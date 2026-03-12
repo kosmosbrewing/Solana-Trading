@@ -19,6 +19,8 @@ export interface StaleCheckInput {
   currentPrice: number;
   currentSpread?: number;
   currentTvl?: number;
+  /** 데이터 소스의 예상 레이턴시 (ms). currentPrice가 폴링 기반일 경우 설정 */
+  dataLatencyMs?: number;
 }
 
 export interface StaleCheckResult {
@@ -37,12 +39,18 @@ export function checkStaleSignal(
   const { signal, currentPrice, currentSpread, currentTvl } = input;
 
   // 1. 시간 경과 체크
-  const age = Date.now() - signal.timestamp.getTime();
-  if (age > cfg.maxAgeMs) {
-    return { isStale: true, reason: `Signal age ${age}ms exceeds ${cfg.maxAgeMs}ms limit` };
+  // 주의: signal.timestamp은 캔들 close 시각이므로, 폴링 간격 + 처리 지연이 포함됨
+  // dataLatencyMs가 설정된 경우, 데이터 소스의 예상 레이턴시를 효과 나이에서 차감
+  const rawAge = Date.now() - signal.timestamp.getTime();
+  const effectiveAge = rawAge - (input.dataLatencyMs || 0);
+  if (effectiveAge > cfg.maxAgeMs) {
+    return { isStale: true, reason: `Signal age ${rawAge}ms (effective: ${effectiveAge}ms) exceeds ${cfg.maxAgeMs}ms limit` };
   }
 
   // 2. 가격 이탈 체크
+  // 주의: currentPrice가 폴링 기반(캔들 close)일 경우 수 초 ~ 수십 초 지연 가능
+  // 이 편차가 실제 가격 변동인지 레이턴시 아티팩트인지 구분 불가하므로,
+  // micro-cap에서는 maxPriceDeviation을 여유있게 설정 필요 (default 1%→2% 권장)
   const priceDeviation = Math.abs(currentPrice - signal.price) / signal.price;
   if (priceDeviation > cfg.maxPriceDeviation) {
     return {

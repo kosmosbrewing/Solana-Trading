@@ -273,7 +273,7 @@ export class BacktestEngine {
       // Update peak for trailing stop
       if (c.high > peakPrice) peakPrice = c.high;
 
-      // Stop Loss
+      // Stop Loss — 같은 봉에서 SL과 TP 동시 도달 가능 시 SL 우선 (보수적)
       if (c.low <= order.stopLoss) {
         return this.makeTrade(
           id, strategy, pairAddress, order, entryIdx, i,
@@ -281,22 +281,7 @@ export class BacktestEngine {
         );
       }
 
-      // Take Profit 2 (check first — higher priority if both hit in same bar)
-      if (c.high >= order.takeProfit2) {
-        return this.makeTrade(
-          id, strategy, pairAddress, order, entryIdx, i,
-          order.takeProfit2, 'TAKE_PROFIT_2', entryCandle, c, peakPrice
-        );
-      }
-
-      // Take Profit 1
-      if (!tp1Hit && c.high >= order.takeProfit1) {
-        tp1Hit = true;
-        // After TP1, tighten stop to entry (breakeven)
-        order.stopLoss = entryPrice;
-      }
-
-      // Trailing Stop (only after TP1)
+      // Trailing Stop (only after TP1) — TP2보다 먼저 체크하여 보수적 평가
       if (tp1Hit && trailingStop && trailingStop > 0) {
         const trailingStopPrice = peakPrice - trailingStop;
         if (c.low <= trailingStopPrice) {
@@ -306,6 +291,20 @@ export class BacktestEngine {
             exitPrice, 'TRAILING_STOP', entryCandle, c, peakPrice
           );
         }
+      }
+
+      // Take Profit 2
+      if (c.high >= order.takeProfit2) {
+        return this.makeTrade(
+          id, strategy, pairAddress, order, entryIdx, i,
+          order.takeProfit2, 'TAKE_PROFIT_2', entryCandle, c, peakPrice
+        );
+      }
+
+      // Take Profit 1 — 이익실현 후 breakeven 스탑으로 전환
+      if (!tp1Hit && c.high >= order.takeProfit1) {
+        tp1Hit = true;
+        order.stopLoss = entryPrice;
       }
 
       // Time Stop

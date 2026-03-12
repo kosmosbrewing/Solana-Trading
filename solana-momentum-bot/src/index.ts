@@ -205,6 +205,7 @@ async function main() {
   });
 
   // ─── Position monitor (SL/TP/Time Stop/Exhaustion) ──
+  // 5초 간격: micro-cap에서 10초는 SL 관통 슬리피지를 크게 악화시킴
   const positionCheckInterval = setInterval(async () => {
     try {
       await checkOpenPositions(ctx);
@@ -212,7 +213,7 @@ async function main() {
       log.error(`Position check error: ${error}`);
       await notifier.sendError('position_check', error).catch(() => {});
     }
-  }, 10000);
+  }, 5000);
 
   // ─── Universe Engine start ──────────────────────────
   await universeEngine.start();
@@ -360,10 +361,13 @@ async function processSignal(
 
   try {
     // Stale Signal Check
+    // 캔들 close 가격은 폴링 주기만큼 지연 가능 — dataLatencyMs로 보정
+    const candleAgeMs = Date.now() - candles[candles.length - 1].timestamp.getTime();
     const staleResult = checkStaleSignal({
       signal,
       currentPrice: candles[candles.length - 1].close,
       currentTvl: signal.poolTvl,
+      dataLatencyMs: Math.min(candleAgeMs, 30_000), // 최대 30초까지 보정
     });
 
     if (staleResult.isStale) {
@@ -456,7 +460,13 @@ async function processSignal(
     try {
       await ctx.positionStore.updateState(positionId, 'ORDER_SUBMITTED');
 
-      const txSignature = await ctx.executor.executeBuy(order);
+      const buyResult = await ctx.executor.executeBuy(order);
+      const txSignature = buyResult.txSignature;
+
+      // 실제 슬리피지 기록
+      if (buyResult.slippageBps > 0) {
+        log.info(`Entry slippage: ${buyResult.slippageBps}bps`);
+      }
 
       await ctx.positionStore.updateState(positionId, 'ENTRY_CONFIRMED', {
         entryPrice: order.price,
@@ -559,6 +569,14 @@ async function checkOpenPositions(ctx: BotContext): Promise<void> {
 
     // Stop Loss 체크
     if (currentPrice <= trade.stopLoss) {
+      // SL 관통 정도를 경고 — 실제 청산 가격은 더 아래일 수 있음
+      const penetrationPct = ((trade.stopLoss - currentPrice) / trade.stopLoss) * 100;
+      if (penetrationPct > 1) {
+        log.warn(
+          `SL penetration warning: price ${currentPrice} is ${penetrationPct.toFixed(1)}% below SL ${trade.stopLoss}. ` +
+          `Actual exit slippage may be significant.`
+        );
+      }
       log.info(`Stop loss triggered for trade ${trade.id} at ${currentPrice}`);
       await closeTrade(trade, 'STOP_LOSS', ctx);
       continue;
@@ -616,25 +634,40 @@ async function closeTrade(
 
     let txSignature: string | undefined;
     let exitPrice = trade.entryPrice;
+    let executionSlippage = 0;
 
     if (tokenBalance > 0n) {
-      txSignature = await ctx.executor.executeSell(trade.pairAddress, tokenBalance);
+      // 매도 전 SOL 잔고 기록
+      const solBefore = await ctx.executor.getBalance();
 
-      const balanceAfter = await ctx.executor.getBalance();
-      const soldValue = Number(tokenBalance) * trade.entryPrice / trade.quantity;
-      exitPrice = soldValue / Number(tokenBalance) || trade.entryPrice;
+      const sellResult = await ctx.executor.executeSell(trade.pairAddress, tokenBalance);
+      txSignature = sellResult.txSignature;
+
+      // 매도 후 SOL 잔고로 실제 수신액 계산
+      const solAfter = await ctx.executor.getBalance();
+      const receivedSol = solAfter - solBefore;
+
+      // 실제 exitPrice = 받은 SOL / 보유 토큰 수량
+      if (receivedSol > 0 && trade.quantity > 0) {
+        exitPrice = receivedSol / trade.quantity;
+      }
+
+      // 실행 슬리피지 = Jupiter quote 대비 실제 수신량 차이
+      executionSlippage = sellResult.slippageBps / 10000;
+
+      log.info(
+        `Sell executed: received=${receivedSol.toFixed(6)} SOL, ` +
+        `exitPrice=${exitPrice.toFixed(8)}, slippage=${sellResult.slippageBps}bps`
+      );
     } else {
       log.warn(`No token balance for trade ${trade.id} — closing with entry price`);
     }
 
     const pnl = (exitPrice - trade.entryPrice) * trade.quantity;
-    const slippage = trade.entryPrice > 0
-      ? Math.abs(exitPrice - trade.entryPrice) / trade.entryPrice
-      : 0;
 
-    await ctx.tradeStore.closeTrade(trade.id, exitPrice, pnl, slippage, reason);
+    await ctx.tradeStore.closeTrade(trade.id, exitPrice, pnl, executionSlippage, reason);
 
-    const closedTrade = { ...trade, exitPrice, pnl, slippage, status: 'CLOSED' as const, exitReason: reason };
+    const closedTrade = { ...trade, exitPrice, pnl, slippage: executionSlippage, status: 'CLOSED' as const, exitReason: reason };
     await ctx.notifier.sendTradeClose(closedTrade);
 
     // Update position state

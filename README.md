@@ -1,150 +1,223 @@
-# Solana Memecoin Sniper Bot 🚀
+# Solana Trading
 
-Solana 네트워크에서 신규 유동성 풀(LP) 생성을 실시간 감지하고 자동 매매하는 스나이퍼 봇
+Solana DEX 자동 트레이딩 시스템. Python 스나이퍼 봇(v0)과 TypeScript 모멘텀 봇(v0.3) 두 가지 전략을 포함합니다.
 
-## 개요
-
-Solana Trading은 텔레그램 채널에서 신규 토큰 정보를 스크래핑하여 필터링 조건에 맞는 토큰을 자동으로 매수하는 Python 기반 트레이딩 봇입니다. GMGN DEX Aggregator를 통해 스왑 주문을 실행합니다.
-
-## 주요 기능
-
-### 📡 실시간 토큰 감지
-- 텔레그램 채널 메시지 실시간 스크래핑 (Telethon)
-- Raydium LP 생성 이벤트 WebSocket 모니터링
-- DexScreener API를 통한 토큰 가격/유동성 조회
-
-### 🔍 스캠 필터링
-- **Market Cap 필터**: 초기 시가총액 검증
-- **Holder 필터**: 홀더 수 제한 (50명 이하)
-- **Renounced 검증**: 컨트랙트 소유권 포기 여부
-- **Top 10 홀더 비율**: 집중도 85% 이하
-- **LP Burn 검증**: 100% 소각 여부
-- **Rug 확률**: 10% 이하만 진입
-- **Twitter 중복 검증**: 동일 트위터 계정 재사용 필터링
-
-### 💹 자동 매매
-- GMGN Router API를 통한 스왑 실행
-- Anti-MEV 보호 옵션
-- Slippage 설정
-- 포지션 자동 관리
-
-### 📊 백테스트
-- 과거 텔레그램 메시지 기반 전략 검증
-- 수익률 분석
+---
 
 ## 프로젝트 구조
 
 ```
 Solana-Trading/
-├── omain.py              # 메인 실행 파일
-├── util.py               # 유틸리티 함수 (텔레그램, 로깅, 데이터 저장)
-├── consts.py             # 설정 상수 (API 키, 지갑 주소 등)
-├── getNewLPScraper.py    # 텔레그램 스크래핑 & 자동 매매
-├── getNewLP.py           # Raydium LP WebSocket 모니터링
-├── getOrderGmGn.py       # GMGN 스왑 주문 실행
-├── getBacktestScraper.py # 백테스트용 스크래퍼
-└── checkPosition.py      # 포지션 모니터링
+├── solana-momentum-bot/     # v0.3 — TypeScript 모멘텀 브레이크아웃 봇
+│   ├── src/
+│   │   ├── index.ts              # 메인 엔트리 (파이프라인 통합)
+│   │   ├── ingester/             # Birdeye API 캔들 수집
+│   │   ├── candle/               # CandleStore + TradeStore (TimescaleDB)
+│   │   ├── universe/             # Pool 필터링 + 랭킹 + Watchlist
+│   │   ├── strategy/             # Breakout Score, Whale, LP, Exhaustion, Trailing
+│   │   ├── risk/                 # RiskManager + LiquiditySizer (3-Constraint)
+│   │   ├── executor/             # Jupiter Swap 실행 (SwapResult 반환)
+│   │   ├── state/                # ExecutionLock, StaleSignalGuard, PositionStore, Recovery
+│   │   ├── audit/                # Signal Audit Log
+│   │   ├── notifier/             # Telegram 4-Level Alert
+│   │   ├── backtest/             # 백테스트 엔진 + 리포터
+│   │   └── utils/                # Config, Logger, HealthMonitor, Types
+│   ├── scripts/
+│   │   ├── migrate.ts            # DB 마이그레이션
+│   │   ├── backtest.ts           # 백테스트 CLI
+│   │   └── fetch-candles.ts      # Birdeye → CSV 데이터 수집
+│   └── config/                   # 3-Group 파라미터 (Universe, Strategy, Liquidity)
+│
+├── omain.py                 # v0 — Python 스나이퍼 봇 메인
+├── getNewLPScraper.py       # 텔레그램 스크래핑 + 자동 매매
+├── getNewLP.py              # Raydium LP WebSocket 모니터링
+├── getOrderGmGn.py          # GMGN 스왑 주문 실행
+├── getBacktestScraper.py    # Python 백테스트
+└── checkPosition.py         # 포지션 모니터링
 ```
 
-## 기술 스택
+---
 
-| 구분 | 기술 |
+## v0.3 — Momentum Breakout Bot (TypeScript)
+
+Solana DEX micro-cap 토큰의 모멘텀 브레이크아웃을 감지하여 자동 매매하는 봇.
+
+### 아키텍처
+
+**3단계 파이프라인**: Universe → Strategy → Risk
+
+```
+Universe Engine          Strategy Layer           Risk Layer
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│ Pool Discovery  │───▶│ Breakout Score    │───▶│ LiquiditySizer  │
+│ Static Filter   │    │  (5-factor 0~100) │    │  (3-Constraint) │
+│ Dynamic Filter  │    │ Whale Detection   │    │ Grade Sizing    │
+│ Ranking         │    │ LP Monitor        │    │  A=100% B=50%   │
+│ Watchlist (≤20) │    │ Exhaustion Exit   │    │  C=rejected     │
+└─────────────────┘    │ Adaptive Trailing │    └─────────────────┘
+                       └──────────────────┘
+```
+
+### Breakout Score (0~100)
+
+| Factor | Weight | 기준 |
+|--------|--------|------|
+| Volume Ratio | 25 | ≥5x → 25, ≥3x → 15 |
+| Buy Ratio | 25 | ≥80% → 25, ≥65% → 15 |
+| Multi-TF Alignment | 20 | ≥3TF → 20, ≥2TF → 10 |
+| Whale Activity | 15 | 감지 → 15 |
+| LP Stability | -10~15 | stable → 15, dropping → -10 |
+
+**Grade**: A (≥70) → Full Size, B (≥50) → Half Size, C (<50) → Rejected
+
+### LiquiditySizer — 3-Constraint Model
+
+```
+Position Size = min(Risk, Liquidity, Emergency)
+
+Risk:       portfolio × riskPerTrade / stopLossPct
+Liquidity:  TVL × maxPoolImpactPct (2%)
+Emergency:  TVL 50% 급감 시에도 maxRisk 이내 청산 가능한 사이즈
+```
+
+슬리피지 추정: `priceImpact + fee(0.3%) + MEV(0.1%)`
+
+### 주요 모듈
+
+| 모듈 | 역할 |
 |------|------|
-| Language | Python 3.x |
-| Async | asyncio, aiohttp |
-| Telegram | Telethon |
-| Blockchain | solana-py, solders |
-| DEX | GMGN Router API |
-| Data | DexScreener API |
-| Notification | python-telegram-bot |
+| **UniverseEngine** | 5분 주기 pool 필터링/랭킹, watchlist 관리 |
+| **BreakoutScore** | 5-factor 점수 → Grade A/B/C 분류 |
+| **WhaleDetect** | 단일 대형 매수(>2% TVL), 3-candle 누적 감지 |
+| **LPMonitor** | LP 추가/제거 감지, 안정성 평가 |
+| **AdaptiveTrailing** | RSI(7) 기반 trailing 폭 조절 (×1~×3 ATR) |
+| **ExhaustionExit** | body 축소 + upper wick + volume 감소 (2/3 trigger) |
+| **ExecutionLock** | 동시 1개 트레이드만 실행 (60s timeout) |
+| **StaleSignalGuard** | 시그널 유효성 (시간/가격/스프레드/TVL) |
+| **PositionStore** | Write-Ahead 상태 기록 + 크래시 복구 |
+| **SignalAuditLog** | 모든 시그널 결과 DB 기록 |
 
-## 환경 설정
-
-### 1. 필수 패키지 설치
-
-```bash
-pip install telethon aiohttp solana solders base58 pandas tabulate python-telegram-bot websockets
-```
-
-### 2. 설정 파일 (`consts.py`)
-
-```python
-# consts.py
-ENV = 'real'  # 'real' 또는 'local'
-
-# Telegram API (my.telegram.org에서 발급)
-API_ID = '<YOUR_TELEGRAM_API_ID>'
-API_HASH = '<YOUR_TELEGRAM_API_HASH>'
-
-# Solana Wallet
-WALLET_KEY = '<YOUR_WALLET_PRIVATE_KEY>'
-FROM_ADDRESS = '<YOUR_WALLET_PUBLIC_ADDRESS>'
-SOL_ADDRESS = 'So11111111111111111111111111111111111111112'
-
-# Trading Settings
-INPUT_SOL = 0.01           # 1회 매수 금액 (SOL)
-INPUT_SOL_AMOUNT = 10000000  # lamports (0.01 SOL)
-REMAINING_SOL = 1.0        # 최대 투자 SOL
-SLIPPAGE = 15              # 슬리피지 (%)
-ORDER_FEE = 0.0009         # 주문 수수료
-
-# Telegram Notification
-TELEGRAM_BOT_TOKEN = '<YOUR_TELEGRAM_BOT_TOKEN>'
-TELEGRAM_MESSAGE_MAX_SIZE = 4096
-```
-
-## 사용법
-
-### 메인 봇 실행
+### 설치 및 실행
 
 ```bash
-python omain.py
+cd solana-momentum-bot
+
+# 의존성 설치
+npm install
+
+# 환경 변수 설정
+cp .env.example .env
+# .env 파일에 API 키, DB URL, 지갑 키 등 설정
+
+# DB 기동 (TimescaleDB)
+docker-compose up -d
+
+# DB 마이그레이션
+npx ts-node scripts/migrate.ts
+
+# Paper 모드로 실행
+TRADING_MODE=paper npx ts-node src/index.ts
+
+# Live 모드로 실행
+TRADING_MODE=live npx ts-node src/index.ts
 ```
 
-### 백테스트 실행
+### 환경 변수 (.env)
+
+| 변수 | 설명 | 기본값 |
+|------|------|--------|
+| `DATABASE_URL` | TimescaleDB 연결 | `postgresql://...` |
+| `BIRDEYE_API_KEY` | Birdeye API 키 | - |
+| `SOLANA_RPC_URL` | Solana RPC 엔드포인트 | - |
+| `WALLET_PRIVATE_KEY` | 지갑 개인키 (Base58) | - |
+| `TELEGRAM_BOT_TOKEN` | 텔레그램 알림 봇 | - |
+| `TARGET_PAIR_ADDRESS` | 모니터링 대상 풀 | - |
+| `TRADING_MODE` | `paper` / `live` | `paper` |
+| `MAX_RISK_PER_TRADE` | 1회 최대 리스크 | `0.02` |
+| `MAX_DAILY_LOSS` | 일일 최대 손실 | `0.05` |
+| `MAX_SLIPPAGE` | 최대 슬리피지 | `0.01` |
+
+### 백테스트
 
 ```bash
-python getBacktestScraper.py
+# 캔들 데이터 수집 (Birdeye → CSV)
+npx ts-node scripts/fetch-candles.ts \
+  --pair <PAIR_ADDRESS> \
+  --interval 5m \
+  --days 30 \
+  --output data/candles.csv
+
+# 백테스트 실행
+npx ts-node scripts/backtest.ts \
+  --file data/candles.csv \
+  --strategy volume_spike \
+  --initial-balance 10 \
+  --slippage-deduction 0.30
+
+# 주요 옵션
+#   --strategy         volume_spike | pump_detect | combined
+#   --start-date       시작일 (YYYY-MM-DD)
+#   --end-date         종료일 (YYYY-MM-DD)
+#   --export-csv       트레이드 결과 CSV 내보내기
+#   --chart            ASCII equity curve 출력
 ```
 
-### LP 모니터링 (WebSocket)
+### DB 스키마
 
-```bash
-python getNewLP.py
+| 테이블 | 용도 |
+|--------|------|
+| `candles` | OHLCV + buyVolume/sellVolume (TimescaleDB hypertable) |
+| `trades` | 트레이드 기록 (score, grade, constraint, exitReason) |
+| `position_states` | 포지션 상태 머신 (Write-Ahead) |
+| `signal_audit_log` | 시그널 감사 로그 (EXECUTED/FILTERED/STALE/RISK_REJECTED) |
+| `universe_snapshots` | Pool 스냅샷 |
+| `backtest_runs` | 백테스트 결과 |
+
+### 파라미터 구조 (3-Group)
+
+```
+config/
+├── params-universe.json    # 7개: TVL, age, holder, volume, trade count, spread, watchlist
+├── params-strategy.json    # 10개: lookback, multiplier, consecutive, TP/SL, trailing 등
+├── params-liquidity.json   # 3개: maxSlippage, maxPoolImpact, emergencyHaircut
+└── params-search.json      # Grid search 범위 + constraint rules
 ```
 
-## 필터링 조건
+---
 
-봇은 다음 조건을 모두 만족하는 토큰만 매수합니다:
+## v0 — Sniper Bot (Python)
+
+텔레그램 채널에서 신규 토큰을 스크래핑하여 필터링 후 자동 매수하는 스나이퍼 봇.
+
+### 필터링 조건
 
 | 조건 | 값 |
 |------|-----|
-| Market Cap | K/M 단위 미만 (초기 단계) |
+| Market Cap | 초기 단계 (K/M 단위) |
 | Holder 수 | 50명 이하 |
-| Renounced | ✅ (소유권 포기됨) |
+| Renounced | 소유권 포기됨 |
 | Top 10 홀더 | 85% 이하 |
 | LP Burn | 100% |
 | Rug 확률 | 10% 이하 |
-| 메시지 지연 | 3초 이내 |
-| Twitter 중복 | 동일 계정 1회만 |
 
-## 데이터 저장
+### 실행
 
-- `position_data.json`: 현재 보유 포지션
-- `twitter_data.json`: 트위터 계정 중복 체크 데이터
+```bash
+pip install telethon aiohttp solana solders base58 pandas python-telegram-bot websockets
 
-## API 연동
+# consts.py에 API 키 및 지갑 설정 후
+python omain.py
+```
 
-### GMGN Router
-- **스왑 라우트 조회**: `GET /sol/tx/get_swap_route`
-- **트랜잭션 제출**: `POST /sol/tx/submit_signed_transaction`
+---
 
-### DexScreener
-- **토큰 정보 조회**: `GET /tokens/v1/solana/{CA}`
+## 기술 스택
 
-## 로그 파일
-
-- `premium.log`: 실시간 트레이딩 로그
-- `backtest.log`: 백테스트 결과 로그
-
-로그는 날짜별로 자동 rotation되며 30일간 보관됩니다.
+| 구분 | v0 (Sniper) | v0.3 (Momentum) |
+|------|------------|-----------------|
+| Language | Python 3.x | TypeScript (Node.js) |
+| DB | JSON files | TimescaleDB (PostgreSQL) |
+| DEX | GMGN Router | Jupiter Aggregator |
+| Data | DexScreener, Telegram | Birdeye API |
+| Notification | python-telegram-bot | Telegram Bot API |
+| Infra | - | Docker Compose |

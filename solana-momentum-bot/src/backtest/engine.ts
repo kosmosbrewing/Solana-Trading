@@ -4,6 +4,8 @@ import {
   buildVolumeSpikeOrder,
   evaluatePumpDetection,
   buildPumpOrder,
+  evaluateFibPullback,
+  buildFibPullbackOrder,
 } from '../strategy';
 import {
   BacktestConfig,
@@ -64,10 +66,13 @@ export class BacktestEngine {
       return this.emptyResult(strategy, pairAddress);
     }
 
-    const lookback = strategy === 'volume_spike' ? 21 : 6;
-    const timeStopMinutes = strategy === 'volume_spike'
-      ? (this.config.volumeSpikeParams.timeStopMinutes ?? 30)
-      : (this.config.pumpDetectParams.timeStopMinutes ?? 15);
+    const lookback = strategy === 'fib_pullback' ? 28
+      : strategy === 'volume_spike' ? 21 : 6;
+    const timeStopMinutes = strategy === 'fib_pullback'
+      ? (this.config.fibPullbackParams.timeStopMinutes ?? 60)
+      : strategy === 'volume_spike'
+        ? (this.config.volumeSpikeParams.timeStopMinutes ?? 30)
+        : (this.config.pumpDetectParams.timeStopMinutes ?? 15);
 
     const riskState: RiskState = {
       balance: this.config.initialBalance,
@@ -89,9 +94,11 @@ export class BacktestEngine {
       const window = filtered.slice(i - lookback, i + 1);
       resetDailyState(riskState, dateKey(filtered[i].timestamp));
 
-      const signal = strategy === 'volume_spike'
-        ? evaluateVolumeSpikeBreakout(window, this.config.volumeSpikeParams)
-        : evaluatePumpDetection(window, this.config.pumpDetectParams);
+      const signal = strategy === 'fib_pullback'
+        ? evaluateFibPullback(window, this.config.fibPullbackParams)
+        : strategy === 'volume_spike'
+          ? evaluateVolumeSpikeBreakout(window, this.config.volumeSpikeParams)
+          : evaluatePumpDetection(window, this.config.pumpDetectParams);
 
       if (signal.action !== 'BUY') continue;
 
@@ -103,9 +110,11 @@ export class BacktestEngine {
       }
 
       // Position sizing
-      const order = strategy === 'volume_spike'
-        ? buildVolumeSpikeOrder(signal, window, 0, this.config.volumeSpikeParams)
-        : buildPumpOrder(signal, window, 0, this.config.pumpDetectParams);
+      const order = strategy === 'fib_pullback'
+        ? buildFibPullbackOrder(signal, window, 0, this.config.fibPullbackParams)
+        : strategy === 'volume_spike'
+          ? buildVolumeSpikeOrder(signal, window, 0, this.config.volumeSpikeParams)
+          : buildPumpOrder(signal, window, 0, this.config.pumpDetectParams);
 
       const quantity = this.calculatePositionSize(riskState, order);
       if (quantity <= 0) {
@@ -159,12 +168,13 @@ export class BacktestEngine {
     candles5m: Candle[],
     candles1m: Candle[],
     pairAddress: string
-  ): { strategyA: BacktestResult; strategyB: BacktestResult; combined: BacktestResult } {
+  ): { strategyA: BacktestResult; strategyB: BacktestResult; strategyC: BacktestResult; combined: BacktestResult } {
     const strategyA = this.run(candles5m, 'volume_spike', pairAddress);
     const strategyB = this.run(candles1m, 'pump_detect', pairAddress);
+    const strategyC = this.run(candles5m, 'fib_pullback', pairAddress);
 
     // Merge trades chronologically for combined stats
-    const allTrades = [...strategyA.trades, ...strategyB.trades]
+    const allTrades = [...strategyA.trades, ...strategyB.trades, ...strategyC.trades]
       .sort((a, b) => a.entryTime.getTime() - b.entryTime.getTime());
 
     // Rebuild equity curve from merged trades
@@ -175,10 +185,10 @@ export class BacktestEngine {
       currentDay: '',
       positionOpen: false,
       rejections: {
-        dailyLimit: strategyA.rejections.dailyLimit + strategyB.rejections.dailyLimit,
-        cooldown: strategyA.rejections.cooldown + strategyB.rejections.cooldown,
-        positionOpen: strategyA.rejections.positionOpen + strategyB.rejections.positionOpen,
-        zeroSize: strategyA.rejections.zeroSize + strategyB.rejections.zeroSize,
+        dailyLimit: strategyA.rejections.dailyLimit + strategyB.rejections.dailyLimit + strategyC.rejections.dailyLimit,
+        cooldown: strategyA.rejections.cooldown + strategyB.rejections.cooldown + strategyC.rejections.cooldown,
+        positionOpen: strategyA.rejections.positionOpen + strategyB.rejections.positionOpen + strategyC.rejections.positionOpen,
+        zeroSize: strategyA.rejections.zeroSize + strategyB.rejections.zeroSize + strategyC.rejections.zeroSize,
       },
     };
 
@@ -204,7 +214,7 @@ export class BacktestEngine {
       'combined' as any, pairAddress, allCandles, allTrades, equityCurve, riskState
     );
 
-    return { strategyA, strategyB, combined };
+    return { strategyA, strategyB, strategyC, combined };
   }
 
   // ─── Private: Risk Check ───

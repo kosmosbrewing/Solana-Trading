@@ -1,0 +1,42 @@
+{
+  "name": "solana-momentum-bot",
+  "version": "0.1.0",
+  "description": "Solana DEX 마이크로캡 토큰 초봉 기반 모멘텀 브레이크아웃 자동매매 봇",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "migrate": "ts-node scripts/migrate.ts",
+    "backtest": "ts-node scripts/backtest.ts",
+    "lint": "eslint src/ --ext .ts",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.95.0",
+    "axios": "^1.7.0",
+    "bignumber.js": "^9.1.2",
+    "bs58": "^6.0.0",
+    "dotenv": "^16.4.0",
+    "pg": "^8.13.0",
+    "winston": "^3.14.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.0",
+    "@types/node": "^22.19.15",
+    "@types/pg": "^8.11.0",
+    "@types/ws": "^8.5.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "private": true
+}

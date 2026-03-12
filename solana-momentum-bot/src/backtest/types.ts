@@ -1,6 +1,7 @@
 import { Candle, Order, StrategyName } from '../utils/types';
 import { VolumeSpikeParams } from '../strategy/volumeSpikeBreakout';
 import { PumpDetectParams } from '../strategy/pumpDetection';
+import { FibPullbackParams } from '../strategy/fibPullback';
 
 // ─── Backtest Configuration ───
 
@@ -20,6 +21,7 @@ export interface BacktestConfig {
   /** Strategy params overrides */
   volumeSpikeParams: Partial<VolumeSpikeParams>;
   pumpDetectParams: Partial<PumpDetectParams>;
+  fibPullbackParams: Partial<FibPullbackParams>;
   /** Date range filter */
   startDate?: Date;
   endDate?: Date;
@@ -34,6 +36,7 @@ export const DEFAULT_BACKTEST_CONFIG: BacktestConfig = {
   cooldownMinutes: 30,
   volumeSpikeParams: {},
   pumpDetectParams: {},
+  fibPullbackParams: {},
 };
 
 // ─── Backtest Trade ───

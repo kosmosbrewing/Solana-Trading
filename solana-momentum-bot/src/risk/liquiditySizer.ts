@@ -90,14 +90,24 @@ export function calculateLiquiditySize(
 }
 
 /**
- * Constant Product AMM 슬리피지 추정
- * slippage ≈ tradeSize / (poolReserve + tradeSize)
+ * Constant Product AMM 슬리피지 추정 (fee + MEV 마진 포함)
+ *
+ * priceImpact = tradeSize / (poolReserve + tradeSize)
+ * + AMM fee (0.3% default)
+ * + MEV/frontrunning 마진 (0.1% — Solana 환경 추정)
+ *
  * poolReserve = TVL / 2
  */
-export function estimateSlippage(tradeSize: number, poolTvl: number): number {
+export function estimateSlippage(
+  tradeSize: number,
+  poolTvl: number,
+  feeRate: number = 0.003,
+  mevMarginPct: number = 0.001
+): number {
   if (poolTvl <= 0 || tradeSize <= 0) return 0;
   const poolReserve = poolTvl / 2;
-  return tradeSize / (poolReserve + tradeSize);
+  const priceImpact = tradeSize / (poolReserve + tradeSize);
+  return priceImpact + feeRate + mevMarginPct;
 }
 
 /**

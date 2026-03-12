@@ -1,0 +1,36 @@
+{
+  "strategies": {
+    "volume_spike": {
+      "enabled": true,
+      "timeframeSec": 300,
+      "lookback": 20,
+      "volumeMultiplier": 3.0,
+      "spreadFilterK": 2.0,
+      "atrPeriod": 20,
+      "tp1Multiplier": 1.5,
+      "tp2Multiplier": 2.5,
+      "timeStopMinutes": 30
+    },
+    "pump_detect": {
+      "enabled": true,
+      "timeframeSec": 60,
+      "consecutiveCandles": 3,
+      "minPriceMove": 0.05,
+      "tp1Pct": 0.10,
+      "tp2Pct": 0.20,
+      "timeStopMinutes": 15
+    }
+  },
+  "risk": {
+    "maxRiskPerTrade": 0.01,
+    "maxDailyLoss": 0.05,
+    "maxConsecutiveLosses": 3,
+    "cooldownMinutes": 30,
+    "maxSlippage": 0.01
+  },
+  "safety": {
+    "minPoolLiquidity": 50000,
+    "minTokenAgeHours": 24,
+    "maxHolderConcentration": 0.80
+  }
+}

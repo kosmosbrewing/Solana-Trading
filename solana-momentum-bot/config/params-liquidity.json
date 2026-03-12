@@ -1,0 +1,5 @@
+{
+  "maxSlippagePct": 0.01,
+  "maxPoolImpactPct": 0.02,
+  "emergencyHaircut": 0.50
+}

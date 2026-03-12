@@ -1,0 +1,9 @@
+{
+  "minPoolTVL": 50000,
+  "minTokenAgeSec": 86400,
+  "maxTop10HolderPct": 0.80,
+  "minDailyVolume": 10000,
+  "minTradeCount24h": 50,
+  "maxSpreadPct": 0.03,
+  "maxWatchlistSize": 20
+}

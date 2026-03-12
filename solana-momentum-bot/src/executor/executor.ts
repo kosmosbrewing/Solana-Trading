@@ -3,13 +3,14 @@ import {
   Connection,
   Keypair,
   VersionedTransaction,
-  TransactionMessage,
 } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { createModuleLogger } from '../utils/logger';
-import { Order, Trade } from '../utils/types';
+import { Order } from '../utils/types';
 
 const log = createModuleLogger('Executor');
+
+const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
 export interface ExecutorConfig {
   solanaRpcUrl: string;
@@ -37,7 +38,6 @@ export class Executor {
   private jupiterClient: AxiosInstance;
   private maxSlippageBps: number;
   private maxRetries: number;
-  private txTimeoutMs: number;
 
   constructor(executorConfig: ExecutorConfig) {
     this.connection = new Connection(executorConfig.solanaRpcUrl, 'confirmed');
@@ -48,7 +48,6 @@ export class Executor {
     });
     this.maxSlippageBps = Math.round(executorConfig.maxSlippage * 10000);
     this.maxRetries = executorConfig.maxRetries;
-    this.txTimeoutMs = executorConfig.txTimeoutMs;
 
     log.info(`Executor initialized. Wallet: ${this.wallet.publicKey.toBase58().slice(0, 6)}...`);
   }
@@ -62,16 +61,12 @@ export class Executor {
     outputMint: string,
     amountLamports: bigint
   ): Promise<string> {
-    // 1. Jupiter Quote 요청
     const quote = await this.getQuote(inputMint, outputMint, amountLamports);
     log.info(
       `Quote: ${quote.inAmount} → ${quote.outAmount} (slippage: ${quote.slippageBps}bps)`
     );
 
-    // 2. Swap Transaction 생성
     const swapTx = await this.getSwapTransaction(quote);
-
-    // 3. 트랜잭션 서명 및 전송 (재시도 포함)
     return this.sendWithRetry(swapTx);
   }
 
@@ -79,9 +74,6 @@ export class Executor {
    * 주문 기반 매수 실행
    */
   async executeBuy(order: Order): Promise<string> {
-    const SOL_MINT = 'So11111111111111111111111111111111111111112';
-
-    // quantity를 SOL lamports로 변환 (1 SOL = 1e9 lamports)
     const amountLamports = BigInt(Math.floor(order.quantity * 1e9));
 
     log.info(
@@ -98,19 +90,30 @@ export class Executor {
     tokenMint: string,
     amountRaw: bigint
   ): Promise<string> {
-    const SOL_MINT = 'So11111111111111111111111111111111111111112';
-
     log.info(`Executing SELL: ${tokenMint} → SOL`);
-
     return this.executeSwap(tokenMint, SOL_MINT, amountRaw);
   }
 
   /**
-   * SOL 잔고 조회 (lamports)
+   * SOL 잔고 조회
    */
   async getBalance(): Promise<number> {
     const balance = await this.connection.getBalance(this.wallet.publicKey);
-    return balance / 1e9; // SOL 단위 반환
+    return balance / 1e9;
+  }
+
+  /**
+   * SPL 토큰 잔고 조회 (raw amount)
+   */
+  async getTokenBalance(tokenMint: string): Promise<bigint> {
+    const accounts = await this.connection.getTokenAccountsByOwner(
+      this.wallet.publicKey,
+      { mint: await import('@solana/web3.js').then(m => new m.PublicKey(tokenMint)) }
+    );
+    if (accounts.value.length === 0) return 0n;
+
+    const info = await this.connection.getTokenAccountBalance(accounts.value[0].pubkey);
+    return BigInt(info.value.amount);
   }
 
   private async getQuote(
@@ -155,7 +158,6 @@ export class Executor {
           skipPreflight: false,
         });
 
-        // 체결 확인
         const confirmation = await this.connection.confirmTransaction(
           signature,
           'confirmed'
@@ -172,7 +174,6 @@ export class Executor {
         log.warn(`TX attempt ${attempt}/${this.maxRetries} failed: ${lastError.message}`);
 
         if (attempt < this.maxRetries) {
-          // Exponential backoff
           const delay = Math.pow(2, attempt) * 1000;
           await new Promise((resolve) => setTimeout(resolve, delay));
         }

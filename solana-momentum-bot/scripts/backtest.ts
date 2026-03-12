@@ -1,8 +1,6 @@
 /**
  * 백테스트 러너
- * 실행: npx ts-node scripts/backtest.ts
- *
- * TimescaleDB에 저장된 과거 캔들 데이터로 전략 A/B 백테스트
+ * 실행: npx ts-node scripts/backtest.ts <pair_address>
  */
 import { Pool } from 'pg';
 import dotenv from 'dotenv';
@@ -13,7 +11,8 @@ import {
   evaluatePumpDetection,
   buildPumpOrder,
 } from '../src/strategy';
-import { Candle, Signal, Order } from '../src/utils/types';
+import { CandleStore } from '../src/candle/candleStore';
+import { Candle, Order } from '../src/utils/types';
 
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
@@ -35,36 +34,50 @@ interface BacktestTrade {
   exitPrice: number;
   pnl: number;
   reason: string;
-  entryTime: Date;
-  exitTime: Date;
+  entryIdx: number;
+  exitIdx: number;
 }
 
-const SLIPPAGE_DEDUCTION = 0.30; // 30% 차감
+const SLIPPAGE_DEDUCTION = 0.30;
+
+type EvalFn = (candles: Candle[]) => { action: string };
+type BuildFn = (signal: any, candles: Candle[], qty: number) => Order;
 
 async function runBacktest() {
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-
   const pairAddress = process.argv[2];
   if (!pairAddress) {
     console.error('Usage: npx ts-node scripts/backtest.ts <pair_address>');
     process.exit(1);
   }
 
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  const candleStore = new CandleStore(pool);
+
   console.log(`\n=== Backtest: ${pairAddress} ===\n`);
 
-  // 5분봉 데이터로 Strategy A 백테스트
-  const candles5m = await loadCandles(pool, pairAddress, 300);
+  // Strategy A: 5분봉
+  const candles5m = await candleStore.getAllCandles(pairAddress, 300);
   if (candles5m.length > 0) {
-    const resultA = backtestStrategyA(candles5m);
+    const resultA = runStrategy(
+      candles5m, 21,
+      (window) => evaluateVolumeSpikeBreakout(window),
+      (signal, window, qty) => buildVolumeSpikeOrder(signal, window, qty),
+      30
+    );
     printResult('Strategy A: Volume Spike Breakout (5m)', resultA);
   } else {
     console.log('No 5m candles found — skipping Strategy A');
   }
 
-  // 1분봉 데이터로 Strategy B 백테스트
-  const candles1m = await loadCandles(pool, pairAddress, 60);
+  // Strategy B: 1분봉
+  const candles1m = await candleStore.getAllCandles(pairAddress, 60);
   if (candles1m.length > 0) {
-    const resultB = backtestStrategyB(candles1m);
+    const resultB = runStrategy(
+      candles1m, 6,
+      (window) => evaluatePumpDetection(window),
+      (signal, window, qty) => buildPumpOrder(signal, window, qty),
+      15
+    );
     printResult('Strategy B: Pump Detection (1m)', resultB);
   } else {
     console.log('No 1m candles found — skipping Strategy B');
@@ -73,73 +86,30 @@ async function runBacktest() {
   await pool.end();
 }
 
-async function loadCandles(pool: Pool, pairAddress: string, intervalSec: number): Promise<Candle[]> {
-  const result = await pool.query(
-    `SELECT * FROM candles
-     WHERE pair_address = $1 AND interval_sec = $2
-     ORDER BY timestamp ASC`,
-    [pairAddress, intervalSec]
-  );
-
-  return result.rows.map((row: Record<string, unknown>) => ({
-    pairAddress: row.pair_address as string,
-    timestamp: new Date(row.timestamp as string),
-    intervalSec: Number(row.interval_sec),
-    open: Number(row.open),
-    high: Number(row.high),
-    low: Number(row.low),
-    close: Number(row.close),
-    volume: Number(row.volume),
-    tradeCount: Number(row.trade_count),
-  }));
-}
-
-function backtestStrategyA(candles: Candle[]): BacktestResult {
+function runStrategy(
+  candles: Candle[],
+  lookback: number,
+  evaluate: EvalFn,
+  buildOrder: BuildFn,
+  timeStopMinutes: number
+): BacktestResult {
   const trades: BacktestTrade[] = [];
-  const lookback = 21; // 20 + 현재 봉
 
   for (let i = lookback; i < candles.length; i++) {
     const window = candles.slice(i - lookback, i + 1);
-    const signal = evaluateVolumeSpikeBreakout(window);
+    const signal = evaluate(window);
 
     if (signal.action === 'BUY') {
-      const order = buildVolumeSpikeOrder(signal, window, 1);
-      const trade = simulateTrade(order, candles, i, 30);
+      const order = buildOrder(signal, window, 1);
+      const trade = simulateTrade(order, candles, i, timeStopMinutes);
       if (trade) {
         trades.push(trade);
-        // 포지션 중 다음 시그널 스킵
-        const exitIdx = candles.findIndex(
-          (c) => c.timestamp >= trade.exitTime
-        );
-        if (exitIdx > i) i = exitIdx;
+        if (trade.exitIdx > i) i = trade.exitIdx;
       }
     }
   }
 
-  return calculateResult('volume_spike', trades);
-}
-
-function backtestStrategyB(candles: Candle[]): BacktestResult {
-  const trades: BacktestTrade[] = [];
-
-  for (let i = 5; i < candles.length; i++) {
-    const window = candles.slice(Math.max(0, i - 5), i + 1);
-    const signal = evaluatePumpDetection(window);
-
-    if (signal.action === 'BUY') {
-      const order = buildPumpOrder(signal, window, 1);
-      const trade = simulateTrade(order, candles, i, 15);
-      if (trade) {
-        trades.push(trade);
-        const exitIdx = candles.findIndex(
-          (c) => c.timestamp >= trade.exitTime
-        );
-        if (exitIdx > i) i = exitIdx;
-      }
-    }
-  }
-
-  return calculateResult('pump_detect', trades);
+  return calculateResult(candles[0]?.pairAddress || '', trades);
 }
 
 function simulateTrade(
@@ -155,44 +125,41 @@ function simulateTrade(
   for (let i = entryIdx + 1; i < candles.length; i++) {
     const c = candles[i];
 
-    // Stop Loss
     if (c.low <= order.stopLoss) {
       return {
         entryPrice,
         exitPrice: order.stopLoss,
         pnl: (order.stopLoss - entryPrice) / entryPrice,
         reason: 'STOP_LOSS',
-        entryTime: entryCandle.timestamp,
-        exitTime: c.timestamp,
+        entryIdx,
+        exitIdx: i,
       };
     }
 
-    // Take Profit 1
     if (c.high >= order.takeProfit1) {
       return {
         entryPrice,
         exitPrice: order.takeProfit1,
         pnl: (order.takeProfit1 - entryPrice) / entryPrice,
         reason: 'TAKE_PROFIT_1',
-        entryTime: entryCandle.timestamp,
-        exitTime: c.timestamp,
+        entryIdx,
+        exitIdx: i,
       };
     }
 
-    // Time Stop
     if (c.timestamp >= timeStopAt) {
       return {
         entryPrice,
         exitPrice: c.close,
         pnl: (c.close - entryPrice) / entryPrice,
         reason: 'TIME_STOP',
-        entryTime: entryCandle.timestamp,
-        exitTime: c.timestamp,
+        entryIdx,
+        exitIdx: i,
       };
     }
   }
 
-  return null; // 데이터 부족
+  return null;
 }
 
 function calculateResult(strategy: string, trades: BacktestTrade[]): BacktestResult {
@@ -200,13 +167,12 @@ function calculateResult(strategy: string, trades: BacktestTrade[]): BacktestRes
   const losses = trades.filter((t) => t.pnl <= 0);
 
   const totalPnlRaw = trades.reduce((sum, t) => sum + t.pnl, 0);
-  const totalPnl = totalPnlRaw * (1 - SLIPPAGE_DEDUCTION); // 30% 차감
+  const totalPnl = totalPnlRaw * (1 - SLIPPAGE_DEDUCTION);
 
   const grossProfit = wins.reduce((sum, t) => sum + t.pnl, 0);
   const grossLoss = Math.abs(losses.reduce((sum, t) => sum + t.pnl, 0));
   const profitFactor = grossLoss > 0 ? (grossProfit * (1 - SLIPPAGE_DEDUCTION)) / grossLoss : 0;
 
-  // Max drawdown
   let maxDD = 0;
   let peak = 0;
   let equity = 0;

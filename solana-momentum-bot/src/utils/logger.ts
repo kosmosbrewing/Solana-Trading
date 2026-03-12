@@ -1,21 +1,14 @@
 import winston from 'winston';
 
-const SENSITIVE_PATTERNS = [
-  /[1-9A-HJ-NP-Za-km-z]{87,88}/g,  // Base58 private keys
-  /[1-9A-HJ-NP-Za-km-z]{43,44}/g,  // Solana public keys (마스킹: 앞6 + ... + 뒤4)
-];
+// Base58 프라이빗 키 (87-88자) 만 마스킹 — 짧은 문자열은 무시
+const PRIVATE_KEY_PATTERN = /[1-9A-HJ-NP-Za-km-z]{87,88}/g;
 
 function maskSensitive(message: string): string {
-  let masked = message;
-  for (const pattern of SENSITIVE_PATTERNS) {
-    masked = masked.replace(pattern, (match) => {
-      if (match.length > 20) {
-        return `${match.slice(0, 6)}...${match.slice(-4)}`;
-      }
-      return match;
-    });
-  }
-  return masked;
+  // 짧은 메시지는 프라이빗 키를 포함할 수 없으므로 스킵
+  if (message.length < 87) return message;
+  return message.replace(PRIVATE_KEY_PATTERN, (match) =>
+    `${match.slice(0, 6)}...${match.slice(-4)}`
+  );
 }
 
 const maskFormat = winston.format((info) => {
@@ -43,7 +36,7 @@ export const logger = winston.createLogger({
     new winston.transports.Console(),
     new winston.transports.File({
       filename: 'logs/bot.log',
-      maxsize: 10 * 1024 * 1024, // 10MB
+      maxsize: 10 * 1024 * 1024,
       maxFiles: 5,
     }),
     new winston.transports.File({

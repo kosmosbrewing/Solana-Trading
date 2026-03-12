@@ -1,2 +1,2 @@
-export { CandleStore } from './candleStore';
+export { CandleStore, rowToCandle } from './candleStore';
 export { TradeStore } from './tradeStore';

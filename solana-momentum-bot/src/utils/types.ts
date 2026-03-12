@@ -1,5 +1,7 @@
 // ─── Candle ───
 
+export type CandleInterval = '1m' | '5m' | '15m' | '1H';
+
 export interface Candle {
   pairAddress: string;
   timestamp: Date;
@@ -22,7 +24,7 @@ export interface Signal {
   pairAddress: string;
   price: number;
   timestamp: Date;
-  meta: Record<string, number>; // ATR, volume ratio 등 부가 정보
+  meta: Record<string, number>;
 }
 
 // ─── Strategy ───
@@ -39,6 +41,7 @@ export interface StrategyConfig {
 
 export type TradeSide = 'BUY' | 'SELL';
 export type TradeStatus = 'OPEN' | 'CLOSED' | 'FAILED';
+export type CloseReason = 'STOP_LOSS' | 'TAKE_PROFIT' | 'TIME_STOP' | 'MANUAL';
 
 export interface Order {
   pairAddress: string;
@@ -96,10 +99,8 @@ export interface TokenSafety {
 
 export interface PortfolioState {
   balanceSol: number;
-  balanceUsd: number;
   openTrades: Trade[];
   dailyPnl: number;
-  dailyTradeCount: number;
   consecutiveLosses: number;
   lastLossTime?: Date;
 }

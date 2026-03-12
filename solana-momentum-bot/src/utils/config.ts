@@ -16,12 +16,33 @@ function optional(key: string, fallback: string): string {
 }
 
 function numRequired(key: string): number {
-  return Number(required(key));
+  const raw = required(key);
+  const num = Number(raw);
+  if (Number.isNaN(num)) {
+    throw new Error(`Env var ${key} is not a valid number: "${raw}"`);
+  }
+  return num;
 }
 
 function numOptional(key: string, fallback: number): number {
   const v = process.env[key];
-  return v ? Number(v) : fallback;
+  if (!v) return fallback;
+  const num = Number(v);
+  if (Number.isNaN(num)) {
+    throw new Error(`Env var ${key} is not a valid number: "${v}"`);
+  }
+  return num;
+}
+
+const VALID_TRADING_MODES = ['paper', 'live'] as const;
+export type TradingMode = typeof VALID_TRADING_MODES[number];
+
+function parseTradingMode(): TradingMode {
+  const raw = process.env.TRADING_MODE || 'paper';
+  if (!VALID_TRADING_MODES.includes(raw as TradingMode)) {
+    throw new Error(`Invalid TRADING_MODE: "${raw}". Must be "paper" or "live".`);
+  }
+  return raw as TradingMode;
 }
 
 export const config = {
@@ -39,6 +60,9 @@ export const config = {
   // Notification
   telegramBotToken: optional('TELEGRAM_BOT_TOKEN', ''),
   telegramChatId: optional('TELEGRAM_CHAT_ID', ''),
+
+  // Trading Mode
+  tradingMode: parseTradingMode(),
 
   // Risk
   maxRiskPerTrade: numOptional('MAX_RISK_PER_TRADE', 0.01),

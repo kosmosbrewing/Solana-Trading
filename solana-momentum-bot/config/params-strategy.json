@@ -1,0 +1,12 @@
+{
+  "candleIntervalSec": 300,
+  "volumeSpikeMultiplier": 3.0,
+  "breakoutLookback": 20,
+  "minBuyRatio": 0.65,
+  "minBreakoutScore": 50,
+  "riskPerTrade": 0.01,
+  "takeProfitAtrMultiplier": 2.0,
+  "trailingStopAtrMultiplier": 1.5,
+  "timeStopMinutes": 30,
+  "exhaustionThreshold": 2
+}

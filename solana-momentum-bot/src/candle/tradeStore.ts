@@ -16,24 +16,28 @@ export class TradeStore {
     try {
       await client.query(`
         CREATE TABLE IF NOT EXISTS trades (
-          id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-          pair_address  TEXT NOT NULL,
-          strategy      TEXT NOT NULL,
-          side          TEXT NOT NULL,
-          entry_price   NUMERIC NOT NULL,
-          exit_price    NUMERIC,
-          quantity      NUMERIC NOT NULL,
-          pnl           NUMERIC,
-          slippage      NUMERIC,
-          tx_signature  TEXT,
-          status        TEXT NOT NULL DEFAULT 'OPEN',
-          stop_loss     NUMERIC NOT NULL,
-          take_profit1  NUMERIC NOT NULL,
-          take_profit2  NUMERIC NOT NULL,
-          trailing_stop NUMERIC,
-          time_stop_at  TIMESTAMPTZ,
-          created_at    TIMESTAMPTZ DEFAULT now(),
-          closed_at     TIMESTAMPTZ
+          id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          pair_address    TEXT NOT NULL,
+          strategy        TEXT NOT NULL,
+          side            TEXT NOT NULL,
+          entry_price     NUMERIC NOT NULL,
+          exit_price      NUMERIC,
+          quantity        NUMERIC NOT NULL,
+          pnl             NUMERIC,
+          slippage        NUMERIC,
+          breakout_score  INTEGER,
+          breakout_grade  TEXT,
+          size_constraint TEXT,
+          exit_reason     TEXT,
+          tx_signature    TEXT,
+          status          TEXT NOT NULL DEFAULT 'OPEN',
+          stop_loss       NUMERIC NOT NULL,
+          take_profit1    NUMERIC NOT NULL,
+          take_profit2    NUMERIC NOT NULL,
+          trailing_stop   NUMERIC,
+          time_stop_at    TIMESTAMPTZ,
+          created_at      TIMESTAMPTZ DEFAULT now(),
+          closed_at       TIMESTAMPTZ
         );
       `);
 
@@ -52,14 +56,17 @@ export class TradeStore {
   async insertTrade(trade: Omit<Trade, 'id'>): Promise<string> {
     const result = await this.pool.query(
       `INSERT INTO trades (pair_address, strategy, side, entry_price, quantity,
-        stop_loss, take_profit1, take_profit2, trailing_stop, time_stop_at, status, tx_signature)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        stop_loss, take_profit1, take_profit2, trailing_stop, time_stop_at,
+        status, tx_signature, breakout_score, breakout_grade, size_constraint)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
        RETURNING id`,
       [
         trade.pairAddress, trade.strategy, trade.side, trade.entryPrice,
         trade.quantity, trade.stopLoss, trade.takeProfit1, trade.takeProfit2,
         trade.trailingStop || null, trade.timeStopAt, trade.status,
         trade.txSignature || null,
+        trade.breakoutScore ?? null, trade.breakoutGrade ?? null,
+        trade.sizeConstraint ?? null,
       ]
     );
     if (result.rows.length === 0) {
@@ -72,14 +79,15 @@ export class TradeStore {
     id: string,
     exitPrice: number,
     pnl: number,
-    slippage: number
+    slippage: number,
+    exitReason?: string
   ): Promise<void> {
     await this.pool.query(
       `UPDATE trades SET
-        exit_price = $2, pnl = $3, slippage = $4,
+        exit_price = $2, pnl = $3, slippage = $4, exit_reason = $5,
         status = 'CLOSED', closed_at = now()
        WHERE id = $1`,
-      [id, exitPrice, pnl, slippage]
+      [id, exitPrice, pnl, slippage, exitReason ?? null]
     );
   }
 
@@ -114,6 +122,15 @@ export class TradeStore {
     return Number(result.rows[0].total_pnl);
   }
 
+  async getTodayTrades(): Promise<Trade[]> {
+    const result = await this.pool.query(
+      `SELECT * FROM trades
+       WHERE created_at >= CURRENT_DATE
+       ORDER BY created_at ASC`
+    );
+    return result.rows.map(rowToTrade);
+  }
+
   async getRecentClosedTrades(limit: number): Promise<Trade[]> {
     const result = await this.pool.query(
       `SELECT * FROM trades
@@ -146,5 +163,9 @@ function rowToTrade(row: Record<string, unknown>): Trade {
     timeStopAt: new Date(row.time_stop_at as string),
     createdAt: new Date(row.created_at as string),
     closedAt: row.closed_at ? new Date(row.closed_at as string) : undefined,
+    breakoutScore: row.breakout_score ? Number(row.breakout_score) : undefined,
+    breakoutGrade: row.breakout_grade as Trade['breakoutGrade'],
+    sizeConstraint: row.size_constraint as Trade['sizeConstraint'],
+    exitReason: row.exit_reason as Trade['exitReason'],
   };
 }

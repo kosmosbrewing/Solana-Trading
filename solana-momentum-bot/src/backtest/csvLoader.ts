@@ -70,6 +70,8 @@ export class CsvLoader implements CandleDataSource {
       const close = Number(cols[4]);
       const volume = Number(cols[5]);
       const tradeCount = cols[6] ? Number(cols[6]) : 0;
+      const buyVolume = cols[7] ? Number(cols[7]) : 0;
+      const sellVolume = cols[8] ? Number(cols[8]) : 0;
 
       if ([open, high, low, close, volume].some(Number.isNaN)) continue;
 
@@ -82,6 +84,8 @@ export class CsvLoader implements CandleDataSource {
         low,
         close,
         volume,
+        buyVolume: Number.isNaN(buyVolume) ? 0 : buyVolume,
+        sellVolume: Number.isNaN(sellVolume) ? 0 : sellVolume,
         tradeCount,
       });
     }

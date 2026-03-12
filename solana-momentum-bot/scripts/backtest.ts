@@ -1,215 +1,282 @@
 /**
- * 백테스트 러너
- * 실행: npx ts-node scripts/backtest.ts <pair_address>
+ * 백테스트 CLI
+ *
+ * 사용법:
+ *   npx ts-node scripts/backtest.ts <pair_address> [options]
+ *
+ * 옵션:
+ *   --source db|csv           데이터 소스 (default: db)
+ *   --csv-dir ./data          CSV 디렉토리 (source=csv 시)
+ *   --strategy a|b|both       전략 선택 (default: both)
+ *   --balance 10              초기 잔고 SOL (default: 10)
+ *   --slippage 0.30           슬리피지 차감률 (default: 0.30)
+ *   --risk 0.01               트레이드당 최대 리스크 (default: 0.01)
+ *   --daily-loss 0.05         일일 최대 손실률 (default: 0.05)
+ *   --max-losses 3            연속 손실 제한 (default: 3)
+ *   --cooldown 30             쿨다운 분 (default: 30)
+ *   --start 2024-01-01        시작 날짜
+ *   --end 2024-12-31          종료 날짜
+ *   --trades                  트레이드 로그 출력
+ *   --trades-limit 50         트레이드 로그 제한 (default: all)
+ *   --equity                  equity curve 출력
+ *   --export-csv ./out        트레이드+equity CSV 내보내기
+ *   --vol-mult 3.0            Volume Spike 배수
+ *   --vol-lookback 20         Volume Spike 룩백
+ *   --pump-candles 3          Pump 연속 양봉 수
+ *   --pump-move 0.05          Pump 최소 변동률
  */
 import { Pool } from 'pg';
-import dotenv from 'dotenv';
+import * as fs from 'fs';
 import path from 'path';
-import {
-  evaluateVolumeSpikeBreakout,
-  buildVolumeSpikeOrder,
-  evaluatePumpDetection,
-  buildPumpOrder,
-} from '../src/strategy';
-import { CandleStore } from '../src/candle/candleStore';
-import { Candle, Order } from '../src/utils/types';
+import dotenv from 'dotenv';
+import { BacktestEngine, BacktestReporter, CsvLoader, DbLoader, BacktestConfig, DEFAULT_BACKTEST_CONFIG } from '../src/backtest';
 
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
-interface BacktestResult {
-  strategy: string;
-  totalTrades: number;
-  wins: number;
-  losses: number;
-  winRate: number;
-  totalPnl: number;
-  profitFactor: number;
-  maxDrawdown: number;
-  avgWin: number;
-  avgLoss: number;
-}
+async function main() {
+  const args = process.argv.slice(2);
+  const pairAddress = args.find(a => !a.startsWith('--'));
 
-interface BacktestTrade {
-  entryPrice: number;
-  exitPrice: number;
-  pnl: number;
-  reason: string;
-  entryIdx: number;
-  exitIdx: number;
-}
-
-const SLIPPAGE_DEDUCTION = 0.30;
-
-type EvalFn = (candles: Candle[]) => { action: string };
-type BuildFn = (signal: any, candles: Candle[], qty: number) => Order;
-
-async function runBacktest() {
-  const pairAddress = process.argv[2];
   if (!pairAddress) {
-    console.error('Usage: npx ts-node scripts/backtest.ts <pair_address>');
+    console.error('Usage: npx ts-node scripts/backtest.ts <pair_address> [options]');
+    console.error('Run with --help for all options');
     process.exit(1);
   }
 
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-  const candleStore = new CandleStore(pool);
-
-  console.log(`\n=== Backtest: ${pairAddress} ===\n`);
-
-  // Strategy A: 5분봉
-  const candles5m = await candleStore.getAllCandles(pairAddress, 300);
-  if (candles5m.length > 0) {
-    const resultA = runStrategy(
-      candles5m, 21,
-      (window) => evaluateVolumeSpikeBreakout(window),
-      (signal, window, qty) => buildVolumeSpikeOrder(signal, window, qty),
-      30
-    );
-    printResult('Strategy A: Volume Spike Breakout (5m)', resultA);
-  } else {
-    console.log('No 5m candles found — skipping Strategy A');
+  if (args.includes('--help')) {
+    printHelp();
+    process.exit(0);
   }
 
-  // Strategy B: 1분봉
-  const candles1m = await candleStore.getAllCandles(pairAddress, 60);
-  if (candles1m.length > 0) {
-    const resultB = runStrategy(
-      candles1m, 6,
-      (window) => evaluatePumpDetection(window),
-      (signal, window, qty) => buildPumpOrder(signal, window, qty),
-      15
-    );
-    printResult('Strategy B: Pump Detection (1m)', resultB);
-  } else {
-    console.log('No 1m candles found — skipping Strategy B');
-  }
+  // Parse config from CLI args
+  const config: Partial<BacktestConfig> = {
+    initialBalance: numArg(args, '--balance', DEFAULT_BACKTEST_CONFIG.initialBalance),
+    slippageDeduction: numArg(args, '--slippage', DEFAULT_BACKTEST_CONFIG.slippageDeduction),
+    maxRiskPerTrade: numArg(args, '--risk', DEFAULT_BACKTEST_CONFIG.maxRiskPerTrade),
+    maxDailyLoss: numArg(args, '--daily-loss', DEFAULT_BACKTEST_CONFIG.maxDailyLoss),
+    maxConsecutiveLosses: numArg(args, '--max-losses', DEFAULT_BACKTEST_CONFIG.maxConsecutiveLosses),
+    cooldownMinutes: numArg(args, '--cooldown', DEFAULT_BACKTEST_CONFIG.cooldownMinutes),
+    volumeSpikeParams: {
+      volumeMultiplier: numArg(args, '--vol-mult', undefined),
+      lookback: numArg(args, '--vol-lookback', undefined),
+    },
+    pumpDetectParams: {
+      consecutiveCandles: numArg(args, '--pump-candles', undefined),
+      minPriceMove: numArg(args, '--pump-move', undefined),
+    },
+  };
 
-  await pool.end();
-}
+  // Remove undefined params to keep defaults
+  cleanUndefined(config.volumeSpikeParams!);
+  cleanUndefined(config.pumpDetectParams!);
 
-function runStrategy(
-  candles: Candle[],
-  lookback: number,
-  evaluate: EvalFn,
-  buildOrder: BuildFn,
-  timeStopMinutes: number
-): BacktestResult {
-  const trades: BacktestTrade[] = [];
+  // Date range
+  const startStr = getArg(args, '--start');
+  const endStr = getArg(args, '--end');
+  if (startStr) config.startDate = new Date(startStr);
+  if (endStr) config.endDate = new Date(endStr);
 
-  for (let i = lookback; i < candles.length; i++) {
-    const window = candles.slice(i - lookback, i + 1);
-    const signal = evaluate(window);
+  // Data source
+  const source = getArg(args, '--source') || 'db';
+  const strategy = getArg(args, '--strategy') || 'both';
+  const showTrades = args.includes('--trades');
+  const tradesLimit = numArg(args, '--trades-limit', undefined);
+  const showEquity = args.includes('--equity');
+  const exportDir = getArg(args, '--export-csv');
 
-    if (signal.action === 'BUY') {
-      const order = buildOrder(signal, window, 1);
-      const trade = simulateTrade(order, candles, i, timeStopMinutes);
-      if (trade) {
-        trades.push(trade);
-        if (trade.exitIdx > i) i = trade.exitIdx;
+  // Load data
+  let candles5m: any[] = [];
+  let candles1m: any[] = [];
+
+  if (source === 'csv') {
+    const csvDir = getArg(args, '--csv-dir') || path.resolve(__dirname, '../data');
+    const loader = new CsvLoader(csvDir);
+
+    if (strategy === 'a' || strategy === 'both') {
+      try { candles5m = await loader.load(pairAddress, 300); } catch (e) {
+        console.warn(`No 5m CSV data: ${e}`);
       }
     }
-  }
+    if (strategy === 'b' || strategy === 'both') {
+      try { candles1m = await loader.load(pairAddress, 60); } catch (e) {
+        console.warn(`No 1m CSV data: ${e}`);
+      }
+    }
+  } else {
+    const databaseUrl = process.env.DATABASE_URL;
+    if (!databaseUrl) {
+      console.error('DATABASE_URL not set. Use --source csv for DB-free mode.');
+      process.exit(1);
+    }
+    const pool = new Pool({ connectionString: databaseUrl });
+    const loader = new DbLoader(pool);
 
-  return calculateResult(candles[0]?.pairAddress || '', trades);
-}
-
-function simulateTrade(
-  order: Order,
-  candles: Candle[],
-  entryIdx: number,
-  timeStopMinutes: number
-): BacktestTrade | null {
-  const entryCandle = candles[entryIdx];
-  const entryPrice = order.price;
-  const timeStopAt = new Date(entryCandle.timestamp.getTime() + timeStopMinutes * 60 * 1000);
-
-  for (let i = entryIdx + 1; i < candles.length; i++) {
-    const c = candles[i];
-
-    if (c.low <= order.stopLoss) {
-      return {
-        entryPrice,
-        exitPrice: order.stopLoss,
-        pnl: (order.stopLoss - entryPrice) / entryPrice,
-        reason: 'STOP_LOSS',
-        entryIdx,
-        exitIdx: i,
-      };
+    if (strategy === 'a' || strategy === 'both') {
+      candles5m = await loader.load(pairAddress, 300);
+    }
+    if (strategy === 'b' || strategy === 'both') {
+      candles1m = await loader.load(pairAddress, 60);
     }
 
-    if (c.high >= order.takeProfit1) {
-      return {
-        entryPrice,
-        exitPrice: order.takeProfit1,
-        pnl: (order.takeProfit1 - entryPrice) / entryPrice,
-        reason: 'TAKE_PROFIT_1',
-        entryIdx,
-        exitIdx: i,
-      };
-    }
-
-    if (c.timestamp >= timeStopAt) {
-      return {
-        entryPrice,
-        exitPrice: c.close,
-        pnl: (c.close - entryPrice) / entryPrice,
-        reason: 'TIME_STOP',
-        entryIdx,
-        exitIdx: i,
-      };
-    }
+    await pool.end();
   }
 
-  return null;
-}
+  // Run backtest
+  const engine = new BacktestEngine(config);
+  const reporter = new BacktestReporter();
 
-function calculateResult(strategy: string, trades: BacktestTrade[]): BacktestResult {
-  const wins = trades.filter((t) => t.pnl > 0);
-  const losses = trades.filter((t) => t.pnl <= 0);
+  if (strategy === 'both') {
+    if (candles5m.length === 0 && candles1m.length === 0) {
+      console.error('No candle data found for either timeframe.');
+      process.exit(1);
+    }
 
-  const totalPnlRaw = trades.reduce((sum, t) => sum + t.pnl, 0);
-  const totalPnl = totalPnlRaw * (1 - SLIPPAGE_DEDUCTION);
+    const { strategyA, strategyB, combined } = engine.runCombined(
+      candles5m, candles1m, pairAddress
+    );
 
-  const grossProfit = wins.reduce((sum, t) => sum + t.pnl, 0);
-  const grossLoss = Math.abs(losses.reduce((sum, t) => sum + t.pnl, 0));
-  const profitFactor = grossLoss > 0 ? (grossProfit * (1 - SLIPPAGE_DEDUCTION)) / grossLoss : 0;
+    if (candles5m.length > 0) {
+      reporter.printSummary(strategyA);
+      if (showTrades) reporter.printTradeLog(strategyA.trades, tradesLimit);
+      if (showEquity) reporter.printEquityCurve(strategyA);
+    } else {
+      console.log('\nNo 5m candles — Strategy A skipped');
+    }
 
-  let maxDD = 0;
-  let peak = 0;
-  let equity = 0;
-  for (const t of trades) {
-    equity += t.pnl;
-    if (equity > peak) peak = equity;
-    const dd = peak - equity;
-    if (dd > maxDD) maxDD = dd;
+    if (candles1m.length > 0) {
+      reporter.printSummary(strategyB);
+      if (showTrades) reporter.printTradeLog(strategyB.trades, tradesLimit);
+      if (showEquity) reporter.printEquityCurve(strategyB);
+    } else {
+      console.log('\nNo 1m candles — Strategy B skipped');
+    }
+
+    if (strategyA.totalTrades + strategyB.totalTrades > 0) {
+      reporter.printSummary(combined);
+      if (showEquity) reporter.printEquityCurve(combined);
+    }
+
+    if (exportDir) {
+      exportResults(reporter, exportDir, strategyA, strategyB, combined);
+    }
+  } else {
+    const candles = strategy === 'a' ? candles5m : candles1m;
+    const stratName = strategy === 'a' ? 'volume_spike' as const : 'pump_detect' as const;
+
+    if (candles.length === 0) {
+      console.error(`No candle data for strategy ${strategy.toUpperCase()}.`);
+      process.exit(1);
+    }
+
+    const result = engine.run(candles, stratName, pairAddress);
+    reporter.printSummary(result);
+    if (showTrades) reporter.printTradeLog(result.trades, tradesLimit);
+    if (showEquity) reporter.printEquityCurve(result);
+
+    if (exportDir) {
+      if (!fs.existsSync(exportDir)) fs.mkdirSync(exportDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(exportDir, `trades_${stratName}.csv`),
+        reporter.exportTradesCsv(result.trades)
+      );
+      fs.writeFileSync(
+        path.join(exportDir, `equity_${stratName}.csv`),
+        reporter.exportEquityCsv(result)
+      );
+      console.log(`\nCSV exported to ${exportDir}`);
+    }
   }
-
-  return {
-    strategy,
-    totalTrades: trades.length,
-    wins: wins.length,
-    losses: losses.length,
-    winRate: trades.length > 0 ? wins.length / trades.length : 0,
-    totalPnl,
-    profitFactor,
-    maxDrawdown: maxDD,
-    avgWin: wins.length > 0 ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0,
-    avgLoss: losses.length > 0 ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : 0,
-  };
 }
 
-function printResult(title: string, r: BacktestResult) {
-  console.log(`\n--- ${title} ---`);
-  console.log(`Total Trades:   ${r.totalTrades}`);
-  console.log(`Wins / Losses:  ${r.wins} / ${r.losses}`);
-  console.log(`Win Rate:       ${(r.winRate * 100).toFixed(1)}%`);
-  console.log(`Total PnL:      ${(r.totalPnl * 100).toFixed(2)}% (after 30% slippage deduction)`);
-  console.log(`Profit Factor:  ${r.profitFactor.toFixed(2)}`);
-  console.log(`Max Drawdown:   ${(r.maxDrawdown * 100).toFixed(2)}%`);
-  console.log(`Avg Win:        ${(r.avgWin * 100).toFixed(2)}%`);
-  console.log(`Avg Loss:       ${(r.avgLoss * 100).toFixed(2)}%`);
+function exportResults(
+  reporter: BacktestReporter,
+  dir: string,
+  a: any, b: any, combined: any
+) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+  if (a.totalTrades > 0) {
+    fs.writeFileSync(path.join(dir, 'trades_volume_spike.csv'), reporter.exportTradesCsv(a.trades));
+    fs.writeFileSync(path.join(dir, 'equity_volume_spike.csv'), reporter.exportEquityCsv(a));
+  }
+  if (b.totalTrades > 0) {
+    fs.writeFileSync(path.join(dir, 'trades_pump_detect.csv'), reporter.exportTradesCsv(b.trades));
+    fs.writeFileSync(path.join(dir, 'equity_pump_detect.csv'), reporter.exportEquityCsv(b));
+  }
+  if (combined.totalTrades > 0) {
+    fs.writeFileSync(path.join(dir, 'trades_combined.csv'), reporter.exportTradesCsv(combined.trades));
+    fs.writeFileSync(path.join(dir, 'equity_combined.csv'), reporter.exportEquityCsv(combined));
+  }
+  console.log(`\nCSV exported to ${dir}`);
 }
 
-runBacktest().catch((error) => {
+// ─── Arg Helpers ───
+
+function getArg(args: string[], flag: string): string | undefined {
+  const idx = args.indexOf(flag);
+  return idx >= 0 && idx + 1 < args.length ? args[idx + 1] : undefined;
+}
+
+function numArg(args: string[], flag: string, fallback: number | undefined): any {
+  const raw = getArg(args, flag);
+  if (raw === undefined) return fallback;
+  const num = Number(raw);
+  if (Number.isNaN(num)) {
+    console.error(`Invalid number for ${flag}: "${raw}"`);
+    process.exit(1);
+  }
+  return num;
+}
+
+function cleanUndefined(obj: Record<string, any>) {
+  for (const key of Object.keys(obj)) {
+    if (obj[key] === undefined) delete obj[key];
+  }
+}
+
+function printHelp() {
+  console.log(`
+Solana Momentum Bot — Backtest CLI
+
+Usage:
+  npx ts-node scripts/backtest.ts <pair_address> [options]
+
+Data Source:
+  --source db|csv           Data source (default: db)
+  --csv-dir ./data          CSV directory (when source=csv)
+
+Strategy:
+  --strategy a|b|both       Strategy selection (default: both)
+                            a = Volume Spike Breakout (5m)
+                            b = Pump Detection (1m)
+
+Risk Parameters:
+  --balance 10              Initial balance in SOL (default: 10)
+  --slippage 0.30           Slippage deduction ratio (default: 0.30)
+  --risk 0.01               Max risk per trade (default: 0.01)
+  --daily-loss 0.05         Max daily loss ratio (default: 0.05)
+  --max-losses 3            Consecutive loss limit (default: 3)
+  --cooldown 30             Cooldown minutes (default: 30)
+
+Strategy Parameters:
+  --vol-mult 3.0            Volume spike multiplier
+  --vol-lookback 20         Volume spike lookback
+  --pump-candles 3          Pump consecutive candles
+  --pump-move 0.05          Pump min price move
+
+Date Range:
+  --start 2024-01-01        Start date (ISO)
+  --end 2024-12-31          End date (ISO)
+
+Output:
+  --trades                  Show trade log
+  --trades-limit 50         Limit trade log entries
+  --equity                  Show equity curve (ASCII)
+  --export-csv ./out        Export trades + equity to CSV
+  `);
+}
+
+main().catch(error => {
   console.error('Backtest failed:', error);
   process.exit(1);
 });

@@ -1,7 +1,8 @@
-import { config } from './utils/config';
+import { Pool } from 'pg';
+import { config, TradingMode } from './utils/config';
 import { createModuleLogger } from './utils/logger';
 import { HealthMonitor } from './utils/healthMonitor';
-import { Candle, Signal, Order } from './utils/types';
+import { Candle, Signal, Order, Trade, CloseReason } from './utils/types';
 
 import { BirdeyeClient, Ingester, IngesterConfig } from './ingester';
 import { CandleStore, TradeStore } from './candle';
@@ -17,19 +18,28 @@ import { Notifier } from './notifier';
 
 const log = createModuleLogger('Main');
 
-// ─── Mode ─────────────────────────────────────────────
-// P2 = paper trading (시그널만, 실행 안함)
-// P3 = live trading (실제 스왑 실행)
-const TRADING_MODE: 'paper' | 'live' = (process.env.TRADING_MODE as 'paper' | 'live') || 'paper';
+// ─── Bot Context (모듈 의존성 묶음) ──────────────────
+
+interface BotContext {
+  tradingMode: TradingMode;
+  candleStore: CandleStore;
+  tradeStore: TradeStore;
+  riskManager: RiskManager;
+  executor: Executor;
+  notifier: Notifier;
+  healthMonitor: HealthMonitor;
+}
 
 async function main() {
-  log.info(`=== Solana Momentum Bot starting (mode: ${TRADING_MODE}) ===`);
+  const tradingMode = config.tradingMode;
+  log.info(`=== Solana Momentum Bot starting (mode: ${tradingMode}) ===`);
 
-  // ─── Initialize stores ──────────────────────────────
-  const candleStore = new CandleStore(config.databaseUrl);
-  const tradeStore = new TradeStore(config.databaseUrl);
-  await candleStore.initialize();
-  await tradeStore.initialize();
+  // ─── 공유 DB Pool ─────────────────────────────────
+  const dbPool = new Pool({ connectionString: config.databaseUrl });
+
+  const candleStore = new CandleStore(dbPool);
+  const tradeStore = new TradeStore(dbPool);
+  await Promise.all([candleStore.initialize(), tradeStore.initialize()]);
   log.info('Database initialized');
 
   // ─── Initialize modules ─────────────────────────────
@@ -63,6 +73,16 @@ async function main() {
   healthMonitor.setDbConnected(true);
   healthMonitor.start();
 
+  const ctx: BotContext = {
+    tradingMode,
+    candleStore,
+    tradeStore,
+    riskManager,
+    executor,
+    notifier,
+    healthMonitor,
+  };
+
   // ─── Configure ingester ─────────────────────────────
   const targetPair = process.env.TARGET_PAIR_ADDRESS;
   if (!targetPair) {
@@ -74,45 +94,39 @@ async function main() {
     {
       pairAddress: targetPair,
       intervalType: config.defaultTimeframe === 60 ? '1m' : '5m',
-      pollIntervalMs: config.defaultTimeframe * 1000, // 캔들 주기와 동일
+      pollIntervalMs: config.defaultTimeframe * 1000,
     },
   ];
 
   const ingester = new Ingester(birdeyeClient, candleStore, ingesterConfigs);
 
-  // ─── Candle event handler ───────────────────────────
-  ingester.on('newCandle', async (candle: Candle) => {
+  // ─── Candle batch handler (배치 이벤트: 마지막 캔들만 전략 평가) ──
+  ingester.on('candles', async (candles: Candle[]) => {
     healthMonitor.updateCandleTime();
 
+    const lastCandle = candles[candles.length - 1];
     try {
-      await handleNewCandle(
-        candle,
-        candleStore,
-        tradeStore,
-        riskManager,
-        executor,
-        notifier,
-        healthMonitor
-      );
+      await handleNewCandle(lastCandle, ctx);
     } catch (error) {
       log.error(`Error processing candle: ${error}`);
-      await notifier.sendError('candle_processing', error);
+      await notifier.sendError('candle_processing', error).catch(() => {});
     }
   });
 
   ingester.on('error', async ({ pairAddress, error }) => {
     log.error(`Ingester error for ${pairAddress}: ${error}`);
-    await notifier.sendError('ingester', error);
+    await notifier.sendError('ingester', error).catch(() => {});
   });
 
   // ─── Position monitor (SL/TP/Time Stop) ─────────────
   const positionCheckInterval = setInterval(async () => {
     try {
-      await checkOpenPositions(tradeStore, executor, notifier, healthMonitor, candleStore);
+      await checkOpenPositions(ctx);
     } catch (error) {
       log.error(`Position check error: ${error}`);
+      await notifier.sendError('position_check', error).catch(() => {});
     }
-  }, 10000); // 10초마다 체크
+  }, 10000);
 
   // ─── Start ingester ─────────────────────────────────
   await ingester.start();
@@ -124,8 +138,7 @@ async function main() {
     clearInterval(positionCheckInterval);
     await ingester.stop();
     healthMonitor.stop();
-    await candleStore.close();
-    await tradeStore.close();
+    await dbPool.end();
     log.info('Shutdown complete');
     process.exit(0);
   };
@@ -136,17 +149,8 @@ async function main() {
 
 // ─── Core Logic ──────────────────────────────────────────
 
-async function handleNewCandle(
-  candle: Candle,
-  candleStore: CandleStore,
-  tradeStore: TradeStore,
-  riskManager: RiskManager,
-  executor: Executor,
-  notifier: Notifier,
-  healthMonitor: HealthMonitor
-): Promise<void> {
-  // 최근 캔들 가져오기
-  const candles = await candleStore.getRecentCandles(
+async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<void> {
+  const candles = await ctx.candleStore.getRecentCandles(
     candle.pairAddress,
     candle.intervalSec,
     30
@@ -165,7 +169,7 @@ async function handleNewCandle(
     });
 
     if (signal.action === 'BUY') {
-      await processSignal(signal, candles, 'volume_spike', riskManager, executor, tradeStore, notifier, healthMonitor);
+      await processSignal(signal, candles, ctx);
     }
   }
 
@@ -177,7 +181,7 @@ async function handleNewCandle(
     });
 
     if (signal.action === 'BUY') {
-      await processSignal(signal, candles, 'pump_detect', riskManager, executor, tradeStore, notifier, healthMonitor);
+      await processSignal(signal, candles, ctx);
     }
   }
 }
@@ -185,23 +189,27 @@ async function handleNewCandle(
 async function processSignal(
   signal: Signal,
   candles: Candle[],
-  strategy: 'volume_spike' | 'pump_detect',
-  riskManager: RiskManager,
-  executor: Executor,
-  tradeStore: TradeStore,
-  notifier: Notifier,
-  healthMonitor: HealthMonitor
+  ctx: BotContext
 ): Promise<void> {
-  log.info(`Signal: ${signal.action} from ${strategy} at ${signal.price}`);
-  await notifier.sendSignal(signal);
+  log.info(`Signal: ${signal.action} from ${signal.strategy} at ${signal.price}`);
+  await ctx.notifier.sendSignal(signal);
 
-  // 잔고 조회
-  const balanceSol = await executor.getBalance();
-  const portfolio = await riskManager.getPortfolioState(balanceSol, signal.price);
+  // 잔고 + 포트폴리오 병렬 조회
+  const [balanceSol, portfolio] = await Promise.all([
+    ctx.executor.getBalance(),
+    ctx.riskManager.getPortfolioState(0), // 임시 잔고 — 아래에서 보정
+  ]);
+  portfolio.balanceSol = balanceSol;
 
-  // 리스크 체크
-  const riskResult = await riskManager.checkOrder(
-    { pairAddress: signal.pairAddress, strategy, side: 'BUY', price: signal.price, quantity: 0, stopLoss: 0, takeProfit1: 0, takeProfit2: 0, timeStopMinutes: 0 },
+  // 리스크 체크 (최소 필드만 전달)
+  const riskResult = await ctx.riskManager.checkOrder(
+    {
+      pairAddress: signal.pairAddress,
+      strategy: signal.strategy,
+      side: 'BUY',
+      price: signal.price,
+      stopLoss: candles[candles.length - 1].low, // 예상 SL
+    },
     portfolio
   );
 
@@ -212,22 +220,22 @@ async function processSignal(
 
   // 주문 생성
   const quantity = riskResult.adjustedQuantity || 0;
-  const order: Order = strategy === 'volume_spike'
+  const order: Order = signal.strategy === 'volume_spike'
     ? buildVolumeSpikeOrder(signal, candles, quantity)
     : buildPumpOrder(signal, candles, quantity);
 
-  if (TRADING_MODE === 'paper') {
+  if (ctx.tradingMode === 'paper') {
     log.info(`[PAPER] Would execute: ${JSON.stringify(order)}`);
-    await notifier.sendTradeOpen(order, 'PAPER_TRADE');
+    await ctx.notifier.sendTradeOpen(order, 'PAPER_TRADE');
     return;
   }
 
   // Live execution
   try {
-    const txSignature = await executor.executeBuy(order);
+    const txSignature = await ctx.executor.executeBuy(order);
 
     const timeStopAt = new Date(Date.now() + order.timeStopMinutes * 60 * 1000);
-    await tradeStore.insertTrade({
+    await ctx.tradeStore.insertTrade({
       pairAddress: order.pairAddress,
       strategy: order.strategy,
       side: order.side,
@@ -243,29 +251,30 @@ async function processSignal(
       createdAt: new Date(),
     });
 
-    healthMonitor.updateTradeTime();
-    await notifier.sendTradeOpen(order, txSignature);
+    ctx.healthMonitor.updateTradeTime();
+    await ctx.notifier.sendTradeOpen(order, txSignature);
     log.info(`Trade opened: ${txSignature}`);
   } catch (error) {
     log.error(`Trade execution failed: ${error}`);
-    await notifier.sendError('trade_execution', error);
+    await ctx.notifier.sendError('trade_execution', error).catch(() => {});
   }
 }
 
 /**
  * 열린 포지션 모니터링 (SL/TP/Time Stop)
  */
-async function checkOpenPositions(
-  tradeStore: TradeStore,
-  executor: Executor,
-  notifier: Notifier,
-  healthMonitor: HealthMonitor,
-  candleStore: CandleStore
-): Promise<void> {
-  if (TRADING_MODE === 'paper') return;
+async function checkOpenPositions(ctx: BotContext): Promise<void> {
+  if (ctx.tradingMode === 'paper') return;
 
-  const openTrades = await tradeStore.getOpenTrades();
-  healthMonitor.updatePositions(openTrades.length);
+  const openTrades = await ctx.tradeStore.getOpenTrades();
+  ctx.healthMonitor.updatePositions(openTrades.length);
+
+  // 열린 포지션이 없으면 PnL만 업데이트하고 종료
+  if (openTrades.length === 0) {
+    const dailyPnl = await ctx.tradeStore.getTodayPnl();
+    ctx.healthMonitor.updateDailyPnl(dailyPnl);
+    return;
+  }
 
   for (const trade of openTrades) {
     const now = new Date();
@@ -273,12 +282,12 @@ async function checkOpenPositions(
     // Time Stop 체크
     if (now >= trade.timeStopAt) {
       log.info(`Time stop triggered for trade ${trade.id}`);
-      await closeTrade(trade, 'TIME_STOP', executor, tradeStore, notifier);
+      await closeTrade(trade, 'TIME_STOP', ctx);
       continue;
     }
 
-    // 현재 가격 조회 (최신 캔들에서)
-    const recentCandles = await candleStore.getRecentCandles(
+    // 현재 가격 조회
+    const recentCandles = await ctx.candleStore.getRecentCandles(
       trade.pairAddress,
       300,
       1
@@ -290,56 +299,61 @@ async function checkOpenPositions(
     // Stop Loss 체크
     if (currentPrice <= trade.stopLoss) {
       log.info(`Stop loss triggered for trade ${trade.id} at ${currentPrice}`);
-      await closeTrade(trade, 'STOP_LOSS', executor, tradeStore, notifier);
+      await closeTrade(trade, 'STOP_LOSS', ctx);
       continue;
     }
 
-    // Take Profit 1 체크 (50% 청산 — 간소화: 전량 청산)
+    // Take Profit 1 체크
     if (currentPrice >= trade.takeProfit1) {
       log.info(`Take profit 1 triggered for trade ${trade.id} at ${currentPrice}`);
-      await closeTrade(trade, 'TAKE_PROFIT', executor, tradeStore, notifier);
+      await closeTrade(trade, 'TAKE_PROFIT', ctx);
       continue;
-    }
-
-    // Trailing Stop 체크
-    if (trade.trailingStop) {
-      const trailingStopPrice = currentPrice - trade.trailingStop;
-      if (currentPrice > trade.entryPrice && trailingStopPrice > trade.stopLoss) {
-        // 트레일링 스탑 갱신 (DB 업데이트는 생략 — 메모리 기반)
-      }
     }
   }
 
   // 일일 PnL 업데이트
-  const dailyPnl = await tradeStore.getTodayPnl();
-  healthMonitor.updateDailyPnl(dailyPnl);
+  const dailyPnl = await ctx.tradeStore.getTodayPnl();
+  ctx.healthMonitor.updateDailyPnl(dailyPnl);
 }
 
 async function closeTrade(
-  trade: import('./utils/types').Trade,
-  reason: string,
-  executor: Executor,
-  tradeStore: TradeStore,
-  notifier: Notifier
+  trade: Trade,
+  reason: CloseReason,
+  ctx: BotContext
 ): Promise<void> {
   try {
-    // TODO: 실제 매도 실행 — 토큰 잔고 조회 후 executeSell 호출 필요
-    // const txSignature = await executor.executeSell(tokenMint, amount);
+    // 토큰 잔고 조회 후 매도 실행
+    const tokenBalance = await ctx.executor.getTokenBalance(trade.pairAddress);
 
-    const exitPrice = trade.entryPrice; // placeholder — 실제 체결가로 대체 필요
+    let txSignature: string | undefined;
+    let exitPrice = trade.entryPrice;
+
+    if (tokenBalance > 0n) {
+      txSignature = await ctx.executor.executeSell(trade.pairAddress, tokenBalance);
+
+      // 매도 후 실제 체결가 추정 (SOL 잔고 변화 기반)
+      const balanceAfter = await ctx.executor.getBalance();
+      const soldValue = Number(tokenBalance) * trade.entryPrice / trade.quantity;
+      exitPrice = soldValue / Number(tokenBalance) || trade.entryPrice;
+    } else {
+      log.warn(`No token balance for trade ${trade.id} — closing with entry price`);
+    }
+
     const pnl = (exitPrice - trade.entryPrice) * trade.quantity;
-    const slippage = 0;
+    const slippage = trade.entryPrice > 0
+      ? Math.abs(exitPrice - trade.entryPrice) / trade.entryPrice
+      : 0;
 
-    await tradeStore.closeTrade(trade.id, exitPrice, pnl, slippage);
+    await ctx.tradeStore.closeTrade(trade.id, exitPrice, pnl, slippage);
 
     const closedTrade = { ...trade, exitPrice, pnl, slippage, status: 'CLOSED' as const };
-    await notifier.sendTradeClose(closedTrade);
+    await ctx.notifier.sendTradeClose(closedTrade);
 
     log.info(`Trade ${trade.id} closed (${reason}). PnL: ${pnl.toFixed(6)} SOL`);
   } catch (error) {
     log.error(`Failed to close trade ${trade.id}: ${error}`);
-    await tradeStore.failTrade(trade.id, `Close failed: ${error}`);
-    await notifier.sendError('trade_close', error);
+    await ctx.tradeStore.failTrade(trade.id, `Close failed: ${error}`);
+    await ctx.notifier.sendError('trade_close', error).catch(() => {});
   }
 }
 

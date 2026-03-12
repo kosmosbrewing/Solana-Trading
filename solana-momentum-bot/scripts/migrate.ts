@@ -8,20 +8,19 @@ import path from 'path';
 
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
-const DATABASE_URL = process.env.DATABASE_URL;
-if (!DATABASE_URL) {
-  console.error('DATABASE_URL not set');
-  process.exit(1);
-}
-
 async function migrate() {
-  const pool = new Pool({ connectionString: DATABASE_URL });
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    console.error('DATABASE_URL not set');
+    process.exit(1);
+  }
+
+  const pool = new Pool({ connectionString: databaseUrl });
   const client = await pool.connect();
 
   try {
     console.log('Running migrations...');
 
-    // 1. Candles table
     await client.query(`
       CREATE TABLE IF NOT EXISTS candles (
         pair_address  TEXT NOT NULL,
@@ -38,7 +37,6 @@ async function migrate() {
     `);
     console.log('  ✓ candles table created');
 
-    // 2. TimescaleDB hypertable (optional)
     try {
       await client.query(`
         SELECT create_hypertable('candles', 'timestamp', if_not_exists => TRUE);
@@ -48,14 +46,12 @@ async function migrate() {
       console.log('  ⚠ TimescaleDB not available — using plain table');
     }
 
-    // 3. Candles index
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_candles_pair_interval
       ON candles (pair_address, interval_sec, timestamp DESC);
     `);
     console.log('  ✓ candles index created');
 
-    // 4. Trades table
     await client.query(`
       CREATE TABLE IF NOT EXISTS trades (
         id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -80,7 +76,6 @@ async function migrate() {
     `);
     console.log('  ✓ trades table created');
 
-    // 5. Trades indexes
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_trades_status ON trades (status);
       CREATE INDEX IF NOT EXISTS idx_trades_created ON trades (created_at DESC);
@@ -98,4 +93,7 @@ async function migrate() {
   }
 }
 
-migrate();
+migrate().catch((error) => {
+  console.error('Migration failed:', error);
+  process.exit(1);
+});

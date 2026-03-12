@@ -1,14 +1,14 @@
 import { Pool } from 'pg';
 import { createModuleLogger } from '../utils/logger';
-import { Trade, TradeStatus } from '../utils/types';
+import { Trade } from '../utils/types';
 
 const log = createModuleLogger('TradeStore');
 
 export class TradeStore {
   private pool: Pool;
 
-  constructor(databaseUrl: string) {
-    this.pool = new Pool({ connectionString: databaseUrl });
+  constructor(pool: Pool) {
+    this.pool = pool;
   }
 
   async initialize(): Promise<void> {
@@ -40,6 +40,7 @@ export class TradeStore {
       await client.query(`
         CREATE INDEX IF NOT EXISTS idx_trades_status ON trades (status);
         CREATE INDEX IF NOT EXISTS idx_trades_created ON trades (created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_trades_pair ON trades (pair_address, created_at DESC);
       `);
 
       log.info('TradeStore initialized');
@@ -61,6 +62,9 @@ export class TradeStore {
         trade.txSignature || null,
       ]
     );
+    if (result.rows.length === 0) {
+      throw new Error('INSERT INTO trades returned no rows');
+    }
     return result.rows[0].id;
   }
 
@@ -92,16 +96,14 @@ export class TradeStore {
     const result = await this.pool.query(
       `SELECT * FROM trades WHERE status = 'OPEN' ORDER BY created_at ASC`
     );
-    return result.rows.map(this.rowToTrade);
+    return result.rows.map(rowToTrade);
   }
 
-  async getTodayTrades(): Promise<Trade[]> {
+  async getTodayTradeCount(): Promise<number> {
     const result = await this.pool.query(
-      `SELECT * FROM trades
-       WHERE created_at >= CURRENT_DATE
-       ORDER BY created_at ASC`
+      `SELECT COUNT(*) as cnt FROM trades WHERE created_at >= CURRENT_DATE`
     );
-    return result.rows.map(this.rowToTrade);
+    return Number(result.rows[0].cnt);
   }
 
   async getTodayPnl(): Promise<number> {
@@ -120,33 +122,29 @@ export class TradeStore {
        LIMIT $1`,
       [limit]
     );
-    return result.rows.map(this.rowToTrade);
+    return result.rows.map(rowToTrade);
   }
+}
 
-  private rowToTrade(row: Record<string, unknown>): Trade {
-    return {
-      id: row.id as string,
-      pairAddress: row.pair_address as string,
-      strategy: row.strategy as Trade['strategy'],
-      side: row.side as Trade['side'],
-      entryPrice: Number(row.entry_price),
-      exitPrice: row.exit_price ? Number(row.exit_price) : undefined,
-      quantity: Number(row.quantity),
-      pnl: row.pnl ? Number(row.pnl) : undefined,
-      slippage: row.slippage ? Number(row.slippage) : undefined,
-      txSignature: row.tx_signature as string | undefined,
-      status: row.status as Trade['status'],
-      stopLoss: Number(row.stop_loss),
-      takeProfit1: Number(row.take_profit1),
-      takeProfit2: Number(row.take_profit2),
-      trailingStop: row.trailing_stop ? Number(row.trailing_stop) : undefined,
-      timeStopAt: new Date(row.time_stop_at as string),
-      createdAt: new Date(row.created_at as string),
-      closedAt: row.closed_at ? new Date(row.closed_at as string) : undefined,
-    };
-  }
-
-  async close(): Promise<void> {
-    await this.pool.end();
-  }
+function rowToTrade(row: Record<string, unknown>): Trade {
+  return {
+    id: row.id as string,
+    pairAddress: row.pair_address as string,
+    strategy: row.strategy as Trade['strategy'],
+    side: row.side as Trade['side'],
+    entryPrice: Number(row.entry_price),
+    exitPrice: row.exit_price ? Number(row.exit_price) : undefined,
+    quantity: Number(row.quantity),
+    pnl: row.pnl ? Number(row.pnl) : undefined,
+    slippage: row.slippage ? Number(row.slippage) : undefined,
+    txSignature: row.tx_signature as string | undefined,
+    status: row.status as Trade['status'],
+    stopLoss: Number(row.stop_loss),
+    takeProfit1: Number(row.take_profit1),
+    takeProfit2: Number(row.take_profit2),
+    trailingStop: row.trailing_stop ? Number(row.trailing_stop) : undefined,
+    timeStopAt: new Date(row.time_stop_at as string),
+    createdAt: new Date(row.created_at as string),
+    closedAt: row.closed_at ? new Date(row.closed_at as string) : undefined,
+  };
 }

@@ -18,3 +18,18 @@ export {
   countConsecutiveBullish,
   calcPriceChangeRate,
 } from './indicators';
+
+export { calcBreakoutScore, calcBuyRatio } from './breakoutScore';
+export type { BreakoutScoreInput } from './breakoutScore';
+
+export { detectWhaleActivity } from './whaleDetect';
+export type { WhaleAlert } from './whaleDetect';
+
+export { checkLpChange, assessLpStability } from './lpMonitor';
+export type { LpStability, LpAlert } from './lpMonitor';
+
+export { checkMultiTfAlignment } from './multiTf';
+
+export { checkExhaustion } from './exhaustion';
+
+export { calcRSI, calcAdaptiveTrailingStop } from './adaptiveTrailing';

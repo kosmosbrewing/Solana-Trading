@@ -1,8 +1,9 @@
 import { createModuleLogger } from '../utils/logger';
 import {
-  Order, RiskCheckResult, TokenSafety, PortfolioState,
+  Order, RiskCheckResult, TokenSafety, PortfolioState, SizeConstraint, BreakoutGrade,
 } from '../utils/types';
 import { TradeStore } from '../candle/tradeStore';
+import { calculateLiquiditySize, LiquidityParams, DEFAULT_LIQUIDITY_PARAMS } from './liquiditySizer';
 
 const log = createModuleLogger('RiskManager');
 
@@ -15,6 +16,7 @@ export interface RiskConfig {
   minPoolLiquidity: number;
   minTokenAgeHours: number;
   maxHolderConcentration: number;
+  liquidityParams?: Partial<LiquidityParams>;
 }
 
 /** checkOrder에 필요한 최소 주문 정보 */
@@ -24,15 +26,19 @@ export interface RiskOrderInput {
   side: string;
   price: number;
   stopLoss: number;
+  breakoutGrade?: BreakoutGrade;
+  poolTvl?: number;
 }
 
 export class RiskManager {
   private riskConfig: RiskConfig;
   private tradeStore: TradeStore;
+  private liquidityParams: LiquidityParams;
 
   constructor(riskConfig: RiskConfig, tradeStore: TradeStore) {
     this.riskConfig = riskConfig;
     this.tradeStore = tradeStore;
+    this.liquidityParams = { ...DEFAULT_LIQUIDITY_PARAMS, ...riskConfig.liquidityParams };
   }
 
   /**
@@ -71,7 +77,15 @@ export class RiskManager {
       }
     }
 
-    const adjustedQuantity = this.calculatePositionSize(order, portfolio);
+    // Grade C → 진입 금지
+    if (order.breakoutGrade === 'C') {
+      return {
+        approved: false,
+        reason: `Breakout grade C — entry rejected`,
+      };
+    }
+
+    const { adjustedQuantity, sizeConstraint } = this.calculatePositionSize(order, portfolio);
     if (adjustedQuantity <= 0) {
       return {
         approved: false,
@@ -79,27 +93,60 @@ export class RiskManager {
       };
     }
 
+    // Grade B → Half Size
+    const gradeMultiplier = order.breakoutGrade === 'B' ? 0.5 : 1.0;
+    const finalQuantity = adjustedQuantity * gradeMultiplier;
+
     log.info(
-      `Order approved: ${order.strategy} ${order.side} ${order.pairAddress} qty=${adjustedQuantity}`
+      `Order approved: ${order.strategy} ${order.side} ${order.pairAddress} ` +
+      `qty=${finalQuantity.toFixed(6)} constraint=${sizeConstraint} grade=${order.breakoutGrade || 'N/A'}`
     );
 
-    return { approved: true, adjustedQuantity };
+    return { approved: true, adjustedQuantity: finalQuantity, sizeConstraint };
   }
 
   /**
-   * 포지션 크기 계산 — 리스크 기반 역산
+   * 포지션 크기 계산 — 3-Constraint Model (LiquiditySizer)
    */
-  calculatePositionSize(order: RiskOrderInput, portfolio: PortfolioState): number {
+  calculatePositionSize(
+    order: RiskOrderInput,
+    portfolio: PortfolioState
+  ): { adjustedQuantity: number; sizeConstraint: SizeConstraint } {
+    const stopLossPct = Math.abs(order.price - order.stopLoss) / order.price;
+
+    // 풀 TVL 정보가 있으면 LiquiditySizer 사용
+    if (order.poolTvl && order.poolTvl > 0) {
+      const sizing = calculateLiquiditySize(
+        portfolio.balanceSol,
+        this.riskConfig.maxRiskPerTrade,
+        stopLossPct,
+        order.poolTvl,
+        0.003,
+        this.liquidityParams
+      );
+
+      const maxPositionValue = portfolio.balanceSol * 0.2;
+      const maxPositionUnits = maxPositionValue / order.price;
+
+      return {
+        adjustedQuantity: Math.min(sizing.maxSize / order.price, maxPositionUnits),
+        sizeConstraint: sizing.constraint,
+      };
+    }
+
+    // Fallback: 기존 방식 (리스크 기반)
     const maxRisk = portfolio.balanceSol * this.riskConfig.maxRiskPerTrade;
     const riskPerUnit = Math.abs(order.price - order.stopLoss);
-
-    if (riskPerUnit <= 0) return 0;
+    if (riskPerUnit <= 0) return { adjustedQuantity: 0, sizeConstraint: 'RISK' };
 
     const positionSize = maxRisk / riskPerUnit;
     const maxPositionValue = portfolio.balanceSol * 0.2;
     const maxPositionUnits = maxPositionValue / order.price;
 
-    return Math.min(positionSize, maxPositionUnits);
+    return {
+      adjustedQuantity: Math.min(positionSize, maxPositionUnits),
+      sizeConstraint: 'RISK',
+    };
   }
 
   private isDailyLossExceeded(portfolio: PortfolioState): boolean {

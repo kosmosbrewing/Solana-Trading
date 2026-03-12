@@ -11,14 +11,25 @@ import {
   buildVolumeSpikeOrder,
   evaluatePumpDetection,
   buildPumpOrder,
+  calcBreakoutScore,
+  calcBuyRatio,
+  calcATR,
+  calcAvgVolume,
+  detectWhaleActivity,
+  assessLpStability,
+  checkExhaustion,
+  calcAdaptiveTrailingStop,
 } from './strategy';
 import { RiskManager, RiskConfig } from './risk';
 import { Executor, ExecutorConfig } from './executor';
 import { Notifier } from './notifier';
+import { UniverseEngine, UniverseEngineConfig } from './universe';
+import { ExecutionLock, PositionStore, checkStaleSignal, runRecovery } from './state';
+import { SignalAuditLogger } from './audit';
 
 const log = createModuleLogger('Main');
 
-// ─── Bot Context (모듈 의존성 묶음) ──────────────────
+// ─── Bot Context ──────────────────
 
 interface BotContext {
   tradingMode: TradingMode;
@@ -28,18 +39,30 @@ interface BotContext {
   executor: Executor;
   notifier: Notifier;
   healthMonitor: HealthMonitor;
+  universeEngine: UniverseEngine;
+  executionLock: ExecutionLock;
+  positionStore: PositionStore;
+  auditLogger: SignalAuditLogger;
+  previousTvl: Map<string, number>;
 }
 
 async function main() {
   const tradingMode = config.tradingMode;
-  log.info(`=== Solana Momentum Bot starting (mode: ${tradingMode}) ===`);
+  log.info(`=== Solana Momentum Bot v0.3 starting (mode: ${tradingMode}) ===`);
 
   // ─── 공유 DB Pool ─────────────────────────────────
   const dbPool = new Pool({ connectionString: config.databaseUrl });
 
   const candleStore = new CandleStore(dbPool);
   const tradeStore = new TradeStore(dbPool);
-  await Promise.all([candleStore.initialize(), tradeStore.initialize()]);
+  const positionStore = new PositionStore(dbPool);
+  const auditLogger = new SignalAuditLogger(dbPool);
+  await Promise.all([
+    candleStore.initialize(),
+    tradeStore.initialize(),
+    positionStore.initialize(),
+    auditLogger.initialize(),
+  ]);
   log.info('Database initialized');
 
   // ─── Initialize modules ─────────────────────────────
@@ -54,6 +77,11 @@ async function main() {
     minPoolLiquidity: config.minPoolLiquidity,
     minTokenAgeHours: config.minTokenAgeHours,
     maxHolderConcentration: config.maxHolderConcentration,
+    liquidityParams: {
+      maxSlippagePct: config.maxSlippage,
+      maxPoolImpactPct: config.maxPoolImpact,
+      emergencyHaircut: config.emergencyHaircut,
+    },
   };
   const riskManager = new RiskManager(riskConfig, tradeStore);
 
@@ -73,6 +101,52 @@ async function main() {
   healthMonitor.setDbConnected(true);
   healthMonitor.start();
 
+  // ─── Execution Lock (v0.3) ─────────────────────────
+  const executionLock = new ExecutionLock(async () => {
+    await notifier.sendWarning('ExecutionLock', 'Lock timeout — auto released');
+  });
+
+  // ─── Universe Engine ───────────────────────────────
+  const targetPair = process.env.TARGET_PAIR_ADDRESS;
+  if (!targetPair) {
+    log.error('TARGET_PAIR_ADDRESS not set. Exiting.');
+    process.exit(1);
+  }
+
+  const universeConfig: UniverseEngineConfig = {
+    params: {
+      minPoolTVL: config.minPoolTVL,
+      minTokenAgeSec: config.minTokenAgeSec,
+      maxTop10HolderPct: config.maxTop10HolderPct,
+      minDailyVolume: config.minDailyVolume,
+      minTradeCount24h: config.minTradeCount24h,
+      maxSpreadPct: config.maxSpreadPct,
+      maxWatchlistSize: config.maxWatchlistSize,
+    },
+    refreshIntervalMs: config.universeRefreshIntervalMs,
+    poolAddresses: [targetPair],
+  };
+
+  const universeEngine = new UniverseEngine(birdeyeClient, universeConfig);
+
+  universeEngine.on('poolEvent', async (event: { type: string; pairAddress: string; detail: string }) => {
+    if (event.type === 'RUG_PULL' || event.type === 'LP_DROP') {
+      await notifier.sendCritical('Pool Event', `${event.type}: ${event.detail}`);
+      // Emergency close if we have a position
+      if (tradingMode === 'live') {
+        const openTrades = await tradeStore.getOpenTrades();
+        for (const trade of openTrades) {
+          if (trade.pairAddress === event.pairAddress) {
+            log.warn(`Emergency close triggered for ${trade.id}`);
+            await closeTrade(trade, 'EMERGENCY', ctx);
+          }
+        }
+      }
+    } else {
+      await notifier.sendWarning('Pool Event', `${event.type}: ${event.detail}`);
+    }
+  });
+
   const ctx: BotContext = {
     tradingMode,
     candleStore,
@@ -81,15 +155,28 @@ async function main() {
     executor,
     notifier,
     healthMonitor,
+    universeEngine,
+    executionLock,
+    positionStore,
+    auditLogger,
+    previousTvl: new Map(),
   };
 
-  // ─── Configure ingester ─────────────────────────────
-  const targetPair = process.env.TARGET_PAIR_ADDRESS;
-  if (!targetPair) {
-    log.error('TARGET_PAIR_ADDRESS not set. Exiting.');
-    process.exit(1);
+  // ─── Crash Recovery (v0.3) ─────────────────────────
+  const recoveryResult = await runRecovery({
+    positionStore,
+    getTokenBalance: (addr) => executor.getTokenBalance(addr),
+    getCurrentPrice: async (addr) => {
+      const candles = await candleStore.getRecentCandles(addr, 300, 1);
+      return candles.length > 0 ? candles[0].close : null;
+    },
+  });
+
+  if (recoveryResult.recovered > 0 || recoveryResult.closed > 0) {
+    await notifier.sendRecoveryReport(recoveryResult.details);
   }
 
+  // ─── Configure ingester ─────────────────────────────
   const ingesterConfigs: IngesterConfig[] = [
     {
       pairAddress: targetPair,
@@ -100,7 +187,6 @@ async function main() {
 
   const ingester = new Ingester(birdeyeClient, candleStore, ingesterConfigs);
 
-  // ─── Candle batch handler (배치 이벤트: 마지막 캔들만 전략 평가) ──
   ingester.on('candles', async (candles: Candle[]) => {
     healthMonitor.updateCandleTime();
 
@@ -113,12 +199,12 @@ async function main() {
     }
   });
 
-  ingester.on('error', async ({ pairAddress, error }) => {
+  ingester.on('error', async ({ pairAddress, error }: { pairAddress: string; error: unknown }) => {
     log.error(`Ingester error for ${pairAddress}: ${error}`);
     await notifier.sendError('ingester', error).catch(() => {});
   });
 
-  // ─── Position monitor (SL/TP/Time Stop) ─────────────
+  // ─── Position monitor (SL/TP/Time Stop/Exhaustion) ──
   const positionCheckInterval = setInterval(async () => {
     try {
       await checkOpenPositions(ctx);
@@ -128,15 +214,25 @@ async function main() {
     }
   }, 10000);
 
+  // ─── Universe Engine start ──────────────────────────
+  await universeEngine.start();
+
   // ─── Start ingester ─────────────────────────────────
   await ingester.start();
   log.info('Bot is running. Press Ctrl+C to stop.');
+
+  await notifier.sendInfo('Bot started (v0.3)');
+
+  // ─── Daily summary scheduler ────────────────────────
+  scheduleDailySummary(ctx);
 
   // ─── Graceful shutdown ──────────────────────────────
   const shutdown = async () => {
     log.info('Shutting down...');
     clearInterval(positionCheckInterval);
     await ingester.stop();
+    universeEngine.stop();
+    executionLock.destroy();
     healthMonitor.stop();
     await dbPool.end();
     log.info('Shutdown complete');
@@ -161,6 +257,11 @@ async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<void> {
     return;
   }
 
+  // Get pool info for breakout score
+  const watchlist = ctx.universeEngine.getWatchlist();
+  const poolInfo = watchlist.find(p => p.pairAddress === candle.pairAddress);
+  const poolTvl = poolInfo?.tvl || 0;
+
   // Strategy A: Volume Spike Breakout (5분봉)
   if (candle.intervalSec === 300) {
     const signal = evaluateVolumeSpikeBreakout(candles, {
@@ -169,6 +270,24 @@ async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<void> {
     });
 
     if (signal.action === 'BUY') {
+      // Calculate Breakout Score
+      const volumeRatio = signal.meta.volumeRatio || 0;
+      const buyRatio = calcBuyRatio(candle);
+      const whaleAlert = detectWhaleActivity(candles.slice(-5), poolTvl);
+      const prevTvl = ctx.previousTvl.get(candle.pairAddress) || poolTvl;
+      const lpStability = assessLpStability(poolTvl, prevTvl);
+
+      const scoreDetail = calcBreakoutScore({
+        volumeRatio,
+        buyRatio,
+        multiTfAlignment: 1, // Single TF for now
+        whaleDetected: !!whaleAlert,
+        lpStability,
+      });
+
+      signal.breakoutScore = scoreDetail;
+      signal.poolTvl = poolTvl;
+
       await processSignal(signal, candles, ctx);
     }
   }
@@ -181,9 +300,18 @@ async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<void> {
     });
 
     if (signal.action === 'BUY') {
+      signal.poolTvl = poolTvl;
+      signal.breakoutScore = {
+        volumeScore: 15, buyRatioScore: 15, multiTfScore: 0,
+        whaleScore: 0, lpScore: 10,
+        totalScore: 40, grade: 'C', // Pump uses fixed scoring
+      };
+
       await processSignal(signal, candles, ctx);
     }
   }
+
+  ctx.previousTvl.set(candle.pairAddress, poolTvl);
 }
 
 async function processSignal(
@@ -191,77 +319,205 @@ async function processSignal(
   candles: Candle[],
   ctx: BotContext
 ): Promise<void> {
-  log.info(`Signal: ${signal.action} from ${signal.strategy} at ${signal.price}`);
-  await ctx.notifier.sendSignal(signal);
+  const grade = signal.breakoutScore?.grade || 'C';
+  const totalScore = signal.breakoutScore?.totalScore || 0;
 
-  // 잔고 + 포트폴리오 병렬 조회
-  const [balanceSol, portfolio] = await Promise.all([
-    ctx.executor.getBalance(),
-    ctx.riskManager.getPortfolioState(0), // 임시 잔고 — 아래에서 보정
-  ]);
-  portfolio.balanceSol = balanceSol;
+  log.info(`Signal: ${signal.action} from ${signal.strategy} at ${signal.price} (Score: ${totalScore}, Grade: ${grade})`);
 
-  // 리스크 체크 (최소 필드만 전달)
-  const riskResult = await ctx.riskManager.checkOrder(
-    {
+  // Grade C → 진입 금지
+  if (grade === 'C') {
+    log.info(`Signal filtered: Grade C (score ${totalScore})`);
+    await ctx.auditLogger.logSignal({
       pairAddress: signal.pairAddress,
       strategy: signal.strategy,
-      side: 'BUY',
-      price: signal.price,
-      stopLoss: candles[candles.length - 1].low, // 예상 SL
-    },
-    portfolio
-  );
-
-  if (!riskResult.approved) {
-    log.warn(`Order rejected by risk manager: ${riskResult.reason}`);
+      ...signal.breakoutScore!,
+      candleClose: signal.price,
+      volume: candles[candles.length - 1].volume,
+      buyVolume: candles[candles.length - 1].buyVolume,
+      sellVolume: candles[candles.length - 1].sellVolume,
+      poolTvl: signal.poolTvl || 0,
+      action: 'FILTERED',
+      filterReason: `Grade C (score ${totalScore})`,
+    });
     return;
   }
 
-  // 주문 생성
-  const quantity = riskResult.adjustedQuantity || 0;
-  const order: Order = signal.strategy === 'volume_spike'
-    ? buildVolumeSpikeOrder(signal, candles, quantity)
-    : buildPumpOrder(signal, candles, quantity);
-
-  if (ctx.tradingMode === 'paper') {
-    log.info(`[PAPER] Would execute: ${JSON.stringify(order)}`);
-    await ctx.notifier.sendTradeOpen(order, 'PAPER_TRADE');
+  // Execution Lock
+  if (!ctx.executionLock.acquire()) {
+    log.info('Signal skipped — execution lock held');
+    await ctx.auditLogger.logSignal({
+      pairAddress: signal.pairAddress,
+      strategy: signal.strategy,
+      ...signal.breakoutScore!,
+      candleClose: signal.price,
+      volume: candles[candles.length - 1].volume,
+      poolTvl: signal.poolTvl || 0,
+      action: 'FILTERED',
+      filterReason: 'Execution lock held',
+    });
     return;
   }
 
-  // Live execution
   try {
-    const txSignature = await ctx.executor.executeBuy(order);
-
-    const timeStopAt = new Date(Date.now() + order.timeStopMinutes * 60 * 1000);
-    await ctx.tradeStore.insertTrade({
-      pairAddress: order.pairAddress,
-      strategy: order.strategy,
-      side: order.side,
-      entryPrice: order.price,
-      quantity: order.quantity,
-      stopLoss: order.stopLoss,
-      takeProfit1: order.takeProfit1,
-      takeProfit2: order.takeProfit2,
-      trailingStop: order.trailingStop,
-      timeStopAt,
-      status: 'OPEN',
-      txSignature,
-      createdAt: new Date(),
+    // Stale Signal Check
+    const staleResult = checkStaleSignal({
+      signal,
+      currentPrice: candles[candles.length - 1].close,
+      currentTvl: signal.poolTvl,
     });
 
-    ctx.healthMonitor.updateTradeTime();
-    await ctx.notifier.sendTradeOpen(order, txSignature);
-    log.info(`Trade opened: ${txSignature}`);
-  } catch (error) {
-    log.error(`Trade execution failed: ${error}`);
-    await ctx.notifier.sendError('trade_execution', error).catch(() => {});
+    if (staleResult.isStale) {
+      log.info(`Stale signal: ${staleResult.reason}`);
+      await ctx.auditLogger.logSignal({
+        pairAddress: signal.pairAddress,
+        strategy: signal.strategy,
+        ...signal.breakoutScore!,
+        candleClose: signal.price,
+        volume: candles[candles.length - 1].volume,
+        poolTvl: signal.poolTvl || 0,
+        action: 'STALE',
+        filterReason: staleResult.reason,
+      });
+      return;
+    }
+
+    await ctx.notifier.sendSignal(signal);
+
+    // Risk check
+    const [balanceSol, portfolio] = await Promise.all([
+      ctx.executor.getBalance(),
+      ctx.riskManager.getPortfolioState(0),
+    ]);
+    portfolio.balanceSol = balanceSol;
+
+    const riskResult = await ctx.riskManager.checkOrder(
+      {
+        pairAddress: signal.pairAddress,
+        strategy: signal.strategy,
+        side: 'BUY',
+        price: signal.price,
+        stopLoss: candles[candles.length - 1].low,
+        breakoutGrade: grade,
+        poolTvl: signal.poolTvl,
+      },
+      portfolio
+    );
+
+    if (!riskResult.approved) {
+      log.warn(`Order rejected by risk manager: ${riskResult.reason}`);
+      await ctx.auditLogger.logSignal({
+        pairAddress: signal.pairAddress,
+        strategy: signal.strategy,
+        ...signal.breakoutScore!,
+        candleClose: signal.price,
+        volume: candles[candles.length - 1].volume,
+        poolTvl: signal.poolTvl || 0,
+        action: 'RISK_REJECTED',
+        filterReason: riskResult.reason,
+      });
+      return;
+    }
+
+    // Build order
+    const quantity = riskResult.adjustedQuantity || 0;
+    const order: Order = signal.strategy === 'volume_spike'
+      ? buildVolumeSpikeOrder(signal, candles, quantity)
+      : buildPumpOrder(signal, candles, quantity);
+
+    order.breakoutScore = totalScore;
+    order.breakoutGrade = grade;
+    order.sizeConstraint = riskResult.sizeConstraint;
+
+    // Record position state
+    const positionId = await ctx.positionStore.createPosition(
+      signal.pairAddress,
+      { signal: signal.meta, score: totalScore, grade }
+    );
+
+    if (ctx.tradingMode === 'paper') {
+      log.info(`[PAPER] Would execute: ${JSON.stringify(order)}`);
+      await ctx.notifier.sendTradeOpen(order, 'PAPER_TRADE');
+      await ctx.auditLogger.logSignal({
+        pairAddress: signal.pairAddress,
+        strategy: signal.strategy,
+        ...signal.breakoutScore!,
+        candleClose: signal.price,
+        volume: candles[candles.length - 1].volume,
+        poolTvl: signal.poolTvl || 0,
+        action: 'EXECUTED',
+        positionSize: quantity,
+        sizeConstraint: riskResult.sizeConstraint,
+      });
+      await ctx.positionStore.updateState(positionId, 'EXIT_CONFIRMED');
+      return;
+    }
+
+    // Live execution
+    try {
+      await ctx.positionStore.updateState(positionId, 'ORDER_SUBMITTED');
+
+      const txSignature = await ctx.executor.executeBuy(order);
+
+      await ctx.positionStore.updateState(positionId, 'ENTRY_CONFIRMED', {
+        entryPrice: order.price,
+        quantity: order.quantity,
+        stopLoss: order.stopLoss,
+        takeProfit1: order.takeProfit1,
+        takeProfit2: order.takeProfit2,
+        trailingStop: order.trailingStop,
+        txEntry: txSignature,
+      });
+
+      const timeStopAt = new Date(Date.now() + order.timeStopMinutes * 60 * 1000);
+      await ctx.tradeStore.insertTrade({
+        pairAddress: order.pairAddress,
+        strategy: order.strategy,
+        side: order.side,
+        entryPrice: order.price,
+        quantity: order.quantity,
+        stopLoss: order.stopLoss,
+        takeProfit1: order.takeProfit1,
+        takeProfit2: order.takeProfit2,
+        trailingStop: order.trailingStop,
+        timeStopAt,
+        status: 'OPEN',
+        txSignature,
+        createdAt: new Date(),
+        breakoutScore: totalScore,
+        breakoutGrade: grade,
+        sizeConstraint: riskResult.sizeConstraint,
+      });
+
+      await ctx.positionStore.updateState(positionId, 'MONITORING');
+
+      ctx.healthMonitor.updateTradeTime();
+      await ctx.notifier.sendTradeOpen(order, txSignature);
+
+      await ctx.auditLogger.logSignal({
+        pairAddress: signal.pairAddress,
+        strategy: signal.strategy,
+        ...signal.breakoutScore!,
+        candleClose: signal.price,
+        volume: candles[candles.length - 1].volume,
+        poolTvl: signal.poolTvl || 0,
+        action: 'EXECUTED',
+        positionSize: quantity,
+        sizeConstraint: riskResult.sizeConstraint,
+      });
+
+      log.info(`Trade opened: ${txSignature}`);
+    } catch (error) {
+      log.error(`Trade execution failed: ${error}`);
+      await ctx.positionStore.updateState(positionId, 'ORDER_FAILED');
+      await ctx.notifier.sendError('trade_execution', error).catch(() => {});
+    }
+  } finally {
+    ctx.executionLock.release();
   }
 }
 
 /**
- * 열린 포지션 모니터링 (SL/TP/Time Stop)
+ * 열린 포지션 모니터링 (SL/TP/Time Stop/Exhaustion/Adaptive Trailing)
  */
 async function checkOpenPositions(ctx: BotContext): Promise<void> {
   if (ctx.tradingMode === 'paper') return;
@@ -269,10 +525,15 @@ async function checkOpenPositions(ctx: BotContext): Promise<void> {
   const openTrades = await ctx.tradeStore.getOpenTrades();
   ctx.healthMonitor.updatePositions(openTrades.length);
 
-  // 열린 포지션이 없으면 PnL만 업데이트하고 종료
   if (openTrades.length === 0) {
     const dailyPnl = await ctx.tradeStore.getTodayPnl();
     ctx.healthMonitor.updateDailyPnl(dailyPnl);
+
+    // 일일 손실 한도 체크
+    const balance = await ctx.executor.getBalance();
+    if (dailyPnl < -(balance * config.maxDailyLoss)) {
+      await ctx.notifier.sendCritical('Daily Loss', `일일 손실 ${config.maxDailyLoss * 100}% 도달, 봇 정지`);
+    }
     return;
   }
 
@@ -290,7 +551,7 @@ async function checkOpenPositions(ctx: BotContext): Promise<void> {
     const recentCandles = await ctx.candleStore.getRecentCandles(
       trade.pairAddress,
       300,
-      1
+      10
     );
     if (recentCandles.length === 0) continue;
 
@@ -303,15 +564,44 @@ async function checkOpenPositions(ctx: BotContext): Promise<void> {
       continue;
     }
 
+    // Take Profit 2 체크
+    if (currentPrice >= trade.takeProfit2) {
+      log.info(`Take profit 2 triggered for trade ${trade.id} at ${currentPrice}`);
+      await closeTrade(trade, 'TAKE_PROFIT_2', ctx);
+      continue;
+    }
+
     // Take Profit 1 체크
     if (currentPrice >= trade.takeProfit1) {
       log.info(`Take profit 1 triggered for trade ${trade.id} at ${currentPrice}`);
-      await closeTrade(trade, 'TAKE_PROFIT', ctx);
+      await closeTrade(trade, 'TAKE_PROFIT_1', ctx);
       continue;
+    }
+
+    // Exhaustion Exit 체크
+    if (recentCandles.length >= 2) {
+      const { exhausted, indicators } = checkExhaustion(recentCandles, config.exhaustionThreshold);
+      if (exhausted && currentPrice > trade.entryPrice) {
+        log.info(`Exhaustion exit for trade ${trade.id}: ${indicators.join(', ')}`);
+        await closeTrade(trade, 'EXHAUSTION', ctx);
+        continue;
+      }
+    }
+
+    // Adaptive Trailing Stop 체크
+    if (trade.trailingStop && recentCandles.length >= 8) {
+      const atr = calcATR(recentCandles, 7);
+      const peakPrice = Math.max(...recentCandles.map(c => c.high));
+      const adaptiveStop = calcAdaptiveTrailingStop(recentCandles, atr, trade.entryPrice, peakPrice);
+
+      if (currentPrice <= adaptiveStop && currentPrice > trade.stopLoss) {
+        log.info(`Adaptive trailing stop triggered for trade ${trade.id} at ${currentPrice}`);
+        await closeTrade(trade, 'TRAILING_STOP', ctx);
+        continue;
+      }
     }
   }
 
-  // 일일 PnL 업데이트
   const dailyPnl = await ctx.tradeStore.getTodayPnl();
   ctx.healthMonitor.updateDailyPnl(dailyPnl);
 }
@@ -322,7 +612,6 @@ async function closeTrade(
   ctx: BotContext
 ): Promise<void> {
   try {
-    // 토큰 잔고 조회 후 매도 실행
     const tokenBalance = await ctx.executor.getTokenBalance(trade.pairAddress);
 
     let txSignature: string | undefined;
@@ -331,7 +620,6 @@ async function closeTrade(
     if (tokenBalance > 0n) {
       txSignature = await ctx.executor.executeSell(trade.pairAddress, tokenBalance);
 
-      // 매도 후 실제 체결가 추정 (SOL 잔고 변화 기반)
       const balanceAfter = await ctx.executor.getBalance();
       const soldValue = Number(tokenBalance) * trade.entryPrice / trade.quantity;
       exitPrice = soldValue / Number(tokenBalance) || trade.entryPrice;
@@ -344,10 +632,22 @@ async function closeTrade(
       ? Math.abs(exitPrice - trade.entryPrice) / trade.entryPrice
       : 0;
 
-    await ctx.tradeStore.closeTrade(trade.id, exitPrice, pnl, slippage);
+    await ctx.tradeStore.closeTrade(trade.id, exitPrice, pnl, slippage, reason);
 
-    const closedTrade = { ...trade, exitPrice, pnl, slippage, status: 'CLOSED' as const };
+    const closedTrade = { ...trade, exitPrice, pnl, slippage, status: 'CLOSED' as const, exitReason: reason };
     await ctx.notifier.sendTradeClose(closedTrade);
+
+    // Update position state
+    const openPositions = await ctx.positionStore.getOpenPositions();
+    for (const pos of openPositions) {
+      if (pos.pairAddress === trade.pairAddress) {
+        await ctx.positionStore.updateState(pos.id, 'EXIT_CONFIRMED', {
+          txExit: txSignature,
+          exitReason: reason,
+          pnl,
+        });
+      }
+    }
 
     log.info(`Trade ${trade.id} closed (${reason}). PnL: ${pnl.toFixed(6)} SOL`);
   } catch (error) {
@@ -355,6 +655,73 @@ async function closeTrade(
     await ctx.tradeStore.failTrade(trade.id, `Close failed: ${error}`);
     await ctx.notifier.sendError('trade_close', error).catch(() => {});
   }
+}
+
+/**
+ * 일일 요약 리포트 스케줄러 (매일 KST 09:00)
+ */
+function scheduleDailySummary(ctx: BotContext): void {
+  const checkInterval = setInterval(async () => {
+    const now = new Date();
+    const kstHour = (now.getUTCHours() + 9) % 24;
+    const minute = now.getMinutes();
+
+    // KST 09:00 ~ 09:01
+    if (kstHour === 9 && minute === 0) {
+      try {
+        await sendDailySummaryReport(ctx);
+      } catch (error) {
+        log.error(`Daily summary failed: ${error}`);
+      }
+    }
+  }, 60_000);
+
+  // Cleanup on shutdown handled by process exit
+}
+
+async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
+  const todayTrades = await ctx.tradeStore.getTodayTrades();
+  const dailyPnl = await ctx.tradeStore.getTodayPnl();
+  const signalCounts = await ctx.auditLogger.getTodaySignalCounts();
+  const balance = await ctx.executor.getBalance();
+  const status = ctx.healthMonitor.getStatus();
+
+  const wins = todayTrades.filter(t => (t.pnl || 0) > 0);
+  const losses = todayTrades.filter(t => (t.pnl || 0) <= 0 && t.status === 'CLOSED');
+
+  const portfolio = await ctx.riskManager.getPortfolioState(balance);
+
+  let bestTrade: { pair: string; pnl: number; score: number; grade: string } | undefined;
+  let worstTrade: { pair: string; pnl: number; score: number; grade: string } | undefined;
+
+  for (const t of todayTrades) {
+    if (t.pnl !== undefined) {
+      if (!bestTrade || t.pnl > bestTrade.pnl) {
+        bestTrade = { pair: t.pairAddress, pnl: t.pnl, score: t.breakoutScore || 0, grade: t.breakoutGrade || 'N/A' };
+      }
+      if (!worstTrade || t.pnl < worstTrade.pnl) {
+        worstTrade = { pair: t.pairAddress, pnl: t.pnl, score: t.breakoutScore || 0, grade: t.breakoutGrade || 'N/A' };
+      }
+    }
+  }
+
+  await ctx.notifier.sendDailySummary({
+    totalTrades: todayTrades.length,
+    wins: wins.length,
+    losses: losses.length,
+    pnl: dailyPnl,
+    portfolioValue: balance,
+    bestTrade,
+    worstTrade,
+    signalsDetected: signalCounts.detected,
+    signalsExecuted: signalCounts.executed,
+    signalsFiltered: signalCounts.filtered,
+    dailyLossUsed: balance > 0 ? Math.abs(dailyPnl) / balance : 0,
+    dailyLossLimit: config.maxDailyLoss,
+    consecutiveLosses: portfolio.consecutiveLosses,
+    uptime: status.uptime,
+    restarts: 0,
+  });
 }
 
 // ─── Entry Point ─────────────────────────────────────────

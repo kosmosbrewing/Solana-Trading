@@ -64,22 +64,41 @@ export const config = {
   // Trading Mode
   tradingMode: parseTradingMode(),
 
-  // Risk
-  maxRiskPerTrade: numOptional('MAX_RISK_PER_TRADE', 0.01),
-  maxDailyLoss: numOptional('MAX_DAILY_LOSS', 0.05),
-  maxSlippage: numOptional('MAX_SLIPPAGE', 0.01),
+  // ─── Universe Parameters (Group 1: 7개) ───
+  minPoolTVL: numOptional('MIN_POOL_TVL', 50_000),
+  minTokenAgeSec: numOptional('MIN_TOKEN_AGE_SEC', 86_400),
+  maxTop10HolderPct: numOptional('MAX_TOP10_HOLDER_PCT', 0.80),
+  minDailyVolume: numOptional('MIN_DAILY_VOLUME', 10_000),
+  minTradeCount24h: numOptional('MIN_TRADE_COUNT_24H', 50),
+  maxSpreadPct: numOptional('MAX_SPREAD_PCT', 0.03),
+  maxWatchlistSize: numOptional('MAX_WATCHLIST_SIZE', 20),
 
-  // Strategy - Volume Spike
+  // ─── Strategy Parameters (Group 2: 10개) ───
   defaultTimeframe: numOptional('DEFAULT_TIMEFRAME', 300),
   volumeSpikeMultiplier: numOptional('VOLUME_SPIKE_MULTIPLIER', 3.0),
   volumeSpikeLookback: numOptional('VOLUME_SPIKE_LOOKBACK', 20),
+  minBuyRatio: numOptional('MIN_BUY_RATIO', 0.65),
+  minBreakoutScore: numOptional('MIN_BREAKOUT_SCORE', 50),
+  maxRiskPerTrade: numOptional('MAX_RISK_PER_TRADE', 0.01),
+  takeProfitAtrMultiplier: numOptional('TAKE_PROFIT_ATR_MULTIPLIER', 2.0),
+  trailingStopAtrMultiplier: numOptional('TRAILING_STOP_ATR_MULTIPLIER', 1.5),
+  timeStopMinutes: numOptional('TIME_STOP_MINUTES', 30),
+  exhaustionThreshold: numOptional('EXHAUSTION_THRESHOLD', 2),
 
-  // Strategy - Pump Detection
+  // Pump Detection
   pumpConsecutiveCandles: numOptional('PUMP_CONSECUTIVE_CANDLES', 3),
   pumpMinPriceMove: numOptional('PUMP_MIN_PRICE_MOVE', 0.05),
 
-  // Safety
-  minPoolLiquidity: numOptional('MIN_POOL_LIQUIDITY', 50000),
+  // ─── Liquidity Parameters (Group 3: 3개) ───
+  maxSlippage: numOptional('MAX_SLIPPAGE', 0.01),
+  maxPoolImpact: numOptional('MAX_POOL_IMPACT', 0.02),
+  emergencyHaircut: numOptional('EMERGENCY_HAIRCUT', 0.50),
+
+  // Risk
+  maxDailyLoss: numOptional('MAX_DAILY_LOSS', 0.05),
+
+  // Safety (legacy aliases — used by Universe)
+  minPoolLiquidity: numOptional('MIN_POOL_LIQUIDITY', 50_000),
   minTokenAgeHours: numOptional('MIN_TOKEN_AGE_HOURS', 24),
   maxHolderConcentration: numOptional('MAX_HOLDER_CONCENTRATION', 0.80),
 
@@ -88,4 +107,7 @@ export const config = {
   txTimeoutMs: numOptional('TX_TIMEOUT_MS', 30000),
   cooldownMinutes: numOptional('COOLDOWN_MINUTES', 30),
   maxConsecutiveLosses: numOptional('MAX_CONSECUTIVE_LOSSES', 3),
+
+  // Universe refresh
+  universeRefreshIntervalMs: numOptional('UNIVERSE_REFRESH_INTERVAL_MS', 300_000),
 } as const;

@@ -66,6 +66,8 @@ export class BirdeyeClient {
         low: item.l,
         close: item.c,
         volume: item.v,
+        buyVolume: 0,
+        sellVolume: 0,
         tradeCount: 0,
       }));
     } catch (error) {

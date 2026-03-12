@@ -45,7 +45,7 @@ export interface Signal {
 
 // ─── Strategy ───
 
-export type StrategyName = 'volume_spike' | 'pump_detect';
+export type StrategyName = 'volume_spike' | 'pump_detect' | 'fib_pullback';
 
 export interface StrategyConfig {
   name: StrategyName;

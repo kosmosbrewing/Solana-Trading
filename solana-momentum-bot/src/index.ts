@@ -37,6 +37,7 @@ interface BotContext {
   notifier: Notifier;
   healthMonitor: HealthMonitor;
   universeEngine: UniverseEngine;
+  eventMonitor: EventMonitor;
   executionLock: ExecutionLock;
   positionStore: PositionStore;
   auditLogger: SignalAuditLogger;
@@ -176,6 +177,7 @@ async function main() {
     notifier,
     healthMonitor,
     universeEngine,
+    eventMonitor,
     executionLock,
     positionStore,
     auditLogger,
@@ -310,6 +312,9 @@ async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<void> {
   }
   const poolTvl = poolInfo.tvl;
 
+  // Gate 2: EventScore 조회 (설명불가 펌프 차단)
+  const eventScore = ctx.eventMonitor.getScoreByMint(poolInfo.tokenMint);
+
   // Strategy A: Volume Spike Breakout (5분봉)
   if (candle.intervalSec === 300) {
     const signal = evaluateVolumeSpikeBreakout(candles, {
@@ -324,6 +329,8 @@ async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<void> {
         candles,
         poolInfo,
         previousTvl: prevTvl,
+        eventScore,
+        requireEventScore: true,
         fibConfig: {
           impulseMinPct: config.fibImpulseMinPct,
           volumeClimaxMultiplier: config.fibVolumeClimaxMultiplier,
@@ -369,6 +376,7 @@ async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<void> {
           candles: fibCandles,
           poolInfo,
           previousTvl: prevTvl,
+          eventScore,
           fibConfig: {
             impulseMinPct: config.fibImpulseMinPct,
             volumeClimaxMultiplier: config.fibVolumeClimaxMultiplier,
@@ -400,7 +408,10 @@ async function processSignal(
   const grade = gateResult.breakoutScore.grade;
   const totalScore = gateResult.breakoutScore.totalScore;
 
-  log.info(`Signal: ${signal.action} from ${signal.strategy} at ${signal.price} (Score: ${totalScore}, Grade: ${grade})`);
+  const eventInfo = gateResult.eventScore
+    ? `Event: ${gateResult.eventScore.eventScore} (${gateResult.eventScore.confidence})`
+    : 'Event: none';
+  log.info(`Signal: ${signal.action} from ${signal.strategy} at ${signal.price} (Score: ${totalScore}, Grade: ${grade}, ${eventInfo})`);
 
   const balanceSol = await ctx.executor.getBalance();
   const portfolio = await ctx.riskManager.getPortfolioState(balanceSol);

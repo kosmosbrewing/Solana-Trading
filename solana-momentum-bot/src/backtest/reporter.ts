@@ -46,6 +46,7 @@ export class BacktestReporter {
     const rej = result.rejections;
     const totalRej =
       rej.dailyLimit +
+      rej.drawdownHalt +
       rej.cooldown +
       rej.positionOpen +
       rej.zeroSize +
@@ -54,6 +55,7 @@ export class BacktestReporter {
     if (totalRej > 0) {
       console.log(`  Risk Rejections: ${totalRej} total`);
       if (rej.dailyLimit > 0) console.log(`    Daily limit:   ${rej.dailyLimit}`);
+      if (rej.drawdownHalt > 0) console.log(`    Drawdown halt: ${rej.drawdownHalt}`);
       if (rej.cooldown > 0)   console.log(`    Cooldown:      ${rej.cooldown}`);
       if (rej.positionOpen > 0) console.log(`    Position open: ${rej.positionOpen}`);
       if (rej.zeroSize > 0)   console.log(`    Zero size:     ${rej.zeroSize}`);

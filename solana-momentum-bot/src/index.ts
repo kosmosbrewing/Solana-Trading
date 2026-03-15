@@ -76,6 +76,8 @@ async function main() {
   const riskConfig: RiskConfig = {
     maxRiskPerTrade: config.maxRiskPerTrade,
     maxDailyLoss: config.maxDailyLoss,
+    maxDrawdownPct: config.maxDrawdownPct,
+    recoveryPct: config.recoveryPct,
     maxConsecutiveLosses: config.maxConsecutiveLosses,
     cooldownMinutes: config.cooldownMinutes,
     maxSlippage: config.maxSlippage,
@@ -400,6 +402,10 @@ async function processSignal(
 
   log.info(`Signal: ${signal.action} from ${signal.strategy} at ${signal.price} (Score: ${totalScore}, Grade: ${grade})`);
 
+  const balanceSol = await ctx.executor.getBalance();
+  const portfolio = await ctx.riskManager.getPortfolioState(balanceSol);
+  await syncTradingHalts(ctx, portfolio);
+
   if (ctx.tradingHaltedReason) {
     log.warn(`Signal filtered: trading halted (${ctx.tradingHaltedReason})`);
     await ctx.auditLogger.logSignal({
@@ -481,12 +487,6 @@ async function processSignal(
     await ctx.notifier.sendSignal(signal);
 
     // Risk check
-    const [balanceSol, portfolio] = await Promise.all([
-      ctx.executor.getBalance(),
-      ctx.riskManager.getPortfolioState(0),
-    ]);
-    portfolio.balanceSol = balanceSol;
-
     const riskResult = await ctx.riskManager.checkOrder(
       {
         pairAddress: signal.pairAddress,
@@ -576,15 +576,12 @@ async function processSignal(
  * 열린 포지션 모니터링 (SL/TP/Time Stop/Exhaustion/Adaptive Trailing)
  */
 async function checkOpenPositions(ctx: BotContext): Promise<void> {
-  const openTrades = await ctx.tradeStore.getOpenTrades();
+  const balanceSol = await ctx.executor.getBalance();
+  const portfolio = await ctx.riskManager.getPortfolioState(balanceSol);
+  const openTrades = portfolio.openTrades;
   ctx.healthMonitor.updatePositions(openTrades.length);
-  const dailyPnl = await ctx.tradeStore.getTodayPnl();
-  ctx.healthMonitor.updateDailyPnl(dailyPnl);
-
-  if (ctx.tradingMode === 'live') {
-    const balance = await ctx.executor.getBalance();
-    await enforceDailyLossHalt(ctx, dailyPnl, balance);
-  }
+  ctx.healthMonitor.updateDailyPnl(portfolio.dailyPnl);
+  await syncTradingHalts(ctx, portfolio);
 
   if (openTrades.length === 0) {
     return;
@@ -670,31 +667,29 @@ async function checkOpenPositions(ctx: BotContext): Promise<void> {
 
 }
 
-async function enforceDailyLossHalt(
+async function syncTradingHalts(
   ctx: BotContext,
-  dailyPnl: number,
-  balance: number
+  portfolio: Awaited<ReturnType<RiskManager['getPortfolioState']>>
 ): Promise<void> {
-  const exceeded = dailyPnl < -(balance * config.maxDailyLoss);
+  const activeHalt = ctx.riskManager.getActiveHalt(portfolio);
 
-  if (!exceeded && ctx.tradingHaltedReason) {
-    log.info(`Trading resumed: daily PnL ${dailyPnl.toFixed(4)} within limit`);
-    await ctx.notifier.sendInfo('Trading resumed — daily loss limit cleared');
+  if (!activeHalt && ctx.tradingHaltedReason) {
+    log.info(`Trading resumed: ${ctx.tradingHaltedReason}`);
+    await ctx.notifier.sendInfo('Trading resumed — risk halt cleared');
     ctx.tradingHaltedReason = undefined;
     return;
   }
 
-  if (!exceeded || ctx.tradingHaltedReason) {
+  if (!activeHalt || ctx.tradingHaltedReason === activeHalt.reason) {
     return;
   }
 
-  const reason =
-    `Trading halted: daily loss ${(Math.abs(dailyPnl) * 100 / Math.max(balance, 1e-9)).toFixed(2)}% ` +
-    `exceeds ${(config.maxDailyLoss * 100).toFixed(2)}% limit`;
-
-  ctx.tradingHaltedReason = reason;
-  log.error(reason);
-  await ctx.notifier.sendCritical('Daily Loss', reason);
+  ctx.tradingHaltedReason = activeHalt.reason;
+  log.error(activeHalt.reason);
+  await ctx.notifier.sendCritical(
+    activeHalt.kind === 'drawdown' ? 'Drawdown Guard' : 'Daily Loss',
+    activeHalt.reason
+  );
 }
 
 async function closeTrade(
@@ -990,7 +985,7 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
     signalsDetected: signalCounts.detected,
     signalsExecuted: signalCounts.executed,
     signalsFiltered: signalCounts.filtered,
-    dailyLossUsed: balance > 0 ? Math.abs(dailyPnl) / balance : 0,
+    dailyLossUsed: portfolio.equitySol > 0 ? Math.abs(dailyPnl) / portfolio.equitySol : 0,
     dailyLossLimit: config.maxDailyLoss,
     consecutiveLosses: portfolio.consecutiveLosses,
     uptime: status.uptime,

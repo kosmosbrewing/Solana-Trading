@@ -12,6 +12,8 @@
  *   --slippage 0.30           슬리피지 차감률 (default: 0.30)
  *   --risk 0.01               트레이드당 최대 리스크 (default: 0.01)
  *   --daily-loss 0.05         일일 최대 손실률 (default: 0.05)
+ *   --max-drawdown 0.30       HWM 기준 최대 drawdown (default: 0.30)
+ *   --recovery-pct 0.85       거래 재개 회복 비율 (default: 0.85)
  *   --max-losses 3            연속 손실 제한 (default: 3)
  *   --cooldown 30             쿨다운 분 (default: 30)
  *   --start 2024-01-01        시작 날짜
@@ -57,6 +59,8 @@ async function main() {
     slippageDeduction: numArg(args, '--slippage', DEFAULT_BACKTEST_CONFIG.slippageDeduction),
     maxRiskPerTrade: numArg(args, '--risk', DEFAULT_BACKTEST_CONFIG.maxRiskPerTrade),
     maxDailyLoss: numArg(args, '--daily-loss', DEFAULT_BACKTEST_CONFIG.maxDailyLoss),
+    maxDrawdownPct: numArg(args, '--max-drawdown', DEFAULT_BACKTEST_CONFIG.maxDrawdownPct),
+    recoveryPct: numArg(args, '--recovery-pct', DEFAULT_BACKTEST_CONFIG.recoveryPct),
     maxConsecutiveLosses: numArg(args, '--max-losses', DEFAULT_BACKTEST_CONFIG.maxConsecutiveLosses),
     cooldownMinutes: numArg(args, '--cooldown', DEFAULT_BACKTEST_CONFIG.cooldownMinutes),
     minBuyRatio: numArg(args, '--min-buy-ratio', DEFAULT_BACKTEST_CONFIG.minBuyRatio),
@@ -261,6 +265,8 @@ Risk Parameters:
   --slippage 0.30           Slippage deduction ratio (default: 0.30)
   --risk 0.01               Max risk per trade (default: 0.01)
   --daily-loss 0.05         Max daily loss ratio (default: 0.05)
+  --max-drawdown 0.30       Max drawdown from HWM before halt (default: 0.30)
+  --recovery-pct 0.85       Recovery threshold to resume (default: 0.85)
   --max-losses 3            Consecutive loss limit (default: 3)
   --cooldown 30             Cooldown minutes (default: 30)
 

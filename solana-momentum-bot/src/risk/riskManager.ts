@@ -1,6 +1,6 @@
 import { createModuleLogger } from '../utils/logger';
 import {
-  Order, RiskCheckResult, TokenSafety, PortfolioState, SizeConstraint, BreakoutGrade, DrawdownGuardState,
+  RiskCheckResult, TokenSafety, PortfolioState, SizeConstraint, BreakoutGrade, DrawdownGuardState,
 } from '../utils/types';
 import { TradeStore } from '../candle/tradeStore';
 import { checkTokenSafety as evaluateTokenSafety, SafetyGateResult } from '../gate/safetyGate';

@@ -95,6 +95,7 @@ async function migrate() {
         take_profit1    NUMERIC NOT NULL,
         take_profit2    NUMERIC NOT NULL,
         trailing_stop   NUMERIC,
+        high_water_mark NUMERIC,
         time_stop_at    TIMESTAMPTZ,
         created_at      TIMESTAMPTZ DEFAULT now(),
         closed_at       TIMESTAMPTZ
@@ -106,6 +107,13 @@ async function migrate() {
     await safeAddColumn(client, 'trades', 'breakout_grade', 'TEXT');
     await safeAddColumn(client, 'trades', 'size_constraint', 'TEXT');
     await safeAddColumn(client, 'trades', 'exit_reason', 'TEXT');
+    await safeAddColumn(client, 'trades', 'high_water_mark', 'NUMERIC');
+
+    await client.query(`
+      UPDATE trades
+      SET high_water_mark = entry_price
+      WHERE status = 'OPEN' AND high_water_mark IS NULL
+    `);
 
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_trades_status ON trades (status);

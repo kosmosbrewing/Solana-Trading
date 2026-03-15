@@ -1,3 +1,4 @@
+import { EdgeTracker } from '../reporting';
 import { BacktestResult, BacktestTrade } from './types';
 
 /**
@@ -16,7 +17,6 @@ export class BacktestReporter {
     console.log(`  Candles:         ${result.candleCount}`);
     console.log(`  Date Range:      ${fmt(result.dateRange.start)} → ${fmt(result.dateRange.end)}`);
     console.log(`  Initial Balance: ${result.config.initialBalance} SOL`);
-    console.log(`  Slippage Ded.:   ${(result.config.slippageDeduction * 100).toFixed(0)}%`);
     console.log(hr);
 
     // Trade Stats
@@ -50,6 +50,7 @@ export class BacktestReporter {
       rej.cooldown +
       rej.positionOpen +
       rej.zeroSize +
+      rej.executionViability +
       rej.gradeFiltered +
       rej.safetyFiltered;
     if (totalRej > 0) {
@@ -59,6 +60,7 @@ export class BacktestReporter {
       if (rej.cooldown > 0)   console.log(`    Cooldown:      ${rej.cooldown}`);
       if (rej.positionOpen > 0) console.log(`    Position open: ${rej.positionOpen}`);
       if (rej.zeroSize > 0)   console.log(`    Zero size:     ${rej.zeroSize}`);
+      if (rej.executionViability > 0) console.log(`    Exec viability: ${rej.executionViability}`);
       console.log(hr);
     }
 
@@ -66,10 +68,12 @@ export class BacktestReporter {
     const totalGrades = grades.A + grades.B + grades.C;
     if (totalGrades > 0) {
       console.log(`  Grade Dist.:     A=${grades.A} B=${grades.B} C=${grades.C}`);
-      if (rej.gradeFiltered > 0) console.log(`    Grade filtered:${rej.gradeFiltered}`);
-      if (rej.safetyFiltered > 0) console.log(`    Safety filtered:${rej.safetyFiltered}`);
+      if (rej.gradeFiltered > 0) console.log(`    Grade filtered: ${rej.gradeFiltered}`);
+      if (rej.safetyFiltered > 0) console.log(`    Safety filtered: ${rej.safetyFiltered}`);
       console.log(hr);
     }
+
+    this.printEdgeSummary(result.trades);
 
     // Exit Reason Breakdown
     this.printExitBreakdown(result.trades);
@@ -158,14 +162,14 @@ export class BacktestReporter {
    * CSV로 트레이드 로그 내보내기
    */
   exportTradesCsv(trades: BacktestTrade[]): string {
-    const header = 'id,strategy,grade,score,entry_time,exit_time,entry_price,exit_price,quantity,pnl_sol,pnl_pct,exit_reason,bars_held,peak_price';
+    const header = 'id,strategy,grade,score,entry_time,exit_time,entry_price,stop_loss,exit_price,quantity,pnl_sol,pnl_pct,exit_reason,bars_held,peak_price';
     const rows = trades.map(t =>
       [
         t.id, t.strategy,
         t.breakoutGrade ?? '',
         t.breakoutScore ?? '',
         t.entryTime.toISOString(), t.exitTime.toISOString(),
-        t.entryPrice, t.exitPrice, t.quantity,
+        t.entryPrice, t.stopLoss, t.exitPrice, t.quantity,
         t.pnlSol.toFixed(8), (t.pnlPct * 100).toFixed(4),
         t.exitReason, t.exitIdx - t.entryIdx, t.peakPrice,
       ].join(',')
@@ -201,6 +205,34 @@ export class BacktestReporter {
     for (const [reason, count] of Object.entries(counts).sort((a, b) => b[1] - a[1])) {
       console.log(`    ${pad(reason, 16)} ${count} (${pct(count / trades.length)})`);
     }
+  }
+
+  private printEdgeSummary(trades: BacktestTrade[]): void {
+    const edgeTracker = new EdgeTracker(
+      trades.map(trade => ({
+        pairAddress: trade.pairAddress,
+        strategy: trade.strategy,
+        entryPrice: trade.entryPrice,
+        stopLoss: trade.stopLoss,
+        quantity: trade.quantity,
+        pnl: trade.pnlSol,
+      }))
+    );
+    const stats = edgeTracker.getAllStrategyStats().filter(stat => stat.totalTrades > 0);
+    if (stats.length === 0) return;
+
+    console.log(`  EdgeTracker:`);
+    for (const stat of stats) {
+      const rewardRisk = Number.isFinite(stat.rewardRisk) ? stat.rewardRisk.toFixed(2) : 'inf';
+      const kelly = stat.kellyEligible ? `${(stat.kellyFraction * 100).toFixed(1)}%` : 'locked';
+      console.log(
+        `    ${pad(stat.strategy, 14)} ${pad(stat.edgeState, 12)} ` +
+        `WR ${pad(pct(stat.winRate), 9)} RR ${pad(rewardRisk, 6)} ` +
+        `Sharpe ${pad(stat.sharpeRatio.toFixed(2), 6)} ` +
+        `MaxL ${pad(String(stat.maxConsecutiveLosses), 3)} Kelly ${kelly}`
+      );
+    }
+    console.log('  ' + '─'.repeat(60));
   }
 }
 

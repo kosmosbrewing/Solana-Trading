@@ -2,7 +2,7 @@
  * DB 마이그레이션 스크립트 (v0.3)
  * 실행: npx ts-node scripts/migrate.ts
  */
-import { Pool } from 'pg';
+import { Pool, PoolClient } from 'pg';
 import dotenv from 'dotenv';
 import path from 'path';
 import { ensureTradeHighWaterMarkColumn } from '../src/candle/tradeSchema';
@@ -251,7 +251,7 @@ async function migrate() {
 }
 
 async function safeAddColumn(
-  client: any,
+  client: PoolClient,
   table: string,
   column: string,
   type: string

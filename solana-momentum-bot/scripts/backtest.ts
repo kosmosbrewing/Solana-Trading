@@ -9,7 +9,6 @@
  *   --csv-dir ./data          CSV 디렉토리 (source=csv 시)
  *   --strategy a|c|both       전략 선택 (default: both)
  *   --balance 10              초기 잔고 SOL (default: 10)
- *   --slippage 0.30           슬리피지 차감률 (default: 0.30)
  *   --risk 0.01               트레이드당 최대 리스크 (default: 0.01)
  *   --daily-loss 0.05         일일 최대 손실률 (default: 0.05)
  *   --max-drawdown 0.30       HWM 기준 최대 drawdown (default: 0.30)
@@ -26,6 +25,9 @@
  *   --vol-lookback 20         Volume Spike 룩백
  *   --min-buy-ratio 0.65      Gate 최소 매수 비율
  *   --min-score 50            Gate 최소 Breakout Score
+ *   --require-attention-score  Backtest gate에서 AttentionScore 필수화
+ *   --gate-attention-score 75  Backtest 공통 AttentionScore
+ *   --gate-attention-confidence high|medium|low  AttentionScore confidence override
  *   --gate-lp-burned true     Backtest safety input override
  *   --gate-ownership-renounced true  Backtest safety input override
  */
@@ -33,7 +35,18 @@ import { Pool } from 'pg';
 import * as fs from 'fs';
 import path from 'path';
 import dotenv from 'dotenv';
-import { BacktestEngine, BacktestReporter, CsvLoader, DbLoader, BacktestConfig, DEFAULT_BACKTEST_CONFIG } from '../src/backtest';
+import {
+  BacktestEngine,
+  BacktestReporter,
+  BacktestResult,
+  CsvLoader,
+  DbLoader,
+  BacktestConfig,
+  BacktestAttentionScoreEntry,
+  DEFAULT_BACKTEST_CONFIG,
+} from '../src/backtest';
+import type { Candle } from '../src/utils/types';
+import type { AttentionScore } from '../src/event/types';
 
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
@@ -56,7 +69,6 @@ async function main() {
   // Parse config from CLI args
   const config: Partial<BacktestConfig> = {
     initialBalance: numArg(args, '--balance', DEFAULT_BACKTEST_CONFIG.initialBalance),
-    slippageDeduction: numArg(args, '--slippage', DEFAULT_BACKTEST_CONFIG.slippageDeduction),
     maxRiskPerTrade: numArg(args, '--risk', DEFAULT_BACKTEST_CONFIG.maxRiskPerTrade),
     maxDailyLoss: numArg(args, '--daily-loss', DEFAULT_BACKTEST_CONFIG.maxDailyLoss),
     maxDrawdownPct: numArg(args, '--max-drawdown', DEFAULT_BACKTEST_CONFIG.maxDrawdownPct),
@@ -65,6 +77,9 @@ async function main() {
     cooldownMinutes: numArg(args, '--cooldown', DEFAULT_BACKTEST_CONFIG.cooldownMinutes),
     minBuyRatio: numArg(args, '--min-buy-ratio', DEFAULT_BACKTEST_CONFIG.minBuyRatio),
     minBreakoutScore: numArg(args, '--min-score', DEFAULT_BACKTEST_CONFIG.minBreakoutScore),
+    requireAttentionScore: args.includes('--require-attention-score') || args.includes('--require-event-score'),
+    gateAttentionScore: buildGateAttentionScore(pairAddress, args),
+    attentionScoreTimeline: loadAttentionScoreTimeline(getArg(args, '--attention-score-file') ?? getArg(args, '--event-score-file')),
     gatePoolInfo: {
       lpBurned: boolArg(args, '--gate-lp-burned', undefined),
       ownershipRenounced: boolArg(args, '--gate-ownership-renounced', undefined),
@@ -97,7 +112,7 @@ async function main() {
   const exportDir = getArg(args, '--export-csv');
 
   // Load data
-  let candles5m: any[] = [];
+  let candles5m: Candle[] = [];
 
   if (source === 'csv') {
     const csvDir = getArg(args, '--csv-dir') || path.resolve(__dirname, '../data');
@@ -192,7 +207,7 @@ async function main() {
 function exportResults(
   reporter: BacktestReporter,
   dir: string,
-  a: any, c: any, combined: any
+  a: BacktestResult, c: BacktestResult, combined: BacktestResult
 ) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
@@ -218,7 +233,9 @@ function getArg(args: string[], flag: string): string | undefined {
   return idx >= 0 && idx + 1 < args.length ? args[idx + 1] : undefined;
 }
 
-function numArg(args: string[], flag: string, fallback: number | undefined): any {
+function numArg(args: string[], flag: string, fallback: number): number;
+function numArg(args: string[], flag: string, fallback: number | undefined): number | undefined;
+function numArg(args: string[], flag: string, fallback: number | undefined): number | undefined {
   const raw = getArg(args, flag);
   if (raw === undefined) return fallback;
   const num = Number(raw);
@@ -229,7 +246,7 @@ function numArg(args: string[], flag: string, fallback: number | undefined): any
   return num;
 }
 
-function boolArg(args: string[], flag: string, fallback: boolean | undefined): any {
+function boolArg(args: string[], flag: string, fallback: boolean | undefined): boolean | undefined {
   const raw = getArg(args, flag);
   if (raw === undefined) return fallback;
   if (raw === 'true') return true;
@@ -238,7 +255,154 @@ function boolArg(args: string[], flag: string, fallback: boolean | undefined): a
   process.exit(1);
 }
 
-function cleanUndefined(obj: Record<string, any>) {
+function buildGateAttentionScore(pairAddress: string, args: string[]): AttentionScore | undefined {
+  const score = numArg(args, '--gate-attention-score', undefined) ?? numArg(args, '--gate-event-score', undefined);
+  if (score === undefined) return undefined;
+
+  const confidenceArg = getArg(args, '--gate-attention-confidence') ?? getArg(args, '--gate-event-confidence');
+  const confidence = parseConfidence(confidenceArg, score);
+  const nowIso = new Date().toISOString();
+
+  return {
+    tokenMint: pairAddress,
+    tokenSymbol: pairAddress.slice(0, 6).toUpperCase(),
+    attentionScore: score,
+    components: {
+      narrativeStrength: Math.min(30, score),
+      sourceQuality: 10,
+      timing: 10,
+      tokenSpecificity: 10,
+      historicalPattern: Math.max(0, Math.min(15, score - 30)),
+    },
+    narrative: 'Static backtest attention score',
+    sources: ['backtest-cli'],
+    detectedAt: nowIso,
+    expiresAt: nowIso,
+    confidence,
+  };
+}
+
+function parseConfidence(
+  raw: string | undefined,
+  score: number
+): AttentionScore['confidence'] {
+  if (!raw) {
+    if (score >= 70) return 'high';
+    if (score >= 40) return 'medium';
+    return 'low';
+  }
+
+  if (raw === 'high' || raw === 'medium' || raw === 'low') {
+    return raw;
+  }
+
+  console.error(`Invalid value for --gate-attention-confidence: "${raw}"`);
+  process.exit(1);
+  return 'low';
+}
+
+function loadAttentionScoreTimeline(filePath: string | undefined): BacktestAttentionScoreEntry[] | undefined {
+  if (!filePath) return undefined;
+
+  const resolved = path.resolve(filePath);
+  const raw = fs.readFileSync(resolved, 'utf8');
+  const parsed = JSON.parse(raw);
+  if (!Array.isArray(parsed)) {
+    console.error(`Attention score file must be a JSON array: ${resolved}`);
+    process.exit(1);
+  }
+
+  return parsed.map((entry, index) => normalizeAttentionScoreEntry(entry, index, resolved));
+}
+
+function normalizeAttentionScoreEntry(
+  entry: unknown,
+  index: number,
+  sourcePath: string
+): BacktestAttentionScoreEntry {
+  if (!entry || typeof entry !== 'object') {
+    console.error(`Invalid attention score entry at ${sourcePath}[${index}]`);
+    process.exit(1);
+  }
+
+  const candidate = entry as Record<string, unknown>;
+
+  return {
+    pairAddress: typeof candidate.pairAddress === 'string' ? candidate.pairAddress : undefined,
+    tokenMint: readString(candidate.tokenMint, 'tokenMint', index, sourcePath),
+    tokenSymbol: readString(candidate.tokenSymbol, 'tokenSymbol', index, sourcePath),
+    attentionScore: readNumber(candidate.attentionScore ?? candidate.eventScore, 'attentionScore', index, sourcePath),
+    components: normalizeComponents(candidate.components, index, sourcePath),
+    narrative: typeof candidate.narrative === 'string' ? candidate.narrative : 'timeline attention score',
+    sources: Array.isArray(candidate.sources)
+      ? candidate.sources.filter((item): item is string => typeof item === 'string')
+      : ['attention-score-file'],
+    detectedAt: readString(candidate.detectedAt, 'detectedAt', index, sourcePath),
+    expiresAt: readString(candidate.expiresAt, 'expiresAt', index, sourcePath),
+    confidence: readConfidence(candidate.confidence, index, sourcePath),
+  };
+}
+
+function normalizeComponents(
+  value: unknown,
+  _index: number,
+  _sourcePath: string
+): BacktestAttentionScoreEntry['components'] {
+  const fallback = {
+    narrativeStrength: 0,
+    sourceQuality: 0,
+    timing: 0,
+    tokenSpecificity: 0,
+    historicalPattern: 0,
+  };
+  if (!value || typeof value !== 'object') return fallback;
+  const components = value as Record<string, unknown>;
+  return {
+    narrativeStrength: readNumberOrFallback(components.narrativeStrength, 0),
+    sourceQuality: readNumberOrFallback(components.sourceQuality, 0),
+    timing: readNumberOrFallback(components.timing, 0),
+    tokenSpecificity: readNumberOrFallback(components.tokenSpecificity, 0),
+    historicalPattern: readNumberOrFallback(components.historicalPattern, 0),
+  };
+}
+
+function readString(
+  value: unknown,
+  field: string,
+  index: number,
+  sourcePath: string
+): string {
+  if (typeof value === 'string' && value.length > 0) return value;
+  console.error(`Invalid ${field} at ${sourcePath}[${index}]`);
+  process.exit(1);
+}
+
+function readNumber(
+  value: unknown,
+  field: string,
+  index: number,
+  sourcePath: string
+): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  console.error(`Invalid ${field} at ${sourcePath}[${index}]`);
+  process.exit(1);
+}
+
+function readNumberOrFallback(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function readConfidence(
+  value: unknown,
+  index: number,
+  sourcePath: string
+): AttentionScore['confidence'] {
+  if (value === 'high' || value === 'medium' || value === 'low') return value;
+  console.error(`Invalid confidence at ${sourcePath}[${index}]`);
+  process.exit(1);
+}
+
+function cleanUndefined(obj: Record<string, unknown>) {
   for (const key of Object.keys(obj)) {
     if (obj[key] === undefined) delete obj[key];
   }
@@ -262,7 +426,6 @@ Strategy:
 
 Risk Parameters:
   --balance 10              Initial balance in SOL (default: 10)
-  --slippage 0.30           Slippage deduction ratio (default: 0.30)
   --risk 0.01               Max risk per trade (default: 0.01)
   --daily-loss 0.05         Max daily loss ratio (default: 0.05)
   --max-drawdown 0.30       Max drawdown from HWM before halt (default: 0.30)
@@ -277,6 +440,10 @@ Strategy Parameters:
   --min-score 50            Gate minimum breakout score
 
 Gate Overrides:
+  --require-attention-score  Require AttentionScore in backtest gate
+  --gate-attention-score 75  Use a static AttentionScore for gate scoring
+  --gate-attention-confidence high|medium|low Override confidence level
+  --attention-score-file ./scores.json Use time-series AttentionScore JSON
   --gate-tvl 50000          Override gate pool TVL
   --gate-token-age-hours 24 Override gate token age hours
   --gate-top10-holder-pct 0.8 Override gate top10 holder concentration

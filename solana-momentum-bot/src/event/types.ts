@@ -1,6 +1,6 @@
 import { BirdeyeTrendingToken } from '../ingester/birdeyeClient';
 
-export interface EventScoreComponents {
+export interface AttentionScoreComponents {
   narrativeStrength: number;
   sourceQuality: number;
   timing: number;
@@ -8,11 +8,11 @@ export interface EventScoreComponents {
   historicalPattern: number;
 }
 
-export interface EventScore {
+export interface AttentionScore {
   tokenMint: string;
   tokenSymbol: string;
-  eventScore: number;
-  components: EventScoreComponents;
+  attentionScore: number;
+  components: AttentionScoreComponents;
   narrative: string;
   sources: string[];
   detectedAt: string;
@@ -20,10 +20,18 @@ export interface EventScore {
   confidence: 'low' | 'medium' | 'high';
 }
 
-export interface EventScorerConfig {
+/** @deprecated use AttentionScoreComponents */
+export type EventScoreComponents = AttentionScoreComponents;
+/** @deprecated use AttentionScore */
+export type EventScore = AttentionScore;
+
+export interface AttentionScorerConfig {
   expiryMinutes: number;
   minLiquidityUsd: number;
 }
+
+/** @deprecated use AttentionScorerConfig */
+export type EventScorerConfig = AttentionScorerConfig;
 
 export interface TrendingFetcherConfig {
   limit: number;
@@ -31,7 +39,7 @@ export interface TrendingFetcherConfig {
 
 export interface EventMonitorConfig {
   pollingIntervalMs: number;
-  minEventScore: number;
+  minAttentionScore: number;
   fetchLimit: number;
   expiryMinutes: number;
   minLiquidityUsd: number;

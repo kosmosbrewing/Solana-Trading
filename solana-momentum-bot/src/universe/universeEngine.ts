@@ -8,7 +8,6 @@ import {
   staticFilter,
   dynamicFilter,
   checkPoolHealth,
-  PoolEvent,
 } from './filters';
 import { rankPools } from './ranker';
 
@@ -128,7 +127,8 @@ export class UniverseEngine extends EventEmitter {
         tvl: Number(overview.liquidity || 0),
         dailyVolume: Number(overview.v24hUSD || 0),
         tradeCount24h: Number(overview.trade24h || 0),
-        spreadPct: 0, // Birdeye doesn't directly provide this
+        spreadPct: await this.estimateSpreadProxy(pairAddress),
+        ammFeePct: this.pickNumber(overview.feeRate, overview.swapFee, overview.tradeFeePercent),
         tokenAgeHours: this.calcTokenAge(overview.createdAt as number | undefined),
         top10HolderPct: Number(security?.top10HolderPercent || 0),
         lpBurned: !!(security?.isLpBurned),
@@ -143,5 +143,44 @@ export class UniverseEngine extends EventEmitter {
   private calcTokenAge(createdAtUnix: number | undefined): number {
     if (!createdAtUnix) return 999;
     return (Date.now() / 1000 - createdAtUnix) / 3600;
+  }
+
+  private async estimateSpreadProxy(pairAddress: string): Promise<number> {
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      const candles = await this.birdeyeClient.getOHLCV(
+        pairAddress,
+        '1m',
+        now - 180,
+        now
+      );
+      if (candles.length === 0) return 0;
+
+      const proxyValues = candles
+        .slice(-3)
+        .map(candle => candle.close > 0 ? Math.max(0, (candle.high - candle.low) / candle.close) : 0)
+        .filter(value => Number.isFinite(value));
+      if (proxyValues.length === 0) return 0;
+
+      proxyValues.sort((a, b) => a - b);
+      return proxyValues[Math.floor(proxyValues.length / 2)];
+    } catch {
+      return 0;
+    }
+  }
+
+  private pickNumber(...values: unknown[]): number | undefined {
+    for (const value of values) {
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        return value > 1 ? value / 100 : value;
+      }
+      if (typeof value === 'string' && value.trim().length > 0) {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) {
+          return parsed > 1 ? parsed / 100 : parsed;
+        }
+      }
+    }
+    return undefined;
   }
 }

@@ -1,4 +1,4 @@
-import { EventScorer } from '../src/event/eventScorer';
+import { AttentionScorer } from '../src/event/eventScorer';
 import { TrendingEventCandidate } from '../src/event/types';
 
 function buildCandidate(overrides: Partial<TrendingEventCandidate> = {}): TrendingEventCandidate {
@@ -20,8 +20,8 @@ function buildCandidate(overrides: Partial<TrendingEventCandidate> = {}): Trendi
   };
 }
 
-describe('EventScorer', () => {
-  const scorer = new EventScorer({
+describe('AttentionScorer', () => {
+  const scorer = new AttentionScorer({
     expiryMinutes: 180,
     minLiquidityUsd: 25_000,
   });
@@ -29,7 +29,7 @@ describe('EventScorer', () => {
   it('assigns a high score to strong, fresh trending tokens', () => {
     const score = scorer.score(buildCandidate());
 
-    expect(score.eventScore).toBeGreaterThanOrEqual(70);
+    expect(score.attentionScore).toBeGreaterThanOrEqual(70);
     expect(score.confidence).toBe('high');
     expect(score.components.narrativeStrength).toBeGreaterThanOrEqual(20);
     expect(score.tokenSymbol).toBe('TEST');
@@ -45,7 +45,7 @@ describe('EventScorer', () => {
       updatedAt: new Date(Date.now() - 8 * 60 * 60_000).toISOString(),
     }));
 
-    expect(score.eventScore).toBeLessThan(40);
+    expect(score.attentionScore).toBeLessThan(40);
     expect(score.confidence).toBe('low');
     expect(score.components.timing).toBeLessThanOrEqual(3);
   });
@@ -64,6 +64,6 @@ describe('EventScorer', () => {
     expect(score.components.timing).toBeLessThanOrEqual(20);
     expect(score.components.tokenSpecificity).toBeLessThanOrEqual(15);
     expect(score.components.historicalPattern).toBeLessThanOrEqual(15);
-    expect(score.eventScore).toBeLessThanOrEqual(100);
+    expect(score.attentionScore).toBeLessThanOrEqual(100);
   });
 });

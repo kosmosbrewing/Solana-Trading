@@ -15,14 +15,6 @@ function optional(key: string, fallback: string): string {
   return process.env[key] || fallback;
 }
 
-function numRequired(key: string): number {
-  const raw = required(key);
-  const num = Number(raw);
-  if (Number.isNaN(num)) {
-    throw new Error(`Env var ${key} is not a valid number: "${raw}"`);
-  }
-  return num;
-}
 
 function numOptional(key: string, fallback: number): number {
   const v = process.env[key];
@@ -96,6 +88,8 @@ export const config = {
   maxSlippage: numOptional('MAX_SLIPPAGE', 0.01),
   maxPoolImpact: numOptional('MAX_POOL_IMPACT', 0.02),
   emergencyHaircut: numOptional('EMERGENCY_HAIRCUT', 0.50),
+  defaultAmmFeePct: numOptional('DEFAULT_AMM_FEE_PCT', 0.005),
+  defaultMevMarginPct: numOptional('DEFAULT_MEV_MARGIN_PCT', 0.0015),
 
   // Risk
   maxDailyLoss: numOptional('MAX_DAILY_LOSS', 0.05),

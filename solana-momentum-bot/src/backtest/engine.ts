@@ -1,13 +1,19 @@
+import { AttentionScore } from '../event/types';
 import { BreakoutGrade, Candle, Order, PoolInfo, Signal, StrategyName } from '../utils/types';
-import { evaluateGates } from '../gate';
+import { evaluateGates, evaluateExecutionViabilityForOrder } from '../gate';
 import { checkTokenSafety } from '../gate/safetyGate';
 import { getGradeSizeMultiplier } from '../gate/sizingGate';
 import { createDrawdownGuardState, updateDrawdownGuardState } from '../risk/drawdownGuard';
+import { resolveRiskTierProfile, RiskTierProfile } from '../risk';
+import { EdgeTracker } from '../reporting';
 import {
   evaluateVolumeSpikeBreakout,
   buildVolumeSpikeOrder,
   evaluateFibPullback,
   buildFibPullbackOrder,
+  calcATR,
+  calcAdaptiveTrailingStop,
+  checkExhaustion,
 } from '../strategy';
 import {
   BacktestConfig,
@@ -28,16 +34,25 @@ interface RiskState {
   currentDay: string;          // YYYY-MM-DD
   positionOpen: boolean;
   drawdownGuard: ReturnType<typeof createDrawdownGuardState>;
-  rejections: {
-    dailyLimit: number;
-    drawdownHalt: number;
-    cooldown: number;
-    positionOpen: number;
-    zeroSize: number;
-    gradeFiltered: number;
-    safetyFiltered: number;
-  };
+  edgeTracker: EdgeTracker;
+  riskTier: RiskTierProfile;
+      rejections: {
+        dailyLimit: number;
+        drawdownHalt: number;
+        cooldown: number;
+        positionOpen: number;
+        zeroSize: number;
+        executionViability: number;
+        gradeFiltered: number;
+        safetyFiltered: number;
+      };
   gradeDistribution: Record<BreakoutGrade, number>;
+}
+
+interface CandidateTrade {
+  signal: Signal;
+  candles: Candle[];
+  timeStopMinutes: number;
 }
 
 function resetDailyState(state: RiskState, day: string): void {
@@ -78,16 +93,7 @@ export class BacktestEngine {
       ? (this.config.fibPullbackParams.timeStopMinutes ?? 60)
       : (this.config.volumeSpikeParams.timeStopMinutes ?? 30);
 
-    const riskState: RiskState = {
-      balance: this.config.initialBalance,
-      dailyPnl: 0,
-      consecutiveLosses: 0,
-      currentDay: dateKey(filtered[0].timestamp),
-      positionOpen: false,
-      drawdownGuard: createDrawdownGuardState(this.config.initialBalance),
-      rejections: { dailyLimit: 0, drawdownHalt: 0, cooldown: 0, positionOpen: 0, zeroSize: 0, gradeFiltered: 0, safetyFiltered: 0 },
-      gradeDistribution: { A: 0, B: 0, C: 0 },
-    };
+    const riskState = this.createInitialRiskState(filtered[0].timestamp);
 
     const trades: BacktestTrade[] = [];
     const equityCurve: EquityPoint[] = [
@@ -112,7 +118,11 @@ export class BacktestEngine {
       riskState.gradeDistribution[gateResult.breakoutScore.grade]++;
 
       if (gateResult.rejected) {
-        riskState.rejections.gradeFiltered++;
+        if (gateResult.filterReason?.startsWith('poor_execution_viability')) {
+          riskState.rejections.executionViability++;
+        } else {
+          riskState.rejections.gradeFiltered++;
+        }
         continue;
       }
 
@@ -145,38 +155,41 @@ export class BacktestEngine {
         order.breakoutGrade = signal.breakoutScore.grade;
       }
 
-      const quantity = this.calculatePositionSize(riskState, order, safetyMultiplier);
+      const quantity = this.calculatePositionSize(
+        riskState,
+        order,
+        safetyMultiplier * gateResult.gradeSizeMultiplier
+      );
       if (quantity <= 0) {
+        riskState.positionOpen = false;
         riskState.rejections.zeroSize++;
         continue;
       }
       order.quantity = quantity;
+      const gatePoolInfo = this.buildGatePoolInfo(pairAddress);
+      const actualExecution = evaluateExecutionViabilityForOrder(order, gatePoolInfo.tvl, {
+        ammFeePct: gatePoolInfo.ammFeePct,
+        mevMarginPct: gatePoolInfo.mevMarginPct,
+      });
+      if (actualExecution.rejected) {
+        riskState.positionOpen = false;
+        riskState.rejections.executionViability++;
+        continue;
+      }
+      if (actualExecution.sizeMultiplier < 1) {
+        order.quantity *= actualExecution.sizeMultiplier;
+      }
 
       // Simulate trade
       const trade = this.simulateTrade(
         order, filtered, i, timeStopMinutes, ++tradeId, strategy, pairAddress
       );
-      if (!trade) continue;
-
-      // Apply trade result
-      riskState.positionOpen = false;
-      riskState.balance += trade.pnlSol;
-      riskState.dailyPnl += trade.pnlSol;
-      riskState.drawdownGuard = updateDrawdownGuardState(
-        riskState.drawdownGuard,
-        riskState.balance,
-        {
-          maxDrawdownPct: this.config.maxDrawdownPct,
-          recoveryPct: this.config.recoveryPct,
-        }
-      );
-
-      if (trade.pnlSol < 0) {
-        riskState.consecutiveLosses++;
-        riskState.lastLossTime = trade.exitTime;
-      } else {
-        riskState.consecutiveLosses = 0;
+      if (!trade) {
+        riskState.positionOpen = false;
+        continue;
       }
+
+      this.applyCompletedTrade(riskState, trade, 'strategy');
 
       trades.push(trade);
       equityCurve.push({
@@ -207,62 +220,63 @@ export class BacktestEngine {
   ): { strategyA: BacktestResult; strategyC: BacktestResult; combined: BacktestResult } {
     const strategyA = this.run(candles5m, 'volume_spike', pairAddress);
     const strategyC = this.run(candles5m, 'fib_pullback', pairAddress);
+    const filtered = this.filterByDateRange(candles5m);
+    if (filtered.length === 0) {
+      return {
+        strategyA,
+        strategyC,
+        combined: this.emptyResult('combined', pairAddress),
+      };
+    }
 
-    // Merge trades chronologically for combined stats
-    const allTrades = [...strategyA.trades, ...strategyC.trades]
-      .sort((a, b) => a.entryTime.getTime() - b.entryTime.getTime());
-
-    // Rebuild equity curve from merged trades
-    const riskState: RiskState = {
-      balance: this.config.initialBalance,
-      dailyPnl: 0,
-      consecutiveLosses: 0,
-      currentDay: '',
-      positionOpen: false,
-      drawdownGuard: createDrawdownGuardState(this.config.initialBalance),
-      rejections: {
-        dailyLimit: strategyA.rejections.dailyLimit + strategyC.rejections.dailyLimit,
-        drawdownHalt: strategyA.rejections.drawdownHalt + strategyC.rejections.drawdownHalt,
-        cooldown: strategyA.rejections.cooldown + strategyC.rejections.cooldown,
-        positionOpen: strategyA.rejections.positionOpen + strategyC.rejections.positionOpen,
-        zeroSize: strategyA.rejections.zeroSize + strategyC.rejections.zeroSize,
-        gradeFiltered: strategyA.rejections.gradeFiltered + strategyC.rejections.gradeFiltered,
-        safetyFiltered: strategyA.rejections.safetyFiltered + strategyC.rejections.safetyFiltered,
-      },
-      gradeDistribution: {
-        A: strategyA.gradeDistribution.A + strategyC.gradeDistribution.A,
-        B: strategyA.gradeDistribution.B + strategyC.gradeDistribution.B,
-        C: strategyA.gradeDistribution.C + strategyC.gradeDistribution.C,
-      },
-    };
-
+    const riskState = this.createInitialRiskState(filtered[0].timestamp);
+    const trades: BacktestTrade[] = [];
     const equityCurve: EquityPoint[] = [{
-      timestamp: allTrades[0]?.entryTime ?? new Date(),
+      timestamp: filtered[0].timestamp,
       equity: this.config.initialBalance,
       drawdown: 0,
     }];
+    let tradeId = 0;
 
-    for (const t of allTrades) {
-      riskState.balance += t.pnlSol;
-      riskState.drawdownGuard = updateDrawdownGuardState(
-        riskState.drawdownGuard,
-        riskState.balance,
-        {
-          maxDrawdownPct: this.config.maxDrawdownPct,
-          recoveryPct: this.config.recoveryPct,
+    for (let i = 21; i < filtered.length; i++) {
+      resetDailyState(riskState, dateKey(filtered[i].timestamp));
+      const candidates = this.buildCombinedCandidates(filtered, i);
+      if (candidates.length === 0) continue;
+
+      for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
+        const candidate = candidates[candidateIndex];
+        const trade = this.attemptCandidateTrade(
+          riskState,
+          candidate,
+          filtered,
+          i,
+          pairAddress,
+          ++tradeId,
+          'portfolio'
+        );
+        if (!trade) {
+          tradeId--;
+          continue;
         }
-      );
-      equityCurve.push({
-        timestamp: t.exitTime,
-        equity: riskState.balance,
-        drawdown: 0,
-        tradeId: t.id,
-      });
+
+        trades.push(trade);
+        equityCurve.push({
+          timestamp: trade.exitTime,
+          equity: riskState.balance,
+          drawdown: 0,
+          tradeId: trade.id,
+        });
+        if (candidateIndex < candidates.length - 1) {
+          riskState.rejections.positionOpen += candidates.length - candidateIndex - 1;
+        }
+        if (trade.exitIdx > i) i = trade.exitIdx;
+        break;
+      }
     }
     this.calcEquityDrawdowns(equityCurve);
 
     const combined = this.buildResult(
-      'combined', pairAddress, candles5m, allTrades, equityCurve, riskState
+      'combined', pairAddress, filtered, trades, equityCurve, riskState
     );
 
     return { strategyA, strategyC, combined };
@@ -277,7 +291,7 @@ export class BacktestEngine {
   ): keyof RiskState['rejections'] | null {
     if (state.positionOpen) return 'positionOpen';
 
-    const maxLoss = state.balance * this.config.maxDailyLoss;
+    const maxLoss = state.balance * state.riskTier.maxDailyLoss;
     if (state.dailyPnl < -maxLoss) return 'dailyLimit';
 
     if (state.drawdownGuard.halted) return 'drawdownHalt';
@@ -298,7 +312,7 @@ export class BacktestEngine {
   // ─── Private: Position Sizing ───
 
   private calculatePositionSize(state: RiskState, order: Order, safetyMultiplier: number): number {
-    const maxRisk = state.balance * this.config.maxRiskPerTrade;
+    const maxRisk = state.balance * state.riskTier.maxRiskPerTrade;
     const riskPerUnit = Math.abs(order.price - order.stopLoss);
     if (riskPerUnit <= 0) return 0;
 
@@ -336,9 +350,19 @@ export class BacktestEngine {
 
     for (let i = entryIdx + 1; i < candles.length; i++) {
       const c = candles[i];
+      const monitorCandles = candles.slice(Math.max(0, i - 9), i + 1);
+      const currentPrice = c.close;
 
       // Update peak for trailing stop
       if (c.high > peakPrice) peakPrice = c.high;
+
+      // Time Stop — live loop와 동일하게 최우선 체크
+      if (c.timestamp >= timeStopAt) {
+        return this.makeTrade(
+          id, strategy, pairAddress, order, entryIdx, i,
+          currentPrice, 'TIME_STOP', entryCandle, c, peakPrice, realizedPnlSol, realizedExitValue, remainingQuantity
+        );
+      }
 
       // Stop Loss — 같은 봉에서 SL과 TP 동시 도달 가능 시 SL 우선 (보수적)
       if (c.low <= order.stopLoss) {
@@ -346,18 +370,6 @@ export class BacktestEngine {
           id, strategy, pairAddress, order, entryIdx, i,
           order.stopLoss, 'STOP_LOSS', entryCandle, c, peakPrice, realizedPnlSol, realizedExitValue, remainingQuantity
         );
-      }
-
-      // Trailing Stop (only after TP1) — TP2보다 먼저 체크하여 보수적 평가
-      if (tp1Hit && trailingStop && trailingStop > 0) {
-        const trailingStopPrice = peakPrice - trailingStop;
-        if (c.low <= trailingStopPrice) {
-          const exitPrice = Math.max(trailingStopPrice, order.stopLoss);
-          return this.makeTrade(
-            id, strategy, pairAddress, order, entryIdx, i,
-            exitPrice, 'TRAILING_STOP', entryCandle, c, peakPrice, realizedPnlSol, realizedExitValue, remainingQuantity
-          );
-        }
       }
 
       // Take Profit 2
@@ -378,12 +390,27 @@ export class BacktestEngine {
         order.stopLoss = entryPrice;
       }
 
-      // Time Stop
-      if (c.timestamp >= timeStopAt) {
-        return this.makeTrade(
-          id, strategy, pairAddress, order, entryIdx, i,
-          c.close, 'TIME_STOP', entryCandle, c, peakPrice, realizedPnlSol, realizedExitValue, remainingQuantity
-        );
+      // Exhaustion Exit — live loop와 같이 수익 구간에서만 청산
+      if (monitorCandles.length >= 2) {
+        const { exhausted } = checkExhaustion(monitorCandles, 2);
+        if (exhausted && currentPrice > entryPrice) {
+          return this.makeTrade(
+            id, strategy, pairAddress, order, entryIdx, i,
+            currentPrice, 'EXHAUSTION', entryCandle, c, peakPrice, realizedPnlSol, realizedExitValue, remainingQuantity
+          );
+        }
+      }
+
+      // Adaptive trailing — live와 동일하게 최근 10봉/ATR(7)/RSI 기반
+      if (trailingStop && monitorCandles.length >= 8) {
+        const atr = calcATR(monitorCandles, 7);
+        const adaptiveStop = calcAdaptiveTrailingStop(monitorCandles, atr, entryPrice, peakPrice);
+        if (currentPrice <= adaptiveStop && currentPrice > order.stopLoss) {
+          return this.makeTrade(
+            id, strategy, pairAddress, order, entryIdx, i,
+            currentPrice, 'TRAILING_STOP', entryCandle, c, peakPrice, realizedPnlSol, realizedExitValue, remainingQuantity
+          );
+        }
       }
     }
 
@@ -426,6 +453,7 @@ export class BacktestEngine {
       breakoutScore: order.breakoutScore,
       breakoutGrade: order.breakoutGrade,
       entryPrice: order.price,
+      stopLoss: order.stopLoss,
       exitPrice: avgExitPrice,
       quantity: order.quantity,
       pnlSol: totalPnlSol,
@@ -533,7 +561,7 @@ export class BacktestEngine {
     });
   }
 
-  private emptyResult(strategy: StrategyName, pairAddress: string): BacktestResult {
+  private emptyResult(strategy: StrategyName | 'combined', pairAddress: string): BacktestResult {
     return {
       config: this.config,
       pairAddress,
@@ -556,7 +584,7 @@ export class BacktestEngine {
       largestWin: 0,
       largestLoss: 0,
       avgHoldingBars: 0,
-      rejections: { dailyLimit: 0, drawdownHalt: 0, cooldown: 0, positionOpen: 0, zeroSize: 0, gradeFiltered: 0, safetyFiltered: 0 },
+      rejections: { dailyLimit: 0, drawdownHalt: 0, cooldown: 0, positionOpen: 0, zeroSize: 0, executionViability: 0, gradeFiltered: 0, safetyFiltered: 0 },
       gradeDistribution: { A: 0, B: 0, C: 0 },
       trades: [],
       equityCurve: [],
@@ -566,6 +594,11 @@ export class BacktestEngine {
 
   private evaluateSignalGates(signal: Signal, candles: Candle[], pairAddress: string) {
     const poolInfo = this.buildGatePoolInfo(pairAddress);
+    const timelineScore = this.resolveTimelineAttentionScore(
+      pairAddress,
+      poolInfo.tokenMint,
+      candles[candles.length - 1]?.timestamp
+    );
     return evaluateGates({
       signal,
       candles,
@@ -580,6 +613,8 @@ export class BacktestEngine {
         minBuyRatio: this.config.minBuyRatio,
         minBreakoutScore: this.config.minBreakoutScore,
       },
+      attentionScore: timelineScore ?? this.config.gateAttentionScore ?? this.config.gateEventScore,
+      requireAttentionScore: this.config.requireAttentionScore ?? this.config.requireEventScore,
     });
   }
 
@@ -592,6 +627,8 @@ export class BacktestEngine {
       dailyVolume: gatePoolInfo.dailyVolume ?? 0,
       tradeCount24h: gatePoolInfo.tradeCount24h ?? 0,
       spreadPct: gatePoolInfo.spreadPct ?? 0,
+      ammFeePct: gatePoolInfo.ammFeePct,
+      mevMarginPct: gatePoolInfo.mevMarginPct,
       tokenAgeHours: gatePoolInfo.tokenAgeHours ?? this.config.minTokenAgeHours,
       top10HolderPct: gatePoolInfo.top10HolderPct ?? this.config.maxHolderConcentration,
       lpBurned: gatePoolInfo.lpBurned ?? false,
@@ -603,7 +640,225 @@ export class BacktestEngine {
   private calcNetPnlSol(entryPrice: number, exitPrice: number, quantity: number): number {
     if (quantity <= 0 || entryPrice <= 0) return 0;
     const rawPnlPct = (exitPrice - entryPrice) / entryPrice;
-    const netPnlPct = rawPnlPct * (1 - this.config.slippageDeduction);
-    return netPnlPct * quantity * entryPrice;
+    return rawPnlPct * quantity * entryPrice;
+  }
+
+  private resolveTimelineAttentionScore(
+    pairAddress: string,
+    tokenMint: string,
+    timestamp?: Date
+  ): AttentionScore | undefined {
+    const timeline = this.config.attentionScoreTimeline ?? this.config.eventScoreTimeline;
+    if (!timestamp || !timeline || timeline.length === 0) {
+      return undefined;
+    }
+
+    const targetTime = timestamp.getTime();
+    let matched: AttentionScore | undefined;
+    let matchedDetectedAt = Number.NEGATIVE_INFINITY;
+
+    for (const entry of timeline) {
+      const matchesPair = !entry.pairAddress || entry.pairAddress === pairAddress;
+      const matchesMint = !entry.tokenMint || entry.tokenMint === tokenMint || entry.tokenMint === pairAddress;
+      if (!matchesPair || !matchesMint) continue;
+
+      const detectedAt = Date.parse(entry.detectedAt);
+      const expiresAt = Date.parse(entry.expiresAt);
+      if (Number.isNaN(detectedAt) || Number.isNaN(expiresAt)) continue;
+      if (targetTime < detectedAt || targetTime > expiresAt) continue;
+      if (detectedAt >= matchedDetectedAt) {
+        matched = entry;
+        matchedDetectedAt = detectedAt;
+      }
+    }
+
+    return matched;
+  }
+
+  private createInitialRiskState(firstTimestamp: Date): RiskState {
+    return {
+      balance: this.config.initialBalance,
+      dailyPnl: 0,
+      consecutiveLosses: 0,
+      currentDay: dateKey(firstTimestamp),
+      positionOpen: false,
+      drawdownGuard: createDrawdownGuardState(this.config.initialBalance),
+      edgeTracker: new EdgeTracker(),
+      riskTier: resolveRiskTierProfile({
+        edgeState: 'Bootstrap',
+        kellyFraction: 0,
+        kellyEligible: false,
+      }, this.config.recoveryPct),
+      rejections: {
+        dailyLimit: 0,
+        drawdownHalt: 0,
+        cooldown: 0,
+        positionOpen: 0,
+        zeroSize: 0,
+        executionViability: 0,
+        gradeFiltered: 0,
+        safetyFiltered: 0,
+      },
+      gradeDistribution: { A: 0, B: 0, C: 0 },
+    };
+  }
+
+  private buildCombinedCandidates(candles: Candle[], index: number): CandidateTrade[] {
+    const candidates: CandidateTrade[] = [];
+    const volumeWindow = candles.slice(Math.max(0, index - 21), index + 1);
+    if (volumeWindow.length >= 22) {
+      const signal = evaluateVolumeSpikeBreakout(volumeWindow, this.config.volumeSpikeParams);
+      if (signal.action === 'BUY') {
+        candidates.push({
+          signal,
+          candles: volumeWindow,
+          timeStopMinutes: this.config.volumeSpikeParams.timeStopMinutes ?? 30,
+        });
+      }
+    }
+
+    const fibWindow = candles.slice(Math.max(0, index - 28), index + 1);
+    if (fibWindow.length >= 29) {
+      const signal = evaluateFibPullback(fibWindow, this.config.fibPullbackParams);
+      if (signal.action === 'BUY') {
+        candidates.push({
+          signal,
+          candles: fibWindow,
+          timeStopMinutes: this.config.fibPullbackParams.timeStopMinutes ?? 60,
+        });
+      }
+    }
+
+    return candidates;
+  }
+
+  private attemptCandidateTrade(
+    riskState: RiskState,
+    candidate: CandidateTrade,
+    allCandles: Candle[],
+    currentIndex: number,
+    pairAddress: string,
+    tradeId: number,
+    riskMode: 'strategy' | 'portfolio'
+  ): BacktestTrade | null {
+    let safetyMultiplier = 1.0;
+    const gateResult = this.evaluateSignalGates(candidate.signal, candidate.candles, pairAddress);
+    candidate.signal.breakoutScore = gateResult.breakoutScore;
+    riskState.gradeDistribution[gateResult.breakoutScore.grade]++;
+
+    if (gateResult.rejected) {
+      if (gateResult.filterReason?.startsWith('poor_execution_viability')) {
+        riskState.rejections.executionViability++;
+      } else {
+        riskState.rejections.gradeFiltered++;
+      }
+      return null;
+    }
+
+    if (gateResult.tokenSafety) {
+      const safetyResult = checkTokenSafety(gateResult.tokenSafety, {
+        minPoolLiquidity: this.config.minPoolLiquidity,
+        minTokenAgeHours: this.config.minTokenAgeHours,
+        maxHolderConcentration: this.config.maxHolderConcentration,
+      });
+      if (!safetyResult.approved) {
+        riskState.rejections.safetyFiltered++;
+        return null;
+      }
+      safetyMultiplier = safetyResult.sizeMultiplier;
+    }
+
+    const rejection = this.checkRisk(riskState, candidate.signal, allCandles[currentIndex]);
+    if (rejection) {
+      riskState.rejections[rejection]++;
+      return null;
+    }
+
+    const order = candidate.signal.strategy === 'fib_pullback'
+      ? buildFibPullbackOrder(candidate.signal, candidate.candles, 0, this.config.fibPullbackParams)
+      : buildVolumeSpikeOrder(candidate.signal, candidate.candles, 0, this.config.volumeSpikeParams);
+    if (candidate.signal.breakoutScore) {
+      order.breakoutScore = candidate.signal.breakoutScore.totalScore;
+      order.breakoutGrade = candidate.signal.breakoutScore.grade;
+    }
+
+    const quantity = this.calculatePositionSize(
+      riskState,
+      order,
+      safetyMultiplier * gateResult.gradeSizeMultiplier
+    );
+    if (quantity <= 0) {
+      riskState.positionOpen = false;
+      riskState.rejections.zeroSize++;
+      return null;
+    }
+    order.quantity = quantity;
+
+    const gatePoolInfo = this.buildGatePoolInfo(pairAddress);
+    const actualExecution = evaluateExecutionViabilityForOrder(order, gatePoolInfo.tvl, {
+      ammFeePct: gatePoolInfo.ammFeePct,
+      mevMarginPct: gatePoolInfo.mevMarginPct,
+    });
+    if (actualExecution.rejected) {
+      riskState.positionOpen = false;
+      riskState.rejections.executionViability++;
+      return null;
+    }
+    if (actualExecution.sizeMultiplier < 1) {
+      order.quantity *= actualExecution.sizeMultiplier;
+    }
+
+    const trade = this.simulateTrade(
+      order,
+      allCandles,
+      currentIndex,
+      candidate.timeStopMinutes,
+      tradeId,
+      candidate.signal.strategy,
+      pairAddress
+    );
+    if (!trade) {
+      riskState.positionOpen = false;
+      return null;
+    }
+
+    this.applyCompletedTrade(riskState, trade, riskMode);
+    return trade;
+  }
+
+  private applyCompletedTrade(
+    riskState: RiskState,
+    trade: BacktestTrade,
+    riskMode: 'strategy' | 'portfolio'
+  ): void {
+    riskState.positionOpen = false;
+    riskState.balance += trade.pnlSol;
+    riskState.dailyPnl += trade.pnlSol;
+    riskState.edgeTracker.recordTrade({
+      pairAddress: trade.pairAddress,
+      strategy: trade.strategy,
+      entryPrice: trade.entryPrice,
+      stopLoss: trade.stopLoss,
+      quantity: trade.quantity,
+      pnl: trade.pnlSol,
+    });
+    riskState.riskTier = resolveRiskTierProfile(
+      riskMode === 'portfolio'
+        ? riskState.edgeTracker.getPortfolioStats()
+        : riskState.edgeTracker.getStrategyStats(trade.strategy),
+      this.config.recoveryPct
+    );
+    riskState.drawdownGuard = updateDrawdownGuardState(
+      riskState.drawdownGuard,
+      riskState.balance,
+      riskState.riskTier
+    );
+
+    if (trade.pnlSol < 0) {
+      riskState.consecutiveLosses++;
+      riskState.lastLossTime = trade.exitTime;
+    } else {
+      riskState.consecutiveLosses = 0;
+    }
   }
 }

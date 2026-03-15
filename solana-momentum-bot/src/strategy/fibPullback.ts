@@ -348,7 +348,6 @@ function analyzePullback(
 function calcLowerWickRatio(candle: Candle): number {
   const range = candle.high - candle.low;
   if (range <= 0) return 0;
-  const body = Math.abs(candle.close - candle.open);
   const lowerWick = Math.min(candle.open, candle.close) - candle.low;
   return lowerWick / range;
 }

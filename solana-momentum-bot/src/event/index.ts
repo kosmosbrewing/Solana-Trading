@@ -1,18 +1,18 @@
 import { EventEmitter } from 'events';
 import { BirdeyeClient } from '../ingester';
 import { createModuleLogger } from '../utils/logger';
-import { EventMonitorConfig, EventScore } from './types';
-import { EventScorer } from './eventScorer';
+import { EventMonitorConfig, AttentionScore } from './types';
+import { AttentionScorer } from './eventScorer';
 import { TrendingFetcher } from './trendingFetcher';
 
 const log = createModuleLogger('EventMonitor');
 
 export class EventMonitor extends EventEmitter {
   private readonly fetcher: TrendingFetcher;
-  private readonly scorer: EventScorer;
+  private readonly scorer: AttentionScorer;
   private timer?: NodeJS.Timeout;
-  // tokenMint → 최신 EventScore (만료 관리 포함)
-  private readonly latestScores = new Map<string, EventScore>();
+  // tokenMint → 최신 AttentionScore (만료 관리 포함)
+  private readonly latestScores = new Map<string, AttentionScore>();
 
   constructor(
     birdeyeClient: BirdeyeClient,
@@ -20,14 +20,14 @@ export class EventMonitor extends EventEmitter {
   ) {
     super();
     this.fetcher = new TrendingFetcher(birdeyeClient, { limit: config.fetchLimit });
-    this.scorer = new EventScorer({
+    this.scorer = new AttentionScorer({
       expiryMinutes: config.expiryMinutes,
       minLiquidityUsd: config.minLiquidityUsd,
     });
   }
 
-  /** 특정 토큰의 유효한 EventScore 반환. 만료 시 undefined. */
-  getScoreByMint(tokenMint: string): EventScore | undefined {
+  /** 특정 토큰의 유효한 AttentionScore 반환. 만료 시 undefined. */
+  getScoreByMint(tokenMint: string): AttentionScore | undefined {
     const score = this.latestScores.get(tokenMint);
     if (!score) return undefined;
     if (new Date(score.expiresAt).getTime() < Date.now()) {
@@ -37,8 +37,8 @@ export class EventMonitor extends EventEmitter {
     return score;
   }
 
-  /** 전체 유효 EventScore Map 반환 (만료 항목 제외) */
-  getAllActiveScores(): Map<string, EventScore> {
+  /** 전체 유효 AttentionScore Map 반환 (만료 항목 제외) */
+  getScoresByMint(): ReadonlyMap<string, AttentionScore> {
     const now = Date.now();
     for (const [mint, score] of this.latestScores) {
       if (new Date(score.expiresAt).getTime() < now) {
@@ -65,11 +65,11 @@ export class EventMonitor extends EventEmitter {
     this.timer = undefined;
   }
 
-  async poll(): Promise<EventScore[]> {
+  async poll(): Promise<AttentionScore[]> {
     const candidates = await this.fetcher.fetchCandidates();
     const scores = candidates
       .map((candidate) => this.scorer.score(candidate))
-      .filter((score) => score.eventScore >= this.config.minEventScore);
+      .filter((score) => score.attentionScore >= this.config.minAttentionScore);
 
     // 최신 스코어 캐시 갱신
     for (const score of scores) {
@@ -78,19 +78,23 @@ export class EventMonitor extends EventEmitter {
 
     if (scores.length > 0) {
       this.emit('events', scores);
-      log.info(`Generated ${scores.length} EventScore payloads`);
+      log.info(`Generated ${scores.length} AttentionScore payloads`);
     } else {
-      log.info('No EventScore payloads passed the minimum threshold');
+      log.info('No AttentionScore payloads passed the minimum threshold');
     }
 
     return scores;
   }
 }
 
-export { EventScorer } from './eventScorer';
+export { AttentionScorer, AttentionScorer as EventScorer } from './eventScorer';
 export { TrendingFetcher } from './trendingFetcher';
 export type {
   EventMonitorConfig,
+  AttentionScore,
+  AttentionScoreComponents,
+  AttentionScorerConfig,
+  // deprecated aliases
   EventScore,
   EventScoreComponents,
   EventScorerConfig,

@@ -9,8 +9,9 @@
     "dev": "ts-node src/index.ts",
     "migrate": "ts-node scripts/migrate.ts",
     "backtest": "ts-node scripts/backtest.ts",
+    "paper-report": "ts-node scripts/paper-report.ts",
     "lint": "eslint src/ --ext .ts",
-    "test": "jest"
+    "test": "jest --config jest.config.cjs"
   },
   "dependencies": {
     "@solana/web3.js": "^1.95.0",

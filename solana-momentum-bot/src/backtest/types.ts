@@ -1,14 +1,20 @@
+import { AttentionScore } from '../event/types';
 import { BreakoutGrade, Candle, PoolInfo, StrategyName } from '../utils/types';
 import { VolumeSpikeParams } from '../strategy/volumeSpikeBreakout';
 import { FibPullbackParams } from '../strategy/fibPullback';
+
+export interface BacktestAttentionScoreEntry extends AttentionScore {
+  pairAddress?: string;
+}
+
+/** @deprecated use BacktestAttentionScoreEntry */
+export type BacktestEventScoreEntry = BacktestAttentionScoreEntry;
 
 // ─── Backtest Configuration ───
 
 export interface BacktestConfig {
   /** Initial balance in SOL */
   initialBalance: number;
-  /** Slippage deduction ratio (design doc: 0.30 = 30%) */
-  slippageDeduction: number;
   /** Max risk per trade as fraction of balance */
   maxRiskPerTrade: number;
   /** Max daily loss as fraction of balance */
@@ -27,6 +33,15 @@ export interface BacktestConfig {
   maxHolderConcentration: number;
   minBuyRatio: number;
   minBreakoutScore: number;
+  requireAttentionScore?: boolean;
+  gateAttentionScore?: AttentionScore;
+  attentionScoreTimeline?: BacktestAttentionScoreEntry[];
+  /** @deprecated use requireAttentionScore */
+  requireEventScore?: boolean;
+  /** @deprecated use gateAttentionScore */
+  gateEventScore?: AttentionScore;
+  /** @deprecated use attentionScoreTimeline */
+  eventScoreTimeline?: BacktestAttentionScoreEntry[];
   /** Optional pool metadata used by shared gate evaluation */
   gatePoolInfo?: Partial<PoolInfo>;
   /** Strategy params overrides */
@@ -39,7 +54,6 @@ export interface BacktestConfig {
 
 export const DEFAULT_BACKTEST_CONFIG: BacktestConfig = {
   initialBalance: 10,
-  slippageDeduction: 0.30,
   maxRiskPerTrade: 0.01,
   maxDailyLoss: 0.05,
   maxDrawdownPct: 0.30,
@@ -64,7 +78,13 @@ export const DEFAULT_BACKTEST_CONFIG: BacktestConfig = {
 
 // ─── Backtest Trade ───
 
-export type ExitReason = 'STOP_LOSS' | 'TAKE_PROFIT_1' | 'TAKE_PROFIT_2' | 'TRAILING_STOP' | 'TIME_STOP';
+export type ExitReason =
+  | 'STOP_LOSS'
+  | 'TAKE_PROFIT_1'
+  | 'TAKE_PROFIT_2'
+  | 'TRAILING_STOP'
+  | 'TIME_STOP'
+  | 'EXHAUSTION';
 
 export interface BacktestTrade {
   id: number;
@@ -73,6 +93,7 @@ export interface BacktestTrade {
   breakoutScore?: number;
   breakoutGrade?: BreakoutGrade;
   entryPrice: number;
+  stopLoss: number;
   exitPrice: number;
   quantity: number;
   pnlSol: number;
@@ -112,7 +133,7 @@ export interface BacktestResult {
 
   // PnL
   grossPnl: number;
-  netPnl: number;            // after slippage deduction
+  netPnl: number;
   netPnlPct: number;
   profitFactor: number;
 
@@ -133,6 +154,7 @@ export interface BacktestResult {
     cooldown: number;
     positionOpen: number;
     zeroSize: number;
+    executionViability: number;
     gradeFiltered: number;
     safetyFiltered: number;
   };

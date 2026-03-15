@@ -1,5 +1,5 @@
 export { RiskManager } from './riskManager';
-export type { RiskConfig, RiskOrderInput, RiskHalt } from './riskManager';
+export type { RiskConfig, RiskOrderInput, RiskHalt, OpenTradeMarkToMarket } from './riskManager';
 export { calculateLiquiditySize, estimateSlippage, DEFAULT_LIQUIDITY_PARAMS } from './liquiditySizer';
 export type { LiquidityParams, SizingResult } from './liquiditySizer';
 export {
@@ -9,3 +9,11 @@ export {
   buildBalanceTimelineFromClosedPnls,
 } from './drawdownGuard';
 export type { DrawdownGuardConfig } from './drawdownGuard';
+export {
+  replayPortfolioDrawdownGuard,
+  replayStrategyDrawdownGuard,
+  resolvePortfolioRiskTier,
+  resolveRiskTierProfile,
+  resolveStrategyRiskTier,
+} from './riskTier';
+export type { RiskTierProfile } from './riskTier';

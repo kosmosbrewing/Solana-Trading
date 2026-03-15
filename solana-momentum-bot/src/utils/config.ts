@@ -99,6 +99,8 @@ export const config = {
 
   // Risk
   maxDailyLoss: numOptional('MAX_DAILY_LOSS', 0.05),
+  maxDrawdownPct: numOptional('MAX_DRAWDOWN_PCT', 0.30),
+  recoveryPct: numOptional('RECOVERY_PCT', 0.85),
 
   // Safety (legacy aliases — used by Universe)
   minPoolLiquidity: numOptional('MIN_POOL_LIQUIDITY', 50_000),

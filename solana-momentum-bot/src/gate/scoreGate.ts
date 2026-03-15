@@ -1,15 +1,21 @@
-import { Candle, BreakoutGrade, BreakoutScoreDetail, Signal } from '../utils/types';
+import { Candle, BreakoutScoreDetail, Signal } from '../utils/types';
 import {
   assessLpStability,
   calcBreakoutScore,
   calcBuyRatio,
   detectWhaleActivity,
 } from '../strategy';
+import { calcFibPullbackScore } from './fibPullbackScore';
 
 export interface FibPullbackGateConfig {
   impulseMinPct: number;
   volumeClimaxMultiplier: number;
   minWickRatio: number;
+}
+
+export interface GateThresholds {
+  minBuyRatio?: number;
+  minBreakoutScore?: number;
 }
 
 export interface EvaluateStrategyScoreInput {
@@ -18,34 +24,47 @@ export interface EvaluateStrategyScoreInput {
   poolTvl: number;
   previousTvl: number;
   fibConfig: FibPullbackGateConfig;
+  thresholds?: GateThresholds;
 }
 
 export function evaluateStrategyScore(input: EvaluateStrategyScoreInput): BreakoutScoreDetail {
-  if (input.signal.strategy === 'volume_spike') {
-    return evaluateVolumeSpikeScore(input.signal, input.candles, input.poolTvl, input.previousTvl);
+  switch (input.signal.strategy) {
+    case 'volume_spike':
+      return evaluateVolumeSpikeScore(
+        input.signal,
+        input.candles,
+        input.poolTvl,
+        input.previousTvl,
+        input.thresholds
+      );
+    case 'fib_pullback':
+      return evaluateFibPullbackScore(
+        input.signal,
+        input.poolTvl,
+        input.previousTvl,
+        input.fibConfig
+      );
+    default:
+      throw new Error(`Unsupported gate scoring strategy: ${input.signal.strategy}`);
   }
-
-  if (input.signal.strategy === 'fib_pullback') {
-    return evaluateFibPullbackScore(input.signal, input.candles, input.poolTvl, input.previousTvl, input.fibConfig);
-  }
-
-  throw new Error(`Unsupported gate scoring strategy: ${input.signal.strategy}`);
 }
 
-export function isGradeRejected(grade: BreakoutGrade): boolean {
-  return grade === 'C';
+export function isGradeRejected(score: BreakoutScoreDetail, thresholds?: GateThresholds): boolean {
+  return score.totalScore < (thresholds?.minBreakoutScore ?? 50);
 }
 
-export function buildGradeFilterReason(score: BreakoutScoreDetail): string | undefined {
-  if (!isGradeRejected(score.grade)) return undefined;
-  return `Grade C (score ${score.totalScore})`;
+export function buildGradeFilterReason(score: BreakoutScoreDetail, thresholds?: GateThresholds): string | undefined {
+  if (!isGradeRejected(score, thresholds)) return undefined;
+  const minBreakoutScore = thresholds?.minBreakoutScore ?? 50;
+  return `Score ${score.totalScore} < minBreakoutScore ${minBreakoutScore}`;
 }
 
 function evaluateVolumeSpikeScore(
   signal: Signal,
   candles: Candle[],
   poolTvl: number,
-  previousTvl: number
+  previousTvl: number,
+  thresholds?: GateThresholds
 ): BreakoutScoreDetail {
   const lastCandle = candles[candles.length - 1];
   const volumeRatio = signal.meta.volumeRatio || 0;
@@ -59,41 +78,21 @@ function evaluateVolumeSpikeScore(
     multiTfAlignment: 1,
     whaleDetected: !!whaleAlert,
     lpStability,
+    minBuyRatio: thresholds?.minBuyRatio,
   });
 }
 
 function evaluateFibPullbackScore(
   signal: Signal,
-  candles: Candle[],
   poolTvl: number,
   previousTvl: number,
   fibConfig: FibPullbackGateConfig
 ): BreakoutScoreDetail {
-  const impulsePct = signal.meta.impulsePct || 0;
-  const wickRatio = signal.meta.wickRatio || 0;
-  const lastCandle = candles[candles.length - 1];
-
-  const derivedVolumeRatio = Math.max(
-    (impulsePct / Math.max(fibConfig.impulseMinPct, 0.0001)) * 3,
-    signal.meta.volumeClimax ? fibConfig.volumeClimaxMultiplier : 0
-  );
-  const derivedBuyRatio = Math.max(
-    calcBuyRatio(lastCandle),
-    Math.min(0.95, 0.5 + wickRatio * 0.5)
-  );
-  const multiTfAlignment =
-    impulsePct >= fibConfig.impulseMinPct * 1.25 &&
-    wickRatio >= Math.max(fibConfig.minWickRatio, 0.5)
-      ? 2
-      : 1;
-  const whaleAlert = detectWhaleActivity(candles.slice(-5), poolTvl);
   const lpStability = assessLpStability(poolTvl, previousTvl);
 
-  return calcBreakoutScore({
-    volumeRatio: derivedVolumeRatio,
-    buyRatio: derivedBuyRatio,
-    multiTfAlignment,
-    whaleDetected: !!whaleAlert,
+  return calcFibPullbackScore({
+    signal,
     lpStability,
+    config: fibConfig,
   });
 }

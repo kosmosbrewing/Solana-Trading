@@ -21,6 +21,14 @@ export interface Candle {
 export type SignalAction = 'BUY' | 'SELL' | 'HOLD';
 export type BreakoutGrade = 'A' | 'B' | 'C';
 
+export interface BreakoutScoreComponent {
+  key: string;
+  label: string;
+  score: number;
+  maxScore: number;
+  value?: number;
+}
+
 export interface BreakoutScoreDetail {
   volumeScore: number;     // 0~25
   buyRatioScore: number;   // 0~25
@@ -29,6 +37,7 @@ export interface BreakoutScoreDetail {
   lpScore: number;         // -10~15
   totalScore: number;      // 0~100
   grade: BreakoutGrade;
+  components?: BreakoutScoreComponent[];
 }
 
 export interface Signal {
@@ -45,7 +54,7 @@ export interface Signal {
 
 // ─── Strategy ───
 
-export type StrategyName = 'volume_spike' | 'pump_detect' | 'fib_pullback';
+export type StrategyName = 'volume_spike' | 'fib_pullback';
 
 export interface StrategyConfig {
   name: StrategyName;
@@ -57,7 +66,16 @@ export interface StrategyConfig {
 
 export type TradeSide = 'BUY' | 'SELL';
 export type TradeStatus = 'OPEN' | 'CLOSED' | 'FAILED';
-export type CloseReason = 'STOP_LOSS' | 'TAKE_PROFIT_1' | 'TAKE_PROFIT_2' | 'TRAILING_STOP' | 'TIME_STOP' | 'EXHAUSTION' | 'EMERGENCY' | 'MANUAL';
+export type CloseReason =
+  | 'STOP_LOSS'
+  | 'TAKE_PROFIT_1'
+  | 'TAKE_PROFIT_2'
+  | 'TRAILING_STOP'
+  | 'TIME_STOP'
+  | 'EXHAUSTION'
+  | 'EMERGENCY'
+  | 'MANUAL'
+  | 'RECOVERED_CLOSED';
 export type SizeConstraint = 'RISK' | 'LIQUIDITY' | 'EMERGENCY';
 
 export interface Order {
@@ -143,6 +161,14 @@ export interface RiskCheckResult {
   appliedAdjustments?: string[];
 }
 
+export interface DrawdownGuardState {
+  peakBalanceSol: number;
+  currentBalanceSol: number;
+  drawdownPct: number;
+  recoveryBalanceSol: number;
+  halted: boolean;
+}
+
 // ─── Safety Filters ───
 
 export interface TokenSafety {
@@ -157,10 +183,12 @@ export interface TokenSafety {
 
 export interface PortfolioState {
   balanceSol: number;
+  equitySol: number;
   openTrades: Trade[];
   dailyPnl: number;
   consecutiveLosses: number;
   lastLossTime?: Date;
+  drawdownGuard: DrawdownGuardState;
 }
 
 // ─── Health ───

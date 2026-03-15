@@ -11,14 +11,17 @@
       "tp2Multiplier": 2.5,
       "timeStopMinutes": 30
     },
-    "pump_detect": {
+    "fib_pullback": {
       "enabled": true,
-      "timeframeSec": 60,
-      "consecutiveCandles": 3,
-      "minPriceMove": 0.05,
-      "tp1Pct": 0.10,
-      "tp2Pct": 0.20,
-      "timeStopMinutes": 15
+      "timeframeSec": 300,
+      "impulseWindowBars": 18,
+      "impulseMinPct": 0.15,
+      "fibEntryLow": 0.5,
+      "fibEntryHigh": 0.618,
+      "fibInvalidation": 0.786,
+      "volumeClimaxMultiplier": 2.5,
+      "minWickRatio": 0.4,
+      "timeStopMinutes": 60
     }
   },
   "risk": {
@@ -32,5 +35,12 @@
     "minPoolLiquidity": 50000,
     "minTokenAgeHours": 24,
     "maxHolderConcentration": 0.80
+  },
+  "event": {
+    "pollingIntervalMs": 1800000,
+    "trendingFetchLimit": 20,
+    "minScore": 35,
+    "expiryMinutes": 180,
+    "minLiquidityUsd": 25000
   }
 }

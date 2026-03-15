@@ -1,9 +1,11 @@
-import { Candle, Signal, Order, StrategyName } from '../utils/types';
+import { BreakoutGrade, Candle, Order, PoolInfo, Signal, StrategyName } from '../utils/types';
+import { evaluateGates } from '../gate';
+import { checkTokenSafety } from '../gate/safetyGate';
+import { getGradeSizeMultiplier } from '../gate/sizingGate';
+import { createDrawdownGuardState, updateDrawdownGuardState } from '../risk/drawdownGuard';
 import {
   evaluateVolumeSpikeBreakout,
   buildVolumeSpikeOrder,
-  evaluatePumpDetection,
-  buildPumpOrder,
   evaluateFibPullback,
   buildFibPullbackOrder,
 } from '../strategy';
@@ -25,12 +27,17 @@ interface RiskState {
   lastLossTime?: Date;
   currentDay: string;          // YYYY-MM-DD
   positionOpen: boolean;
+  drawdownGuard: ReturnType<typeof createDrawdownGuardState>;
   rejections: {
     dailyLimit: number;
+    drawdownHalt: number;
     cooldown: number;
     positionOpen: number;
     zeroSize: number;
+    gradeFiltered: number;
+    safetyFiltered: number;
   };
+  gradeDistribution: Record<BreakoutGrade, number>;
 }
 
 function resetDailyState(state: RiskState, day: string): void {
@@ -66,13 +73,10 @@ export class BacktestEngine {
       return this.emptyResult(strategy, pairAddress);
     }
 
-    const lookback = strategy === 'fib_pullback' ? 28
-      : strategy === 'volume_spike' ? 21 : 6;
+    const lookback = strategy === 'fib_pullback' ? 28 : 21;
     const timeStopMinutes = strategy === 'fib_pullback'
       ? (this.config.fibPullbackParams.timeStopMinutes ?? 60)
-      : strategy === 'volume_spike'
-        ? (this.config.volumeSpikeParams.timeStopMinutes ?? 30)
-        : (this.config.pumpDetectParams.timeStopMinutes ?? 15);
+      : (this.config.volumeSpikeParams.timeStopMinutes ?? 30);
 
     const riskState: RiskState = {
       balance: this.config.initialBalance,
@@ -80,7 +84,9 @@ export class BacktestEngine {
       consecutiveLosses: 0,
       currentDay: dateKey(filtered[0].timestamp),
       positionOpen: false,
-      rejections: { dailyLimit: 0, cooldown: 0, positionOpen: 0, zeroSize: 0 },
+      drawdownGuard: createDrawdownGuardState(this.config.initialBalance),
+      rejections: { dailyLimit: 0, drawdownHalt: 0, cooldown: 0, positionOpen: 0, zeroSize: 0, gradeFiltered: 0, safetyFiltered: 0 },
+      gradeDistribution: { A: 0, B: 0, C: 0 },
     };
 
     const trades: BacktestTrade[] = [];
@@ -96,11 +102,32 @@ export class BacktestEngine {
 
       const signal = strategy === 'fib_pullback'
         ? evaluateFibPullback(window, this.config.fibPullbackParams)
-        : strategy === 'volume_spike'
-          ? evaluateVolumeSpikeBreakout(window, this.config.volumeSpikeParams)
-          : evaluatePumpDetection(window, this.config.pumpDetectParams);
+        : evaluateVolumeSpikeBreakout(window, this.config.volumeSpikeParams);
 
       if (signal.action !== 'BUY') continue;
+
+      let safetyMultiplier = 1.0;
+      const gateResult = this.evaluateSignalGates(signal, window, pairAddress);
+      signal.breakoutScore = gateResult.breakoutScore;
+      riskState.gradeDistribution[gateResult.breakoutScore.grade]++;
+
+      if (gateResult.rejected) {
+        riskState.rejections.gradeFiltered++;
+        continue;
+      }
+
+      if (gateResult.tokenSafety) {
+        const safetyResult = checkTokenSafety(gateResult.tokenSafety, {
+          minPoolLiquidity: this.config.minPoolLiquidity,
+          minTokenAgeHours: this.config.minTokenAgeHours,
+          maxHolderConcentration: this.config.maxHolderConcentration,
+        });
+        if (!safetyResult.approved) {
+          riskState.rejections.safetyFiltered++;
+          continue;
+        }
+        safetyMultiplier = safetyResult.sizeMultiplier;
+      }
 
       // Risk checks
       const rejection = this.checkRisk(riskState, signal, filtered[i]);
@@ -112,11 +139,13 @@ export class BacktestEngine {
       // Position sizing
       const order = strategy === 'fib_pullback'
         ? buildFibPullbackOrder(signal, window, 0, this.config.fibPullbackParams)
-        : strategy === 'volume_spike'
-          ? buildVolumeSpikeOrder(signal, window, 0, this.config.volumeSpikeParams)
-          : buildPumpOrder(signal, window, 0, this.config.pumpDetectParams);
+        : buildVolumeSpikeOrder(signal, window, 0, this.config.volumeSpikeParams);
+      if (signal.breakoutScore) {
+        order.breakoutScore = signal.breakoutScore.totalScore;
+        order.breakoutGrade = signal.breakoutScore.grade;
+      }
 
-      const quantity = this.calculatePositionSize(riskState, order);
+      const quantity = this.calculatePositionSize(riskState, order, safetyMultiplier);
       if (quantity <= 0) {
         riskState.rejections.zeroSize++;
         continue;
@@ -133,6 +162,14 @@ export class BacktestEngine {
       riskState.positionOpen = false;
       riskState.balance += trade.pnlSol;
       riskState.dailyPnl += trade.pnlSol;
+      riskState.drawdownGuard = updateDrawdownGuardState(
+        riskState.drawdownGuard,
+        riskState.balance,
+        {
+          maxDrawdownPct: this.config.maxDrawdownPct,
+          recoveryPct: this.config.recoveryPct,
+        }
+      );
 
       if (trade.pnlSol < 0) {
         riskState.consecutiveLosses++;
@@ -162,19 +199,17 @@ export class BacktestEngine {
   }
 
   /**
-   * Run both strategies on appropriate timeframe candles and combine
+   * Run active 5m strategies and combine
    */
   runCombined(
     candles5m: Candle[],
-    candles1m: Candle[],
     pairAddress: string
-  ): { strategyA: BacktestResult; strategyB: BacktestResult; strategyC: BacktestResult; combined: BacktestResult } {
+  ): { strategyA: BacktestResult; strategyC: BacktestResult; combined: BacktestResult } {
     const strategyA = this.run(candles5m, 'volume_spike', pairAddress);
-    const strategyB = this.run(candles1m, 'pump_detect', pairAddress);
     const strategyC = this.run(candles5m, 'fib_pullback', pairAddress);
 
     // Merge trades chronologically for combined stats
-    const allTrades = [...strategyA.trades, ...strategyB.trades, ...strategyC.trades]
+    const allTrades = [...strategyA.trades, ...strategyC.trades]
       .sort((a, b) => a.entryTime.getTime() - b.entryTime.getTime());
 
     // Rebuild equity curve from merged trades
@@ -184,11 +219,20 @@ export class BacktestEngine {
       consecutiveLosses: 0,
       currentDay: '',
       positionOpen: false,
+      drawdownGuard: createDrawdownGuardState(this.config.initialBalance),
       rejections: {
-        dailyLimit: strategyA.rejections.dailyLimit + strategyB.rejections.dailyLimit + strategyC.rejections.dailyLimit,
-        cooldown: strategyA.rejections.cooldown + strategyB.rejections.cooldown + strategyC.rejections.cooldown,
-        positionOpen: strategyA.rejections.positionOpen + strategyB.rejections.positionOpen + strategyC.rejections.positionOpen,
-        zeroSize: strategyA.rejections.zeroSize + strategyB.rejections.zeroSize + strategyC.rejections.zeroSize,
+        dailyLimit: strategyA.rejections.dailyLimit + strategyC.rejections.dailyLimit,
+        drawdownHalt: strategyA.rejections.drawdownHalt + strategyC.rejections.drawdownHalt,
+        cooldown: strategyA.rejections.cooldown + strategyC.rejections.cooldown,
+        positionOpen: strategyA.rejections.positionOpen + strategyC.rejections.positionOpen,
+        zeroSize: strategyA.rejections.zeroSize + strategyC.rejections.zeroSize,
+        gradeFiltered: strategyA.rejections.gradeFiltered + strategyC.rejections.gradeFiltered,
+        safetyFiltered: strategyA.rejections.safetyFiltered + strategyC.rejections.safetyFiltered,
+      },
+      gradeDistribution: {
+        A: strategyA.gradeDistribution.A + strategyC.gradeDistribution.A,
+        B: strategyA.gradeDistribution.B + strategyC.gradeDistribution.B,
+        C: strategyA.gradeDistribution.C + strategyC.gradeDistribution.C,
       },
     };
 
@@ -200,6 +244,14 @@ export class BacktestEngine {
 
     for (const t of allTrades) {
       riskState.balance += t.pnlSol;
+      riskState.drawdownGuard = updateDrawdownGuardState(
+        riskState.drawdownGuard,
+        riskState.balance,
+        {
+          maxDrawdownPct: this.config.maxDrawdownPct,
+          recoveryPct: this.config.recoveryPct,
+        }
+      );
       equityCurve.push({
         timestamp: t.exitTime,
         equity: riskState.balance,
@@ -209,12 +261,11 @@ export class BacktestEngine {
     }
     this.calcEquityDrawdowns(equityCurve);
 
-    const allCandles = candles5m.length > candles1m.length ? candles5m : candles1m;
     const combined = this.buildResult(
-      'combined' as any, pairAddress, allCandles, allTrades, equityCurve, riskState
+      'combined', pairAddress, candles5m, allTrades, equityCurve, riskState
     );
 
-    return { strategyA, strategyB, strategyC, combined };
+    return { strategyA, strategyC, combined };
   }
 
   // ─── Private: Risk Check ───
@@ -228,6 +279,8 @@ export class BacktestEngine {
 
     const maxLoss = state.balance * this.config.maxDailyLoss;
     if (state.dailyPnl < -maxLoss) return 'dailyLimit';
+
+    if (state.drawdownGuard.halted) return 'drawdownHalt';
 
     if (state.consecutiveLosses >= this.config.maxConsecutiveLosses && state.lastLossTime) {
       const cooldownEnd = new Date(
@@ -244,7 +297,7 @@ export class BacktestEngine {
 
   // ─── Private: Position Sizing ───
 
-  private calculatePositionSize(state: RiskState, order: Order): number {
+  private calculatePositionSize(state: RiskState, order: Order, safetyMultiplier: number): number {
     const maxRisk = state.balance * this.config.maxRiskPerTrade;
     const riskPerUnit = Math.abs(order.price - order.stopLoss);
     if (riskPerUnit <= 0) return 0;
@@ -253,7 +306,8 @@ export class BacktestEngine {
     const maxPositionValue = state.balance * 0.2;
     const maxPositionUnits = maxPositionValue / order.price;
 
-    return Math.min(positionSize, maxPositionUnits);
+    const baseQuantity = Math.min(positionSize, maxPositionUnits);
+    return baseQuantity * getGradeSizeMultiplier(order.breakoutGrade) * safetyMultiplier;
   }
 
   // ─── Private: Trade Simulation ───
@@ -276,6 +330,9 @@ export class BacktestEngine {
     let peakPrice = entryPrice;
     const trailingStop = order.trailingStop;
     let tp1Hit = false;
+    let remainingQuantity = order.quantity;
+    let realizedPnlSol = 0;
+    let realizedExitValue = 0;
 
     for (let i = entryIdx + 1; i < candles.length; i++) {
       const c = candles[i];
@@ -287,7 +344,7 @@ export class BacktestEngine {
       if (c.low <= order.stopLoss) {
         return this.makeTrade(
           id, strategy, pairAddress, order, entryIdx, i,
-          order.stopLoss, 'STOP_LOSS', entryCandle, c, peakPrice
+          order.stopLoss, 'STOP_LOSS', entryCandle, c, peakPrice, realizedPnlSol, realizedExitValue, remainingQuantity
         );
       }
 
@@ -298,7 +355,7 @@ export class BacktestEngine {
           const exitPrice = Math.max(trailingStopPrice, order.stopLoss);
           return this.makeTrade(
             id, strategy, pairAddress, order, entryIdx, i,
-            exitPrice, 'TRAILING_STOP', entryCandle, c, peakPrice
+            exitPrice, 'TRAILING_STOP', entryCandle, c, peakPrice, realizedPnlSol, realizedExitValue, remainingQuantity
           );
         }
       }
@@ -307,13 +364,17 @@ export class BacktestEngine {
       if (c.high >= order.takeProfit2) {
         return this.makeTrade(
           id, strategy, pairAddress, order, entryIdx, i,
-          order.takeProfit2, 'TAKE_PROFIT_2', entryCandle, c, peakPrice
+          order.takeProfit2, 'TAKE_PROFIT_2', entryCandle, c, peakPrice, realizedPnlSol, realizedExitValue, remainingQuantity
         );
       }
 
-      // Take Profit 1 — 이익실현 후 breakeven 스탑으로 전환
+      // Take Profit 1 — 절반 익절 후 나머지는 breakeven 스탑으로 전환
       if (!tp1Hit && c.high >= order.takeProfit1) {
         tp1Hit = true;
+        const partialQuantity = remainingQuantity * 0.5;
+        realizedPnlSol += this.calcNetPnlSol(entryPrice, order.takeProfit1, partialQuantity);
+        realizedExitValue += order.takeProfit1 * partialQuantity;
+        remainingQuantity -= partialQuantity;
         order.stopLoss = entryPrice;
       }
 
@@ -321,7 +382,7 @@ export class BacktestEngine {
       if (c.timestamp >= timeStopAt) {
         return this.makeTrade(
           id, strategy, pairAddress, order, entryIdx, i,
-          c.close, 'TIME_STOP', entryCandle, c, peakPrice
+          c.close, 'TIME_STOP', entryCandle, c, peakPrice, realizedPnlSol, realizedExitValue, remainingQuantity
         );
       }
     }
@@ -330,7 +391,7 @@ export class BacktestEngine {
     const lastCandle = candles[candles.length - 1];
     return this.makeTrade(
       id, strategy, pairAddress, order, entryIdx, candles.length - 1,
-      lastCandle.close, 'TIME_STOP', entryCandle, lastCandle, peakPrice
+      lastCandle.close, 'TIME_STOP', entryCandle, lastCandle, peakPrice, realizedPnlSol, realizedExitValue, remainingQuantity
     );
   }
 
@@ -345,21 +406,30 @@ export class BacktestEngine {
     exitReason: ExitReason,
     entryCandle: Candle,
     exitCandle: Candle,
-    peakPrice: number
+    peakPrice: number,
+    realizedPnlSol: number,
+    realizedExitValue: number,
+    remainingQuantity: number
   ): BacktestTrade {
-    const rawPnlPct = (exitPrice - order.price) / order.price;
-    const netPnlPct = rawPnlPct * (1 - this.config.slippageDeduction);
-    const pnlSol = netPnlPct * order.quantity * order.price;
+    const exitQuantity = Math.max(remainingQuantity, 0);
+    const totalPnlSol = realizedPnlSol + this.calcNetPnlSol(order.price, exitPrice, exitQuantity);
+    const totalExitValue = realizedExitValue + exitPrice * exitQuantity;
+    const avgExitPrice = order.quantity > 0 ? totalExitValue / order.quantity : exitPrice;
+    const pnlPct = order.quantity > 0 && order.price > 0
+      ? totalPnlSol / (order.quantity * order.price)
+      : 0;
 
     return {
       id,
       strategy,
       pairAddress,
+      breakoutScore: order.breakoutScore,
+      breakoutGrade: order.breakoutGrade,
       entryPrice: order.price,
-      exitPrice,
+      exitPrice: avgExitPrice,
       quantity: order.quantity,
-      pnlSol,
-      pnlPct: netPnlPct,
+      pnlSol: totalPnlSol,
+      pnlPct,
       exitReason,
       entryTime: entryCandle.timestamp,
       exitTime: exitCandle.timestamp,
@@ -436,6 +506,7 @@ export class BacktestEngine {
       largestLoss: losses.length > 0 ? Math.min(...losses.map(t => t.pnlSol)) : 0,
       avgHoldingBars,
       rejections: riskState.rejections,
+      gradeDistribution: riskState.gradeDistribution,
       trades,
       equityCurve,
       finalEquity: riskState.balance,
@@ -485,10 +556,54 @@ export class BacktestEngine {
       largestWin: 0,
       largestLoss: 0,
       avgHoldingBars: 0,
-      rejections: { dailyLimit: 0, cooldown: 0, positionOpen: 0, zeroSize: 0 },
+      rejections: { dailyLimit: 0, drawdownHalt: 0, cooldown: 0, positionOpen: 0, zeroSize: 0, gradeFiltered: 0, safetyFiltered: 0 },
+      gradeDistribution: { A: 0, B: 0, C: 0 },
       trades: [],
       equityCurve: [],
       finalEquity: this.config.initialBalance,
     };
+  }
+
+  private evaluateSignalGates(signal: Signal, candles: Candle[], pairAddress: string) {
+    const poolInfo = this.buildGatePoolInfo(pairAddress);
+    return evaluateGates({
+      signal,
+      candles,
+      poolInfo,
+      previousTvl: poolInfo.tvl,
+      fibConfig: {
+        impulseMinPct: this.config.fibPullbackParams.impulseMinPct ?? 0.15,
+        volumeClimaxMultiplier: this.config.fibPullbackParams.volumeClimaxMultiplier ?? 2.5,
+        minWickRatio: this.config.fibPullbackParams.minWickRatio ?? 0.4,
+      },
+      thresholds: {
+        minBuyRatio: this.config.minBuyRatio,
+        minBreakoutScore: this.config.minBreakoutScore,
+      },
+    });
+  }
+
+  private buildGatePoolInfo(pairAddress: string): PoolInfo {
+    const gatePoolInfo = this.config.gatePoolInfo ?? {};
+    return {
+      pairAddress,
+      tokenMint: gatePoolInfo.tokenMint ?? pairAddress,
+      tvl: gatePoolInfo.tvl ?? this.config.minPoolLiquidity,
+      dailyVolume: gatePoolInfo.dailyVolume ?? 0,
+      tradeCount24h: gatePoolInfo.tradeCount24h ?? 0,
+      spreadPct: gatePoolInfo.spreadPct ?? 0,
+      tokenAgeHours: gatePoolInfo.tokenAgeHours ?? this.config.minTokenAgeHours,
+      top10HolderPct: gatePoolInfo.top10HolderPct ?? this.config.maxHolderConcentration,
+      lpBurned: gatePoolInfo.lpBurned ?? false,
+      ownershipRenounced: gatePoolInfo.ownershipRenounced ?? false,
+      rankScore: gatePoolInfo.rankScore ?? 0,
+    };
+  }
+
+  private calcNetPnlSol(entryPrice: number, exitPrice: number, quantity: number): number {
+    if (quantity <= 0 || entryPrice <= 0) return 0;
+    const rawPnlPct = (exitPrice - entryPrice) / entryPrice;
+    const netPnlPct = rawPnlPct * (1 - this.config.slippageDeduction);
+    return netPnlPct * quantity * entryPrice;
   }
 }

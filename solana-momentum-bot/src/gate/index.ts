@@ -1,6 +1,12 @@
 import { BreakoutScoreDetail, PoolInfo, Signal, TokenSafety } from '../utils/types';
 import { buildTokenSafety } from './safetyGate';
-import { buildGradeFilterReason, evaluateStrategyScore, FibPullbackGateConfig, isGradeRejected } from './scoreGate';
+import {
+  buildGradeFilterReason,
+  evaluateStrategyScore,
+  FibPullbackGateConfig,
+  GateThresholds,
+  isGradeRejected,
+} from './scoreGate';
 import { getGradeSizeMultiplier } from './sizingGate';
 
 export interface EvaluateGatesInput {
@@ -9,6 +15,7 @@ export interface EvaluateGatesInput {
   poolInfo: PoolInfo;
   previousTvl: number;
   fibConfig: FibPullbackGateConfig;
+  thresholds?: GateThresholds;
 }
 
 export interface GateEvaluationResult {
@@ -26,15 +33,16 @@ export function evaluateGates(input: EvaluateGatesInput): GateEvaluationResult {
     poolTvl: input.poolInfo.tvl,
     previousTvl: input.previousTvl,
     fibConfig: input.fibConfig,
+    thresholds: input.thresholds,
   });
   const tokenSafety = buildTokenSafety(input.poolInfo);
-  const filterReason = buildGradeFilterReason(breakoutScore);
+  const filterReason = buildGradeFilterReason(breakoutScore, input.thresholds);
 
   return {
     breakoutScore,
     tokenSafety,
     gradeSizeMultiplier: getGradeSizeMultiplier(breakoutScore.grade),
-    rejected: isGradeRejected(breakoutScore.grade),
+    rejected: isGradeRejected(breakoutScore, input.thresholds),
     filterReason,
   };
 }

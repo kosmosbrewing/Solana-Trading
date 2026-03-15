@@ -60,6 +60,12 @@ interface PullbackState {
   volumeClimaxSeen: boolean;  // 하락 봉 거래량 급증 확인
   reclaimSeen: boolean;       // reclaim 봉 확인 (종가가 fib 위로 회복)
   reclaimBarIdx: number;      // reclaim 봉 인덱스
+  pullbackDepth: number;
+  fibPrecision: number;
+  volumeClimaxRatio: number;
+  reclaimCloseStrength: number;
+  reclaimBodyRatio: number;
+  reclaimQuality: number;
 }
 
 /**
@@ -270,19 +276,35 @@ function analyzePullback(
     volumeClimaxSeen: false,
     reclaimSeen: false,
     reclaimBarIdx: -1,
+    pullbackDepth: 0,
+    fibPrecision: 0,
+    volumeClimaxRatio: 0,
+    reclaimCloseStrength: 0,
+    reclaimBodyRatio: 0,
+    reclaimQuality: 0,
   };
 
   const fibEntryUpper = fibs.swingHigh - (fibs.swingHigh - fibs.swingLow) * params.fibEntryLow;   // fib 0.5 가격
   const fibEntryLower = fibs.swingHigh - (fibs.swingHigh - fibs.swingLow) * params.fibEntryHigh;   // fib 0.618 가격
+  const impulseRange = Math.max(fibs.swingHigh - fibs.swingLow, Number.EPSILON);
 
   for (let i = 0; i < pullbackCandles.length; i++) {
     const c = pullbackCandles[i];
+    const pullbackDepth = clampUnit((fibs.swingHigh - c.low) / impulseRange);
+    if (pullbackDepth >= state.pullbackDepth) {
+      state.pullbackDepth = pullbackDepth;
+      state.fibPrecision = calcFibPrecision(pullbackDepth, params);
+    }
 
     // Fib 0.786 이하로 하락 → 임펄스 무효화
     if (c.close < fibs.fib786) {
       state.enteredFibZone = false;
       state.volumeClimaxSeen = false;
       state.reclaimSeen = false;
+      state.reclaimBarIdx = -1;
+      state.reclaimCloseStrength = 0;
+      state.reclaimBodyRatio = 0;
+      state.reclaimQuality = 0;
       continue;
     }
 
@@ -295,6 +317,7 @@ function analyzePullback(
     if (state.enteredFibZone && !state.volumeClimaxSeen) {
       const isBearish = c.close < c.open;
       const volRatio = avgVolume > 0 ? c.volume / avgVolume : 0;
+      state.volumeClimaxRatio = Math.max(state.volumeClimaxRatio, volRatio);
       if (isBearish && volRatio >= params.volumeClimaxMultiplier) {
         state.volumeClimaxSeen = true;
       }
@@ -305,6 +328,11 @@ function analyzePullback(
       if (c.close > fibEntryUpper) {
         state.reclaimSeen = true;
         state.reclaimBarIdx = i;
+        state.reclaimCloseStrength = clampUnit(
+          (c.close - fibEntryUpper) / Math.max(fibs.swingHigh - fibEntryUpper, Number.EPSILON)
+        );
+        state.reclaimBodyRatio = calcBodyRatio(c);
+        state.reclaimQuality = calcReclaimQuality(c, state.reclaimCloseStrength, params.minWickRatio);
       }
     }
   }
@@ -340,5 +368,43 @@ function buildMeta(
     fibZoneEntered: pullback.enteredFibZone ? 1 : 0,
     volumeClimax: pullback.volumeClimaxSeen ? 1 : 0,
     reclaimed: pullback.reclaimSeen ? 1 : 0,
+    pullbackDepth: pullback.pullbackDepth,
+    fibPrecision: pullback.fibPrecision,
+    volumeClimaxRatio: pullback.volumeClimaxRatio,
+    reclaimCloseStrength: pullback.reclaimCloseStrength,
+    reclaimBodyRatio: pullback.reclaimBodyRatio,
+    reclaimQuality: pullback.reclaimQuality,
   };
+}
+
+function calcFibPrecision(pullbackDepth: number, params: FibPullbackParams): number {
+  const targetDepth = params.fibEntryHigh;
+  const tolerance = Math.max((params.fibEntryHigh - params.fibEntryLow) * 2, Number.EPSILON);
+  return clampUnit(1 - Math.abs(pullbackDepth - targetDepth) / tolerance);
+}
+
+function calcBodyRatio(candle: Candle): number {
+  const range = candle.high - candle.low;
+  if (range <= 0) return 0;
+  return Math.abs(candle.close - candle.open) / range;
+}
+
+function calcReclaimQuality(
+  candle: Candle,
+  reclaimCloseStrength: number,
+  minWickRatio: number
+): number {
+  const wickRatio = calcLowerWickRatio(candle);
+  const wickQuality = clampUnit(
+    (wickRatio - minWickRatio) / Math.max(1 - minWickRatio, Number.EPSILON)
+  );
+  return clampUnit(
+    reclaimCloseStrength * 0.55 +
+      wickQuality * 0.30 +
+      calcBodyRatio(candle) * 0.15
+  );
+}
+
+function clampUnit(value: number): number {
+  return Math.max(0, Math.min(1, value));
 }

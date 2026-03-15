@@ -1,13 +1,13 @@
-import { EventScore, EventScoreComponents, EventScorerConfig, TrendingEventCandidate } from './types';
+import { AttentionScore, AttentionScoreComponents, AttentionScorerConfig, TrendingEventCandidate } from './types';
 
 const BIRDEYE_TRENDING_URL = 'https://docs.birdeye.so/reference/get-defi-token_trending';
 
-export class EventScorer {
-  constructor(private readonly config: EventScorerConfig) {}
+export class AttentionScorer {
+  constructor(private readonly config: AttentionScorerConfig) {}
 
-  score(candidate: TrendingEventCandidate): EventScore {
+  score(candidate: TrendingEventCandidate): AttentionScore {
     const components = this.buildComponents(candidate);
-    const eventScore = clamp(
+    const attentionScore = clamp(
       components.narrativeStrength +
       components.sourceQuality +
       components.timing +
@@ -21,17 +21,17 @@ export class EventScorer {
     return {
       tokenMint: candidate.address,
       tokenSymbol: candidate.symbol,
-      eventScore,
+      attentionScore,
       components,
       narrative: this.buildNarrative(candidate, components),
       sources: [BIRDEYE_TRENDING_URL],
       detectedAt,
       expiresAt: new Date(Date.parse(detectedAt) + this.config.expiryMinutes * 60_000).toISOString(),
-      confidence: this.resolveConfidence(eventScore, candidate),
+      confidence: this.resolveConfidence(attentionScore, candidate),
     };
   }
 
-  private buildComponents(candidate: TrendingEventCandidate): EventScoreComponents {
+  private buildComponents(candidate: TrendingEventCandidate): AttentionScoreComponents {
     return {
       narrativeStrength: this.calcNarrativeStrength(candidate),
       sourceQuality: this.calcSourceQuality(candidate),
@@ -108,7 +108,7 @@ export class EventScorer {
     return clamp(score, 0, 15);
   }
 
-  private buildNarrative(candidate: TrendingEventCandidate, components: EventScoreComponents): string {
+  private buildNarrative(candidate: TrendingEventCandidate, components: AttentionScoreComponents): string {
     const fragments = [
       `Birdeye Trending rank ${candidate.rank}`,
       typeof candidate.priceChange24hPct === 'number' ? `24h change ${candidate.priceChange24hPct.toFixed(1)}%` : null,
@@ -116,11 +116,11 @@ export class EventScorer {
       `timing ${components.timing}/20`,
     ].filter((fragment): fragment is string => !!fragment);
 
-    return `${candidate.symbol} event detected: ${fragments.join(', ')}`;
+    return `${candidate.symbol} attention detected: ${fragments.join(', ')}`;
   }
 
   private resolveConfidence(
-    eventScore: number,
+    attentionScore: number,
     candidate: TrendingEventCandidate
   ): 'low' | 'medium' | 'high' {
     const hasCoreMetrics =
@@ -128,11 +128,14 @@ export class EventScorer {
       typeof candidate.volume24hUsd === 'number' &&
       typeof candidate.liquidityUsd === 'number';
 
-    if (eventScore >= 70 && hasCoreMetrics) return 'high';
-    if (eventScore >= 40) return 'medium';
+    if (attentionScore >= 70 && hasCoreMetrics) return 'high';
+    if (attentionScore >= 40) return 'medium';
     return 'low';
   }
 }
+
+/** @deprecated use AttentionScorer */
+export const EventScorer = AttentionScorer;
 
 function normalizeIso(value: string): string {
   const date = new Date(value);

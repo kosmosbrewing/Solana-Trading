@@ -2,7 +2,7 @@ import { EventEmitter } from 'events';
 import { BirdeyeClient } from './birdeyeClient';
 import { CandleStore } from '../candle/candleStore';
 import { createModuleLogger } from '../utils/logger';
-import { Candle, CandleInterval } from '../utils/types';
+import { CandleInterval } from '../utils/types';
 
 const log = createModuleLogger('Ingester');
 

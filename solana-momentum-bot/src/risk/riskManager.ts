@@ -1,16 +1,19 @@
 import { createModuleLogger } from '../utils/logger';
 import {
-  RiskCheckResult, TokenSafety, PortfolioState, SizeConstraint, BreakoutGrade, DrawdownGuardState,
+  RiskCheckResult, TokenSafety, PortfolioState, SizeConstraint, BreakoutGrade, DrawdownGuardState, StrategyName,
 } from '../utils/types';
 import { TradeStore } from '../candle/tradeStore';
+import { EdgeTracker, EdgeTrackerTrade } from '../reporting';
 import { checkTokenSafety as evaluateTokenSafety, SafetyGateResult } from '../gate/safetyGate';
 import { getGradeSizeMultiplier } from '../gate/sizingGate';
 import { calculateLiquiditySize, LiquidityParams, DEFAULT_LIQUIDITY_PARAMS } from './liquiditySizer';
+import { updateDrawdownGuardState } from './drawdownGuard';
 import {
-  buildBalanceTimelineFromClosedPnls,
-  DrawdownGuardConfig,
-  replayDrawdownGuardState,
-} from './drawdownGuard';
+  replayPortfolioDrawdownGuard,
+  resolvePortfolioRiskTier,
+  resolveStrategyRiskTier,
+  RiskTierProfile,
+} from './riskTier';
 
 const log = createModuleLogger('RiskManager');
 
@@ -33,10 +36,15 @@ export interface RiskHalt {
   reason: string;
 }
 
+export interface OpenTradeMarkToMarket {
+  quantity: number;
+  currentPrice: number;
+}
+
 /** checkOrder에 필요한 최소 주문 정보 */
 export interface RiskOrderInput {
   pairAddress: string;
-  strategy: string;
+  strategy: StrategyName;
   side: string;
   price: number;
   stopLoss: number;
@@ -64,9 +72,32 @@ export class RiskManager {
     tokenSafety?: TokenSafety
   ): Promise<RiskCheckResult> {
     let safetyMultiplier = 1.0;
-    const appliedAdjustments: string[] = [];
+    const closedEdgeTrades = await this.getClosedEdgeTrades();
+    const strategyRisk = resolveStrategyRiskTier(
+      closedEdgeTrades,
+      order.strategy,
+      this.riskConfig.recoveryPct
+    );
+    const portfolioRisk = portfolio.riskTier ?? resolvePortfolioRiskTier(
+      closedEdgeTrades,
+      this.riskConfig.recoveryPct
+    );
+    const appliedAdjustments: string[] = [`RISK_TIER_${strategyRisk.edgeState.toUpperCase()}`];
+    const edgeTracker = new EdgeTracker(closedEdgeTrades);
 
-    const activeHalt = this.getActiveHalt(portfolio);
+    if (strategyRisk.kellyApplied) {
+      appliedAdjustments.push(`KELLY_${strategyRisk.kellyMode.toUpperCase()}`);
+    }
+
+    const activeHalt = this.getActiveHalt({
+      ...portfolio,
+      drawdownGuard: replayPortfolioDrawdownGuard(
+        portfolio.equitySol,
+        closedEdgeTrades,
+        this.riskConfig.recoveryPct
+      ),
+      riskTier: portfolioRisk,
+    });
     if (activeHalt) {
       return {
         approved: false,
@@ -88,6 +119,17 @@ export class RiskManager {
       };
     }
 
+    const pairStats = edgeTracker.getPairStats(order.pairAddress);
+    if (edgeTracker.isPairBlacklisted(order.pairAddress)) {
+      return {
+        approved: false,
+        reason:
+          `Pair blacklisted by edge tracker: WR ${(pairStats.winRate * 100).toFixed(1)}% ` +
+          `RR ${formatMetric(pairStats.rewardRisk)} Sharpe ${formatMetric(pairStats.sharpeRatio)} ` +
+          `MaxL ${pairStats.maxConsecutiveLosses}`,
+      };
+    }
+
     if (tokenSafety) {
       const safetyResult = this.checkTokenSafety(tokenSafety);
       if (!safetyResult.approved) {
@@ -97,7 +139,11 @@ export class RiskManager {
       appliedAdjustments.push(...(safetyResult.appliedAdjustments ?? []));
     }
 
-    const { adjustedQuantity, sizeConstraint } = this.calculatePositionSize(order, portfolio);
+    const { adjustedQuantity, sizeConstraint } = this.calculatePositionSize(
+      order,
+      portfolio,
+      strategyRisk
+    );
     if (adjustedQuantity <= 0) {
       return {
         approved: false,
@@ -105,7 +151,6 @@ export class RiskManager {
       };
     }
 
-    // Grade B → Half Size
     const gradeMultiplier = getGradeSizeMultiplier(order.breakoutGrade);
     const finalQuantity = adjustedQuantity * gradeMultiplier * safetyMultiplier;
 
@@ -118,7 +163,8 @@ export class RiskManager {
 
     log.info(
       `Order approved: ${order.strategy} ${order.side} ${order.pairAddress} ` +
-      `qty=${finalQuantity.toFixed(6)} constraint=${sizeConstraint} grade=${order.breakoutGrade || 'N/A'}` +
+      `qty=${finalQuantity.toFixed(6)} constraint=${sizeConstraint} grade=${order.breakoutGrade || 'N/A'} ` +
+      `tier=${strategyRisk.edgeState} risk=${(strategyRisk.maxRiskPerTrade * 100).toFixed(2)}%` +
       (appliedAdjustments.length > 0 ? ` adjustments=${appliedAdjustments.join(',')}` : '')
     );
 
@@ -135,7 +181,8 @@ export class RiskManager {
    */
   calculatePositionSize(
     order: RiskOrderInput,
-    portfolio: PortfolioState
+    portfolio: PortfolioState,
+    strategyRisk: RiskTierProfile
   ): { adjustedQuantity: number; sizeConstraint: SizeConstraint } {
     const stopLossPct = Math.abs(order.price - order.stopLoss) / order.price;
 
@@ -143,7 +190,7 @@ export class RiskManager {
     if (order.poolTvl && order.poolTvl > 0) {
       const sizing = calculateLiquiditySize(
         portfolio.balanceSol,
-        this.riskConfig.maxRiskPerTrade,
+        strategyRisk.maxRiskPerTrade,
         stopLossPct,
         order.poolTvl,
         0.003,
@@ -160,7 +207,7 @@ export class RiskManager {
     }
 
     // Fallback: 기존 방식 (리스크 기반)
-    const maxRisk = portfolio.balanceSol * this.riskConfig.maxRiskPerTrade;
+    const maxRisk = portfolio.balanceSol * strategyRisk.maxRiskPerTrade;
     const riskPerUnit = Math.abs(order.price - order.stopLoss);
     if (riskPerUnit <= 0) return { adjustedQuantity: 0, sizeConstraint: 'RISK' };
 
@@ -182,7 +229,8 @@ export class RiskManager {
       };
     }
 
-    if (this.isDailyLossExceeded(portfolio)) {
+    const maxDailyLoss = portfolio.riskTier?.maxDailyLoss ?? this.riskConfig.maxDailyLoss;
+    if (this.isDailyLossExceeded(portfolio, maxDailyLoss)) {
       return {
         kind: 'dailyLoss',
         reason: `Daily loss limit reached: ${portfolio.dailyPnl.toFixed(4)} SOL`,
@@ -192,9 +240,43 @@ export class RiskManager {
     return undefined;
   }
 
-  private isDailyLossExceeded(portfolio: PortfolioState): boolean {
-    const maxLoss = portfolio.equitySol * this.riskConfig.maxDailyLoss;
+  private isDailyLossExceeded(portfolio: PortfolioState, maxDailyLoss: number): boolean {
+    const maxLoss = portfolio.equitySol * maxDailyLoss;
     return portfolio.dailyPnl < -maxLoss;
+  }
+
+  applyUnrealizedDrawdown(
+    portfolio: PortfolioState,
+    positions: OpenTradeMarkToMarket[]
+  ): PortfolioState {
+    if (positions.length === 0) return portfolio;
+
+    const markedToMarketValue = positions.reduce(
+      (sum, position) => sum + Math.max(0, position.currentPrice) * Math.max(0, position.quantity),
+      0
+    );
+    const equitySol = portfolio.balanceSol + markedToMarketValue;
+    const riskTier = portfolio.riskTier ?? {
+      edgeState: 'Bootstrap',
+      maxRiskPerTrade: this.riskConfig.maxRiskPerTrade,
+      maxDailyLoss: this.riskConfig.maxDailyLoss,
+      maxDrawdownPct: this.riskConfig.maxDrawdownPct,
+      recoveryPct: this.riskConfig.recoveryPct,
+      kellyFraction: 0,
+      kellyApplied: false,
+      kellyMode: 'fixed' as const,
+    };
+
+    return {
+      ...portfolio,
+      equitySol,
+      drawdownGuard: updateDrawdownGuardState(
+        portfolio.drawdownGuard,
+        equitySol,
+        riskTier
+      ),
+      riskTier,
+    };
   }
 
   private isInCooldown(portfolio: PortfolioState): boolean {
@@ -238,7 +320,13 @@ export class RiskManager {
     ]);
 
     const equitySol = balanceSol + openTrades.reduce((sum, trade) => sum + trade.quantity, 0);
-    const drawdownGuard = this.buildDrawdownGuardState(equitySol, closedTrades.map(trade => trade.pnl ?? 0));
+    const closedEdgeTrades = closedTrades.map(toEdgeTrackerTrade);
+    const riskTier = resolvePortfolioRiskTier(closedEdgeTrades, this.riskConfig.recoveryPct);
+    const drawdownGuard = replayPortfolioDrawdownGuard(
+      equitySol,
+      closedEdgeTrades,
+      this.riskConfig.recoveryPct
+    );
 
     let consecutiveLosses = 0;
     let lastLossTime: Date | undefined;
@@ -259,21 +347,7 @@ export class RiskManager {
       consecutiveLosses,
       lastLossTime,
       drawdownGuard,
-    };
-  }
-
-  private buildDrawdownGuardState(
-    currentBalanceSol: number,
-    realizedPnls: number[]
-  ): DrawdownGuardState {
-    const balanceTimeline = buildBalanceTimelineFromClosedPnls(currentBalanceSol, realizedPnls);
-    return replayDrawdownGuardState(balanceTimeline, this.getDrawdownGuardConfig());
-  }
-
-  private getDrawdownGuardConfig(): DrawdownGuardConfig {
-    return {
-      maxDrawdownPct: this.riskConfig.maxDrawdownPct,
-      recoveryPct: this.riskConfig.recoveryPct,
+      riskTier,
     };
   }
 
@@ -283,4 +357,27 @@ export class RiskManager {
       `${drawdownGuard.peakBalanceSol.toFixed(4)} SOL; resume at ${drawdownGuard.recoveryBalanceSol.toFixed(4)} SOL`
     );
   }
+
+  private async getClosedEdgeTrades(): Promise<EdgeTrackerTrade[]> {
+    const closedTrades = await this.tradeStore.getClosedTradesChronological();
+    return closedTrades.map(toEdgeTrackerTrade);
+  }
+}
+
+function toEdgeTrackerTrade(
+  trade: Awaited<ReturnType<TradeStore['getClosedTradesChronological']>>[number]
+): EdgeTrackerTrade {
+  return {
+    pairAddress: trade.pairAddress,
+    strategy: trade.strategy,
+    entryPrice: trade.entryPrice,
+    stopLoss: trade.stopLoss,
+    quantity: trade.quantity,
+    pnl: trade.pnl ?? 0,
+  };
+}
+
+function formatMetric(value: number): string {
+  if (!Number.isFinite(value)) return 'inf';
+  return value.toFixed(2);
 }

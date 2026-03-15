@@ -169,6 +169,17 @@ export interface DrawdownGuardState {
   halted: boolean;
 }
 
+export interface PortfolioRiskTier {
+  edgeState: 'Bootstrap' | 'Calibration' | 'Confirmed' | 'Proven';
+  maxRiskPerTrade: number;
+  maxDailyLoss: number;
+  maxDrawdownPct: number;
+  recoveryPct: number;
+  kellyFraction: number;
+  kellyApplied: boolean;
+  kellyMode: 'fixed' | 'quarter' | 'half';
+}
+
 // ─── Safety Filters ───
 
 export interface TokenSafety {
@@ -189,6 +200,7 @@ export interface PortfolioState {
   consecutiveLosses: number;
   lastLossTime?: Date;
   drawdownGuard: DrawdownGuardState;
+  riskTier?: PortfolioRiskTier;
 }
 
 // ─── Health ───
@@ -212,6 +224,8 @@ export interface PoolInfo {
   dailyVolume: number;
   tradeCount24h: number;
   spreadPct: number;
+  ammFeePct?: number;
+  mevMarginPct?: number;
   tokenAgeHours: number;
   top10HolderPct: number;
   lpBurned: boolean;
@@ -249,4 +263,6 @@ export interface SignalAuditEntry {
   exitReason?: string;
   pnl?: number;
   slippageActual?: number;
+  effectiveRR?: number;
+  roundTripCost?: number;
 }

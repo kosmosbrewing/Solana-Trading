@@ -1,4 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
+import { StrategyEdgeStats } from '../reporting';
 import { createModuleLogger } from '../utils/logger';
 import { Signal, Trade, Order, AlertLevel } from '../utils/types';
 
@@ -157,6 +158,7 @@ export class Notifier {
     consecutiveLosses: number;
     uptime: number;
     restarts: number;
+    edgeStats?: StrategyEdgeStats[];
   }): Promise<void> {
     const winRate = report.totalTrades > 0
       ? ((report.wins / report.totalTrades) * 100).toFixed(1)
@@ -190,6 +192,20 @@ export class Notifier {
       '',
       `Uptime: ${formatDuration(report.uptime)} (restarts: ${report.restarts})`
     );
+
+    const visibleEdgeStats = (report.edgeStats ?? []).filter(stat => stat.totalTrades > 0);
+    if (visibleEdgeStats.length > 0) {
+      lines.push('', 'EdgeTracker:');
+      for (const stat of visibleEdgeStats) {
+        const rewardRisk = Number.isFinite(stat.rewardRisk) ? stat.rewardRisk.toFixed(2) : 'inf';
+        const kelly = stat.kellyEligible ? `${(stat.kellyFraction * 100).toFixed(1)}%` : 'locked';
+        lines.push(
+          `  ${stat.strategy}: ${stat.edgeState} | WR ${(stat.winRate * 100).toFixed(1)}% | ` +
+          `R:R ${rewardRisk} | Sharpe ${stat.sharpeRatio.toFixed(2)} | ` +
+          `MaxL ${stat.maxConsecutiveLosses} | Kelly ${kelly}`
+        );
+      }
+    }
 
     await this.send(lines.join('\n'));
   }

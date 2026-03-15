@@ -41,13 +41,20 @@ export class SignalAuditLogger {
         exit_price      NUMERIC,
         exit_reason     TEXT,
         pnl             NUMERIC,
-        slippage_actual NUMERIC
+        slippage_actual NUMERIC,
+        effective_rr    NUMERIC,
+        round_trip_cost NUMERIC
       );
 
       CREATE INDEX IF NOT EXISTS idx_signal_audit_strategy
         ON signal_audit_log (strategy, grade, action);
       CREATE INDEX IF NOT EXISTS idx_signal_audit_time
         ON signal_audit_log (timestamp DESC);
+    `);
+    await this.pool.query(`
+      ALTER TABLE signal_audit_log
+      ADD COLUMN IF NOT EXISTS effective_rr NUMERIC,
+      ADD COLUMN IF NOT EXISTS round_trip_cost NUMERIC
     `);
     log.info('SignalAuditLogger initialized');
   }
@@ -60,8 +67,9 @@ export class SignalAuditLogger {
         total_score, grade,
         candle_close, volume, buy_volume, sell_volume,
         pool_tvl, spread_pct,
-        action, filter_reason, position_size, size_constraint
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+        action, filter_reason, position_size, size_constraint,
+        effective_rr, round_trip_cost
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
       RETURNING id`,
       [
         entry.pairAddress, entry.strategy,
@@ -73,6 +81,7 @@ export class SignalAuditLogger {
         entry.poolTvl, entry.spreadPct ?? null,
         entry.action, entry.filterReason ?? null,
         entry.positionSize ?? null, entry.sizeConstraint ?? null,
+        entry.effectiveRR ?? null, entry.roundTripCost ?? null,
       ]
     );
     return result.rows[0].id;

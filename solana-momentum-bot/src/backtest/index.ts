@@ -4,6 +4,8 @@ export { DbLoader } from './dbLoader';
 export { BacktestReporter } from './reporter';
 export type {
   BacktestConfig,
+  BacktestAttentionScoreEntry,
+  BacktestEventScoreEntry,
   BacktestResult,
   BacktestTrade,
   EquityPoint,

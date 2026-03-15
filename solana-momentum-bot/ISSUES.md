@@ -21,22 +21,19 @@
 
 ## Remaining Work Summary
 
-### Highest priority
+### Lower priority (Phase 1 이후)
 
-- `0b` Live/backtest decision-path divergence
-
-### Medium priority
-
-- `1` Remove or intentionally preserve `pump_detect` in `StrategyName`
-- `4` Wire or remove unused config values: `minBuyRatio`, `minBreakoutScore`
-
-### Lower priority
-
-- `5` Replace hardcoded `multiTfAlignment: 1` in `volume_spike`
 - `6` Make position monitoring timeframe-aware
-- `7` Confirm spread data is real and reaches the filter path
-- `8` Clean up `safeAddColumn` interpolation pattern
-- `9` Consolidate duplicate HWM migration logic
+- `7` Confirm spread data is real and reaches the filter path (Universe 미사용 상태로 현재 영향 없음)
+
+## Recently Resolved
+
+- `0b` ✅ Live/backtest decision-path divergence — Gate 모듈 추출로 해결 (SOL-4)
+- `1` ✅ `pump_detect` StrategyName에서 완전 제거 (SOL-5)
+- `4` ✅ `minBuyRatio`, `minBreakoutScore` — Gate 평가 로직에 연결 완료
+- `5` ✅ `multiTfAlignment` — volume_spike 단일 TF는 의도적 설계, fib_pullback은 동적 계산
+- `8` ✅ `safeAddColumn` — 화이트리스트 검증 추가로 안전 (코스메틱 이슈만 잔존)
+- `9` ✅ HWM migration 중복 — tradeStore.ts에서 제거, migrate.ts로 통합
 ### P0 — Must fix
 
 #### 0b. Live/backtest strategy divergence (fib_pullback and shared)

@@ -43,17 +43,6 @@ export class TradeStore {
       `);
 
       await client.query(`
-        ALTER TABLE trades
-        ADD COLUMN IF NOT EXISTS high_water_mark NUMERIC;
-      `);
-
-      await client.query(`
-        UPDATE trades
-        SET high_water_mark = entry_price
-        WHERE status = 'OPEN' AND high_water_mark IS NULL;
-      `);
-
-      await client.query(`
         CREATE INDEX IF NOT EXISTS idx_trades_status ON trades (status);
         CREATE INDEX IF NOT EXISTS idx_trades_created ON trades (created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_trades_pair ON trades (pair_address, created_at DESC);
@@ -176,6 +165,15 @@ export class TradeStore {
     );
     return result.rows.map(rowToTrade);
   }
+
+  async getClosedTradesChronological(): Promise<Trade[]> {
+    const result = await this.pool.query(
+      `SELECT * FROM trades
+       WHERE status = 'CLOSED'
+       ORDER BY closed_at ASC, created_at ASC`
+    );
+    return result.rows.map(rowToTrade);
+  }
 }
 
 function rowToTrade(row: Record<string, unknown>): Trade {
@@ -185,21 +183,21 @@ function rowToTrade(row: Record<string, unknown>): Trade {
     strategy: row.strategy as Trade['strategy'],
     side: row.side as Trade['side'],
     entryPrice: Number(row.entry_price),
-    exitPrice: row.exit_price ? Number(row.exit_price) : undefined,
+    exitPrice: row.exit_price != null ? Number(row.exit_price) : undefined,
     quantity: Number(row.quantity),
-    pnl: row.pnl ? Number(row.pnl) : undefined,
-    slippage: row.slippage ? Number(row.slippage) : undefined,
+    pnl: row.pnl != null ? Number(row.pnl) : undefined,
+    slippage: row.slippage != null ? Number(row.slippage) : undefined,
     txSignature: row.tx_signature as string | undefined,
     status: row.status as Trade['status'],
     stopLoss: Number(row.stop_loss),
     takeProfit1: Number(row.take_profit1),
     takeProfit2: Number(row.take_profit2),
-    trailingStop: row.trailing_stop ? Number(row.trailing_stop) : undefined,
-    highWaterMark: row.high_water_mark ? Number(row.high_water_mark) : undefined,
+    trailingStop: row.trailing_stop != null ? Number(row.trailing_stop) : undefined,
+    highWaterMark: row.high_water_mark != null ? Number(row.high_water_mark) : undefined,
     timeStopAt: new Date(row.time_stop_at as string),
     createdAt: new Date(row.created_at as string),
     closedAt: row.closed_at ? new Date(row.closed_at as string) : undefined,
-    breakoutScore: row.breakout_score ? Number(row.breakout_score) : undefined,
+    breakoutScore: row.breakout_score != null ? Number(row.breakout_score) : undefined,
     breakoutGrade: row.breakout_grade as Trade['breakoutGrade'],
     sizeConstraint: row.size_constraint as Trade['sizeConstraint'],
     exitReason: row.exit_reason as Trade['exitReason'],

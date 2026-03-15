@@ -1,5 +1,5 @@
 import { createModuleLogger } from '../utils/logger';
-import { PositionRecord } from '../utils/types';
+import { CloseReason, PositionRecord } from '../utils/types';
 import { PositionStore } from './positionStore';
 
 const log = createModuleLogger('Recovery');
@@ -8,6 +8,14 @@ export interface RecoveryDeps {
   positionStore: PositionStore;
   getTokenBalance: (pairAddress: string) => Promise<bigint>;
   getCurrentPrice: (pairAddress: string) => Promise<number | null>;
+  executeSell: (pairAddress: string, amountRaw: bigint) => Promise<{ txSignature: string }>;
+  finalizeRecoveredTrade?: (
+    pairAddress: string,
+    txSignature: string,
+    exitPrice?: number,
+    exitReason?: CloseReason
+  ) => Promise<void>;
+  notifyCritical: (context: string, message: string) => Promise<void>;
 }
 
 export interface RecoveryResult {
@@ -105,12 +113,43 @@ async function recoverPosition(
   if (pos.state === 'EXIT_TRIGGERED') {
     const balance = await deps.getTokenBalance(pos.pairAddress);
     if (balance > 0n) {
-      result.recovered++;
-      result.details.push(`Position ${pos.id}: EXIT_TRIGGERED — balance still exists, needs re-sell`);
+      try {
+        const sellResult = await deps.executeSell(pos.pairAddress, balance);
+        const exitPrice = (await deps.getCurrentPrice(pos.pairAddress)) ?? pos.entryPrice;
+        await deps.positionStore.updateState(pos.id, 'EXIT_CONFIRMED', {
+          txExit: sellResult.txSignature,
+          exitReason: 'RECOVERED_CLOSED',
+        });
+        if (deps.finalizeRecoveredTrade) {
+          await deps.finalizeRecoveredTrade(
+            pos.pairAddress,
+            sellResult.txSignature,
+            exitPrice,
+            'RECOVERED_CLOSED'
+          );
+        }
+        result.closed++;
+        result.details.push(`Position ${pos.id}: EXIT_TRIGGERED → EXIT_CONFIRMED (re-sell executed)`);
+      } catch (error) {
+        result.failed++;
+        const msg = `Position ${pos.id}: EXIT_TRIGGERED re-sell failed: ${error}`;
+        log.error(msg);
+        result.details.push(msg);
+        await deps.notifyCritical('Recovery Exit Retry', msg);
+      }
     } else {
+      const exitPrice = (await deps.getCurrentPrice(pos.pairAddress)) ?? pos.entryPrice;
       await deps.positionStore.updateState(pos.id, 'EXIT_CONFIRMED', {
         exitReason: 'RECOVERED_CLOSED',
       });
+      if (deps.finalizeRecoveredTrade) {
+        await deps.finalizeRecoveredTrade(
+          pos.pairAddress,
+          pos.txExit ?? 'RECOVERED_CLOSED',
+          exitPrice,
+          'RECOVERED_CLOSED'
+        );
+      }
       result.closed++;
       result.details.push(`Position ${pos.id}: EXIT_TRIGGERED → EXIT_CONFIRMED (already sold)`);
     }

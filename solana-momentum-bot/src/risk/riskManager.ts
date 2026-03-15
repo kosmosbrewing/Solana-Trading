@@ -1,17 +1,24 @@
 import { createModuleLogger } from '../utils/logger';
 import {
-  Order, RiskCheckResult, TokenSafety, PortfolioState, SizeConstraint, BreakoutGrade,
+  Order, RiskCheckResult, TokenSafety, PortfolioState, SizeConstraint, BreakoutGrade, DrawdownGuardState,
 } from '../utils/types';
 import { TradeStore } from '../candle/tradeStore';
 import { checkTokenSafety as evaluateTokenSafety, SafetyGateResult } from '../gate/safetyGate';
 import { getGradeSizeMultiplier } from '../gate/sizingGate';
 import { calculateLiquiditySize, LiquidityParams, DEFAULT_LIQUIDITY_PARAMS } from './liquiditySizer';
+import {
+  buildBalanceTimelineFromClosedPnls,
+  DrawdownGuardConfig,
+  replayDrawdownGuardState,
+} from './drawdownGuard';
 
 const log = createModuleLogger('RiskManager');
 
 export interface RiskConfig {
   maxRiskPerTrade: number;
   maxDailyLoss: number;
+  maxDrawdownPct: number;
+  recoveryPct: number;
   maxConsecutiveLosses: number;
   cooldownMinutes: number;
   maxSlippage: number;
@@ -19,6 +26,11 @@ export interface RiskConfig {
   minTokenAgeHours: number;
   maxHolderConcentration: number;
   liquidityParams?: Partial<LiquidityParams>;
+}
+
+export interface RiskHalt {
+  kind: 'dailyLoss' | 'drawdown';
+  reason: string;
 }
 
 /** checkOrder에 필요한 최소 주문 정보 */
@@ -54,10 +66,11 @@ export class RiskManager {
     let safetyMultiplier = 1.0;
     const appliedAdjustments: string[] = [];
 
-    if (this.isDailyLossExceeded(portfolio)) {
+    const activeHalt = this.getActiveHalt(portfolio);
+    if (activeHalt) {
       return {
         approved: false,
-        reason: `Daily loss limit reached: ${portfolio.dailyPnl.toFixed(4)} SOL`,
+        reason: activeHalt.reason,
       };
     }
 
@@ -82,14 +95,6 @@ export class RiskManager {
       }
       safetyMultiplier = safetyResult.sizeMultiplier ?? 1.0;
       appliedAdjustments.push(...(safetyResult.appliedAdjustments ?? []));
-    }
-
-    // Grade C → 진입 금지
-    if (order.breakoutGrade === 'C') {
-      return {
-        approved: false,
-        reason: `Breakout grade C — entry rejected`,
-      };
     }
 
     const { adjustedQuantity, sizeConstraint } = this.calculatePositionSize(order, portfolio);
@@ -169,8 +174,26 @@ export class RiskManager {
     };
   }
 
+  getActiveHalt(portfolio: PortfolioState): RiskHalt | undefined {
+    if (portfolio.drawdownGuard.halted) {
+      return {
+        kind: 'drawdown',
+        reason: this.formatDrawdownHaltReason(portfolio.drawdownGuard),
+      };
+    }
+
+    if (this.isDailyLossExceeded(portfolio)) {
+      return {
+        kind: 'dailyLoss',
+        reason: `Daily loss limit reached: ${portfolio.dailyPnl.toFixed(4)} SOL`,
+      };
+    }
+
+    return undefined;
+  }
+
   private isDailyLossExceeded(portfolio: PortfolioState): boolean {
-    const maxLoss = portfolio.balanceSol * this.riskConfig.maxDailyLoss;
+    const maxLoss = portfolio.equitySol * this.riskConfig.maxDailyLoss;
     return portfolio.dailyPnl < -maxLoss;
   }
 
@@ -207,11 +230,15 @@ export class RiskManager {
    * 현재 포트폴리오 상태 구성 — 병렬 DB 쿼리
    */
   async getPortfolioState(balanceSol: number): Promise<PortfolioState> {
-    const [openTrades, dailyPnl, recentClosed] = await Promise.all([
+    const [openTrades, dailyPnl, recentClosed, closedTrades] = await Promise.all([
       this.tradeStore.getOpenTrades(),
       this.tradeStore.getTodayPnl(),
       this.tradeStore.getRecentClosedTrades(10),
+      this.tradeStore.getClosedTradesChronological(),
     ]);
+
+    const equitySol = balanceSol + openTrades.reduce((sum, trade) => sum + trade.quantity, 0);
+    const drawdownGuard = this.buildDrawdownGuardState(equitySol, closedTrades.map(trade => trade.pnl ?? 0));
 
     let consecutiveLosses = 0;
     let lastLossTime: Date | undefined;
@@ -226,10 +253,34 @@ export class RiskManager {
 
     return {
       balanceSol,
+      equitySol,
       openTrades,
       dailyPnl,
       consecutiveLosses,
       lastLossTime,
+      drawdownGuard,
     };
+  }
+
+  private buildDrawdownGuardState(
+    currentBalanceSol: number,
+    realizedPnls: number[]
+  ): DrawdownGuardState {
+    const balanceTimeline = buildBalanceTimelineFromClosedPnls(currentBalanceSol, realizedPnls);
+    return replayDrawdownGuardState(balanceTimeline, this.getDrawdownGuardConfig());
+  }
+
+  private getDrawdownGuardConfig(): DrawdownGuardConfig {
+    return {
+      maxDrawdownPct: this.riskConfig.maxDrawdownPct,
+      recoveryPct: this.riskConfig.recoveryPct,
+    };
+  }
+
+  private formatDrawdownHaltReason(drawdownGuard: DrawdownGuardState): string {
+    return (
+      `Drawdown guard active: ${(drawdownGuard.drawdownPct * 100).toFixed(2)}% below HWM ` +
+      `${drawdownGuard.peakBalanceSol.toFixed(4)} SOL; resume at ${drawdownGuard.recoveryBalanceSol.toFixed(4)} SOL`
+    );
   }
 }

@@ -80,14 +80,7 @@ export const config = {
   minBuyRatio: numOptional('MIN_BUY_RATIO', 0.65),
   minBreakoutScore: numOptional('MIN_BREAKOUT_SCORE', 50),
   maxRiskPerTrade: numOptional('MAX_RISK_PER_TRADE', 0.01),
-  takeProfitAtrMultiplier: numOptional('TAKE_PROFIT_ATR_MULTIPLIER', 2.0),
-  trailingStopAtrMultiplier: numOptional('TRAILING_STOP_ATR_MULTIPLIER', 1.5),
-  timeStopMinutes: numOptional('TIME_STOP_MINUTES', 30),
   exhaustionThreshold: numOptional('EXHAUSTION_THRESHOLD', 2),
-
-  // Pump Detection
-  pumpConsecutiveCandles: numOptional('PUMP_CONSECUTIVE_CANDLES', 3),
-  pumpMinPriceMove: numOptional('PUMP_MIN_PRICE_MOVE', 0.05),
 
   // Fib Pullback (Strategy C)
   fibImpulseWindowBars: numOptional('FIB_IMPULSE_WINDOW_BARS', 18),
@@ -120,4 +113,11 @@ export const config = {
 
   // Universe refresh
   universeRefreshIntervalMs: numOptional('UNIVERSE_REFRESH_INTERVAL_MS', 300_000),
+
+  // Event Context (Stage 1 / EventScout)
+  eventPollingIntervalMs: numOptional('EVENT_POLLING_INTERVAL_MS', 1_800_000),
+  eventTrendingFetchLimit: numOptional('EVENT_TRENDING_FETCH_LIMIT', 20),
+  eventMinScore: numOptional('EVENT_MIN_SCORE', 35),
+  eventExpiryMinutes: numOptional('EVENT_EXPIRY_MINUTES', 180),
+  eventMinLiquidityUsd: numOptional('EVENT_MIN_LIQUIDITY_USD', 25_000),
 } as const;

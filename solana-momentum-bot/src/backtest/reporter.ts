@@ -44,13 +44,28 @@ export class BacktestReporter {
 
     // Risk Rejections
     const rej = result.rejections;
-    const totalRej = rej.dailyLimit + rej.cooldown + rej.positionOpen + rej.zeroSize;
+    const totalRej =
+      rej.dailyLimit +
+      rej.cooldown +
+      rej.positionOpen +
+      rej.zeroSize +
+      rej.gradeFiltered +
+      rej.safetyFiltered;
     if (totalRej > 0) {
       console.log(`  Risk Rejections: ${totalRej} total`);
       if (rej.dailyLimit > 0) console.log(`    Daily limit:   ${rej.dailyLimit}`);
       if (rej.cooldown > 0)   console.log(`    Cooldown:      ${rej.cooldown}`);
       if (rej.positionOpen > 0) console.log(`    Position open: ${rej.positionOpen}`);
       if (rej.zeroSize > 0)   console.log(`    Zero size:     ${rej.zeroSize}`);
+      console.log(hr);
+    }
+
+    const grades = result.gradeDistribution;
+    const totalGrades = grades.A + grades.B + grades.C;
+    if (totalGrades > 0) {
+      console.log(`  Grade Dist.:     A=${grades.A} B=${grades.B} C=${grades.C}`);
+      if (rej.gradeFiltered > 0) console.log(`    Grade filtered:${rej.gradeFiltered}`);
+      if (rej.safetyFiltered > 0) console.log(`    Safety filtered:${rej.safetyFiltered}`);
       console.log(hr);
     }
 
@@ -70,11 +85,12 @@ export class BacktestReporter {
       '  ' +
       pad('#', 4) +
       pad('Strategy', 14) +
-      pad('Entry', 14) +
-      pad('Exit', 14) +
-      pad('PnL %', 10) +
-      pad('PnL SOL', 12) +
-      pad('Exit Reason', 16) +
+        pad('Entry', 14) +
+        pad('Exit', 14) +
+        pad('Grade', 8) +
+        pad('PnL %', 10) +
+        pad('PnL SOL', 12) +
+        pad('Exit Reason', 16) +
       pad('Bars', 6) +
       pad('Entry Time', 20)
     );
@@ -87,6 +103,7 @@ export class BacktestReporter {
         pad(t.strategy, 14) +
         pad(t.entryPrice.toPrecision(6), 14) +
         pad(t.exitPrice.toPrecision(6), 14) +
+        pad(t.breakoutGrade || '-', 8) +
         pad(pct(t.pnlPct), 10) +
         pad(t.pnlSol.toFixed(6), 12) +
         pad(t.exitReason, 16) +
@@ -139,10 +156,12 @@ export class BacktestReporter {
    * CSV로 트레이드 로그 내보내기
    */
   exportTradesCsv(trades: BacktestTrade[]): string {
-    const header = 'id,strategy,entry_time,exit_time,entry_price,exit_price,quantity,pnl_sol,pnl_pct,exit_reason,bars_held,peak_price';
+    const header = 'id,strategy,grade,score,entry_time,exit_time,entry_price,exit_price,quantity,pnl_sol,pnl_pct,exit_reason,bars_held,peak_price';
     const rows = trades.map(t =>
       [
         t.id, t.strategy,
+        t.breakoutGrade ?? '',
+        t.breakoutScore ?? '',
         t.entryTime.toISOString(), t.exitTime.toISOString(),
         t.entryPrice, t.exitPrice, t.quantity,
         t.pnlSol.toFixed(8), (t.pnlPct * 100).toFixed(4),

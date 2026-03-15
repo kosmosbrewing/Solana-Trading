@@ -5,6 +5,7 @@
 import { Pool } from 'pg';
 import dotenv from 'dotenv';
 import path from 'path';
+import { ensureTradeHighWaterMarkColumn } from '../src/candle/tradeSchema';
 
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
@@ -108,12 +109,7 @@ async function migrate() {
     await safeAddColumn(client, 'trades', 'size_constraint', 'TEXT');
     await safeAddColumn(client, 'trades', 'exit_reason', 'TEXT');
     await safeAddColumn(client, 'trades', 'high_water_mark', 'NUMERIC');
-
-    await client.query(`
-      UPDATE trades
-      SET high_water_mark = entry_price
-      WHERE status = 'OPEN' AND high_water_mark IS NULL
-    `);
+    await ensureTradeHighWaterMarkColumn(client);
 
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_trades_status ON trades (status);
@@ -260,11 +256,37 @@ async function safeAddColumn(
   column: string,
   type: string
 ): Promise<void> {
-  try {
-    await client.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${type}`);
-  } catch {
-    // Column might already exist — ignore
+  const allowedColumns: Record<string, Record<string, string>> = {
+    candles: {
+      buy_volume: 'NUMERIC NOT NULL DEFAULT 0',
+      sell_volume: 'NUMERIC NOT NULL DEFAULT 0',
+    },
+    trades: {
+      breakout_score: 'INTEGER',
+      breakout_grade: 'TEXT',
+      size_constraint: 'TEXT',
+      exit_reason: 'TEXT',
+      high_water_mark: 'NUMERIC',
+    },
+  };
+
+  const tableColumns = allowedColumns[table];
+  if (!tableColumns) {
+    throw new Error(`safeAddColumn rejected table: ${table}`);
   }
+
+  const expectedType = tableColumns[column];
+  if (!expectedType) {
+    throw new Error(`safeAddColumn rejected column: ${table}.${column}`);
+  }
+
+  if (expectedType !== type) {
+    throw new Error(
+      `safeAddColumn rejected type for ${table}.${column}: expected "${expectedType}", got "${type}"`
+    );
+  }
+
+  await client.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${type}`);
 }
 
 migrate().catch((error) => {

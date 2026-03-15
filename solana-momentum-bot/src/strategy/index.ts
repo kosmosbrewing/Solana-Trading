@@ -5,12 +5,6 @@ export {
 export type { VolumeSpikeParams } from './volumeSpikeBreakout';
 
 export {
-  evaluatePumpDetection,
-  buildPumpOrder,
-} from './pumpDetection';
-export type { PumpDetectParams } from './pumpDetection';
-
-export {
   calcATR,
   calcAvgVolume,
   calcHighestHigh,
@@ -25,10 +19,8 @@ export type { BreakoutScoreInput } from './breakoutScore';
 export { detectWhaleActivity } from './whaleDetect';
 export type { WhaleAlert } from './whaleDetect';
 
-export { checkLpChange, assessLpStability } from './lpMonitor';
-export type { LpStability, LpAlert } from './lpMonitor';
-
-export { checkMultiTfAlignment } from './multiTf';
+export { assessLpStability } from './lpMonitor';
+export type { LpStability } from './lpMonitor';
 
 export { checkExhaustion } from './exhaustion';
 

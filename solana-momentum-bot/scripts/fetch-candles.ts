@@ -74,7 +74,7 @@ async function main() {
         allRows.push(
           [
             Math.floor(c.timestamp.getTime() / 1000),
-            c.open, c.high, c.low, c.close, c.volume, c.tradeCount,
+            c.open, c.high, c.low, c.close, c.volume, c.tradeCount, c.buyVolume, c.sellVolume,
           ].join(',')
         );
       }
@@ -107,7 +107,7 @@ async function main() {
   const filename = `${pairAddress}_${intervalStr}.csv`;
   const filepath = path.join(outputDir, filename);
 
-  const header = 'timestamp,open,high,low,close,volume,trade_count';
+  const header = 'timestamp,open,high,low,close,volume,trade_count,buy_volume,sell_volume';
   fs.writeFileSync(filepath, [header, ...uniqueRows].join('\n') + '\n');
 
   console.log(`\nSaved ${uniqueRows.length} candles to ${filepath}`);

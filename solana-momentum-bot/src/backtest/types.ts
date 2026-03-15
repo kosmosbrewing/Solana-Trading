@@ -1,6 +1,5 @@
-import { Candle, Order, StrategyName } from '../utils/types';
+import { BreakoutGrade, Candle, PoolInfo, StrategyName } from '../utils/types';
 import { VolumeSpikeParams } from '../strategy/volumeSpikeBreakout';
-import { PumpDetectParams } from '../strategy/pumpDetection';
 import { FibPullbackParams } from '../strategy/fibPullback';
 
 // ─── Backtest Configuration ───
@@ -14,13 +13,24 @@ export interface BacktestConfig {
   maxRiskPerTrade: number;
   /** Max daily loss as fraction of balance */
   maxDailyLoss: number;
+  /** Max total drawdown from HWM before halting new entries */
+  maxDrawdownPct: number;
+  /** Balance recovery threshold from HWM to resume trading */
+  recoveryPct: number;
   /** Max consecutive losses before cooldown */
   maxConsecutiveLosses: number;
   /** Cooldown duration in minutes */
   cooldownMinutes: number;
+  /** Safety thresholds aligned with live risk config */
+  minPoolLiquidity: number;
+  minTokenAgeHours: number;
+  maxHolderConcentration: number;
+  minBuyRatio: number;
+  minBreakoutScore: number;
+  /** Optional pool metadata used by shared gate evaluation */
+  gatePoolInfo?: Partial<PoolInfo>;
   /** Strategy params overrides */
   volumeSpikeParams: Partial<VolumeSpikeParams>;
-  pumpDetectParams: Partial<PumpDetectParams>;
   fibPullbackParams: Partial<FibPullbackParams>;
   /** Date range filter */
   startDate?: Date;
@@ -32,10 +42,23 @@ export const DEFAULT_BACKTEST_CONFIG: BacktestConfig = {
   slippageDeduction: 0.30,
   maxRiskPerTrade: 0.01,
   maxDailyLoss: 0.05,
+  maxDrawdownPct: 0.30,
+  recoveryPct: 0.85,
   maxConsecutiveLosses: 3,
   cooldownMinutes: 30,
+  minPoolLiquidity: 50_000,
+  minTokenAgeHours: 24,
+  maxHolderConcentration: 0.80,
+  minBuyRatio: 0.65,
+  minBreakoutScore: 50,
+  gatePoolInfo: {
+    tvl: 50_000,
+    tokenAgeHours: 24,
+    top10HolderPct: 0.80,
+    lpBurned: false,
+    ownershipRenounced: false,
+  },
   volumeSpikeParams: {},
-  pumpDetectParams: {},
   fibPullbackParams: {},
 };
 
@@ -47,6 +70,8 @@ export interface BacktestTrade {
   id: number;
   strategy: StrategyName;
   pairAddress: string;
+  breakoutScore?: number;
+  breakoutGrade?: BreakoutGrade;
   entryPrice: number;
   exitPrice: number;
   quantity: number;
@@ -104,10 +129,14 @@ export interface BacktestResult {
   // Risk rejections
   rejections: {
     dailyLimit: number;
+    drawdownHalt: number;
     cooldown: number;
     positionOpen: number;
     zeroSize: number;
+    gradeFiltered: number;
+    safetyFiltered: number;
   };
+  gradeDistribution: Record<BreakoutGrade, number>;
 
   // Data
   trades: BacktestTrade[];

@@ -5,6 +5,7 @@ import { HealthMonitor } from './utils/healthMonitor';
 import { Candle, Signal, Order, Trade, CloseReason, PoolInfo } from './utils/types';
 
 import { BirdeyeClient, Ingester, IngesterConfig } from './ingester';
+import { EventMonitor } from './event';
 import { CandleStore, TradeStore } from './candle';
 import {
   evaluateVolumeSpikeBreakout,
@@ -64,6 +65,13 @@ async function main() {
 
   // ─── Initialize modules ─────────────────────────────
   const birdeyeClient = new BirdeyeClient(config.birdeyeApiKey);
+  const eventMonitor = new EventMonitor(birdeyeClient, {
+    pollingIntervalMs: config.eventPollingIntervalMs,
+    minEventScore: config.eventMinScore,
+    fetchLimit: config.eventTrendingFetchLimit,
+    expiryMinutes: config.eventExpiryMinutes,
+    minLiquidityUsd: config.eventMinLiquidityUsd,
+  });
 
   const riskConfig: RiskConfig = {
     maxRiskPerTrade: config.maxRiskPerTrade,
@@ -126,6 +134,19 @@ async function main() {
 
   const universeEngine = new UniverseEngine(birdeyeClient, universeConfig);
 
+  eventMonitor.on('events', (scores) => {
+    for (const score of scores) {
+      log.info(JSON.stringify({
+        type: 'event_score',
+        ...score,
+      }));
+    }
+  });
+
+  eventMonitor.on('error', async (error: unknown) => {
+    await notifier.sendError('event_monitor', error).catch(() => {});
+  });
+
   universeEngine.on('poolEvent', async (event: { type: string; pairAddress: string; detail: string }) => {
     if (event.type === 'RUG_PULL' || event.type === 'LP_DROP') {
       await notifier.sendCritical('Pool Event', `${event.type}: ${event.detail}`);
@@ -168,6 +189,26 @@ async function main() {
       const candles = await candleStore.getRecentCandles(addr, 300, 1);
       return candles.length > 0 ? candles[0].close : null;
     },
+    executeSell: (addr, amountRaw) => executor.executeSell(addr, amountRaw),
+    finalizeRecoveredTrade: async (pairAddress, txSignature, exitPrice, exitReason = 'RECOVERED_CLOSED') => {
+      const openTrade = (await tradeStore.getOpenTrades()).find(trade => trade.pairAddress === pairAddress);
+      if (!openTrade) return;
+
+      const resolvedExitPrice = exitPrice ?? openTrade.entryPrice;
+      const pnl = (resolvedExitPrice - openTrade.entryPrice) * openTrade.quantity;
+      await tradeStore.closeTrade(openTrade.id, resolvedExitPrice, pnl, 0, exitReason);
+      await notifier.sendTradeClose({
+        ...openTrade,
+        exitPrice: resolvedExitPrice,
+        pnl,
+        slippage: 0,
+        status: 'CLOSED',
+        txSignature,
+        exitReason,
+        closedAt: new Date(),
+      });
+    },
+    notifyCritical: (context, message) => notifier.sendCritical(context, message),
   });
 
   if (recoveryResult.recovered > 0 || recoveryResult.closed > 0) {
@@ -214,6 +255,7 @@ async function main() {
   }, 5000);
 
   // ─── Universe Engine start ──────────────────────────
+  await eventMonitor.start();
   await universeEngine.start();
 
   // ─── Start ingester ─────────────────────────────────
@@ -230,6 +272,7 @@ async function main() {
     log.info('Shutting down...');
     clearInterval(positionCheckInterval);
     await ingester.stop();
+    eventMonitor.stop();
     universeEngine.stop();
     executionLock.destroy();
     healthMonitor.stop();
@@ -284,6 +327,10 @@ async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<void> {
           volumeClimaxMultiplier: config.fibVolumeClimaxMultiplier,
           minWickRatio: config.fibMinWickRatio,
         },
+        thresholds: {
+          minBuyRatio: config.minBuyRatio,
+          minBreakoutScore: config.minBreakoutScore,
+        },
       });
 
       signal.breakoutScore = gateResult.breakoutScore;
@@ -324,6 +371,10 @@ async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<void> {
             impulseMinPct: config.fibImpulseMinPct,
             volumeClimaxMultiplier: config.fibVolumeClimaxMultiplier,
             minWickRatio: config.fibMinWickRatio,
+          },
+          thresholds: {
+            minBuyRatio: config.minBuyRatio,
+            minBreakoutScore: config.minBreakoutScore,
           },
         });
 
@@ -366,9 +417,9 @@ async function processSignal(
     return;
   }
 
-  // Grade C → 진입 금지
+  // Configured score threshold 미만 → 진입 금지
   if (gateResult.rejected) {
-    const filterReason = gateResult.filterReason || `Grade C (score ${totalScore})`;
+    const filterReason = gateResult.filterReason || `Score ${totalScore} rejected by gate threshold`;
     log.info(`Signal filtered: ${filterReason}`);
     await ctx.auditLogger.logSignal({
       pairAddress: signal.pairAddress,
@@ -494,84 +545,22 @@ async function processSignal(
       { signal: signal.meta, score: totalScore, grade }
     );
 
-    if (ctx.tradingMode === 'paper') {
-      log.info(`[PAPER] Would execute: ${JSON.stringify(order)}`);
-      await ctx.notifier.sendTradeOpen(order, 'PAPER_TRADE');
-      await ctx.auditLogger.logSignal({
-        pairAddress: signal.pairAddress,
-        strategy: signal.strategy,
-        ...signal.breakoutScore!,
-        candleClose: signal.price,
-        volume: candles[candles.length - 1].volume,
-        poolTvl: signal.poolTvl || 0,
-        action: 'EXECUTED',
-        positionSize: quantity,
-        sizeConstraint: riskResult.sizeConstraint,
-      });
-      await ctx.positionStore.updateState(positionId, 'EXIT_CONFIRMED');
-      return;
-    }
-
-    // Live execution
     try {
-      await ctx.positionStore.updateState(positionId, 'ORDER_SUBMITTED');
+      let txSignature = 'PAPER_TRADE';
 
-      const buyResult = await ctx.executor.executeBuy(order);
-      const txSignature = buyResult.txSignature;
+      if (ctx.tradingMode === 'paper') {
+        log.info(`[PAPER] Simulating execution: ${JSON.stringify(order)}`);
+      } else {
+        await ctx.positionStore.updateState(positionId, 'ORDER_SUBMITTED');
+        const buyResult = await ctx.executor.executeBuy(order);
+        txSignature = buyResult.txSignature;
 
-      // 실제 슬리피지 기록
-      if (buyResult.slippageBps > 0) {
-        log.info(`Entry slippage: ${buyResult.slippageBps}bps`);
+        if (buyResult.slippageBps > 0) {
+          log.info(`Entry slippage: ${buyResult.slippageBps}bps`);
+        }
       }
 
-      await ctx.positionStore.updateState(positionId, 'ENTRY_CONFIRMED', {
-        entryPrice: order.price,
-        quantity: order.quantity,
-        stopLoss: order.stopLoss,
-        takeProfit1: order.takeProfit1,
-        takeProfit2: order.takeProfit2,
-        trailingStop: order.trailingStop,
-        txEntry: txSignature,
-      });
-
-      const timeStopAt = new Date(Date.now() + order.timeStopMinutes * 60 * 1000);
-      await ctx.tradeStore.insertTrade({
-        pairAddress: order.pairAddress,
-        strategy: order.strategy,
-        side: order.side,
-        entryPrice: order.price,
-        quantity: order.quantity,
-        stopLoss: order.stopLoss,
-        takeProfit1: order.takeProfit1,
-        takeProfit2: order.takeProfit2,
-        trailingStop: order.trailingStop,
-        highWaterMark: order.price,
-        timeStopAt,
-        status: 'OPEN',
-        txSignature,
-        createdAt: new Date(),
-        breakoutScore: totalScore,
-        breakoutGrade: grade,
-        sizeConstraint: riskResult.sizeConstraint,
-      });
-
-      await ctx.positionStore.updateState(positionId, 'MONITORING');
-
-      ctx.healthMonitor.updateTradeTime();
-      await ctx.notifier.sendTradeOpen(order, txSignature);
-
-      await ctx.auditLogger.logSignal({
-        pairAddress: signal.pairAddress,
-        strategy: signal.strategy,
-        ...signal.breakoutScore!,
-        candleClose: signal.price,
-        volume: candles[candles.length - 1].volume,
-        poolTvl: signal.poolTvl || 0,
-        action: 'EXECUTED',
-        positionSize: quantity,
-        sizeConstraint: riskResult.sizeConstraint,
-      });
-
+      await recordOpenedTrade(ctx, positionId, signal, candles[candles.length - 1], order, totalScore, quantity, riskResult.sizeConstraint, txSignature);
       log.info(`Trade opened: ${txSignature}`);
     } catch (error) {
       log.error(`Trade execution failed: ${error}`);
@@ -587,14 +576,15 @@ async function processSignal(
  * 열린 포지션 모니터링 (SL/TP/Time Stop/Exhaustion/Adaptive Trailing)
  */
 async function checkOpenPositions(ctx: BotContext): Promise<void> {
-  if (ctx.tradingMode === 'paper') return;
-
   const openTrades = await ctx.tradeStore.getOpenTrades();
   ctx.healthMonitor.updatePositions(openTrades.length);
   const dailyPnl = await ctx.tradeStore.getTodayPnl();
   ctx.healthMonitor.updateDailyPnl(dailyPnl);
-  const balance = await ctx.executor.getBalance();
-  await enforceDailyLossHalt(ctx, dailyPnl, balance);
+
+  if (ctx.tradingMode === 'live') {
+    const balance = await ctx.executor.getBalance();
+    await enforceDailyLossHalt(ctx, dailyPnl, balance);
+  }
 
   if (openTrades.length === 0) {
     return;
@@ -602,13 +592,6 @@ async function checkOpenPositions(ctx: BotContext): Promise<void> {
 
   for (const trade of openTrades) {
     const now = new Date();
-
-    // Time Stop 체크
-    if (now >= trade.timeStopAt) {
-      log.info(`Time stop triggered for trade ${trade.id}`);
-      await closeTrade(trade, 'TIME_STOP', ctx);
-      continue;
-    }
 
     // 현재 가격 조회
     const recentCandles = await ctx.candleStore.getRecentCandles(
@@ -619,6 +602,13 @@ async function checkOpenPositions(ctx: BotContext): Promise<void> {
     if (recentCandles.length === 0) continue;
 
     const currentPrice = recentCandles[recentCandles.length - 1].close;
+
+    // Time Stop 체크
+    if (now >= trade.timeStopAt) {
+      log.info(`Time stop triggered for trade ${trade.id}`);
+      await closeTrade(trade, 'TIME_STOP', ctx, currentPrice);
+      continue;
+    }
 
     // Stop Loss 체크
     if (currentPrice <= trade.stopLoss) {
@@ -631,14 +621,14 @@ async function checkOpenPositions(ctx: BotContext): Promise<void> {
         );
       }
       log.info(`Stop loss triggered for trade ${trade.id} at ${currentPrice}`);
-      await closeTrade(trade, 'STOP_LOSS', ctx);
+      await closeTrade(trade, 'STOP_LOSS', ctx, currentPrice);
       continue;
     }
 
     // Take Profit 2 체크
     if (currentPrice >= trade.takeProfit2) {
       log.info(`Take profit 2 triggered for trade ${trade.id} at ${currentPrice}`);
-      await closeTrade(trade, 'TAKE_PROFIT_2', ctx);
+      await closeTrade(trade, 'TAKE_PROFIT_2', ctx, currentPrice);
       continue;
     }
 
@@ -654,7 +644,7 @@ async function checkOpenPositions(ctx: BotContext): Promise<void> {
       const { exhausted, indicators } = checkExhaustion(recentCandles, config.exhaustionThreshold);
       if (exhausted && currentPrice > trade.entryPrice) {
         log.info(`Exhaustion exit for trade ${trade.id}: ${indicators.join(', ')}`);
-        await closeTrade(trade, 'EXHAUSTION', ctx);
+        await closeTrade(trade, 'EXHAUSTION', ctx, currentPrice);
         continue;
       }
     }
@@ -672,7 +662,7 @@ async function checkOpenPositions(ctx: BotContext): Promise<void> {
 
       if (currentPrice <= adaptiveStop && currentPrice > trade.stopLoss) {
         log.info(`Adaptive trailing stop triggered for trade ${trade.id} at ${currentPrice}`);
-        await closeTrade(trade, 'TRAILING_STOP', ctx);
+        await closeTrade(trade, 'TRAILING_STOP', ctx, currentPrice);
         continue;
       }
     }
@@ -710,40 +700,41 @@ async function enforceDailyLossHalt(
 async function closeTrade(
   trade: Trade,
   reason: CloseReason,
-  ctx: BotContext
+  ctx: BotContext,
+  paperExitPrice?: number
 ): Promise<void> {
   try {
-    const tokenBalance = await ctx.executor.getTokenBalance(trade.pairAddress);
-
     let txSignature: string | undefined;
-    let exitPrice = trade.entryPrice;
+    let exitPrice = paperExitPrice ?? trade.entryPrice;
     let executionSlippage = 0;
 
-    if (tokenBalance > 0n) {
-      // 매도 전 SOL 잔고 기록
-      const solBefore = await ctx.executor.getBalance();
-
-      const sellResult = await ctx.executor.executeSell(trade.pairAddress, tokenBalance);
-      txSignature = sellResult.txSignature;
-
-      // 매도 후 SOL 잔고로 실제 수신액 계산
-      const solAfter = await ctx.executor.getBalance();
-      const receivedSol = solAfter - solBefore;
-
-      // 실제 exitPrice = 받은 SOL / 보유 토큰 수량
-      if (receivedSol > 0 && trade.quantity > 0) {
-        exitPrice = receivedSol / trade.quantity;
-      }
-
-      // 실행 슬리피지 = Jupiter quote 대비 실제 수신량 차이
-      executionSlippage = sellResult.slippageBps / 10000;
-
-      log.info(
-        `Sell executed: received=${receivedSol.toFixed(6)} SOL, ` +
-        `exitPrice=${exitPrice.toFixed(8)}, slippage=${sellResult.slippageBps}bps`
-      );
+    if (ctx.tradingMode === 'paper') {
+      txSignature = 'PAPER_TRADE';
     } else {
-      log.warn(`No token balance for trade ${trade.id} — closing with entry price`);
+      await updatePositionsForPair(ctx, trade.pairAddress, 'EXIT_TRIGGERED', { exitReason: reason });
+      const tokenBalance = await ctx.executor.getTokenBalance(trade.pairAddress);
+
+      if (tokenBalance > 0n) {
+        const solBefore = await ctx.executor.getBalance();
+        const sellResult = await ctx.executor.executeSell(trade.pairAddress, tokenBalance);
+        txSignature = sellResult.txSignature;
+
+        const solAfter = await ctx.executor.getBalance();
+        const receivedSol = solAfter - solBefore;
+
+        if (receivedSol > 0 && trade.quantity > 0) {
+          exitPrice = receivedSol / trade.quantity;
+        }
+
+        executionSlippage = sellResult.slippageBps / 10000;
+
+        log.info(
+          `Sell executed: received=${receivedSol.toFixed(6)} SOL, ` +
+          `exitPrice=${exitPrice.toFixed(8)}, slippage=${sellResult.slippageBps}bps`
+        );
+      } else {
+        log.warn(`No token balance for trade ${trade.id} — closing with entry price`);
+      }
     }
 
     const pnl = (exitPrice - trade.entryPrice) * trade.quantity;
@@ -752,19 +743,13 @@ async function closeTrade(
 
     const closedTrade = { ...trade, exitPrice, pnl, slippage: executionSlippage, status: 'CLOSED' as const, exitReason: reason };
     await ctx.notifier.sendTradeClose(closedTrade);
+    await updatePositionsForPair(ctx, trade.pairAddress, 'EXIT_CONFIRMED', {
+      txExit: txSignature,
+      exitReason: reason,
+      pnl,
+    });
 
-    // Update position state
-    const openPositions = await ctx.positionStore.getOpenPositions();
-    for (const pos of openPositions) {
-      if (pos.pairAddress === trade.pairAddress) {
-        await ctx.positionStore.updateState(pos.id, 'EXIT_CONFIRMED', {
-          txExit: txSignature,
-          exitReason: reason,
-          pnl,
-        });
-      }
-    }
-
+    ctx.healthMonitor.updateTradeTime();
     log.info(`Trade ${trade.id} closed (${reason}). PnL: ${pnl.toFixed(6)} SOL`);
   } catch (error) {
     log.error(`Failed to close trade ${trade.id}: ${error}`);
@@ -779,31 +764,37 @@ async function handleTakeProfit1Partial(
   ctx: BotContext
 ): Promise<void> {
   try {
-    const tokenBalance = await ctx.executor.getTokenBalance(trade.pairAddress);
-    const partialTokenAmount = tokenBalance / 2n;
-
-    if (partialTokenAmount <= 0n || trade.quantity <= 0) {
-      log.warn(`Partial TP1 unavailable for trade ${trade.id}; closing full position instead`);
-      await closeTrade(trade, 'TAKE_PROFIT_1', ctx);
-      return;
-    }
-
     const soldQuantity = trade.quantity * 0.5;
     const remainingQuantity = trade.quantity - soldQuantity;
 
     if (remainingQuantity <= 0 || soldQuantity <= 0) {
       log.warn(`Invalid TP1 split for trade ${trade.id}; closing full position instead`);
-      await closeTrade(trade, 'TAKE_PROFIT_1', ctx);
+      await closeTrade(trade, 'TAKE_PROFIT_1', ctx, currentPrice);
       return;
     }
 
-    const solBefore = await ctx.executor.getBalance();
-    const sellResult = await ctx.executor.executeSell(trade.pairAddress, partialTokenAmount);
-    const solAfter = await ctx.executor.getBalance();
-    const receivedSol = solAfter - solBefore;
+    let exitPrice = currentPrice;
+    let executionSlippage = 0;
 
-    const exitPrice = receivedSol > 0 ? receivedSol / soldQuantity : currentPrice;
-    const executionSlippage = sellResult.slippageBps / 10000;
+    if (ctx.tradingMode === 'live') {
+      const tokenBalance = await ctx.executor.getTokenBalance(trade.pairAddress);
+      const partialTokenAmount = tokenBalance / 2n;
+
+      if (partialTokenAmount <= 0n || trade.quantity <= 0) {
+        log.warn(`Partial TP1 unavailable for trade ${trade.id}; closing full position instead`);
+        await closeTrade(trade, 'TAKE_PROFIT_1', ctx, currentPrice);
+        return;
+      }
+
+      const solBefore = await ctx.executor.getBalance();
+      const sellResult = await ctx.executor.executeSell(trade.pairAddress, partialTokenAmount);
+      const solAfter = await ctx.executor.getBalance();
+      const receivedSol = solAfter - solBefore;
+
+      exitPrice = receivedSol > 0 ? receivedSol / soldQuantity : currentPrice;
+      executionSlippage = sellResult.slippageBps / 10000;
+    }
+
     const realizedPnl = (exitPrice - trade.entryPrice) * soldQuantity;
 
     await ctx.tradeStore.closeTrade(
@@ -849,18 +840,13 @@ async function handleTakeProfit1Partial(
       `SL moved to breakeven ${trade.entryPrice.toFixed(8)}`
     );
 
-    const openPositions = await ctx.positionStore.getOpenPositions();
-    for (const pos of openPositions) {
-      if (pos.pairAddress === trade.pairAddress) {
-        await ctx.positionStore.updateState(pos.id, 'MONITORING', {
-          quantity: remainingQuantity,
-          stopLoss: trade.entryPrice,
-          takeProfit1: trade.takeProfit2,
-          takeProfit2: trade.takeProfit2,
-          trailingStop: trade.trailingStop,
-        });
-      }
-    }
+    await updatePositionsForPair(ctx, trade.pairAddress, 'MONITORING', {
+      quantity: remainingQuantity,
+      stopLoss: trade.entryPrice,
+      takeProfit1: trade.takeProfit2,
+      takeProfit2: trade.takeProfit2,
+      trailingStop: trade.trailingStop,
+    });
 
     ctx.healthMonitor.updateTradeTime();
     log.info(
@@ -870,6 +856,78 @@ async function handleTakeProfit1Partial(
   } catch (error) {
     log.error(`Failed to partially close trade ${trade.id}: ${error}`);
     await ctx.notifier.sendError('trade_partial_close', error).catch(() => {});
+  }
+}
+
+async function recordOpenedTrade(
+  ctx: BotContext,
+  positionId: string,
+  signal: Signal,
+  lastCandle: Candle,
+  order: Order,
+  totalScore: number,
+  quantity: number,
+  sizeConstraint: Trade['sizeConstraint'],
+  txSignature: string
+): Promise<void> {
+  await ctx.positionStore.updateState(positionId, 'ENTRY_CONFIRMED', {
+    entryPrice: order.price,
+    quantity: order.quantity,
+    stopLoss: order.stopLoss,
+    takeProfit1: order.takeProfit1,
+    takeProfit2: order.takeProfit2,
+    trailingStop: order.trailingStop,
+    txEntry: txSignature,
+  });
+
+  const timeStopAt = new Date(Date.now() + order.timeStopMinutes * 60 * 1000);
+  await ctx.tradeStore.insertTrade({
+    pairAddress: order.pairAddress,
+    strategy: order.strategy,
+    side: order.side,
+    entryPrice: order.price,
+    quantity: order.quantity,
+    stopLoss: order.stopLoss,
+    takeProfit1: order.takeProfit1,
+    takeProfit2: order.takeProfit2,
+    trailingStop: order.trailingStop,
+    highWaterMark: order.price,
+    timeStopAt,
+    status: 'OPEN',
+    txSignature,
+    createdAt: new Date(),
+    breakoutScore: totalScore,
+    breakoutGrade: order.breakoutGrade,
+    sizeConstraint,
+  });
+
+  await ctx.positionStore.updateState(positionId, 'MONITORING');
+  ctx.healthMonitor.updateTradeTime();
+  await ctx.notifier.sendTradeOpen(order, txSignature);
+  await ctx.auditLogger.logSignal({
+    pairAddress: signal.pairAddress,
+    strategy: signal.strategy,
+    ...signal.breakoutScore!,
+    candleClose: signal.price,
+    volume: lastCandle.volume,
+    poolTvl: signal.poolTvl || 0,
+    action: 'EXECUTED',
+    positionSize: quantity,
+    sizeConstraint,
+  });
+}
+
+async function updatePositionsForPair(
+  ctx: BotContext,
+  pairAddress: string,
+  state: Parameters<PositionStore['updateState']>[1],
+  updates: Parameters<PositionStore['updateState']>[2] = {}
+): Promise<void> {
+  const openPositions = await ctx.positionStore.getOpenPositions();
+  for (const pos of openPositions) {
+    if (pos.pairAddress === pairAddress) {
+      await ctx.positionStore.updateState(pos.id, state, updates);
+    }
   }
 }
 

@@ -7,7 +7,7 @@
  * 옵션:
  *   --source db|csv           데이터 소스 (default: db)
  *   --csv-dir ./data          CSV 디렉토리 (source=csv 시)
- *   --strategy a|b|both       전략 선택 (default: both)
+ *   --strategy a|c|both       전략 선택 (default: both)
  *   --balance 10              초기 잔고 SOL (default: 10)
  *   --slippage 0.30           슬리피지 차감률 (default: 0.30)
  *   --risk 0.01               트레이드당 최대 리스크 (default: 0.01)
@@ -22,8 +22,10 @@
  *   --export-csv ./out        트레이드+equity CSV 내보내기
  *   --vol-mult 3.0            Volume Spike 배수
  *   --vol-lookback 20         Volume Spike 룩백
- *   --pump-candles 3          Pump 연속 양봉 수
- *   --pump-move 0.05          Pump 최소 변동률
+ *   --min-buy-ratio 0.65      Gate 최소 매수 비율
+ *   --min-score 50            Gate 최소 Breakout Score
+ *   --gate-lp-burned true     Backtest safety input override
+ *   --gate-ownership-renounced true  Backtest safety input override
  */
 import { Pool } from 'pg';
 import * as fs from 'fs';
@@ -35,17 +37,18 @@ dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 async function main() {
   const args = process.argv.slice(2);
+
+  if (args.includes('--help')) {
+    printHelp();
+    process.exit(0);
+  }
+
   const pairAddress = args.find(a => !a.startsWith('--'));
 
   if (!pairAddress) {
     console.error('Usage: npx ts-node scripts/backtest.ts <pair_address> [options]');
     console.error('Run with --help for all options');
     process.exit(1);
-  }
-
-  if (args.includes('--help')) {
-    printHelp();
-    process.exit(0);
   }
 
   // Parse config from CLI args
@@ -56,19 +59,24 @@ async function main() {
     maxDailyLoss: numArg(args, '--daily-loss', DEFAULT_BACKTEST_CONFIG.maxDailyLoss),
     maxConsecutiveLosses: numArg(args, '--max-losses', DEFAULT_BACKTEST_CONFIG.maxConsecutiveLosses),
     cooldownMinutes: numArg(args, '--cooldown', DEFAULT_BACKTEST_CONFIG.cooldownMinutes),
+    minBuyRatio: numArg(args, '--min-buy-ratio', DEFAULT_BACKTEST_CONFIG.minBuyRatio),
+    minBreakoutScore: numArg(args, '--min-score', DEFAULT_BACKTEST_CONFIG.minBreakoutScore),
+    gatePoolInfo: {
+      lpBurned: boolArg(args, '--gate-lp-burned', undefined),
+      ownershipRenounced: boolArg(args, '--gate-ownership-renounced', undefined),
+      tvl: numArg(args, '--gate-tvl', undefined),
+      tokenAgeHours: numArg(args, '--gate-token-age-hours', undefined),
+      top10HolderPct: numArg(args, '--gate-top10-holder-pct', undefined),
+    },
     volumeSpikeParams: {
       volumeMultiplier: numArg(args, '--vol-mult', undefined),
       lookback: numArg(args, '--vol-lookback', undefined),
     },
-    pumpDetectParams: {
-      consecutiveCandles: numArg(args, '--pump-candles', undefined),
-      minPriceMove: numArg(args, '--pump-move', undefined),
-    },
   };
 
   // Remove undefined params to keep defaults
+  cleanUndefined(config.gatePoolInfo!);
   cleanUndefined(config.volumeSpikeParams!);
-  cleanUndefined(config.pumpDetectParams!);
 
   // Date range
   const startStr = getArg(args, '--start');
@@ -86,20 +94,14 @@ async function main() {
 
   // Load data
   let candles5m: any[] = [];
-  let candles1m: any[] = [];
 
   if (source === 'csv') {
     const csvDir = getArg(args, '--csv-dir') || path.resolve(__dirname, '../data');
     const loader = new CsvLoader(csvDir);
 
-    if (strategy === 'a' || strategy === 'both') {
+    if (strategy === 'a' || strategy === 'c' || strategy === 'both') {
       try { candles5m = await loader.load(pairAddress, 300); } catch (e) {
         console.warn(`No 5m CSV data: ${e}`);
-      }
-    }
-    if (strategy === 'b' || strategy === 'both') {
-      try { candles1m = await loader.load(pairAddress, 60); } catch (e) {
-        console.warn(`No 1m CSV data: ${e}`);
       }
     }
   } else {
@@ -111,11 +113,8 @@ async function main() {
     const pool = new Pool({ connectionString: databaseUrl });
     const loader = new DbLoader(pool);
 
-    if (strategy === 'a' || strategy === 'both') {
+    if (strategy === 'a' || strategy === 'c' || strategy === 'both') {
       candles5m = await loader.load(pairAddress, 300);
-    }
-    if (strategy === 'b' || strategy === 'both') {
-      candles1m = await loader.load(pairAddress, 60);
     }
 
     await pool.end();
@@ -126,13 +125,13 @@ async function main() {
   const reporter = new BacktestReporter();
 
   if (strategy === 'both') {
-    if (candles5m.length === 0 && candles1m.length === 0) {
-      console.error('No candle data found for either timeframe.');
+    if (candles5m.length === 0) {
+      console.error('No 5m candle data found.');
       process.exit(1);
     }
 
-    const { strategyA, strategyB, combined } = engine.runCombined(
-      candles5m, candles1m, pairAddress
+    const { strategyA, strategyC, combined } = engine.runCombined(
+      candles5m, pairAddress
     );
 
     if (candles5m.length > 0) {
@@ -143,25 +142,23 @@ async function main() {
       console.log('\nNo 5m candles — Strategy A skipped');
     }
 
-    if (candles1m.length > 0) {
-      reporter.printSummary(strategyB);
-      if (showTrades) reporter.printTradeLog(strategyB.trades, tradesLimit);
-      if (showEquity) reporter.printEquityCurve(strategyB);
-    } else {
-      console.log('\nNo 1m candles — Strategy B skipped');
+    if (candles5m.length > 0) {
+      reporter.printSummary(strategyC);
+      if (showTrades) reporter.printTradeLog(strategyC.trades, tradesLimit);
+      if (showEquity) reporter.printEquityCurve(strategyC);
     }
 
-    if (strategyA.totalTrades + strategyB.totalTrades > 0) {
+    if (strategyA.totalTrades + strategyC.totalTrades > 0) {
       reporter.printSummary(combined);
       if (showEquity) reporter.printEquityCurve(combined);
     }
 
     if (exportDir) {
-      exportResults(reporter, exportDir, strategyA, strategyB, combined);
+      exportResults(reporter, exportDir, strategyA, strategyC, combined);
     }
   } else {
-    const candles = strategy === 'a' ? candles5m : candles1m;
-    const stratName = strategy === 'a' ? 'volume_spike' as const : 'pump_detect' as const;
+    const candles = candles5m;
+    const stratName = strategy === 'a' ? 'volume_spike' as const : 'fib_pullback' as const;
 
     if (candles.length === 0) {
       console.error(`No candle data for strategy ${strategy.toUpperCase()}.`);
@@ -191,7 +188,7 @@ async function main() {
 function exportResults(
   reporter: BacktestReporter,
   dir: string,
-  a: any, b: any, combined: any
+  a: any, c: any, combined: any
 ) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
@@ -199,9 +196,9 @@ function exportResults(
     fs.writeFileSync(path.join(dir, 'trades_volume_spike.csv'), reporter.exportTradesCsv(a.trades));
     fs.writeFileSync(path.join(dir, 'equity_volume_spike.csv'), reporter.exportEquityCsv(a));
   }
-  if (b.totalTrades > 0) {
-    fs.writeFileSync(path.join(dir, 'trades_pump_detect.csv'), reporter.exportTradesCsv(b.trades));
-    fs.writeFileSync(path.join(dir, 'equity_pump_detect.csv'), reporter.exportEquityCsv(b));
+  if (c.totalTrades > 0) {
+    fs.writeFileSync(path.join(dir, 'trades_fib_pullback.csv'), reporter.exportTradesCsv(c.trades));
+    fs.writeFileSync(path.join(dir, 'equity_fib_pullback.csv'), reporter.exportEquityCsv(c));
   }
   if (combined.totalTrades > 0) {
     fs.writeFileSync(path.join(dir, 'trades_combined.csv'), reporter.exportTradesCsv(combined.trades));
@@ -228,6 +225,15 @@ function numArg(args: string[], flag: string, fallback: number | undefined): any
   return num;
 }
 
+function boolArg(args: string[], flag: string, fallback: boolean | undefined): any {
+  const raw = getArg(args, flag);
+  if (raw === undefined) return fallback;
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  console.error(`Invalid boolean for ${flag}: "${raw}". Use true or false.`);
+  process.exit(1);
+}
+
 function cleanUndefined(obj: Record<string, any>) {
   for (const key of Object.keys(obj)) {
     if (obj[key] === undefined) delete obj[key];
@@ -246,9 +252,9 @@ Data Source:
   --csv-dir ./data          CSV directory (when source=csv)
 
 Strategy:
-  --strategy a|b|both       Strategy selection (default: both)
+  --strategy a|c|both       Strategy selection (default: both)
                             a = Volume Spike Breakout (5m)
-                            b = Pump Detection (1m)
+                            c = Fib Pullback (5m)
 
 Risk Parameters:
   --balance 10              Initial balance in SOL (default: 10)
@@ -261,8 +267,15 @@ Risk Parameters:
 Strategy Parameters:
   --vol-mult 3.0            Volume spike multiplier
   --vol-lookback 20         Volume spike lookback
-  --pump-candles 3          Pump consecutive candles
-  --pump-move 0.05          Pump min price move
+  --min-buy-ratio 0.65      Gate minimum buy ratio
+  --min-score 50            Gate minimum breakout score
+
+Gate Overrides:
+  --gate-tvl 50000          Override gate pool TVL
+  --gate-token-age-hours 24 Override gate token age hours
+  --gate-top10-holder-pct 0.8 Override gate top10 holder concentration
+  --gate-lp-burned true     Override gate LP burned flag
+  --gate-ownership-renounced true Override gate ownership renounced flag
 
 Date Range:
   --start 2024-01-01        Start date (ISO)

@@ -89,6 +89,16 @@ export const config = {
   pumpConsecutiveCandles: numOptional('PUMP_CONSECUTIVE_CANDLES', 3),
   pumpMinPriceMove: numOptional('PUMP_MIN_PRICE_MOVE', 0.05),
 
+  // Fib Pullback (Strategy C)
+  fibImpulseWindowBars: numOptional('FIB_IMPULSE_WINDOW_BARS', 18),
+  fibImpulseMinPct: numOptional('FIB_IMPULSE_MIN_PCT', 0.15),
+  fibEntryLow: numOptional('FIB_ENTRY_LOW', 0.5),
+  fibEntryHigh: numOptional('FIB_ENTRY_HIGH', 0.618),
+  fibInvalidation: numOptional('FIB_INVALIDATION', 0.786),
+  fibVolumeClimaxMultiplier: numOptional('FIB_VOLUME_CLIMAX_MULTIPLIER', 2.5),
+  fibMinWickRatio: numOptional('FIB_MIN_WICK_RATIO', 0.4),
+  fibTimeStopMinutes: numOptional('FIB_TIME_STOP_MINUTES', 60),
+
   // ─── Liquidity Parameters (Group 3: 3개) ───
   maxSlippage: numOptional('MAX_SLIPPAGE', 0.01),
   maxPoolImpact: numOptional('MAX_POOL_IMPACT', 0.02),

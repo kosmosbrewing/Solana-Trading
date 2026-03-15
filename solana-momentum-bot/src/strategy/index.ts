@@ -33,3 +33,9 @@ export { checkMultiTfAlignment } from './multiTf';
 export { checkExhaustion } from './exhaustion';
 
 export { calcRSI, calcAdaptiveTrailingStop } from './adaptiveTrailing';
+
+export {
+  evaluateFibPullback,
+  buildFibPullbackOrder,
+} from './fibPullback';
+export type { FibPullbackParams } from './fibPullback';

@@ -11,6 +11,8 @@ import {
   buildVolumeSpikeOrder,
   evaluatePumpDetection,
   buildPumpOrder,
+  evaluateFibPullback,
+  buildFibPullbackOrder,
   calcBreakoutScore,
   calcBuyRatio,
   calcATR,
@@ -293,6 +295,44 @@ async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<void> {
     }
   }
 
+  // Strategy C: Fib Pullback (5분봉) — 임펄스 후 되돌림 매수
+  if (candle.intervalSec === 300) {
+    const fibCandles = await ctx.candleStore.getRecentCandles(
+      candle.pairAddress,
+      candle.intervalSec,
+      Math.max(config.fibImpulseWindowBars + 10, 30)
+    );
+
+    if (fibCandles.length >= config.fibImpulseWindowBars + 5) {
+      const fibSignal = evaluateFibPullback(fibCandles, {
+        impulseWindowBars: config.fibImpulseWindowBars,
+        impulseMinPct: config.fibImpulseMinPct,
+        fibEntryLow: config.fibEntryLow,
+        fibEntryHigh: config.fibEntryHigh,
+        fibInvalidation: config.fibInvalidation,
+        volumeClimaxMultiplier: config.fibVolumeClimaxMultiplier,
+        minWickRatio: config.fibMinWickRatio,
+        timeStopMinutes: config.fibTimeStopMinutes,
+      });
+
+      if (fibSignal.action === 'BUY') {
+        fibSignal.poolTvl = poolTvl;
+        // Fib Pullback uses its own scoring — map to breakout score format
+        fibSignal.breakoutScore = {
+          volumeScore: Math.min(25, (fibSignal.meta.volumeClimax || 0) * 20),
+          buyRatioScore: Math.min(25, (fibSignal.meta.wickRatio || 0) * 30),
+          multiTfScore: 10,
+          whaleScore: 0,
+          lpScore: 10,
+          totalScore: 55, // Fib signals pre-qualified by multi-step filter
+          grade: 'B',
+        };
+
+        await processSignal(fibSignal, fibCandles, ctx);
+      }
+    }
+  }
+
   // Strategy B: Pump Detection (1분봉)
   if (candle.intervalSec === 60) {
     const signal = evaluatePumpDetection(candles, {
@@ -424,9 +464,16 @@ async function processSignal(
 
     // Build order
     const quantity = riskResult.adjustedQuantity || 0;
-    const order: Order = signal.strategy === 'volume_spike'
-      ? buildVolumeSpikeOrder(signal, candles, quantity)
-      : buildPumpOrder(signal, candles, quantity);
+    let order: Order;
+    if (signal.strategy === 'volume_spike') {
+      order = buildVolumeSpikeOrder(signal, candles, quantity);
+    } else if (signal.strategy === 'fib_pullback') {
+      order = buildFibPullbackOrder(signal, candles, quantity, {
+        timeStopMinutes: config.fibTimeStopMinutes,
+      });
+    } else {
+      order = buildPumpOrder(signal, candles, quantity);
+    }
 
     order.breakoutScore = totalScore;
     order.breakoutGrade = grade;

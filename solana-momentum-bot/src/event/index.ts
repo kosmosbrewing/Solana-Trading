@@ -11,6 +11,8 @@ export class EventMonitor extends EventEmitter {
   private readonly fetcher: TrendingFetcher;
   private readonly scorer: EventScorer;
   private timer?: NodeJS.Timeout;
+  // tokenMint → 최신 EventScore (만료 관리 포함)
+  private readonly latestScores = new Map<string, EventScore>();
 
   constructor(
     birdeyeClient: BirdeyeClient,
@@ -22,6 +24,28 @@ export class EventMonitor extends EventEmitter {
       expiryMinutes: config.expiryMinutes,
       minLiquidityUsd: config.minLiquidityUsd,
     });
+  }
+
+  /** 특정 토큰의 유효한 EventScore 반환. 만료 시 undefined. */
+  getScoreByMint(tokenMint: string): EventScore | undefined {
+    const score = this.latestScores.get(tokenMint);
+    if (!score) return undefined;
+    if (new Date(score.expiresAt).getTime() < Date.now()) {
+      this.latestScores.delete(tokenMint);
+      return undefined;
+    }
+    return score;
+  }
+
+  /** 전체 유효 EventScore Map 반환 (만료 항목 제외) */
+  getAllActiveScores(): Map<string, EventScore> {
+    const now = Date.now();
+    for (const [mint, score] of this.latestScores) {
+      if (new Date(score.expiresAt).getTime() < now) {
+        this.latestScores.delete(mint);
+      }
+    }
+    return this.latestScores;
   }
 
   async start(): Promise<void> {
@@ -46,6 +70,11 @@ export class EventMonitor extends EventEmitter {
     const scores = candidates
       .map((candidate) => this.scorer.score(candidate))
       .filter((score) => score.eventScore >= this.config.minEventScore);
+
+    // 최신 스코어 캐시 갱신
+    for (const score of scores) {
+      this.latestScores.set(score.tokenMint, score);
+    }
 
     if (scores.length > 0) {
       this.emit('events', scores);

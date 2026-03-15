@@ -35,10 +35,22 @@ export class TradeStore {
           take_profit1    NUMERIC NOT NULL,
           take_profit2    NUMERIC NOT NULL,
           trailing_stop   NUMERIC,
+          high_water_mark NUMERIC,
           time_stop_at    TIMESTAMPTZ,
           created_at      TIMESTAMPTZ DEFAULT now(),
           closed_at       TIMESTAMPTZ
         );
+      `);
+
+      await client.query(`
+        ALTER TABLE trades
+        ADD COLUMN IF NOT EXISTS high_water_mark NUMERIC;
+      `);
+
+      await client.query(`
+        UPDATE trades
+        SET high_water_mark = entry_price
+        WHERE status = 'OPEN' AND high_water_mark IS NULL;
       `);
 
       await client.query(`
@@ -56,14 +68,14 @@ export class TradeStore {
   async insertTrade(trade: Omit<Trade, 'id'>): Promise<string> {
     const result = await this.pool.query(
       `INSERT INTO trades (pair_address, strategy, side, entry_price, quantity,
-        stop_loss, take_profit1, take_profit2, trailing_stop, time_stop_at,
+        stop_loss, take_profit1, take_profit2, trailing_stop, high_water_mark, time_stop_at,
         status, tx_signature, breakout_score, breakout_grade, size_constraint)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
        RETURNING id`,
       [
         trade.pairAddress, trade.strategy, trade.side, trade.entryPrice,
         trade.quantity, trade.stopLoss, trade.takeProfit1, trade.takeProfit2,
-        trade.trailingStop || null, trade.timeStopAt, trade.status,
+        trade.trailingStop || null, trade.highWaterMark ?? trade.entryPrice, trade.timeStopAt, trade.status,
         trade.txSignature || null,
         trade.breakoutScore ?? null, trade.breakoutGrade ?? null,
         trade.sizeConstraint ?? null,
@@ -80,14 +92,37 @@ export class TradeStore {
     exitPrice: number,
     pnl: number,
     slippage: number,
-    exitReason?: string
+    exitReason?: string,
+    quantity?: number
   ): Promise<void> {
+    const setClauses = [
+      'exit_price = $2',
+      'pnl = $3',
+      'slippage = $4',
+      'exit_reason = $5',
+      `status = 'CLOSED'`,
+      `closed_at = now()`,
+    ];
+    const params: unknown[] = [id, exitPrice, pnl, slippage, exitReason ?? null];
+
+    if (quantity !== undefined) {
+      setClauses.push(`quantity = $${params.length + 1}`);
+      params.push(quantity);
+    }
+
     await this.pool.query(
-      `UPDATE trades SET
-        exit_price = $2, pnl = $3, slippage = $4, exit_reason = $5,
-        status = 'CLOSED', closed_at = now()
+      `UPDATE trades SET ${setClauses.join(', ')}
        WHERE id = $1`,
-      [id, exitPrice, pnl, slippage, exitReason ?? null]
+      params
+    );
+  }
+
+  async updateHighWaterMark(id: string, highWaterMark: number): Promise<void> {
+    await this.pool.query(
+      `UPDATE trades
+       SET high_water_mark = GREATEST(COALESCE(high_water_mark, 0), $2)
+       WHERE id = $1`,
+      [id, highWaterMark]
     );
   }
 
@@ -160,6 +195,7 @@ function rowToTrade(row: Record<string, unknown>): Trade {
     takeProfit1: Number(row.take_profit1),
     takeProfit2: Number(row.take_profit2),
     trailingStop: row.trailing_stop ? Number(row.trailing_stop) : undefined,
+    highWaterMark: row.high_water_mark ? Number(row.high_water_mark) : undefined,
     timeStopAt: new Date(row.time_stop_at as string),
     createdAt: new Date(row.created_at as string),
     closedAt: row.closed_at ? new Date(row.closed_at as string) : undefined,

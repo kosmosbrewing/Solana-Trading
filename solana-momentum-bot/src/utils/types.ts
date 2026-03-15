@@ -94,6 +94,7 @@ export interface Trade {
   takeProfit1: number;
   takeProfit2: number;
   trailingStop?: number;
+  highWaterMark?: number;
   timeStopAt: Date;
   breakoutScore?: number;
   breakoutGrade?: BreakoutGrade;
@@ -139,6 +140,7 @@ export interface RiskCheckResult {
   reason?: string;
   adjustedQuantity?: number;
   sizeConstraint?: SizeConstraint;
+  appliedAdjustments?: string[];
 }
 
 // ─── Safety Filters ───

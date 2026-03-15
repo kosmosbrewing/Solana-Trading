@@ -3,6 +3,8 @@ import {
   Order, RiskCheckResult, TokenSafety, PortfolioState, SizeConstraint, BreakoutGrade,
 } from '../utils/types';
 import { TradeStore } from '../candle/tradeStore';
+import { checkTokenSafety as evaluateTokenSafety, SafetyGateResult } from '../gate/safetyGate';
+import { getGradeSizeMultiplier } from '../gate/sizingGate';
 import { calculateLiquiditySize, LiquidityParams, DEFAULT_LIQUIDITY_PARAMS } from './liquiditySizer';
 
 const log = createModuleLogger('RiskManager');
@@ -49,6 +51,9 @@ export class RiskManager {
     portfolio: PortfolioState,
     tokenSafety?: TokenSafety
   ): Promise<RiskCheckResult> {
+    let safetyMultiplier = 1.0;
+    const appliedAdjustments: string[] = [];
+
     if (this.isDailyLossExceeded(portfolio)) {
       return {
         approved: false,
@@ -75,6 +80,8 @@ export class RiskManager {
       if (!safetyResult.approved) {
         return safetyResult;
       }
+      safetyMultiplier = safetyResult.sizeMultiplier ?? 1.0;
+      appliedAdjustments.push(...(safetyResult.appliedAdjustments ?? []));
     }
 
     // Grade C → 진입 금지
@@ -94,15 +101,28 @@ export class RiskManager {
     }
 
     // Grade B → Half Size
-    const gradeMultiplier = order.breakoutGrade === 'B' ? 0.5 : 1.0;
-    const finalQuantity = adjustedQuantity * gradeMultiplier;
+    const gradeMultiplier = getGradeSizeMultiplier(order.breakoutGrade);
+    const finalQuantity = adjustedQuantity * gradeMultiplier * safetyMultiplier;
+
+    if (finalQuantity <= 0) {
+      return {
+        approved: false,
+        reason: 'Calculated position size is zero or negative after safety adjustments',
+      };
+    }
 
     log.info(
       `Order approved: ${order.strategy} ${order.side} ${order.pairAddress} ` +
-      `qty=${finalQuantity.toFixed(6)} constraint=${sizeConstraint} grade=${order.breakoutGrade || 'N/A'}`
+      `qty=${finalQuantity.toFixed(6)} constraint=${sizeConstraint} grade=${order.breakoutGrade || 'N/A'}` +
+      (appliedAdjustments.length > 0 ? ` adjustments=${appliedAdjustments.join(',')}` : '')
     );
 
-    return { approved: true, adjustedQuantity: finalQuantity, sizeConstraint };
+    return {
+      approved: true,
+      adjustedQuantity: finalQuantity,
+      sizeConstraint,
+      appliedAdjustments,
+    };
   }
 
   /**
@@ -166,39 +186,21 @@ export class RiskManager {
     return new Date() < cooldownEnd;
   }
 
-  checkTokenSafety(safety: TokenSafety): RiskCheckResult {
-    if (safety.poolLiquidity < this.riskConfig.minPoolLiquidity) {
-      return {
-        approved: false,
-        reason: `Pool liquidity too low: $${safety.poolLiquidity.toFixed(0)}`,
-      };
-    }
+  checkTokenSafety(safety: TokenSafety): SafetyGateResult {
+    const result = evaluateTokenSafety(safety, {
+      minPoolLiquidity: this.riskConfig.minPoolLiquidity,
+      minTokenAgeHours: this.riskConfig.minTokenAgeHours,
+      maxHolderConcentration: this.riskConfig.maxHolderConcentration,
+    });
 
-    if (safety.tokenAgeHours < this.riskConfig.minTokenAgeHours) {
-      return {
-        approved: false,
-        reason: `Token too new: ${safety.tokenAgeHours.toFixed(1)}h old`,
-      };
-    }
-
-    if (safety.top10HolderPct > this.riskConfig.maxHolderConcentration) {
-      return {
-        approved: false,
-        reason: `Holder concentration too high: ${(safety.top10HolderPct * 100).toFixed(1)}%`,
-      };
-    }
-
-    if (!safety.lpBurned) {
+    if (result.appliedAdjustments.includes('LP_NOT_BURNED_HALF')) {
       log.warn('LP tokens not burned — reducing position by 50%');
-      return { approved: true, reason: 'LP not burned — position halved' };
     }
-
-    if (!safety.ownershipRenounced) {
+    if (result.appliedAdjustments.includes('OWNERSHIP_NOT_RENOUNCED_HALF')) {
       log.warn('Ownership not renounced — reducing position by 50%');
-      return { approved: true, reason: 'Ownership not renounced — position halved' };
     }
 
-    return { approved: true };
+    return result;
   }
 
   /**

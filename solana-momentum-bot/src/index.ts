@@ -2,26 +2,20 @@ import { Pool } from 'pg';
 import { config, TradingMode } from './utils/config';
 import { createModuleLogger } from './utils/logger';
 import { HealthMonitor } from './utils/healthMonitor';
-import { Candle, Signal, Order, Trade, CloseReason } from './utils/types';
+import { Candle, Signal, Order, Trade, CloseReason, PoolInfo } from './utils/types';
 
 import { BirdeyeClient, Ingester, IngesterConfig } from './ingester';
 import { CandleStore, TradeStore } from './candle';
 import {
   evaluateVolumeSpikeBreakout,
   buildVolumeSpikeOrder,
-  evaluatePumpDetection,
-  buildPumpOrder,
   evaluateFibPullback,
   buildFibPullbackOrder,
-  calcBreakoutScore,
-  calcBuyRatio,
   calcATR,
-  calcAvgVolume,
-  detectWhaleActivity,
-  assessLpStability,
   checkExhaustion,
   calcAdaptiveTrailingStop,
 } from './strategy';
+import { evaluateGates, GateEvaluationResult } from './gate';
 import { RiskManager, RiskConfig } from './risk';
 import { Executor, ExecutorConfig } from './executor';
 import { Notifier } from './notifier';
@@ -46,6 +40,7 @@ interface BotContext {
   positionStore: PositionStore;
   auditLogger: SignalAuditLogger;
   previousTvl: Map<string, number>;
+  tradingHaltedReason?: string;
 }
 
 async function main() {
@@ -162,6 +157,7 @@ async function main() {
     positionStore,
     auditLogger,
     previousTvl: new Map(),
+    tradingHaltedReason: undefined,
   };
 
   // ─── Crash Recovery (v0.3) ─────────────────────────
@@ -263,7 +259,11 @@ async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<void> {
   // Get pool info for breakout score
   const watchlist = ctx.universeEngine.getWatchlist();
   const poolInfo = watchlist.find(p => p.pairAddress === candle.pairAddress);
-  const poolTvl = poolInfo?.tvl || 0;
+  if (!poolInfo) {
+    log.info(`Skipping ${candle.pairAddress} — pair is not in active watchlist`);
+    return;
+  }
+  const poolTvl = poolInfo.tvl;
 
   // Strategy A: Volume Spike Breakout (5분봉)
   if (candle.intervalSec === 300) {
@@ -273,25 +273,23 @@ async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<void> {
     });
 
     if (signal.action === 'BUY') {
-      // Calculate Breakout Score
-      const volumeRatio = signal.meta.volumeRatio || 0;
-      const buyRatio = calcBuyRatio(candle);
-      const whaleAlert = detectWhaleActivity(candles.slice(-5), poolTvl);
       const prevTvl = ctx.previousTvl.get(candle.pairAddress) || poolTvl;
-      const lpStability = assessLpStability(poolTvl, prevTvl);
-
-      const scoreDetail = calcBreakoutScore({
-        volumeRatio,
-        buyRatio,
-        multiTfAlignment: 1, // Single TF for now
-        whaleDetected: !!whaleAlert,
-        lpStability,
+      const gateResult = evaluateGates({
+        signal,
+        candles,
+        poolInfo,
+        previousTvl: prevTvl,
+        fibConfig: {
+          impulseMinPct: config.fibImpulseMinPct,
+          volumeClimaxMultiplier: config.fibVolumeClimaxMultiplier,
+          minWickRatio: config.fibMinWickRatio,
+        },
       });
 
-      signal.breakoutScore = scoreDetail;
+      signal.breakoutScore = gateResult.breakoutScore;
       signal.poolTvl = poolTvl;
 
-      await processSignal(signal, candles, ctx);
+      await processSignal(signal, candles, ctx, gateResult);
     }
   }
 
@@ -316,39 +314,24 @@ async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<void> {
       });
 
       if (fibSignal.action === 'BUY') {
+        const prevTvl = ctx.previousTvl.get(candle.pairAddress) || poolTvl;
+        const gateResult = evaluateGates({
+          signal: fibSignal,
+          candles: fibCandles,
+          poolInfo,
+          previousTvl: prevTvl,
+          fibConfig: {
+            impulseMinPct: config.fibImpulseMinPct,
+            volumeClimaxMultiplier: config.fibVolumeClimaxMultiplier,
+            minWickRatio: config.fibMinWickRatio,
+          },
+        });
+
         fibSignal.poolTvl = poolTvl;
-        // Fib Pullback uses its own scoring — map to breakout score format
-        fibSignal.breakoutScore = {
-          volumeScore: Math.min(25, (fibSignal.meta.volumeClimax || 0) * 20),
-          buyRatioScore: Math.min(25, (fibSignal.meta.wickRatio || 0) * 30),
-          multiTfScore: 10,
-          whaleScore: 0,
-          lpScore: 10,
-          totalScore: 55, // Fib signals pre-qualified by multi-step filter
-          grade: 'B',
-        };
+        fibSignal.breakoutScore = gateResult.breakoutScore;
 
-        await processSignal(fibSignal, fibCandles, ctx);
+        await processSignal(fibSignal, fibCandles, ctx, gateResult);
       }
-    }
-  }
-
-  // Strategy B: Pump Detection (1분봉)
-  if (candle.intervalSec === 60) {
-    const signal = evaluatePumpDetection(candles, {
-      consecutiveCandles: config.pumpConsecutiveCandles,
-      minPriceMove: config.pumpMinPriceMove,
-    });
-
-    if (signal.action === 'BUY') {
-      signal.poolTvl = poolTvl;
-      signal.breakoutScore = {
-        volumeScore: 15, buyRatioScore: 15, multiTfScore: 0,
-        whaleScore: 0, lpScore: 10,
-        totalScore: 40, grade: 'C', // Pump uses fixed scoring
-      };
-
-      await processSignal(signal, candles, ctx);
     }
   }
 
@@ -358,16 +341,16 @@ async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<void> {
 async function processSignal(
   signal: Signal,
   candles: Candle[],
-  ctx: BotContext
+  ctx: BotContext,
+  gateResult: GateEvaluationResult
 ): Promise<void> {
-  const grade = signal.breakoutScore?.grade || 'C';
-  const totalScore = signal.breakoutScore?.totalScore || 0;
+  const grade = gateResult.breakoutScore.grade;
+  const totalScore = gateResult.breakoutScore.totalScore;
 
   log.info(`Signal: ${signal.action} from ${signal.strategy} at ${signal.price} (Score: ${totalScore}, Grade: ${grade})`);
 
-  // Grade C → 진입 금지
-  if (grade === 'C') {
-    log.info(`Signal filtered: Grade C (score ${totalScore})`);
+  if (ctx.tradingHaltedReason) {
+    log.warn(`Signal filtered: trading halted (${ctx.tradingHaltedReason})`);
     await ctx.auditLogger.logSignal({
       pairAddress: signal.pairAddress,
       strategy: signal.strategy,
@@ -378,7 +361,26 @@ async function processSignal(
       sellVolume: candles[candles.length - 1].sellVolume,
       poolTvl: signal.poolTvl || 0,
       action: 'FILTERED',
-      filterReason: `Grade C (score ${totalScore})`,
+      filterReason: ctx.tradingHaltedReason,
+    });
+    return;
+  }
+
+  // Grade C → 진입 금지
+  if (gateResult.rejected) {
+    const filterReason = gateResult.filterReason || `Grade C (score ${totalScore})`;
+    log.info(`Signal filtered: ${filterReason}`);
+    await ctx.auditLogger.logSignal({
+      pairAddress: signal.pairAddress,
+      strategy: signal.strategy,
+      ...signal.breakoutScore!,
+      candleClose: signal.price,
+      volume: candles[candles.length - 1].volume,
+      buyVolume: candles[candles.length - 1].buyVolume,
+      sellVolume: candles[candles.length - 1].sellVolume,
+      poolTvl: signal.poolTvl || 0,
+      action: 'FILTERED',
+      filterReason,
     });
     return;
   }
@@ -444,7 +446,8 @@ async function processSignal(
         breakoutGrade: grade,
         poolTvl: signal.poolTvl,
       },
-      portfolio
+      portfolio,
+      gateResult.tokenSafety
     );
 
     if (!riskResult.approved) {
@@ -462,6 +465,12 @@ async function processSignal(
       return;
     }
 
+    if (riskResult.appliedAdjustments && riskResult.appliedAdjustments.length > 0) {
+      log.warn(
+        `Risk adjustments applied to ${signal.pairAddress}: ${riskResult.appliedAdjustments.join(', ')}`
+      );
+    }
+
     // Build order
     const quantity = riskResult.adjustedQuantity || 0;
     let order: Order;
@@ -472,7 +481,7 @@ async function processSignal(
         timeStopMinutes: config.fibTimeStopMinutes,
       });
     } else {
-      order = buildPumpOrder(signal, candles, quantity);
+      throw new Error(`Unsupported live strategy: ${signal.strategy}`);
     }
 
     order.breakoutScore = totalScore;
@@ -536,6 +545,7 @@ async function processSignal(
         takeProfit1: order.takeProfit1,
         takeProfit2: order.takeProfit2,
         trailingStop: order.trailingStop,
+        highWaterMark: order.price,
         timeStopAt,
         status: 'OPEN',
         txSignature,
@@ -581,16 +591,12 @@ async function checkOpenPositions(ctx: BotContext): Promise<void> {
 
   const openTrades = await ctx.tradeStore.getOpenTrades();
   ctx.healthMonitor.updatePositions(openTrades.length);
+  const dailyPnl = await ctx.tradeStore.getTodayPnl();
+  ctx.healthMonitor.updateDailyPnl(dailyPnl);
+  const balance = await ctx.executor.getBalance();
+  await enforceDailyLossHalt(ctx, dailyPnl, balance);
 
   if (openTrades.length === 0) {
-    const dailyPnl = await ctx.tradeStore.getTodayPnl();
-    ctx.healthMonitor.updateDailyPnl(dailyPnl);
-
-    // 일일 손실 한도 체크
-    const balance = await ctx.executor.getBalance();
-    if (dailyPnl < -(balance * config.maxDailyLoss)) {
-      await ctx.notifier.sendCritical('Daily Loss', `일일 손실 ${config.maxDailyLoss * 100}% 도달, 봇 정지`);
-    }
     return;
   }
 
@@ -639,7 +645,7 @@ async function checkOpenPositions(ctx: BotContext): Promise<void> {
     // Take Profit 1 체크
     if (currentPrice >= trade.takeProfit1) {
       log.info(`Take profit 1 triggered for trade ${trade.id} at ${currentPrice}`);
-      await closeTrade(trade, 'TAKE_PROFIT_1', ctx);
+      await handleTakeProfit1Partial(trade, currentPrice, ctx);
       continue;
     }
 
@@ -656,7 +662,12 @@ async function checkOpenPositions(ctx: BotContext): Promise<void> {
     // Adaptive Trailing Stop 체크
     if (trade.trailingStop && recentCandles.length >= 8) {
       const atr = calcATR(recentCandles, 7);
-      const peakPrice = Math.max(...recentCandles.map(c => c.high));
+      const recentPeak = Math.max(...recentCandles.map(c => c.high));
+      const peakPrice = Math.max(trade.highWaterMark ?? trade.entryPrice, recentPeak);
+      if (!trade.highWaterMark || peakPrice > trade.highWaterMark) {
+        await ctx.tradeStore.updateHighWaterMark(trade.id, peakPrice);
+        trade.highWaterMark = peakPrice;
+      }
       const adaptiveStop = calcAdaptiveTrailingStop(recentCandles, atr, trade.entryPrice, peakPrice);
 
       if (currentPrice <= adaptiveStop && currentPrice > trade.stopLoss) {
@@ -667,8 +678,33 @@ async function checkOpenPositions(ctx: BotContext): Promise<void> {
     }
   }
 
-  const dailyPnl = await ctx.tradeStore.getTodayPnl();
-  ctx.healthMonitor.updateDailyPnl(dailyPnl);
+}
+
+async function enforceDailyLossHalt(
+  ctx: BotContext,
+  dailyPnl: number,
+  balance: number
+): Promise<void> {
+  const exceeded = dailyPnl < -(balance * config.maxDailyLoss);
+
+  if (!exceeded && ctx.tradingHaltedReason) {
+    log.info(`Trading resumed: daily PnL ${dailyPnl.toFixed(4)} within limit`);
+    await ctx.notifier.sendInfo('Trading resumed — daily loss limit cleared');
+    ctx.tradingHaltedReason = undefined;
+    return;
+  }
+
+  if (!exceeded || ctx.tradingHaltedReason) {
+    return;
+  }
+
+  const reason =
+    `Trading halted: daily loss ${(Math.abs(dailyPnl) * 100 / Math.max(balance, 1e-9)).toFixed(2)}% ` +
+    `exceeds ${(config.maxDailyLoss * 100).toFixed(2)}% limit`;
+
+  ctx.tradingHaltedReason = reason;
+  log.error(reason);
+  await ctx.notifier.sendCritical('Daily Loss', reason);
 }
 
 async function closeTrade(
@@ -734,6 +770,106 @@ async function closeTrade(
     log.error(`Failed to close trade ${trade.id}: ${error}`);
     await ctx.tradeStore.failTrade(trade.id, `Close failed: ${error}`);
     await ctx.notifier.sendError('trade_close', error).catch(() => {});
+  }
+}
+
+async function handleTakeProfit1Partial(
+  trade: Trade,
+  currentPrice: number,
+  ctx: BotContext
+): Promise<void> {
+  try {
+    const tokenBalance = await ctx.executor.getTokenBalance(trade.pairAddress);
+    const partialTokenAmount = tokenBalance / 2n;
+
+    if (partialTokenAmount <= 0n || trade.quantity <= 0) {
+      log.warn(`Partial TP1 unavailable for trade ${trade.id}; closing full position instead`);
+      await closeTrade(trade, 'TAKE_PROFIT_1', ctx);
+      return;
+    }
+
+    const soldQuantity = trade.quantity * 0.5;
+    const remainingQuantity = trade.quantity - soldQuantity;
+
+    if (remainingQuantity <= 0 || soldQuantity <= 0) {
+      log.warn(`Invalid TP1 split for trade ${trade.id}; closing full position instead`);
+      await closeTrade(trade, 'TAKE_PROFIT_1', ctx);
+      return;
+    }
+
+    const solBefore = await ctx.executor.getBalance();
+    const sellResult = await ctx.executor.executeSell(trade.pairAddress, partialTokenAmount);
+    const solAfter = await ctx.executor.getBalance();
+    const receivedSol = solAfter - solBefore;
+
+    const exitPrice = receivedSol > 0 ? receivedSol / soldQuantity : currentPrice;
+    const executionSlippage = sellResult.slippageBps / 10000;
+    const realizedPnl = (exitPrice - trade.entryPrice) * soldQuantity;
+
+    await ctx.tradeStore.closeTrade(
+      trade.id,
+      exitPrice,
+      realizedPnl,
+      executionSlippage,
+      'TAKE_PROFIT_1',
+      soldQuantity
+    );
+
+    const remainingTrade: Omit<Trade, 'id'> = {
+      ...trade,
+      quantity: remainingQuantity,
+      stopLoss: trade.entryPrice,
+      takeProfit1: trade.takeProfit2,
+      takeProfit2: trade.takeProfit2,
+      highWaterMark: Math.max(trade.highWaterMark ?? trade.entryPrice, currentPrice),
+      status: 'OPEN',
+      createdAt: new Date(),
+      closedAt: undefined,
+      exitPrice: undefined,
+      pnl: undefined,
+      slippage: undefined,
+      exitReason: undefined,
+    };
+
+    await ctx.tradeStore.insertTrade(remainingTrade);
+
+    const partialTrade: Trade = {
+      ...trade,
+      quantity: soldQuantity,
+      exitPrice,
+      pnl: realizedPnl,
+      slippage: executionSlippage,
+      status: 'CLOSED',
+      exitReason: 'TAKE_PROFIT_1',
+      closedAt: new Date(),
+    };
+    await ctx.notifier.sendTradeClose(partialTrade);
+    await ctx.notifier.sendTradeAlert(
+      `TP1 partial exit: ${trade.strategy} remaining ${remainingQuantity.toFixed(6)} SOL, ` +
+      `SL moved to breakeven ${trade.entryPrice.toFixed(8)}`
+    );
+
+    const openPositions = await ctx.positionStore.getOpenPositions();
+    for (const pos of openPositions) {
+      if (pos.pairAddress === trade.pairAddress) {
+        await ctx.positionStore.updateState(pos.id, 'MONITORING', {
+          quantity: remainingQuantity,
+          stopLoss: trade.entryPrice,
+          takeProfit1: trade.takeProfit2,
+          takeProfit2: trade.takeProfit2,
+          trailingStop: trade.trailingStop,
+        });
+      }
+    }
+
+    ctx.healthMonitor.updateTradeTime();
+    log.info(
+      `Trade ${trade.id} partially closed at TP1. Realized=${realizedPnl.toFixed(6)} SOL, ` +
+      `remaining=${remainingQuantity.toFixed(6)}`
+    );
+  } catch (error) {
+    log.error(`Failed to partially close trade ${trade.id}: ${error}`);
+    await ctx.notifier.sendError('trade_partial_close', error).catch(() => {});
   }
 }
 

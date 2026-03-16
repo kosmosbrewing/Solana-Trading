@@ -189,20 +189,28 @@ Grade: A(≥70) / B(≥50) / C(<50, reject)
 
 ### Birdeye WebSocket 구독 타입
 
+**URL:** `wss://public-api.birdeye.so/socket/solana?x-api-key={API_KEY}`
+
 ```
-SUBSCRIBE_PRICE          — 실시간 가격 (5초 polling 대체)
-SUBSCRIBE_TXS            — 트랜잭션 피드 (volume spike 조기 감지)
-SUBSCRIBE_OHLCV          — 캔들 스트림 (ingester 대체)
-SUBSCRIBE_TOKEN_NEW_LISTING — 신규 토큰 리스팅
-SUBSCRIBE_NEW_PAIR       — 신규 페어 생성
+SUBSCRIBE_PRICE              — 실시간 가격 (5초 polling 대체)
+SUBSCRIBE_TXS                — 트랜잭션 피드 (volume spike 조기 감지)
+SUBSCRIBE_PRICE (w/ OHLCV)   — 캔들 스트림 (1s/15s/30s/1m~1M, ingester 대체)
+SUBSCRIBE_TOKEN_NEW_LISTING  — 신규 토큰 리스팅 (address, liquidity, liquidityAddedAt)
+SUBSCRIBE_NEW_PAIR           — 신규 페어 생성
+SUBSCRIBE_BASE_QUOTE_PRICE   — 임의 페어 가격 변동
 ```
+
+**플랜 요구사항:** WS 연결은 Premium Plus(500 conn) 이상, Free/Standard는 WS 미지원.
 
 ### DexScreener 피처 (랭킹 보조, 매수 트리거 아님)
 
+**Base URL:** `https://api.dexscreener.com` (API key 필요, 60 req/min)
+
 ```
-GET /token-boosts/latest   — 최근 부스트된 토큰
-GET /token-boosts/top      — 가장 많이 부스트된 토큰
-GET /orders/v1/solana/:token — 유료 주문/광고 존재 여부
+GET /token-boosts/latest       — 최근 부스트된 토큰 (amount, claimDate)
+GET /token-boosts/top          — 가장 많이 부스트된 토큰 (amount, totalAmount)
+GET /orders/v1/solana/:token   — 유료 주문/광고 존재 여부
+GET /token-profiles/latest     — 최근 프로필 업데이트된 토큰
 ```
 
 > DexScreener 데이터는 "사람들이 돈 주고 노출시키는 토큰인지" = 마케팅 강도 피처.
@@ -210,11 +218,14 @@ GET /orders/v1/solana/:token — 유료 주문/광고 존재 여부
 
 ### Jupiter Quote Gate
 
+> **v6 (`quote-api.jup.ag/v6`)는 deprecated.** Ultra API (`api.jup.ag`, portal.jup.ag에서 API key 발급)로 마이그레이션 필요.
+> Ultra V3: 0.01% 분할 라우팅, Jupiter Beam MEV 보호 (50-66% faster landing), gasless swap 지원.
+
 진입 직전 실행 가능성 검증:
 
 ```typescript
-// Jupiter Swap API (Ultra V3 기준)
-GET /quote?inputMint=SOL&outputMint={token}&amount={estimatedSize}
+// Jupiter Ultra API (api.jup.ag, X-API-Key 헤더)
+GET /swap/quote?inputMint=SOL&outputMint={token}&amount={estimatedSize}
 
 검증 항목:
   - priceImpact ≤ maxPoolImpact
@@ -222,10 +233,14 @@ GET /quote?inputMint=SOL&outputMint={token}&amount={estimatedSize}
   - quote freshness (stale quote 거부)
 ```
 
+**Price API V3** (참조가격): `GET https://api.jup.ag/price/v3/price?ids=SOL`
+
 ### Security Gate 강화
 
+> **플랜 요구사항:** token_security → Premium+, exit-liquidity → Premium+
+
 ```
-Birdeye /defi/token_security:
+Birdeye GET /defi/token_security (X-API-KEY 헤더):
   - is_honeypot → reject
   - is_freezable → reject
   - is_mintable → reject (또는 사이징 50%)
@@ -233,10 +248,13 @@ Birdeye /defi/token_security:
   - freeze_authority_present → reject
   - top10_holder_pct > 80% → reject
 
-Birdeye /defi/v3/token/trade-data/single (exit-liquidity 프록시):
+Birdeye GET /defi/v3/token/exit-liquidity (단일 토큰, 2025-06 추가):
+  - exit-liquidity 실측 (null이면 미지원 토큰 → 사이징 50%)
+  - sell-side depth가 entry size 대비 충분한지
+
+보조 — Birdeye /defi/v3/token/trade-data/single:
   - 24h sell volume / buy volume ratio
   - 최근 대형 매도 체결 존재 여부
-  - sell-side depth가 entry size 대비 충분한지
 ```
 
 ### Watchlist Score 체계 (AttentionScore 대체)
@@ -481,7 +499,12 @@ effectiveRR = (rewardPct - roundTripCost) / (riskPct + roundTripCost)
 
 ### 전제 조건
 
-1. **Jito bundle 통합 완료** — fast landing, MEV protection, revert protection
+1. **Jito bundle 통합 완료**
+   - API: `POST https://mainnet.block-engine.jito.wtf/api/v1/bundles`
+   - 최대 5 TX/bundle, all-or-nothing 원자적 실행
+   - tip: 마지막 TX에 SOL transfer (min 1,000 lamports, 8개 tip account 중 랜덤 선택)
+   - **DontFront MEV 보호**: `jitodontfront...` 계정을 instruction에 read-only로 추가 → 샌드위치 방지
+   - SDK: `jito-js-rpc` (JS)
 2. **강화된 Security Gate** — honeypot, freezable, mintable, freeze authority, transfer fee 전부 체크
 3. **별도 지갑** — 메인 자본과 완전 격리
 4. **별도 일일 손실 한도** — 메인 전략과 독립
@@ -697,6 +720,12 @@ Birdeye WS: SUBSCRIBE_TOKEN_NEW_LISTING / SUBSCRIBE_NEW_PAIR
 | `MEV_MARGIN_PCT` | 0.001 | executionViability.ts |
 | `maxRetries` | 3 | config.ts |
 | `txTimeoutMs` | 30,000 | config.ts |
+
+### Jupiter 파라미터 (Phase 1A에서 마이그레이션)
+
+| 파라미터 | 현재 값 | Phase 1A 후 |
+|---------|--------|------------|
+| `jupiterApiUrl` | `https://quote-api.jup.ag/v6` (deprecated) | `https://api.jup.ag` (Ultra API) |
 
 ### 이벤트 파라미터 (Phase 1A에서 변경 예정)
 

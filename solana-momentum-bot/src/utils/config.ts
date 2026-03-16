@@ -116,4 +116,28 @@ export const config = {
   eventMinScore: numOptional('EVENT_MIN_SCORE', 35),
   eventExpiryMinutes: numOptional('EVENT_EXPIRY_MINUTES', 180),
   eventMinLiquidityUsd: numOptional('EVENT_MIN_LIQUIDITY_USD', 25_000),
+
+  // ─── Scanner (Phase 1A) ───
+  scannerEnabled: process.env.SCANNER_ENABLED === 'true',
+  scannerMinWatchlistScore: numOptional('SCANNER_MIN_WATCHLIST_SCORE', 30),
+  scannerTrendingPollMs: numOptional('SCANNER_TRENDING_POLL_MS', 300_000),
+  scannerDexEnrichMs: numOptional('SCANNER_DEX_ENRICH_MS', 300_000),
+  scannerLaneAMinAgeSec: numOptional('SCANNER_LANE_A_MIN_AGE_SEC', 3_600),
+  scannerLaneBMaxAgeSec: numOptional('SCANNER_LANE_B_MAX_AGE_SEC', 1_200),
+
+  // ─── Birdeye WebSocket ───
+  birdeyeWSEnabled: process.env.BIRDEYE_WS_ENABLED === 'true',
+
+  // ─── DexScreener ───
+  dexScreenerApiKey: optional('DEXSCREENER_API_KEY', ''),
+
+  // ─── Jupiter API Key (Ultra API) ───
+  jupiterApiKey: optional('JUPITER_API_KEY', ''),
+
+  // ─── Security Gate ───
+  securityGateEnabled: process.env.SECURITY_GATE_ENABLED !== 'false', // default: true
+  minExitLiquidityUsd: numOptional('MIN_EXIT_LIQUIDITY_USD', 10_000),
+
+  // ─── Quote Gate ───
+  quoteGateEnabled: process.env.QUOTE_GATE_ENABLED !== 'false', // default: true
 } as const;

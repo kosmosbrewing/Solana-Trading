@@ -12,6 +12,7 @@ const INTERVAL_TO_SECONDS: Record<CandleInterval, number> = {
   '5m': 300,
   '15m': 900,
   '1H': 3600,
+  '4H': 14400,
 };
 const MAX_TXS_PER_REQUEST = 50;
 const MAX_TX_PAGES = 200;

@@ -116,6 +116,25 @@ export async function processSignal(
         `effectiveRR=${gateResult.executionViability.effectiveRR.toFixed(2)}`
       );
     }
+
+    // Phase 1B: Apply regime filter sizing
+    if (ctx.regimeFilter) {
+      const regimeMult = ctx.regimeFilter.getSizeMultiplier();
+      if (regimeMult <= 0) {
+        const regime = ctx.regimeFilter.getRegime();
+        log.info(`Signal blocked by regime filter: ${regime} (sizeMultiplier=0)`);
+        await ctx.auditLogger.logSignal({
+          ...buildSignalAuditBase(signal, candles[candles.length - 1], gateResult),
+          action: 'FILTERED',
+          filterReason: `Regime ${regime} — no new entries`,
+        });
+        return;
+      }
+      if (regimeMult < 1) {
+        quantity *= regimeMult;
+        log.info(`Regime sizing: ${ctx.regimeFilter.getRegime()} x${regimeMult.toFixed(2)}`);
+      }
+    }
     let order: Order;
     if (signal.strategy === 'volume_spike') {
       order = buildVolumeSpikeOrder(signal, candles, quantity);
@@ -185,6 +204,22 @@ export async function processSignal(
         riskResult.sizeConstraint,
         txSignature
       );
+
+      // Phase 1B: Record paper metrics entry
+      if (ctx.paperMetrics) {
+        ctx.paperMetrics.recordEntry({
+          id: positionId,
+          pairAddress: signal.pairAddress,
+          strategy: signal.strategy,
+          entryPrice: order.price,
+          quantity: order.quantity,
+          entryTime: new Date(),
+          entryPriceImpactPct: gateResult.quoteGate?.priceImpactPct,
+          regimeAtEntry: ctx.regimeFilter?.getRegime(),
+          securityFlags: gateResult.securityGate?.flags,
+        });
+      }
+
       log.info(`Trade opened: ${txSignature}`);
     } catch (error) {
       log.error(`Trade execution failed: ${error}`);

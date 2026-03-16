@@ -2,8 +2,12 @@ import { SignalAuditLogger } from '../audit';
 import { CandleStore, TradeStore } from '../candle';
 import { EventMonitor } from '../event';
 import { Executor } from '../executor';
+import { BirdeyeClient } from '../ingester';
+import { BirdeyeWSClient } from '../ingester/birdeyeWSClient';
 import { Notifier } from '../notifier';
-import { RiskManager } from '../risk';
+import { PaperMetricsTracker } from '../reporting';
+import { RiskManager, RegimeFilter } from '../risk';
+import { ScannerEngine } from '../scanner';
 import { ExecutionLock, PositionStore } from '../state';
 import { UniverseEngine } from '../universe';
 import { HealthMonitor } from '../utils/healthMonitor';
@@ -24,4 +28,14 @@ export interface BotContext {
   auditLogger: SignalAuditLogger;
   previousTvl: Map<string, number>;
   tradingHaltedReason?: string;
+  /** Phase 1A: Scanner Engine (null = legacy single-pair mode) */
+  scanner?: ScannerEngine;
+  /** Phase 1A: Birdeye REST client (for security/exit-liquidity checks) */
+  birdeyeClient?: BirdeyeClient;
+  /** Phase 1A: Birdeye WS client (null = polling fallback) */
+  birdeyeWS?: BirdeyeWSClient;
+  /** Phase 1B: Market Regime Filter */
+  regimeFilter?: RegimeFilter;
+  /** Phase 1B: Paper Trading Metrics Tracker */
+  paperMetrics?: PaperMetricsTracker;
 }

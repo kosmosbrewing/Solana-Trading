@@ -2,7 +2,7 @@ import {
   evaluateVolumeSpikeBreakout,
   evaluateFibPullback,
 } from '../strategy';
-import { evaluateGates } from '../gate';
+import { evaluateGates, evaluateGatesAsync } from '../gate';
 import { buildLiveGateInput } from '../gate/liveGateInput';
 import { config } from '../utils/config';
 import { createModuleLogger } from '../utils/logger';
@@ -45,6 +45,34 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
     ? (config.maxRiskPerTrade * 10) / stopDistancePct
     : 1;
 
+  // Phase 1A: Security + Quote Gate data (fetched once per candle, shared across strategies)
+  const useAsyncGates = config.securityGateEnabled || config.quoteGateEnabled;
+  let tokenSecurityData = undefined;
+  let exitLiquidityData = undefined;
+
+  if (useAsyncGates && ctx.birdeyeClient) {
+    try {
+      const [secData, exitData] = await Promise.all([
+        config.securityGateEnabled
+          ? ctx.birdeyeClient.getTokenSecurityDetailed(poolInfo.tokenMint)
+          : Promise.resolve(undefined),
+        config.securityGateEnabled
+          ? ctx.birdeyeClient.getExitLiquidity(poolInfo.tokenMint)
+          : Promise.resolve(undefined),
+      ]);
+      tokenSecurityData = secData;
+      exitLiquidityData = exitData;
+    } catch (error) {
+      log.warn(`Security data fetch failed for ${poolInfo.tokenMint}: ${error}`);
+    }
+  }
+
+  const quoteGateConfig = config.quoteGateEnabled ? {
+    jupiterApiUrl: config.jupiterApiUrl,
+    jupiterApiKey: config.jupiterApiKey || undefined,
+    maxPriceImpact: config.maxPoolImpact,
+  } : undefined;
+
   // Strategy A: Volume Spike Breakout (5분봉)
   if (candle.intervalSec === 300) {
     const signal = evaluateVolumeSpikeBreakout(candles, {
@@ -54,7 +82,7 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
 
     if (signal.action === 'BUY') {
       const prevTvl = ctx.previousTvl.get(candle.pairAddress) || poolTvl;
-      const gateResult = evaluateGates(buildLiveGateInput({
+      const gateInput = buildLiveGateInput({
         signal,
         candles,
         poolInfo,
@@ -70,7 +98,18 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
           minBuyRatio: config.minBuyRatio,
           minBreakoutScore: config.minBreakoutScore,
         },
-      }));
+      });
+
+      // Phase 1A: inject security/quote gate params
+      gateInput.tokenSecurityData = tokenSecurityData;
+      gateInput.exitLiquidityData = exitLiquidityData;
+      gateInput.quoteGateConfig = quoteGateConfig;
+      gateInput.enableSecurityGate = config.securityGateEnabled;
+      gateInput.enableQuoteGate = config.quoteGateEnabled;
+
+      const gateResult = useAsyncGates
+        ? await evaluateGatesAsync(gateInput)
+        : evaluateGates(gateInput);
 
       signal.breakoutScore = gateResult.breakoutScore;
       signal.poolTvl = poolTvl;
@@ -104,7 +143,7 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
 
       if (fibSignal.action === 'BUY') {
         const prevTvl = ctx.previousTvl.get(candle.pairAddress) || poolTvl;
-        const gateResult = evaluateGates(buildLiveGateInput({
+        const gateInput = buildLiveGateInput({
           signal: fibSignal,
           candles: fibCandles,
           poolInfo,
@@ -120,7 +159,18 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
             minBuyRatio: config.minBuyRatio,
             minBreakoutScore: config.minBreakoutScore,
           },
-        }));
+        });
+
+        // Phase 1A: inject security/quote gate params
+        gateInput.tokenSecurityData = tokenSecurityData;
+        gateInput.exitLiquidityData = exitLiquidityData;
+        gateInput.quoteGateConfig = quoteGateConfig;
+        gateInput.enableSecurityGate = config.securityGateEnabled;
+        gateInput.enableQuoteGate = config.quoteGateEnabled;
+
+        const gateResult = useAsyncGates
+          ? await evaluateGatesAsync(gateInput)
+          : evaluateGates(gateInput);
 
         fibSignal.poolTvl = poolTvl;
         fibSignal.breakoutScore = gateResult.breakoutScore;

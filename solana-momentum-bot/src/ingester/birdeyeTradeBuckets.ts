@@ -14,6 +14,7 @@ const INTERVAL_TO_SECONDS: Record<CandleInterval, number> = {
   '5m': 300,
   '15m': 900,
   '1H': 3600,
+  '4H': 14400,
 };
 
 const TIMESTAMP_KEYS = ['blockUnixTime', 'block_unix_time', 'unixTime', 'txTime', 'timestamp'];

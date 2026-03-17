@@ -7,6 +7,7 @@ import {
 import bs58 from 'bs58';
 import { createModuleLogger } from '../utils/logger';
 import { Order } from '../utils/types';
+import { JitoClient } from './jitoClient';
 
 const log = createModuleLogger('Executor');
 
@@ -19,6 +20,12 @@ export interface ExecutorConfig {
   maxSlippage: number;       // 0.01 = 1%
   maxRetries: number;
   txTimeoutMs: number;
+  /** Phase 3: Use Jito bundles for MEV protection */
+  useJitoBundles?: boolean;
+  /** Phase 3: Jito block engine URL */
+  jitoRpcUrl?: string;
+  /** Phase 3: Jito tip amount in SOL */
+  jitoTipSol?: number;
 }
 
 export interface SwapResult {
@@ -45,6 +52,8 @@ export class Executor {
   private jupiterClient: AxiosInstance;
   private maxSlippageBps: number;
   private maxRetries: number;
+  private jitoClient?: JitoClient;
+  private useJito: boolean;
 
   constructor(executorConfig: ExecutorConfig) {
     this.connection = new Connection(executorConfig.solanaRpcUrl, 'confirmed');
@@ -55,6 +64,17 @@ export class Executor {
     });
     this.maxSlippageBps = Math.round(executorConfig.maxSlippage * 10000);
     this.maxRetries = executorConfig.maxRetries;
+    this.useJito = executorConfig.useJitoBundles ?? false;
+
+    if (this.useJito && executorConfig.jitoRpcUrl) {
+      this.jitoClient = new JitoClient({
+        jitoRpcUrl: executorConfig.jitoRpcUrl,
+        tipSol: executorConfig.jitoTipSol ?? 0.001,
+        solanaRpcUrl: executorConfig.solanaRpcUrl,
+        enableDontFront: true,
+      });
+      log.info('Jito bundle integration enabled');
+    }
 
     log.info(`Executor initialized. Wallet: ${this.wallet.publicKey.toBase58().slice(0, 6)}...`);
   }
@@ -209,11 +229,23 @@ export class Executor {
 
   /**
    * 단일 트랜잭션 전송 + 확인 (retry는 executeSwapWithRetry에서 quote 포함 처리)
+   * Phase 3: Jito bundle 경로 추가 — MEV 보호.
    */
   private async sendTransaction(txBuffer: Buffer): Promise<string> {
     const tx = VersionedTransaction.deserialize(txBuffer);
     tx.sign([this.wallet]);
 
+    // Phase 3: Jito bundle path
+    if (this.useJito && this.jitoClient) {
+      log.info('Submitting via Jito bundle...');
+      const result = await this.jitoClient.submitSingleTx(tx, this.wallet);
+      await this.jitoClient.waitForConfirmation(result.bundleId);
+      const signature = result.txSignatures[0];
+      log.info(`TX confirmed via Jito: ${signature}`);
+      return signature;
+    }
+
+    // Standard RPC path
     const signature = await this.connection.sendTransaction(tx, {
       maxRetries: 2,
       skipPreflight: false,

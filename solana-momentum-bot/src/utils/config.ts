@@ -150,4 +150,21 @@ export const config = {
 
   // ─── Phase 2: EventScore Pruning ───
   eventScoreRetentionDays: numOptional('EVENT_SCORE_RETENTION_DAYS', 30),
+
+  // ─── Phase 3: Jito Bundle Integration (M-5) ───
+  useJitoBundles: process.env.USE_JITO_BUNDLES === 'true', // default: false
+  jitoRpcUrl: optional('JITO_RPC_URL', 'https://mainnet.block-engine.jito.wtf'),
+  jitoTipSol: numOptional('JITO_TIP_SOL', 0.001),
+
+  // ─── Phase 3: Sandbox Wallet (Strategy D) ───
+  sandboxWalletKey: optional('SANDBOX_WALLET_PRIVATE_KEY', ''),
+  sandboxDailyLossLimitSol: numOptional('SANDBOX_DAILY_LOSS_LIMIT_SOL', 0.5),
+  sandboxMaxPositionSol: numOptional('SANDBOX_MAX_POSITION_SOL', 0.05),
+
+  // ─── Phase 3: Strategy D Parameters ───
+  strategyDEnabled: process.env.STRATEGY_D_ENABLED === 'true', // default: false
+  strategyDTicketSol: numOptional('STRATEGY_D_TICKET_SOL', 0.02),
+  strategyDMinAge: numOptional('STRATEGY_D_MIN_AGE_MINUTES', 3),
+  strategyDMaxAge: numOptional('STRATEGY_D_MAX_AGE_MINUTES', 20),
+  strategyDTpMultiplier: numOptional('STRATEGY_D_TP_MULTIPLIER', 3.0),
 } as const;

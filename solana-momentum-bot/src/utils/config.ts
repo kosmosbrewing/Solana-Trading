@@ -140,4 +140,14 @@ export const config = {
 
   // ─── Quote Gate ───
   quoteGateEnabled: process.env.QUOTE_GATE_ENABLED !== 'false', // default: true
+
+  // ─── Phase 2: Pre-flight Gate ───
+  preflightEnforceGate: process.env.PREFLIGHT_ENFORCE_GATE !== 'false', // default: true
+
+  // ─── Phase 2: X/Twitter Social Mentions (C-2) ───
+  twitterBearerToken: optional('TWITTER_BEARER_TOKEN', ''),
+  socialInfluencerMinFollowers: numOptional('SOCIAL_INFLUENCER_MIN_FOLLOWERS', 10_000),
+
+  // ─── Phase 2: EventScore Pruning ───
+  eventScoreRetentionDays: numOptional('EVENT_SCORE_RETENTION_DAYS', 30),
 } as const;

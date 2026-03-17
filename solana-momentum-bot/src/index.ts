@@ -6,26 +6,28 @@ import { Candle } from './utils/types';
 
 import { BirdeyeClient, Ingester, IngesterConfig } from './ingester';
 import { BirdeyeWSClient } from './ingester/birdeyeWSClient';
-import { EventMonitor } from './event';
+import { EventMonitor, EventScoreStore } from './event';
 import { CandleStore, TradeStore } from './candle';
 import { RiskManager, RiskConfig, RegimeFilter } from './risk';
 import { PaperMetricsTracker } from './reporting';
 import { Executor, ExecutorConfig } from './executor';
 import { Notifier } from './notifier';
 import { UniverseEngine, UniverseEngineConfig } from './universe';
-import { ScannerEngine, ScannerEngineConfig, DexScreenerClient } from './scanner';
+import { ScannerEngine, ScannerEngineConfig, DexScreenerClient, SocialMentionTracker } from './scanner';
 import { ExecutionLock, PositionStore, runRecovery } from './state';
 import { SignalAuditLogger } from './audit';
 import { scheduleDailySummary } from './orchestration/reporting';
 import { handleNewCandle } from './orchestration/candleHandler';
 import { checkOpenPositions, closeTrade } from './orchestration/tradeExecution';
+import { runPreflightCheck } from './orchestration/preflightCheck';
+import { SpreadMeasurer } from './gate/spreadMeasurer';
 import { BotContext } from './orchestration/types';
 
 const log = createModuleLogger('Main');
 
 async function main() {
   const tradingMode = config.tradingMode;
-  log.info(`=== Solana Momentum Bot v0.4 starting (mode: ${tradingMode}) ===`);
+  log.info(`=== Solana Momentum Bot v0.5 starting (mode: ${tradingMode}) ===`);
 
   // ─── 공유 DB Pool ─────────────────────────────────
   const dbPool = new Pool({ connectionString: config.databaseUrl });
@@ -40,7 +42,25 @@ async function main() {
     positionStore.initialize(),
     auditLogger.initialize(),
   ]);
+  // Phase 2: EventScore persistence (C-1)
+  const eventScoreStore = new EventScoreStore(dbPool);
+  await eventScoreStore.initialize();
   log.info('Database initialized');
+
+  // ─── Phase 2: Pre-flight check (live mode gate) ────
+  let effectiveMode = tradingMode;
+  if (tradingMode === 'live') {
+    const preflight = await runPreflightCheck(dbPool, {
+      tradingMode,
+      enforceGate: config.preflightEnforceGate,
+    });
+    if (!preflight.passed && config.preflightEnforceGate) {
+      log.warn('Falling back to paper mode — pre-flight criteria not met');
+      effectiveMode = 'paper';
+      await new Notifier(config.telegramBotToken, config.telegramChatId)
+        .sendWarning('PreFlight', `Live mode blocked: ${preflight.reasons.join(', ')}`);
+    }
+  }
 
   // ─── Initialize modules ─────────────────────────────
   const birdeyeClient = new BirdeyeClient(config.birdeyeApiKey);
@@ -50,6 +70,20 @@ async function main() {
     fetchLimit: config.eventTrendingFetchLimit,
     expiryMinutes: config.eventExpiryMinutes,
     minLiquidityUsd: config.eventMinLiquidityUsd,
+  });
+  // Phase 2: Attach persistent store for historical replay (C-1)
+  eventMonitor.setScoreStore(eventScoreStore);
+
+  // Phase 2: Social mention tracker (C-2)
+  const socialMentionTracker = new SocialMentionTracker({
+    twitterBearerToken: config.twitterBearerToken,
+    influencerMinFollowers: config.socialInfluencerMinFollowers,
+  });
+
+  // Phase 2: Jupiter quote-based spread/fee measurer (H-2/H-3)
+  const spreadMeasurer = new SpreadMeasurer({
+    jupiterApiUrl: config.jupiterApiUrl,
+    jupiterApiKey: config.jupiterApiKey || undefined,
   });
 
   const riskConfig: RiskConfig = {
@@ -185,7 +219,7 @@ async function main() {
   });
 
   const ctx: BotContext = {
-    tradingMode,
+    tradingMode: effectiveMode,
     candleStore,
     tradeStore,
     riskManager,
@@ -204,6 +238,9 @@ async function main() {
     birdeyeWS: birdeyeWS ?? undefined,
     regimeFilter,
     paperMetrics,
+    socialMentionTracker,
+    spreadMeasurer,
+    eventScoreStore,
   };
 
   universeEngine.on('poolEvent', async (event: { type: string; pairAddress: string; detail: string }) => {
@@ -337,6 +374,15 @@ async function main() {
   await updateRegime();
   const regimeInterval = setInterval(updateRegime, REGIME_UPDATE_INTERVAL_MS);
 
+  // ─── Phase 2: Daily EventScore pruning ─────────────
+  const pruneInterval = setInterval(async () => {
+    try {
+      await eventScoreStore.pruneOlderThan(config.eventScoreRetentionDays);
+    } catch (error) {
+      log.warn(`EventScore pruning failed: ${error}`);
+    }
+  }, 24 * 3600_000); // daily
+
   // ─── Start services ───────────────────────────────
   await eventMonitor.start();
   await universeEngine.start();
@@ -361,7 +407,7 @@ async function main() {
   }
   log.info('Bot is running. Press Ctrl+C to stop.');
 
-  await notifier.sendInfo('Bot started (v0.4 — Phase 1A Scanner)');
+  await notifier.sendInfo(`Bot started (v0.5 — Phase 2 Core Live, mode: ${effectiveMode})`);
 
   // ─── Daily summary scheduler ────────────────────────
   scheduleDailySummary(ctx);
@@ -371,6 +417,7 @@ async function main() {
     log.info('Shutting down...');
     clearInterval(positionCheckInterval);
     clearInterval(regimeInterval);
+    clearInterval(pruneInterval);
     await ingester.stop();
     eventMonitor.stop();
     universeEngine.stop();

@@ -98,6 +98,22 @@
 
 > Birdeye WS 인프라 완료, position monitor polling → WS 배선 잔여
 
+#### Birdeye WS → Helius WS 전환 검토
+
+> 상태: 미착수 (아이디어 단계)
+
+현재 멀티풀 실시간 데이터는 Birdeye WS로 해결됨.
+향후 비용/의존성 최적화로 Helius WebSocket 전환을 검토할 수 있음.
+
+기대 효과:
+- Birdeye 의존 제거 (OHLCV + 매수/매도 볼륨)
+- Helius RPC 단일 인프라로 통합 (TX 실행 + 데이터 수집)
+- 월 비용 절감
+
+구현 방향:
+- `accountSubscribe([pool1..pool20])` → swap TX 파싱 → 로컬 5분봉 조립
+- 기존 CandleHandler 트리거 유지 (전략/Gate 코드 변경 없음)
+
 ---
 
 ## Notes

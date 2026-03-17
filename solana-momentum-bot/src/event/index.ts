@@ -3,6 +3,7 @@ import { BirdeyeClient } from '../ingester';
 import { createModuleLogger } from '../utils/logger';
 import { EventMonitorConfig, AttentionScore } from './types';
 import { AttentionScorer } from './eventScorer';
+import { EventScoreStore } from './eventScoreStore';
 import { TrendingFetcher } from './trendingFetcher';
 
 const log = createModuleLogger('EventMonitor');
@@ -13,6 +14,8 @@ export class EventMonitor extends EventEmitter {
   private timer?: NodeJS.Timeout;
   // tokenMint → 최신 AttentionScore (만료 관리 포함)
   private readonly latestScores = new Map<string, AttentionScore>();
+  /** Phase 2: Optional persistent store for historical replay (C-1) */
+  private scoreStore?: EventScoreStore;
 
   constructor(
     birdeyeClient: BirdeyeClient,
@@ -24,6 +27,11 @@ export class EventMonitor extends EventEmitter {
       expiryMinutes: config.expiryMinutes,
       minLiquidityUsd: config.minLiquidityUsd,
     });
+  }
+
+  /** Attach a persistent store for historical EventScore collection (C-1). */
+  setScoreStore(store: EventScoreStore): void {
+    this.scoreStore = store;
   }
 
   /** 특정 토큰의 유효한 AttentionScore 반환. 만료 시 undefined. */
@@ -79,6 +87,13 @@ export class EventMonitor extends EventEmitter {
     if (scores.length > 0) {
       this.emit('events', scores);
       log.info(`Generated ${scores.length} AttentionScore payloads`);
+
+      // Phase 2: Persist to DB for historical replay (C-1)
+      if (this.scoreStore) {
+        this.scoreStore.insertScores(scores).catch(err => {
+          log.warn(`Failed to persist EventScores: ${err}`);
+        });
+      }
     } else {
       log.info('No AttentionScore payloads passed the minimum threshold');
     }
@@ -89,6 +104,7 @@ export class EventMonitor extends EventEmitter {
 
 export { AttentionScorer, AttentionScorer as EventScorer } from './eventScorer';
 export { TrendingFetcher } from './trendingFetcher';
+export { EventScoreStore } from './eventScoreStore';
 export type {
   EventMonitorConfig,
   AttentionScore,

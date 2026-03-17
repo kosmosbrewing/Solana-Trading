@@ -2,7 +2,7 @@ import {
   evaluateVolumeSpikeBreakout,
   evaluateFibPullback,
 } from '../strategy';
-import { evaluateGates } from '../gate';
+import { evaluateGates, evaluateGatesAsync } from '../gate';
 import { buildLiveGateInput } from '../gate/liveGateInput';
 import { config } from '../utils/config';
 import { createModuleLogger } from '../utils/logger';
@@ -45,6 +45,45 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
     ? (config.maxRiskPerTrade * 10) / stopDistancePct
     : 1;
 
+  // Phase 1A: Security + Quote Gate data (fetched once per candle, shared across strategies)
+  const useAsyncGates = config.securityGateEnabled || config.quoteGateEnabled;
+  let tokenSecurityData = undefined;
+  let exitLiquidityData = undefined;
+
+  if (useAsyncGates && ctx.birdeyeClient) {
+    try {
+      const [secData, exitData] = await Promise.all([
+        config.securityGateEnabled
+          ? ctx.birdeyeClient.getTokenSecurityDetailed(poolInfo.tokenMint)
+          : Promise.resolve(undefined),
+        config.securityGateEnabled
+          ? ctx.birdeyeClient.getExitLiquidity(poolInfo.tokenMint)
+          : Promise.resolve(undefined),
+      ]);
+      tokenSecurityData = secData;
+      exitLiquidityData = exitData;
+    } catch (error) {
+      log.warn(`Security data fetch failed for ${poolInfo.tokenMint}: ${error}`);
+    }
+  }
+
+  const quoteGateConfig = config.quoteGateEnabled ? {
+    jupiterApiUrl: config.jupiterApiUrl,
+    jupiterApiKey: config.jupiterApiKey || undefined,
+    maxPriceImpact: config.maxPoolImpact,
+  } : undefined;
+
+  // Phase 2: Jupiter quote-based spread/fee measurement (H-2/H-3)
+  let measuredSpreadPct: number | undefined;
+  let measuredFeePct: number | undefined;
+  if (ctx.spreadMeasurer) {
+    const measurement = await ctx.spreadMeasurer.measure(poolInfo.tokenMint);
+    if (measurement) {
+      measuredSpreadPct = measurement.spreadPct;
+      measuredFeePct = measurement.effectiveFeePct;
+    }
+  }
+
   // Strategy A: Volume Spike Breakout (5분봉)
   if (candle.intervalSec === 300) {
     const signal = evaluateVolumeSpikeBreakout(candles, {
@@ -54,7 +93,7 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
 
     if (signal.action === 'BUY') {
       const prevTvl = ctx.previousTvl.get(candle.pairAddress) || poolTvl;
-      const gateResult = evaluateGates(buildLiveGateInput({
+      const gateInput = buildLiveGateInput({
         signal,
         candles,
         poolInfo,
@@ -70,12 +109,24 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
           minBuyRatio: config.minBuyRatio,
           minBreakoutScore: config.minBreakoutScore,
         },
-      }));
+      });
+
+      // Phase 1A: inject security/quote gate params
+      gateInput.tokenSecurityData = tokenSecurityData;
+      gateInput.exitLiquidityData = exitLiquidityData;
+      gateInput.quoteGateConfig = quoteGateConfig;
+      gateInput.enableSecurityGate = config.securityGateEnabled;
+      gateInput.enableQuoteGate = config.quoteGateEnabled;
+
+      const gateResult = useAsyncGates
+        ? await evaluateGatesAsync(gateInput)
+        : evaluateGates(gateInput);
 
       signal.breakoutScore = gateResult.breakoutScore;
       signal.poolTvl = poolTvl;
-      signal.spreadPct = poolInfo.spreadPct;
-      if (poolInfo.ammFeePct !== undefined) signal.meta.ammFeePct = poolInfo.ammFeePct;
+      signal.spreadPct = measuredSpreadPct ?? poolInfo.spreadPct;
+      const resolvedFee = measuredFeePct ?? poolInfo.ammFeePct;
+      if (resolvedFee !== undefined) signal.meta.ammFeePct = resolvedFee;
       if (poolInfo.mevMarginPct !== undefined) signal.meta.mevMarginPct = poolInfo.mevMarginPct;
 
       await processSignal(signal, candles, ctx, gateResult);
@@ -104,7 +155,7 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
 
       if (fibSignal.action === 'BUY') {
         const prevTvl = ctx.previousTvl.get(candle.pairAddress) || poolTvl;
-        const gateResult = evaluateGates(buildLiveGateInput({
+        const gateInput = buildLiveGateInput({
           signal: fibSignal,
           candles: fibCandles,
           poolInfo,
@@ -120,12 +171,24 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
             minBuyRatio: config.minBuyRatio,
             minBreakoutScore: config.minBreakoutScore,
           },
-        }));
+        });
+
+        // Phase 1A: inject security/quote gate params
+        gateInput.tokenSecurityData = tokenSecurityData;
+        gateInput.exitLiquidityData = exitLiquidityData;
+        gateInput.quoteGateConfig = quoteGateConfig;
+        gateInput.enableSecurityGate = config.securityGateEnabled;
+        gateInput.enableQuoteGate = config.quoteGateEnabled;
+
+        const gateResult = useAsyncGates
+          ? await evaluateGatesAsync(gateInput)
+          : evaluateGates(gateInput);
 
         fibSignal.poolTvl = poolTvl;
         fibSignal.breakoutScore = gateResult.breakoutScore;
-        fibSignal.spreadPct = poolInfo.spreadPct;
-        if (poolInfo.ammFeePct !== undefined) fibSignal.meta.ammFeePct = poolInfo.ammFeePct;
+        fibSignal.spreadPct = measuredSpreadPct ?? poolInfo.spreadPct;
+        const fibResolvedFee = measuredFeePct ?? poolInfo.ammFeePct;
+        if (fibResolvedFee !== undefined) fibSignal.meta.ammFeePct = fibResolvedFee;
         if (poolInfo.mevMarginPct !== undefined) fibSignal.meta.mevMarginPct = poolInfo.mevMarginPct;
 
         await processSignal(fibSignal, fibCandles, ctx, gateResult);

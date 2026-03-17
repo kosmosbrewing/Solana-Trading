@@ -66,7 +66,7 @@ export interface PaperValidationReport {
   };
 }
 
-const STRATEGIES: StrategyName[] = ['volume_spike', 'fib_pullback'];
+const STRATEGIES: StrategyName[] = ['volume_spike', 'fib_pullback', 'new_lp_sniper'];
 
 export function buildPaperValidationReport(
   trades: PaperValidationTrade[],

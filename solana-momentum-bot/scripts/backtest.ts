@@ -45,6 +45,7 @@ import {
   BacktestAttentionScoreEntry,
   DEFAULT_BACKTEST_CONFIG,
 } from '../src/backtest';
+import { AttentionScoreDbLoader } from '../src/backtest/attentionScoreDbLoader';
 import type { Candle } from '../src/utils/types';
 import type { AttentionScore } from '../src/event/types';
 
@@ -134,6 +135,20 @@ async function main() {
 
     if (strategy === 'a' || strategy === 'c' || strategy === 'both') {
       candles5m = await loader.load(pairAddress, 300);
+    }
+
+    // Phase 2: Load EventScore timeline from DB if --attention-score-db flag set
+    if (args.includes('--attention-score-db') && !config.attentionScoreTimeline) {
+      const dbTimelineLoader = new AttentionScoreDbLoader(pool);
+      const fromTime = config.startDate ?? new Date(0);
+      const toTime = config.endDate ?? new Date();
+      const dbTimeline = await dbTimelineLoader.loadTimeline(fromTime, toTime);
+      if (dbTimeline.length > 0) {
+        config.attentionScoreTimeline = dbTimeline;
+        console.log(`Loaded ${dbTimeline.length} EventScores from DB for timeline`);
+      } else {
+        console.warn('No EventScores found in DB for the specified date range');
+      }
     }
 
     await pool.end();

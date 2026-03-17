@@ -116,4 +116,55 @@ export const config = {
   eventMinScore: numOptional('EVENT_MIN_SCORE', 35),
   eventExpiryMinutes: numOptional('EVENT_EXPIRY_MINUTES', 180),
   eventMinLiquidityUsd: numOptional('EVENT_MIN_LIQUIDITY_USD', 25_000),
+
+  // ─── Scanner (Phase 1A) ───
+  scannerEnabled: process.env.SCANNER_ENABLED === 'true',
+  scannerMinWatchlistScore: numOptional('SCANNER_MIN_WATCHLIST_SCORE', 30),
+  scannerTrendingPollMs: numOptional('SCANNER_TRENDING_POLL_MS', 300_000),
+  scannerDexEnrichMs: numOptional('SCANNER_DEX_ENRICH_MS', 300_000),
+  scannerLaneAMinAgeSec: numOptional('SCANNER_LANE_A_MIN_AGE_SEC', 3_600),
+  scannerLaneBMaxAgeSec: numOptional('SCANNER_LANE_B_MAX_AGE_SEC', 1_200),
+
+  // ─── Birdeye WebSocket ───
+  birdeyeWSEnabled: process.env.BIRDEYE_WS_ENABLED === 'true',
+
+  // ─── DexScreener ───
+  dexScreenerApiKey: optional('DEXSCREENER_API_KEY', ''),
+
+  // ─── Jupiter API Key (Ultra API) ───
+  jupiterApiKey: optional('JUPITER_API_KEY', ''),
+
+  // ─── Security Gate ───
+  securityGateEnabled: process.env.SECURITY_GATE_ENABLED !== 'false', // default: true
+  minExitLiquidityUsd: numOptional('MIN_EXIT_LIQUIDITY_USD', 10_000),
+
+  // ─── Quote Gate ───
+  quoteGateEnabled: process.env.QUOTE_GATE_ENABLED !== 'false', // default: true
+
+  // ─── Phase 2: Pre-flight Gate ───
+  preflightEnforceGate: process.env.PREFLIGHT_ENFORCE_GATE !== 'false', // default: true
+
+  // ─── Phase 2: X/Twitter Social Mentions (C-2) ───
+  twitterBearerToken: optional('TWITTER_BEARER_TOKEN', ''),
+  socialInfluencerMinFollowers: numOptional('SOCIAL_INFLUENCER_MIN_FOLLOWERS', 10_000),
+
+  // ─── Phase 2: EventScore Pruning ───
+  eventScoreRetentionDays: numOptional('EVENT_SCORE_RETENTION_DAYS', 30),
+
+  // ─── Phase 3: Jito Bundle Integration (M-5) ───
+  useJitoBundles: process.env.USE_JITO_BUNDLES === 'true', // default: false
+  jitoRpcUrl: optional('JITO_RPC_URL', 'https://mainnet.block-engine.jito.wtf'),
+  jitoTipSol: numOptional('JITO_TIP_SOL', 0.001),
+
+  // ─── Phase 3: Sandbox Wallet (Strategy D) ───
+  sandboxWalletKey: optional('SANDBOX_WALLET_PRIVATE_KEY', ''),
+  sandboxDailyLossLimitSol: numOptional('SANDBOX_DAILY_LOSS_LIMIT_SOL', 0.5),
+  sandboxMaxPositionSol: numOptional('SANDBOX_MAX_POSITION_SOL', 0.05),
+
+  // ─── Phase 3: Strategy D Parameters ───
+  strategyDEnabled: process.env.STRATEGY_D_ENABLED === 'true', // default: false
+  strategyDTicketSol: numOptional('STRATEGY_D_TICKET_SOL', 0.02),
+  strategyDMinAge: numOptional('STRATEGY_D_MIN_AGE_MINUTES', 3),
+  strategyDMaxAge: numOptional('STRATEGY_D_MAX_AGE_MINUTES', 20),
+  strategyDTpMultiplier: numOptional('STRATEGY_D_TP_MULTIPLIER', 3.0),
 } as const;

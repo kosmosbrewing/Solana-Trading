@@ -30,11 +30,11 @@ const RISK_TIERS: Record<EdgeState, RiskTierDefinition> = {
     kellyCap: 0.01,
   },
   Calibration: {
-    fixedRiskPerTrade: 0.02,
-    maxDailyLoss: 0.08,
+    fixedRiskPerTrade: 0.01,  // STRATEGY.md: Bootstrap/Calibration 모두 1% 고정
+    maxDailyLoss: 0.05,
     maxDrawdownPct: 0.30,
     kellyScale: 0,
-    kellyCap: 0.02,
+    kellyCap: 0.01,
   },
   Confirmed: {
     fixedRiskPerTrade: 0.02,
@@ -71,6 +71,44 @@ export function resolveRiskTierProfile(
     kellyApplied,
     kellyMode: tier.kellyScale >= 0.5 ? 'half' : tier.kellyScale > 0 ? 'quarter' : 'fixed',
   };
+}
+
+/**
+ * Phase 4: Resolve risk tier with demotion check.
+ * Uses EdgeTracker.checkDemotion() to detect recent performance degradation.
+ * On demotion: drops one tier (Proven→Confirmed, Confirmed→Calibration).
+ */
+export function resolveRiskTierWithDemotion(
+  edgeTracker: EdgeTracker,
+  recoveryPct: number,
+  mode: 'portfolio' | StrategyName = 'portfolio'
+): { profile: RiskTierProfile; demoted: boolean; demotionReason?: string } {
+  const stats = mode === 'portfolio'
+    ? edgeTracker.getPortfolioStats()
+    : edgeTracker.getStrategyStats(mode as StrategyName);
+
+  let profile = resolveRiskTierProfile(stats, recoveryPct);
+
+  // Check demotion
+  const demotion = edgeTracker.checkDemotion();
+  if (demotion.shouldDemote) {
+    const demotedState = demoteEdgeState(profile.edgeState);
+    if (demotedState !== profile.edgeState) {
+      const demotedStats = { ...stats, edgeState: demotedState, kellyEligible: demotedState === 'Confirmed' || demotedState === 'Proven' };
+      profile = resolveRiskTierProfile(demotedStats, recoveryPct);
+      return { profile, demoted: true, demotionReason: demotion.reason };
+    }
+  }
+
+  return { profile, demoted: false };
+}
+
+function demoteEdgeState(state: EdgeState): EdgeState {
+  switch (state) {
+    case 'Proven': return 'Confirmed';
+    case 'Confirmed': return 'Calibration';
+    default: return state;
+  }
 }
 
 export function resolveStrategyRiskTier(

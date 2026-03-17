@@ -12,6 +12,7 @@ const INTERVAL_TO_SECONDS: Record<CandleInterval, number> = {
   '5m': 300,
   '15m': 900,
   '1H': 3600,
+  '4H': 14400,
 };
 const MAX_TXS_PER_REQUEST = 50;
 const MAX_TX_PAGES = 200;
@@ -23,6 +24,27 @@ interface BirdeyeOHLCV {
   l: number;
   c: number;
   v: number;
+}
+
+// ─── Token Security (강화) ───
+
+export interface TokenSecurityData {
+  isHoneypot: boolean;
+  isFreezable: boolean;
+  isMintable: boolean;
+  hasTransferFee: boolean;
+  freezeAuthorityPresent: boolean;
+  top10HolderPct: number;
+  creatorPct: number;
+  ownerAddress?: string;
+  creatorAddress?: string;
+}
+
+export interface ExitLiquidityData {
+  exitLiquidityUsd: number | null;
+  sellVolume24h: number;
+  buyVolume24h: number;
+  sellBuyRatio: number;
 }
 
 export interface BirdeyeTrendingToken {
@@ -130,6 +152,63 @@ export class BirdeyeClient {
     } catch (error) {
       log.error(`Failed to fetch token overview for ${tokenAddress}: ${error}`);
       throw error;
+    }
+  }
+
+  /**
+   * 토큰 보안 상세 조회 (honeypot, freeze, mint, transfer fee)
+   * Requires: Premium+ plan
+   */
+  async getTokenSecurityDetailed(tokenAddress: string): Promise<TokenSecurityData | null> {
+    try {
+      const response = await this.client.get('/defi/token_security', {
+        params: { address: tokenAddress },
+      });
+      const d = response.data?.data;
+      if (!d) return null;
+
+      return {
+        isHoneypot: Boolean(d.isHoneypot ?? d.is_honeypot ?? false),
+        isFreezable: Boolean(d.isFreezable ?? d.is_freezable ?? d.freezeable ?? false),
+        isMintable: Boolean(d.isMintable ?? d.is_mintable ?? d.mintable ?? false),
+        hasTransferFee: Boolean(d.hasTransferFee ?? d.has_transfer_fee ?? d.transferFeeEnable ?? false),
+        freezeAuthorityPresent: Boolean(d.freezeAuthority ?? d.freeze_authority ?? false),
+        top10HolderPct: Number(d.top10HolderPercent ?? d.top10_holder_percent ?? 0),
+        creatorPct: Number(d.creatorPercent ?? d.creator_percent ?? 0),
+        ownerAddress: d.ownerAddress ?? d.owner_address,
+        creatorAddress: d.creatorAddress ?? d.creator_address,
+      };
+    } catch (error) {
+      log.error(`Failed to fetch token security (detailed) for ${tokenAddress}: ${error}`);
+      return null;
+    }
+  }
+
+  /**
+   * Exit Liquidity 조회 (실제로 팔 수 있는지)
+   * Requires: Premium+ plan
+   */
+  async getExitLiquidity(tokenAddress: string): Promise<ExitLiquidityData | null> {
+    try {
+      const response = await this.client.get('/defi/v3/token/exit-liquidity', {
+        params: { address: tokenAddress },
+      });
+      const d = response.data?.data;
+      if (!d) return null;
+
+      const sellVol = Number(d.sell24hVolume ?? d.sellVolume24h ?? 0);
+      const buyVol = Number(d.buy24hVolume ?? d.buyVolume24h ?? 0);
+
+      return {
+        exitLiquidityUsd: d.exitLiquidity != null ? Number(d.exitLiquidity) : null,
+        sellVolume24h: sellVol,
+        buyVolume24h: buyVol,
+        sellBuyRatio: buyVol > 0 ? sellVol / buyVol : 0,
+      };
+    } catch (error) {
+      // exit-liquidity may return null for unsupported tokens
+      log.warn(`Exit liquidity unavailable for ${tokenAddress}: ${error}`);
+      return null;
     }
   }
 

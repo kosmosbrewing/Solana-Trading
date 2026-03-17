@@ -14,6 +14,7 @@ export {
   replayStrategyDrawdownGuard,
   resolvePortfolioRiskTier,
   resolveRiskTierProfile,
+  resolveRiskTierWithDemotion,
   resolveStrategyRiskTier,
 } from './riskTier';
 export type { RiskTierProfile } from './riskTier';

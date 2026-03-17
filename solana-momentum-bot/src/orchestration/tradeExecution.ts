@@ -45,6 +45,11 @@ export async function checkOpenPositions(ctx: BotContext): Promise<void> {
   await syncTradingHalts(ctx, portfolioWithUnrealized);
 
   for (const { trade, recentCandles, currentPrice } of activeTrades) {
+    // Phase 1B: Update MAE/MFE excursions
+    if (ctx.paperMetrics) {
+      ctx.paperMetrics.updateExcursion(trade.id, currentPrice);
+    }
+
     const now = new Date();
 
     if (now >= trade.timeStopAt) {
@@ -188,6 +193,11 @@ export async function closeTrade(
       exitReason: reason,
       pnl,
     });
+
+    // Phase 1B: Record paper metrics exit
+    if (ctx.paperMetrics) {
+      ctx.paperMetrics.recordExit(trade.id, exitPrice, reason);
+    }
 
     ctx.healthMonitor.updateTradeTime();
     log.info(`Trade ${trade.id} closed (${reason}). PnL: ${pnl.toFixed(6)} SOL`);

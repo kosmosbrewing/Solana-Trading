@@ -44,7 +44,7 @@ export interface PairBlacklistConfig {
   decayWindowTrades: number;
 }
 
-const STRATEGIES: StrategyName[] = ['volume_spike', 'fib_pullback'];
+const STRATEGIES: StrategyName[] = ['volume_spike', 'fib_pullback', 'new_lp_sniper'];
 const DEFAULT_PAIR_BLACKLIST_CONFIG: PairBlacklistConfig = {
   minTrades: 5,
   maxWinRate: 0.35,
@@ -76,6 +76,32 @@ const PROMOTION_GATES: Record<'Confirmed' | 'Proven', PromotionGate> = {
     minRewardRisk: 1.75,
     minSharpeRatio: 0.75,
     maxConsecutiveLosses: 3,
+  },
+};
+
+/**
+ * Phase 4: Demotion gates — recent-window performance check.
+ * If recent N trades fall below these thresholds, demote by one tier.
+ */
+interface DemotionGate {
+  recentWindowSize: number;
+  maxWinRate: number;       // Demote if BELOW this
+  maxRewardRisk: number;    // Demote if BELOW this
+  minConsecutiveLosses: number; // Demote if ABOVE this
+}
+
+const DEMOTION_GATES: Record<'Proven' | 'Confirmed', DemotionGate> = {
+  Proven: {
+    recentWindowSize: 20,
+    maxWinRate: 0.35,
+    maxRewardRisk: 1.0,
+    minConsecutiveLosses: 5,
+  },
+  Confirmed: {
+    recentWindowSize: 15,
+    maxWinRate: 0.30,
+    maxRewardRisk: 0.8,
+    minConsecutiveLosses: 5,
   },
 };
 
@@ -144,6 +170,88 @@ export class EdgeTracker {
 
   getPortfolioStats(): EdgePerformanceStats {
     return summarizeTrades(this.trades);
+  }
+
+  /**
+   * Phase 4: Get stats for recent N trades only.
+   * Used for demotion checks and recent-window Kelly recalculation.
+   */
+  getRecentStats(windowSize: number): EdgePerformanceStats {
+    const recentTrades = windowSize > 0 && this.trades.length > windowSize
+      ? this.trades.slice(-windowSize)
+      : this.trades;
+    return summarizeTrades(recentTrades);
+  }
+
+  /**
+   * Phase 4: Get strategy-specific recent stats.
+   */
+  getRecentStrategyStats(strategy: StrategyName, windowSize: number): StrategyEdgeStats {
+    let stratTrades = this.trades.filter(t => t.strategy === strategy);
+    if (windowSize > 0 && stratTrades.length > windowSize) {
+      stratTrades = stratTrades.slice(-windowSize);
+    }
+    return { strategy, ...summarizeTrades(stratTrades) };
+  }
+
+  /**
+   * Phase 4: Check if current edge state should be demoted
+   * based on recent performance deterioration.
+   */
+  checkDemotion(): { shouldDemote: boolean; reason?: string } {
+    const fullStats = this.getPortfolioStats();
+
+    if (fullStats.edgeState === 'Proven') {
+      const gate = DEMOTION_GATES.Proven;
+      const recent = this.getRecentStats(gate.recentWindowSize);
+      if (recent.totalTrades >= gate.recentWindowSize) {
+        if (recent.winRate < gate.maxWinRate) {
+          return { shouldDemote: true, reason: `Recent WR ${(recent.winRate * 100).toFixed(1)}% < ${(gate.maxWinRate * 100).toFixed(0)}%` };
+        }
+        if (recent.rewardRisk < gate.maxRewardRisk && Number.isFinite(recent.rewardRisk)) {
+          return { shouldDemote: true, reason: `Recent R:R ${recent.rewardRisk.toFixed(2)} < ${gate.maxRewardRisk}` };
+        }
+        if (recent.maxConsecutiveLosses >= gate.minConsecutiveLosses) {
+          return { shouldDemote: true, reason: `${recent.maxConsecutiveLosses} consecutive losses` };
+        }
+      }
+    }
+
+    if (fullStats.edgeState === 'Confirmed') {
+      const gate = DEMOTION_GATES.Confirmed;
+      const recent = this.getRecentStats(gate.recentWindowSize);
+      if (recent.totalTrades >= gate.recentWindowSize) {
+        if (recent.winRate < gate.maxWinRate) {
+          return { shouldDemote: true, reason: `Recent WR ${(recent.winRate * 100).toFixed(1)}% < ${(gate.maxWinRate * 100).toFixed(0)}%` };
+        }
+        if (recent.rewardRisk < gate.maxRewardRisk && Number.isFinite(recent.rewardRisk)) {
+          return { shouldDemote: true, reason: `Recent R:R ${recent.rewardRisk.toFixed(2)} < ${gate.maxRewardRisk}` };
+        }
+        if (recent.maxConsecutiveLosses >= gate.minConsecutiveLosses) {
+          return { shouldDemote: true, reason: `${recent.maxConsecutiveLosses} consecutive losses` };
+        }
+      }
+    }
+
+    return { shouldDemote: false };
+  }
+
+  /**
+   * Phase 4: Get expectancy (average R-multiple per trade).
+   * Positive expectancy is prerequisite for Strategy E activation.
+   */
+  getExpectancy(strategy?: StrategyName): number {
+    const trades = strategy
+      ? this.trades.filter(t => t.strategy === strategy)
+      : this.trades;
+    if (trades.length === 0) return 0;
+    const rMultiples = trades.map(toRiskMultiple).filter(isFiniteNumber);
+    return rMultiples.length > 0 ? average(rMultiples) : 0;
+  }
+
+  /** Total trade count */
+  getTradeCount(): number {
+    return this.trades.length;
   }
 }
 

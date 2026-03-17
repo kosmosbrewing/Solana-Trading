@@ -1,6 +1,6 @@
 // ─── Candle ───
 
-export type CandleInterval = '1m' | '5m' | '15m' | '1H';
+export type CandleInterval = '1m' | '5m' | '15m' | '1H' | '4H';
 
 export interface Candle {
   pairAddress: string;
@@ -54,7 +54,7 @@ export interface Signal {
 
 // ─── Strategy ───
 
-export type StrategyName = 'volume_spike' | 'fib_pullback';
+export type StrategyName = 'volume_spike' | 'fib_pullback' | 'new_lp_sniper';
 
 export interface StrategyConfig {
   name: StrategyName;

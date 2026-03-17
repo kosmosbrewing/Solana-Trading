@@ -87,4 +87,18 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
     restarts: 0,
     edgeStats: edgeTracker.getAllStrategyStats(),
   });
+
+  // Phase 1B: Paper metrics + regime status
+  if (ctx.paperMetrics) {
+    const paperText = ctx.paperMetrics.formatSummaryText(24);
+    await ctx.notifier.sendInfo(paperText);
+  }
+  if (ctx.regimeFilter) {
+    const regime = ctx.regimeFilter.getState();
+    await ctx.notifier.sendInfo(
+      `🔍 Regime: ${regime.regime} (size=${regime.sizeMultiplier}x) ` +
+      `SOL=${regime.solTrendBullish ? 'bull' : 'bear'} ` +
+      `breadth=${(regime.breadthPct * 100).toFixed(0)}% follow=${(regime.followThroughPct * 100).toFixed(0)}%`
+    );
+  }
 }

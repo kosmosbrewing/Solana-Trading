@@ -5,24 +5,29 @@ import { HealthMonitor } from './utils/healthMonitor';
 import { Candle } from './utils/types';
 
 import { BirdeyeClient, Ingester, IngesterConfig } from './ingester';
-import { EventMonitor } from './event';
+import { BirdeyeWSClient } from './ingester/birdeyeWSClient';
+import { EventMonitor, EventScoreStore } from './event';
 import { CandleStore, TradeStore } from './candle';
-import { RiskManager, RiskConfig } from './risk';
-import { Executor, ExecutorConfig } from './executor';
+import { RiskManager, RiskConfig, RegimeFilter } from './risk';
+import { PaperMetricsTracker } from './reporting';
+import { Executor, ExecutorConfig, WalletManager } from './executor';
 import { Notifier } from './notifier';
 import { UniverseEngine, UniverseEngineConfig } from './universe';
+import { ScannerEngine, ScannerEngineConfig, DexScreenerClient, SocialMentionTracker } from './scanner';
 import { ExecutionLock, PositionStore, runRecovery } from './state';
 import { SignalAuditLogger } from './audit';
 import { scheduleDailySummary } from './orchestration/reporting';
 import { handleNewCandle } from './orchestration/candleHandler';
 import { checkOpenPositions, closeTrade } from './orchestration/tradeExecution';
+import { runPreflightCheck } from './orchestration/preflightCheck';
+import { SpreadMeasurer } from './gate/spreadMeasurer';
 import { BotContext } from './orchestration/types';
 
 const log = createModuleLogger('Main');
 
 async function main() {
   const tradingMode = config.tradingMode;
-  log.info(`=== Solana Momentum Bot v0.3 starting (mode: ${tradingMode}) ===`);
+  log.info(`=== Solana Momentum Bot v0.5 starting (mode: ${tradingMode}) ===`);
 
   // ─── 공유 DB Pool ─────────────────────────────────
   const dbPool = new Pool({ connectionString: config.databaseUrl });
@@ -37,7 +42,25 @@ async function main() {
     positionStore.initialize(),
     auditLogger.initialize(),
   ]);
+  // Phase 2: EventScore persistence (C-1)
+  const eventScoreStore = new EventScoreStore(dbPool);
+  await eventScoreStore.initialize();
   log.info('Database initialized');
+
+  // ─── Phase 2: Pre-flight check (live mode gate) ────
+  let effectiveMode = tradingMode;
+  if (tradingMode === 'live') {
+    const preflight = await runPreflightCheck(dbPool, {
+      tradingMode,
+      enforceGate: config.preflightEnforceGate,
+    });
+    if (!preflight.passed && config.preflightEnforceGate) {
+      log.warn('Falling back to paper mode — pre-flight criteria not met');
+      effectiveMode = 'paper';
+      await new Notifier(config.telegramBotToken, config.telegramChatId)
+        .sendWarning('PreFlight', `Live mode blocked: ${preflight.reasons.join(', ')}`);
+    }
+  }
 
   // ─── Initialize modules ─────────────────────────────
   const birdeyeClient = new BirdeyeClient(config.birdeyeApiKey);
@@ -47,6 +70,20 @@ async function main() {
     fetchLimit: config.eventTrendingFetchLimit,
     expiryMinutes: config.eventExpiryMinutes,
     minLiquidityUsd: config.eventMinLiquidityUsd,
+  });
+  // Phase 2: Attach persistent store for historical replay (C-1)
+  eventMonitor.setScoreStore(eventScoreStore);
+
+  // Phase 2: Social mention tracker (C-2)
+  const socialMentionTracker = new SocialMentionTracker({
+    twitterBearerToken: config.twitterBearerToken,
+    influencerMinFollowers: config.socialInfluencerMinFollowers,
+  });
+
+  // Phase 2: Jupiter quote-based spread/fee measurer (H-2/H-3)
+  const spreadMeasurer = new SpreadMeasurer({
+    jupiterApiUrl: config.jupiterApiUrl,
+    jupiterApiKey: config.jupiterApiKey || undefined,
   });
 
   const riskConfig: RiskConfig = {
@@ -75,10 +112,26 @@ async function main() {
     maxSlippage: config.maxSlippage,
     maxRetries: config.maxRetries,
     txTimeoutMs: config.txTimeoutMs,
+    useJitoBundles: config.useJitoBundles,
+    jitoRpcUrl: config.jitoRpcUrl,
+    jitoTipSol: config.jitoTipSol,
   };
   const executor = new Executor(executorConfig);
 
   const notifier = new Notifier(config.telegramBotToken, config.telegramChatId);
+
+  // ─── Phase 3: Wallet Manager (main + sandbox isolation) ───
+  const walletManager = new WalletManager({
+    solanaRpcUrl: config.solanaRpcUrl,
+    mainWalletKey: config.walletPrivateKey,
+    sandboxWalletKey: config.sandboxWalletKey || undefined,
+    sandboxDailyLossLimitSol: config.sandboxDailyLossLimitSol,
+    sandboxMaxPositionSol: config.sandboxMaxPositionSol,
+  });
+
+  // ─── Phase 1B: Regime Filter + Paper Metrics ────────
+  const regimeFilter = new RegimeFilter();
+  const paperMetrics = new PaperMetricsTracker();
 
   const healthMonitor = new HealthMonitor();
   healthMonitor.setDbConnected(true);
@@ -89,10 +142,62 @@ async function main() {
     await notifier.sendWarning('ExecutionLock', 'Lock timeout — auto released');
   });
 
+  // ─── Phase 1A: Birdeye WebSocket ──────────────────
+  let birdeyeWS: BirdeyeWSClient | null = null;
+  if (config.birdeyeWSEnabled) {
+    birdeyeWS = new BirdeyeWSClient({
+      apiKey: config.birdeyeApiKey,
+    });
+    birdeyeWS.on('connected', () => {
+      log.info('Birdeye WS connected');
+      healthMonitor.setWsConnected(true);
+    });
+    birdeyeWS.on('disconnected', () => {
+      healthMonitor.setWsConnected(false);
+    });
+    birdeyeWS.on('error', (err: Error) => {
+      log.error(`Birdeye WS error: ${err.message}`);
+    });
+    log.info('Birdeye WebSocket client initialized');
+  }
+
+  // ─── Phase 1A: DexScreener Client ─────────────────
+  let dexScreenerClient: DexScreenerClient | null = null;
+  if (config.dexScreenerApiKey) {
+    dexScreenerClient = new DexScreenerClient(config.dexScreenerApiKey);
+    log.info('DexScreener client initialized');
+  }
+
+  // ─── Phase 1A: Scanner Engine ─────────────────────
+  let scanner: ScannerEngine | null = null;
+  if (config.scannerEnabled) {
+    const scannerConfig: ScannerEngineConfig = {
+      birdeyeClient,
+      birdeyeWS,
+      dexScreenerClient,
+      maxWatchlistSize: config.maxWatchlistSize,
+      minWatchlistScore: config.scannerMinWatchlistScore,
+      trendingPollIntervalMs: config.scannerTrendingPollMs,
+      dexEnrichIntervalMs: config.scannerDexEnrichMs,
+      laneAMinAgeSec: config.scannerLaneAMinAgeSec,
+      laneBMaxAgeSec: config.scannerLaneBMaxAgeSec,
+      minLiquidityUsd: config.eventMinLiquidityUsd,
+    };
+    scanner = new ScannerEngine(scannerConfig);
+    scanner.on('candidateDiscovered', (entry) => {
+      log.info(`Scanner: new candidate ${entry.symbol} lane=${entry.lane} score=${entry.watchlistScore.totalScore}`);
+    });
+    scanner.on('candidateEvicted', (tokenMint: string) => {
+      log.info(`Scanner: evicted ${tokenMint}`);
+    });
+    log.info('Scanner engine initialized');
+  }
+
   // ─── Universe Engine ───────────────────────────────
+  // Legacy mode: TARGET_PAIR_ADDRESS, Scanner mode: 동적 watchlist
   const targetPair = process.env.TARGET_PAIR_ADDRESS;
-  if (!targetPair) {
-    log.error('TARGET_PAIR_ADDRESS not set. Exiting.');
+  if (!targetPair && !config.scannerEnabled) {
+    log.error('TARGET_PAIR_ADDRESS not set and SCANNER_ENABLED is false. Exiting.');
     process.exit(1);
   }
 
@@ -107,7 +212,7 @@ async function main() {
       maxWatchlistSize: config.maxWatchlistSize,
     },
     refreshIntervalMs: config.universeRefreshIntervalMs,
-    poolAddresses: [targetPair],
+    poolAddresses: targetPair ? [targetPair] : [],
   };
 
   const universeEngine = new UniverseEngine(birdeyeClient, universeConfig);
@@ -124,6 +229,32 @@ async function main() {
   eventMonitor.on('error', async (error: unknown) => {
     await notifier.sendError('event_monitor', error).catch(() => {});
   });
+
+  const ctx: BotContext = {
+    tradingMode: effectiveMode,
+    candleStore,
+    tradeStore,
+    riskManager,
+    executor,
+    notifier,
+    healthMonitor,
+    universeEngine,
+    eventMonitor,
+    executionLock,
+    positionStore,
+    auditLogger,
+    previousTvl: new Map(),
+    tradingHaltedReason: undefined,
+    scanner: scanner ?? undefined,
+    birdeyeClient,
+    birdeyeWS: birdeyeWS ?? undefined,
+    regimeFilter,
+    paperMetrics,
+    socialMentionTracker,
+    spreadMeasurer,
+    eventScoreStore,
+    walletManager,
+  };
 
   universeEngine.on('poolEvent', async (event: { type: string; pairAddress: string; detail: string }) => {
     if (event.type === 'RUG_PULL' || event.type === 'LP_DROP') {
@@ -142,23 +273,6 @@ async function main() {
       await notifier.sendWarning('Pool Event', `${event.type}: ${event.detail}`);
     }
   });
-
-  const ctx: BotContext = {
-    tradingMode,
-    candleStore,
-    tradeStore,
-    riskManager,
-    executor,
-    notifier,
-    healthMonitor,
-    universeEngine,
-    eventMonitor,
-    executionLock,
-    positionStore,
-    auditLogger,
-    previousTvl: new Map(),
-    tradingHaltedReason: undefined,
-  };
 
   // ─── Crash Recovery (v0.3) ─────────────────────────
   const recoveryResult = await runRecovery({
@@ -195,13 +309,14 @@ async function main() {
   }
 
   // ─── Configure ingester ─────────────────────────────
-  const ingesterConfigs: IngesterConfig[] = [
-    {
+  const ingesterConfigs: IngesterConfig[] = [];
+  if (targetPair) {
+    ingesterConfigs.push({
       pairAddress: targetPair,
       intervalType: config.defaultTimeframe === 60 ? '1m' : '5m',
       pollIntervalMs: config.defaultTimeframe * 1000,
-    },
-  ];
+    });
+  }
 
   const ingester = new Ingester(birdeyeClient, candleStore, ingesterConfigs);
 
@@ -223,7 +338,6 @@ async function main() {
   });
 
   // ─── Position monitor (SL/TP/Time Stop/Exhaustion) ──
-  // 5초 간격: micro-cap에서 10초는 SL 관통 슬리피지를 크게 악화시킴
   const positionCheckInterval = setInterval(async () => {
     try {
       await checkOpenPositions(ctx);
@@ -233,15 +347,80 @@ async function main() {
     }
   }, 5000);
 
-  // ─── Universe Engine start ──────────────────────────
+  // ─── Phase 1B: Regime Filter periodic update ───────
+  const SOL_USDC_PAIR = 'So11111111111111111111111111111111111111112';
+  const REGIME_UPDATE_INTERVAL_MS = 15 * 60 * 1000; // 15 min
+
+  const updateRegime = async () => {
+    try {
+      // Factor 1: SOL 4H trend from Birdeye (60 candles × 4h = 10 days)
+      const now = Math.floor(Date.now() / 1000);
+      const tenDaysAgo = now - 60 * 4 * 3600;
+      const sol4hCandles = await birdeyeClient.getOHLCV(SOL_USDC_PAIR, '4H', tenDaysAgo, now);
+      if (sol4hCandles.length >= 50) {
+        regimeFilter.updateSolTrend(sol4hCandles);
+      }
+
+      // Factor 2+3: breadth & follow-through from paper metrics
+      const summary = paperMetrics.getSummary(48);
+      if (summary.totalTrades > 0) {
+        // Breadth: win rate as proxy for watchlist health
+        regimeFilter.updateBreadth(summary.wins, summary.totalTrades);
+        // Follow-through: TP1 hit rate
+        const tp1Hits = Math.round(summary.tp1HitRate * summary.totalTrades);
+        regimeFilter.updateFollowThrough(tp1Hits, summary.totalTrades);
+      }
+
+      const state = regimeFilter.getState();
+      log.info(
+        `Regime: ${state.regime} (size=${state.sizeMultiplier}x) ` +
+        `SOL=${state.solTrendBullish ? 'bull' : 'bear'} ` +
+        `breadth=${(state.breadthPct * 100).toFixed(0)}% ` +
+        `follow=${(state.followThroughPct * 100).toFixed(0)}%`
+      );
+    } catch (error) {
+      log.warn(`Regime update failed: ${error}`);
+    }
+  };
+
+  // Initial update + schedule
+  await updateRegime();
+  const regimeInterval = setInterval(updateRegime, REGIME_UPDATE_INTERVAL_MS);
+
+  // ─── Phase 2: Daily EventScore pruning ─────────────
+  const pruneInterval = setInterval(async () => {
+    try {
+      await eventScoreStore.pruneOlderThan(config.eventScoreRetentionDays);
+    } catch (error) {
+      log.warn(`EventScore pruning failed: ${error}`);
+    }
+  }, 24 * 3600_000); // daily
+
+  // ─── Start services ───────────────────────────────
   await eventMonitor.start();
   await universeEngine.start();
 
+  // Phase 1A: Start scanner + WS
+  if (birdeyeWS) {
+    birdeyeWS.start();
+    log.info('Birdeye WebSocket started');
+  }
+  if (scanner) {
+    // If TARGET_PAIR_ADDRESS is set, add it as manual entry for backward compatibility
+    if (targetPair) {
+      scanner.addManualEntry(targetPair, targetPair, 'LEGACY_TARGET');
+    }
+    await scanner.start();
+    log.info(`Scanner started. Watchlist: ${scanner.getWatchlist().length} entries.`);
+  }
+
   // ─── Start ingester ─────────────────────────────────
-  await ingester.start();
+  if (ingesterConfigs.length > 0) {
+    await ingester.start();
+  }
   log.info('Bot is running. Press Ctrl+C to stop.');
 
-  await notifier.sendInfo('Bot started (v0.3)');
+  await notifier.sendInfo(`Bot started (v0.5 — Phase 2 Core Live, mode: ${effectiveMode})`);
 
   // ─── Daily summary scheduler ────────────────────────
   scheduleDailySummary(ctx);
@@ -250,9 +429,13 @@ async function main() {
   const shutdown = async () => {
     log.info('Shutting down...');
     clearInterval(positionCheckInterval);
+    clearInterval(regimeInterval);
+    clearInterval(pruneInterval);
     await ingester.stop();
     eventMonitor.stop();
     universeEngine.stop();
+    if (scanner) scanner.stop();
+    if (birdeyeWS) birdeyeWS.stop();
     executionLock.destroy();
     healthMonitor.stop();
     await dbPool.end();

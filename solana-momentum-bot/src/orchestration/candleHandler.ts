@@ -92,6 +92,7 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
     });
 
     if (signal.action === 'BUY') {
+      signal.meta.currentVolume24hUsd = poolInfo.dailyVolume;
       const prevTvl = ctx.previousTvl.get(candle.pairAddress) || poolTvl;
       const gateInput = buildLiveGateInput({
         signal,
@@ -154,6 +155,7 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
       });
 
       if (fibSignal.action === 'BUY') {
+        fibSignal.meta.currentVolume24hUsd = poolInfo.dailyVolume;
         const prevTvl = ctx.previousTvl.get(candle.pairAddress) || poolTvl;
         const gateInput = buildLiveGateInput({
           signal: fibSignal,

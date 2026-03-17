@@ -14,6 +14,8 @@ export interface WatchlistScoreInput {
   // Internal metrics
   volumeChangeRatio?: number;     // 24h vol / prev 24h vol
   uniqueBuyersTrend?: number;     // ratio of unique buyers growth
+  // H-02: Social mention data
+  socialScore?: number;           // 0~15 from SocialMentionTracker
 }
 
 export interface WatchlistScoreResult {
@@ -37,7 +39,8 @@ export function calcWatchlistScore(input: WatchlistScoreInput): WatchlistScoreRe
   const marketingScore = calcMarketingScore(input);
   const volumeScore = calcVolumeScore(input);
   const liquidityScore = calcLiquidityScore(input);
-  const momentumScore = calcMomentumScore(input);
+  // H-02: momentumScore에 socialScore 보너스 가산 (15점 캡 유지)
+  const momentumScore = Math.min(15, calcMomentumScore(input) + (input.socialScore ?? 0));
 
   const totalScore = Math.min(100, Math.max(0,
     trendingScore + marketingScore + volumeScore + liquidityScore + momentumScore

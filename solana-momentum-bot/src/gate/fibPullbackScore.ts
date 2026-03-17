@@ -31,6 +31,7 @@ export function calcFibPullbackScore(input: FibPullbackScoreInput): BreakoutScor
     multiTfScore,
     whaleScore,
     lpScore,
+    mcapVolumeScore: 0,
     components: [
       { key: 'impulse_strength', label: 'Impulse Strength', score: multiTfScore, maxScore: 25, value: impulseStrength },
       { key: 'fib_precision', label: 'Fib Precision', score: buyRatioScore, maxScore: 25, value: fibPrecision },

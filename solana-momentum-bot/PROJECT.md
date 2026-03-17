@@ -47,7 +47,7 @@ Stage 2: 지금 들어가도 되는가? (Trigger)
 
 ### 게이트 시스템 (점수 합산 X, 단계별 필터)
 - Gate 1: ScamRisk > 임계치 → 즉시 제외
-- Gate 2: EventScore → 감시 강도 / 사이즈 결정
+- Gate 2: Attention / Context score → 감시 강도 / 사이즈 결정
 - Gate 3: OnchainBreakout → 실제 체결 여부
 - Gate 4: Execution Viability → 슬리피지, stale, 추격 금지
 
@@ -64,7 +64,7 @@ Stage 2: 지금 들어가도 되는가? (Trigger)
 | OS | Ubuntu 22.04 LTS | Docker/Node.js 호환성, 레퍼런스 |
 | RPC | Helius | Solana 전용, Jupiter 궁합, Priority Fee API |
 | DB | TimescaleDB (PG 16) | 시계열 캔들 데이터, 압축/보존 정책 |
-| DEX | Jupiter Aggregator v6 | 최적 경로, 슬리피지 최소화 |
+| DEX | Jupiter API (quote/swap) | 최적 경로, 슬리피지/price impact 검증 |
 | 알림 | Telegram Bot | 4-Level Alert (Critical/Warning/Trade/Info) |
 | 프로세스 관리 | pm2 or systemd | 크래시 자동 재시작 |
 
@@ -72,15 +72,15 @@ Stage 2: 지금 들어가도 되는가? (Trigger)
 
 | Phase | 목표 | 상태 |
 |-------|------|------|
-| Phase 0 | 기존 봇 안정화 (데드코드, safety, 청산) | 진행 중 |
-| Phase 1 | Spike Explanation (급변 사례 캐치) | 미착수 |
-| Phase 2 | Event Catch (소셜/뉴스 이벤트) | 미착수 |
-| Phase 3 | Candidate-Driven Execution (게이트 통합) | 미착수 |
-| Phase 4 | New Coin Pipeline | 미착수 |
+| Phase 0 | 기존 봇 안정화 (데드코드, safety, 청산) | 완료 |
+| Phase 1 | Spike Explanation + scanner/gate 기반 정리 | 완료 |
+| Phase 2 | Event Catch (Birdeye 중심 + X stream 코드 경로) | 구현 완료, 외부 검증 대기 |
+| Phase 3 | Candidate-Driven Execution (게이트 통합) | 완료 |
+| Phase 4 | New Coin Pipeline + sandbox/conditional 전략 | 완료 |
 
 ## 판단 기준
 
-### 성공 지표 (REFACTORING.md Section 9)
+### 성공 지표 (REFACTORING.md metrics section)
 - Expectancy after fees and slippage > 0
 - Explained vs unexplained candidate conversion rate
 - Win rate by gate path

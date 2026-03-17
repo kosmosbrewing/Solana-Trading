@@ -1,6 +1,8 @@
 import { Connection, Keypair, PublicKey } from '@solana/web3.js';
 import bs58 from 'bs58';
+import { Pool } from 'pg';
 import { createModuleLogger } from '../utils/logger';
+import { DailyPnlTracker, DailyLimitConfig } from './dailyPnlTracker';
 
 const log = createModuleLogger('WalletManager');
 
@@ -27,6 +29,13 @@ export interface WalletManagerConfig {
   sandboxMaxPositionSol: number;
 }
 
+export interface WalletTradeLimitResult {
+  allowed: boolean;
+  walletName?: string;
+  filterReason?: string;
+  reason?: string;
+}
+
 const DEFAULT_CONFIG: Partial<WalletManagerConfig> = {
   sandboxDailyLossLimitSol: 0.5,
   sandboxMaxPositionSol: 0.05,
@@ -43,17 +52,21 @@ const DEFAULT_CONFIG: Partial<WalletManagerConfig> = {
  */
 export class WalletManager {
   private wallets = new Map<string, WalletProfile>();
-  private dailyPnl = new Map<string, number>();
   private connection: Connection;
-  private lastResetDate: string;
+  /** M-13: 일일 PnL 추적은 DailyPnlTracker에 위임 */
+  readonly dailyPnlTracker: DailyPnlTracker;
 
-  constructor(config: WalletManagerConfig & Partial<typeof DEFAULT_CONFIG>) {
+  constructor(config: WalletManagerConfig & Partial<typeof DEFAULT_CONFIG>, dbPool?: Pool) {
     const cfg = { ...DEFAULT_CONFIG, ...config };
     this.connection = new Connection(cfg.solanaRpcUrl, 'confirmed');
-    this.lastResetDate = new Date().toISOString().slice(0, 10);
 
-    // Register main wallet
-    const mainKeypair = Keypair.fromSecretKey(bs58.decode(cfg.mainWalletKey));
+    // Register main wallet (C-10: 키 파싱 실패 시 명확한 에러 메시지)
+    let mainKeypair: Keypair;
+    try {
+      mainKeypair = Keypair.fromSecretKey(bs58.decode(cfg.mainWalletKey));
+    } catch (err) {
+      throw new Error(`Invalid main wallet private key (WALLET_PRIVATE_KEY). Check Base58 encoding. ${err}`);
+    }
     this.wallets.set('main', {
       name: 'main',
       keypair: mainKeypair,
@@ -65,7 +78,12 @@ export class WalletManager {
 
     // Register sandbox wallet (Strategy D)
     if (cfg.sandboxWalletKey) {
-      const sandboxKeypair = Keypair.fromSecretKey(bs58.decode(cfg.sandboxWalletKey));
+      let sandboxKeypair: Keypair;
+      try {
+        sandboxKeypair = Keypair.fromSecretKey(bs58.decode(cfg.sandboxWalletKey));
+      } catch (err) {
+        throw new Error(`Invalid sandbox wallet private key (SANDBOX_WALLET_PRIVATE_KEY). Check Base58 encoding. ${err}`);
+      }
       this.wallets.set('sandbox', {
         name: 'sandbox',
         keypair: sandboxKeypair,
@@ -75,6 +93,13 @@ export class WalletManager {
       });
       log.info(`Sandbox wallet: ${sandboxKeypair.publicKey.toBase58().slice(0, 8)}...`);
     }
+
+    // M-13: DailyPnlTracker에 지갑별 한도 위임
+    const limitConfigs: DailyLimitConfig[] = [];
+    for (const [name, profile] of this.wallets.entries()) {
+      limitConfigs.push({ name, dailyLossLimitSol: profile.dailyLossLimitSol });
+    }
+    this.dailyPnlTracker = new DailyPnlTracker(limitConfigs, dbPool);
   }
 
   /**
@@ -96,6 +121,10 @@ export class WalletManager {
     return this.wallets.get(name);
   }
 
+  getWalletNameForStrategy(strategy: string): string | undefined {
+    return this.getWalletForStrategy(strategy)?.name;
+  }
+
   /**
    * Get SOL balance for a wallet.
    */
@@ -107,31 +136,20 @@ export class WalletManager {
   }
 
   /**
-   * Record a PnL event for daily loss tracking.
+   * M-13: DailyPnlTracker에 위임 — DB 초기화 + PnL 로드
    */
-  recordPnl(walletName: string, pnlSol: number): void {
-    this.maybeResetDaily();
-    const current = this.dailyPnl.get(walletName) ?? 0;
-    this.dailyPnl.set(walletName, current + pnlSol);
+  async initDailyPnlStore(): Promise<void> {
+    return this.dailyPnlTracker.initialize();
   }
 
-  /**
-   * Check if a wallet has hit its daily loss limit.
-   */
-  isDailyLimitHit(walletName: string): boolean {
-    this.maybeResetDaily();
-    const profile = this.wallets.get(walletName);
-    if (!profile) return true;
+  /** M-13: DailyPnlTracker에 위임 */
+  recordPnl(walletName: string, pnlSol: number): void {
+    this.dailyPnlTracker.recordPnl(walletName, pnlSol);
+  }
 
-    const dailyPnl = this.dailyPnl.get(walletName) ?? 0;
-    if (dailyPnl <= -profile.dailyLossLimitSol) {
-      log.warn(
-        `${walletName} daily loss limit hit: ${dailyPnl.toFixed(4)} SOL ` +
-        `(limit: -${profile.dailyLossLimitSol} SOL)`
-      );
-      return true;
-    }
-    return false;
+  /** M-13: DailyPnlTracker에 위임 */
+  isDailyLimitHit(walletName: string): boolean {
+    return this.dailyPnlTracker.isDailyLimitHit(walletName);
   }
 
   /**
@@ -143,24 +161,43 @@ export class WalletManager {
     return positionSol <= profile.maxPositionSol;
   }
 
-  /**
-   * Get daily PnL for a wallet.
-   */
-  getDailyPnl(walletName: string): number {
-    this.maybeResetDaily();
-    return this.dailyPnl.get(walletName) ?? 0;
+  checkTradeLimits(strategy: string, positionSol: number): WalletTradeLimitResult {
+    const walletName = this.getWalletNameForStrategy(strategy);
+    if (!walletName) {
+      return {
+        allowed: false,
+        filterReason: 'wallet_not_configured',
+        reason: `No wallet configured for strategy ${strategy}`,
+      };
+    }
+
+    if (this.isDailyLimitHit(walletName)) {
+      return {
+        allowed: false,
+        walletName,
+        filterReason: `${walletName}_wallet_daily_limit`,
+        reason: `${walletName} wallet daily loss limit hit`,
+      };
+    }
+
+    if (!this.isWithinLimits(walletName, positionSol)) {
+      return {
+        allowed: false,
+        walletName,
+        filterReason: `${walletName}_wallet_position_limit`,
+        reason: `Position ${positionSol.toFixed(4)} SOL exceeds ${walletName} wallet limit`,
+      };
+    }
+
+    return {
+      allowed: true,
+      walletName,
+    };
   }
 
-  /**
-   * Reset daily PnL at midnight UTC.
-   */
-  private maybeResetDaily(): void {
-    const today = new Date().toISOString().slice(0, 10);
-    if (today !== this.lastResetDate) {
-      this.dailyPnl.clear();
-      this.lastResetDate = today;
-      log.info('Daily PnL counters reset');
-    }
+  /** M-13: DailyPnlTracker에 위임 */
+  getDailyPnl(walletName: string): number {
+    return this.dailyPnlTracker.getDailyPnl(walletName);
   }
 
   /**

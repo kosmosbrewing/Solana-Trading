@@ -1,6 +1,7 @@
 import { DEFAULT_BACKTEST_CONFIG } from '../backtest/types';
 import { replayDrawdownGuardState } from '../risk/drawdownGuard';
 import { CloseReason, StrategyName } from '../utils/types';
+import { summarizeRiskMetrics } from './riskMetrics';
 
 export interface PaperValidationTrade {
   strategy: StrategyName;
@@ -140,38 +141,17 @@ function summarizeTrades(
   trades: PaperValidationTrade[],
   strategy?: StrategyName
 ): StrategyValidationStats {
-  const wins = trades.filter(trade => trade.pnl > 0);
-  const losses = trades.filter(trade => trade.pnl <= 0);
-  const winRs = wins.map(toRiskMultiple).filter(isFiniteNumber);
-  const lossRs = losses.map(toRiskMultiple).filter(isFiniteNumber).map(value => Math.abs(value));
-  const rewardRisk = lossRs.length > 0
-    ? average(winRs) / average(lossRs)
-    : winRs.length > 0 ? Number.POSITIVE_INFINITY : 0;
+  const summary = summarizeRiskMetrics(trades);
 
   return {
     strategy: strategy ?? 'volume_spike',
-    totalTrades: trades.length,
-    wins: wins.length,
-    losses: losses.length,
-    winRate: trades.length > 0 ? wins.length / trades.length : 0,
-    netPnl: trades.reduce((sum, trade) => sum + trade.pnl, 0),
-    avgWinR: average(winRs),
-    avgLossR: average(lossRs),
-    rewardRisk,
+    totalTrades: summary.totalTrades,
+    wins: summary.wins,
+    losses: summary.losses,
+    winRate: summary.winRate,
+    netPnl: summary.netPnl,
+    avgWinR: summary.avgWinR,
+    avgLossR: summary.avgLossR,
+    rewardRisk: summary.rewardRisk,
   };
-}
-
-function toRiskMultiple(trade: PaperValidationTrade): number {
-  const plannedRiskSol = Math.abs(trade.entryPrice - trade.stopLoss) * trade.quantity;
-  if (plannedRiskSol <= 0) return Number.NaN;
-  return trade.pnl / plannedRiskSol;
-}
-
-function average(values: number[]): number {
-  if (values.length === 0) return 0;
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
-}
-
-function isFiniteNumber(value: number): boolean {
-  return Number.isFinite(value);
 }

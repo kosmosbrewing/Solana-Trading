@@ -11,6 +11,13 @@ export interface VolumeSpikeParams {
   timeStopMinutes: number;  // 30분
 }
 
+export function calcVolumeMcapRatio(volume24hUsd?: number, marketCap?: number): number {
+  if (!volume24hUsd || !marketCap || volume24hUsd <= 0 || marketCap <= 0) {
+    return 0;
+  }
+  return volume24hUsd / marketCap;
+}
+
 const DEFAULT_PARAMS: VolumeSpikeParams = {
   lookback: 20,
   volumeMultiplier: 3.0,

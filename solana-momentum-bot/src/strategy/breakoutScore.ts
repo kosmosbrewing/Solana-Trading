@@ -3,6 +3,8 @@ import { Candle, BreakoutScoreComponent, BreakoutScoreDetail, BreakoutGrade } fr
 export interface BreakoutScoreInput {
   /** 현재 봉 거래량 / N봉 평균 비율 */
   volumeRatio: number;
+  /** 24h 거래량 / 시가총액 비율 */
+  volumeMcapRatio?: number;
   /** 매수 비율 (buyVolume / totalVolume) */
   buyRatio: number;
   /** 멀티 타임프레임 정렬 수 (0~3) */
@@ -21,11 +23,12 @@ interface BreakoutScoreDetailInput {
   multiTfScore: number;
   whaleScore: number;
   lpScore: number;
+  mcapVolumeScore: number;
   components?: BreakoutScoreComponent[];
 }
 
 /**
- * Breakout Score (0~100) — 5개 팩터 합산
+ * Breakout Score (0~100) — 6개 팩터 합산 후 100점 cap
  */
 export function calcBreakoutScore(input: BreakoutScoreInput): BreakoutScoreDetail {
   const minBuyRatio = input.minBuyRatio ?? 0.65;
@@ -54,18 +57,26 @@ export function calcBreakoutScore(input: BreakoutScoreInput): BreakoutScoreDetai
   if (input.lpStability === 'stable') lpScore = 15;
   else if (input.lpStability === 'dropping') lpScore = -10;
 
+  // Factor 6: 시가총액 대비 24h 거래량 (0~10)
+  let mcapVolumeScore = 0;
+  if ((input.volumeMcapRatio ?? 0) >= 0.30) mcapVolumeScore = 10;
+  else if ((input.volumeMcapRatio ?? 0) >= 0.15) mcapVolumeScore = 6;
+  else if ((input.volumeMcapRatio ?? 0) >= 0.05) mcapVolumeScore = 3;
+
   return buildBreakoutScoreDetail({
     volumeScore,
     buyRatioScore,
     multiTfScore,
     whaleScore,
     lpScore,
+    mcapVolumeScore,
     components: [
       { key: 'volume_ratio', label: 'Volume Ratio', score: volumeScore, maxScore: 25, value: input.volumeRatio },
       { key: 'buy_ratio', label: 'Buy Ratio', score: buyRatioScore, maxScore: 25, value: input.buyRatio },
       { key: 'multi_tf_alignment', label: 'Multi TF Alignment', score: multiTfScore, maxScore: 20, value: input.multiTfAlignment },
       { key: 'whale_detected', label: 'Whale Activity', score: whaleScore, maxScore: 15, value: input.whaleDetected ? 1 : 0 },
       { key: 'lp_stability', label: 'LP Stability', score: lpScore, maxScore: 15, value: input.lpStability === 'stable' ? 1 : input.lpStability === 'dropping' ? -1 : 0 },
+      { key: 'volume_mcap_ratio', label: 'Volume / Market Cap', score: mcapVolumeScore, maxScore: 10, value: input.volumeMcapRatio ?? 0 },
     ],
   });
 }
@@ -81,7 +92,7 @@ export function calcBuyRatio(candle: Candle): number {
 
 export function buildBreakoutScoreDetail(input: BreakoutScoreDetailInput): BreakoutScoreDetail {
   const totalScore = Math.max(0, Math.min(100,
-    input.volumeScore + input.buyRatioScore + input.multiTfScore + input.whaleScore + input.lpScore
+    input.volumeScore + input.buyRatioScore + input.multiTfScore + input.whaleScore + input.lpScore + input.mcapVolumeScore
   ));
 
   return {
@@ -90,6 +101,7 @@ export function buildBreakoutScoreDetail(input: BreakoutScoreDetailInput): Break
     multiTfScore: input.multiTfScore,
     whaleScore: input.whaleScore,
     lpScore: input.lpScore,
+    mcapVolumeScore: input.mcapVolumeScore,
     totalScore,
     grade: resolveBreakoutGrade(totalScore),
     components: input.components,

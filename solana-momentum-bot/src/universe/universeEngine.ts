@@ -125,6 +125,7 @@ export class UniverseEngine extends EventEmitter {
         pairAddress,
         tokenMint: (overview.address as string) || pairAddress,
         tvl: Number(overview.liquidity || 0),
+        marketCap: this.pickFiniteNumber(overview.marketCap, overview.marketcap, overview.mc),
         dailyVolume: Number(overview.v24hUSD || 0),
         tradeCount24h: Number(overview.trade24h || 0),
         spreadPct: await this.estimateSpreadProxy(pairAddress),
@@ -178,6 +179,21 @@ export class UniverseEngine extends EventEmitter {
         const parsed = Number(value);
         if (Number.isFinite(parsed)) {
           return parsed > 1 ? parsed / 100 : parsed;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  private pickFiniteNumber(...values: unknown[]): number | undefined {
+    for (const value of values) {
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+      }
+      if (typeof value === 'string' && value.trim().length > 0) {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) {
+          return parsed;
         }
       }
     }

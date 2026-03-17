@@ -1,6 +1,7 @@
 export {
   evaluateVolumeSpikeBreakout,
   buildVolumeSpikeOrder,
+  calcVolumeMcapRatio,
 } from './volumeSpikeBreakout';
 export type { VolumeSpikeParams } from './volumeSpikeBreakout';
 
@@ -39,6 +40,8 @@ export {
 export type { NewLpSniperParams, NewListingCandidate } from './newLpSniper';
 
 export {
+  evaluateMomentumCascadeEntry,
+  buildMomentumCascadeOrder,
   isFirstLegQualified,
   detectRecompression,
   detectReacceleration,
@@ -46,5 +49,6 @@ export {
   calculateAddOnQuantity,
   initCascadeState,
   addCascadeLeg,
+  updateCascadeState,
 } from './momentumCascade';
 export type { CascadeState, CascadeLeg, MomentumCascadeParams } from './momentumCascade';

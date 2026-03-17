@@ -15,31 +15,63 @@ const log = createModuleLogger('EventScoreStore');
 export class EventScoreStore {
   constructor(private readonly pool: Pool) {}
 
-  async initialize(): Promise<void> {
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS event_scores (
-        id SERIAL PRIMARY KEY,
-        token_mint TEXT NOT NULL,
-        token_symbol TEXT NOT NULL,
-        attention_score REAL NOT NULL,
-        components JSONB NOT NULL,
-        narrative TEXT,
-        sources JSONB,
-        confidence TEXT NOT NULL,
-        detected_at TIMESTAMPTZ NOT NULL,
-        expires_at TIMESTAMPTZ NOT NULL,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_event_scores_mint_detected
-      ON event_scores (token_mint, detected_at)
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_event_scores_detected
-      ON event_scores (detected_at)
-    `);
-    log.info('EventScoreStore initialized');
+  /**
+   * H-26: DB 쿼리 retry 래퍼 — 일시 장애 시 최대 retries회 재시도 (exponential backoff)
+   */
+  private async withRetry<T>(label: string, fn: () => Promise<T>, retries = 2): Promise<T> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        if (attempt > retries) throw err;
+        const delay = Math.pow(2, attempt) * 500;
+        log.warn(`${label} failed (attempt ${attempt}/${retries + 1}): ${err}. Retrying in ${delay}ms...`);
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
+  }
+
+  /**
+   * H-19: retry 포함 초기화 — DB 일시 장애 시 최대 3회 재시도
+   */
+  async initialize(maxRetries = 3): Promise<void> {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await this.pool.query(`
+          CREATE TABLE IF NOT EXISTS event_scores (
+            id SERIAL PRIMARY KEY,
+            token_mint TEXT NOT NULL,
+            token_symbol TEXT NOT NULL,
+            attention_score REAL NOT NULL,
+            components JSONB NOT NULL,
+            narrative TEXT,
+            sources JSONB,
+            confidence TEXT NOT NULL,
+            detected_at TIMESTAMPTZ NOT NULL,
+            expires_at TIMESTAMPTZ NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+          )
+        `);
+        await this.pool.query(`
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_event_scores_mint_detected
+          ON event_scores (token_mint, detected_at)
+        `);
+        await this.pool.query(`
+          CREATE INDEX IF NOT EXISTS idx_event_scores_detected
+          ON event_scores (detected_at)
+        `);
+        log.info('EventScoreStore initialized');
+        return;
+      } catch (err) {
+        if (attempt < maxRetries) {
+          const delay = Math.pow(2, attempt) * 1000;
+          log.warn(`EventScoreStore init failed (attempt ${attempt}/${maxRetries}): ${err}. Retrying in ${delay}ms...`);
+          await new Promise(r => setTimeout(r, delay));
+        } else {
+          throw new Error(`EventScoreStore initialization failed after ${maxRetries} attempts: ${err}`);
+        }
+      }
+    }
   }
 
   /**
@@ -70,12 +102,14 @@ export class EventScoreStore {
       );
     }
 
-    await this.pool.query(
-      `INSERT INTO event_scores
-        (token_mint, token_symbol, attention_score, components, narrative, sources, confidence, detected_at, expires_at)
-       VALUES ${placeholders.join(', ')}
-       ON CONFLICT DO NOTHING`,
-      values
+    await this.withRetry('insertScores', () =>
+      this.pool.query(
+        `INSERT INTO event_scores
+          (token_mint, token_symbol, attention_score, components, narrative, sources, confidence, detected_at, expires_at)
+         VALUES ${placeholders.join(', ')}
+         ON CONFLICT (token_mint, detected_at) DO NOTHING`,
+        values
+      )
     );
   }
 
@@ -88,23 +122,25 @@ export class EventScoreStore {
     fromTime: Date,
     toTime: Date
   ): Promise<AttentionScore[]> {
-    const result = await this.pool.query<{
-      token_mint: string;
-      token_symbol: string;
-      attention_score: number;
-      components: AttentionScore['components'];
-      narrative: string;
-      sources: string[];
-      confidence: string;
-      detected_at: Date;
-      expires_at: Date;
-    }>(`
-      SELECT token_mint, token_symbol, attention_score, components,
-             narrative, sources, confidence, detected_at, expires_at
-      FROM event_scores
-      WHERE token_mint = $1 AND detected_at >= $2 AND detected_at <= $3
-      ORDER BY detected_at ASC
-    `, [tokenMint, fromTime, toTime]);
+    const result = await this.withRetry('getScoresForToken', () =>
+      this.pool.query<{
+        token_mint: string;
+        token_symbol: string;
+        attention_score: number;
+        components: AttentionScore['components'];
+        narrative: string;
+        sources: string[];
+        confidence: string;
+        detected_at: Date;
+        expires_at: Date;
+      }>(`
+        SELECT token_mint, token_symbol, attention_score, components,
+               narrative, sources, confidence, detected_at, expires_at
+        FROM event_scores
+        WHERE token_mint = $1 AND detected_at >= $2 AND detected_at <= $3
+        ORDER BY detected_at ASC
+      `, [tokenMint, fromTime, toTime])
+    );
 
     return result.rows.map(row => ({
       tokenMint: row.token_mint,
@@ -128,24 +164,26 @@ export class EventScoreStore {
     toTime: Date,
     limit = 10000
   ): Promise<AttentionScore[]> {
-    const result = await this.pool.query<{
-      token_mint: string;
-      token_symbol: string;
-      attention_score: number;
-      components: AttentionScore['components'];
-      narrative: string;
-      sources: string[];
-      confidence: string;
-      detected_at: Date;
-      expires_at: Date;
-    }>(`
-      SELECT token_mint, token_symbol, attention_score, components,
-             narrative, sources, confidence, detected_at, expires_at
-      FROM event_scores
-      WHERE detected_at >= $1 AND detected_at <= $2
-      ORDER BY detected_at ASC
-      LIMIT $3
-    `, [fromTime, toTime, limit]);
+    const result = await this.withRetry('exportTimeline', () =>
+      this.pool.query<{
+        token_mint: string;
+        token_symbol: string;
+        attention_score: number;
+        components: AttentionScore['components'];
+        narrative: string;
+        sources: string[];
+        confidence: string;
+        detected_at: Date;
+        expires_at: Date;
+      }>(`
+        SELECT token_mint, token_symbol, attention_score, components,
+               narrative, sources, confidence, detected_at, expires_at
+        FROM event_scores
+        WHERE detected_at >= $1 AND detected_at <= $2
+        ORDER BY detected_at ASC
+        LIMIT $3
+      `, [fromTime, toTime, limit])
+    );
 
     return result.rows.map(row => ({
       tokenMint: row.token_mint,
@@ -166,14 +204,23 @@ export class EventScoreStore {
    */
   async pruneOlderThan(days: number): Promise<number> {
     const cutoff = new Date(Date.now() - days * 86400_000);
-    const result = await this.pool.query(
-      'DELETE FROM event_scores WHERE detected_at < $1',
-      [cutoff]
-    );
-    const deleted = result.rowCount ?? 0;
-    if (deleted > 0) {
-      log.info(`Pruned ${deleted} event scores older than ${days} days`);
+    // 배치 삭제로 DB lock 방지 (H-16)
+    let totalDeleted = 0;
+    const BATCH_SIZE = 1000;
+    let deleted: number;
+    do {
+      const result = await this.pool.query(
+        `DELETE FROM event_scores WHERE id IN (
+           SELECT id FROM event_scores WHERE detected_at < $1 LIMIT $2
+         )`,
+        [cutoff, BATCH_SIZE]
+      );
+      deleted = result.rowCount ?? 0;
+      totalDeleted += deleted;
+    } while (deleted === BATCH_SIZE);
+    if (totalDeleted > 0) {
+      log.info(`Pruned ${totalDeleted} event scores older than ${days} days`);
     }
-    return deleted;
+    return totalDeleted;
   }
 }

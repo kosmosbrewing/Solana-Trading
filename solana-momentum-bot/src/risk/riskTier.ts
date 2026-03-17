@@ -89,12 +89,21 @@ export function resolveRiskTierWithDemotion(
 
   let profile = resolveRiskTierProfile(stats, recoveryPct);
 
-  // Check demotion
-  const demotion = edgeTracker.checkDemotion();
+  // Check demotion (H-08: strategy mode 전달)
+  const demotion = mode === 'portfolio'
+    ? edgeTracker.checkDemotion()
+    : edgeTracker.checkDemotion(mode as StrategyName);
   if (demotion.shouldDemote) {
     const demotedState = demoteEdgeState(profile.edgeState);
     if (demotedState !== profile.edgeState) {
-      const demotedStats = { ...stats, edgeState: demotedState, kellyEligible: demotedState === 'Confirmed' || demotedState === 'Proven' };
+      const kellyEligible = demotedState === 'Confirmed' || demotedState === 'Proven';
+      const demotedStats = {
+        ...stats,
+        edgeState: demotedState,
+        kellyEligible,
+        // C-14: 강등 시 Kelly fraction도 리셋 (eligible하지 않으면 0)
+        kellyFraction: kellyEligible ? stats.kellyFraction : 0,
+      };
       profile = resolveRiskTierProfile(demotedStats, recoveryPct);
       return { profile, demoted: true, demotionReason: demotion.reason };
     }
@@ -149,6 +158,9 @@ export function replayPortfolioDrawdownGuard(
   );
 }
 
+// H-23: tier 변경 가능한 trade 수 경계 — 이 시점에서만 프로필 재계산
+const TIER_BOUNDARIES = new Set([20, 50, 100]);
+
 function replayTieredDrawdownGuard(
   currentBalanceSol: number,
   trades: EdgeTrackerTrade[],
@@ -158,11 +170,17 @@ function replayTieredDrawdownGuard(
   let balance = currentBalanceSol - totalRealizedPnl;
   let state = createDrawdownGuardState(balance);
   const tracker = new EdgeTracker();
+  let cachedProfile: RiskTierProfile | null = null;
 
-  for (const trade of trades) {
-    tracker.recordTrade(trade);
-    balance += trade.pnl;
-    state = updateDrawdownGuardState(state, balance, getProfile(tracker));
+  for (let i = 0; i < trades.length; i++) {
+    tracker.recordTrade(trades[i]);
+    balance += trades[i].pnl;
+    const tradeCount = i + 1;
+    // 프로필 재계산: 첫 trade, tier 경계, 마지막 trade
+    if (!cachedProfile || TIER_BOUNDARIES.has(tradeCount) || i === trades.length - 1) {
+      cachedProfile = getProfile(tracker);
+    }
+    state = updateDrawdownGuardState(state, balance, cachedProfile);
   }
 
   return state;

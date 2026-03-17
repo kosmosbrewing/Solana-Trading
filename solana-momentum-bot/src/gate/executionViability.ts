@@ -25,8 +25,10 @@ export function evaluateExecutionViability(
   const order = signal.strategy === 'fib_pullback'
     ? buildFibPullbackOrder(signal, candles, probeQty)
     : buildVolumeSpikeOrder(signal, candles, probeQty);
+  // H-03: SpreadMeasurer 실측값이 있으면 ammFeePct 대신 사용
+  const measuredSpread = signal.spreadPct;
   return evaluateExecutionViabilityForOrder(order, poolInfo.tvl, {
-    ammFeePct: poolInfo.ammFeePct,
+    ammFeePct: measuredSpread != null ? measuredSpread : poolInfo.ammFeePct,
     mevMarginPct: poolInfo.mevMarginPct,
   });
 }

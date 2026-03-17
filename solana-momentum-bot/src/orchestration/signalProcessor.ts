@@ -135,6 +135,21 @@ export async function processSignal(
         log.info(`Regime sizing: ${ctx.regimeFilter.getRegime()} x${regimeMult.toFixed(2)}`);
       }
     }
+    // H-01: WalletManager pre-trade 체크 (일일 손실 한도 + 포지션 한도)
+    if (ctx.walletManager) {
+      const positionSol = quantity * signal.price;
+      const walletLimit = ctx.walletManager.checkTradeLimits(signal.strategy, positionSol);
+      if (!walletLimit.allowed) {
+        log.warn(`Signal filtered: ${walletLimit.reason}`);
+        await ctx.auditLogger.logSignal({
+          ...buildSignalAuditBase(signal, candles[candles.length - 1], gateResult),
+          action: 'RISK_REJECTED',
+          filterReason: walletLimit.filterReason,
+        });
+        return;
+      }
+    }
+
     let order: Order;
     if (signal.strategy === 'volume_spike') {
       order = buildVolumeSpikeOrder(signal, candles, quantity);

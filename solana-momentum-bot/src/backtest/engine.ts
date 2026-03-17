@@ -11,10 +11,20 @@ import {
   buildVolumeSpikeOrder,
   evaluateFibPullback,
   buildFibPullbackOrder,
+  evaluateMomentumCascadeEntry,
+  buildMomentumCascadeOrder,
+  detectRecompression,
+  detectReacceleration,
+  calculateAddOnQuantity,
+  calculateCombinedStopLoss,
+  initCascadeState,
+  addCascadeLeg,
+  updateCascadeState,
   calcATR,
   calcAdaptiveTrailingStop,
   checkExhaustion,
 } from '../strategy';
+import type { CascadeState, CascadeLeg } from '../strategy';
 import {
   BacktestConfig,
   BacktestTrade,
@@ -91,7 +101,9 @@ export class BacktestEngine {
     const lookback = strategy === 'fib_pullback' ? 28 : 21;
     const timeStopMinutes = strategy === 'fib_pullback'
       ? (this.config.fibPullbackParams.timeStopMinutes ?? 60)
-      : (this.config.volumeSpikeParams.timeStopMinutes ?? 30);
+      : strategy === 'momentum_cascade'
+        ? 120
+        : (this.config.volumeSpikeParams.timeStopMinutes ?? 30);
 
     const riskState = this.createInitialRiskState(filtered[0].timestamp);
 
@@ -108,7 +120,9 @@ export class BacktestEngine {
 
       const signal = strategy === 'fib_pullback'
         ? evaluateFibPullback(window, this.config.fibPullbackParams)
-        : evaluateVolumeSpikeBreakout(window, this.config.volumeSpikeParams);
+        : strategy === 'momentum_cascade'
+          ? evaluateMomentumCascadeEntry(window, this.config.momentumCascadeParams)
+          : evaluateVolumeSpikeBreakout(window, this.config.volumeSpikeParams);
 
       if (signal.action !== 'BUY') continue;
 
@@ -149,7 +163,9 @@ export class BacktestEngine {
       // Position sizing
       const order = strategy === 'fib_pullback'
         ? buildFibPullbackOrder(signal, window, 0, this.config.fibPullbackParams)
-        : buildVolumeSpikeOrder(signal, window, 0, this.config.volumeSpikeParams);
+        : strategy === 'momentum_cascade'
+          ? buildMomentumCascadeOrder(signal, window, 0, this.config.momentumCascadeParams)
+          : buildVolumeSpikeOrder(signal, window, 0, this.config.volumeSpikeParams);
       if (signal.breakoutScore) {
         order.breakoutScore = signal.breakoutScore.totalScore;
         order.breakoutGrade = signal.breakoutScore.grade;
@@ -180,10 +196,10 @@ export class BacktestEngine {
         order.quantity *= actualExecution.sizeMultiplier;
       }
 
-      // Simulate trade
-      const trade = this.simulateTrade(
-        order, filtered, i, timeStopMinutes, ++tradeId, strategy, pairAddress
-      );
+      // Simulate trade — cascade는 add-on 포함 시뮬레이션
+      const trade = strategy === 'momentum_cascade'
+        ? this.simulateCascadeTrade(order, filtered, i, timeStopMinutes, ++tradeId, pairAddress, riskState.balance)
+        : this.simulateTrade(order, filtered, i, timeStopMinutes, ++tradeId, strategy, pairAddress);
       if (!trade) {
         riskState.positionOpen = false;
         continue;
@@ -468,6 +484,204 @@ export class BacktestEngine {
     };
   }
 
+  // ─── Private: Cascade Trade Simulation (H-06) ───
+
+  /**
+   * Momentum Cascade trade simulation:
+   * 1. 기존 simulateTrade와 동일한 exit 로직
+   * 2. TP1 후 재압축 → 재가속 감지 → add-on 진입
+   * 3. Add-on 시 combined SL 재산정, 총 리스크 1R 유지
+   */
+  private simulateCascadeTrade(
+    order: Order,
+    candles: Candle[],
+    entryIdx: number,
+    timeStopMinutes: number,
+    id: number,
+    pairAddress: string,
+    currentBalance: number
+  ): BacktestTrade | null {
+    const entryCandle = candles[entryIdx];
+    const entryPrice = order.price;
+    const timeStopAt = new Date(
+      entryCandle.timestamp.getTime() + timeStopMinutes * 60 * 1000
+    );
+    const cascadeParams = this.config.momentumCascadeParams ?? {};
+
+    // 캐스케이드 상태 초기화
+    const firstLeg: CascadeLeg = {
+      entryPrice,
+      quantity: order.quantity,
+      stopLoss: order.stopLoss,
+      entryIdx,
+      entryTime: entryCandle.timestamp,
+    };
+    let cascadeState = initCascadeState(firstLeg, order.takeProfit2);
+    let recompressionDetected = false;
+
+    let peakPrice = entryPrice;
+    const trailingStop = order.trailingStop;
+    let remainingQuantity = order.quantity;
+    let realizedPnlSol = 0;
+    let realizedExitValue = 0;
+    let activeSL = order.stopLoss;
+
+    for (let i = entryIdx + 1; i < candles.length; i++) {
+      const c = candles[i];
+      const monitorCandles = candles.slice(Math.max(0, i - 9), i + 1);
+      const currentPrice = c.close;
+      const tp1WasHit = cascadeState.tp1Hit;
+
+      if (c.high > peakPrice) peakPrice = c.high;
+
+      // 캐스케이드 상태 업데이트 (TP1 감지 + peak 갱신)
+      cascadeState = updateCascadeState(cascadeState, c.high, order.takeProfit1);
+
+      // Time Stop
+      if (c.timestamp >= timeStopAt) {
+        return this.makeTrade(
+          id, 'momentum_cascade', pairAddress, order, entryIdx, i,
+          currentPrice, 'TIME_STOP', entryCandle, c, peakPrice,
+          realizedPnlSol, realizedExitValue, remainingQuantity
+        );
+      }
+
+      // Stop Loss (combined SL)
+      if (c.low <= activeSL) {
+        return this.makeTrade(
+          id, 'momentum_cascade', pairAddress, order, entryIdx, i,
+          activeSL, 'STOP_LOSS', entryCandle, c, peakPrice,
+          realizedPnlSol, realizedExitValue, remainingQuantity
+        );
+      }
+
+      // Take Profit 2 (전체 포지션)
+      if (c.high >= cascadeState.takeProfit2) {
+        return this.makeTrade(
+          id, 'momentum_cascade', pairAddress, order, entryIdx, i,
+          cascadeState.takeProfit2, 'TAKE_PROFIT_2', entryCandle, c, peakPrice,
+          realizedPnlSol, realizedExitValue, remainingQuantity
+        );
+      }
+
+      // TP1 — 첫 TP1 히트 시 50% 익절 + breakeven SL
+      if (!tp1WasHit && cascadeState.tp1Hit) {
+        const partialQuantity = remainingQuantity * 0.5;
+        realizedPnlSol += this.calcNetPnlSol(entryPrice, order.takeProfit1, partialQuantity);
+        realizedExitValue += order.takeProfit1 * partialQuantity;
+        remainingQuantity -= partialQuantity;
+        activeSL = entryPrice; // breakeven
+        cascadeState = this.updateCascadeStateAfterTp1(cascadeState, remainingQuantity, activeSL);
+      }
+
+      // ── Cascade add-on 로직 (TP1 이후만) ──
+      if (cascadeState.tp1Hit && cascadeState.addOnCount < (cascadeParams.maxAddOns ?? 1)) {
+        const lookbackWindow = candles.slice(
+          Math.max(0, i - (cascadeParams.recompressionLookback ?? 10)),
+          i + 1
+        );
+
+        // Step 1: 재압축 감지
+        if (!recompressionDetected) {
+          recompressionDetected = detectRecompression(
+            lookbackWindow, peakPrice, cascadeParams
+          );
+        }
+
+        // Step 2: 재압축 후 재가속 감지 → add-on 진입
+        if (recompressionDetected) {
+          const reaccWindow = candles.slice(Math.max(0, i - 21), i + 1);
+          const reaccSignal = detectReacceleration(reaccWindow, {}, cascadeParams);
+
+          if (reaccSignal.action === 'BUY') {
+            const addOnQty = calculateAddOnQuantity(
+              cascadeState.legs, currentPrice,
+              cascadeState.originalRiskSol, 0.2, currentBalance
+            );
+
+            if (addOnQty > 0) {
+              const addOnLeg: CascadeLeg = {
+                entryPrice: currentPrice,
+                quantity: addOnQty,
+                stopLoss: entryPrice, // breakeven of leg 1
+                entryIdx: i,
+                entryTime: c.timestamp,
+              };
+              cascadeState = addCascadeLeg(cascadeState, addOnLeg);
+              remainingQuantity += addOnQty;
+              order.quantity += addOnQty;
+              activeSL = cascadeState.combinedStopLoss;
+              recompressionDetected = false;
+            }
+          }
+        }
+      }
+
+      // Exhaustion Exit
+      if (monitorCandles.length >= 2) {
+        const { exhausted } = checkExhaustion(monitorCandles, 2);
+        if (exhausted && currentPrice > entryPrice) {
+          return this.makeTrade(
+            id, 'momentum_cascade', pairAddress, order, entryIdx, i,
+            currentPrice, 'EXHAUSTION', entryCandle, c, peakPrice,
+            realizedPnlSol, realizedExitValue, remainingQuantity
+          );
+        }
+      }
+
+      // Adaptive trailing
+      if (trailingStop && monitorCandles.length >= 8) {
+        const atr = calcATR(monitorCandles, 7);
+        const adaptiveStop = calcAdaptiveTrailingStop(monitorCandles, atr, entryPrice, peakPrice);
+        if (currentPrice <= adaptiveStop && currentPrice > activeSL) {
+          return this.makeTrade(
+            id, 'momentum_cascade', pairAddress, order, entryIdx, i,
+            currentPrice, 'TRAILING_STOP', entryCandle, c, peakPrice,
+            realizedPnlSol, realizedExitValue, remainingQuantity
+          );
+        }
+      }
+    }
+
+    // End of data
+    const lastCandle = candles[candles.length - 1];
+    return this.makeTrade(
+      id, 'momentum_cascade', pairAddress, order, entryIdx, candles.length - 1,
+      lastCandle.close, 'TIME_STOP', entryCandle, lastCandle, peakPrice,
+      realizedPnlSol, realizedExitValue, remainingQuantity
+    );
+  }
+
+  private updateCascadeStateAfterTp1(
+    state: CascadeState,
+    remainingQuantity: number,
+    breakevenStop: number
+  ): CascadeState {
+    if (state.legs.length === 0) return state;
+
+    const [firstLeg, ...restLegs] = state.legs;
+    const updatedLegs = [
+      {
+        ...firstLeg,
+        quantity: remainingQuantity,
+        stopLoss: breakevenStop,
+      },
+      ...restLegs,
+    ];
+    const totalQuantity = updatedLegs.reduce((sum, leg) => sum + leg.quantity, 0);
+    const costBasis = totalQuantity > 0
+      ? updatedLegs.reduce((sum, leg) => sum + leg.entryPrice * leg.quantity, 0) / totalQuantity
+      : state.costBasis;
+
+    return {
+      ...state,
+      legs: updatedLegs,
+      totalQuantity,
+      costBasis,
+      combinedStopLoss: breakevenStop,
+    };
+  }
+
   // ─── Private: Equity Curve ───
 
   private calcEquityDrawdowns(curve: EquityPoint[]): void {
@@ -594,6 +808,7 @@ export class BacktestEngine {
 
   private evaluateSignalGates(signal: Signal, candles: Candle[], pairAddress: string) {
     const poolInfo = this.buildGatePoolInfo(pairAddress);
+    signal.meta.currentVolume24hUsd = poolInfo.dailyVolume;
     const timelineScore = this.resolveTimelineAttentionScore(
       pairAddress,
       poolInfo.tokenMint,
@@ -624,6 +839,7 @@ export class BacktestEngine {
       pairAddress,
       tokenMint: gatePoolInfo.tokenMint ?? pairAddress,
       tvl: gatePoolInfo.tvl ?? this.config.minPoolLiquidity,
+      marketCap: gatePoolInfo.marketCap,
       dailyVolume: gatePoolInfo.dailyVolume ?? 0,
       tradeCount24h: gatePoolInfo.tradeCount24h ?? 0,
       spreadPct: gatePoolInfo.spreadPct ?? 0,
@@ -776,7 +992,9 @@ export class BacktestEngine {
 
     const order = candidate.signal.strategy === 'fib_pullback'
       ? buildFibPullbackOrder(candidate.signal, candidate.candles, 0, this.config.fibPullbackParams)
-      : buildVolumeSpikeOrder(candidate.signal, candidate.candles, 0, this.config.volumeSpikeParams);
+      : candidate.signal.strategy === 'momentum_cascade'
+        ? buildMomentumCascadeOrder(candidate.signal, candidate.candles, 0, this.config.momentumCascadeParams)
+        : buildVolumeSpikeOrder(candidate.signal, candidate.candles, 0, this.config.volumeSpikeParams);
     if (candidate.signal.breakoutScore) {
       order.breakoutScore = candidate.signal.breakoutScore.totalScore;
       order.breakoutGrade = candidate.signal.breakoutScore.grade;

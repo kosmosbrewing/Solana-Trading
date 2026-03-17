@@ -11,6 +11,7 @@ import { updateDrawdownGuardState } from './drawdownGuard';
 import {
   replayPortfolioDrawdownGuard,
   resolvePortfolioRiskTier,
+  resolveRiskTierWithDemotion,
   resolveStrategyRiskTier,
   RiskTierProfile,
 } from './riskTier';
@@ -78,12 +79,22 @@ export class RiskManager {
       order.strategy,
       this.riskConfig.recoveryPct
     );
-    const portfolioRisk = portfolio.riskTier ?? resolvePortfolioRiskTier(
+    const edgeTracker = new EdgeTracker(closedEdgeTrades);
+
+    // H-04: Demotion 체크 활성화 — 최근 성과 하락 시 자동 강등
+    const { profile: demotionProfile, demoted, demotionReason } =
+      resolveRiskTierWithDemotion(edgeTracker, this.riskConfig.recoveryPct);
+
+    const portfolioRisk = portfolio.riskTier ?? (demoted ? demotionProfile : resolvePortfolioRiskTier(
       closedEdgeTrades,
       this.riskConfig.recoveryPct
-    );
+    ));
     const appliedAdjustments: string[] = [`RISK_TIER_${strategyRisk.edgeState.toUpperCase()}`];
-    const edgeTracker = new EdgeTracker(closedEdgeTrades);
+
+    if (demoted) {
+      appliedAdjustments.push(`DEMOTED_${demotionProfile.edgeState.toUpperCase()}`);
+      log.warn(`Risk tier demoted: ${demotionReason}`);
+    }
 
     if (strategyRisk.kellyApplied) {
       appliedAdjustments.push(`KELLY_${strategyRisk.kellyMode.toUpperCase()}`);

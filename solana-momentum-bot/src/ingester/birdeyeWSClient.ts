@@ -302,7 +302,9 @@ export class BirdeyeWSClient extends EventEmitter {
   private scheduleReconnect(): void {
     if (this.closing) return;
     if (this.reconnectAttempts >= this.config.maxReconnectAttempts) {
-      log.error(`Max reconnect attempts (${this.config.maxReconnectAttempts}) reached. Giving up.`);
+      log.error(`Max reconnect attempts (${this.config.maxReconnectAttempts}) reached. Emitting fallback.`);
+      // M-18: WS 완전 실패 시 fallback 이벤트 — caller가 REST polling으로 전환 가능
+      this.emit('fallback', { reason: 'max_reconnect_exceeded', attempts: this.reconnectAttempts });
       this.emit('error', new Error('Max WS reconnect attempts exceeded'));
       return;
     }

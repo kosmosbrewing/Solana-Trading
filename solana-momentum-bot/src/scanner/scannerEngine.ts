@@ -4,6 +4,7 @@ import { BirdeyeClient, BirdeyeTrendingToken } from '../ingester/birdeyeClient';
 import { BirdeyeWSClient, WSPriceUpdate, WSNewListingUpdate, WSNewPairUpdate } from '../ingester/birdeyeWSClient';
 import { DexScreenerClient } from './dexScreenerClient';
 import { calcWatchlistScore, WatchlistScoreInput, WatchlistScoreResult } from './watchlistScore';
+import { SocialMentionTracker } from './socialMentionTracker';
 import { PoolInfo } from '../utils/types';
 
 const log = createModuleLogger('Scanner');
@@ -42,6 +43,8 @@ export interface ScannerEngineConfig {
   laneBMaxAgeSec: number;
   /** Minimum liquidity USD to consider */
   minLiquidityUsd: number;
+  /** H-02: Social mention tracker for WatchlistScore enrichment */
+  socialMentionTracker?: SocialMentionTracker;
 }
 
 /**
@@ -103,6 +106,12 @@ export class ScannerEngine extends EventEmitter {
     // Initial discovery via trending
     await this.discoverFromTrending();
 
+    if (this.config.socialMentionTracker) {
+      await this.config.socialMentionTracker.startFilteredStream().catch(
+        error => log.warn(`Social filtered stream start failed: ${error}`)
+      );
+    }
+
     // Schedule recurring trending poll
     this.trendingTimer = setInterval(
       () => this.discoverFromTrending().catch(e => log.error(`Trending poll error: ${e}`)),
@@ -124,6 +133,7 @@ export class ScannerEngine extends EventEmitter {
     this.running = false;
     if (this.trendingTimer) { clearInterval(this.trendingTimer); this.trendingTimer = null; }
     if (this.dexEnrichTimer) { clearInterval(this.dexEnrichTimer); this.dexEnrichTimer = null; }
+    this.config.socialMentionTracker?.stopFilteredStream();
     log.info('Scanner stopped.');
   }
 
@@ -149,11 +159,17 @@ export class ScannerEngine extends EventEmitter {
   }
 
   private async evaluateCandidate(token: BirdeyeTrendingToken): Promise<void> {
+    // H-02: SocialMentionTracker에서 social score 조회
+    const socialScore = this.config.socialMentionTracker
+      ? this.config.socialMentionTracker.calcSocialScore(token.address)
+      : undefined;
+
     const scoreInput: WatchlistScoreInput = {
       trendingRank: token.rank,
       priceChange24hPct: token.priceChange24hPct,
       volume24hUsd: token.volume24hUsd,
       liquidityUsd: token.liquidityUsd,
+      socialScore,
     };
 
     const scoreResult = calcWatchlistScore(scoreInput);
@@ -180,6 +196,11 @@ export class ScannerEngine extends EventEmitter {
     };
 
     this.watchlist.set(token.address, entry);
+    this.config.socialMentionTracker?.registerTrackedToken(
+      token.address,
+      token.symbol,
+      [token.name ?? '']
+    );
     log.info(`+ Watchlist: ${token.symbol} lane=${lane} score=${scoreResult.totalScore} grade=${scoreResult.grade}`);
 
     // Subscribe to WS price feed if available
@@ -329,6 +350,7 @@ export class ScannerEngine extends EventEmitter {
 
     for (const entry of toRemove) {
       this.watchlist.delete(entry.tokenMint);
+      this.config.socialMentionTracker?.unregisterTrackedToken(entry.tokenMint);
       if (this.config.birdeyeWS) {
         this.config.birdeyeWS.unsubscribeAll(entry.tokenMint);
       }
@@ -356,6 +378,7 @@ export class ScannerEngine extends EventEmitter {
     };
 
     this.watchlist.set(tokenMint, entry);
+    this.config.socialMentionTracker?.registerTrackedToken(tokenMint, symbol);
 
     if (this.config.birdeyeWS) {
       this.config.birdeyeWS.subscribePrice(tokenMint);

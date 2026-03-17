@@ -31,3 +31,9 @@ export {
   buildFibPullbackOrder,
 } from './fibPullback';
 export type { FibPullbackParams } from './fibPullback';
+
+export {
+  evaluateNewLpSniper,
+  buildNewLpOrder,
+} from './newLpSniper';
+export type { NewLpSniperParams, NewListingCandidate } from './newLpSniper';

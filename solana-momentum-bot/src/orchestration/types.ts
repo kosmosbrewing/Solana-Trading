@@ -1,7 +1,7 @@
 import { SignalAuditLogger } from '../audit';
 import { CandleStore, TradeStore } from '../candle';
 import { EventMonitor, EventScoreStore } from '../event';
-import { Executor } from '../executor';
+import { Executor, WalletManager } from '../executor';
 import { SpreadMeasurer } from '../gate/spreadMeasurer';
 import { BirdeyeClient } from '../ingester';
 import { BirdeyeWSClient } from '../ingester/birdeyeWSClient';
@@ -45,4 +45,6 @@ export interface BotContext {
   spreadMeasurer?: SpreadMeasurer;
   /** Phase 2: EventScore persistent store (C-1) */
   eventScoreStore?: EventScoreStore;
+  /** Phase 3: Wallet manager (main + sandbox isolation) */
+  walletManager?: WalletManager;
 }

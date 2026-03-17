@@ -10,7 +10,7 @@ import { EventMonitor, EventScoreStore } from './event';
 import { CandleStore, TradeStore } from './candle';
 import { RiskManager, RiskConfig, RegimeFilter } from './risk';
 import { PaperMetricsTracker } from './reporting';
-import { Executor, ExecutorConfig } from './executor';
+import { Executor, ExecutorConfig, WalletManager } from './executor';
 import { Notifier } from './notifier';
 import { UniverseEngine, UniverseEngineConfig } from './universe';
 import { ScannerEngine, ScannerEngineConfig, DexScreenerClient, SocialMentionTracker } from './scanner';
@@ -112,10 +112,22 @@ async function main() {
     maxSlippage: config.maxSlippage,
     maxRetries: config.maxRetries,
     txTimeoutMs: config.txTimeoutMs,
+    useJitoBundles: config.useJitoBundles,
+    jitoRpcUrl: config.jitoRpcUrl,
+    jitoTipSol: config.jitoTipSol,
   };
   const executor = new Executor(executorConfig);
 
   const notifier = new Notifier(config.telegramBotToken, config.telegramChatId);
+
+  // ─── Phase 3: Wallet Manager (main + sandbox isolation) ───
+  const walletManager = new WalletManager({
+    solanaRpcUrl: config.solanaRpcUrl,
+    mainWalletKey: config.walletPrivateKey,
+    sandboxWalletKey: config.sandboxWalletKey || undefined,
+    sandboxDailyLossLimitSol: config.sandboxDailyLossLimitSol,
+    sandboxMaxPositionSol: config.sandboxMaxPositionSol,
+  });
 
   // ─── Phase 1B: Regime Filter + Paper Metrics ────────
   const regimeFilter = new RegimeFilter();
@@ -241,6 +253,7 @@ async function main() {
     socialMentionTracker,
     spreadMeasurer,
     eventScoreStore,
+    walletManager,
   };
 
   universeEngine.on('poolEvent', async (event: { type: string; pairAddress: string; detail: string }) => {

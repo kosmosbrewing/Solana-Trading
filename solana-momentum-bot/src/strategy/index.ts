@@ -37,3 +37,14 @@ export {
   buildNewLpOrder,
 } from './newLpSniper';
 export type { NewLpSniperParams, NewListingCandidate } from './newLpSniper';
+
+export {
+  isFirstLegQualified,
+  detectRecompression,
+  detectReacceleration,
+  calculateCombinedStopLoss,
+  calculateAddOnQuantity,
+  initCascadeState,
+  addCascadeLeg,
+} from './momentumCascade';
+export type { CascadeState, CascadeLeg, MomentumCascadeParams } from './momentumCascade';

@@ -1,13 +1,14 @@
 import { SignalAuditLogger } from '../audit';
 import { CandleStore, TradeStore } from '../candle';
-import { EventMonitor } from '../event';
+import { EventMonitor, EventScoreStore } from '../event';
 import { Executor } from '../executor';
+import { SpreadMeasurer } from '../gate/spreadMeasurer';
 import { BirdeyeClient } from '../ingester';
 import { BirdeyeWSClient } from '../ingester/birdeyeWSClient';
 import { Notifier } from '../notifier';
 import { PaperMetricsTracker } from '../reporting';
 import { RiskManager, RegimeFilter } from '../risk';
-import { ScannerEngine } from '../scanner';
+import { ScannerEngine, SocialMentionTracker } from '../scanner';
 import { ExecutionLock, PositionStore } from '../state';
 import { UniverseEngine } from '../universe';
 import { HealthMonitor } from '../utils/healthMonitor';
@@ -38,4 +39,10 @@ export interface BotContext {
   regimeFilter?: RegimeFilter;
   /** Phase 1B: Paper Trading Metrics Tracker */
   paperMetrics?: PaperMetricsTracker;
+  /** Phase 2: Social mention tracker (C-2) */
+  socialMentionTracker?: SocialMentionTracker;
+  /** Phase 2: Jupiter quote-based spread measurer (H-2/H-3) */
+  spreadMeasurer?: SpreadMeasurer;
+  /** Phase 2: EventScore persistent store (C-1) */
+  eventScoreStore?: EventScoreStore;
 }

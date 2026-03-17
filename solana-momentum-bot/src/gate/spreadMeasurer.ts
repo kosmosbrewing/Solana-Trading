@@ -1,0 +1,216 @@
+import axios from 'axios';
+import { createModuleLogger } from '../utils/logger';
+
+const log = createModuleLogger('SpreadMeasurer');
+
+export interface SpreadMeasurement {
+  tokenMint: string;
+  /** Bid-ask spread estimated from buy/sell quote difference (%) */
+  spreadPct: number;
+  /** Buy price impact for probe size (%) */
+  buyImpactPct: number;
+  /** Sell price impact for probe size (%) */
+  sellImpactPct: number;
+  /** Effective AMM fee from route (%) */
+  effectiveFeePct: number;
+  /** Number of available routes */
+  routeCount: number;
+  /** Measurement timestamp */
+  measuredAt: Date;
+}
+
+export interface SpreadMeasurerConfig {
+  jupiterApiUrl: string;
+  jupiterApiKey?: string;
+  /** Probe size in SOL lamports (default: 0.1 SOL = 100_000_000 lamports) */
+  probeSizeLamports: number;
+  /** Timeout for quote requests (ms) */
+  timeoutMs: number;
+}
+
+const SOL_MINT = 'So11111111111111111111111111111111111111112';
+const LAMPORTS_PER_SOL = 1_000_000_000;
+
+const DEFAULT_CONFIG: SpreadMeasurerConfig = {
+  jupiterApiUrl: 'https://api.jup.ag',
+  probeSizeLamports: 100_000_000, // 0.1 SOL
+  timeoutMs: 5000,
+};
+
+/**
+ * Jupiter Quote-based Spread & Fee Measurer (H-2 / H-3).
+ *
+ * Replaces the high/low candle-based spread proxy with actual
+ * Jupiter quote data:
+ *   - Buy quote: SOL → Token (buy impact)
+ *   - Sell quote: Token → SOL (sell impact)
+ *   - Spread = buy impact + sell impact
+ *   - Effective fee = derived from quote vs mid-price
+ */
+export class SpreadMeasurer {
+  private config: SpreadMeasurerConfig;
+  private cache = new Map<string, SpreadMeasurement>();
+  private cacheTTLMs = 60_000; // 1 min cache
+
+  constructor(config: Partial<SpreadMeasurerConfig> = {}) {
+    this.config = { ...DEFAULT_CONFIG, ...config };
+  }
+
+  /**
+   * Measure actual spread and fee for a token using Jupiter quotes.
+   * Returns cached result if available and fresh.
+   */
+  async measure(tokenMint: string): Promise<SpreadMeasurement | null> {
+    // Check cache
+    const cached = this.cache.get(tokenMint);
+    if (cached && Date.now() - cached.measuredAt.getTime() < this.cacheTTLMs) {
+      return cached;
+    }
+
+    try {
+      const [buyQuote, sellQuote] = await Promise.all([
+        this.getQuote(SOL_MINT, tokenMint, this.config.probeSizeLamports),
+        this.getQuote(tokenMint, SOL_MINT, 0, true), // reverse probe
+      ]);
+
+      if (!buyQuote || !sellQuote) return null;
+
+      const buyImpactPct = this.parsePriceImpact(buyQuote);
+      const sellImpactPct = this.parsePriceImpact(sellQuote);
+
+      // Spread = round-trip cost estimate
+      const spreadPct = buyImpactPct + sellImpactPct;
+
+      // Effective fee from route plan
+      const effectiveFeePct = this.extractRouteFees(buyQuote);
+
+      const routeCount = buyQuote.routePlan?.length ?? 0;
+
+      const measurement: SpreadMeasurement = {
+        tokenMint,
+        spreadPct,
+        buyImpactPct,
+        sellImpactPct,
+        effectiveFeePct,
+        routeCount,
+        measuredAt: new Date(),
+      };
+
+      this.cache.set(tokenMint, measurement);
+
+      log.debug(
+        `Spread: ${tokenMint.slice(0, 8)}... ` +
+        `buy=${(buyImpactPct * 100).toFixed(3)}% sell=${(sellImpactPct * 100).toFixed(3)}% ` +
+        `spread=${(spreadPct * 100).toFixed(3)}% fee=${(effectiveFeePct * 100).toFixed(3)}%`
+      );
+
+      return measurement;
+    } catch (error) {
+      log.warn(`Spread measurement failed for ${tokenMint}: ${error}`);
+      return null;
+    }
+  }
+
+  /**
+   * Get spread for execution viability calculation.
+   * Falls back to default estimate if quote fails.
+   */
+  async getSpreadOrDefault(tokenMint: string, defaultSpreadPct = 0.005): Promise<number> {
+    const m = await this.measure(tokenMint);
+    return m ? m.spreadPct : defaultSpreadPct;
+  }
+
+  /**
+   * Get effective AMM fee for a token.
+   * Falls back to standard 0.3% if unavailable.
+   */
+  async getFeeOrDefault(tokenMint: string, defaultFeePct = 0.003): Promise<number> {
+    const m = await this.measure(tokenMint);
+    return m ? m.effectiveFeePct : defaultFeePct;
+  }
+
+  private async getQuote(
+    inputMint: string,
+    outputMint: string,
+    amount: number,
+    reverseProbe = false
+  ): Promise<JupiterQuoteResponse | null> {
+    try {
+      // For reverse probe (sell), we need to determine a token amount.
+      // Use a small fixed amount based on the buy quote if available.
+      let queryAmount = amount;
+      if (reverseProbe && amount === 0) {
+        // Get the buy output amount first for proportional sell probe
+        const buyResult = await this.getQuote(
+          SOL_MINT,
+          inputMint,
+          this.config.probeSizeLamports
+        );
+        if (!buyResult) return null;
+        queryAmount = parseInt(buyResult.outAmount, 10);
+      }
+
+      const headers: Record<string, string> = {};
+      if (this.config.jupiterApiKey) {
+        headers['X-API-Key'] = this.config.jupiterApiKey;
+      }
+
+      const response = await axios.get<JupiterQuoteResponse>(
+        `${this.config.jupiterApiUrl}/quote`,
+        {
+          params: {
+            inputMint,
+            outputMint,
+            amount: queryAmount.toString(),
+            slippageBps: 100,
+          },
+          headers,
+          timeout: this.config.timeoutMs,
+        }
+      );
+
+      return response.data;
+    } catch (error) {
+      log.debug(`Quote failed ${inputMint.slice(0, 8)} → ${outputMint.slice(0, 8)}: ${error}`);
+      return null;
+    }
+  }
+
+  private parsePriceImpact(quote: JupiterQuoteResponse): number {
+    const raw = quote.priceImpactPct ?? 0;
+    const pct = typeof raw === 'string' ? parseFloat(raw) : raw;
+    return Math.abs(isNaN(pct) ? 0 : pct / 100); // Convert percentage to decimal
+  }
+
+  private extractRouteFees(quote: JupiterQuoteResponse): number {
+    if (!quote.routePlan || quote.routePlan.length === 0) return 0.003; // default 0.3%
+
+    let totalFeePct = 0;
+    for (const step of quote.routePlan) {
+      const feePct = step.swapInfo?.feeAmount && step.swapInfo?.inAmount
+        ? parseInt(step.swapInfo.feeAmount, 10) / parseInt(step.swapInfo.inAmount, 10)
+        : 0;
+      totalFeePct += feePct;
+    }
+
+    return totalFeePct || 0.003;
+  }
+}
+
+interface JupiterQuoteResponse {
+  inputMint: string;
+  outputMint: string;
+  inAmount: string;
+  outAmount: string;
+  priceImpactPct?: string | number;
+  routePlan?: Array<{
+    swapInfo?: {
+      ammKey: string;
+      feeAmount: string;
+      feeMint: string;
+      inAmount: string;
+      outAmount: string;
+    };
+    percent: number;
+  }>;
+}

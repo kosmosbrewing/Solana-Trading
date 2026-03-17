@@ -73,6 +73,17 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
     maxPriceImpact: config.maxPoolImpact,
   } : undefined;
 
+  // Phase 2: Jupiter quote-based spread/fee measurement (H-2/H-3)
+  let measuredSpreadPct: number | undefined;
+  let measuredFeePct: number | undefined;
+  if (ctx.spreadMeasurer) {
+    const measurement = await ctx.spreadMeasurer.measure(poolInfo.tokenMint);
+    if (measurement) {
+      measuredSpreadPct = measurement.spreadPct;
+      measuredFeePct = measurement.effectiveFeePct;
+    }
+  }
+
   // Strategy A: Volume Spike Breakout (5분봉)
   if (candle.intervalSec === 300) {
     const signal = evaluateVolumeSpikeBreakout(candles, {
@@ -113,8 +124,9 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
 
       signal.breakoutScore = gateResult.breakoutScore;
       signal.poolTvl = poolTvl;
-      signal.spreadPct = poolInfo.spreadPct;
-      if (poolInfo.ammFeePct !== undefined) signal.meta.ammFeePct = poolInfo.ammFeePct;
+      signal.spreadPct = measuredSpreadPct ?? poolInfo.spreadPct;
+      const resolvedFee = measuredFeePct ?? poolInfo.ammFeePct;
+      if (resolvedFee !== undefined) signal.meta.ammFeePct = resolvedFee;
       if (poolInfo.mevMarginPct !== undefined) signal.meta.mevMarginPct = poolInfo.mevMarginPct;
 
       await processSignal(signal, candles, ctx, gateResult);
@@ -174,8 +186,9 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
 
         fibSignal.poolTvl = poolTvl;
         fibSignal.breakoutScore = gateResult.breakoutScore;
-        fibSignal.spreadPct = poolInfo.spreadPct;
-        if (poolInfo.ammFeePct !== undefined) fibSignal.meta.ammFeePct = poolInfo.ammFeePct;
+        fibSignal.spreadPct = measuredSpreadPct ?? poolInfo.spreadPct;
+        const fibResolvedFee = measuredFeePct ?? poolInfo.ammFeePct;
+        if (fibResolvedFee !== undefined) fibSignal.meta.ammFeePct = fibResolvedFee;
         if (poolInfo.mevMarginPct !== undefined) fibSignal.meta.mevMarginPct = poolInfo.mevMarginPct;
 
         await processSignal(fibSignal, fibCandles, ctx, gateResult);

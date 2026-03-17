@@ -1,4 +1,4 @@
-import axios, { AxiosInstance } from 'axios';
+import axios, { AxiosError, AxiosInstance } from 'axios';
 import { createModuleLogger } from '../utils/logger';
 
 const log = createModuleLogger('DexScreener');
@@ -38,10 +38,9 @@ export class DexScreenerClient {
 
   /** Latest boosted tokens — marketing intensity feature */
   async getLatestBoosts(): Promise<DexScreenerBoost[]> {
-    await this.rateLimit();
     try {
-      const res = await this.client.get('/token-boosts/latest/v1');
-      return this.normalizeBoosts(res.data);
+      const data = await this.getWithRetry('/token-boosts/latest/v1');
+      return this.normalizeBoosts(data);
     } catch (error) {
       log.warn(`Failed to fetch latest boosts: ${error}`);
       return [];
@@ -50,10 +49,9 @@ export class DexScreenerClient {
 
   /** Top boosted tokens — highest total boost amount */
   async getTopBoosts(): Promise<DexScreenerBoost[]> {
-    await this.rateLimit();
     try {
-      const res = await this.client.get('/token-boosts/top/v1');
-      return this.normalizeBoosts(res.data);
+      const data = await this.getWithRetry('/token-boosts/top/v1');
+      return this.normalizeBoosts(data);
     } catch (error) {
       log.warn(`Failed to fetch top boosts: ${error}`);
       return [];
@@ -62,10 +60,9 @@ export class DexScreenerClient {
 
   /** Check if a token has paid orders/ads */
   async getTokenOrders(tokenAddress: string): Promise<DexScreenerOrder[]> {
-    await this.rateLimit();
     try {
-      const res = await this.client.get(`/orders/v1/solana/${tokenAddress}`);
-      const items = Array.isArray(res.data) ? res.data : [];
+      const data = await this.getWithRetry(`/orders/v1/solana/${tokenAddress}`);
+      const items = Array.isArray(data) ? data : [];
       return items.map((o: Record<string, unknown>) => ({
         type: String(o.type ?? ''),
         status: String(o.status ?? ''),
@@ -90,6 +87,32 @@ export class DexScreenerClient {
         description: b.description as string | undefined,
         url: b.url as string | undefined,
       }));
+  }
+
+  /**
+   * M-19: 429 감지 시 자동 backoff + retry (최대 1회)
+   */
+  private async getWithRetry<T>(path: string): Promise<T | null> {
+    await this.rateLimit();
+    try {
+      const res = await this.client.get<T>(path);
+      return res.data;
+    } catch (err) {
+      if (err instanceof AxiosError && err.response?.status === 429) {
+        const retryAfter = Number(err.response.headers['retry-after'] || 5) * 1000;
+        log.warn(`DexScreener 429 rate limited. Backing off ${retryAfter}ms...`);
+        await new Promise(r => setTimeout(r, retryAfter));
+        this.lastRequestMs = Date.now();
+        try {
+          const res = await this.client.get<T>(path);
+          return res.data;
+        } catch (retryErr) {
+          log.warn(`DexScreener retry failed: ${retryErr}`);
+          return null;
+        }
+      }
+      throw err;
+    }
   }
 
   private async rateLimit(): Promise<void> {

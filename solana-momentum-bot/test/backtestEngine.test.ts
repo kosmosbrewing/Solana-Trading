@@ -1,6 +1,7 @@
 import { BacktestEngine } from '../src/backtest';
 import type { AttentionScore } from '../src/event/types';
 import type { Candle, Order, Signal } from '../src/utils/types';
+import * as strategy from '../src/strategy';
 
 describe('BacktestEngine parity', () => {
   it('can require AttentionScore in backtest gate inputs', () => {
@@ -194,6 +195,48 @@ describe('BacktestEngine parity', () => {
 
     expect(result.combined.totalTrades).toBe(1);
     expect(result.combined.rejections.positionOpen).toBe(1);
+  });
+
+  it('simulates cascade add-on after TP1 in momentum backtest mode', () => {
+    const recompressionSpy = jest.spyOn(strategy, 'detectRecompression').mockReturnValue(true);
+    const reaccelerationSpy = jest.spyOn(strategy, 'detectReacceleration').mockReturnValue({
+      action: 'BUY',
+      strategy: 'momentum_cascade',
+      pairAddress: 'pair-1',
+      price: 1.15,
+      timestamp: new Date('2026-03-15T00:05:00Z'),
+      meta: {},
+    });
+
+    try {
+      const engine = new BacktestEngine();
+      const trade = engine["simulateCascadeTrade"](
+        makeOrder({
+          strategy: 'momentum_cascade',
+          takeProfit1: 1.2,
+          takeProfit2: 1.4,
+          trailingStop: 0,
+        }),
+        [
+          makeCandle({ timestamp: new Date('2026-03-15T00:00:00Z'), open: 1, high: 1.01, low: 0.99, close: 1 }),
+          makeCandle({ timestamp: new Date('2026-03-15T00:05:00Z'), open: 1, high: 1.22, low: 1.0, close: 1.15, volume: 120 }),
+          makeCandle({ timestamp: new Date('2026-03-15T00:10:00Z'), open: 1.15, high: 1.42, low: 1.14, close: 1.4, volume: 200 }),
+        ],
+        0,
+        120,
+        1,
+        'pair-1',
+        10
+      );
+
+      expect(trade?.strategy).toBe('momentum_cascade');
+      expect(trade?.exitReason).toBe('TAKE_PROFIT_2');
+      expect(trade?.quantity).toBeGreaterThan(1);
+      expect(trade?.exitPrice).toBeGreaterThan(1.25);
+    } finally {
+      recompressionSpy.mockRestore();
+      reaccelerationSpy.mockRestore();
+    }
   });
 });
 

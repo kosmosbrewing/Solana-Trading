@@ -144,6 +144,34 @@ describe('AttentionScore gate integration', () => {
     });
   });
 
+  it('adds volume/marketCap factor for strong turnover tokens', () => {
+    const result = evaluateGates({
+      signal: {
+        ...signal,
+        meta: { ...signal.meta, currentVolume24hUsd: 40_000 },
+      },
+      candles,
+      poolInfo: {
+        ...poolInfo,
+        marketCap: 100_000,
+      },
+      previousTvl: poolInfo.tvl,
+      fibConfig: {
+        impulseMinPct: 0.15,
+        volumeClimaxMultiplier: 2.5,
+        minWickRatio: 0.4,
+      },
+    });
+
+    expect(result.breakoutScore.mcapVolumeScore).toBe(10);
+    expect(result.breakoutScore.totalScore).toBe(65);
+    expect(result.breakoutScore.components?.find(component => component.key === 'volume_mcap_ratio')).toMatchObject({
+      score: 10,
+      maxScore: 10,
+      value: 0.4,
+    });
+  });
+
   it('applies Gate 4 execution viability sizing and rejection bands', () => {
     const rrCandles: Candle[] = [
       {

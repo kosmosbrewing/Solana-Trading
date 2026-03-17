@@ -1,5 +1,20 @@
 import { createModuleLogger } from '../utils/logger';
 import { Signal, Order, Candle } from '../utils/types';
+import type {
+  ExitLiquidityData,
+  TokenSecurityData,
+} from '../ingester/birdeyeClient';
+import type { WSNewListingUpdate } from '../ingester/birdeyeWSClient';
+import {
+  evaluateSecurityGate,
+  type SecurityGateConfig,
+  type SecurityGateResult,
+} from '../gate/securityGate';
+import {
+  evaluateQuoteGate,
+  type QuoteGateConfig,
+  type QuoteGateResult,
+} from '../gate/quoteGate';
 
 const log = createModuleLogger('StrategyD');
 
@@ -20,6 +35,8 @@ export interface NewLpSniperParams {
   timeStopMinutes: number;
   /** Take profit multiplier (default: 3x) */
   takeProfitMultiplier: number;
+  /** Slippage tolerance in bps for new LP swaps (default: 500 = 5%) */
+  slippageBps: number;
 }
 
 export const DEFAULT_NEW_LP_PARAMS: NewLpSniperParams = {
@@ -31,6 +48,7 @@ export const DEFAULT_NEW_LP_PARAMS: NewLpSniperParams = {
   acceptFullLoss: true,
   timeStopMinutes: 15,
   takeProfitMultiplier: 3.0,
+  slippageBps: 500, // 5% — 새 LP 풀은 유동성이 낮아 높은 슬리피지 허용
 };
 
 export interface NewListingCandidate {
@@ -40,13 +58,124 @@ export interface NewListingCandidate {
   liquidityUsd: number;
   liquidityAddedAt: Date;
   price: number;
-  /** Security gate results (must be pre-checked) */
-  securityPassed: boolean;
-  /** Exit liquidity exists */
-  exitLiquidityOk: boolean;
-  /** Jupiter route exists with acceptable impact */
-  jupiterRouteOk: boolean;
-  priceImpactPct: number;
+  /** Ticket size after async security/quote gate reductions */
+  recommendedTicketSizeSol?: number;
+  /** Security gate results (default: false — must be explicitly set) */
+  securityPassed?: boolean;
+  /** Exit liquidity exists (default: false) */
+  exitLiquidityOk?: boolean;
+  /** Jupiter route exists with acceptable impact (default: false) */
+  jupiterRouteOk?: boolean;
+  /** Price impact from Jupiter quote (default: 1 = 100%, rejected) */
+  priceImpactPct?: number;
+}
+
+export interface PrepareNewLpCandidateDependencies {
+  getTokenSecurityDetailed(tokenMint: string): Promise<TokenSecurityData | null>;
+  getExitLiquidity(tokenMint: string): Promise<ExitLiquidityData | null>;
+  getTokenOverview(tokenMint: string): Promise<Record<string, unknown> | undefined>;
+  evaluateQuoteGate?: (
+    tokenMint: string,
+    estimatedPositionSol: number,
+    config: Partial<QuoteGateConfig>
+  ) => Promise<QuoteGateResult>;
+}
+
+export interface PrepareNewLpCandidateOptions {
+  params?: Partial<NewLpSniperParams>;
+  securityGate?: Partial<SecurityGateConfig>;
+  quoteGate?: Partial<QuoteGateConfig>;
+}
+
+export interface PreparedNewLpCandidateResult {
+  candidate?: NewListingCandidate;
+  rejectionReason?: string;
+  securityGate?: SecurityGateResult;
+  quoteGate?: QuoteGateResult;
+}
+
+export async function prepareNewLpCandidate(
+  update: Pick<
+    WSNewListingUpdate,
+    'address' | 'symbol' | 'liquidity' | 'liquidityAddedAt' | 'decimals'
+  >,
+  deps: PrepareNewLpCandidateDependencies,
+  options: PrepareNewLpCandidateOptions = {}
+): Promise<PreparedNewLpCandidateResult> {
+  const params = { ...DEFAULT_NEW_LP_PARAMS, ...options.params };
+  const quoteGateRunner = deps.evaluateQuoteGate ?? evaluateQuoteGate;
+
+  if (!update.address) {
+    return { rejectionReason: 'missing_token_mint' };
+  }
+
+  const [securityData, exitLiquidityData, overview] = await Promise.all([
+    deps.getTokenSecurityDetailed(update.address),
+    deps.getExitLiquidity(update.address),
+    deps.getTokenOverview(update.address),
+  ]);
+
+  const securityGate = evaluateSecurityGate(
+    securityData,
+    exitLiquidityData,
+    options.securityGate
+  );
+  if (!securityGate.approved) {
+    return {
+      rejectionReason: `security_rejected: ${securityGate.reason ?? 'unknown'}`,
+      securityGate,
+    };
+  }
+
+  const gatedTicketSizeSol = params.ticketSizeSol * securityGate.sizeMultiplier;
+  const quoteGate = await quoteGateRunner(update.address, gatedTicketSizeSol, {
+    ...options.quoteGate,
+    maxPriceImpact: options.quoteGate?.maxPriceImpact ?? params.maxPriceImpact,
+    slippageBps: options.quoteGate?.slippageBps ?? params.slippageBps,
+  });
+
+  if (!quoteGate.approved) {
+    return {
+      rejectionReason: `quote_rejected: ${quoteGate.reason ?? 'unknown'}`,
+      securityGate,
+      quoteGate,
+    };
+  }
+
+  const price = resolveListingPrice({
+    overview,
+    decimals: update.decimals,
+    quoteGate,
+    ticketSizeSol: gatedTicketSizeSol,
+  });
+  if (!Number.isFinite(price) || price <= 0) {
+    return {
+      rejectionReason: 'price_unavailable',
+      securityGate,
+      quoteGate,
+    };
+  }
+
+  const liquidityUsd = resolveLiquidityUsd(update.liquidity, overview);
+  const recommendedTicketSizeSol = gatedTicketSizeSol * quoteGate.sizeMultiplier;
+
+  return {
+    candidate: {
+      tokenMint: update.address,
+      tokenSymbol: update.symbol ?? 'UNKNOWN',
+      pairAddress: update.address,
+      liquidityUsd,
+      liquidityAddedAt: new Date(update.liquidityAddedAt ?? Date.now()),
+      price,
+      recommendedTicketSizeSol,
+      securityPassed: true,
+      exitLiquidityOk: !securityGate.flags.includes('LOW_EXIT_LIQUIDITY'),
+      jupiterRouteOk: quoteGate.routeFound,
+      priceImpactPct: quoteGate.priceImpactPct,
+    },
+    securityGate,
+    quoteGate,
+  };
 }
 
 /**
@@ -70,6 +199,7 @@ export function evaluateNewLpSniper(
   params: Partial<NewLpSniperParams> = {}
 ): Signal {
   const p = { ...DEFAULT_NEW_LP_PARAMS, ...params };
+  const ticketSizeSol = candidate.recommendedTicketSizeSol ?? p.ticketSizeSol;
 
   const noSignal: Signal = {
     action: 'HOLD',
@@ -91,28 +221,29 @@ export function evaluateNewLpSniper(
     return { ...noSignal, meta: { filterReason: 2, liquidityUsd: candidate.liquidityUsd } };
   }
 
-  // Security gate (pre-checked by caller)
-  if (!candidate.securityPassed) {
+  // Security gate (pre-checked by caller, default: false)
+  if (!(candidate.securityPassed ?? false)) {
     return { ...noSignal, meta: { filterReason: 3 } };
   }
 
-  // Exit liquidity
-  if (!candidate.exitLiquidityOk) {
+  // Exit liquidity (default: false)
+  if (!(candidate.exitLiquidityOk ?? false)) {
     return { ...noSignal, meta: { filterReason: 4 } };
   }
 
-  // Jupiter route & impact
-  if (!candidate.jupiterRouteOk) {
+  // Jupiter route & impact (default: false / 1.0)
+  if (!(candidate.jupiterRouteOk ?? false)) {
     return { ...noSignal, meta: { filterReason: 5 } };
   }
-  if (candidate.priceImpactPct > p.maxPriceImpact) {
-    return { ...noSignal, meta: { filterReason: 6, priceImpactPct: candidate.priceImpactPct } };
+  const impactPct = candidate.priceImpactPct ?? 1;
+  if (impactPct > p.maxPriceImpact) {
+    return { ...noSignal, meta: { filterReason: 6, priceImpactPct: impactPct } };
   }
 
   log.info(
     `New LP signal: ${candidate.tokenSymbol} (${candidate.pairAddress.slice(0, 8)}...) ` +
     `age=${ageMinutes.toFixed(1)}min liq=$${candidate.liquidityUsd.toFixed(0)} ` +
-    `impact=${(candidate.priceImpactPct * 100).toFixed(2)}%`
+    `impact=${(impactPct * 100).toFixed(2)}%`
   );
 
   return {
@@ -124,8 +255,8 @@ export function evaluateNewLpSniper(
     meta: {
       ageMinutes,
       liquidityUsd: candidate.liquidityUsd,
-      priceImpactPct: candidate.priceImpactPct,
-      ticketSizeSol: p.ticketSizeSol,
+      priceImpactPct: impactPct,
+      ticketSizeSol,
     },
   };
 }
@@ -141,8 +272,8 @@ export function buildNewLpOrder(
   const p = { ...DEFAULT_NEW_LP_PARAMS, ...params };
   const ticketSol = signal.meta.ticketSizeSol ?? p.ticketSizeSol;
 
-  // SL = accept full loss (lottery ticket)
-  const stopLoss = p.acceptFullLoss ? 0 : signal.price * 0.5;
+  // SL = accept near-full loss (lottery ticket): 95% 손실 허용, 0은 불가 (SL 미트리거)
+  const stopLoss = p.acceptFullLoss ? signal.price * 0.05 : signal.price * 0.5;
 
   // TP = entry × multiplier
   const takeProfit1 = signal.price * (1 + (p.takeProfitMultiplier - 1) * 0.5);
@@ -159,5 +290,60 @@ export function buildNewLpOrder(
     takeProfit2,
     trailingStop: 0, // No trailing for lottery tickets
     timeStopMinutes: p.timeStopMinutes,
+    slippageBps: p.slippageBps, // C-18: 새 LP 풀 전용 슬리피지 설정
   };
+}
+
+function resolveListingPrice(input: {
+  overview?: Record<string, unknown>;
+  decimals?: number;
+  quoteGate: QuoteGateResult;
+  ticketSizeSol: number;
+}): number {
+  const overviewPrice = parsePositiveNumber(
+    input.overview,
+    ['price', 'priceUsd', 'priceUSD', 'value', 'valueUsd']
+  );
+  if (overviewPrice != null) {
+    return overviewPrice;
+  }
+
+  if (input.decimals != null && input.decimals >= 0 && input.quoteGate.outAmountLamports > 0n) {
+    const tokenOut = Number(input.quoteGate.outAmountLamports) / 10 ** input.decimals;
+    if (Number.isFinite(tokenOut) && tokenOut > 0) {
+      return input.ticketSizeSol / tokenOut;
+    }
+  }
+
+  return 0;
+}
+
+function resolveLiquidityUsd(
+  listingLiquidity: number | undefined,
+  overview?: Record<string, unknown>
+): number {
+  if (Number.isFinite(listingLiquidity) && (listingLiquidity ?? 0) > 0) {
+    return listingLiquidity ?? 0;
+  }
+
+  return (
+    parsePositiveNumber(overview, ['liquidity', 'liquidityUsd', 'liquidityUSD', 'tvl']) ?? 0
+  );
+}
+
+function parsePositiveNumber(
+  source: Record<string, unknown> | undefined,
+  keys: string[]
+): number | undefined {
+  if (!source) return undefined;
+
+  for (const key of keys) {
+    const value = source[key];
+    const parsed = typeof value === 'string' ? Number(value) : Number(value);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  return undefined;
 }

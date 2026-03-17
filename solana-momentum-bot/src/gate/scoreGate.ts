@@ -4,6 +4,7 @@ import {
   assessLpStability,
   calcBreakoutScore,
   calcBuyRatio,
+  calcVolumeMcapRatio,
   detectWhaleActivity,
 } from '../strategy';
 import { calcFibPullbackScore } from './fibPullbackScore';
@@ -23,6 +24,7 @@ export interface EvaluateStrategyScoreInput {
   signal: Signal;
   candles: Candle[];
   poolTvl: number;
+  marketCap?: number;
   previousTvl: number;
   fibConfig: FibPullbackGateConfig;
   thresholds?: GateThresholds;
@@ -35,6 +37,7 @@ export function evaluateStrategyScore(input: EvaluateStrategyScoreInput): Breako
         input.signal,
         input.candles,
         input.poolTvl,
+        input.marketCap,
         input.previousTvl,
         input.thresholds
       );
@@ -108,18 +111,21 @@ function evaluateVolumeSpikeScore(
   signal: Signal,
   candles: Candle[],
   poolTvl: number,
+  marketCap: number | undefined,
   previousTvl: number,
   thresholds?: GateThresholds
 ): BreakoutScoreDetail {
   const lastCandle = candles[candles.length - 1];
   const volumeRatio = signal.meta.volumeRatio || 0;
   const buyRatio = calcBuyRatio(lastCandle);
+  const volumeMcapRatio = calcVolumeMcapRatio(signal.meta.currentVolume24hUsd, marketCap);
   const whaleAlert = detectWhaleActivity(candles.slice(-5), poolTvl);
   const lpStability = assessLpStability(poolTvl, previousTvl);
   const multiTfAlignment = calcMultiPeriodAlignment(candles);
 
   return calcBreakoutScore({
     volumeRatio,
+    volumeMcapRatio,
     buyRatio,
     multiTfAlignment,
     whaleDetected: !!whaleAlert,

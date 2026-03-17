@@ -13,7 +13,7 @@ describe('RiskTier', () => {
     expect(nineteen.maxRiskPerTrade).toBeCloseTo(0.01, 6);
 
     expect(twenty.edgeState).toBe('Calibration');
-    expect(twenty.maxRiskPerTrade).toBeCloseTo(0.02, 6);
+    expect(twenty.maxRiskPerTrade).toBeCloseTo(0.01, 6); // STRATEGY.md: Bootstrap/Calibration 모두 1%
 
     expect(fifty.edgeState).toBe('Confirmed');
     expect(fifty.kellyApplied).toBe(true);
@@ -31,7 +31,7 @@ describe('RiskTier', () => {
 
     expect(locked.edgeState).toBe('Calibration');
     expect(locked.kellyApplied).toBe(false);
-    expect(locked.maxRiskPerTrade).toBeCloseTo(0.02, 6);
+    expect(locked.maxRiskPerTrade).toBeCloseTo(0.01, 6); // Calibration = 1% 고정
   });
 
   it('uses the looser Confirmed drawdown limit once the 50th trade closes', () => {

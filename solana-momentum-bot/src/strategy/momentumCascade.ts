@@ -75,6 +75,49 @@ export const DEFAULT_CASCADE_PARAMS: MomentumCascadeParams = {
  */
 
 /**
+ * H-06: Backtest-compatible signal evaluator for Strategy E.
+ * Uses volume spike breakout detection but tags as momentum_cascade.
+ */
+export function evaluateMomentumCascadeEntry(
+  candles: Candle[],
+  params: Partial<MomentumCascadeParams & VolumeSpikeParams> = {}
+): Signal {
+  const signal = evaluateVolumeSpikeBreakout(candles, params);
+  return {
+    ...signal,
+    strategy: 'momentum_cascade',
+  };
+}
+
+/**
+ * H-06: Backtest-compatible order builder for Strategy E.
+ * 캐스케이드 첫 진입은 volume_spike와 동일한 SL/TP, 단 시간 제한 연장.
+ */
+export function buildMomentumCascadeOrder(
+  signal: Signal,
+  candles: Candle[],
+  quantity: number,
+  params: Partial<MomentumCascadeParams & VolumeSpikeParams> = {}
+): Order {
+  const p = { ...DEFAULT_CASCADE_PARAMS, ...params };
+  const currentCandle = candles[candles.length - 1];
+  const atr = signal.meta.atr || calcATR(candles, params.atrPeriod ?? 20);
+
+  return {
+    pairAddress: signal.pairAddress,
+    strategy: 'momentum_cascade',
+    side: 'BUY',
+    price: signal.price,
+    quantity,
+    stopLoss: currentCandle.low,
+    takeProfit1: signal.price + atr * (params.tp1Multiplier ?? 1.5),
+    takeProfit2: signal.price + atr * (params.tp2Multiplier ?? 2.5),
+    trailingStop: atr,
+    timeStopMinutes: 120, // 캐스케이드는 add-on 감지를 위해 2시간 확보
+  };
+}
+
+/**
  * Check if first leg qualifies for add-on entry.
  * Must be +minProfitR in profit AND TP1 must have been hit.
  */
@@ -130,6 +173,7 @@ export function detectRecompression(
 
 /**
  * Detect re-acceleration: volume spike + price breakout from compression range.
+ * H-10: price confirmation 추가 — compression range 상단 돌파 필수
  */
 export function detectReacceleration(
   candles: Candle[],
@@ -139,10 +183,23 @@ export function detectReacceleration(
   const p = { ...DEFAULT_CASCADE_PARAMS, ...cascadeParams };
 
   // Use volume spike evaluator with lower threshold for re-acceleration
-  return evaluateVolumeSpikeBreakout(candles, {
+  const signal = evaluateVolumeSpikeBreakout(candles, {
     ...spikeParams,
     volumeMultiplier: p.reaccelerationVolMult,
   });
+
+  // Price confirmation: 최근 compression range 상단을 돌파해야 유효
+  if (signal.action === 'BUY' && candles.length >= p.recompressionLookback) {
+    const compressionWindow = candles.slice(-p.recompressionLookback, -1);
+    const rangeHigh = Math.max(...compressionWindow.map(c => c.high));
+    const currentClose = candles[candles.length - 1].close;
+
+    if (currentClose <= rangeHigh) {
+      return { ...signal, action: 'HOLD', meta: { ...signal.meta, priceConfirmation: 0 } };
+    }
+  }
+
+  return signal;
 }
 
 /**
@@ -167,7 +224,10 @@ export function calculateCombinedStopLoss(
   // Never move SL below the lowest individual leg SL (safety floor)
   const lowestLegSL = Math.min(...legs.map(l => l.stopLoss));
 
-  return Math.max(newSL, lowestLegSL);
+  const flooredSL = Math.max(newSL, lowestLegSL);
+
+  // 상한 제약: SL이 cost basis 이상이면 진입 즉시 손실 확정 → cost basis의 99% 이하로 제한
+  return Math.min(flooredSL, costBasis * 0.99);
 }
 
 /**
@@ -183,6 +243,9 @@ export function calculateAddOnQuantity(
   maxBalanceFraction: number = 0.2,
   balance: number = 0
 ): number {
+  // H-31: price=0 방어
+  if (addOnPrice <= 0) return 0;
+
   const existingRisk = existingLegs.reduce((sum, leg) => {
     return sum + Math.abs(leg.entryPrice - leg.stopLoss) * leg.quantity;
   }, 0);
@@ -201,8 +264,8 @@ export function calculateAddOnQuantity(
 
   let quantity = remainingRisk / riskPerUnit;
 
-  // Cap at balance fraction
-  if (balance > 0) {
+  // Cap at balance fraction (NaN 방어: balance undefined/NaN 시 무시)
+  if (balance != null && Number.isFinite(balance) && balance > 0) {
     const maxFromBalance = (balance * maxBalanceFraction) / addOnPrice;
     quantity = Math.min(quantity, maxFromBalance);
   }
@@ -259,4 +322,23 @@ export function addCascadeLeg(
     combinedStopLoss,
     addOnCount: state.addOnCount + 1,
   };
+}
+
+/**
+ * Cascade state 업데이트: peak price 갱신 + TP1 도달 감지.
+ * Position monitor 루프에서 매 캔들/틱마다 호출.
+ */
+export function updateCascadeState(
+  state: CascadeState,
+  currentPrice: number,
+  tp1Price: number
+): CascadeState {
+  const peakPrice = Math.max(state.peakPrice, currentPrice);
+  const tp1Hit = state.tp1Hit || currentPrice >= tp1Price;
+
+  if (tp1Hit && !state.tp1Hit) {
+    log.info(`Cascade TP1 hit at ${currentPrice.toFixed(6)} (target: ${tp1Price.toFixed(6)})`);
+  }
+
+  return { ...state, peakPrice, tp1Hit };
 }

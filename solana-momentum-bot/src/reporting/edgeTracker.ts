@@ -1,4 +1,10 @@
 import { StrategyName } from '../utils/types';
+import {
+  average,
+  isFiniteNumber,
+  summarizeRiskMetrics,
+  toRiskMultiple,
+} from './riskMetrics';
 
 export type EdgeState = 'Bootstrap' | 'Calibration' | 'Confirmed' | 'Proven';
 
@@ -36,19 +42,21 @@ export interface PairEdgeStats extends EdgePerformanceStats {
 
 export interface PairBlacklistConfig {
   minTrades: number;
-  maxWinRate: number;
-  maxRewardRisk: number;
+  /** Blacklist if win rate BELOW this threshold */
+  minWinRate: number;
+  /** Blacklist if R:R BELOW this threshold */
+  minRewardRisk: number;
   maxSharpeRatio: number;
   minConsecutiveLosses: number;
   /** 최근 N개 트레이드만 평가 (0 = 전체, default 10) — decay 윈도우 */
   decayWindowTrades: number;
 }
 
-const STRATEGIES: StrategyName[] = ['volume_spike', 'fib_pullback', 'new_lp_sniper'];
+const STRATEGIES: StrategyName[] = ['volume_spike', 'fib_pullback', 'new_lp_sniper', 'momentum_cascade'];
 const DEFAULT_PAIR_BLACKLIST_CONFIG: PairBlacklistConfig = {
   minTrades: 5,
-  maxWinRate: 0.35,
-  maxRewardRisk: 1.0,
+  minWinRate: 0.35,
+  minRewardRisk: 1.0,
   maxSharpeRatio: 0,
   minConsecutiveLosses: 4,
   decayWindowTrades: 10,
@@ -85,22 +93,24 @@ const PROMOTION_GATES: Record<'Confirmed' | 'Proven', PromotionGate> = {
  */
 interface DemotionGate {
   recentWindowSize: number;
-  maxWinRate: number;       // Demote if BELOW this
-  maxRewardRisk: number;    // Demote if BELOW this
+  /** Demote if recent WR falls BELOW this */
+  minWinRate: number;
+  /** Demote if recent R:R falls BELOW this */
+  minRewardRisk: number;
   minConsecutiveLosses: number; // Demote if ABOVE this
 }
 
 const DEMOTION_GATES: Record<'Proven' | 'Confirmed', DemotionGate> = {
   Proven: {
     recentWindowSize: 20,
-    maxWinRate: 0.35,
-    maxRewardRisk: 1.0,
+    minWinRate: 0.35,
+    minRewardRisk: 1.0,
     minConsecutiveLosses: 5,
   },
   Confirmed: {
     recentWindowSize: 15,
-    maxWinRate: 0.30,
-    maxRewardRisk: 0.8,
+    minWinRate: 0.30,
+    minRewardRisk: 0.8,
     minConsecutiveLosses: 5,
   },
 };
@@ -143,11 +153,24 @@ export class EdgeTracker {
 
   getBlacklistedPairs(config: Partial<PairBlacklistConfig> = {}): PairEdgeStats[] {
     const threshold = { ...DEFAULT_PAIR_BLACKLIST_CONFIG, ...config };
-    const pairAddresses = [...new Set(this.trades.map(trade => trade.pairAddress))];
-    return pairAddresses
-      .map(pairAddress => this.getPairStatsWindowed(pairAddress, threshold.decayWindowTrades))
-      .filter(stat => stat.totalTrades >= threshold.minTrades)
-      .filter(stat => isBlacklisted(stat, threshold));
+    // H-21: O(n) pre-group으로 O(n²) → O(n) 최적화
+    const grouped = new Map<string, EdgeTrackerTrade[]>();
+    for (const trade of this.trades) {
+      let arr = grouped.get(trade.pairAddress);
+      if (!arr) { arr = []; grouped.set(trade.pairAddress, arr); }
+      arr.push(trade);
+    }
+    const results: PairEdgeStats[] = [];
+    for (const [pairAddress, trades] of grouped) {
+      const windowed = threshold.decayWindowTrades > 0 && trades.length > threshold.decayWindowTrades
+        ? trades.slice(-threshold.decayWindowTrades)
+        : trades;
+      const stat = summarizePair(windowed, pairAddress);
+      if (stat.totalTrades >= threshold.minTrades && isBlacklisted(stat, threshold)) {
+        results.push(stat);
+      }
+    }
+    return results;
   }
 
   isPairBlacklisted(pairAddress: string, config: Partial<PairBlacklistConfig> = {}): boolean {
@@ -197,19 +220,26 @@ export class EdgeTracker {
   /**
    * Phase 4: Check if current edge state should be demoted
    * based on recent performance deterioration.
+   * H-08: strategy mode 지원 — strategy 지정 시 해당 전략 트레이드만으로 평가
    */
-  checkDemotion(): { shouldDemote: boolean; reason?: string } {
-    const fullStats = this.getPortfolioStats();
+  checkDemotion(strategy?: StrategyName): { shouldDemote: boolean; reason?: string } {
+    const fullStats = strategy
+      ? this.getStrategyStats(strategy)
+      : this.getPortfolioStats();
+
+    const getRecent = (windowSize: number) => strategy
+      ? this.getRecentStrategyStats(strategy, windowSize)
+      : this.getRecentStats(windowSize);
 
     if (fullStats.edgeState === 'Proven') {
       const gate = DEMOTION_GATES.Proven;
-      const recent = this.getRecentStats(gate.recentWindowSize);
+      const recent = getRecent(gate.recentWindowSize);
       if (recent.totalTrades >= gate.recentWindowSize) {
-        if (recent.winRate < gate.maxWinRate) {
-          return { shouldDemote: true, reason: `Recent WR ${(recent.winRate * 100).toFixed(1)}% < ${(gate.maxWinRate * 100).toFixed(0)}%` };
+        if (recent.winRate < gate.minWinRate) {
+          return { shouldDemote: true, reason: `Recent WR ${(recent.winRate * 100).toFixed(1)}% < ${(gate.minWinRate * 100).toFixed(0)}%` };
         }
-        if (recent.rewardRisk < gate.maxRewardRisk && Number.isFinite(recent.rewardRisk)) {
-          return { shouldDemote: true, reason: `Recent R:R ${recent.rewardRisk.toFixed(2)} < ${gate.maxRewardRisk}` };
+        if (recent.rewardRisk < gate.minRewardRisk && Number.isFinite(recent.rewardRisk)) {
+          return { shouldDemote: true, reason: `Recent R:R ${recent.rewardRisk.toFixed(2)} < ${gate.minRewardRisk}` };
         }
         if (recent.maxConsecutiveLosses >= gate.minConsecutiveLosses) {
           return { shouldDemote: true, reason: `${recent.maxConsecutiveLosses} consecutive losses` };
@@ -219,13 +249,13 @@ export class EdgeTracker {
 
     if (fullStats.edgeState === 'Confirmed') {
       const gate = DEMOTION_GATES.Confirmed;
-      const recent = this.getRecentStats(gate.recentWindowSize);
+      const recent = getRecent(gate.recentWindowSize);
       if (recent.totalTrades >= gate.recentWindowSize) {
-        if (recent.winRate < gate.maxWinRate) {
-          return { shouldDemote: true, reason: `Recent WR ${(recent.winRate * 100).toFixed(1)}% < ${(gate.maxWinRate * 100).toFixed(0)}%` };
+        if (recent.winRate < gate.minWinRate) {
+          return { shouldDemote: true, reason: `Recent WR ${(recent.winRate * 100).toFixed(1)}% < ${(gate.minWinRate * 100).toFixed(0)}%` };
         }
-        if (recent.rewardRisk < gate.maxRewardRisk && Number.isFinite(recent.rewardRisk)) {
-          return { shouldDemote: true, reason: `Recent R:R ${recent.rewardRisk.toFixed(2)} < ${gate.maxRewardRisk}` };
+        if (recent.rewardRisk < gate.minRewardRisk && Number.isFinite(recent.rewardRisk)) {
+          return { shouldDemote: true, reason: `Recent R:R ${recent.rewardRisk.toFixed(2)} < ${gate.minRewardRisk}` };
         }
         if (recent.maxConsecutiveLosses >= gate.minConsecutiveLosses) {
           return { shouldDemote: true, reason: `${recent.maxConsecutiveLosses} consecutive losses` };
@@ -276,65 +306,33 @@ function summarizePair(
 }
 
 function summarizeTrades(trades: EdgeTrackerTrade[]): EdgePerformanceStats {
-  const wins = trades.filter(trade => trade.pnl > 0);
-  const losses = trades.filter(trade => trade.pnl <= 0);
-  const riskMultiples = trades.map(toRiskMultiple).filter(isFiniteNumber);
-  const winRs = wins.map(toRiskMultiple).filter(isFiniteNumber);
-  const lossRs = losses.map(toRiskMultiple).filter(isFiniteNumber).map(value => Math.abs(value));
-  const rewardRisk = lossRs.length > 0
-    ? average(winRs) / average(lossRs)
-    : winRs.length > 0 ? Number.POSITIVE_INFINITY : 0;
-  const winRate = trades.length > 0 ? wins.length / trades.length : 0;
-  const sharpeRatio = calcSharpe(riskMultiples);
-  const maxConsecutiveLosses = calcMaxConsecutiveLosses(trades);
+  const summary = summarizeRiskMetrics(trades);
   const kellyFraction = calculateKellyFraction(
-    winRate,
-    rewardRisk
+    summary.winRate,
+    summary.rewardRisk
   );
   const edgeState = resolveEdgeState({
-    totalTrades: trades.length,
-    winRate,
-    rewardRisk,
-    sharpeRatio,
-    maxConsecutiveLosses,
+    totalTrades: summary.totalTrades,
+    winRate: summary.winRate,
+    rewardRisk: summary.rewardRisk,
+    sharpeRatio: summary.sharpeRatio,
+    maxConsecutiveLosses: summary.maxConsecutiveLosses,
   });
 
   return {
-    totalTrades: trades.length,
-    wins: wins.length,
-    losses: losses.length,
-    winRate,
-    avgWinR: average(winRs),
-    avgLossR: average(lossRs),
-    rewardRisk,
-    sharpeRatio,
-    maxConsecutiveLosses,
+    totalTrades: summary.totalTrades,
+    wins: summary.wins,
+    losses: summary.losses,
+    winRate: summary.winRate,
+    avgWinR: summary.avgWinR,
+    avgLossR: summary.avgLossR,
+    rewardRisk: summary.rewardRisk,
+    sharpeRatio: summary.sharpeRatio,
+    maxConsecutiveLosses: summary.maxConsecutiveLosses,
     edgeState,
     kellyFraction,
     kellyEligible: isKellyEligible(edgeState, kellyFraction),
   };
-}
-
-function toRiskMultiple(trade: EdgeTrackerTrade): number {
-  const plannedRiskSol = Math.abs(trade.entryPrice - trade.stopLoss) * trade.quantity;
-  if (plannedRiskSol <= 0) return Number.NaN;
-  return trade.pnl / plannedRiskSol;
-}
-
-function calcMaxConsecutiveLosses(trades: EdgeTrackerTrade[]): number {
-  let streak = 0;
-  let maxStreak = 0;
-
-  for (const trade of trades) {
-    if (trade.pnl < 0) {
-      streak++;
-      maxStreak = Math.max(maxStreak, streak);
-      continue;
-    }
-    streak = 0;
-  }
-
-  return maxStreak;
 }
 
 function resolveEdgeState(stats: {
@@ -384,30 +382,12 @@ function isKellyEligible(edgeState: EdgeState, kellyFraction: number): boolean {
   return (edgeState === 'Confirmed' || edgeState === 'Proven') && kellyFraction > 0;
 }
 
-function calcSharpe(returns: number[]): number {
-  if (returns.length < 2) return 0;
-  const mean = average(returns);
-  const variance = returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (returns.length - 1);
-  const std = Math.sqrt(variance);
-  if (std === 0) return 0;
-  return (mean / std) * Math.sqrt(252);
-}
-
-function average(values: number[]): number {
-  if (values.length === 0) return 0;
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
-}
-
-function isFiniteNumber(value: number): boolean {
-  return Number.isFinite(value);
-}
-
 function isBlacklisted(stat: PairEdgeStats, threshold: PairBlacklistConfig): boolean {
   return (
     stat.maxConsecutiveLosses >= threshold.minConsecutiveLosses ||
     (
-      stat.winRate <= threshold.maxWinRate &&
-      stat.rewardRisk <= threshold.maxRewardRisk &&
+      stat.winRate <= threshold.minWinRate &&
+      stat.rewardRisk <= threshold.minRewardRisk &&
       stat.sharpeRatio <= threshold.maxSharpeRatio
     )
   );

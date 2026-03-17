@@ -18,6 +18,7 @@ import { ExecutionLock, PositionStore, runRecovery } from './state';
 import { SignalAuditLogger } from './audit';
 import { scheduleDailySummary } from './orchestration/reporting';
 import { handleNewCandle } from './orchestration/candleHandler';
+import { evaluateNewLpSniper, buildNewLpOrder, prepareNewLpCandidate } from './strategy/newLpSniper';
 import { checkOpenPositions, closeTrade } from './orchestration/tradeExecution';
 import { runPreflightCheck } from './orchestration/preflightCheck';
 import { SpreadMeasurer } from './gate/spreadMeasurer';
@@ -30,7 +31,16 @@ async function main() {
   log.info(`=== Solana Momentum Bot v0.5 starting (mode: ${tradingMode}) ===`);
 
   // ─── 공유 DB Pool ─────────────────────────────────
-  const dbPool = new Pool({ connectionString: config.databaseUrl });
+  // M-20: pool exhaustion 방지 — max connections 제한 + idle timeout
+  const dbPool = new Pool({
+    connectionString: config.databaseUrl,
+    max: 10,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 5_000,
+  });
+  dbPool.on('error', (err) => {
+    log.error(`DB pool error: ${err.message}`);
+  });
 
   const candleStore = new CandleStore(dbPool);
   const tradeStore = new TradeStore(dbPool);
@@ -50,15 +60,23 @@ async function main() {
   // ─── Phase 2: Pre-flight check (live mode gate) ────
   let effectiveMode = tradingMode;
   if (tradingMode === 'live') {
-    const preflight = await runPreflightCheck(dbPool, {
-      tradingMode,
-      enforceGate: config.preflightEnforceGate,
-    });
-    if (!preflight.passed && config.preflightEnforceGate) {
-      log.warn('Falling back to paper mode — pre-flight criteria not met');
+    try {
+      const preflight = await runPreflightCheck(dbPool, {
+        tradingMode,
+        enforceGate: config.preflightEnforceGate,
+      });
+      if (!preflight.passed && config.preflightEnforceGate) {
+        log.warn('Falling back to paper mode — pre-flight criteria not met');
+        effectiveMode = 'paper';
+        await new Notifier(config.telegramBotToken, config.telegramChatId)
+          .sendWarning('PreFlight', `Live mode blocked: ${preflight.reasons.join(', ')}`);
+      }
+    } catch (err) {
+      // H-27: DB query 실패 시 안전하게 paper mode fallback (live 진입 차단)
+      log.error(`Pre-flight DB query failed: ${err}. Falling back to paper mode.`);
       effectiveMode = 'paper';
       await new Notifier(config.telegramBotToken, config.telegramChatId)
-        .sendWarning('PreFlight', `Live mode blocked: ${preflight.reasons.join(', ')}`);
+        .sendWarning('PreFlight', `DB query failed — forced paper mode`);
     }
   }
 
@@ -127,7 +145,8 @@ async function main() {
     sandboxWalletKey: config.sandboxWalletKey || undefined,
     sandboxDailyLossLimitSol: config.sandboxDailyLossLimitSol,
     sandboxMaxPositionSol: config.sandboxMaxPositionSol,
-  });
+  }, dbPool);
+  await walletManager.initDailyPnlStore();
 
   // ─── Phase 1B: Regime Filter + Paper Metrics ────────
   const regimeFilter = new RegimeFilter();
@@ -158,6 +177,64 @@ async function main() {
     birdeyeWS.on('error', (err: Error) => {
       log.error(`Birdeye WS error: ${err.message}`);
     });
+    // H-05: Strategy D — New LP Sniper event handler
+    if (config.strategyDEnabled && walletManager.hasSandboxWallet()) {
+      birdeyeWS.on('newListing', async (update: { address: string; symbol?: string; liquidity?: number; liquidityAddedAt?: number }) => {
+        if (!update.address) return;
+        try {
+          const strategyDParams = {
+            ticketSizeSol: config.strategyDTicketSol,
+            minAgeMinutes: config.strategyDMinAge,
+            maxAgeMinutes: config.strategyDMaxAge,
+            takeProfitMultiplier: config.strategyDTpMultiplier,
+          };
+          const prepared = await prepareNewLpCandidate(update, {
+            getTokenSecurityDetailed: (tokenMint) => birdeyeClient.getTokenSecurityDetailed(tokenMint),
+            getExitLiquidity: (tokenMint) => birdeyeClient.getExitLiquidity(tokenMint),
+            getTokenOverview: (tokenMint) => birdeyeClient.getTokenOverview(tokenMint),
+          }, {
+            params: strategyDParams,
+            securityGate: {
+              minExitLiquidityUsd: config.minExitLiquidityUsd,
+            },
+            quoteGate: {
+              jupiterApiUrl: config.jupiterApiUrl,
+              jupiterApiKey: config.jupiterApiKey || undefined,
+            },
+          });
+
+          if (!prepared.candidate) {
+            log.debug(
+              `Strategy D skipped ${update.symbol ?? update.address}: ${prepared.rejectionReason ?? 'unknown'}`
+            );
+            return;
+          }
+
+          const signal = evaluateNewLpSniper(prepared.candidate, strategyDParams);
+          if (signal.action !== 'BUY') return;
+
+          const walletLimit = walletManager.checkTradeLimits('new_lp_sniper', signal.meta.ticketSizeSol * signal.price);
+          if (!walletLimit.allowed) {
+            log.info(`Strategy D blocked: ${walletLimit.reason}`);
+            return;
+          }
+
+          const order = buildNewLpOrder(signal, strategyDParams);
+          log.info(
+            `Strategy D signal: ${prepared.candidate.tokenSymbol} ticket=${order.quantity} SOL ` +
+            `impact=${((prepared.quoteGate?.priceImpactPct ?? 0) * 100).toFixed(2)}%`
+          );
+
+          if (effectiveMode === 'paper') {
+            log.info(`[PAPER] Strategy D: ${JSON.stringify(order)}`);
+          }
+          // Live execution은 Jito bundle + sandbox wallet 통합 후 활성화
+        } catch (err) {
+          log.warn(`Strategy D evaluation failed: ${err}`);
+        }
+      });
+    }
+
     log.info('Birdeye WebSocket client initialized');
   }
 
@@ -182,6 +259,7 @@ async function main() {
       laneAMinAgeSec: config.scannerLaneAMinAgeSec,
       laneBMaxAgeSec: config.scannerLaneBMaxAgeSec,
       minLiquidityUsd: config.eventMinLiquidityUsd,
+      socialMentionTracker, // H-02: social score → WatchlistScore 연동
     };
     scanner = new ScannerEngine(scannerConfig);
     scanner.on('candidateDiscovered', (entry) => {
@@ -260,7 +338,7 @@ async function main() {
     if (event.type === 'RUG_PULL' || event.type === 'LP_DROP') {
       await notifier.sendCritical('Pool Event', `${event.type}: ${event.detail}`);
       // Emergency close if we have a position
-      if (tradingMode === 'live') {
+      if (effectiveMode === 'live') {
         const openTrades = await tradeStore.getOpenTrades();
         for (const trade of openTrades) {
           if (trade.pairAddress === event.pairAddress) {

@@ -35,6 +35,7 @@ export interface BreakoutScoreDetail {
   multiTfScore: number;    // 0~20
   whaleScore: number;      // 0~15
   lpScore: number;         // -10~15
+  mcapVolumeScore: number; // 0~10
   totalScore: number;      // 0~100
   grade: BreakoutGrade;
   components?: BreakoutScoreComponent[];
@@ -54,7 +55,7 @@ export interface Signal {
 
 // ─── Strategy ───
 
-export type StrategyName = 'volume_spike' | 'fib_pullback' | 'new_lp_sniper';
+export type StrategyName = 'volume_spike' | 'fib_pullback' | 'new_lp_sniper' | 'momentum_cascade';
 
 export interface StrategyConfig {
   name: StrategyName;
@@ -92,6 +93,8 @@ export interface Order {
   breakoutScore?: number;
   breakoutGrade?: BreakoutGrade;
   sizeConstraint?: SizeConstraint;
+  /** Strategy-specific slippage override (bps). Executor uses this if set, else config default. */
+  slippageBps?: number;
 }
 
 export interface Trade {
@@ -221,6 +224,7 @@ export interface PoolInfo {
   pairAddress: string;
   tokenMint: string;
   tvl: number;
+  marketCap?: number;
   dailyVolume: number;
   tradeCount24h: number;
   spreadPct: number;

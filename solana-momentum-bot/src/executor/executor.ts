@@ -232,17 +232,25 @@ export class Executor {
    * Phase 3: Jito bundle 경로 추가 — MEV 보호.
    */
   private async sendTransaction(txBuffer: Buffer): Promise<string> {
-    const tx = VersionedTransaction.deserialize(txBuffer);
+    let tx = VersionedTransaction.deserialize(txBuffer);
     tx.sign([this.wallet]);
 
-    // Phase 3: Jito bundle path
+    // Phase 3: Jito bundle path (C-21: 장애 시 standard RPC fallback)
     if (this.useJito && this.jitoClient) {
-      log.info('Submitting via Jito bundle...');
-      const result = await this.jitoClient.submitSingleTx(tx, this.wallet);
-      await this.jitoClient.waitForConfirmation(result.bundleId);
-      const signature = result.txSignatures[0];
-      log.info(`TX confirmed via Jito: ${signature}`);
-      return signature;
+      try {
+        log.info('Submitting via Jito bundle...');
+        const result = await this.jitoClient.submitSingleTx(tx, this.wallet);
+        await this.jitoClient.waitForConfirmation(result.bundleId);
+        const signature = result.txSignatures[0];
+        log.info(`TX confirmed via Jito: ${signature}`);
+        return signature;
+      } catch (jitoErr) {
+        log.warn(`Jito bundle failed: ${jitoErr}. Falling back to standard RPC.`);
+        // TX를 재서명하여 standard RPC로 전송
+        const freshTx = VersionedTransaction.deserialize(txBuffer);
+        freshTx.sign([this.wallet]);
+        tx = freshTx;
+      }
     }
 
     // Standard RPC path

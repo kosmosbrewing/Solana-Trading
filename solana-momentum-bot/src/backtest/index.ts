@@ -2,6 +2,7 @@ export { BacktestEngine } from './engine';
 export { CsvLoader } from './csvLoader';
 export { DbLoader } from './dbLoader';
 export { BacktestReporter } from './reporter';
+export { bootstrapMeanCI, permutationTestPValue } from './statistics';
 export type {
   BacktestConfig,
   BacktestAttentionScoreEntry,

@@ -82,7 +82,7 @@ export async function evaluateGatesAsync(input: EvaluateGatesInput): Promise<Gat
   const emptyResult = (): GateEvaluationResult => ({
     breakoutScore: {
       volumeScore: 0, buyRatioScore: 0, multiTfScore: 0,
-      whaleScore: 0, lpScore: 0, totalScore: 0, grade: 'C' as const,
+      whaleScore: 0, lpScore: 0, mcapVolumeScore: 0, totalScore: 0, grade: 'C' as const,
     },
     gradeSizeMultiplier: 0,
     rejected: true,
@@ -163,7 +163,7 @@ function evaluateGatesSync(input: EvaluateGatesInput): GateEvaluationResult {
     return {
       breakoutScore: {
         volumeScore: 0, buyRatioScore: 0, multiTfScore: 0,
-        whaleScore: 0, lpScore: 0, totalScore: 0, grade: 'C' as const,
+        whaleScore: 0, lpScore: 0, mcapVolumeScore: 0, totalScore: 0, grade: 'C' as const,
       },
       gradeSizeMultiplier: 0,
       rejected: true,
@@ -183,6 +183,7 @@ function evaluateGatesSync(input: EvaluateGatesInput): GateEvaluationResult {
     signal: input.signal,
     candles: input.candles,
     poolTvl: input.poolInfo.tvl,
+    marketCap: input.poolInfo.marketCap,
     previousTvl: input.previousTvl,
     fibConfig: input.fibConfig,
     thresholds: input.thresholds,

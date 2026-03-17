@@ -11,7 +11,7 @@
 |--------|------|------|
 | Birdeye API | US | 캔들 데이터 수집 레이턴시 |
 | Helius RPC | US | 온체인 트랜잭션 속도 |
-| Jupiter v6 | US | 스왑 실행 속도 |
+| Jupiter API | US | quote/swap 레이턴시 및 price impact 검증 |
 | Solana Validators | 대부분 US | 체인 전체 레이턴시 |
 
 **추천: New Jersey (ewr) 또는 Los Angeles (lax)**
@@ -98,11 +98,11 @@ DATABASE_URL=postgresql://momentum:momentum_secret@localhost:5432/momentum_bot
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=<helius-key>
 WALLET_PRIVATE_KEY=<base58-private-key>
-JUPITER_API_URL=https://quote-api.jup.ag/v6
+JUPITER_API_URL=https://api.jup.ag
 TELEGRAM_BOT_TOKEN=<telegram-bot-token>
 TELEGRAM_CHAT_ID=<telegram-chat-id>
 TRADING_MODE=paper
-TARGET_PAIR_ADDRESS=<pair-address>
+TARGET_PAIR_ADDRESS=<pair-address>   # legacy single-pair mode에서만 사용
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Risk Parameters

@@ -2,6 +2,37 @@ import { createModuleLogger } from '../utils/logger';
 
 const log = createModuleLogger('SocialMentionTracker');
 
+const X_FILTERED_STREAM_URL =
+  'https://api.twitter.com/2/tweets/search/stream?tweet.fields=created_at,author_id&expansions=author_id&user.fields=public_metrics,username';
+
+type FetchLike = typeof fetch;
+
+export interface TrackedSocialToken {
+  tokenMint: string;
+  tokenSymbol: string;
+  keywords: string[];
+}
+
+export interface FilteredStreamUser {
+  id: string;
+  username?: string;
+  public_metrics?: {
+    followers_count?: number;
+  };
+}
+
+export interface FilteredStreamTweetPayload {
+  data?: {
+    id?: string;
+    text?: string;
+    author_id?: string;
+    created_at?: string;
+  };
+  includes?: {
+    users?: FilteredStreamUser[];
+  };
+}
+
 export interface SocialMention {
   tokenMint: string;
   tokenSymbol: string;
@@ -45,9 +76,107 @@ const DEFAULT_CONFIG: SocialMentionConfig = {
 export class SocialMentionTracker {
   private config: SocialMentionConfig;
   private mentions = new Map<string, SocialMention>();
+  private trackedTokens = new Map<string, TrackedSocialToken>();
+  private streamAbort: AbortController | null = null;
+  private streamTask: Promise<void> | null = null;
 
   constructor(config: Partial<SocialMentionConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+  }
+
+  registerTrackedToken(
+    tokenMint: string,
+    tokenSymbol: string,
+    keywords: string[] = []
+  ): void {
+    const normalized = normalizeKeywords([
+      tokenSymbol,
+      tokenMint,
+      ...keywords,
+    ]);
+    if (normalized.length === 0) return;
+
+    this.trackedTokens.set(tokenMint, {
+      tokenMint,
+      tokenSymbol,
+      keywords: normalized,
+    });
+  }
+
+  unregisterTrackedToken(tokenMint: string): void {
+    this.trackedTokens.delete(tokenMint);
+  }
+
+  getTrackedTokenCount(): number {
+    return this.trackedTokens.size;
+  }
+
+  async startFilteredStream(fetchImpl: FetchLike = fetch): Promise<boolean> {
+    if (!this.config.twitterBearerToken) {
+      log.info('Filtered stream disabled: TWITTER_BEARER_TOKEN not configured');
+      return false;
+    }
+    if (this.streamTask) {
+      return true;
+    }
+    if (this.trackedTokens.size === 0) {
+      log.info('Filtered stream skipped: no tracked tokens registered');
+      return false;
+    }
+
+    this.streamAbort = new AbortController();
+    this.streamTask = this.runFilteredStream(fetchImpl, this.streamAbort.signal)
+      .catch((error) => {
+        if ((error as Error)?.name !== 'AbortError') {
+          log.warn(`Filtered stream stopped: ${error}`);
+        }
+      })
+      .finally(() => {
+        this.streamTask = null;
+        this.streamAbort = null;
+      });
+
+    return true;
+  }
+
+  stopFilteredStream(): void {
+    this.streamAbort?.abort();
+  }
+
+  async waitForStreamStop(): Promise<void> {
+    await this.streamTask;
+  }
+
+  consumeFilteredStreamLine(line: string): number {
+    const trimmed = line.trim();
+    if (!trimmed) return 0;
+
+    try {
+      const payload = JSON.parse(trimmed) as FilteredStreamTweetPayload;
+      return this.ingestFilteredStreamEvent(payload);
+    } catch (error) {
+      log.debug(`Ignoring malformed filtered stream line: ${error}`);
+      return 0;
+    }
+  }
+
+  ingestFilteredStreamEvent(payload: FilteredStreamTweetPayload): number {
+    const text = payload.data?.text?.toLowerCase();
+    if (!text) return 0;
+
+    const authorId = payload.data?.author_id;
+    const user = payload.includes?.users?.find(candidate => candidate.id === authorId);
+    const isInfluencer = (user?.public_metrics?.followers_count ?? 0) >= this.config.influencerMinFollowers;
+
+    let matched = 0;
+    for (const tracked of this.trackedTokens.values()) {
+      if (tracked.keywords.some(keyword => text.includes(keyword))) {
+        this.recordMention(tracked.tokenMint, tracked.tokenSymbol, isInfluencer);
+        matched++;
+      }
+    }
+
+    return matched;
   }
 
   /**
@@ -62,17 +191,17 @@ export class SocialMentionTracker {
     const existing = this.mentions.get(tokenMint);
 
     if (existing) {
-      existing.mentionCount++;
-      if (isInfluencer) existing.influencerMentions++;
-      existing.lastSeenAt = now;
-
-      // Reset if outside window
+      // 윈도우 초과 시 먼저 리셋한 뒤 현재 mention 반영 (C-05)
       const windowStart = new Date(Date.now() - this.config.mentionWindowMs);
       if (existing.firstSeenAt < windowStart) {
         existing.firstSeenAt = now;
-        existing.mentionCount = 1;
-        existing.influencerMentions = isInfluencer ? 1 : 0;
+        existing.mentionCount = 0;
+        existing.influencerMentions = 0;
       }
+
+      existing.mentionCount++;
+      if (isInfluencer) existing.influencerMentions++;
+      existing.lastSeenAt = now;
     } else {
       this.mentions.set(tokenMint, {
         tokenMint,
@@ -163,4 +292,45 @@ export class SocialMentionTracker {
     }
     return pruned;
   }
+
+  private async runFilteredStream(fetchImpl: FetchLike, signal: AbortSignal): Promise<void> {
+    const response = await fetchImpl(X_FILTERED_STREAM_URL, {
+      headers: {
+        Authorization: `Bearer ${this.config.twitterBearerToken}`,
+      },
+      signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`X filtered stream request failed: ${response.status} ${response.statusText}`);
+    }
+    if (!response.body) {
+      throw new Error('X filtered stream response body unavailable');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+
+      for (const line of lines) {
+        this.consumeFilteredStreamLine(line);
+      }
+    }
+  }
+}
+
+function normalizeKeywords(keywords: string[]): string[] {
+  return [...new Set(
+    keywords
+      .map(keyword => keyword.trim().toLowerCase())
+      .filter(keyword => keyword.length > 0)
+  )];
 }

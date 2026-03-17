@@ -199,6 +199,12 @@ export async function closeTrade(
       ctx.paperMetrics.recordExit(trade.id, exitPrice, reason);
     }
 
+    // Phase 3: WalletManager PnL 기록 (H-01)
+    if (ctx.walletManager) {
+      const walletName = trade.strategy === 'new_lp_sniper' ? 'sandbox' : 'main';
+      ctx.walletManager.recordPnl(walletName, pnl);
+    }
+
     ctx.healthMonitor.updateTradeTime();
     log.info(`Trade ${trade.id} closed (${reason}). PnL: ${pnl.toFixed(6)} SOL`);
   } catch (error) {

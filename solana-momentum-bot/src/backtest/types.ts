@@ -2,6 +2,7 @@ import { AttentionScore } from '../event/types';
 import { BreakoutGrade, Candle, PoolInfo, StrategyName } from '../utils/types';
 import { VolumeSpikeParams } from '../strategy/volumeSpikeBreakout';
 import { FibPullbackParams } from '../strategy/fibPullback';
+import { MomentumCascadeParams } from '../strategy/momentumCascade';
 
 export interface BacktestAttentionScoreEntry extends AttentionScore {
   pairAddress?: string;
@@ -47,6 +48,7 @@ export interface BacktestConfig {
   /** Strategy params overrides */
   volumeSpikeParams: Partial<VolumeSpikeParams>;
   fibPullbackParams: Partial<FibPullbackParams>;
+  momentumCascadeParams?: Partial<MomentumCascadeParams>;
   /** Date range filter */
   startDate?: Date;
   endDate?: Date;

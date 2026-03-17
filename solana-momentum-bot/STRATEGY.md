@@ -1,9 +1,9 @@
 # Strategy Reference
 
-> Last updated: 2026-03-16
+> Last updated: 2026-03-17
 > Mission: 1 SOL → 100 SOL
-> Active strategies: Volume Spike (A), Fib Pullback (C)
-> Next: Event-driven Scanner Core (Phase 1A)
+> Documented strategies: Volume Spike (A), Fib Pullback (C), New LP Sniper (D), Momentum Cascade (E)
+> Runtime focus: A/C core, D sandbox, E conditional add-on
 
 ---
 
@@ -218,8 +218,8 @@ GET /token-profiles/latest     — 최근 프로필 업데이트된 토큰
 
 ### Jupiter Quote Gate
 
-> **v6 (`quote-api.jup.ag/v6`)는 deprecated.** Ultra API (`api.jup.ag`, portal.jup.ag에서 API key 발급)로 마이그레이션 필요.
-> Ultra V3: 0.01% 분할 라우팅, Jupiter Beam MEV 보호 (50-66% faster landing), gasless swap 지원.
+> 권장 베이스 URL은 `https://api.jup.ag`이다.
+> quote 기반 진입 가능성 검증과 swap 실행은 이 경로를 기준으로 운영한다.
 
 진입 직전 실행 가능성 검증:
 
@@ -400,7 +400,7 @@ EdgeTracker의 트레이드 이력 기반 자동 단계 조정.
 |----------|-----------|------|
 | A/C (코어 브레이크아웃/리클레임) | fixed-fraction + hard notional cap | 검증된 전략 |
 | D (신규 LP 실험) | 고정 티켓 사이즈 (0.01~0.05 SOL) | "잃어도 되는 복권값" |
-| E (모멘텀 캐스케이드) | A 확장 — 총 리스크 1R 이내 | Phase 4 이후 |
+| E (모멘텀 캐스케이드) | A 확장 — 총 리스크 1R 이내 | 구현 완료, 조건부 활성 |
 
 ### Kelly Criterion
 
@@ -492,10 +492,10 @@ effectiveRR = (rewardPct - roundTripCost) / (riskPct + roundTripCost)
 
 ---
 
-## Strategy D: New LP Sniper (실험 트랙 — Phase 3)
+## Strategy D: New LP Sniper (실험 트랙 — 구현 완료)
 
 > **코어 전략이 아닌 별도 지갑의 옵션성 베팅.**
-> Jito 도입이 전제 조건이며, Phase 3 이전에는 라이브 금지.
+> Jito 도입과 sandbox wallet이 전제 조건이며, 메인 지갑 live 경로와 분리한다.
 
 ### 전제 조건
 
@@ -530,7 +530,7 @@ Birdeye WS: SUBSCRIBE_TOKEN_NEW_LISTING / SUBSCRIBE_NEW_PAIR
 
 ---
 
-## Strategy E: Momentum Cascade (Phase 4 — 조건부)
+## Strategy E: Momentum Cascade (구현 완료 — 조건부 활성)
 
 > Strategy A의 확장 기능이지, 별도 메인 전략이 아니다.
 > A가 라이브에서 기대값 양수 확인된 뒤에만 검토한다.
@@ -547,6 +547,64 @@ Birdeye WS: SUBSCRIBE_TOKEN_NEW_LISTING / SUBSCRIBE_NEW_PAIR
 
 피라미딩은 초기 진입 전략이 기대값 양수일 때만 효율적이다.
 검증 전 추가 진입 = 수익 극대화가 아니라 슬리피지 확대 + 손실 가속.
+
+### 실행 플로우
+
+```
+1. First leg: Strategy A와 동일한 breakout 진입
+   - SL = breakout candle low
+   - TP1 / TP2 = ATR 기반
+   - time stop = 120분으로 연장
+
+2. State tracking
+   - peakPrice 갱신
+   - TP1 hit 여부 기록
+   - originalRiskSol = 첫 진입의 1R 고정
+
+3. Add-on eligibility
+   - TP1 hit = true
+   - 현재 손익 ≥ +1R
+   - addOnCount < maxAddOns (기본 1회)
+
+4. Re-compression detection
+   - 최근 10봉 기준 pullback ≥ 0.4 ATR
+   - 후반 range / 전반 range ≤ 0.6
+
+5. Re-acceleration confirmation
+   - volume spike 재발생 (기본 2.5x)
+   - compression range 상단 돌파
+
+6. Add-on sizing
+   - 남은 1R 범위 안에서만 추가 수량 계산
+   - balance cap = 계좌의 20% 이하
+
+7. Combined risk reset
+   - cost basis 재계산
+   - combined SL 재산정
+   - combined SL은 cost basis 99% 이하로 제한
+
+8. Exit
+   - TP2 / trailing / time stop은 전체 포지션 기준
+   - add-on 후에도 총 손실 상한은 최초 1R 유지
+```
+
+### 상태와 파라미터 해석
+
+| 항목 | 의미 | 기본값 |
+|------|------|--------|
+| `minProfitR` | 첫 진입이 add-on 자격을 얻는 최소 진행폭 | `1.0R` |
+| `reaccelerationVolMult` | 재가속 판단용 볼륨 배수 | `2.5x` |
+| `maxAddOns` | 최대 추가 진입 횟수 | `1` |
+| `recompressionLookback` | 재압축 판별 구간 | `10 bars` |
+| `recompressionMinPullbackAtr` | peak 대비 최소 눌림 폭 | `0.4 ATR` |
+| `recompressionRangeRatio` | 후반 range 축소 비율 | `0.6` |
+
+### 운영 가드레일
+
+- Strategy E는 Strategy A의 live expectancy가 양수이고 최소 50트레이드가 쌓이기 전에는 비활성 유지.
+- TP1이 먼저 체결되지 않으면 add-on을 금지.
+- add-on 수량이 0이거나 combined SL을 안전하게 계산할 수 없으면 첫 진입만 유지.
+- backtest와 live 경로 모두 첫 진입 parity, add-on, combined SL이 배선되어 있고, 실제 활성화 여부는 Strategy A 기대값과 운영 가드레일로 제어한다.
 
 ---
 
@@ -622,57 +680,30 @@ Birdeye WS: SUBSCRIBE_TOKEN_NEW_LISTING / SUBSCRIBE_NEW_PAIR
 
 ---
 
-## 구현 로드맵 (피드백 반영 최종안)
+## 구현 상태 요약
 
-### Phase 1A — Event-driven Scanner Core ← **지금 시작**
+### 완료된 기반 레이어
 
-| 항목 | 상세 |
+| 영역 | 상태 |
 |------|------|
-| Birdeye WS 연결 | price, txs, OHLCV 구독 (5초 polling 대체) |
-| Multi-pair watchlist | TARGET_PAIR_ADDRESS 단일 → 동적 watchlist |
-| DexScreener enrichment | boost/ad/order → WatchlistScore 피처 |
-| Jupiter quote gate | 진입 전 실제 price impact 검증 |
-| Security gate 강화 | Birdeye token_security + exit-liquidity |
-| 결과물 | watchlist score 기반 자동 후보 관리 |
+| Event-driven Scanner Core | 완료 — Birdeye WS, 동적 watchlist, DexScreener enrichment, quote/security gate |
+| Regime + Paper Trading | 완료 — regime filter, MAE/MFE/impact/quote decay 측정, validation 리포트 |
+| Core Live Wiring | 완료 — pre-flight, spread/fee 실측, risk tier/demotion, wallet limits |
+| Strategy D Sandbox | 완료 — Jito, 별도 지갑, 별도 일일 손실 한도 |
+| Strategy E / Dynamic Sizing | 완료 — cascade, combined SL, TP1 tuning, Kelly, demotion |
 
-### Phase 1B — Regime + Paper Trading
+### 남은 외부 작업
 
-| 항목 | 상세 |
+| 항목 | 상태 |
 |------|------|
-| Market Regime Filter | SOL 4H + breadth + follow-through |
-| Paper trade 측정 | false positive, price impact, quote decay, MAE/MFE |
-| Strategy A/C 검증 | multi-pair 환경에서 기대값 확인 |
-
-### Phase 2 — Core Live (A/C만)
-
-| 항목 | 상세 |
-|------|------|
-| 소액 라이브 | Bootstrap tier (1% risk) |
-| X 피처 추가 | WatchlistScore social_mention_count |
-| Historical EventScore 수집 | C-1 해결 → backtest 신뢰도 확보 |
-
-### Phase 3 — Strategy D Sandbox
-
-| 항목 | 상세 |
-|------|------|
-| Jito 통합 | fast landing, MEV protection, revert protection |
-| 별도 지갑 | 메인 자본 격리 |
-| 별도 일일 손실 한도 | 코어 전략과 독립 |
-| New LP Sniper | "코어 전략" 아닌 "옵션성 베팅" |
-
-### Phase 4 — Momentum Cascade / Dynamic Sizing
-
-| 항목 | 상세 |
-|------|------|
-| Strategy E | A가 라이브에서 양수 기대값 확인 후 |
-| Fractional Kelly | 라이브 표본 ≥ 50 트레이드 후 |
-| TP1 튜닝 | 2.0x/2.5x ATR backtest 비교 (M-1) |
+| X Filtered Stream 실연동 | 코드 완료, Bearer Token + rule/live 검증 대기 |
 
 ### 금지 사항
 
-- Phase 2 전에 Strategy D/E 라이브 금지
 - Jito 없이 Strategy D 라이브 금지
+- Strategy D는 sandbox wallet 외 경로에서 사용 금지
 - 라이브 표본 < 50 상태에서 Kelly 활성화 금지
+- Strategy A 기대값 검증 전 Strategy E 공격적 활성화 금지
 - DexScreener/X 데이터를 매수 트리거로 사용 금지
 
 ---
@@ -721,18 +752,18 @@ Birdeye WS: SUBSCRIBE_TOKEN_NEW_LISTING / SUBSCRIBE_NEW_PAIR
 | `maxRetries` | 3 | config.ts |
 | `txTimeoutMs` | 30,000 | config.ts |
 
-### Jupiter 파라미터 (Phase 1A에서 마이그레이션)
+### Jupiter 파라미터
 
-| 파라미터 | 현재 값 | Phase 1A 후 |
-|---------|--------|------------|
-| `jupiterApiUrl` | `https://quote-api.jup.ag/v6` (deprecated) | `https://api.jup.ag` (Ultra API) |
+| 파라미터 | 권장 값 | 메모 |
+|---------|--------|------|
+| `jupiterApiUrl` | `https://api.jup.ag` | quote/swap 공통 베이스 URL |
 
-### 이벤트 파라미터 (Phase 1A에서 변경 예정)
+### 이벤트 파라미터
 
-| 파라미터 | 현재 값 | Phase 1A 후 |
-|---------|--------|------------|
-| `eventPollingIntervalMs` | 1,800,000 (30분) | Birdeye WS로 대체 |
-| `eventTrendingFetchLimit` | 20 | WatchlistScore로 대체 |
+| 파라미터 | 현재 값 | 메모 |
+|---------|--------|------|
+| `eventPollingIntervalMs` | 1,800,000 (30분) | AttentionScore 폴링 경로 |
+| `eventTrendingFetchLimit` | 20 | watchlist/attention 입력 |
 | `eventMinScore` | 35 | 유지 |
 | `eventExpiryMinutes` | 180 (3시간) | 유지 |
 | `eventMinLiquidityUsd` | 25,000 | 유지 |

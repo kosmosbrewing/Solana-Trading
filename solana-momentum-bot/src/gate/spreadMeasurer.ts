@@ -26,6 +26,8 @@ export interface SpreadMeasurerConfig {
   probeSizeLamports: number;
   /** Timeout for quote requests (ms) */
   timeoutMs: number;
+  /** M-04: Cache TTL in ms (default: 60_000 = 1 min) */
+  cacheTTLMs: number;
 }
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -35,6 +37,7 @@ const DEFAULT_CONFIG: SpreadMeasurerConfig = {
   jupiterApiUrl: 'https://api.jup.ag',
   probeSizeLamports: 100_000_000, // 0.1 SOL
   timeoutMs: 5000,
+  cacheTTLMs: 60_000,
 };
 
 /**
@@ -50,7 +53,6 @@ const DEFAULT_CONFIG: SpreadMeasurerConfig = {
 export class SpreadMeasurer {
   private config: SpreadMeasurerConfig;
   private cache = new Map<string, SpreadMeasurement>();
-  private cacheTTLMs = 60_000; // 1 min cache
 
   constructor(config: Partial<SpreadMeasurerConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -63,7 +65,7 @@ export class SpreadMeasurer {
   async measure(tokenMint: string): Promise<SpreadMeasurement | null> {
     // Check cache
     const cached = this.cache.get(tokenMint);
-    if (cached && Date.now() - cached.measuredAt.getTime() < this.cacheTTLMs) {
+    if (cached && Date.now() - cached.measuredAt.getTime() < this.config.cacheTTLMs) {
       return cached;
     }
 
@@ -106,7 +108,14 @@ export class SpreadMeasurer {
 
       return measurement;
     } catch (error) {
-      log.warn(`Spread measurement failed for ${tokenMint}: ${error}`);
+      // C-20: quote 실패 시 stale cache 경고 (있으면 반환, 없으면 null)
+      const stale = this.cache.get(tokenMint);
+      if (stale) {
+        const ageMs = Date.now() - stale.measuredAt.getTime();
+        log.warn(`Spread measurement failed for ${tokenMint}: ${error}. Using stale cache (age=${(ageMs / 1000).toFixed(0)}s)`);
+        return stale;
+      }
+      log.warn(`Spread measurement failed for ${tokenMint}: ${error}. No cache available.`);
       return null;
     }
   }

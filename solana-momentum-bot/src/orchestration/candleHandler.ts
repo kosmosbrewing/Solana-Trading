@@ -74,6 +74,8 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
   } : undefined;
 
   // Phase 2: Jupiter quote-based spread/fee measurement (H-2/H-3)
+  // Why: spread/fee는 매 캔들 측정 (cached, 0.1 SOL probe)
+  //       sell impact는 시그널 발생 시에만 position-sized probe로 별도 측정
   let measuredSpreadPct: number | undefined;
   let measuredFeePct: number | undefined;
   if (ctx.spreadMeasurer) {
@@ -118,6 +120,14 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
       gateInput.quoteGateConfig = quoteGateConfig;
       gateInput.enableSecurityGate = config.securityGateEnabled;
       gateInput.enableQuoteGate = config.quoteGateEnabled;
+      // Exit gate: position-sized sell impact (시그널 발생 시에만 측정)
+      if (ctx.spreadMeasurer) {
+        gateInput.sellImpactPct = await ctx.spreadMeasurer.measureSellImpact(
+          poolInfo.tokenMint, estimatedPositionSol
+        ) ?? undefined;
+      }
+      gateInput.maxSellImpact = config.maxSellImpact;
+      gateInput.sellImpactSizingThreshold = config.sellImpactSizingThreshold;
 
       const gateResult = useAsyncGates
         ? await evaluateGatesAsync(gateInput)
@@ -181,6 +191,14 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
         gateInput.quoteGateConfig = quoteGateConfig;
         gateInput.enableSecurityGate = config.securityGateEnabled;
         gateInput.enableQuoteGate = config.quoteGateEnabled;
+        // Exit gate: position-sized sell impact (시그널 발생 시에만 측정)
+        if (ctx.spreadMeasurer) {
+          gateInput.sellImpactPct = await ctx.spreadMeasurer.measureSellImpact(
+            poolInfo.tokenMint, estimatedPositionSol
+          ) ?? undefined;
+        }
+        gateInput.maxSellImpact = config.maxSellImpact;
+        gateInput.sellImpactSizingThreshold = config.sellImpactSizingThreshold;
 
         const gateResult = useAsyncGates
           ? await evaluateGatesAsync(gateInput)

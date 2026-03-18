@@ -42,6 +42,9 @@ export const config = {
   solanaRpcUrl: required('SOLANA_RPC_URL'),
   walletPrivateKey: required('WALLET_PRIVATE_KEY'),
 
+  // Legacy single-pair mode
+  targetPairAddress: optional('TARGET_PAIR_ADDRESS', ''),
+
   // Data
   birdeyeApiKey: required('BIRDEYE_API_KEY'),
   databaseUrl: required('DATABASE_URL'),
@@ -131,8 +134,10 @@ export const config = {
   // ─── DexScreener ───
   dexScreenerApiKey: optional('DEXSCREENER_API_KEY', ''),
 
-  // ─── Jupiter API Key (Ultra API) ───
+  // ─── Jupiter API Key + Ultra API (ADR-005: Jito 보완재) ───
   jupiterApiKey: optional('JUPITER_API_KEY', ''),
+  // Why: ADR-005 — Jito 미사용 경로 또는 Jito fallback으로만 활성화
+  useJupiterUltra: process.env.USE_JUPITER_ULTRA === 'true', // default: false
 
   // ─── Security Gate ───
   securityGateEnabled: process.env.SECURITY_GATE_ENABLED !== 'false', // default: true
@@ -140,6 +145,9 @@ export const config = {
 
   // ─── Quote Gate ───
   quoteGateEnabled: process.env.QUOTE_GATE_ENABLED !== 'false', // default: true
+  // Why: sell-side impact가 높으면 exit 시 슬리피지 → 실제 R:R 훼손
+  maxSellImpact: numOptional('MAX_SELL_IMPACT', 0.03), // 3% — hard reject
+  sellImpactSizingThreshold: numOptional('SELL_IMPACT_SIZING_THRESHOLD', 0.015), // 1.5% — 50% sizing
 
   // ─── Phase 2: Pre-flight Gate ───
   preflightEnforceGate: process.env.PREFLIGHT_ENFORCE_GATE !== 'false', // default: true
@@ -167,4 +175,30 @@ export const config = {
   strategyDMinAge: numOptional('STRATEGY_D_MIN_AGE_MINUTES', 3),
   strategyDMaxAge: numOptional('STRATEGY_D_MAX_AGE_MINUTES', 20),
   strategyDTpMultiplier: numOptional('STRATEGY_D_TP_MULTIPLIER', 3.0),
+  // ─── v2: Degraded Exit (P0-3) ───
+  degradedExitEnabled: process.env.DEGRADED_EXIT_ENABLED === 'true', // default: false — paper 검증 먼저
+  degradedSellImpactThreshold: numOptional('DEGRADED_SELL_IMPACT_THRESHOLD', 0.05), // 5%
+  degradedQuoteFailLimit: numOptional('DEGRADED_QUOTE_FAIL_LIMIT', 3), // 연속 실패 횟수
+  degradedPartialPct: numOptional('DEGRADED_PARTIAL_PCT', 0.25), // 첫 매도 비율
+  degradedDelayMs: numOptional('DEGRADED_DELAY_MS', 300_000), // 나머지 매도까지 대기 (5분)
+
+  // ─── v2: Runner Extension (P0-4) ───
+  runnerEnabled: process.env.RUNNER_ENABLED === 'true', // default: false — paper 검증 먼저
+
+  // ─── v3: TP1 Time Extension ───
+  // Why: TP1 50% 청산 후 잔여 trade가 원본 timeStop을 상속하면 Runner 활성화 시간 부족
+  tp1TimeExtensionMinutes: numOptional('TP1_TIME_EXTENSION_MINUTES', 30),
+
+  // ─── v3: Runner Grade B ───
+  // Why: Grade B runner를 0.5x 사이징으로 허용하면 Runner 후보 2~3배 증가
+  runnerGradeBEnabled: process.env.RUNNER_GRADE_B_ENABLED === 'true', // default: false
+
+  // ─── v3: Runner Concurrent ───
+  // Why: Runner 포지션은 SL이 TP1(손익분기+)이므로 추가 리스크 극소
+  runnerConcurrentEnabled: process.env.RUNNER_CONCURRENT_ENABLED === 'true', // default: false
+  maxConcurrentPositions: numOptional('MAX_CONCURRENT_POSITIONS', 1),
+
+  // ─── v3: Jupiter Ultra V3 ───
+  // Why: ShadowLane으로 3x 높은 체결률, 0-1블록 지연, RTSE 자동 슬리피지
+  jupiterUltraApiUrl: optional('JUPITER_ULTRA_API_URL', 'https://api.jup.ag'),
 } as const;

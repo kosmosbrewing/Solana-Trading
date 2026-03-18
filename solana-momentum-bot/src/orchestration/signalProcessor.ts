@@ -4,7 +4,7 @@ import { checkStaleSignal } from '../state';
 import { config } from '../utils/config';
 import { createModuleLogger } from '../utils/logger';
 import { Candle, Order, Signal } from '../utils/types';
-import { buildSignalAuditBase, recordOpenedTrade, syncTradingHalts } from './tradeExecution';
+import { buildSignalAuditBase, recordOpenedTrade, runnerStateMap, syncTradingHalts } from './tradeExecution';
 import { BotContext } from './types';
 
 const log = createModuleLogger('SignalProcessor');
@@ -25,6 +25,16 @@ export async function processSignal(
 
   const balanceSol = await ctx.executor.getBalance();
   const portfolio = await ctx.riskManager.getPortfolioState(balanceSol);
+
+  // v3: Runner trade ID를 portfolio에 주입 — concurrent 판정에 사용
+  const runnerIds = new Set<string>();
+  for (const [tradeId, isRunner] of runnerStateMap) {
+    if (isRunner) runnerIds.add(tradeId);
+  }
+  if (runnerIds.size > 0) {
+    portfolio.runnerTradeIds = runnerIds;
+  }
+
   await syncTradingHalts(ctx, portfolio);
 
   if (ctx.tradingHaltedReason) {

@@ -28,63 +28,28 @@
 
 ---
 
-## 즉시 작업: REST-only 전환 + Strategy A mcap/volume 보강
+## 즉시 작업: VPS Paper 배포 준비
 
-### 배경
+### 완료된 사전 작업 (2026-03-18)
 
-Birdeye Premium Plus WebSocket은 유료이고, 코어 전략 A/C/E는 1분~5분봉 REST polling으로 충분하다.
-WS가 필수인 건 Strategy D(신규 토큰 감지)뿐인데, D는 Live Proven 단계 이후에나 활성화한다.
-또한 Strategy A가 시가총액 대비 볼륨을 고려하지 않아 저시총 펌프를 과대평가할 위험이 있다.
+- ✅ Strategy A mcap/volume ratio 6번째 팩터 추가 (`calcVolumeMcapRatio`)
+- ✅ RegimeFilter 데이터소스 수정 (SOL_USDC_PAIR → getTokenOHLCV)
+- ✅ Exit Gate 구현 (SpreadMeasurer.measureSellImpact + gate 배선)
+- ✅ SOL_MINT 상수 중앙화 (`utils/constants.ts`)
+- ✅ Jupiter Ultra 포지셔닝 ADR-005 확정
+- ✅ REST-only 운영 가능 (WS/Strategy D 기본 비활성)
 
-### 작업 1: REST-only 운영 (.env 정비)
+### 남은 배포 준비 항목
 
-`birdeyeWSEnabled`은 이미 기본값 `false`, `strategyDEnabled`도 기본값 `false`.
-코드 수정 없이 `.env` 설정만으로 REST-only 동작한다.
-
-**.env.example에 추가/갱신할 항목:**
+**.env.example 확인:**
 ```
-# ─── Scanner ───
+TRADING_MODE=paper
 SCANNER_ENABLED=true
-SCANNER_TRENDING_POLL_MS=300000     # 5분
-SCANNER_DEX_ENRICH_MS=300000        # 5분
-
-# ─── Birdeye WebSocket (비활성 — Premium Plus 필요) ───
-# BIRDEYE_WS_ENABLED=false          # 기본값 false
-
-# ─── Strategy D (비활성 — WS + Jito 전제) ───
-# STRATEGY_D_ENABLED=false          # 기본값 false
+# BIRDEYE_WS_ENABLED=false  (기본값)
+# STRATEGY_D_ENABLED=false   (기본값)
 ```
 
 **결과**: Birdeye Free/Standard 플랜으로 paper trading 운영 가능.
-
-### 작업 2: Strategy A — mcap/volume ratio 스코어 추가
-
-현재 Volume Score는 `currentVolume / avgVolume[20]` 자기 평균 대비만 본다.
-시가총액 대비 24h 볼륨 비율을 6번째 팩터로 추가한다.
-
-**스코어 기준:**
-
-| volume/mcap | 의미 | 보너스 |
-|-------------|------|--------|
-| ≥ 0.30 (30%) | 매우 활발 | +10점 |
-| ≥ 0.15 (15%) | 활발 | +6점 |
-| ≥ 0.05 (5%) | 보통 | +3점 |
-| < 0.05 | 낮음 | 0점 |
-
-기존 5팩터(최대 100점) → 6팩터(최대 110점) → `Math.min(100, total)` 캡 유지.
-mcap 데이터 없으면 0점(기존 동작 유지).
-
-**수정 파일:**
-
-| 파일 | 변경 |
-|------|------|
-| `src/strategy/breakoutScore.ts` | `volumeMcapRatio?: number` 입력 + 6번째 팩터 |
-| `src/utils/types.ts` | `BreakoutScoreDetail.mcapVolumeScore`, `PoolInfo.marketCap` |
-| `src/strategy/volumeSpikeBreakout.ts` | ratio 계산 후 전달 |
-| `src/orchestration/candleHandler.ts` | poolInfo.marketCap → ratio 계산 |
-| `src/scanner/scannerEngine.ts` | BirdeyeTrendingToken.marketCap → PoolInfo 전달 |
-| `src/backtest/engine.ts` | 백테스트 호환 (optional) |
-| `.env.example` | Scanner/WS 설정 문서화 |
 
 ---
 
@@ -244,4 +209,4 @@ Proven (100+ trades)
 
 ## 한 줄 요약
 
-> **지금 할 일: mcap/volume 보강 → REST-only .env 정비 → VPS paper 배포 → 50 trades 축적.**
+> **지금 할 일: .env 정비 → VPS paper 배포 → 50 trades 축적 → Phase 2 검증.**

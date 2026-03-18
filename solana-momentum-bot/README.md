@@ -10,7 +10,7 @@ Solana DEX 이벤트 기반 트레이딩 봇. Birdeye WS/Trending, DexScreener, 
 
 ## Reference Docs
 
-- `STRATEGY.md` — Strategy A/C/D/E 흐름과 게이트 설계
+- `docs/product-specs/strategy-catalog.md` — Strategy A/C/D/E 흐름과 게이트 설계
 - `OPERATIONS.md` — demotion 운영 가이드와 live 대응 절차
 - `PROJECT.md` — 목표, 비목표, 로드맵
 
@@ -30,17 +30,18 @@ Solana DEX 이벤트 기반 트레이딩 봇. Birdeye WS/Trending, DexScreener, 
 │  └─ AttentionScore (Birdeye WS/Trending + enrichment)    │
 │                                                          │
 │  Stage 2: IS it safe to enter NOW?                       │
-│  └─ Gate System (4-gate sequential filter)               │
-│     ├─ Gate 0: AttentionScore 필수 (live mode)           │
-│     ├─ Gate 1: Strategy Score + Attention 보너스          │
-│     ├─ Gate 2: Slippage-Aware R:R (effectiveRR ≥ 1.2)   │
-│     └─ Gate 3: Token Safety (TVL, age, holder)           │
+│  └─ Gate System (5+1 sequential filter)                  │
+│     ├─ Gate 0: Security (honeypot, freeze, transferFee)  │
+│     ├─ Gate 1: AttentionScore 필수 (live mode)           │
+│     ├─ Gate 2: Strategy Score + Execution Viability      │
+│     ├─ Gate 3: Token Safety (TVL, age, holder)           │
+│     └─ Exit Gate: Sell-side Impact (포지션 크기 기반)     │
 │                                                          │
 │  Stage 3: HOW MUCH to risk?                              │
 │  └─ Risk Tier → 3-Constraint Sizing → Kelly (if earned)  │
 │                                                          │
-│  Execution: Jupiter API quote/swap (+ Jito optional)     │
-│  Exit: 6-priority exit cascade (5sec monitor)            │
+│  Execution: Jupiter Ultra V3 (+ v6 fallback + Jito)      │
+│  Exit: 8-priority exit cascade (5sec monitor)            │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -73,8 +74,9 @@ Solana DEX 이벤트 기반 트레이딩 봇. Birdeye WS/Trending, DexScreener, 
 | Multi-TF Alignment | 20 | 5/10/20봉 추세 정렬: 3 TF → 20 / 2 TF → 10 |
 | Whale Activity | 15 | 감지 시 +15 |
 | LP Stability | -10 ~ +15 | stable → +15 / dropping → -10 |
+| Mcap/Volume Ratio | 10 | ≥30% → 10 / ≥15% → 6 / ≥5% → 3 |
 
-**등급:** A (≥70) / B (≥50) / C (<50, 거부)
+**등급:** A (≥70) / B (≥50) / C (<50, 거부) — 6팩터 합산 후 `min(100, total)` 캡
 
 ---
 
@@ -118,44 +120,64 @@ Solana DEX 이벤트 기반 트레이딩 봇. Birdeye WS/Trending, DexScreener, 
 
 ## Gate System (진입 게이트)
 
-모든 시그널은 4개의 순차적 게이트를 통과해야 실행됩니다. 어느 하나라도 실패하면 `filterReason`과 함께 거부.
+모든 시그널은 5+1개의 순차적 게이트를 통과해야 실행됩니다. 어느 하나라도 실패하면 `filterReason`과 함께 거부.
 
 ```
-Signal ──► Gate 0: AttentionScore ──► Gate 1: Strategy Score ──► Gate 2: R:R ──► Gate 3: Safety
-              │                          │                        │                  │
-              ▼                          ▼                        ▼                  ▼
-         no score?                  totalScore < 50?        effectiveRR < 1.2?   TVL<$50K?
-         → reject                   → reject                → reject             age<24h?
-         "not_trending"                                                           → reject
+Gate 0: Security Gate (async) — honeypot, freeze, transferFee, holder 집중도
+Gate 1: AttentionScore — 트렌딩 화이트리스트
+Gate 2A: Execution Viability — R:R + round-trip cost
+Gate 2B: Quote Gate (async) — Jupiter entry price impact
+Gate 3: Strategy Score — 전략별 점수 (A/B/C 등급)
+Gate 4: Safety Gate — pool 유동성, token age, LP burn
+Exit Gate: Sell-side Impact (async) — 포지션 크기 기반 exit 유동성 검증
 ```
 
-### Gate 0: AttentionScore (이벤트 게이트)
+### Gate 0: Security Gate (async)
+
+- Birdeye `token_security`: honeypot, freezable, mintable, transfer_fee → reject
+- exit-liquidity 프록시 검증
+- async 경로(live/paper)에서만 활성화
+
+### Gate 1: AttentionScore (이벤트 게이트)
 
 - Live 모드: `requireAttentionScore = true` — 점수 없으면 `not_trending`으로 거부
 - Birdeye Trending 상위 20개 토큰 기반, 30분 주기 폴링
 - 캐시 TTL: 3시간, 35점 미만 점수는 폐기
 
-### Gate 1: Strategy Score + Attention Bonus
-
-- 전략별 스코어 (0–100) + AttentionScore 보너스 (+0–20)
-- 합산 50점 미만 → 거부
-
-### Gate 2: Slippage-Aware R:R
+### Gate 2: Execution Viability + Quote Gate
 
 - Constant Product AMM 슬리피지 모델로 진입/퇴출 비용 추정
 - `roundTripCost = entrySlippage + exitSlippage + AMMfee(0.5%) + MEVmargin(0.15%)`
 - `effectiveRR = (reward% - roundTripCost) / (risk% + roundTripCost)`
 - < 1.2 → 거부 / 1.2–1.5 → size × 0.5 / ≥ 1.5 → full size
+- Quote Gate: Jupiter 실시간 quote로 price impact ≤ 2% 검증 (60% 초과 시 size × 0.5)
 
-### Gate 3: Token Safety
+### Gate 3: Strategy Score + Attention Bonus
+
+- 전략별 스코어 (0–100) + AttentionScore 보너스 (+0–20)
+- 합산 50점 미만 → 거부
+
+### Gate 4: Token Safety (v2: Age Bucket Graduated Sizing)
 
 | 조건 | 처리 |
 |------|------|
 | TVL < $50K | 거부 |
-| Token Age < 24h | 거부 |
+| Token Age < 20min | 거부 (hard floor) |
+| Token Age 20min ~ 2h | size × 0.25 |
+| Token Age 2h ~ 24h | size × 0.5 |
+| Token Age ≥ 24h | size × 1.0 (감산 없음) |
 | Top 10 Holder > 80% | 거부 |
-| LP not burned | size × 0.5 |
+| LP not burned | size × 0.5 (age bucket과 곱셈 누적) |
 | Ownership not renounced | size × 0.5 |
+
+> `enableAgeBuckets` (default: true). false 시 기존 binary reject(`< minTokenAgeHours`) 유지.
+
+### Exit Gate: Sell-side Impact (async)
+
+- 포지션 크기 기반 Jupiter quote로 sell-side impact 측정
+- `sellImpact > 3%` → reject (`exit_illiquid`)
+- `sellImpact > 1.5%` → size × 0.5
+- sync 경로(backtest)에서는 비활성 — 라이브 Jupiter quote 필요
 
 ---
 
@@ -187,9 +209,9 @@ EdgeTracker의 거래 이력에 따라 자동으로 단계가 조정됩니다. *
 | Tier | 거래 수 | Risk/Trade | Daily Limit | Max DD | Kelly |
 |------|---------|-----------|-------------|--------|-------|
 | **Bootstrap** | <20 | 1% 고정 | 5% | 30% | 비활성 |
-| **Calibration** | 20–49 | 2% 고정 | 8% | 30% | 비활성 |
-| **Confirmed** | 50–99 | 1/4 Kelly (cap 6.25%) | 15% | 35% | Quarter |
-| **Proven** | 100+ | 1/2 Kelly (cap 12.5%) | 15% | 40% | Half |
+| **Calibration** | 20–49 | 1% 고정 | 5% | 30% | 비활성 |
+| **Confirmed** | 50–99 | 1/4 Kelly (cap 3%) | 15% | 35% | Quarter |
+| **Proven** | 100+ | 1/4 Kelly (cap 5%) | 15% | 40% | Quarter |
 
 **승급 조건:**
 - Confirmed: ≥50 trades, WR ≥ 45%, R:R ≥ 1.5, Sharpe ≥ 0.5, 최대연속손실 ≤ 4
@@ -224,24 +246,31 @@ balance ≥ peak × 85% → 거래 재개 (recovered)
 | 장치 | 동작 |
 |------|------|
 | Cooldown | 3연속 손실 → 30분 쿨다운 |
-| Position Limit | 동시 오픈 포지션 최대 1개 |
+| Position Limit | 동시 오픈 포지션 최대 1개 (Runner 중 +1 허용, flag) |
 | Pair Blacklist | 10-trade 롤링 윈도우: WR ≤ 35% + R:R ≤ 1.0 → 자동 블랙리스트 |
 | Stale Signal | 시그널 발생 후 가격 괴리/TVL 급락 감지 시 거부 |
 
 ---
 
-## Exit System (6-Priority Cascade)
+## Exit System (7-Priority Cascade)
 
 5초마다 열린 포지션을 점검. 우선순위 순서대로 평가.
 
 | 순위 | 트리거 | 동작 |
 |------|--------|------|
-| 1 | **Time Stop** | VS: 30분 / Fib: 60분 초과 시 전량 청산 |
+| **0** | **Degraded Exit** | sellImpact > 5% or quote 3x fail → 25% 즉시 → 5분 후 75% |
+| 1 | **Time Stop** | VS: 30분 / Fib: 60분 초과 시 전량 청산 **(TP1 후 잔여분: +30분 연장)** |
 | 2 | **Stop Loss** | price ≤ SL → 전량 청산 (1%+ 이탈 시 경고) |
-| 3 | **Take Profit 2** | price ≥ TP2 → 전량 청산 |
+| 3 | **Take Profit 2** | price ≥ TP2 → 전량 청산 **(Runner: Grade A 전량 trailing / Grade B 50% 매도+50% trailing)** |
 | 4 | **Take Profit 1** | price ≥ TP1 → **50% 분할 청산**, SL → 손익분기점 이동 |
 | 5 | **Exhaustion Exit** | 2/3 충족 시: 캔들 바디 축소 + 긴 윗꼬리 + 거래량 감소 |
 | 6 | **Adaptive Trailing** | ATR(7) × RSI 배수 기반 트레일링. RSI>80: 3.0x / 60–80: 2.0x / <60: 1.0x |
+
+> **v2 추가:**
+> - **Degraded Exit (P0):** TP1과 동일한 부분 청산 패턴. Phase 1에서 25% 매도 후 잔여분을 새 trade로 생성, pairAddress로 추적하여 delay 후 phase 2 전량 청산. trade 종료 시 state map 자동 정리. `degradedExitEnabled` (default: false)
+> - **Runner Extension (v3 확장):** TP2 도달 + Grade A/B + risk-on + 비degraded → trailing-only 전환. Grade A: 전량, Grade B: 50% TP2 매도 + 50% trailing. SL 변경 DB 영속화. `runnerEnabled` + `runnerGradeBEnabled` (default: false)
+> - **TP1 Time Extension (v3):** TP1 50% 청산 후 잔여분 timeStop을 현재+30분으로 재설정. `tp1TimeExtensionMinutes` (default: 30)
+> - **Runner Concurrent (v3):** Runner 중 +1 추가 진입 허용 (절대 상한 2). `runnerConcurrentEnabled` (default: false)
 
 ---
 
@@ -261,8 +290,8 @@ balance ≥ peak × 85% → 거래 재개 (recovered)
 
 ```
 appliedKelly = kellyFraction × kellyScale
-  Confirmed: kellyScale = 0.25 (Quarter Kelly)
-  Proven:    kellyScale = 0.50 (Half Kelly)
+  Confirmed: kellyScale = 0.25, kellyCap = 0.03 (3%)
+  Proven:    kellyScale = 0.25, kellyCap = 0.05 (5%)   ← v2: 1/2→1/4, 12.5%→5%
 
 활성화 전제: EdgeState ∈ {Confirmed, Proven} AND kellyFraction > 0
 ```
@@ -274,7 +303,7 @@ appliedKelly = kellyFraction × kellyScale
 | 구성요소 | 기술 |
 |---------|------|
 | Runtime | Node.js 20 LTS + TypeScript |
-| DEX | Jupiter Aggregator v6 |
+| DEX | Jupiter Ultra V3 (v6 fallback) |
 | RPC | Helius (Solana mainnet) |
 | Data | Birdeye API (OHLCV + Trending + Token Security) |
 | Database | TimescaleDB (PostgreSQL 16, Docker) |
@@ -293,19 +322,24 @@ solana-momentum-bot/
 │   ├── strategy/               # 전략 구현 (순수 함수)
 │   │   ├── volumeSpikeBreakout.ts
 │   │   ├── fibPullback.ts
+│   │   ├── newLpSniper.ts      # Strategy D (sandbox)
+│   │   ├── momentumCascade.ts  # Strategy E (conditional)
 │   │   ├── breakoutScore.ts
 │   │   ├── adaptiveTrailing.ts # RSI 기반 트레일링 스톱
 │   │   ├── exhaustion.ts       # 모멘텀 소진 감지
 │   │   ├── indicators.ts       # ATR, avgVolume, highestHigh
 │   │   ├── lpMonitor.ts        # LP 안정성 모니터
 │   │   └── whaleDetect.ts      # 웨일 감지
-│   ├── gate/                   # 4-Gate 진입 필터
-│   │   ├── index.ts            # evaluateGates()
+│   ├── gate/                   # 5+1 Gate 진입 필터
+│   │   ├── index.ts            # evaluateGates() + evaluateGatesAsync()
+│   │   ├── securityGate.ts     # Gate 0: 토큰 보안 검증
+│   │   ├── quoteGate.ts        # Gate 2B: Jupiter quote 검증
 │   │   ├── scoreGate.ts
 │   │   ├── fibPullbackScore.ts
-│   │   ├── executionViability.ts  # Slippage-Aware R:R
+│   │   ├── executionViability.ts  # Gate 2A: Slippage-Aware R:R
 │   │   ├── safetyGate.ts
 │   │   ├── sizingGate.ts
+│   │   ├── spreadMeasurer.ts   # Exit Gate: sell-side impact
 │   │   └── liveGateInput.ts
 │   ├── event/                  # 이벤트/관심 스코어링
 │   │   ├── index.ts            # EventMonitor (폴링 + 캐시)
@@ -316,7 +350,8 @@ solana-momentum-bot/
 │   │   ├── riskManager.ts      # 주문 승인 + 포지션 사이징
 │   │   ├── riskTier.ts         # Risk Tier (Bootstrap→Proven)
 │   │   ├── drawdownGuard.ts    # DrawdownGuard 상태 머신
-│   │   └── liquiditySizer.ts   # 3-Constraint 사이저
+│   │   ├── liquiditySizer.ts   # 3-Constraint 사이저
+│   │   └── regimeFilter.ts     # 3-Factor 시장 국면 필터
 │   ├── orchestration/          # 거래 라이프사이클
 │   │   ├── candleHandler.ts    # 캔들 → 전략 → 게이트 → 시그널
 │   │   ├── signalProcessor.ts  # 시그널 → 리스크 → 주문 → 실행
@@ -330,7 +365,7 @@ solana-momentum-bot/
 │   ├── state/                  # 포지션 상태 머신, 실행 잠금
 │   ├── notifier/               # Telegram 알림
 │   ├── audit/                  # 시그널 감사 로깅
-│   └── utils/                  # Config, Logger, Types
+│   └── utils/                  # Config, Logger, Types, Constants
 ├── config/                     # JSON 설정 파일
 ├── scripts/                    # CLI 도구 (backtest, paper-report)
 ├── test/                       # 테스트
@@ -407,6 +442,7 @@ npx ts-node scripts/backtest.ts <PAIR_ADDRESS> \
 - 50회 이상 Paper Trade 완료
 - Win Rate ≥ 40%
 - Reward-to-Risk ≥ 2.0
+- `USE_JUPITER_ULTRA=true` + `JUPITER_API_KEY` 확보 (체결률 3x 개선)
 - 외부 연동 항목은 `TWITTER_BEARER_TOKEN` 및 X filtered stream rule 준비 필요
 
 ---

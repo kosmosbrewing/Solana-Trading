@@ -1,6 +1,6 @@
 # Operations Guide
 
-> Last updated: 2026-03-17
+> Last updated: 2026-03-18
 > Scope: VPS 배포 + risk tier demotion + live 운영 판단
 
 ---

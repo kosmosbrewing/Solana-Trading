@@ -68,6 +68,7 @@ export interface StrategyConfig {
 export type TradeSide = 'BUY' | 'SELL';
 export type TradeStatus = 'OPEN' | 'CLOSED' | 'FAILED';
 export type CloseReason =
+  | 'DEGRADED_EXIT'     // v2: Priority 0 — sellImpact > 5% 또는 quote 3연속 실패
   | 'STOP_LOSS'
   | 'TAKE_PROFIT_1'
   | 'TAKE_PROFIT_2'
@@ -204,6 +205,8 @@ export interface PortfolioState {
   lastLossTime?: Date;
   drawdownGuard: DrawdownGuardState;
   riskTier?: PortfolioRiskTier;
+  /** v3: Runner 상태인 trade ID 집합 — concurrent 허용 판정에 사용 */
+  runnerTradeIds?: Set<string>;
 }
 
 // ─── Health ───

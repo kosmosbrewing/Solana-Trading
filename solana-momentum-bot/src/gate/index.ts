@@ -5,6 +5,7 @@ import { evaluateExecutionViability, ExecutionViabilityResult } from './executio
 import { evaluateSecurityGate, SecurityGateResult } from './securityGate';
 import { evaluateQuoteGate, QuoteGateResult } from './quoteGate';
 import { TokenSecurityData, ExitLiquidityData } from '../ingester/birdeyeClient';
+import { createModuleLogger } from '../utils/logger';
 import {
   applyAttentionScoreComponent,
   buildStrategyHardRejectReason,
@@ -14,6 +15,8 @@ import {
   GateThresholds,
   isGradeRejected,
 } from './scoreGate';
+
+const log = createModuleLogger('Gate');
 
 export interface EvaluateGatesInput {
   signal: Signal;
@@ -41,6 +44,14 @@ export interface EvaluateGatesInput {
   /** Set to false to skip quote gate (e.g., backtest mode) */
   enableQuoteGate?: boolean;
 
+  // ─── Exit Gate: sell-side impact ───
+  /** SpreadMeasurer sell-side price impact (decimal, e.g. 0.02 = 2%) */
+  sellImpactPct?: number;
+  /** Max sell impact before hard reject (default: 0.03 = 3%) */
+  maxSellImpact?: number;
+  /** Sell impact threshold for 50% sizing reduction (default: 0.015 = 1.5%) */
+  sellImpactSizingThreshold?: number;
+
   // deprecated aliases
   /** @deprecated use attentionScore */
   eventScore?: AttentionScore;
@@ -61,14 +72,19 @@ export interface GateEvaluationResult {
   securityGate?: SecurityGateResult;
   /** Phase 1A: Quote Gate result */
   quoteGate?: QuoteGateResult;
+  /** Sell-side impact from SpreadMeasurer (exit liquidity gate) */
+  sellImpactPct?: number;
 
   /** @deprecated use attentionScore */
   eventScore?: AttentionScore;
 }
 
 /**
- * Synchronous gate evaluation (backward-compatible, no security/quote gate).
+ * Synchronous gate evaluation (backward-compatible, no security/quote/exit gate).
  * For backtest or contexts where async is not available.
+ *
+ * NOTE: sellImpactPct, security gate, quote gate는 무시됨.
+ * 이들은 라이브 Jupiter quote가 필요하므로 evaluateGatesAsync() 에서만 적용.
  */
 export function evaluateGates(input: EvaluateGatesInput): GateEvaluationResult {
   return evaluateGatesSync(input);
@@ -127,6 +143,9 @@ export async function evaluateGatesAsync(input: EvaluateGatesInput): Promise<Gat
       }
     }
 
+    // ─── Exit Gate: sell-side impact check ───
+    applySellImpactGate(syncResult, input);
+
     return syncResult;
   }
 
@@ -149,6 +168,9 @@ export async function evaluateGatesAsync(input: EvaluateGatesInput): Promise<Gat
       syncResult.gradeSizeMultiplier *= qResult.sizeMultiplier;
     }
   }
+
+  // ─── Exit Gate: sell-side impact check ───
+  applySellImpactGate(syncResult, input);
 
   return syncResult;
 }
@@ -230,6 +252,36 @@ function evaluateGatesSync(input: EvaluateGatesInput): GateEvaluationResult {
     eventScore: score,
     executionViability,
   };
+}
+
+const DEFAULT_MAX_SELL_IMPACT = 0.03;
+const DEFAULT_SELL_IMPACT_SIZING_THRESHOLD = 0.015;
+
+/**
+ * Exit Gate: sell-side impact가 높으면 exit 시 슬리피지로 실제 R:R 훼손.
+ * SpreadMeasurer의 sellImpactPct를 기반으로 sizing 감소/reject.
+ */
+function applySellImpactGate(result: GateEvaluationResult, input: EvaluateGatesInput): void {
+  if (result.rejected || input.sellImpactPct == null) return;
+
+  const sellImpact = input.sellImpactPct;
+  const maxSellImpact = input.maxSellImpact ?? DEFAULT_MAX_SELL_IMPACT;
+  const sizingThreshold = input.sellImpactSizingThreshold ?? DEFAULT_SELL_IMPACT_SIZING_THRESHOLD;
+
+  result.sellImpactPct = sellImpact;
+
+  if (sellImpact > maxSellImpact) {
+    result.rejected = true;
+    result.filterReason = `exit_illiquid: sellImpact=${(sellImpact * 100).toFixed(2)}% > ${(maxSellImpact * 100).toFixed(2)}%`;
+    result.gradeSizeMultiplier = 0;
+    log.info(`Exit gate reject: sell impact ${(sellImpact * 100).toFixed(2)}% exceeds max ${(maxSellImpact * 100).toFixed(2)}%`);
+    return;
+  }
+
+  if (sellImpact > sizingThreshold) {
+    result.gradeSizeMultiplier *= 0.5;
+    log.info(`Exit gate sizing: sell impact ${(sellImpact * 100).toFixed(2)}% > ${(sizingThreshold * 100).toFixed(2)}% — 50% reduction`);
+  }
 }
 
 export type { FibPullbackGateConfig } from './scoreGate';

@@ -126,6 +126,37 @@ export class BirdeyeClient {
   }
 
   /**
+   * 토큰 mint 주소 기반 OHLCV (Regime Filter 등 단일 토큰 가격 조회용).
+   * Why: `/defi/ohlcv/pair`는 pair address 필요, 이 메서드는 mint 주소만으로 동작.
+   */
+  async getTokenOHLCV(
+    tokenMint: string,
+    intervalType: CandleInterval,
+    timeFrom: number,
+    timeTo: number
+  ): Promise<{ close: number; timestamp: number }[]> {
+    try {
+      const response = await this.client.get('/defi/ohlcv', {
+        params: {
+          address: tokenMint,
+          type: intervalType,
+          time_from: timeFrom,
+          time_to: timeTo,
+        },
+      });
+
+      const items: BirdeyeOHLCV[] = response.data?.data?.items || [];
+      return items.map((item) => ({
+        close: item.c,
+        timestamp: item.unixTime,
+      }));
+    } catch (error) {
+      log.error(`Failed to fetch token OHLCV for ${tokenMint}: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
    * 토큰 메타데이터 조회 (안전 필터용)
    */
   async getTokenSecurity(tokenAddress: string): Promise<Record<string, unknown> | undefined> {

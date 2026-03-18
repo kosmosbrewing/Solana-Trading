@@ -30,7 +30,7 @@ const RISK_TIERS: Record<EdgeState, RiskTierDefinition> = {
     kellyCap: 0.01,
   },
   Calibration: {
-    fixedRiskPerTrade: 0.01,  // STRATEGY.md: Bootstrap/Calibration 모두 1% 고정
+    fixedRiskPerTrade: 0.01,  // Bootstrap/Calibration 모두 1% 고정 (strategy-catalog 참조)
     maxDailyLoss: 0.05,
     maxDrawdownPct: 0.30,
     kellyScale: 0,
@@ -41,14 +41,14 @@ const RISK_TIERS: Record<EdgeState, RiskTierDefinition> = {
     maxDailyLoss: 0.15,
     maxDrawdownPct: 0.35,
     kellyScale: 0.25,
-    kellyCap: 0.0625,
+    kellyCap: 0.03, // v2: 6.25%→3% — 마이크로캡 exit-liquidity 부족 대응
   },
   Proven: {
     fixedRiskPerTrade: 0.02,
     maxDailyLoss: 0.15,
     maxDrawdownPct: 0.40,
-    kellyScale: 0.50,
-    kellyCap: 0.125,
+    kellyScale: 0.25, // v2: 1/2→1/4 Kelly — 생존 우선
+    kellyCap: 0.05,   // v2: 12.5%→5% — 마이크로캡 exit-liquidity 부족 대응
   },
 };
 
@@ -69,6 +69,7 @@ export function resolveRiskTierProfile(
     recoveryPct,
     kellyFraction: stats.kellyFraction,
     kellyApplied,
+    // v2: Proven도 1/4 Kelly. 'half' 타입은 향후 복원 가능성 유지
     kellyMode: tier.kellyScale >= 0.5 ? 'half' : tier.kellyScale > 0 ? 'quarter' : 'fixed',
   };
 }

@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    env:
+      # Why: config.ts의 required() 호출이 CI에서도 동작하도록 더미 값 설정
+      SOLANA_RPC_URL: 'https://dummy-rpc.example.com'
+      WALLET_PRIVATE_KEY: 'dummy-key-for-ci'
+      BIRDEYE_API_KEY: 'dummy-birdeye-key'
+      DATABASE_URL: 'postgresql://dummy:dummy@localhost:5432/dummy'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript build
+        run: npm run build
+
+      - name: Unit tests
+        run: npm test
+
+      - name: ESLint
+        run: npx eslint src/
+
+      - name: Docs freshness check
+        run: bash scripts/check-docs-freshness.sh
+
+      # Why: 파일 분리 완료 전까지 check-structure.sh는 실패하므로 continue-on-error
+      # P1b 완료 후 continue-on-error: false로 변경
+      - name: Structure check
+        run: bash scripts/check-structure.sh
+        continue-on-error: true

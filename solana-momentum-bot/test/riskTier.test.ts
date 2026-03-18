@@ -17,11 +17,11 @@ describe('RiskTier', () => {
 
     expect(fifty.edgeState).toBe('Confirmed');
     expect(fifty.kellyApplied).toBe(true);
-    expect(fifty.maxRiskPerTrade).toBeCloseTo(0.0625, 6);
+    expect(fifty.maxRiskPerTrade).toBeCloseTo(0.03, 6); // v2: kellyCap 3%
 
     expect(hundred.edgeState).toBe('Proven');
     expect(hundred.kellyApplied).toBe(true);
-    expect(hundred.maxRiskPerTrade).toBeCloseTo(0.125, 6);
+    expect(hundred.maxRiskPerTrade).toBeCloseTo(0.05, 6); // v2: kellyCap 5%
   });
 
   it('keeps fixed-percent sizing when Kelly is still locked', () => {

@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { createModuleLogger } from '../utils/logger';
+import { SOL_MINT, LAMPORTS_PER_SOL } from '../utils/constants';
 
 const log = createModuleLogger('SpreadMeasurer');
 
@@ -29,9 +30,6 @@ export interface SpreadMeasurerConfig {
   /** M-04: Cache TTL in ms (default: 60_000 = 1 min) */
   cacheTTLMs: number;
 }
-
-const SOL_MINT = 'So11111111111111111111111111111111111111112';
-const LAMPORTS_PER_SOL = 1_000_000_000;
 
 const DEFAULT_CONFIG: SpreadMeasurerConfig = {
   jupiterApiUrl: 'https://api.jup.ag',
@@ -127,6 +125,38 @@ export class SpreadMeasurer {
   async getSpreadOrDefault(tokenMint: string, defaultSpreadPct = 0.005): Promise<number> {
     const m = await this.measure(tokenMint);
     return m ? m.spreadPct : defaultSpreadPct;
+  }
+
+  /**
+   * Measure sell-side impact at actual position size (exit gate용).
+   * Why: 기본 measure()는 0.1 SOL probe — 실제 포지션(1~5 SOL)의 sell impact와 다를 수 있음.
+   * 시그널 발생 시에만 호출하여 API 사용량 최소화.
+   */
+  async measureSellImpact(
+    tokenMint: string,
+    positionSizeSol: number
+  ): Promise<number | null> {
+    if (positionSizeSol <= 0) return null;
+    try {
+      const positionLamports = Math.round(positionSizeSol * LAMPORTS_PER_SOL);
+      // Buy quote at position size → 토큰 수량 산출
+      const buyQuote = await this.getQuote(SOL_MINT, tokenMint, positionLamports);
+      if (!buyQuote) return null;
+      const tokenAmount = parseInt(buyQuote.outAmount, 10);
+      if (tokenAmount <= 0) return null;
+      // Sell quote at 실제 토큰 수량
+      const sellQuote = await this.getQuote(tokenMint, SOL_MINT, tokenAmount);
+      if (!sellQuote) return null;
+      const impact = this.parsePriceImpact(sellQuote);
+      log.debug(
+        `SellImpact(${positionSizeSol.toFixed(2)} SOL): ${tokenMint.slice(0, 8)}... ` +
+        `impact=${(impact * 100).toFixed(3)}%`
+      );
+      return impact;
+    } catch (error) {
+      log.warn(`Sell impact measurement failed for ${tokenMint}: ${error}`);
+      return null;
+    }
   }
 
   /**

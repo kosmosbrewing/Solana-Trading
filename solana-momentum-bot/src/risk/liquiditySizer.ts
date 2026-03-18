@@ -97,6 +97,10 @@ export function calculateLiquiditySize(
  * + MEV/frontrunning 마진 (0.1% — Solana 환경 추정)
  *
  * poolReserve = TVL / 2
+ *
+ * ⚠️ executionViability에서 fee=0, mev=0으로 호출하여 순수 impact만 추출 후
+ * ammFeePct + mevMarginPct를 별도 가산하는 구조. 이중계산은 아님.
+ * live에서 Jupiter quote 기반으로 전환 시 fee 포함 여부 반드시 확인할 것.
  */
 export function estimateSlippage(
   tradeSize: number,

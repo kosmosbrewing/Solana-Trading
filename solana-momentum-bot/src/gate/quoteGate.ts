@@ -1,10 +1,8 @@
 import axios from 'axios';
 import { createModuleLogger } from '../utils/logger';
+import { SOL_MINT, LAMPORTS_PER_SOL } from '../utils/constants';
 
 const log = createModuleLogger('QuoteGate');
-
-const SOL_MINT = 'So11111111111111111111111111111111111111112';
-const SOL_DECIMALS = 9;
 
 export interface QuoteGateResult {
   approved: boolean;
@@ -48,7 +46,7 @@ export async function evaluateQuoteGate(
 ): Promise<QuoteGateResult> {
   const cfg = { ...DEFAULT_CONFIG, ...config };
 
-  const amountLamports = BigInt(Math.round(estimatedPositionSol * 10 ** SOL_DECIMALS));
+  const amountLamports = BigInt(Math.round(estimatedPositionSol * LAMPORTS_PER_SOL));
 
   try {
     const headers: Record<string, string> = {};

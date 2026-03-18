@@ -4,6 +4,8 @@ import type { Candle, Order, PoolInfo, Signal } from '../utils/types';
 
 const MIN_EFFECTIVE_RR_REJECT = 1.2;
 const MIN_EFFECTIVE_RR_PASS = 1.5;
+// Why: config.ts import 시 required env vars 체크가 테스트를 깨뜨리므로 로컬 파싱 유지
+// 값 기본값은 config.ts의 defaultAmmFeePct / defaultMevMarginPct와 동일하게 유지
 const DEFAULT_AMM_FEE_PCT = parseOptionalNumber(process.env.DEFAULT_AMM_FEE_PCT, 0.005);
 const DEFAULT_MEV_MARGIN_PCT = parseOptionalNumber(process.env.DEFAULT_MEV_MARGIN_PCT, 0.0015);
 
@@ -52,6 +54,8 @@ export function evaluateExecutionViabilityForOrder(
   const mevMarginPct = costs.mevMarginPct ?? DEFAULT_MEV_MARGIN_PCT;
   const riskPct = order.price > 0 ? Math.max((order.price - order.stopLoss) / order.price, 0) : 0;
   const rewardPct = order.price > 0 ? Math.max((order.takeProfit2 - order.price) / order.price, 0) : 0;
+  // Why fee=0, mev=0: estimateSlippage()에 순수 price impact만 추출, AMM fee/MEV는 별도 가산(L59).
+  // ⚠️ live 전환 시 Jupiter quote 기반으로 교체하면 fee가 이미 포함되므로 이중계산 주의.
   const entryPriceImpact = estimateSlippage(order.price * order.quantity, poolTvl, 0, 0);
   const exitPriceImpact = estimateSlippage(order.takeProfit2 * order.quantity, poolTvl, 0, 0);
   const roundTripCost = entryPriceImpact + exitPriceImpact + ammFeePct + mevMarginPct;

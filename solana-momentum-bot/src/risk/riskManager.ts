@@ -30,6 +30,10 @@ export interface RiskConfig {
   minTokenAgeHours: number;
   maxHolderConcentration: number;
   liquidityParams?: Partial<LiquidityParams>;
+  /** v3: Runner 중 +1 concurrent 허용 */
+  runnerConcurrentEnabled?: boolean;
+  /** v3: 최대 동시 포지션 수 */
+  maxConcurrentPositions?: number;
 }
 
 export interface RiskHalt {
@@ -123,11 +127,26 @@ export class RiskManager {
       };
     }
 
-    if (portfolio.openTrades.length > 0) {
-      return {
-        approved: false,
-        reason: 'Max concurrent position limit reached (1)',
-      };
+    const maxConcurrent = this.riskConfig.maxConcurrentPositions ?? 1;
+    const ABSOLUTE_MAX = 2;
+    if (portfolio.openTrades.length >= maxConcurrent) {
+      // v3: Runner 중이면 +1 허용 (절대 상한 2)
+      const canBypassForRunner =
+        (this.riskConfig.runnerConcurrentEnabled ?? false) &&
+        portfolio.openTrades.length === 1 &&
+        portfolio.openTrades.length < ABSOLUTE_MAX &&
+        portfolio.runnerTradeIds &&
+        portfolio.runnerTradeIds.size > 0 &&
+        portfolio.runnerTradeIds.has(portfolio.openTrades[0].id);
+
+      if (!canBypassForRunner) {
+        return {
+          approved: false,
+          reason: `Max concurrent position limit reached (${maxConcurrent})`,
+        };
+      }
+      appliedAdjustments.push('RUNNER_CONCURRENT_BYPASS');
+      log.info('Runner concurrent bypass: existing position is runner, allowing +1');
     }
 
     const pairStats = edgeTracker.getPairStats(order.pairAddress);

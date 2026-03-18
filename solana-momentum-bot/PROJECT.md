@@ -45,11 +45,13 @@ Stage 2: 지금 들어가도 되는가? (Trigger)
   → Onchain Breakout Confirmation + Risk Gate
 ```
 
-### 게이트 시스템 (점수 합산 X, 단계별 필터)
-- Gate 1: ScamRisk > 임계치 → 즉시 제외
-- Gate 2: Attention / Context score → 감시 강도 / 사이즈 결정
-- Gate 3: OnchainBreakout → 실제 체결 여부
-- Gate 4: Execution Viability → 슬리피지, stale, 추격 금지
+### 게이트 시스템 (5+1단계 순차 필터)
+- Gate 0: Security — honeypot, freeze, transferFee 즉시 제외
+- Gate 1: AttentionScore — 트렌딩 컨텍스트 필수
+- Gate 2: Execution Viability + Quote — R:R, 슬리피지, 추격 금지
+- Gate 3: Strategy Score — 전략별 점수 기반 등급
+- Gate 4: Safety — pool 유동성, token age, LP burn
+- Exit Gate: Sell-side Impact — 포지션 크기 기반 exit 유동성
 
 ### 핵심 원칙
 - 브레이크아웃은 메인 전략이 아니라 트리거
@@ -76,11 +78,11 @@ Stage 2: 지금 들어가도 되는가? (Trigger)
 | Phase 1 | Spike Explanation + scanner/gate 기반 정리 | 완료 |
 | Phase 2 | Event Catch (Birdeye 중심 + X stream 코드 경로) | 구현 완료, 외부 검증 대기 |
 | Phase 3 | Candidate-Driven Execution (게이트 통합) | 완료 |
-| Phase 4 | New Coin Pipeline + sandbox/conditional 전략 | 완료 |
+| Phase 4 | Momentum Cascade / Dynamic Sizing / Kelly | 완료 |
 
 ## 판단 기준
 
-### 성공 지표 (REFACTORING.md metrics section)
+### 성공 지표 (docs/exec-plans/completed/phase-0-4-refactor.md)
 - Expectancy after fees and slippage > 0
 - Explained vs unexplained candidate conversion rate
 - Win rate by gate path

@@ -1,6 +1,6 @@
 # Completed Issues Archive
 
-> Last updated: 2026-03-17
+> Last updated: 2026-03-18
 > Purpose: solved items, audit history, migrated completion logs, and historical decisions
 
 ---
@@ -163,6 +163,29 @@
 | M-18 | Resilience | Birdeye WS fallback |
 | M-19 | Resilience | DexScreener 429 retry |
 | M-20 | Resilience | PG pool exhaustion 방어 |
+
+---
+
+## 2026-03-18 Quality Improvements (HB16+)
+
+### Harness Refactoring Gap Analysis → 코드 반영
+
+| ID | 항목 | 파일 | 내용 |
+|----|------|------|------|
+| HB-1 | RegimeFilter 데이터소스 버그 | `birdeyeClient.ts`, `index.ts` | SOL_USDC_PAIR(mint주소)를 pair endpoint에 사용 → getTokenOHLCV(mint endpoint) 수정 |
+| HB-2 | Exit Gate (Sell-side Impact) 구현 | `gate/index.ts`, `spreadMeasurer.ts`, `candleHandler.ts` | position-sized sell impact 측정 + 3%/1.5% 임계치 gate |
+| HB-3 | Jupiter Ultra ADR 확정 | `docs/decisions/005-jupiter-ultra-positioning.md` | Jito 보완재 포지셔닝, config 토글 추가 |
+| HB-4 | SOL_MINT 상수 중앙화 | `utils/constants.ts` 생성 | 4파일 중복 제거 (executor, quoteGate, spreadMeasurer, index) |
+| HB-5 | gate/index.ts import 순서 수정 | `gate/index.ts` | const log가 import 블록 사이에 위치 → import 후로 이동 |
+| HB-6 | getTokenOHLCV 에러 핸들링 일관화 | `birdeyeClient.ts` | return [] → throw error (getOHLCV와 일관) |
+| HB-7 | Probe size 스케일링 | `spreadMeasurer.ts`, `candleHandler.ts` | 0.1 SOL probe → position-sized measureSellImpact() |
+| HB-8 | Sync path JSDoc 문서화 | `gate/index.ts` | evaluateGates()가 sellImpactPct, security, quote를 무시함을 명시 |
+| HB-9 | ADR-005 URL 검증 | `docs/decisions/005-jupiter-ultra-positioning.md` | station.jup.ag → dev.jup.ag 수정 |
+| HB-10 | design-docs/index.md 갱신 | `docs/design-docs/index.md` | Gate chain + Exit Gate 문서화 |
+
+### 테스트 추가
+
+- `test/gateEventScore.test.ts`: Sell-side impact exit gate 5건 (passes, sizing reduction, reject, skip undefined, sync ignore)
 
 ---
 

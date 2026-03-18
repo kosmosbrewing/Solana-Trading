@@ -7,11 +7,10 @@ import {
 import bs58 from 'bs58';
 import { createModuleLogger } from '../utils/logger';
 import { Order } from '../utils/types';
+import { SOL_MINT } from '../utils/constants';
 import { JitoClient } from './jitoClient';
 
 const log = createModuleLogger('Executor');
-
-const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
 export interface ExecutorConfig {
   solanaRpcUrl: string;
@@ -26,6 +25,12 @@ export interface ExecutorConfig {
   jitoRpcUrl?: string;
   /** Phase 3: Jito tip amount in SOL */
   jitoTipSol?: number;
+  /** v3: Jupiter Ultra V3 활성화 */
+  useJupiterUltra?: boolean;
+  /** v3: Jupiter Ultra API base URL */
+  jupiterUltraApiUrl?: string;
+  /** v3: Jupiter API key (Ultra 필수) */
+  jupiterApiKey?: string;
 }
 
 export interface SwapResult {
@@ -46,14 +51,36 @@ interface JupiterQuote {
   routePlan: unknown[];
 }
 
+/** v3: Ultra V3 order 응답 */
+interface UltraOrderResponse {
+  transaction: string; // base64 serialized transaction
+  requestId: string;
+  inputMint: string;
+  outputMint: string;
+  inAmount: string;
+  outAmount: string;
+  slippageBps?: number;
+}
+
+/** v3: Ultra V3 execute 응답 */
+interface UltraExecuteResponse {
+  signature: string;
+  status: string;
+  slot?: number;
+  inputAmountResult?: string;
+  outputAmountResult?: string;
+}
+
 export class Executor {
   private connection: Connection;
   private wallet: Keypair;
   private jupiterClient: AxiosInstance;
+  private ultraClient?: AxiosInstance;
   private maxSlippageBps: number;
   private maxRetries: number;
   private jitoClient?: JitoClient;
   private useJito: boolean;
+  private useUltra: boolean;
 
   constructor(executorConfig: ExecutorConfig) {
     this.connection = new Connection(executorConfig.solanaRpcUrl, 'confirmed');
@@ -65,6 +92,22 @@ export class Executor {
     this.maxSlippageBps = Math.round(executorConfig.maxSlippage * 10000);
     this.maxRetries = executorConfig.maxRetries;
     this.useJito = executorConfig.useJitoBundles ?? false;
+
+    // v3: Ultra V3 — API key 필수, 없으면 graceful disable
+    this.useUltra = (executorConfig.useJupiterUltra ?? false) && !!executorConfig.jupiterApiKey;
+    if (executorConfig.useJupiterUltra && !executorConfig.jupiterApiKey) {
+      log.warn('Jupiter Ultra enabled but no API key — falling back to v6');
+    }
+    if (this.useUltra) {
+      this.ultraClient = axios.create({
+        baseURL: executorConfig.jupiterUltraApiUrl || 'https://api.jup.ag',
+        timeout: 15000,
+        headers: {
+          'x-api-key': executorConfig.jupiterApiKey!,
+        },
+      });
+      log.info('Jupiter Ultra V3 integration enabled');
+    }
 
     if (this.useJito && executorConfig.jitoRpcUrl) {
       this.jitoClient = new JitoClient({
@@ -92,8 +135,106 @@ export class Executor {
 
   /**
    * retry 시마다 quote를 재발급받아 stale quote 문제 방지
+   * v3: Ultra 활성화 시 Ultra 우선 시도 → 실패 시 v6 fallback
    */
   private async executeSwapWithRetry(
+    inputMint: string,
+    outputMint: string,
+    amountLamports: bigint
+  ): Promise<SwapResult> {
+    // v3: Ultra V3 경로 우선 시도
+    if (this.useUltra && this.ultraClient) {
+      try {
+        return await this.executeSwapUltra(inputMint, outputMint, amountLamports);
+      } catch (ultraError) {
+        log.warn(`Ultra V3 swap failed: ${ultraError}. Falling back to v6.`);
+      }
+    }
+
+    return this.executeSwapV6(inputMint, outputMint, amountLamports);
+  }
+
+  /**
+   * v3: Jupiter Ultra V3 swap — GET /ultra/v1/order → sign → POST /ultra/v1/execute
+   */
+  private async executeSwapUltra(
+    inputMint: string,
+    outputMint: string,
+    amountLamports: bigint
+  ): Promise<SwapResult> {
+    if (!this.ultraClient) throw new Error('Ultra client not initialized');
+
+    // Step 1: GET /ultra/v1/order
+    const orderResponse = await this.ultraClient.get<UltraOrderResponse>('/ultra/v1/order', {
+      params: {
+        inputMint,
+        outputMint,
+        amount: amountLamports.toString(),
+        taker: this.wallet.publicKey.toBase58(),
+      },
+    });
+
+    const order = orderResponse.data;
+    const expectedOut = BigInt(order.outAmount);
+
+    log.info(
+      `Ultra order: ${order.inAmount} → ${order.outAmount} ` +
+      `(slippage: ${order.slippageBps ?? 'auto'}bps, requestId: ${order.requestId})`
+    );
+
+    // Step 2: Sign the transaction
+    const txBuffer = Buffer.from(order.transaction, 'base64');
+    const tx = VersionedTransaction.deserialize(txBuffer);
+    tx.sign([this.wallet]);
+    const signedTxBase64 = Buffer.from(tx.serialize()).toString('base64');
+
+    // Step 3: POST /ultra/v1/execute
+    const executeResponse = await this.ultraClient.post<UltraExecuteResponse>('/ultra/v1/execute', {
+      signedTransaction: signedTxBase64,
+      requestId: order.requestId,
+    });
+
+    const result = executeResponse.data;
+
+    if (result.status !== 'Success') {
+      throw new Error(`Ultra execute failed: status=${result.status}`);
+    }
+
+    // 실제 수신량 계산 — Ultra 응답에 결과가 있으면 사용, 없으면 잔액 비교
+    let actualOutAmount: bigint | undefined;
+    let actualSlippageBps = 0;
+
+    if (result.outputAmountResult) {
+      actualOutAmount = BigInt(result.outputAmountResult);
+      actualSlippageBps = expectedOut > 0n
+        ? Number((expectedOut - actualOutAmount) * 10000n / expectedOut)
+        : 0;
+    } else {
+      // Fallback: 잔액 비교 (기존 v6 패턴 재사용)
+      const balanceAfter = outputMint === SOL_MINT
+        ? BigInt(Math.round(await this.getBalance() * 1e9))
+        : await this.getTokenBalance(outputMint);
+      // 잔액 비교는 before 값이 없으므로 Ultra 결과만 신뢰
+      actualOutAmount = undefined;
+    }
+
+    log.info(
+      `Ultra swap complete: sig=${result.signature}, expected=${expectedOut}, ` +
+      `actual=${actualOutAmount ?? 'unknown'}, slippage=${actualSlippageBps}bps`
+    );
+
+    return {
+      txSignature: result.signature,
+      expectedOutAmount: expectedOut,
+      actualOutAmount,
+      slippageBps: actualSlippageBps,
+    };
+  }
+
+  /**
+   * v6 swap 경로 — 기존 로직 그대로
+   */
+  private async executeSwapV6(
     inputMint: string,
     outputMint: string,
     amountLamports: bigint
@@ -102,7 +243,6 @@ export class Executor {
 
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       try {
-        // 매 시도마다 fresh quote 발급
         const quote = await this.getQuote(inputMint, outputMint, amountLamports);
         log.info(
           `Quote (attempt ${attempt}): ${quote.inAmount} → ${quote.outAmount} (slippage: ${quote.slippageBps}bps)`
@@ -110,7 +250,6 @@ export class Executor {
 
         const expectedOut = BigInt(quote.outAmount);
 
-        // 출력 토큰의 잔고를 사전 기록
         const balanceBefore = outputMint === SOL_MINT
           ? BigInt(Math.round(await this.getBalance() * 1e9))
           : await this.getTokenBalance(outputMint);
@@ -118,7 +257,6 @@ export class Executor {
         const swapTx = await this.getSwapTransaction(quote);
         const txSignature = await this.sendTransaction(swapTx);
 
-        // 출력 토큰의 잔고를 사후 기록하여 실제 수신량 계산
         const balanceAfter = outputMint === SOL_MINT
           ? BigInt(Math.round(await this.getBalance() * 1e9))
           : await this.getTokenBalance(outputMint);

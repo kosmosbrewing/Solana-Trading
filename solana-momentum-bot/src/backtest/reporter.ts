@@ -1,3 +1,5 @@
+/* eslint-disable no-console */
+// Why: reporter.ts는 CLI 출력 전용 모듈이므로 console.log 허용
 import { EdgeTracker } from '../reporting';
 import { BacktestResult, BacktestTrade } from './types';
 

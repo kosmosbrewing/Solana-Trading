@@ -1,9 +1,9 @@
 # Solana Momentum Bot Refactoring Status
 
-> Updated: 2026-03-17
+> Updated: 2026-03-18
 > Status: core refactor complete
 > Remaining blocker: external X Filtered Stream live validation
-> Archive: `ISSUES_CMPL.md`
+> Archive: `docs/exec-plans/completed/issues-archive.md`
 
 ---
 

@@ -22,6 +22,7 @@ import { evaluateNewLpSniper, buildNewLpOrder, prepareNewLpCandidate } from './s
 import { checkOpenPositions, closeTrade } from './orchestration/tradeExecution';
 import { runPreflightCheck } from './orchestration/preflightCheck';
 import { SpreadMeasurer } from './gate/spreadMeasurer';
+import { SOL_MINT } from './utils/constants';
 import { BotContext } from './orchestration/types';
 
 const log = createModuleLogger('Main');
@@ -120,6 +121,8 @@ async function main() {
       maxPoolImpactPct: config.maxPoolImpact,
       emergencyHaircut: config.emergencyHaircut,
     },
+    runnerConcurrentEnabled: config.runnerConcurrentEnabled,
+    maxConcurrentPositions: config.maxConcurrentPositions,
   };
   const riskManager = new RiskManager(riskConfig, tradeStore);
 
@@ -133,6 +136,9 @@ async function main() {
     useJitoBundles: config.useJitoBundles,
     jitoRpcUrl: config.jitoRpcUrl,
     jitoTipSol: config.jitoTipSol,
+    useJupiterUltra: config.useJupiterUltra,
+    jupiterUltraApiUrl: config.jupiterUltraApiUrl,
+    jupiterApiKey: config.jupiterApiKey,
   };
   const executor = new Executor(executorConfig);
 
@@ -273,7 +279,7 @@ async function main() {
 
   // ─── Universe Engine ───────────────────────────────
   // Legacy mode: TARGET_PAIR_ADDRESS, Scanner mode: 동적 watchlist
-  const targetPair = process.env.TARGET_PAIR_ADDRESS;
+  const targetPair = config.targetPairAddress || undefined;
   if (!targetPair && !config.scannerEnabled) {
     log.error('TARGET_PAIR_ADDRESS not set and SCANNER_ENABLED is false. Exiting.');
     process.exit(1);
@@ -426,7 +432,7 @@ async function main() {
   }, 5000);
 
   // ─── Phase 1B: Regime Filter periodic update ───────
-  const SOL_USDC_PAIR = 'So11111111111111111111111111111111111111112';
+  // Why: SOL mint 주소로 /defi/ohlcv 엔드포인트 사용 (getOHLCV는 pair address 전용)
   const REGIME_UPDATE_INTERVAL_MS = 15 * 60 * 1000; // 15 min
 
   const updateRegime = async () => {
@@ -434,7 +440,7 @@ async function main() {
       // Factor 1: SOL 4H trend from Birdeye (60 candles × 4h = 10 days)
       const now = Math.floor(Date.now() / 1000);
       const tenDaysAgo = now - 60 * 4 * 3600;
-      const sol4hCandles = await birdeyeClient.getOHLCV(SOL_USDC_PAIR, '4H', tenDaysAgo, now);
+      const sol4hCandles = await birdeyeClient.getTokenOHLCV(SOL_MINT, '4H', tenDaysAgo, now);
       if (sol4hCandles.length >= 50) {
         regimeFilter.updateSolTrend(sol4hCandles);
       }

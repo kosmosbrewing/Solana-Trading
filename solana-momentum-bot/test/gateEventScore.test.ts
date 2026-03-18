@@ -1,4 +1,4 @@
-import { evaluateExecutionViabilityForOrder, evaluateGates } from '../src/gate';
+import { evaluateExecutionViabilityForOrder, evaluateGates, evaluateGatesAsync } from '../src/gate';
 import { buildLiveGateInput } from '../src/gate/liveGateInput';
 import type { AttentionScore } from '../src/event/types';
 import type { Candle, PoolInfo, Signal } from '../src/utils/types';
@@ -250,5 +250,83 @@ describe('AttentionScore gate integration', () => {
     expect(tinyProbe.rejected).toBe(false);
     expect(actualSize.rejected).toBe(true);
     expect(actualSize.filterReason).toContain('poor_execution_viability');
+  });
+});
+
+describe('Sell-side impact exit gate', () => {
+  const baseInput = {
+    signal,
+    candles,
+    poolInfo,
+    previousTvl: poolInfo.tvl,
+    fibConfig: {
+      impulseMinPct: 0.15,
+      volumeClimaxMultiplier: 2.5,
+      minWickRatio: 0.4,
+    },
+  };
+
+  it('passes when sellImpactPct is below sizing threshold', async () => {
+    const result = await evaluateGatesAsync({
+      ...baseInput,
+      sellImpactPct: 0.005, // 0.5% — well below 1.5% threshold
+      maxSellImpact: 0.03,
+      sellImpactSizingThreshold: 0.015,
+    });
+
+    expect(result.rejected).toBe(false);
+    expect(result.sellImpactPct).toBe(0.005);
+  });
+
+  it('reduces sizing 50% when sellImpactPct exceeds sizing threshold', async () => {
+    const baseline = await evaluateGatesAsync({
+      ...baseInput,
+      sellImpactPct: 0.005,
+    });
+    const highSellImpact = await evaluateGatesAsync({
+      ...baseInput,
+      sellImpactPct: 0.02, // 2% — above 1.5% threshold
+      maxSellImpact: 0.03,
+      sellImpactSizingThreshold: 0.015,
+    });
+
+    expect(highSellImpact.rejected).toBe(false);
+    expect(highSellImpact.gradeSizeMultiplier).toBeCloseTo(baseline.gradeSizeMultiplier * 0.5, 6);
+  });
+
+  it('rejects when sellImpactPct exceeds maxSellImpact', async () => {
+    const result = await evaluateGatesAsync({
+      ...baseInput,
+      sellImpactPct: 0.04, // 4% — above 3% max
+      maxSellImpact: 0.03,
+      sellImpactSizingThreshold: 0.015,
+    });
+
+    expect(result.rejected).toBe(true);
+    expect(result.filterReason).toContain('exit_illiquid');
+    expect(result.gradeSizeMultiplier).toBe(0);
+  });
+
+  it('skips sell impact check when sellImpactPct is undefined', async () => {
+    const result = await evaluateGatesAsync({
+      ...baseInput,
+      // sellImpactPct not provided
+    });
+
+    expect(result.sellImpactPct).toBeUndefined();
+  });
+
+  it('sync evaluateGates ignores sellImpactPct (by design — backtest has no live quotes)', () => {
+    const withHighSellImpact = evaluateGates({
+      ...baseInput,
+      sellImpactPct: 0.10, // 10% — would reject in async path
+      maxSellImpact: 0.03,
+    });
+    const withoutSellImpact = evaluateGates(baseInput);
+
+    // Sync path does not apply sell impact gate
+    expect(withHighSellImpact.rejected).toBe(withoutSellImpact.rejected);
+    expect(withHighSellImpact.gradeSizeMultiplier).toBe(withoutSellImpact.gradeSizeMultiplier);
+    expect(withHighSellImpact.sellImpactPct).toBeUndefined();
   });
 });

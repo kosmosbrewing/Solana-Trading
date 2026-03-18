@@ -1,6 +1,6 @@
 # Strategy Reference
 
-> Last updated: 2026-03-17
+> Last updated: 2026-03-18
 > Mission: 1 SOL → 100 SOL
 > Documented strategies: Volume Spike (A), Fib Pullback (C), New LP Sniper (D), Momentum Cascade (E)
 > Runtime focus: A/C core, D sandbox, E conditional add-on
@@ -65,6 +65,9 @@ TP1 도달 시 50% 청산, 잔여 50%는:
 | Multi-TF Alignment | 0–20 | ≥3 TF → 20 / ≥2 → 10 |
 | Whale Activity | 0–15 | 감지 시 15 |
 | LP Stability | -10–15 | stable +15 / dropping -10 |
+| Mcap/Volume Ratio | 0–10 | ≥30% → 10 / ≥15% → 6 / ≥5% → 3 / <5% → 0 |
+
+6팩터 합산 후 `Math.min(100, total)` 캡. mcap 데이터 없으면 0점.
 
 Grade: A(≥70) / B(≥50) / C(<50, reject)
 
@@ -228,7 +231,7 @@ GET /token-profiles/latest     — 최근 프로필 업데이트된 토큰
 GET /swap/quote?inputMint=SOL&outputMint={token}&amount={estimatedSize}
 
 검증 항목:
-  - priceImpact ≤ maxPoolImpact
+  - priceImpact ≤ maxPriceImpact (기본 2%, 60% 초과 시 size × 0.5)
   - route 존재 여부
   - quote freshness (stale quote 거부)
 ```
@@ -301,12 +304,21 @@ Signal
   │    ├─ 1.2 ≤ effectiveRR < 1.5 → 50% 사이징
   │    └─ effectiveRR ≥ 1.5 → 100% 사이징
   │
-  └─ Gate 4: Token Safety
-       ├─ Pool TVL < $50K → reject
-       ├─ Token age < 60min (Lane A) → reject
-       ├─ Top10 holders > 80% → reject
-       ├─ LP not burned → 50% 사이징
-       └─ Ownership not renounced → 50% 사이징
+  ├─ Gate 4: Token Safety (v2: Age Bucket Graduated Sizing)
+  │    ├─ Pool TVL < $50K → reject
+  │    ├─ Token age < 20min → reject (hard floor)
+  │    ├─ Token age 20min~2h → size × 0.25
+  │    ├─ Token age 2h~24h → size × 0.5
+  │    ├─ Token age ≥ 24h → size × 1.0
+  │    ├─ Top10 holders > 80% → reject
+  │    ├─ LP not burned → 50% 사이징 (age bucket과 곱셈 누적)
+  │    └─ Ownership not renounced → 50% 사이징
+  │
+  └─ Exit Gate: Sell-side Impact (async)
+       ├─ SpreadMeasurer.measureSellImpact(tokenMint, positionSizeSol)
+       ├─ sellImpact > 3% (maxSellImpact) → reject (exit_illiquid)
+       ├─ sellImpact > 1.5% (sizingThreshold) → 50% 사이징
+       └─ sync 경로(backtest)에서는 비활성
 ```
 
 ### 최종 사이징 공식
@@ -318,6 +330,7 @@ finalQuantity = riskBasedSize
   × executionViability       (full: 1.0 / reduced: 0.5 / reject: 0)
   × safetySizeMultiplier     (1.0 / 0.5 / 0.25)
   × regimeMultiplier         (risk-on: 1.0 / neutral: 0.7 / risk-off: 0)
+  × sellImpactMultiplier     (≤1.5%: 1.0 / >1.5%: 0.5 / >3%: reject)
 ```
 
 ---
@@ -351,9 +364,10 @@ finalQuantity = riskBasedSize
 
 | 우선순위 | 청산 조건 | 적용 대상 |
 |---------|----------|----------|
+| **0** | **Degraded Exit** — sellImpact > 5% or quote 3x fail | TP1 패턴: 25% 부분 청산 → 잔여분 새 trade → 5분 후 pairAddress 매칭으로 전량 청산 |
 | 1 | **Time Stop** — 경과시간 ≥ 제한 | Spike: 30분, Fib: 60분 |
 | 2 | **Stop Loss** — price ≤ SL | 전체 |
-| 3 | **Take Profit 2** — price ≥ TP2 | 전체 (전량 청산) |
+| 3 | **Take Profit 2** — price ≥ TP2 | 전량 청산 (Runner 시: SL→TP1으로 DB 영속화, trailing-only 전환) |
 | 4 | **Take Profit 1** — price ≥ TP1 | 전체 (50% 부분 청산) |
 | 5 | **Exhaustion Exit** — 2+ 소진 지표 | 전체 |
 | 6 | **Adaptive Trailing** — price ≤ peak - ATR(7) | 전체 |
@@ -373,6 +387,50 @@ if currentPrice ≤ trail → 청산
 
 HWM(High Water Mark)은 DB에 저장되어 봇 재시작 후에도 유지.
 
+### v2: Degraded Exit 구현 상세
+
+```
+조건: sellImpact > degradedSellImpactThreshold (5%)
+      OR quote 연속 실패 ≥ degradedQuoteFailLimit (3회)
+
+Phase 1: TP1 부분 청산 패턴 적용
+  1. trade의 25% (degradedPartialPct) 부분 청산 → DB에 CLOSED
+  2. 잔여 75%를 새 trade로 INSERT (status: OPEN)
+  3. degradedStateMap에 {partialSoldAt, pairAddress} 기록
+
+Phase 2: delay 후 잔여분 전량 청산
+  1. 모니터링 루프에서 pairAddress 기반으로 잔여 trade 매칭
+  2. degradedDelayMs (5분) 경과 확인
+  3. 전량 청산 + state map 정리
+
+State 관리:
+  - degradedStateMap: trade.id → {partialSoldAt, pairAddress} (실제 트리거된 거래만)
+  - quoteFailCountMap: trade.id → 연속 실패 카운트 (degraded 판정과 분리)
+  - closeTrade()에서 양쪽 map 자동 정리 (메모리 누수 방지)
+```
+
+Config: `degradedExitEnabled` (default: false), `degradedSellImpactThreshold` (0.05), `degradedQuoteFailLimit` (3), `degradedPartialPct` (0.25), `degradedDelayMs` (300,000)
+
+### v2: Runner Extension 구현 상세
+
+```
+조건: runnerEnabled + Grade A + risk-on (tradingHaltedReason 없음) + 비degraded
+
+TP2 도달 시:
+  1. SL → TP1으로 상향 (DB에 영속화 — updatePositionsForPair)
+  2. HWM 갱신
+  3. trailing-only 모드 전환 (runnerStateMap에 기록)
+  4. 이후 Adaptive Trailing으로 청산 관리
+
+미충족 시: 기존대로 TP2 전량 청산
+
+State 관리:
+  - runnerStateMap: trade.id → boolean
+  - closeTrade()에서 자동 정리
+```
+
+Config: `runnerEnabled` (default: false)
+
 ---
 
 ## Risk Tier System
@@ -383,8 +441,8 @@ EdgeTracker의 트레이드 이력 기반 자동 단계 조정.
 |------|-----------|-----------|-------------|--------|-------|
 | **Bootstrap** | <20 | 1% 고정 | 5% | 30% | 비활성 |
 | **Calibration** | 20–50 | 1% 고정 | 5% | 30% | 비활성 |
-| **Confirmed** | 50–100 | QK ≤6.25% | 10% | 35% | 1/4 Kelly |
-| **Proven** | 100+ | HK ≤12.5% | 15% | 40% | 1/2 Kelly |
+| **Confirmed** | 50–100 | QK ≤3% | 15% | 35% | 1/4 Kelly |
+| **Proven** | 100+ | QK ≤5% | 15% | 40% | 1/4 Kelly |
 
 ### 피드백 반영 — Bootstrap에서 공격적 사이징 금지
 
@@ -406,11 +464,13 @@ EdgeTracker의 트레이드 이력 기반 자동 단계 조정.
 
 ```
 kellyFraction = winRate - (1 - winRate) / rewardRiskRatio
-appliedKelly = kellyFraction × kellyScale
-maxRiskPerTrade = min(appliedKelly, kellyCap)
+appliedKelly = kellyFraction × kellyScale   (Confirmed/Proven 모두 0.25 = 1/4 Kelly)
+maxRiskPerTrade = min(appliedKelly, kellyCap)  (Confirmed: 3%, Proven: 5%)
 ```
 
 활성화 조건: edgeState ∈ {Confirmed, Proven} AND kellyFraction > 0 AND 라이브 표본 ≥ 50
+
+> v2: Proven도 1/4 Kelly (이전 1/2). 마이크로캡 exit-liquidity 리스크 대비 생존 우선.
 
 ### Drawdown Guard
 
@@ -466,7 +526,7 @@ Constant product AMM 기준:
 
 ```
 priceImpact = tradeSize / (poolTVL/2 + tradeSize)
-totalSlippage = priceImpact + AMMfee(0.3%) + MEVmargin(0.1%)
+totalSlippage = priceImpact + AMMfee(0.5%) + MEVmargin(0.15%)
 ```
 
 슬리피지 > 1% 시 사이즈 추가 감축.
@@ -478,7 +538,7 @@ totalSlippage = priceImpact + AMMfee(0.3%) + MEVmargin(0.1%)
 ### 비용 모델
 
 ```
-roundTripCost = entrySlippage + exitSlippage + AMMfee(0.3%) + MEV(0.1%)
+roundTripCost = entrySlippage + exitSlippage + AMMfee(0.5%) + MEV(0.15%)
 effectiveRR = (rewardPct - roundTripCost) / (riskPct + roundTripCost)
 ```
 
@@ -747,8 +807,8 @@ Birdeye WS: SUBSCRIBE_TOKEN_NEW_LISTING / SUBSCRIBE_NEW_PAIR
 |---------|-----|------|
 | `MIN_EFFECTIVE_RR_REJECT` | 1.2 | executionViability.ts |
 | `MIN_EFFECTIVE_RR_PASS` | 1.5 | executionViability.ts |
-| `AMM_FEE_PCT` | 0.003 | executionViability.ts |
-| `MEV_MARGIN_PCT` | 0.001 | executionViability.ts |
+| `AMM_FEE_PCT` | 0.005 | executionViability.ts |
+| `MEV_MARGIN_PCT` | 0.0015 | executionViability.ts |
 | `maxRetries` | 3 | config.ts |
 | `txTimeoutMs` | 30,000 | config.ts |
 

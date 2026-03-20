@@ -330,7 +330,11 @@ export async function checkOpenPositions(ctx: BotContext): Promise<void> {
       continue;
     }
 
-    if (recentCandles.length >= 2) {
+    // Exhaustion Exit — 최소 10분(2봉) 보유 후 적용
+    // Why: 진입 봉(volume spike)→직후 1봉은 자연스럽게 volume/body 감소. 1봉 exhaustion 오탐만 스킵
+    const minExhaustionMs = 10 * 60 * 1000;
+    const holdDuration = Date.now() - trade.createdAt.getTime();
+    if (holdDuration >= minExhaustionMs && recentCandles.length >= 2) {
       const { exhausted, indicators } = checkExhaustion(recentCandles, config.exhaustionThreshold);
       if (exhausted && currentPrice > trade.entryPrice) {
         log.info(`Exhaustion exit for trade ${trade.id}: ${indicators.join(', ')}`);
@@ -688,6 +692,11 @@ async function handleRunnerGradeBPartial(
     const realizedPnl = (exitPrice - trade.entryPrice) * soldQuantity;
     await ctx.tradeStore.closeTrade(trade.id, exitPrice, realizedPnl, executionSlippage, 'TAKE_PROFIT_2', soldQuantity);
 
+    // 원본 trade state map 정리 (closeTrade 경유하지 않으므로 수동 정리)
+    degradedStateMap.delete(trade.id);
+    quoteFailCountMap.delete(trade.id);
+    runnerStateMap.delete(trade.id);
+
     // 잔여분: trailing-only runner로 전환
     const newStopLoss = trade.takeProfit1;
     const extendedTimeStopAt = new Date(Date.now() + config.tp1TimeExtensionMinutes * 60_000);
@@ -727,6 +736,17 @@ async function handleRunnerGradeBPartial(
       closedAt: new Date(),
     };
     await ctx.notifier.sendTradeClose(partialTrade);
+
+    // Phase 1B: Paper metrics (closeTrade 우회하므로 수동 기록)
+    if (ctx.paperMetrics) {
+      ctx.paperMetrics.recordExit(trade.id, exitPrice, 'TAKE_PROFIT_2');
+    }
+    // Phase 3: WalletManager PnL 기록
+    if (ctx.walletManager) {
+      const walletName = trade.strategy === 'new_lp_sniper' ? 'sandbox' : 'main';
+      ctx.walletManager.recordPnl(walletName, realizedPnl);
+    }
+
     await ctx.notifier.sendTradeAlert(
       `Runner activated (B, 0.5x): ${trade.strategy} ${trade.id}, ` +
       `sold 50% at TP2, remaining ${remainingQuantity.toFixed(6)} SOL trailing`

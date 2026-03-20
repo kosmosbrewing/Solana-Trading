@@ -34,6 +34,19 @@ export interface RiskConfig {
   runnerConcurrentEnabled?: boolean;
   /** v3: 최대 동시 포지션 수 */
   maxConcurrentPositions?: number;
+  /** v4: 포트폴리오 대비 최대 포지션 비율 (기본 0.20 = 20%) */
+  maxPositionPct?: number;
+  /** v4: Concurrent 절대 상한 (runner bypass 포함, 기본 3) */
+  maxConcurrentAbsolute?: number;
+  /** v4: Equity tier — 이 equity 이상이면 2 concurrent (기본 5 SOL) */
+  concurrentTier1Sol?: number;
+  /** v4: Equity tier — 이 equity 이상이면 3 concurrent (기본 20 SOL) */
+  concurrentTier2Sol?: number;
+  /** v4: Impact tier — equity 기반 maxPoolImpact 동적 축소 */
+  impactTier1Sol?: number;
+  impactTier1MaxImpact?: number;
+  impactTier2Sol?: number;
+  impactTier2MaxImpact?: number;
 }
 
 export interface RiskHalt {
@@ -127,17 +140,17 @@ export class RiskManager {
       };
     }
 
-    const maxConcurrent = this.riskConfig.maxConcurrentPositions ?? 1;
-    const ABSOLUTE_MAX = 2;
+    const ABSOLUTE_MAX = this.riskConfig.maxConcurrentAbsolute ?? 3;
+    const maxConcurrent = this.resolveMaxConcurrent(portfolio.equitySol);
     if (portfolio.openTrades.length >= maxConcurrent) {
-      // v3: Runner 중이면 +1 허용 (절대 상한 2)
+      // v3: Runner 중이면 +1 허용 (ABSOLUTE_MAX 이내)
       const canBypassForRunner =
         (this.riskConfig.runnerConcurrentEnabled ?? false) &&
-        portfolio.openTrades.length === 1 &&
         portfolio.openTrades.length < ABSOLUTE_MAX &&
         portfolio.runnerTradeIds &&
         portfolio.runnerTradeIds.size > 0 &&
-        portfolio.runnerTradeIds.has(portfolio.openTrades[0].id);
+        // 모든 기존 포지션 중 최소 하나가 runner일 때 bypass
+        portfolio.openTrades.some(t => portfolio.runnerTradeIds!.has(t.id));
 
       if (!canBypassForRunner) {
         return {
@@ -161,7 +174,7 @@ export class RiskManager {
     }
 
     if (tokenSafety) {
-      const safetyResult = this.checkTokenSafety(tokenSafety);
+      const safetyResult = this.checkTokenSafety(tokenSafety, portfolio.equitySol);
       if (!safetyResult.approved) {
         return safetyResult;
       }
@@ -218,16 +231,23 @@ export class RiskManager {
 
     // 풀 TVL 정보가 있으면 LiquiditySizer 사용
     if (order.poolTvl && order.poolTvl > 0) {
+      // v4: equity 기반 동적 maxPoolImpact
+      const dynamicImpact = this.resolveMaxPoolImpact(portfolio.equitySol);
+      const liquidityOverrides = dynamicImpact !== undefined
+        ? { ...this.liquidityParams, maxPoolImpactPct: dynamicImpact }
+        : this.liquidityParams;
+
       const sizing = calculateLiquiditySize(
         portfolio.balanceSol,
         strategyRisk.maxRiskPerTrade,
         stopLossPct,
         order.poolTvl,
         0.003,
-        this.liquidityParams
+        liquidityOverrides
       );
 
-      const maxPositionValue = portfolio.balanceSol * 0.2;
+      const positionCap = this.riskConfig.maxPositionPct ?? 0.20;
+      const maxPositionValue = portfolio.balanceSol * positionCap;
       const maxPositionUnits = maxPositionValue / order.price;
 
       return {
@@ -242,7 +262,8 @@ export class RiskManager {
     if (riskPerUnit <= 0) return { adjustedQuantity: 0, sizeConstraint: 'RISK' };
 
     const positionSize = maxRisk / riskPerUnit;
-    const maxPositionValue = portfolio.balanceSol * 0.2;
+    const positionCap = this.riskConfig.maxPositionPct ?? 0.20;
+    const maxPositionValue = portfolio.balanceSol * positionCap;
     const maxPositionUnits = maxPositionValue / order.price;
 
     return {
@@ -309,6 +330,41 @@ export class RiskManager {
     };
   }
 
+  /**
+   * v4: Equity 기반 동적 maxConcurrent 계산
+   * 포트폴리오 성장에 따라 동시 포지션 수 자동 확대
+   */
+  private resolveMaxConcurrent(equitySol: number): number {
+    const base = this.riskConfig.maxConcurrentPositions ?? 1;
+    const absoluteMax = this.riskConfig.maxConcurrentAbsolute ?? 3;
+    const tier1 = this.riskConfig.concurrentTier1Sol ?? 5;
+    const tier2 = this.riskConfig.concurrentTier2Sol ?? 20;
+
+    let equityMax = 1;
+    if (equitySol >= tier2) equityMax = 3;
+    else if (equitySol >= tier1) equityMax = 2;
+
+    return Math.min(Math.max(base, equityMax), absoluteMax);
+  }
+
+  /**
+   * v4: Equity 기반 동적 maxPoolImpact 결정
+   * 포트폴리오 성장 시 시장 영향력 자동 제한
+   */
+  private resolveMaxPoolImpact(equitySol: number): number | undefined {
+    const t1Sol = this.riskConfig.impactTier1Sol;
+    const t2Sol = this.riskConfig.impactTier2Sol;
+    if (t1Sol == null && t2Sol == null) return undefined;
+
+    if (t2Sol && equitySol >= t2Sol && this.riskConfig.impactTier2MaxImpact !== undefined) {
+      return this.riskConfig.impactTier2MaxImpact;
+    }
+    if (t1Sol && equitySol >= t1Sol && this.riskConfig.impactTier1MaxImpact !== undefined) {
+      return this.riskConfig.impactTier1MaxImpact;
+    }
+    return undefined;
+  }
+
   private isInCooldown(portfolio: PortfolioState): boolean {
     if (portfolio.consecutiveLosses < this.riskConfig.maxConsecutiveLosses) {
       return false;
@@ -321,11 +377,12 @@ export class RiskManager {
     return new Date() < cooldownEnd;
   }
 
-  checkTokenSafety(safety: TokenSafety): SafetyGateResult {
+  checkTokenSafety(safety: TokenSafety, equitySol?: number): SafetyGateResult {
     const result = evaluateTokenSafety(safety, {
       minPoolLiquidity: this.riskConfig.minPoolLiquidity,
       minTokenAgeHours: this.riskConfig.minTokenAgeHours,
       maxHolderConcentration: this.riskConfig.maxHolderConcentration,
+      equitySol,
     });
 
     if (result.appliedAdjustments.includes('LP_NOT_BURNED_HALF')) {

@@ -66,23 +66,44 @@ export class UniverseEngine extends EventEmitter {
     return this.watchlist.some(p => p.pairAddress === pairAddress);
   }
 
+  /** Scanner가 발견한 pool을 API fetch 없이 직접 추가 */
+  addPoolDirect(pool: PoolInfo): void {
+    if (this.isInWatchlist(pool.pairAddress)) return;
+    this.watchlist.push(pool);
+    this.previousTvl.set(pool.pairAddress, pool.tvl);
+    log.info(`Pool added directly: ${pool.pairAddress} (tvl=${pool.tvl})`);
+  }
+
+  /** Scanner eviction 시 pool 제거 */
+  removePool(pairAddress: string): void {
+    this.watchlist = this.watchlist.filter(p => p.pairAddress !== pairAddress);
+    this.previousTvl.delete(pairAddress);
+    this.poolAddresses = this.poolAddresses.filter(a => a !== pairAddress);
+  }
+
   /**
    * 풀 정보 조회 + 필터링 + 랭킹 → 워치리스트 갱신
+   * Why: Scanner가 addPoolDirect()로 추가한 풀은 refresh에서 보존
    */
   async refresh(): Promise<void> {
-    const allPools: PoolInfo[] = [];
+    // Scanner가 추가한 풀 보존 (poolAddresses에 없는 것 = Scanner 관리)
+    const scannerPools = this.watchlist.filter(
+      p => !this.poolAddresses.includes(p.pairAddress)
+    );
+
+    const apiPools: PoolInfo[] = [];
 
     for (const addr of this.poolAddresses) {
       try {
         const pool = await this.fetchPoolInfo(addr);
-        if (pool) allPools.push(pool);
+        if (pool) apiPools.push(pool);
       } catch (err) {
         log.warn(`Failed to fetch pool ${addr}: ${err}`);
       }
     }
 
-    // Static filter
-    const afterStatic = allPools.filter(pool => {
+    // Static filter (API pools only — Scanner pools already vetted)
+    const afterStatic = apiPools.filter(pool => {
       const result = staticFilter(pool, this.params);
       if (!result.pass) log.debug(`Static filter rejected ${pool.pairAddress}: ${result.reason}`);
       return result.pass;
@@ -106,12 +127,20 @@ export class UniverseEngine extends EventEmitter {
       this.previousTvl.set(pool.pairAddress, pool.tvl);
     }
 
-    // Rank and trim
+    // Rank and trim — merge Scanner pools + API pools
     const ranked = rankPools(afterDynamic);
-    this.watchlist = ranked.slice(0, this.params.maxWatchlistSize);
+    const merged = [...scannerPools, ...ranked];
+    // 중복 제거 (pairAddress 기준)
+    const seen = new Set<string>();
+    const deduped = merged.filter(p => {
+      if (seen.has(p.pairAddress)) return false;
+      seen.add(p.pairAddress);
+      return true;
+    });
+    this.watchlist = deduped.slice(0, this.params.maxWatchlistSize);
 
     this.emit('watchlistUpdated', this.watchlist);
-    log.info(`Watchlist updated: ${this.watchlist.length} pools (from ${allPools.length} total)`);
+    log.info(`Watchlist updated: ${this.watchlist.length} pools (${scannerPools.length} scanner + ${ranked.length} API)`);
   }
 
   private async fetchPoolInfo(pairAddress: string): Promise<PoolInfo | null> {

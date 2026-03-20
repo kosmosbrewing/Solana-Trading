@@ -70,7 +70,7 @@ export const config = {
 
   // ─── Strategy Parameters (Group 2: 10개) ───
   defaultTimeframe: numOptional('DEFAULT_TIMEFRAME', 300),
-  volumeSpikeMultiplier: numOptional('VOLUME_SPIKE_MULTIPLIER', 3.0),
+  volumeSpikeMultiplier: numOptional('VOLUME_SPIKE_MULTIPLIER', 2.5),
   volumeSpikeLookback: numOptional('VOLUME_SPIKE_LOOKBACK', 20),
   minBuyRatio: numOptional('MIN_BUY_RATIO', 0.65),
   minBreakoutScore: numOptional('MIN_BREAKOUT_SCORE', 50),
@@ -79,7 +79,7 @@ export const config = {
 
   // Fib Pullback (Strategy C)
   fibImpulseWindowBars: numOptional('FIB_IMPULSE_WINDOW_BARS', 18),
-  fibImpulseMinPct: numOptional('FIB_IMPULSE_MIN_PCT', 0.15),
+  fibImpulseMinPct: numOptional('FIB_IMPULSE_MIN_PCT', 0.175),
   fibEntryLow: numOptional('FIB_ENTRY_LOW', 0.5),
   fibEntryHigh: numOptional('FIB_ENTRY_HIGH', 0.618),
   fibInvalidation: numOptional('FIB_INVALIDATION', 0.786),
@@ -140,11 +140,17 @@ export const config = {
   useJupiterUltra: process.env.USE_JUPITER_ULTRA === 'true', // default: false
 
   // ─── Security Gate ───
-  securityGateEnabled: process.env.SECURITY_GATE_ENABLED !== 'false', // default: true
+  // Paper 모드: Birdeye Premium 미보유 시 401 → 자동 비활성화
+  securityGateEnabled: process.env.SECURITY_GATE_ENABLED
+    ? process.env.SECURITY_GATE_ENABLED !== 'false'
+    : parseTradingMode() === 'live',
   minExitLiquidityUsd: numOptional('MIN_EXIT_LIQUIDITY_USD', 10_000),
 
   // ─── Quote Gate ───
-  quoteGateEnabled: process.env.QUOTE_GATE_ENABLED !== 'false', // default: true
+  // Paper 모드: exit liquidity/sell impact 조회 불필요 → 자동 비활성화
+  quoteGateEnabled: process.env.QUOTE_GATE_ENABLED
+    ? process.env.QUOTE_GATE_ENABLED !== 'false'
+    : parseTradingMode() === 'live',
   // Why: sell-side impact가 높으면 exit 시 슬리피지 → 실제 R:R 훼손
   maxSellImpact: numOptional('MAX_SELL_IMPACT', 0.03), // 3% — hard reject
   sellImpactSizingThreshold: numOptional('SELL_IMPACT_SIZING_THRESHOLD', 0.015), // 1.5% — 50% sizing
@@ -175,6 +181,38 @@ export const config = {
   strategyDMinAge: numOptional('STRATEGY_D_MIN_AGE_MINUTES', 3),
   strategyDMaxAge: numOptional('STRATEGY_D_MAX_AGE_MINUTES', 20),
   strategyDTpMultiplier: numOptional('STRATEGY_D_TP_MULTIPLIER', 3.0),
+  // ─── v4: Concurrent 절대 상한 + Equity Tiers (Step 1D, 3) ───
+  maxConcurrentAbsolute: numOptional('MAX_CONCURRENT_ABSOLUTE', 3), // 안전 상한 (runner bypass 포함)
+  concurrentTier1Sol: numOptional('CONCURRENT_TIER_1_SOL', 5),   // 이 equity 이상이면 2 concurrent
+  concurrentTier2Sol: numOptional('CONCURRENT_TIER_2_SOL', 20),  // 이 equity 이상이면 3 concurrent
+
+  // ─── v4: Execution R:R 임계값 (Step 1C) ───
+  executionRrReject: numOptional('EXECUTION_RR_REJECT', 1.2),  // hard reject 기준
+  executionRrPass: numOptional('EXECUTION_RR_PASS', 1.5),      // full pass 기준 (미만이면 0.5x)
+
+  // ─── v4: Position Cap 설정 가능화 (Step 1B) ───
+  maxPositionPct: numOptional('MAX_POSITION_PCT', 0.20), // 포트폴리오 대비 최대 포지션 비율
+
+  // ─── v4: 유동성 적응 (Step 5A, 5B) ───
+  // TVL 최소 기준 — equity 성장 시 저유동성 토큰 자동 차단
+  liquidityTier1Sol: numOptional('LIQUIDITY_TIER_1_SOL', 5),
+  liquidityTier1MinPool: numOptional('LIQUIDITY_TIER_1_MIN_POOL', 100_000),
+  liquidityTier2Sol: numOptional('LIQUIDITY_TIER_2_SOL', 20),
+  liquidityTier2MinPool: numOptional('LIQUIDITY_TIER_2_MIN_POOL', 200_000),
+  // maxPoolImpact 동적 축소
+  impactTier1Sol: numOptional('IMPACT_TIER_1_SOL', 5),
+  impactTier1MaxImpact: numOptional('IMPACT_TIER_1_MAX_IMPACT', 0.015),
+  impactTier2Sol: numOptional('IMPACT_TIER_2_SOL', 20),
+  impactTier2MaxImpact: numOptional('IMPACT_TIER_2_MAX_IMPACT', 0.01),
+
+  // ─── v4: Age Bucket 설정 가능화 (Step 1A) ───
+  ageBucketHardFloorMin: numOptional('AGE_BUCKET_HARD_FLOOR_MIN', 15),         // reject 기준 (분)
+  ageBucketTiers: [
+    { upperHours: numOptional('AGE_BUCKET_1_UPPER_HOURS', 1), multiplier: numOptional('AGE_BUCKET_1_MULTIPLIER', 0.25) },
+    { upperHours: numOptional('AGE_BUCKET_2_UPPER_HOURS', 4), multiplier: numOptional('AGE_BUCKET_2_MULTIPLIER', 0.5) },
+    { upperHours: numOptional('AGE_BUCKET_3_UPPER_HOURS', 24), multiplier: numOptional('AGE_BUCKET_3_MULTIPLIER', 0.75) },
+  ],
+
   // ─── v2: Degraded Exit (P0-3) ───
   degradedExitEnabled: process.env.DEGRADED_EXIT_ENABLED === 'true', // default: false — paper 검증 먼저
   degradedSellImpactThreshold: numOptional('DEGRADED_SELL_IMPACT_THRESHOLD', 0.05), // 5%

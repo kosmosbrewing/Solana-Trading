@@ -149,6 +149,9 @@ describe('Runner Concurrent', () => {
     maxHolderConcentration: 0.80,
     runnerConcurrentEnabled: false,
     maxConcurrentPositions: 1,
+    // v4: equity tier 비활성화 (기존 runner 로직만 테스트)
+    concurrentTier1Sol: 999,
+    concurrentTier2Sol: 999,
   };
 
   const mockTradeStore = {
@@ -204,18 +207,115 @@ describe('Runner Concurrent', () => {
     expect(result.reason).toContain('Max concurrent');
   });
 
-  it('flag on + open 2 (둘 다 runner) → reject (절대 상한)', async () => {
-    const rm = makeRiskManager({ runnerConcurrentEnabled: true, maxConcurrentPositions: 2 });
+  it('flag on + open at ABSOLUTE_MAX → reject (절대 상한)', async () => {
+    const rm = makeRiskManager({
+      runnerConcurrentEnabled: true,
+      maxConcurrentPositions: 2,
+      maxConcurrentAbsolute: 3,
+    });
 
-    const runner1 = makeTrade({ id: 'runner-1' });
-    const runner2 = makeTrade({ id: 'runner-2', pairAddress: 'PAIR-2' });
+    const trades = [
+      makeTrade({ id: 'r-1' }),
+      makeTrade({ id: 'r-2', pairAddress: 'P-2' }),
+      makeTrade({ id: 'r-3', pairAddress: 'P-3' }),
+    ];
     const portfolio = makePortfolio({
-      openTrades: [runner1, runner2],
-      runnerTradeIds: new Set(['runner-1', 'runner-2']),
+      equitySol: 25,
+      openTrades: trades,
+      runnerTradeIds: new Set(['r-1', 'r-2', 'r-3']),
     });
 
     const result = await rm.checkOrder(makeOrder(), portfolio);
     expect(result.approved).toBe(false);
     expect(result.reason).toContain('Max concurrent');
+  });
+});
+
+describe('Equity-Scaled Concurrent (v4 Step 3)', () => {
+  const baseRiskConfig: RiskConfig = {
+    maxRiskPerTrade: 0.01,
+    maxDailyLoss: 0.05,
+    maxDrawdownPct: 0.30,
+    recoveryPct: 0.85,
+    maxConsecutiveLosses: 3,
+    cooldownMinutes: 30,
+    maxSlippage: 0.01,
+    minPoolLiquidity: 50000,
+    minTokenAgeHours: 24,
+    maxHolderConcentration: 0.80,
+    maxConcurrentPositions: 1,
+    maxConcurrentAbsolute: 4,
+    concurrentTier1Sol: 5,
+    concurrentTier2Sol: 20,
+  };
+
+  const mockTradeStore = {
+    getOpenTrades: jest.fn().mockResolvedValue([]),
+    getTodayPnl: jest.fn().mockResolvedValue(0),
+    getRecentClosedTrades: jest.fn().mockResolvedValue([]),
+    getClosedTradesChronological: jest.fn().mockResolvedValue([]),
+  };
+
+  function makeRiskManager(overrides: Partial<RiskConfig> = {}): RiskManager {
+    return new RiskManager({ ...baseRiskConfig, ...overrides }, mockTradeStore as any);
+  }
+
+  it('equitySol=3 → max 1 (기본)', async () => {
+    const rm = makeRiskManager();
+    const t1 = makeTrade({ id: 't-1' });
+    const portfolio = makePortfolio({
+      equitySol: 3,
+      openTrades: [t1],
+    });
+
+    const result = await rm.checkOrder(makeOrder(), portfolio);
+    expect(result.approved).toBe(false);
+    expect(result.reason).toContain('Max concurrent');
+  });
+
+  it('equitySol=8 → max 2 (tier 1)', async () => {
+    const rm = makeRiskManager();
+    const t1 = makeTrade({ id: 't-1' });
+    const portfolio = makePortfolio({
+      equitySol: 8,
+      balanceSol: 8,
+      openTrades: [t1],
+    });
+
+    const result = await rm.checkOrder(makeOrder(), portfolio);
+    expect(result.approved).toBe(true);
+  });
+
+  it('equitySol=25 → max 3 (tier 2)', async () => {
+    const rm = makeRiskManager();
+    const t1 = makeTrade({ id: 't-1' });
+    const t2 = makeTrade({ id: 't-2', pairAddress: 'P-2' });
+    const portfolio = makePortfolio({
+      equitySol: 25,
+      balanceSol: 25,
+      openTrades: [t1, t2],
+    });
+
+    const result = await rm.checkOrder(makeOrder(), portfolio);
+    expect(result.approved).toBe(true);
+  });
+
+  it('equitySol=25 + runner → max 4 (ABSOLUTE_MAX 이내)', async () => {
+    const rm = makeRiskManager({ runnerConcurrentEnabled: true });
+    const trades = [
+      makeTrade({ id: 't-1' }),
+      makeTrade({ id: 't-2', pairAddress: 'P-2' }),
+      makeTrade({ id: 't-3', pairAddress: 'P-3' }),
+    ];
+    const portfolio = makePortfolio({
+      equitySol: 25,
+      balanceSol: 25,
+      openTrades: trades,
+      runnerTradeIds: new Set(['t-1']),
+    });
+
+    const result = await rm.checkOrder(makeOrder(), portfolio);
+    expect(result.approved).toBe(true);
+    expect(result.appliedAdjustments).toContain('RUNNER_CONCURRENT_BYPASS');
   });
 });

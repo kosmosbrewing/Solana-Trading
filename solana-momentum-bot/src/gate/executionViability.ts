@@ -2,8 +2,8 @@ import { buildFibPullbackOrder, buildVolumeSpikeOrder } from '../strategy';
 import { estimateSlippage } from '../risk';
 import type { Candle, Order, PoolInfo, Signal } from '../utils/types';
 
-const MIN_EFFECTIVE_RR_REJECT = 1.2;
-const MIN_EFFECTIVE_RR_PASS = 1.5;
+const DEFAULT_MIN_EFFECTIVE_RR_REJECT = 1.2;
+const DEFAULT_MIN_EFFECTIVE_RR_PASS = 1.5;
 // Why: config.ts import 시 required env vars 체크가 테스트를 깨뜨리므로 로컬 파싱 유지
 // 값 기본값은 config.ts의 defaultAmmFeePct / defaultMevMarginPct와 동일하게 유지
 const DEFAULT_AMM_FEE_PCT = parseOptionalNumber(process.env.DEFAULT_AMM_FEE_PCT, 0.005);
@@ -38,7 +38,8 @@ export function evaluateExecutionViability(
 export function evaluateExecutionViabilityForOrder(
   order: Pick<Order, 'price' | 'quantity' | 'stopLoss' | 'takeProfit2'>,
   poolTvl: number,
-  costs: { ammFeePct?: number; mevMarginPct?: number } = {}
+  costs: { ammFeePct?: number; mevMarginPct?: number } = {},
+  thresholds: { rrReject?: number; rrPass?: number } = {}
 ): ExecutionViabilityResult {
   if (order.quantity <= 0) {
     return {
@@ -63,7 +64,10 @@ export function evaluateExecutionViabilityForOrder(
     ? Math.max(rewardPct - roundTripCost, 0) / (riskPct + roundTripCost)
     : 0;
 
-  if (effectiveRR < MIN_EFFECTIVE_RR_REJECT) {
+  const rrReject = thresholds.rrReject ?? DEFAULT_MIN_EFFECTIVE_RR_REJECT;
+  const rrPass = thresholds.rrPass ?? DEFAULT_MIN_EFFECTIVE_RR_PASS;
+
+  if (effectiveRR < rrReject) {
     return {
       effectiveRR,
       roundTripCost,
@@ -73,7 +77,7 @@ export function evaluateExecutionViabilityForOrder(
     };
   }
 
-  if (effectiveRR < MIN_EFFECTIVE_RR_PASS) {
+  if (effectiveRR < rrPass) {
     return {
       effectiveRR,
       roundTripCost,

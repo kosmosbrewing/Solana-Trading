@@ -64,6 +64,9 @@ export interface BirdeyeTrendingToken {
 
 export class BirdeyeClient {
   private client: AxiosInstance;
+  /** Trending 캐시 — EventMonitor + Scanner 동시 호출 시 429 방지 */
+  private trendingCache: { data: BirdeyeTrendingToken[]; fetchedAt: number } | null = null;
+  private static readonly TRENDING_CACHE_TTL_MS = 60_000; // 60초
 
   constructor(apiKey: string) {
     this.client = axios.create({
@@ -243,16 +246,63 @@ export class BirdeyeClient {
     }
   }
 
+  /**
+   * Token mint 기반 OHLCV (Scanner 모드 — pair address 없이 캔들 수집).
+   * /defi/ohlcv 엔드포인트는 token mint 주소를 직접 받음.
+   */
+  async getTokenOHLCVFull(
+    tokenMint: string,
+    intervalType: CandleInterval,
+    timeFrom: number,
+    timeTo: number
+  ): Promise<Candle[]> {
+    try {
+      const response = await this.client.get('/defi/ohlcv', {
+        params: {
+          address: tokenMint,
+          type: intervalType,
+          time_from: timeFrom,
+          time_to: timeTo,
+        },
+      });
+
+      const items: BirdeyeOHLCV[] = response.data?.data?.items || [];
+      return items.map((item) => ({
+        pairAddress: tokenMint,
+        timestamp: new Date(item.unixTime * 1000),
+        intervalSec: INTERVAL_TO_SECONDS[intervalType],
+        open: item.o,
+        high: item.h,
+        low: item.l,
+        close: item.c,
+        volume: item.v,
+        buyVolume: 0,
+        sellVolume: 0,
+        tradeCount: 0,
+      }));
+    } catch (error) {
+      log.error(`Failed to fetch token OHLCV full for ${tokenMint}: ${error}`);
+      throw error;
+    }
+  }
+
   async getTrendingTokens(limit = 20): Promise<BirdeyeTrendingToken[]> {
+    // 캐시 히트: 동일 limit이면 60초 이내 재사용 (429 방지)
+    if (this.trendingCache && Date.now() - this.trendingCache.fetchedAt < BirdeyeClient.TRENDING_CACHE_TTL_MS) {
+      log.debug('Trending cache hit');
+      return this.trendingCache.data.slice(0, limit);
+    }
     try {
       const response = await this.client.get('/defi/token_trending', {
         params: { limit },
       });
       const items = response.data?.data?.tokens || response.data?.data?.items || response.data?.data || [];
       const rows = Array.isArray(items) ? items as Record<string, unknown>[] : [];
-      return rows
+      const result = rows
         .map((item, index) => this.normalizeTrendingToken(item, index))
         .filter((item): item is BirdeyeTrendingToken => !!item);
+      this.trendingCache = { data: result, fetchedAt: Date.now() };
+      return result;
     } catch (error) {
       log.error(`Failed to fetch Birdeye trending tokens: ${error}`);
       throw error;

@@ -64,8 +64,15 @@ const DEFAULT_CONFIG: JitoConfig = {
 /**
  * DontFront account — adding this as read-only in an instruction
  * signals Jito searchers not to sandwich the transaction.
+ * 지연 초기화: Paper 모드에서 Jito 미사용 시 모듈 로드 실패 방지
  */
-const DONT_FRONT_ACCOUNT = new PublicKey('JitoDontFronta1111111111111111111111111111');
+let _dontFrontAccount: PublicKey | null = null;
+function getDontFrontAccount(): PublicKey {
+  if (!_dontFrontAccount) {
+    _dontFrontAccount = new PublicKey('DontFr0nt11111111111111111111111111111111111');
+  }
+  return _dontFrontAccount;
+}
 
 export interface BundleResult {
   bundleId: string;
@@ -303,7 +310,7 @@ export class JitoClient {
     if (this.config.enableDontFront) {
       instructions.push(
         new TransactionInstruction({
-          keys: [{ pubkey: DONT_FRONT_ACCOUNT, isSigner: false, isWritable: false }],
+          keys: [{ pubkey: getDontFrontAccount(), isSigner: false, isWritable: false }],
           programId: new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'),
           data: Buffer.from('DontFront', 'utf-8'),
         })

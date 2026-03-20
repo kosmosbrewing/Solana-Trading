@@ -17,7 +17,7 @@ export interface FibPullbackParams {
 
 const DEFAULT_PARAMS: FibPullbackParams = {
   impulseWindowBars: 18,
-  impulseMinPct: 0.15,
+  impulseMinPct: 0.175,   // v4 sweep: 0.15→0.175 (작은 임펄스 노이즈 필터링)
   fibEntryLow: 0.5,
   fibEntryHigh: 0.618,
   fibInvalidation: 0.786,

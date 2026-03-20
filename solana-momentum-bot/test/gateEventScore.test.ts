@@ -201,16 +201,17 @@ describe('AttentionScore gate integration', () => {
     });
     const middling = evaluateGates({
       ...baseInput,
-      poolInfo: { ...poolInfo, tvl: 100 },
+      poolInfo: { ...poolInfo, tvl: 65 },
     });
     const poor = evaluateGates({
       ...baseInput,
-      poolInfo: { ...poolInfo, tvl: 40 },
+      poolInfo: { ...poolInfo, tvl: 30 },
     });
 
     expect(healthy.executionViability.effectiveRR).toBeGreaterThanOrEqual(1.5);
     expect(healthy.gradeSizeMultiplier).toBeCloseTo(1.2, 6);
 
+    // Why: v4 sweep으로 tp2 3.5 적용 후 middling 구간 TVL 조정
     expect(middling.executionViability.effectiveRR).toBeGreaterThanOrEqual(1.2);
     expect(middling.executionViability.effectiveRR).toBeLessThan(1.5);
     expect(middling.gradeSizeMultiplier).toBeCloseTo(0.6, 6);

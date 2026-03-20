@@ -34,7 +34,7 @@ Stage 2: Trigger — 지금 들어가도 되는가?
 | **reporting/** | 성과 집계, 엣지 추적 | `EdgeTracker`, `PaperValidation` |
 | **notifier/** | Telegram 4-Level 알림 | `Notifier` |
 | **audit/** | 시그널 감사 로그 | `SignalAuditLogger` |
-| **backtest/** | 백테스트 엔진/리포터 | `BacktestEngine`, `BacktestReporter` |
+| **backtest/** | 백테스트 엔진/리포터/스윕 | `BacktestEngine`, `BacktestReporter`, `ParamSweep` |
 | **orchestration/** | 최상위 조율 (BotContext) | `handleNewCandle`, `checkOpenPositions`, `BotContext` |
 
 ## 3. 의존성 방향 규칙

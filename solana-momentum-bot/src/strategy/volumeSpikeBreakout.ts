@@ -20,11 +20,11 @@ export function calcVolumeMcapRatio(volume24hUsd?: number, marketCap?: number): 
 
 const DEFAULT_PARAMS: VolumeSpikeParams = {
   lookback: 20,
-  volumeMultiplier: 3.0,
+  volumeMultiplier: 2.5,   // v4 sweep: 3.0→2.5 (시그널 수 ~30% 증가)
   spreadFilterK: 2.0,
   atrPeriod: 20,
   tp1Multiplier: 1.5,
-  tp2Multiplier: 2.5,
+  tp2Multiplier: 3.5,      // v4 sweep: 2.5→3.5 (fat tail 포착 강화)
   timeStopMinutes: 30,
 };
 

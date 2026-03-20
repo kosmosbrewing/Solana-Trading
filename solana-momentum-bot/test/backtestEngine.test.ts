@@ -12,13 +12,15 @@ describe('BacktestEngine parity', () => {
     expect(result.filterReason).toBe('not_trending');
   });
 
-  it('exits on exhaustion when live monitor conditions are met', () => {
+  it('exits on exhaustion when live monitor conditions are met (after min 2-bar hold)', () => {
     const engine = new BacktestEngine();
     const trade = engine["simulateTrade"](
       makeOrder(),
       [
         makeCandle({ timestamp: new Date('2026-03-15T00:00:00Z'), close: 1.0, high: 1.02, low: 0.98, volume: 100 }),
+        // bar 1: 최소 보유 기간 (2봉) — exhaustion 미적용
         makeCandle({ timestamp: new Date('2026-03-15T00:05:00Z'), open: 1.0, close: 1.12, high: 1.16, low: 1.0, volume: 200 }),
+        // bar 2: 2봉 경과 후 exhaustion 발생 (body shrink + volume decline)
         makeCandle({ timestamp: new Date('2026-03-15T00:10:00Z'), open: 1.12, close: 1.14, high: 1.2, low: 1.11, volume: 80 }),
       ],
       0,

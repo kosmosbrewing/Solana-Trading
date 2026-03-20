@@ -98,6 +98,11 @@ export class BacktestEngine {
       return this.emptyResult(strategy, pairAddress);
     }
 
+    // buy/sell volume 데이터 없으면 buyRatio 게이트 자동 비활성화
+    if (this.config.minBuyRatio > 0 && !this.hasBuySellVolumeData(filtered)) {
+      this.config = { ...this.config, minBuyRatio: 0 };
+    }
+
     const lookback = strategy === 'fib_pullback' ? 28 : 21;
     const timeStopMinutes = strategy === 'fib_pullback'
       ? (this.config.fibPullbackParams.timeStopMinutes ?? 60)
@@ -406,8 +411,10 @@ export class BacktestEngine {
         order.stopLoss = entryPrice;
       }
 
-      // Exhaustion Exit — live loop와 같이 수익 구간에서만 청산
-      if (monitorCandles.length >= 2) {
+      // Exhaustion Exit — 최소 2봉 보유 후 수익 구간에서만 청산
+      // Why: 진입 봉(volume spike)→직후 1봉은 자연스럽게 volume/body 감소. 1봉 exhaustion 오탐만 스킵
+      const barsHeld = i - entryIdx;
+      if (barsHeld >= 2 && monitorCandles.length >= 2) {
         const { exhausted } = checkExhaustion(monitorCandles, 2);
         if (exhausted && currentPrice > entryPrice) {
           return this.makeTrade(
@@ -417,8 +424,9 @@ export class BacktestEngine {
         }
       }
 
-      // Adaptive trailing — live와 동일하게 최근 10봉/ATR(7)/RSI 기반
-      if (trailingStop && monitorCandles.length >= 8) {
+      // Adaptive trailing — 최소 2봉 보유 후 활성화
+      // Why: 진입 직후 adaptiveStop=entryPrice(본전 스탑)이 되어 1봉 만에 exit하는 오탐 방지
+      if (barsHeld >= 2 && trailingStop && monitorCandles.length >= 8) {
         const atr = calcATR(monitorCandles, 7);
         const adaptiveStop = calcAdaptiveTrailingStop(monitorCandles, atr, entryPrice, peakPrice);
         if (currentPrice <= adaptiveStop && currentPrice > order.stopLoss) {
@@ -617,8 +625,9 @@ export class BacktestEngine {
         }
       }
 
-      // Exhaustion Exit
-      if (monitorCandles.length >= 2) {
+      // Exhaustion Exit — 최소 2봉 보유 후
+      const cascadeBarsHeld = i - entryIdx;
+      if (cascadeBarsHeld >= 2 && monitorCandles.length >= 2) {
         const { exhausted } = checkExhaustion(monitorCandles, 2);
         if (exhausted && currentPrice > entryPrice) {
           return this.makeTrade(
@@ -629,8 +638,8 @@ export class BacktestEngine {
         }
       }
 
-      // Adaptive trailing
-      if (trailingStop && monitorCandles.length >= 8) {
+      // Adaptive trailing — 최소 2봉 보유 후 활성화
+      if (cascadeBarsHeld >= 2 && trailingStop && monitorCandles.length >= 8) {
         const atr = calcATR(monitorCandles, 7);
         const adaptiveStop = calcAdaptiveTrailingStop(monitorCandles, atr, entryPrice, peakPrice);
         if (currentPrice <= adaptiveStop && currentPrice > activeSL) {
@@ -891,6 +900,16 @@ export class BacktestEngine {
     return matched;
   }
 
+  /** 캔들 데이터에 buy/sell volume이 존재하는지 샘플 검사 */
+  private hasBuySellVolumeData(candles: Candle[]): boolean {
+    const sampleSize = Math.min(candles.length, 50);
+    for (let i = 0; i < sampleSize; i++) {
+      const c = candles[Math.floor(i * candles.length / sampleSize)];
+      if ((c.buyVolume ?? 0) > 0 || (c.sellVolume ?? 0) > 0) return true;
+    }
+    return false;
+  }
+
   private createInitialRiskState(firstTimestamp: Date): RiskState {
     return {
       balance: this.config.initialBalance,
@@ -904,6 +923,7 @@ export class BacktestEngine {
         edgeState: 'Bootstrap',
         kellyFraction: 0,
         kellyEligible: false,
+        totalTrades: 0,
       }, this.config.recoveryPct),
       rejections: {
         dailyLimit: 0,

@@ -123,6 +123,15 @@ async function main() {
     },
     runnerConcurrentEnabled: config.runnerConcurrentEnabled,
     maxConcurrentPositions: config.maxConcurrentPositions,
+    // v4: 설정 가능화 파라미터
+    maxPositionPct: config.maxPositionPct,
+    maxConcurrentAbsolute: config.maxConcurrentAbsolute,
+    concurrentTier1Sol: config.concurrentTier1Sol,
+    concurrentTier2Sol: config.concurrentTier2Sol,
+    impactTier1Sol: config.impactTier1Sol,
+    impactTier1MaxImpact: config.impactTier1MaxImpact,
+    impactTier2Sol: config.impactTier2Sol,
+    impactTier2MaxImpact: config.impactTier2MaxImpact,
   };
   const riskManager = new RiskManager(riskConfig, tradeStore);
 
@@ -268,11 +277,61 @@ async function main() {
       socialMentionTracker, // H-02: social score → WatchlistScore 연동
     };
     scanner = new ScannerEngine(scannerConfig);
-    scanner.on('candidateDiscovered', (entry) => {
+    // Bridge: Scanner → Ingester + UniverseEngine (rate limit 방지 큐)
+    const ingesterQueue: import('./scanner').WatchlistEntry[] = [];
+    let ingesterQueueRunning = false;
+
+    const processIngesterQueue = async () => {
+      if (ingesterQueueRunning) return;
+      ingesterQueueRunning = true;
+      while (ingesterQueue.length > 0) {
+        const entry = ingesterQueue.shift()!;
+        try {
+          await ingester.addPair({
+            pairAddress: entry.tokenMint,
+            intervalType: config.defaultTimeframe === 60 ? '1m' : '5m',
+            pollIntervalMs: config.defaultTimeframe * 1000,
+            isTokenMint: true, // Scanner: token mint 기반 OHLCV
+          });
+        } catch (err) {
+          log.warn(`Failed to add ingester for ${entry.symbol}: ${err}`);
+        }
+        // Birdeye API rate limit 방지: pair 간 3초 간격
+        if (ingesterQueue.length > 0) {
+          await new Promise(r => setTimeout(r, 3000));
+        }
+      }
+      ingesterQueueRunning = false;
+    };
+
+    scanner.on('candidateDiscovered', (entry: import('./scanner').WatchlistEntry) => {
       log.info(`Scanner: new candidate ${entry.symbol} lane=${entry.lane} score=${entry.watchlistScore.totalScore}`);
+
+      // UniverseEngine은 즉시 추가 (API 호출 없음)
+      universeEngine.addPoolDirect({
+        pairAddress: entry.tokenMint,
+        tokenMint: entry.tokenMint,
+        tvl: entry.poolInfo?.tvl ?? 0,
+        marketCap: entry.poolInfo?.marketCap,
+        dailyVolume: entry.poolInfo?.dailyVolume ?? 0,
+        tradeCount24h: entry.poolInfo?.tradeCount24h ?? 0,
+        spreadPct: entry.poolInfo?.spreadPct ?? 0,
+        ammFeePct: entry.poolInfo?.ammFeePct,
+        tokenAgeHours: entry.poolInfo?.tokenAgeHours ?? 0,
+        top10HolderPct: entry.poolInfo?.top10HolderPct ?? 0,
+        lpBurned: entry.poolInfo?.lpBurned ?? false,
+        ownershipRenounced: entry.poolInfo?.ownershipRenounced ?? false,
+        rankScore: entry.watchlistScore.totalScore,
+      });
+
+      // Ingester는 큐잉 후 순차 처리 (rate limit 방지)
+      ingesterQueue.push(entry);
+      processIngesterQueue().catch(err => log.error(`Ingester queue error: ${err}`));
     });
     scanner.on('candidateEvicted', (tokenMint: string) => {
       log.info(`Scanner: evicted ${tokenMint}`);
+      ingester.removePair(tokenMint);
+      universeEngine.removePool(tokenMint);
     });
     log.info('Scanner engine initialized');
   }
@@ -499,9 +558,8 @@ async function main() {
   }
 
   // ─── Start ingester ─────────────────────────────────
-  if (ingesterConfigs.length > 0) {
-    await ingester.start();
-  }
+  // Scanner 모드: 동적 addPair()를 위해 항상 start()
+  await ingester.start();
   log.info('Bot is running. Press Ctrl+C to stop.');
 
   await notifier.sendInfo(`Bot started (v0.5 — Phase 2 Core Live, mode: ${effectiveMode})`);

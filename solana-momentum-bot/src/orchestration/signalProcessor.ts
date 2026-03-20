@@ -178,6 +178,9 @@ export async function processSignal(
     const actualExecution = evaluateExecutionViabilityForOrder(order, signal.poolTvl || 0, {
       ammFeePct: signal.meta.ammFeePct,
       mevMarginPct: signal.meta.mevMarginPct,
+    }, {
+      rrReject: config.executionRrReject,
+      rrPass: config.executionRrPass,
     });
     if (actualExecution.rejected) {
       log.warn(`Signal filtered after size-aware execution check: ${actualExecution.filterReason}`);

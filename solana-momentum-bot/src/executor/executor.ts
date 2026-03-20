@@ -209,14 +209,8 @@ export class Executor {
       actualSlippageBps = expectedOut > 0n
         ? Number((expectedOut - actualOutAmount) * 10000n / expectedOut)
         : 0;
-    } else {
-      // Fallback: 잔액 비교 (기존 v6 패턴 재사용)
-      const balanceAfter = outputMint === SOL_MINT
-        ? BigInt(Math.round(await this.getBalance() * 1e9))
-        : await this.getTokenBalance(outputMint);
-      // 잔액 비교는 before 값이 없으므로 Ultra 결과만 신뢰
-      actualOutAmount = undefined;
     }
+    // outputAmountResult 없으면 actualOutAmount=undefined 유지 (before 없이 비교 불가)
 
     log.info(
       `Ultra swap complete: sig=${result.signature}, expected=${expectedOut}, ` +

@@ -52,18 +52,50 @@ const RISK_TIERS: Record<EdgeState, RiskTierDefinition> = {
   },
 };
 
+/** 선형 보간 */
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * Math.max(0, Math.min(1, t));
+}
+
 export function resolveRiskTierProfile(
-  stats: Pick<EdgePerformanceStats, 'edgeState' | 'kellyFraction' | 'kellyEligible'>,
+  stats: Pick<EdgePerformanceStats, 'edgeState' | 'kellyFraction' | 'kellyEligible' | 'totalTrades'>,
   recoveryPct: number
 ): RiskTierProfile {
   const tier = RISK_TIERS[stats.edgeState];
   const kellyApplied = tier.kellyScale > 0 && stats.kellyEligible;
 
+  let maxRiskPerTrade = kellyApplied
+    ? Math.min(stats.kellyFraction * tier.kellyScale, tier.kellyCap)
+    : tier.fixedRiskPerTrade;
+
+  // v4: 보간 — tier 경계에서 급변(cliff) 방지
+  const tc = stats.totalTrades;
+
+  // Calibration→Confirmed 전환 (trades 40~60): calibrationRisk → confirmedRisk
+  if (stats.edgeState === 'Confirmed' && tc >= 40 && tc < 60) {
+    const calibrationRisk = RISK_TIERS.Calibration.fixedRiskPerTrade; // 1%
+    const confirmedRisk = maxRiskPerTrade;
+    if (confirmedRisk > calibrationRisk) {
+      const progress = (tc - 40) / 20;
+      maxRiskPerTrade = lerp(calibrationRisk, confirmedRisk, progress);
+    }
+  }
+
+  // Confirmed→Proven 전환 (trades 85~115): confirmedRisk → provenRisk
+  if (stats.edgeState === 'Proven' && tc >= 85 && tc < 115) {
+    const prevTierRisk = kellyApplied
+      ? RISK_TIERS.Confirmed.kellyCap   // Kelly 활성 시 이전 tier cap
+      : RISK_TIERS.Confirmed.fixedRiskPerTrade; // Kelly 비활성 시 이전 tier fixed
+    const provenRisk = maxRiskPerTrade;
+    if (provenRisk > prevTierRisk) {
+      const progress = (tc - 85) / 30;
+      maxRiskPerTrade = lerp(prevTierRisk, provenRisk, progress);
+    }
+  }
+
   return {
     edgeState: stats.edgeState,
-    maxRiskPerTrade: kellyApplied
-      ? Math.min(stats.kellyFraction * tier.kellyScale, tier.kellyCap)
-      : tier.fixedRiskPerTrade,
+    maxRiskPerTrade,
     maxDailyLoss: tier.maxDailyLoss,
     maxDrawdownPct: tier.maxDrawdownPct,
     recoveryPct,

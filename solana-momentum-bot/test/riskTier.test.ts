@@ -6,22 +6,24 @@ describe('RiskTier', () => {
   it('switches tiers at the expected trade-count boundaries', () => {
     const nineteen = resolveProfile(makeTrades(19));
     const twenty = resolveProfile(makeTrades(20));
-    const fifty = resolveProfile(makeTrades(50));
-    const hundred = resolveProfile(makeTrades(100));
+    // v4: trade 50은 보간 구간(40~60)이므로 60으로 테스트
+    const sixty = resolveProfile(makeTrades(60));
+    // v4: trade 100은 보간 구간 종료(≥115)이므로 115로 테스트
+    const oneOneFive = resolveProfile(makeTrades(115));
 
     expect(nineteen.edgeState).toBe('Bootstrap');
     expect(nineteen.maxRiskPerTrade).toBeCloseTo(0.01, 6);
 
     expect(twenty.edgeState).toBe('Calibration');
-    expect(twenty.maxRiskPerTrade).toBeCloseTo(0.01, 6); // STRATEGY.md: Bootstrap/Calibration 모두 1%
+    expect(twenty.maxRiskPerTrade).toBeCloseTo(0.01, 6);
 
-    expect(fifty.edgeState).toBe('Confirmed');
-    expect(fifty.kellyApplied).toBe(true);
-    expect(fifty.maxRiskPerTrade).toBeCloseTo(0.03, 6); // v2: kellyCap 3%
+    expect(sixty.edgeState).toBe('Confirmed');
+    expect(sixty.kellyApplied).toBe(true);
+    expect(sixty.maxRiskPerTrade).toBeCloseTo(0.03, 6); // v2: kellyCap 3% (보간 완료)
 
-    expect(hundred.edgeState).toBe('Proven');
-    expect(hundred.kellyApplied).toBe(true);
-    expect(hundred.maxRiskPerTrade).toBeCloseTo(0.05, 6); // v2: kellyCap 5%
+    expect(oneOneFive.edgeState).toBe('Proven');
+    expect(oneOneFive.kellyApplied).toBe(true);
+    expect(oneOneFive.maxRiskPerTrade).toBeCloseTo(0.05, 6); // v2: kellyCap 5% (보간 완료)
   });
 
   it('keeps fixed-percent sizing when Kelly is still locked', () => {
@@ -32,6 +34,21 @@ describe('RiskTier', () => {
     expect(locked.edgeState).toBe('Calibration');
     expect(locked.kellyApplied).toBe(false);
     expect(locked.maxRiskPerTrade).toBeCloseTo(0.01, 6); // Calibration = 1% 고정
+  });
+
+  it('v4: interpolates risk at Confirmed entry (trade 50, interpolation mid-zone)', () => {
+    const profile = resolveProfile(makeTrades(50));
+    expect(profile.edgeState).toBe('Confirmed');
+    expect(profile.kellyApplied).toBe(true);
+    // trade 50: progress = (50-40)/20 = 0.5 → lerp(0.01, 0.03, 0.5) = 0.02
+    expect(profile.maxRiskPerTrade).toBeGreaterThan(0.01);
+    expect(profile.maxRiskPerTrade).toBeLessThan(0.03);
+  });
+
+  it('v4: full Confirmed Kelly at trade 60 (interpolation done)', () => {
+    const profile = resolveProfile(makeTrades(60));
+    expect(profile.edgeState).toBe('Confirmed');
+    expect(profile.maxRiskPerTrade).toBeCloseTo(0.03, 6);
   });
 
   it('uses the looser Confirmed drawdown limit once the 50th trade closes', () => {

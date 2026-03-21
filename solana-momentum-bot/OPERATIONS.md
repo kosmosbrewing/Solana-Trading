@@ -1,7 +1,7 @@
 # Operations Guide
 
-> Last updated: 2026-03-18
-> Scope: VPS 배포 + risk tier demotion + live 운영 판단
+> Last updated: 2026-03-21
+> Scope: VPS 배포 + paper 운영 점검 + risk tier demotion + live 운영 판단
 
 ---
 
@@ -25,9 +25,13 @@ git clone <repo> && cd solana-momentum-bot
 
 # 2. .env 설정
 cp .env.example .env
-# 필수 값 입력: SOLANA_RPC_URL, WALLET_PRIVATE_KEY, BIRDEYE_API_KEY, DATABASE_URL
+# 필수 값 입력: SOLANA_RPC_URL, WALLET_PRIVATE_KEY, DATABASE_URL
 # TRADING_MODE=paper
 # SCANNER_ENABLED=true
+#
+# 참고:
+# - paper runtime 자체는 GeckoTerminal + DexScreener 중심이라 BIRDEYE_API_KEY가 필수는 아님
+# - 다만 scripts/deploy.sh는 아직 legacy 체크로 BIRDEYE_API_KEY 존재 여부를 검사함
 
 # 3. 자동 배포
 bash scripts/deploy.sh
@@ -38,19 +42,39 @@ bash scripts/deploy.sh
 ```env
 TRADING_MODE=paper
 SCANNER_ENABLED=true
+MAX_WATCHLIST_SIZE=8
+SCANNER_REENTRY_COOLDOWN_MS=1800000
+EVENT_POLLING_INTERVAL_MS=1800000
 # WS/Strategy D는 기본 false — 설정 불필요
 # BIRDEYE_WS_ENABLED=false (기본값)
 # STRATEGY_D_ENABLED=false (기본값)
 ```
 
+### 현재 권장 운영 메모
+
+- `MAX_WATCHLIST_SIZE=8`은 paper 안정화용 보수값이다.
+- watchlist를 늘리기 전에 `429`, `Poll failed`, `No candle received`가 먼저 안정화돼야 한다.
+- scanner churn 억제를 위해 `SCANNER_REENTRY_COOLDOWN_MS=1800000`을 유지한다.
+
 ### 가동 확인 체크리스트
 
 - [ ] `pm2 status` — `momentum-bot` online
 - [ ] `pm2 logs momentum-bot` — `Bot started (v0.5 — Phase 2 Core Live, mode: paper)` 확인
-- [ ] Scanner watchlist 갱신 로그: `Scanner: new candidate ...`
+- [ ] `Scanner started. Watchlist: 8 entries.` 확인
+- [ ] `candidateDiscovered`가 실제 retained watchlist 후보에만 발생하는지 확인
 - [ ] Gate 평가 로그 출력
 - [ ] Telegram alert 수신 (`Bot started` 메시지)
+- [ ] `GeckoTerminal 429 rate limited`가 반복적으로 쌓이지 않는지 확인
+- [ ] `No candle received for ... minutes` 경고가 장시간 누적되지 않는지 확인
 - [ ] 24시간 후: `pm2 monit` — memory < 300MB, restart 0
+
+### 핵심 운영 지표
+
+- `GeckoTerminal 429 count`
+- `Poll failed count`
+- `No candle received` 경고 빈도
+- `dynamic pair added / backfilled` churn
+- `explained entry ratio`
 
 ### 모니터링 명령어
 
@@ -80,7 +104,15 @@ TELEGRAM_CHAT_ID=<봇에게 메시지 보낸 후 getUpdates API로 확인>
 | DB connection refused | TimescaleDB 미실행 | `sudo systemctl start postgresql` |
 | `TimescaleDB not available` | extension 미설치 | `CREATE EXTENSION IF NOT EXISTS timescaledb;` |
 | Memory > 500MB | 메모리 릭 가능성 | `pm2 restart momentum-bot` + 로그 확인 |
-| Scanner 0 candidates | API 키 이슈 또는 시장 비활성 | Birdeye API 키 확인, DexScreener 키 확인 |
+| Scanner 0 candidates | 시장 비활성, Gecko/Dex 소스 문제, 필터 과도 | `Trending discovery` 로그, `SCANNER_MIN_WATCHLIST_SCORE`, `MIN_POOL_TVL` 확인 |
+| `GeckoTerminal 429 rate limited` 반복 | burst/concurrency 또는 watchlist churn | `MAX_WATCHLIST_SIZE=8` 유지, `SCANNER_REENTRY_COOLDOWN_MS` 확인, startup/backfill churn 로그 확인 |
+| `No candle received for ... minutes` | 특정 pair poll 누락 또는 Gecko 지연 | pair별 backfill/poll 로그 확인, regime/event 주기 과도 여부 점검 |
+
+### 운영 해석 메모
+
+- 평균 req/min 계산만으로는 Gecko 안정성을 판단하지 않는다.
+- 한 시점에 몰리는 burst와 watchlist churn이 실제 병목이다.
+- paper 기준으로는 “더 많은 후보”보다 “설명 가능한 후보를 끊김 없이 추적”하는 것이 우선이다.
 
 ---
 

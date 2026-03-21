@@ -3,6 +3,49 @@ import { RiskManager } from '../src/risk';
 import type { PortfolioState } from '../src/utils/types';
 
 describe('RiskManager unrealized drawdown', () => {
+  it('does not treat open-trade raw quantity as SOL equity in portfolio state', async () => {
+    const tradeStore = {
+      getOpenTrades: jest.fn().mockResolvedValue([
+        {
+          id: 'open-1',
+          pairAddress: 'pair-1',
+          strategy: 'volume_spike',
+          side: 'BUY',
+          entryPrice: 0.01,
+          quantity: 3.2,
+          status: 'OPEN',
+          createdAt: new Date('2026-03-21T00:00:00.000Z'),
+          stopLoss: 0.009,
+          takeProfit1: 0.011,
+          takeProfit2: 0.012,
+          timeStopAt: new Date('2026-03-21T01:00:00.000Z'),
+        },
+      ]),
+      getTodayPnl: jest.fn().mockResolvedValue(0),
+      getRecentClosedTrades: jest.fn().mockResolvedValue([]),
+      getClosedTradesChronological: jest.fn().mockResolvedValue([]),
+    } as unknown as TradeStore;
+
+    const manager = new RiskManager({
+      maxRiskPerTrade: 0.01,
+      maxDailyLoss: 0.05,
+      maxDrawdownPct: 0.30,
+      recoveryPct: 0.85,
+      maxConsecutiveLosses: 3,
+      cooldownMinutes: 30,
+      maxSlippage: 0.05,
+      minPoolLiquidity: 50_000,
+      minTokenAgeHours: 24,
+      maxHolderConcentration: 0.8,
+    }, tradeStore);
+
+    const portfolio = await manager.getPortfolioState(1.0);
+
+    expect(portfolio.balanceSol).toBeCloseTo(1.0, 8);
+    expect(portfolio.equitySol).toBeCloseTo(1.0, 8);
+    expect(portfolio.drawdownGuard.peakBalanceSol).toBeCloseTo(1.0, 8);
+  });
+
   it('updates equity and drawdown guard using marked-to-market open positions', () => {
     const manager = new RiskManager({
       maxRiskPerTrade: 0.01,

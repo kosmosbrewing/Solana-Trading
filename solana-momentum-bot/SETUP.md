@@ -1,7 +1,8 @@
 # VPS 환경 구성 가이드
 
 > Vultr VPS (US) + Ubuntu 22.04 + TimescaleDB + Node.js 20
-> 목적: 백테스트 실행 → 라이브 전환 대비
+> 목적: 백테스트 실행 + paper runtime 운영 + 라이브 전환 대비
+> Last updated: 2026-03-21
 
 ---
 
@@ -9,10 +10,11 @@
 
 | 서비스 | 위치 | 이유 |
 |--------|------|------|
-| Birdeye API | US | 캔들 데이터 수집 레이턴시 |
+| GeckoTerminal / DexScreener | US 권장 | paper runtime 외부 API 왕복 안정성 |
 | Helius RPC | US | 온체인 트랜잭션 속도 |
 | Jupiter API | US | quote/swap 레이턴시 및 price impact 검증 |
 | Solana Validators | 대부분 US | 체인 전체 레이턴시 |
+| Birdeye API | US | 백테스트 CSV 수집 / live 보조 경로 사용 시 |
 
 **추천: New Jersey (ewr) 또는 Los Angeles (lax)**
 
@@ -84,6 +86,26 @@ BIRDEYE_API_KEY=<your-birdeye-api-key>
 DATABASE_URL=postgresql://momentum:momentum_secret@localhost:5432/momentum_bot
 ```
 
+### Paper runtime 최소 설정
+
+```bash
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  필수 — paper runtime
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=<helius-key>
+WALLET_PRIVATE_KEY=<base58-private-key>
+DATABASE_URL=postgresql://momentum:momentum_secret@localhost:5432/momentum_bot
+TRADING_MODE=paper
+SCANNER_ENABLED=true
+MAX_WATCHLIST_SIZE=8
+SCANNER_REENTRY_COOLDOWN_MS=1800000
+EVENT_POLLING_INTERVAL_MS=1800000
+```
+
+> 참고:
+> - 현재 paper runtime 데이터 경로는 GeckoTerminal + DexScreener 중심이다.
+> - 다만 `scripts/fetch-candles.ts`, `scripts/deploy.sh`, 일부 live 보조 경로는 아직 `BIRDEYE_API_KEY`를 기대한다.
+
 ### 전체 설정 (라이브 전환 포함)
 
 ```bash
@@ -137,8 +159,10 @@ MAX_TOP10_HOLDER_PCT=0.80
 MIN_DAILY_VOLUME=10000
 MIN_TRADE_COUNT_24H=50
 MAX_SPREAD_PCT=0.03
-MAX_WATCHLIST_SIZE=20
+MAX_WATCHLIST_SIZE=8          # paper 안정화 권장값
 UNIVERSE_REFRESH_INTERVAL_MS=300000
+SCANNER_REENTRY_COOLDOWN_MS=1800000
+EVENT_POLLING_INTERVAL_MS=1800000
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Safety (legacy)
@@ -397,11 +421,22 @@ sudo lsof -i :5432
 ### fetch-candles 실패
 
 ```bash
+# fetch-candles 스크립트는 아직 Birdeye 기반
 # API Key 확인
 echo $BIRDEYE_API_KEY
 
 # Rate limit → 200ms 딜레이 내장, 그래도 실패 시 --days 줄여서 재시도
 npx ts-node scripts/fetch-candles.ts <PAIR> --interval 5m --days 7 --output ./data
+```
+
+### paper runtime에서 429 발생
+
+```bash
+# 권장 운영값 재확인
+grep -E 'MAX_WATCHLIST_SIZE|SCANNER_REENTRY_COOLDOWN_MS|EVENT_POLLING_INTERVAL_MS' .env
+
+# watchlist churn / 429 / candle lag 로그 확인
+rg -n "429|No candle received|dynamic pair added|backfilled" logs
 ```
 
 ### 백테스트 "No candle data found"
@@ -431,11 +466,14 @@ NODE_OPTIONS="--max-old-space-size=2048" npx ts-node scripts/backtest.ts ...
 [ ] Node.js 20 설치 (node --version)
 [ ] Docker 설치 (docker compose version)
 [ ] 프로젝트 clone + npm install
-[ ] .env 생성 (BIRDEYE_API_KEY + DATABASE_URL)
+[ ] .env 생성
+[ ] 백테스트면 `BIRDEYE_API_KEY + DATABASE_URL` 설정
+[ ] paper runtime이면 `SOLANA_RPC_URL + WALLET_PRIVATE_KEY + DATABASE_URL + SCANNER_ENABLED=true` 설정
+[ ] paper runtime 권장값 `MAX_WATCHLIST_SIZE=8`, `SCANNER_REENTRY_COOLDOWN_MS=1800000` 반영
 [ ] docker compose up -d timescaledb
 [ ] npx ts-node scripts/migrate.ts → "Migration complete!"
 [ ] npx ts-node scripts/fetch-candles.ts <PAIR> --days 30
 [ ] npx ts-node scripts/backtest.ts <PAIR> --source csv --trades
 ```
 
-**Birdeye API Key + 페어 주소만 있으면 ~15분 완료.**
+**백테스트는 Birdeye API Key + 페어 주소가 필요하고, paper runtime은 RPC/지갑/DB + 보수적 watchlist 설정이 핵심이다.**

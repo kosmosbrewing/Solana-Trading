@@ -1,9 +1,10 @@
 # Strategy Reference
 
-> Last updated: 2026-03-18
+> Last updated: 2026-03-21
 > Mission: 1 SOL → 100 SOL
 > Documented strategies: Volume Spike (A), Fib Pullback (C), New LP Sniper (D), Momentum Cascade (E)
 > Runtime focus: A/C core, D sandbox, E conditional add-on
+> Runtime note: 현재 paper 데이터 경로는 GeckoTerminal + DexScreener 중심이며, Birdeye WS/security 관련 표기는 live/optional roadmap를 함께 포함한다.
 
 ---
 
@@ -14,9 +15,16 @@
 봇은 순수 모멘텀 추격자가 아니다. **이벤트 컨텍스트**가 선행하고, **온체인 트리거**가 확인될 때만 진입한다.
 
 ```
-Stage 1: 왜 움직이는가?  → AttentionScore (Birdeye WS + DexScreener 보조)
+Stage 1: 왜 움직이는가?  → AttentionScore (GeckoTerminal trending + DexScreener 보조, optional Birdeye WS)
 Stage 2: 지금 들어가도 되는가?  → Gate System (Security → Score → Execution → Risk)
 ```
+
+### 현재 paper runtime 메모
+
+- watchlist는 breadth보다 안정성을 우선한다. 즉시 prune될 후보까지 backfill하지 않는다.
+- `MAX_WATCHLIST_SIZE=8`, `SCANNER_REENTRY_COOLDOWN_MS=1800000`이 현재 권장 운영값이다.
+- GeckoTerminal는 평균 req/min보다 burst/concurrency가 더 큰 제약이라, 요청 직렬화와 backfill spacing을 함께 사용한다.
+- SOL 4H regime는 Gecko 4H 캔들을 캐시해 같은 버킷을 반복 조회하지 않는다.
 
 ### 핵심 제약 — 이 시장에서는 "의도한 손절"보다 "실제 exit 손실"이 더 중요하다
 
@@ -147,8 +155,9 @@ Grade: A(≥70) / B(≥50) / C(<50, reject)
   volume spike + range compression + Jupiter quote impact 양호
 
 소스:
-  Birdeye WS → price / txs / OHLCV 실시간 수신
-  Universe refresh → pool health 모니터링
+  GeckoTerminal trending + OHLCV polling
+  DexScreener enrichment
+  optional Birdeye WS → live/phase 2+ 실시간 보강
 ```
 
 ### Lane B: Fresh Listing (향후 Strategy D 대상)
@@ -161,8 +170,8 @@ Grade: A(≥70) / B(≥50) / C(<50, reject)
   강화된 security gate
 
 소스:
-  Birdeye WS → SUBSCRIBE_TOKEN_NEW_LISTING / SUBSCRIBE_NEW_PAIR
-  Birdeye token_security + exit-liquidity 엔드포인트
+  optional Birdeye WS → SUBSCRIBE_TOKEN_NEW_LISTING / SUBSCRIBE_NEW_PAIR
+  live에서는 security / exit-liquidity gate 추가
 ```
 
 ### 왜 분리하는가
@@ -185,12 +194,12 @@ Grade: A(≥70) / B(≥50) / C(<50, reject)
 
 | 소스 | 역할 | 갱신 주기 |
 |------|------|----------|
-| **Birdeye WebSocket** | 실시간 탐지 (price, txs, OHLCV, new listing, new pair) | 실시간 |
-| **DexScreener API** | 주목도 보강 (boosts, ads, paid orders, token profiles) | 1~5분 |
+| **GeckoTerminal** | trending discovery + OHLCV + regime 입력 | 5분 / 15분 / 30분 polling |
+| **DexScreener API** | 주목도 보강, pair 메타, liquidity/volume 보강 | 1~5분 |
 | **Jupiter Quote API** | price impact / route quality / freshness gate | 진입 전 |
-| **Birdeye REST** | token_security + exit-liquidity gate | 진입 전 |
+| **Birdeye WebSocket / REST** | optional live 보강, security / exit-liquidity gate | 필요 시 |
 
-### Birdeye WebSocket 구독 타입
+### Optional Birdeye WebSocket 구독 타입
 
 **URL:** `wss://public-api.birdeye.so/socket/solana?x-api-key={API_KEY}`
 
@@ -344,7 +353,7 @@ finalQuantity = riskBasedSize
 
 | 팩터 | 소스 | 판단 기준 |
 |------|------|----------|
-| **SOL 4H Trend** | Birdeye SOL/USD 4H OHLCV | EMA20 > EMA50 = bullish, 역전 = bearish |
+| **SOL 4H Trend** | GeckoTerminal SOL 4H OHLCV (cached) | EMA20 > EMA50 = bullish, 역전 = bearish |
 | **Watchlist Breadth** | 내부 scanner 결과 | 후보군 중 고점돌파 후 2봉 연장 성공 비율 |
 | **Recent Follow-through** | 최근 1~2일 트레이드 결과 | breakout 후 TP1 도달률 |
 
@@ -360,7 +369,7 @@ finalQuantity = riskBasedSize
 
 ## 청산 규칙
 
-포지션 모니터링: **Birdeye WS price 스트림** (5초 polling 대체). 아래 순서로 체크, 첫 번째 매칭에서 청산.
+포지션 모니터링: **내부 candle feed + optional price stream** 기준. paper에서는 poll 기반, live/optional 경로에서는 WS 보강 가능. 아래 순서로 체크, 첫 번째 매칭에서 청산.
 
 | 우선순위 | 청산 조건 | 적용 대상 |
 |---------|----------|----------|
@@ -695,10 +704,10 @@ Birdeye WS: SUBSCRIBE_TOKEN_NEW_LISTING / SUBSCRIBE_NEW_PAIR
 ## 전체 파이프라인 요약 (개선안)
 
 ```
-[Birdeye WS]
+[GeckoTerminal poll + optional Birdeye WS]
     │
-    ├─ price / txs / OHLCV → Lane A 실시간 모니터링
-    ├─ new_listing / new_pair → Lane B 후보 수집 (Phase 3)
+    ├─ trending / OHLCV → Lane A 후보 수집 + 캔들 수집
+    ├─ optional new_listing / new_pair → Lane B 후보 수집 (Phase 3)
     │
     ├─ [DexScreener enrichment] → WatchlistScore 보강
     │
@@ -728,7 +737,7 @@ Birdeye WS: SUBSCRIBE_TOKEN_NEW_LISTING / SUBSCRIBE_NEW_PAIR
                     실제 슬리피지 측정
                     포지션 DB 기록
                             │
-                    [모니터링] (Birdeye WS price 스트림)
+                    [모니터링] (poll 기본, optional WS 보강)
                     SL / TP1(50%) / TP2 / TimeStop
                     Exhaustion / Adaptive Trailing
                             │
@@ -746,7 +755,7 @@ Birdeye WS: SUBSCRIBE_TOKEN_NEW_LISTING / SUBSCRIBE_NEW_PAIR
 
 | 영역 | 상태 |
 |------|------|
-| Event-driven Scanner Core | 완료 — Birdeye WS, 동적 watchlist, DexScreener enrichment, quote/security gate |
+| Event-driven Scanner Core | 완료 — GeckoTerminal 기반 동적 watchlist, DexScreener enrichment, churn 억제, optional WS 보강 |
 | Regime + Paper Trading | 완료 — regime filter, MAE/MFE/impact/quote decay 측정, validation 리포트 |
 | Core Live Wiring | 완료 — pre-flight, spread/fee 실측, risk tier/demotion, wallet limits |
 | Strategy D Sandbox | 완료 — Jito, 별도 지갑, 별도 일일 손실 한도 |
@@ -827,6 +836,15 @@ Birdeye WS: SUBSCRIBE_TOKEN_NEW_LISTING / SUBSCRIBE_NEW_PAIR
 | `eventMinScore` | 35 | 유지 |
 | `eventExpiryMinutes` | 180 (3시간) | 유지 |
 | `eventMinLiquidityUsd` | 25,000 | 유지 |
+
+### Scanner 운영 파라미터
+
+| 파라미터 | 현재 값 | 메모 |
+|---------|--------|------|
+| `maxWatchlistSize` | 8 권장 | paper 안정화 보수값 |
+| `scannerTrendingPollMs` | 300,000 (5분) | trending poll |
+| `scannerDexEnrichMs` | 300,000 (5분) | Dex 보강 주기 |
+| `scannerReentryCooldownMs` | 1,800,000 (30분) | evict 직후 재진입 차단 |
 
 ### Safety 파라미터
 

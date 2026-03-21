@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import { createModuleLogger } from '../utils/logger';
-import { BirdeyeClient, BirdeyeTrendingToken } from '../ingester/birdeyeClient';
+import { BirdeyeTrendingToken } from '../ingester/birdeyeClient';
+import { GeckoTerminalClient } from '../ingester/geckoTerminalClient';
 import { BirdeyeWSClient, WSPriceUpdate, WSNewListingUpdate, WSNewPairUpdate } from '../ingester/birdeyeWSClient';
 import { DexScreenerClient } from './dexScreenerClient';
 import { calcWatchlistScore, WatchlistScoreInput, WatchlistScoreResult } from './watchlistScore';
@@ -23,8 +24,8 @@ export interface WatchlistEntry {
 }
 
 export interface ScannerEngineConfig {
-  /** Birdeye REST client */
-  birdeyeClient: BirdeyeClient;
+  /** GeckoTerminal client (Birdeye 대체) */
+  geckoClient: GeckoTerminalClient;
   /** Birdeye WebSocket client (optional — falls back to polling if null) */
   birdeyeWS: BirdeyeWSClient | null;
   /** DexScreener client (optional) */
@@ -41,6 +42,8 @@ export interface ScannerEngineConfig {
   laneAMinAgeSec: number;
   /** Lane B maximum token age (seconds) — 초신규 */
   laneBMaxAgeSec: number;
+  /** Recently evicted token re-entry cooldown (ms) */
+  reentryCooldownMs?: number;
   /** Minimum liquidity USD to consider */
   minLiquidityUsd: number;
   /** H-02: Social mention tracker for WatchlistScore enrichment */
@@ -64,6 +67,7 @@ export interface ScannerEngineConfig {
 export class ScannerEngine extends EventEmitter {
   private config: ScannerEngineConfig;
   private watchlist: Map<string, WatchlistEntry> = new Map(); // key = tokenMint
+  private evictedCooldowns: Map<string, number> = new Map();
   private trendingTimer: ReturnType<typeof setInterval> | null = null;
   private dexEnrichTimer: ReturnType<typeof setInterval> | null = null;
   private running = false;
@@ -141,7 +145,9 @@ export class ScannerEngine extends EventEmitter {
 
   private async discoverFromTrending(): Promise<void> {
     try {
-      const tokens = await this.config.birdeyeClient.getTrendingTokens(20);
+      this.cleanupCooldowns();
+      const previousMints = new Set(this.watchlist.keys());
+      const tokens = await this.config.geckoClient.getTrendingTokens(20);
       log.info(`Trending discovery: ${tokens.length} candidates`);
 
       for (const token of tokens) {
@@ -151,14 +157,17 @@ export class ScannerEngine extends EventEmitter {
         await this.evaluateCandidate(token);
       }
 
-      this.pruneWatchlist();
-      this.emit('watchlistUpdated', this.getWatchlist());
+      this.finalizeWatchlist(previousMints);
     } catch (error) {
       log.error(`Trending discovery failed: ${error}`);
     }
   }
 
-  private async evaluateCandidate(token: BirdeyeTrendingToken): Promise<void> {
+  private async evaluateCandidate(token: BirdeyeTrendingToken): Promise<WatchlistEntry | undefined> {
+    if (!token.address || this.isCoolingDown(token.address)) {
+      return undefined;
+    }
+
     // H-02: SocialMentionTracker에서 social score 조회
     const socialScore = this.config.socialMentionTracker
       ? this.config.socialMentionTracker.calcSocialScore(token.address)
@@ -176,12 +185,17 @@ export class ScannerEngine extends EventEmitter {
 
     if (scoreResult.totalScore < this.config.minWatchlistScore) {
       log.debug(`Candidate ${token.symbol} rejected: score=${scoreResult.totalScore}`);
-      return;
+      return undefined;
+    }
+
+    if (!this.shouldAddCandidate(scoreResult.totalScore)) {
+      log.debug(`Candidate ${token.symbol} skipped: score=${scoreResult.totalScore} below watchlist cutoff`);
+      return undefined;
     }
 
     // Determine lane based on available age info
     const lane = this.determineLane(token);
-    if (!lane) return; // doesn't fit either lane
+    if (!lane) return undefined; // doesn't fit either lane
 
     const entry: WatchlistEntry = {
       tokenMint: token.address,
@@ -196,12 +210,12 @@ export class ScannerEngine extends EventEmitter {
         tvl: token.liquidityUsd ?? 0,
         marketCap: token.marketCap,
         dailyVolume: token.volume24hUsd ?? 0,
-        tradeCount24h: 0,
+        tradeCount24h: (token.raw?.buys_24h as number ?? 0) + (token.raw?.sells_24h as number ?? 0),
         spreadPct: 0,
-        tokenAgeHours: 0,
+        tokenAgeHours: this.calcTokenAgeHours(token.raw?.pool_created_at as string | undefined),
         top10HolderPct: 0,
-        lpBurned: false,
-        ownershipRenounced: false,
+        lpBurned: null,
+        ownershipRenounced: null,
         rankScore: scoreResult.totalScore,
       },
       addedAt: new Date(),
@@ -210,19 +224,7 @@ export class ScannerEngine extends EventEmitter {
     };
 
     this.watchlist.set(token.address, entry);
-    this.config.socialMentionTracker?.registerTrackedToken(
-      token.address,
-      token.symbol,
-      [token.name ?? '']
-    );
-    log.info(`+ Watchlist: ${token.symbol} lane=${lane} score=${scoreResult.totalScore} grade=${scoreResult.grade}`);
-
-    // Subscribe to WS price feed if available
-    if (this.config.birdeyeWS) {
-      this.config.birdeyeWS.subscribePrice(token.address);
-    }
-
-    this.emit('candidateDiscovered', entry);
+    return entry;
   }
 
   private determineLane(token: BirdeyeTrendingToken): 'A' | 'B' | null {
@@ -266,7 +268,7 @@ export class ScannerEngine extends EventEmitter {
       raw: update as unknown as Record<string, unknown>,
     };
 
-    this.evaluateCandidate(token).catch(e =>
+    this.considerCandidate(token).catch(e =>
       log.error(`Failed to evaluate new listing ${update.address}: ${e}`)
     );
   }
@@ -287,7 +289,7 @@ export class ScannerEngine extends EventEmitter {
       raw: update as unknown as Record<string, unknown>,
     };
 
-    this.evaluateCandidate(token).catch(e =>
+    this.considerCandidate(token).catch(e =>
       log.error(`Failed to evaluate new pair ${update.pairAddress}: ${e}`)
     );
   }
@@ -340,7 +342,7 @@ export class ScannerEngine extends EventEmitter {
             source: 'token_trending',
             raw: boost as unknown as Record<string, unknown>,
           };
-          await this.evaluateCandidate(token);
+          await this.considerCandidate(token);
         }
       }
 
@@ -364,6 +366,7 @@ export class ScannerEngine extends EventEmitter {
 
     for (const entry of toRemove) {
       this.watchlist.delete(entry.tokenMint);
+      this.markEvicted(entry.tokenMint);
       this.config.socialMentionTracker?.unregisterTrackedToken(entry.tokenMint);
       if (this.config.birdeyeWS) {
         this.config.birdeyeWS.unsubscribeAll(entry.tokenMint);
@@ -392,13 +395,16 @@ export class ScannerEngine extends EventEmitter {
     };
 
     this.watchlist.set(tokenMint, entry);
-    this.config.socialMentionTracker?.registerTrackedToken(tokenMint, symbol);
-
-    if (this.config.birdeyeWS) {
-      this.config.birdeyeWS.subscribePrice(tokenMint);
-    }
-
+    this.activateCandidate(entry);
     log.info(`+ Manual watchlist entry: ${symbol} (${tokenMint})`);
+  }
+
+  /** ISO 8601 pool_created_at → 시간 단위 나이 */
+  private calcTokenAgeHours(createdAt?: string): number {
+    if (!createdAt) return 999; // 데이터 없으면 충분히 오래된 것으로 간주
+    const ts = new Date(createdAt).getTime();
+    if (isNaN(ts)) return 999;
+    return (Date.now() - ts) / (3600 * 1000);
   }
 
   /** Update PoolInfo for a watchlist entry (called after UniverseEngine refresh) */
@@ -407,6 +413,75 @@ export class ScannerEngine extends EventEmitter {
     if (entry) {
       entry.poolInfo = poolInfo;
       entry.lastUpdatedAt = new Date();
+    }
+  }
+
+  private async considerCandidate(token: BirdeyeTrendingToken): Promise<void> {
+    this.cleanupCooldowns();
+    const previousMints = new Set(this.watchlist.keys());
+    const entry = await this.evaluateCandidate(token);
+    if (!entry) return;
+    this.finalizeWatchlist(previousMints);
+  }
+
+  private finalizeWatchlist(previousMints: Set<string>): void {
+    this.pruneWatchlist();
+
+    for (const entry of this.getWatchlist()) {
+      if (!previousMints.has(entry.tokenMint)) {
+        this.activateCandidate(entry);
+      }
+    }
+
+    this.emit('watchlistUpdated', this.getWatchlist());
+  }
+
+  private activateCandidate(entry: WatchlistEntry): void {
+    this.config.socialMentionTracker?.registerTrackedToken(
+      entry.tokenMint,
+      entry.symbol,
+      [entry.name ?? '']
+    );
+
+    if (this.config.birdeyeWS) {
+      this.config.birdeyeWS.subscribePrice(entry.tokenMint);
+    }
+
+    log.info(
+      `+ Watchlist: ${entry.symbol} lane=${entry.lane} ` +
+      `score=${entry.watchlistScore.totalScore} grade=${entry.watchlistScore.grade}`
+    );
+    this.emit('candidateDiscovered', entry);
+  }
+
+  private shouldAddCandidate(score: number): boolean {
+    if (this.watchlist.size < this.config.maxWatchlistSize) return true;
+    const weakest = this.getWatchlist().at(-1);
+    return weakest ? score > weakest.watchlistScore.totalScore : true;
+  }
+
+  private isCoolingDown(tokenMint: string): boolean {
+    const until = this.evictedCooldowns.get(tokenMint);
+    if (!until) return false;
+    if (until <= Date.now()) {
+      this.evictedCooldowns.delete(tokenMint);
+      return false;
+    }
+    return true;
+  }
+
+  private markEvicted(tokenMint: string): void {
+    const cooldownMs = this.config.reentryCooldownMs ?? 0;
+    if (cooldownMs <= 0) return;
+    this.evictedCooldowns.set(tokenMint, Date.now() + cooldownMs);
+  }
+
+  private cleanupCooldowns(): void {
+    const now = Date.now();
+    for (const [tokenMint, until] of this.evictedCooldowns) {
+      if (until <= now) {
+        this.evictedCooldowns.delete(tokenMint);
+      }
     }
   }
 }

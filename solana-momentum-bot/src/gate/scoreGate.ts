@@ -102,7 +102,11 @@ export function buildStrategyHardRejectReason(
     return undefined;
   }
 
-  const buyRatio = calcBuyRatio(candles[candles.length - 1]);
+  const lastCandle = candles[candles.length - 1];
+  // Why: directional volume 없으면 buyRatio 판단 불가 → 스킵 (backtest engine 동일 패턴)
+  if (lastCandle.buyVolume + lastCandle.sellVolume <= 0) return undefined;
+
+  const buyRatio = calcBuyRatio(lastCandle);
   if (buyRatio >= thresholds.minBuyRatio) return undefined;
   return `buy_ratio ${buyRatio.toFixed(2)} < minBuyRatio ${thresholds.minBuyRatio.toFixed(2)}`;
 }
@@ -123,6 +127,11 @@ function evaluateVolumeSpikeScore(
   const lpStability = assessLpStability(poolTvl, previousTvl);
   const multiTfAlignment = calcMultiPeriodAlignment(candles);
 
+  // Why: directional volume 없으면 minBuyRatio=0 → buyRatioScore 중립 15/25
+  // backtest engine.ts:101-103 동일 패턴
+  const hasDirectionalData = lastCandle.buyVolume + lastCandle.sellVolume > 0;
+  const effectiveMinBuyRatio = hasDirectionalData ? thresholds?.minBuyRatio : 0;
+
   return calcBreakoutScore({
     volumeRatio,
     volumeMcapRatio,
@@ -130,7 +139,7 @@ function evaluateVolumeSpikeScore(
     multiTfAlignment,
     whaleDetected: !!whaleAlert,
     lpStability,
-    minBuyRatio: thresholds?.minBuyRatio,
+    minBuyRatio: effectiveMinBuyRatio,
   });
 }
 

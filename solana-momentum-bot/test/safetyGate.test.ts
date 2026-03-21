@@ -178,4 +178,39 @@ describe('SafetyGate — Age Bucket Graduated Sizing (v4 configurable)', () => {
     );
     expect(large.approved).toBe(false);
   });
+
+  // null 케이스: GeckoTerminal/DexScreener 데이터 미제공 시 패널티 없음
+  it('applies no penalty when lpBurned is null (data unavailable)', () => {
+    const result = checkTokenSafety(
+      makeSafety({ tokenAgeHours: 48, lpBurned: null, ownershipRenounced: null }),
+      BASE_THRESHOLDS
+    );
+    expect(result.approved).toBe(true);
+    expect(result.sizeMultiplier).toBeCloseTo(1.0, 6);
+    expect(result.appliedAdjustments).not.toContain('LP_NOT_BURNED_HALF');
+    expect(result.appliedAdjustments).not.toContain('OWNERSHIP_NOT_RENOUNCED_HALF');
+  });
+
+  it('stacks penalty correctly when one field is null and other is false', () => {
+    // lpBurned: null (no penalty) + ownershipRenounced: false (0.5x) = 0.5x
+    const result = checkTokenSafety(
+      makeSafety({ tokenAgeHours: 48, lpBurned: null, ownershipRenounced: false }),
+      BASE_THRESHOLDS
+    );
+    expect(result.approved).toBe(true);
+    expect(result.sizeMultiplier).toBeCloseTo(0.5, 6);
+    expect(result.appliedAdjustments).not.toContain('LP_NOT_BURNED_HALF');
+    expect(result.appliedAdjustments).toContain('OWNERSHIP_NOT_RENOUNCED_HALF');
+  });
+
+  it('applies full penalty when both fields are explicitly false', () => {
+    const result = checkTokenSafety(
+      makeSafety({ tokenAgeHours: 48, lpBurned: false, ownershipRenounced: false }),
+      BASE_THRESHOLDS
+    );
+    expect(result.approved).toBe(true);
+    expect(result.sizeMultiplier).toBeCloseTo(0.25, 6);
+    expect(result.appliedAdjustments).toContain('LP_NOT_BURNED_HALF');
+    expect(result.appliedAdjustments).toContain('OWNERSHIP_NOT_RENOUNCED_HALF');
+  });
 });

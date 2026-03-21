@@ -23,7 +23,10 @@ export async function processSignal(
     : 'Attention: none';
   log.info(`Signal: ${signal.action} from ${signal.strategy} at ${signal.price} (Score: ${totalScore}, Grade: ${grade}, ${attentionInfo})`);
 
-  const balanceSol = await ctx.executor.getBalance();
+  // Why: Paper 모드에서 온체인 잔고는 0 → 시뮬레이션 잔고 사용
+  const balanceSol = ctx.tradingMode === 'paper' && ctx.paperBalance != null
+    ? ctx.paperBalance
+    : await ctx.executor.getBalance();
   const portfolio = await ctx.riskManager.getPortfolioState(balanceSol);
 
   // v3: Runner trade ID를 portfolio에 주입 — concurrent 판정에 사용
@@ -232,6 +235,11 @@ export async function processSignal(
         riskResult.sizeConstraint,
         txSignature
       );
+
+      if (ctx.tradingMode === 'paper' && ctx.paperBalance != null) {
+        const entryNotionalSol = order.quantity * order.price;
+        ctx.paperBalance = Math.max(0, ctx.paperBalance - entryNotionalSol);
+      }
 
       // Phase 1B: Record paper metrics entry
       if (ctx.paperMetrics) {

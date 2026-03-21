@@ -28,6 +28,11 @@ export function isDegraded(tradeId: string): boolean {
   return degradedStateMap.has(tradeId);
 }
 
+function applyPaperExitProceeds(ctx: BotContext, quantity: number, exitPrice: number): void {
+  if (ctx.tradingMode !== 'paper' || ctx.paperBalance == null) return;
+  ctx.paperBalance = Math.max(0, ctx.paperBalance + (quantity * exitPrice));
+}
+
 /**
  * v2: Degraded Exit 판정
  * 조건: sellImpact > threshold OR quote 연속 실패 >= limit
@@ -103,6 +108,7 @@ async function handleDegradedExitPhase1(
   }
 
   const realizedPnl = (exitPrice - trade.entryPrice) * soldQuantity;
+  applyPaperExitProceeds(ctx, soldQuantity, exitPrice);
   await ctx.tradeStore.closeTrade(trade.id, exitPrice, realizedPnl, executionSlippage, 'DEGRADED_EXIT', soldQuantity);
 
   // 잔여분 새 trade 생성 (phase 2에서 청산)
@@ -209,7 +215,9 @@ export function shouldActivateRunner(
 }
 
 export async function checkOpenPositions(ctx: BotContext): Promise<void> {
-  const balanceSol = await ctx.executor.getBalance();
+  const balanceSol = ctx.tradingMode === 'paper' && ctx.paperBalance != null
+    ? ctx.paperBalance
+    : await ctx.executor.getBalance();
   const portfolio = await ctx.riskManager.getPortfolioState(balanceSol);
   const openTrades = portfolio.openTrades;
   ctx.healthMonitor.updatePositions(openTrades.length);
@@ -427,6 +435,7 @@ export async function closeTrade(
     }
 
     const pnl = (exitPrice - trade.entryPrice) * trade.quantity;
+    applyPaperExitProceeds(ctx, trade.quantity, exitPrice);
 
     await ctx.tradeStore.closeTrade(trade.id, exitPrice, pnl, executionSlippage, reason);
 
@@ -582,6 +591,7 @@ async function handleTakeProfit1Partial(
     }
 
     const realizedPnl = (exitPrice - trade.entryPrice) * soldQuantity;
+    applyPaperExitProceeds(ctx, soldQuantity, exitPrice);
 
     await ctx.tradeStore.closeTrade(
       trade.id,
@@ -690,6 +700,7 @@ async function handleRunnerGradeBPartial(
     }
 
     const realizedPnl = (exitPrice - trade.entryPrice) * soldQuantity;
+    applyPaperExitProceeds(ctx, soldQuantity, exitPrice);
     await ctx.tradeStore.closeTrade(trade.id, exitPrice, realizedPnl, executionSlippage, 'TAKE_PROFIT_2', soldQuantity);
 
     // 원본 trade state map 정리 (closeTrade 경유하지 않으므로 수동 정리)

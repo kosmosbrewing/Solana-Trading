@@ -856,8 +856,9 @@ export class BacktestEngine {
       mevMarginPct: gatePoolInfo.mevMarginPct,
       tokenAgeHours: gatePoolInfo.tokenAgeHours ?? this.config.minTokenAgeHours,
       top10HolderPct: gatePoolInfo.top10HolderPct ?? this.config.maxHolderConcentration,
-      lpBurned: gatePoolInfo.lpBurned ?? false,
-      ownershipRenounced: gatePoolInfo.ownershipRenounced ?? false,
+      // Why: null = 데이터 미확인 → 패널티 없음. CLI --gate-lp-burned=false 시에만 패널티 적용
+      lpBurned: gatePoolInfo.lpBurned ?? null,
+      ownershipRenounced: gatePoolInfo.ownershipRenounced ?? null,
       rankScore: gatePoolInfo.rankScore ?? 0,
     };
   }

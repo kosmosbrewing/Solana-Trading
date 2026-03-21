@@ -4,7 +4,7 @@ import { createModuleLogger } from './utils/logger';
 import { HealthMonitor } from './utils/healthMonitor';
 import { Candle } from './utils/types';
 
-import { BirdeyeClient, Ingester, IngesterConfig } from './ingester';
+import { GeckoTerminalClient, BirdeyeClient, Ingester, IngesterConfig } from './ingester';
 import { BirdeyeWSClient } from './ingester/birdeyeWSClient';
 import { EventMonitor, EventScoreStore } from './event';
 import { CandleStore, TradeStore } from './candle';
@@ -26,6 +26,8 @@ import { SOL_MINT } from './utils/constants';
 import { BotContext } from './orchestration/types';
 
 const log = createModuleLogger('Main');
+const SCANNER_INGESTER_QUEUE_GAP_MS = 10_000;
+const REGIME_SOL_CACHE_TTL_MS = 60 * 60 * 1000;
 
 async function main() {
   const tradingMode = config.tradingMode;
@@ -82,8 +84,10 @@ async function main() {
   }
 
   // ─── Initialize modules ─────────────────────────────
-  const birdeyeClient = new BirdeyeClient(config.birdeyeApiKey);
-  const eventMonitor = new EventMonitor(birdeyeClient, {
+  const geckoClient = new GeckoTerminalClient();
+  // Why: Birdeye optional — Security Gate + Strategy D only (live mode)
+  const birdeyeClient = config.birdeyeApiKey ? new BirdeyeClient(config.birdeyeApiKey) : null;
+  const eventMonitor = new EventMonitor(geckoClient, {
     pollingIntervalMs: config.eventPollingIntervalMs,
     minAttentionScore: config.eventMinScore,
     fetchLimit: config.eventTrendingFetchLimit,
@@ -176,9 +180,9 @@ async function main() {
     await notifier.sendWarning('ExecutionLock', 'Lock timeout — auto released');
   });
 
-  // ─── Phase 1A: Birdeye WebSocket ──────────────────
+  // ─── Phase 1A: Birdeye WebSocket (requires API key) ──
   let birdeyeWS: BirdeyeWSClient | null = null;
-  if (config.birdeyeWSEnabled) {
+  if (config.birdeyeWSEnabled && config.birdeyeApiKey) {
     birdeyeWS = new BirdeyeWSClient({
       apiKey: config.birdeyeApiKey,
     });
@@ -193,9 +197,9 @@ async function main() {
       log.error(`Birdeye WS error: ${err.message}`);
     });
     // H-05: Strategy D — New LP Sniper event handler
-    if (config.strategyDEnabled && walletManager.hasSandboxWallet()) {
+    if (config.strategyDEnabled && walletManager.hasSandboxWallet() && birdeyeClient) {
       birdeyeWS.on('newListing', async (update: { address: string; symbol?: string; liquidity?: number; liquidityAddedAt?: number }) => {
-        if (!update.address) return;
+        if (!update.address || !birdeyeClient) return;
         try {
           const strategyDParams = {
             ticketSizeSol: config.strategyDTicketSol,
@@ -204,9 +208,9 @@ async function main() {
             takeProfitMultiplier: config.strategyDTpMultiplier,
           };
           const prepared = await prepareNewLpCandidate(update, {
-            getTokenSecurityDetailed: (tokenMint) => birdeyeClient.getTokenSecurityDetailed(tokenMint),
-            getExitLiquidity: (tokenMint) => birdeyeClient.getExitLiquidity(tokenMint),
-            getTokenOverview: (tokenMint) => birdeyeClient.getTokenOverview(tokenMint),
+            getTokenSecurityDetailed: (tokenMint) => birdeyeClient!.getTokenSecurityDetailed(tokenMint),
+            getExitLiquidity: (tokenMint) => birdeyeClient!.getExitLiquidity(tokenMint),
+            getTokenOverview: (tokenMint) => birdeyeClient!.getTokenOverview(tokenMint),
           }, {
             params: strategyDParams,
             securityGate: {
@@ -253,18 +257,15 @@ async function main() {
     log.info('Birdeye WebSocket client initialized');
   }
 
-  // ─── Phase 1A: DexScreener Client ─────────────────
-  let dexScreenerClient: DexScreenerClient | null = null;
-  if (config.dexScreenerApiKey) {
-    dexScreenerClient = new DexScreenerClient(config.dexScreenerApiKey);
-    log.info('DexScreener client initialized');
-  }
+  // ─── DexScreener Client (free — API key optional) ─────
+  const dexScreenerClient = new DexScreenerClient(config.dexScreenerApiKey || undefined);
+  log.info('DexScreener client initialized');
 
   // ─── Phase 1A: Scanner Engine ─────────────────────
   let scanner: ScannerEngine | null = null;
   if (config.scannerEnabled) {
     const scannerConfig: ScannerEngineConfig = {
-      birdeyeClient,
+      geckoClient,
       birdeyeWS,
       dexScreenerClient,
       maxWatchlistSize: config.maxWatchlistSize,
@@ -273,7 +274,9 @@ async function main() {
       dexEnrichIntervalMs: config.scannerDexEnrichMs,
       laneAMinAgeSec: config.scannerLaneAMinAgeSec,
       laneBMaxAgeSec: config.scannerLaneBMaxAgeSec,
-      minLiquidityUsd: config.eventMinLiquidityUsd,
+      reentryCooldownMs: config.scannerReentryCooldownMs,
+      // Why: Scanner minLiquidity는 SafetyGate minPoolLiquidity 이상이어야 함 (config gap 방지)
+      minLiquidityUsd: Math.max(config.eventMinLiquidityUsd, config.minPoolLiquidity),
       socialMentionTracker, // H-02: social score → WatchlistScore 연동
     };
     scanner = new ScannerEngine(scannerConfig);
@@ -287,18 +290,26 @@ async function main() {
       while (ingesterQueue.length > 0) {
         const entry = ingesterQueue.shift()!;
         try {
+          // Why: GeckoTerminal OHLCV는 pool address 필요 (token mint ≠ pool address)
+          // DexScreener로 token mint → 최고 유동성 pool address 변환
+          const poolAddress = await dexScreenerClient.getBestPoolAddress(entry.tokenMint);
+          if (!poolAddress) {
+            log.warn(`No pool found for ${entry.symbol} (${entry.tokenMint}), skipping ingester`);
+            continue;
+          }
           await ingester.addPair({
-            pairAddress: entry.tokenMint,
+            pairAddress: entry.tokenMint,  // CandleHandler watchlist matching key
+            poolAddress,                   // GeckoTerminal OHLCV query key
             intervalType: config.defaultTimeframe === 60 ? '1m' : '5m',
             pollIntervalMs: config.defaultTimeframe * 1000,
-            isTokenMint: true, // Scanner: token mint 기반 OHLCV
+            isTokenMint: true,
           });
         } catch (err) {
           log.warn(`Failed to add ingester for ${entry.symbol}: ${err}`);
         }
-        // Birdeye API rate limit 방지: pair 간 3초 간격
+        // GeckoTerminal rate limit 방지: startup backfill은 더 보수적으로 10초 간격
         if (ingesterQueue.length > 0) {
-          await new Promise(r => setTimeout(r, 3000));
+          await new Promise(r => setTimeout(r, SCANNER_INGESTER_QUEUE_GAP_MS));
         }
       }
       ingesterQueueRunning = false;
@@ -319,8 +330,8 @@ async function main() {
         ammFeePct: entry.poolInfo?.ammFeePct,
         tokenAgeHours: entry.poolInfo?.tokenAgeHours ?? 0,
         top10HolderPct: entry.poolInfo?.top10HolderPct ?? 0,
-        lpBurned: entry.poolInfo?.lpBurned ?? false,
-        ownershipRenounced: entry.poolInfo?.ownershipRenounced ?? false,
+        lpBurned: entry.poolInfo?.lpBurned ?? null,
+        ownershipRenounced: entry.poolInfo?.ownershipRenounced ?? null,
         rankScore: entry.watchlistScore.totalScore,
       });
 
@@ -358,7 +369,7 @@ async function main() {
     poolAddresses: targetPair ? [targetPair] : [],
   };
 
-  const universeEngine = new UniverseEngine(birdeyeClient, universeConfig);
+  const universeEngine = new UniverseEngine(geckoClient, universeConfig, dexScreenerClient);
 
   eventMonitor.on('events', (scores) => {
     for (const score of scores) {
@@ -389,7 +400,8 @@ async function main() {
     previousTvl: new Map(),
     tradingHaltedReason: undefined,
     scanner: scanner ?? undefined,
-    birdeyeClient,
+    geckoClient,
+    birdeyeClient: birdeyeClient ?? undefined,
     birdeyeWS: birdeyeWS ?? undefined,
     regimeFilter,
     paperMetrics,
@@ -397,6 +409,8 @@ async function main() {
     spreadMeasurer,
     eventScoreStore,
     walletManager,
+    // Why: Paper 모드에서 온체인 잔고 대신 시뮬레이션 잔고 (기본 1 SOL)
+    paperBalance: effectiveMode === 'paper' ? config.paperInitialBalance : undefined,
   };
 
   universeEngine.on('poolEvent', async (event: { type: string; pairAddress: string; detail: string }) => {
@@ -461,7 +475,7 @@ async function main() {
     });
   }
 
-  const ingester = new Ingester(birdeyeClient, candleStore, ingesterConfigs);
+  const ingester = new Ingester(geckoClient, candleStore, ingesterConfigs);
 
   ingester.on('candles', async (candles: Candle[]) => {
     healthMonitor.updateCandleTime();
@@ -494,14 +508,43 @@ async function main() {
   // Why: SOL mint 주소로 /defi/ohlcv 엔드포인트 사용 (getOHLCV는 pair address 전용)
   const REGIME_UPDATE_INTERVAL_MS = 15 * 60 * 1000; // 15 min
 
+  // Why: SOL pool address for RegimeFilter — DexScreener 조회 후 캐시
+  let solPoolAddress: string | null = null;
+  let cachedSol4hCandles: { bucketStartMs: number; fetchedAtMs: number; closes: { close: number; timestamp: number }[] } | null = null;
+
   const updateRegime = async () => {
     try {
-      // Factor 1: SOL 4H trend from Birdeye (60 candles × 4h = 10 days)
+      // Factor 1: SOL 4H trend from GeckoTerminal (60 candles × 4h = 10 days)
       const now = Math.floor(Date.now() / 1000);
       const tenDaysAgo = now - 60 * 4 * 3600;
-      const sol4hCandles = await birdeyeClient.getTokenOHLCV(SOL_MINT, '4H', tenDaysAgo, now);
-      if (sol4hCandles.length >= 50) {
-        regimeFilter.updateSolTrend(sol4hCandles);
+
+      // SOL pool address 조회 (최초 1회만)
+      if (!solPoolAddress) {
+        solPoolAddress = await dexScreenerClient.getBestPoolAddress(SOL_MINT);
+      }
+
+      if (solPoolAddress) {
+        const nowMs = Date.now();
+        const currentBucketStartMs = Math.floor(nowMs / (4 * 3600_000)) * (4 * 3600_000);
+        const useCachedCandles = cachedSol4hCandles
+          && cachedSol4hCandles.bucketStartMs === currentBucketStartMs
+          && (nowMs - cachedSol4hCandles.fetchedAtMs) < REGIME_SOL_CACHE_TTL_MS;
+
+        if (!useCachedCandles) {
+          const sol4hCandles = await geckoClient.getOHLCV(solPoolAddress, '4H', tenDaysAgo, now);
+          cachedSol4hCandles = {
+            bucketStartMs: currentBucketStartMs,
+            fetchedAtMs: nowMs,
+            closes: sol4hCandles.map(c => ({
+              close: c.close,
+              timestamp: Math.floor(c.timestamp.getTime() / 1000),
+            })),
+          };
+        }
+
+        if ((cachedSol4hCandles?.closes.length ?? 0) >= 50) {
+          regimeFilter.updateSolTrend(cachedSol4hCandles!.closes);
+        }
       }
 
       // Factor 2+3: breadth & follow-through from paper metrics

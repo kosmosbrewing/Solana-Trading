@@ -189,8 +189,9 @@ export interface PortfolioRiskTier {
 export interface TokenSafety {
   poolLiquidity: number;   // TVL in USD
   tokenAgeHours: number;
-  lpBurned: boolean;
-  ownershipRenounced: boolean;
+  // Why: null = 데이터 미확인 (GeckoTerminal/DexScreener 미제공), false = 확인된 미해소
+  lpBurned: boolean | null;
+  ownershipRenounced: boolean | null;
   top10HolderPct: number;  // 0~1
 }
 
@@ -235,8 +236,9 @@ export interface PoolInfo {
   mevMarginPct?: number;
   tokenAgeHours: number;
   top10HolderPct: number;
-  lpBurned: boolean;
-  ownershipRenounced: boolean;
+  // Why: null = 데이터 미확인, false = 확인된 미해소, true = 확인된 해소
+  lpBurned: boolean | null;
+  ownershipRenounced: boolean | null;
   rankScore: number;
 }
 

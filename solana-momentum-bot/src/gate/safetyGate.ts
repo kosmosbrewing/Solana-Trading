@@ -184,12 +184,14 @@ export function checkTokenSafety(
   }
 
   // LP/ownership 감산은 age bucket과 곱셈 누적
-  if (!safety.lpBurned) {
+  // Why: null = 데이터 미확인 → 패널티 없음 (GeckoTerminal/DexScreener 미제공)
+  //       false = 확인된 미해소 → 0.5x 패널티
+  if (safety.lpBurned === false) {
     sizeMultiplier *= 0.5;
     appliedAdjustments.push('LP_NOT_BURNED_HALF');
   }
 
-  if (!safety.ownershipRenounced) {
+  if (safety.ownershipRenounced === false) {
     sizeMultiplier *= 0.5;
     appliedAdjustments.push('OWNERSHIP_NOT_RENOUNCED_HALF');
   }

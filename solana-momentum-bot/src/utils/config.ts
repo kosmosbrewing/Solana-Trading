@@ -46,7 +46,8 @@ export const config = {
   targetPairAddress: optional('TARGET_PAIR_ADDRESS', ''),
 
   // Data
-  birdeyeApiKey: required('BIRDEYE_API_KEY'),
+  // Why: Birdeye optional — GeckoTerminal + DexScreener로 대체 (PLAN1.md)
+  birdeyeApiKey: optional('BIRDEYE_API_KEY', ''),
   databaseUrl: required('DATABASE_URL'),
 
   // Jupiter
@@ -58,6 +59,8 @@ export const config = {
 
   // Trading Mode
   tradingMode: parseTradingMode(),
+  // Why: Paper 모드에서 온체인 잔고 대신 시뮬레이션 잔고 사용 (지갑에 SOL 없음)
+  paperInitialBalance: numOptional('PAPER_INITIAL_BALANCE', 1.0),
 
   // ─── Universe Parameters (Group 1: 7개) ───
   minPoolTVL: numOptional('MIN_POOL_TVL', 50_000),
@@ -127,6 +130,7 @@ export const config = {
   scannerDexEnrichMs: numOptional('SCANNER_DEX_ENRICH_MS', 300_000),
   scannerLaneAMinAgeSec: numOptional('SCANNER_LANE_A_MIN_AGE_SEC', 3_600),
   scannerLaneBMaxAgeSec: numOptional('SCANNER_LANE_B_MAX_AGE_SEC', 1_200),
+  scannerReentryCooldownMs: numOptional('SCANNER_REENTRY_COOLDOWN_MS', 1_800_000),
 
   // ─── Birdeye WebSocket ───
   birdeyeWSEnabled: process.env.BIRDEYE_WS_ENABLED === 'true',

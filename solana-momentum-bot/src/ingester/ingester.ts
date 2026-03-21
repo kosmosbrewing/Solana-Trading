@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { BirdeyeClient } from './birdeyeClient';
+import { GeckoTerminalClient } from './geckoTerminalClient';
 import { CandleStore } from '../candle/candleStore';
 import { createModuleLogger } from '../utils/logger';
 import { CandleInterval } from '../utils/types';
@@ -12,17 +12,19 @@ export interface IngesterConfig {
   pollIntervalMs: number;
   /** true = token mint 주소 (Scanner 모드), false = pair/pool 주소 (Legacy 모드) */
   isTokenMint?: boolean;
+  /** GeckoTerminal용 pool address (token mint와 다를 수 있음) */
+  poolAddress?: string;
 }
 
 /**
- * Data Ingester — Birdeye API 폴링 기반 캔들 수집
+ * Data Ingester — GeckoTerminal API 폴링 기반 캔들 수집
  *
  * Events:
  * - 'candles' (Candle[]) — 새 캔들 배치 (1개 이상)
  * - 'error' ({ pairAddress: string, error: unknown })
  */
 export class Ingester extends EventEmitter {
-  private birdeyeClient: BirdeyeClient;
+  private geckoClient: GeckoTerminalClient;
   private candleStore: CandleStore;
   private configs: IngesterConfig[];
   private timers: Map<string, NodeJS.Timeout> = new Map();
@@ -30,12 +32,12 @@ export class Ingester extends EventEmitter {
   private running = false;
 
   constructor(
-    birdeyeClient: BirdeyeClient,
+    geckoClient: GeckoTerminalClient,
     candleStore: CandleStore,
     configs: IngesterConfig[]
   ) {
     super();
-    this.birdeyeClient = birdeyeClient;
+    this.geckoClient = geckoClient;
     this.candleStore = candleStore;
     this.configs = configs;
   }
@@ -51,14 +53,9 @@ export class Ingester extends EventEmitter {
       if (i > 0) await new Promise(r => setTimeout(r, 3000));
       await this.backfill(cfg);
 
-      // Why: 폴링 시작 시간을 pair 간 10초 간격으로 분산 → 동시 429 방지
-      const staggerMs = i * 10_000;
-      setTimeout(() => {
-        if (!this.running) return;
-        const timer = setInterval(() => this.poll(cfg), cfg.pollIntervalMs);
-        this.timers.set(cfg.pairAddress, timer);
-        log.info(`Polling started: ${cfg.pairAddress} every ${cfg.pollIntervalMs}ms (stagger: ${staggerMs}ms)`);
-      }, staggerMs);
+      const initialDelayMs = cfg.pollIntervalMs + (i * 10_000) + this.getStablePollOffsetMs(cfg);
+      this.schedulePoll(cfg, initialDelayMs);
+      log.info(`Polling scheduled: ${cfg.pairAddress} every ${cfg.pollIntervalMs}ms (first poll in ${initialDelayMs}ms)`);
     }
   }
 
@@ -71,22 +68,18 @@ export class Ingester extends EventEmitter {
     this.timers.clear();
   }
 
-  /** OHLCV 가져오기 — isTokenMint에 따라 적절한 엔드포인트 사용 */
+  /** OHLCV 가져오기 — GeckoTerminal pool address 기반 */
   private async fetchCandles(cfg: IngesterConfig, timeFrom: number, timeTo: number) {
-    if (cfg.isTokenMint) {
-      return this.birdeyeClient.getTokenOHLCVFull(
-        cfg.pairAddress,
-        cfg.intervalType,
-        timeFrom,
-        timeTo
-      );
-    }
-    return this.birdeyeClient.getOHLCV(
-      cfg.pairAddress,
+    // Why: GeckoTerminal은 pool address 기반. poolAddress가 있으면 사용, 없으면 pairAddress 사용.
+    const address = cfg.poolAddress || cfg.pairAddress;
+    const candles = await this.geckoClient.getOHLCV(
+      address,
       cfg.intervalType,
       timeFrom,
       timeTo
     );
+    // Why: pairAddress를 원본(token mint)으로 유지해야 CandleHandler에서 watchlist 매칭됨
+    return candles.map(c => ({ ...c, pairAddress: cfg.pairAddress }));
   }
 
   private async backfill(cfg: IngesterConfig): Promise<void> {
@@ -154,9 +147,9 @@ export class Ingester extends EventEmitter {
 
     if (this.running) {
       await this.backfill(cfg);
-      const timer = setInterval(() => this.poll(cfg), cfg.pollIntervalMs);
-      this.timers.set(cfg.pairAddress, timer);
-      log.info(`Dynamic pair added: ${cfg.pairAddress} (poll every ${cfg.pollIntervalMs}ms)`);
+      const initialDelayMs = cfg.pollIntervalMs + this.getStablePollOffsetMs(cfg);
+      this.schedulePoll(cfg, initialDelayMs);
+      log.info(`Dynamic pair added: ${cfg.pairAddress} (poll every ${cfg.pollIntervalMs}ms, first poll in ${initialDelayMs}ms)`);
     }
   }
 
@@ -174,5 +167,26 @@ export class Ingester extends EventEmitter {
 
   isRunning(): boolean {
     return this.running;
+  }
+
+  private schedulePoll(cfg: IngesterConfig, delayMs: number): void {
+    const timer = setTimeout(async () => {
+      if (!this.running) return;
+      await this.poll(cfg);
+      if (!this.running || !this.timers.has(cfg.pairAddress)) return;
+      this.schedulePoll(cfg, cfg.pollIntervalMs);
+    }, delayMs);
+    this.timers.set(cfg.pairAddress, timer);
+  }
+
+  private getStablePollOffsetMs(cfg: IngesterConfig): number {
+    const maxOffsetMs = Math.min(60_000, Math.floor(cfg.pollIntervalMs / 5));
+    if (maxOffsetMs <= 0) return 0;
+
+    let hash = 0;
+    for (const ch of cfg.pairAddress) {
+      hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+    }
+    return hash % (maxOffsetMs + 1);
   }
 }

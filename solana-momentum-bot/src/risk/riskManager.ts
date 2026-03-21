@@ -406,7 +406,9 @@ export class RiskManager {
       this.tradeStore.getClosedTradesChronological(),
     ]);
 
-    const equitySol = balanceSol + openTrades.reduce((sum, trade) => sum + trade.quantity, 0);
+    // Open-position mark-to-market requires live candle prices and is applied later via applyUnrealizedDrawdown().
+    // 여기서 raw trade.quantity를 더하면 token units를 SOL equity로 오인해 HWM/drawdown이 왜곡된다.
+    const equitySol = balanceSol;
     const closedEdgeTrades = closedTrades.map(toEdgeTrackerTrade);
     const riskTier = resolvePortfolioRiskTier(closedEdgeTrades, this.riskConfig.recoveryPct);
     const drawdownGuard = replayPortfolioDrawdownGuard(

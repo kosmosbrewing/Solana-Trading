@@ -305,8 +305,8 @@ async function runProfile(
           dailyVolume: pool.volume24hUsd,
           tokenAgeHours: pool.ageHours,
           top10HolderPct: 0.80,
-          lpBurned: false,
-          ownershipRenounced: false,
+          lpBurned: null,
+          ownershipRenounced: null,
         },
       };
 

@@ -1,7 +1,8 @@
 import { EventEmitter } from 'events';
 import { createModuleLogger } from '../utils/logger';
 import { PoolInfo } from '../utils/types';
-import { BirdeyeClient } from '../ingester/birdeyeClient';
+import { GeckoTerminalClient } from '../ingester/geckoTerminalClient';
+import { DexScreenerClient } from '../scanner/dexScreenerClient';
 import {
   UniverseParams,
   DEFAULT_UNIVERSE_PARAMS,
@@ -16,7 +17,7 @@ const log = createModuleLogger('UniverseEngine');
 export interface UniverseEngineConfig {
   params: Partial<UniverseParams>;
   refreshIntervalMs: number;  // 5분 = 300_000
-  poolAddresses?: string[];   // 초기 풀 목록 (없으면 BirdeyeAPI에서 탐색)
+  poolAddresses?: string[];   // 초기 풀 목록 (없으면 Scanner에서 동적 추가)
 }
 
 /**
@@ -25,16 +26,22 @@ export interface UniverseEngineConfig {
  */
 export class UniverseEngine extends EventEmitter {
   private params: UniverseParams;
-  private birdeyeClient: BirdeyeClient;
+  private geckoClient: GeckoTerminalClient;
+  private dexScreenerClient: DexScreenerClient | null;
   private refreshIntervalMs: number;
   private watchlist: PoolInfo[] = [];
   private previousTvl: Map<string, number> = new Map();
   private refreshTimer?: NodeJS.Timeout;
   private poolAddresses: string[];
 
-  constructor(birdeyeClient: BirdeyeClient, config: UniverseEngineConfig) {
+  constructor(
+    geckoClient: GeckoTerminalClient,
+    config: UniverseEngineConfig,
+    dexScreenerClient?: DexScreenerClient | null
+  ) {
     super();
-    this.birdeyeClient = birdeyeClient;
+    this.geckoClient = geckoClient;
+    this.dexScreenerClient = dexScreenerClient ?? null;
     this.params = { ...DEFAULT_UNIVERSE_PARAMS, ...config.params };
     this.refreshIntervalMs = config.refreshIntervalMs;
     this.poolAddresses = config.poolAddresses || [];
@@ -143,26 +150,51 @@ export class UniverseEngine extends EventEmitter {
     log.info(`Watchlist updated: ${this.watchlist.length} pools (${scannerPools.length} scanner + ${ranked.length} API)`);
   }
 
+  /**
+   * 풀 정보 조회 — DexScreener (TVL, volume, age) + GeckoTerminal (spread proxy)
+   * Why: Paper 모드에서는 Security Gate 비활성화이므로 security 정보 불필요
+   */
   private async fetchPoolInfo(pairAddress: string): Promise<PoolInfo | null> {
     try {
-      const overview = await this.birdeyeClient.getTokenOverview(pairAddress);
-      if (!overview) return null;
+      // DexScreener로 토큰 정보 조회
+      if (this.dexScreenerClient) {
+        const pairs = await this.dexScreenerClient.getTokenPairs(pairAddress);
+        if (pairs.length > 0) {
+          const pair = pairs[0];
+          return {
+            pairAddress,
+            tokenMint: pair.baseToken.address || pairAddress,
+            tvl: pair.liquidity?.usd || 0,
+            marketCap: pair.marketCap,
+            dailyVolume: pair.volume?.h24 || 0,
+            tradeCount24h: (pair.txns?.h24?.buys || 0) + (pair.txns?.h24?.sells || 0),
+            spreadPct: await this.estimateSpreadProxy(pairAddress),
+            tokenAgeHours: this.calcTokenAge(pair.pairCreatedAt),
+            // Why: GeckoTerminal/DexScreener은 LP burn, ownership 데이터 미제공 → null
+            top10HolderPct: 0,
+            lpBurned: null,
+            ownershipRenounced: null,
+            rankScore: 0,
+          };
+        }
+      }
 
-      const security = await this.birdeyeClient.getTokenSecurity(pairAddress);
+      // Fallback: GeckoTerminal pool info
+      const poolInfo = await this.geckoClient.getPoolInfo(pairAddress);
+      if (!poolInfo) return null;
 
       return {
         pairAddress,
-        tokenMint: (overview.address as string) || pairAddress,
-        tvl: Number(overview.liquidity || 0),
-        marketCap: this.pickFiniteNumber(overview.marketCap, overview.marketcap, overview.mc),
-        dailyVolume: Number(overview.v24hUSD || 0),
-        tradeCount24h: Number(overview.trade24h || 0),
+        tokenMint: poolInfo.baseTokenAddress || pairAddress,
+        tvl: poolInfo.tvlUsd,
+        marketCap: poolInfo.marketCapUsd,
+        dailyVolume: poolInfo.volume24hUsd,
+        tradeCount24h: poolInfo.buys24h + poolInfo.sells24h,
         spreadPct: await this.estimateSpreadProxy(pairAddress),
-        ammFeePct: this.pickNumber(overview.feeRate, overview.swapFee, overview.tradeFeePercent),
-        tokenAgeHours: this.calcTokenAge(overview.createdAt as number | undefined),
-        top10HolderPct: Number(security?.top10HolderPercent || 0),
-        lpBurned: !!(security?.isLpBurned),
-        ownershipRenounced: !!(security?.isOwnerRenounced),
+        tokenAgeHours: this.calcTokenAgeFromISO(poolInfo.poolCreatedAt),
+        top10HolderPct: 0,
+        lpBurned: null,
+        ownershipRenounced: null,
         rankScore: 0,
       };
     } catch {
@@ -170,15 +202,22 @@ export class UniverseEngine extends EventEmitter {
     }
   }
 
-  private calcTokenAge(createdAtUnix: number | undefined): number {
-    if (!createdAtUnix) return 999;
-    return (Date.now() / 1000 - createdAtUnix) / 3600;
+  private calcTokenAge(createdAtMs: number | undefined): number {
+    if (!createdAtMs) return 999;
+    return (Date.now() - createdAtMs) / (3600 * 1000);
+  }
+
+  private calcTokenAgeFromISO(createdAt: string | undefined): number {
+    if (!createdAt) return 999;
+    const ts = new Date(createdAt).getTime();
+    if (isNaN(ts)) return 999;
+    return (Date.now() - ts) / (3600 * 1000);
   }
 
   private async estimateSpreadProxy(pairAddress: string): Promise<number> {
     try {
       const now = Math.floor(Date.now() / 1000);
-      const candles = await this.birdeyeClient.getOHLCV(
+      const candles = await this.geckoClient.getOHLCV(
         pairAddress,
         '1m',
         now - 180,
@@ -197,35 +236,5 @@ export class UniverseEngine extends EventEmitter {
     } catch {
       return 0;
     }
-  }
-
-  private pickNumber(...values: unknown[]): number | undefined {
-    for (const value of values) {
-      if (typeof value === 'number' && Number.isFinite(value)) {
-        return value > 1 ? value / 100 : value;
-      }
-      if (typeof value === 'string' && value.trim().length > 0) {
-        const parsed = Number(value);
-        if (Number.isFinite(parsed)) {
-          return parsed > 1 ? parsed / 100 : parsed;
-        }
-      }
-    }
-    return undefined;
-  }
-
-  private pickFiniteNumber(...values: unknown[]): number | undefined {
-    for (const value of values) {
-      if (typeof value === 'number' && Number.isFinite(value)) {
-        return value;
-      }
-      if (typeof value === 'string' && value.trim().length > 0) {
-        const parsed = Number(value);
-        if (Number.isFinite(parsed)) {
-          return parsed;
-        }
-      }
-    }
-    return undefined;
   }
 }

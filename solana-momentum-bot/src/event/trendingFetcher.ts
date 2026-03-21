@@ -1,4 +1,4 @@
-import { BirdeyeClient } from '../ingester';
+import { GeckoTerminalClient } from '../ingester/geckoTerminalClient';
 import { createModuleLogger } from '../utils/logger';
 import { TrendingEventCandidate, TrendingFetcherConfig } from './types';
 
@@ -6,13 +6,13 @@ const log = createModuleLogger('TrendingFetcher');
 
 export class TrendingFetcher {
   constructor(
-    private readonly birdeyeClient: BirdeyeClient,
+    private readonly geckoClient: GeckoTerminalClient,
     private readonly config: TrendingFetcherConfig
   ) {}
 
   async fetchCandidates(): Promise<TrendingEventCandidate[]> {
     const detectedAt = new Date().toISOString();
-    const tokens = await this.birdeyeClient.getTrendingTokens(this.config.limit);
+    const tokens = await this.geckoClient.getTrendingTokens(this.config.limit);
     const unique = new Map<string, TrendingEventCandidate>();
 
     for (const token of tokens) {

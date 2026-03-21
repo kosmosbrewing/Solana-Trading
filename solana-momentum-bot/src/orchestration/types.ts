@@ -3,7 +3,7 @@ import { CandleStore, TradeStore } from '../candle';
 import { EventMonitor, EventScoreStore } from '../event';
 import { Executor, WalletManager } from '../executor';
 import { SpreadMeasurer } from '../gate/spreadMeasurer';
-import { BirdeyeClient } from '../ingester';
+import { GeckoTerminalClient, BirdeyeClient } from '../ingester';
 import { BirdeyeWSClient } from '../ingester/birdeyeWSClient';
 import { Notifier } from '../notifier';
 import { PaperMetricsTracker } from '../reporting';
@@ -31,7 +31,9 @@ export interface BotContext {
   tradingHaltedReason?: string;
   /** Phase 1A: Scanner Engine (null = legacy single-pair mode) */
   scanner?: ScannerEngine;
-  /** Phase 1A: Birdeye REST client (for security/exit-liquidity checks) */
+  /** GeckoTerminal client (OHLCV, trending — Birdeye 대체) */
+  geckoClient?: GeckoTerminalClient;
+  /** Birdeye REST client (optional — Security Gate/Strategy D only) */
   birdeyeClient?: BirdeyeClient;
   /** Phase 1A: Birdeye WS client (null = polling fallback) */
   birdeyeWS?: BirdeyeWSClient;
@@ -47,4 +49,6 @@ export interface BotContext {
   eventScoreStore?: EventScoreStore;
   /** Phase 3: Wallet manager (main + sandbox isolation) */
   walletManager?: WalletManager;
+  /** Paper 모드 시뮬레이션 잔고 (SOL). PnL에 따라 동적 업데이트 */
+  paperBalance?: number;
 }

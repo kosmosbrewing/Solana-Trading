@@ -28,7 +28,9 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
   );
   const dailyPnl = await ctx.tradeStore.getTodayPnl();
   const signalCounts = await ctx.auditLogger.getTodaySignalCounts();
-  const balance = await ctx.executor.getBalance();
+  const balance = ctx.tradingMode === 'paper' && ctx.paperBalance != null
+    ? ctx.paperBalance
+    : await ctx.executor.getBalance();
   const status = ctx.healthMonitor.getStatus();
   const edgeTracker = new EdgeTracker(
     closedTodayTrades.map(trade => ({

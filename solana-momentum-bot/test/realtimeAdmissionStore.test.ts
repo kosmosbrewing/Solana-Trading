@@ -34,6 +34,7 @@ describe('RealtimeAdmissionStore', () => {
     expect(restored.getStats('pool-blocked')).toEqual({
       observedNotifications: 50,
       logParsed: 0,
+      fallbackParsed: 0,
       fallbackSkipped: 50,
       parseRatePct: 0,
       skippedRatePct: 100,

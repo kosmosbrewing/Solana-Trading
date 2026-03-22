@@ -12,6 +12,7 @@ export {
 export {
   tryParseSwapFromLogs,
   parseSwapFromTransaction,
+  isLikelyPumpSwapFallbackLog,
   shouldFallbackToTransaction,
   shouldForceFallbackToTransaction,
   RAYDIUM_V4_PROGRAM,

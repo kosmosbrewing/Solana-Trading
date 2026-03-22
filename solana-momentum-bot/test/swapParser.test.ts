@@ -1,5 +1,6 @@
 import bs58 from 'bs58';
 import {
+  isLikelyPumpSwapFallbackLog,
   parseSwapFromTransaction,
   PUMP_SWAP_PROGRAM,
   shouldForceFallbackToTransaction,
@@ -173,6 +174,20 @@ describe('swapParser', () => {
       quoteMint: 'So11111111111111111111111111111111111111112',
       poolProgram: PUMP_SWAP_PROGRAM,
     })).toBe(true);
+  });
+
+  it('identifies likely PumpSwap fallback logs and skips noisy ones', () => {
+    expect(isLikelyPumpSwapFallbackLog([
+      'Program ComputeBudget111111111111111111111111111111 invoke [1]',
+      'Program FsU1rcaEC361jBr9JE5wm7bpWRSTYeAMN4R2MCs11rNF invoke [1]',
+      'Program log: pi: 1, sbps: -121, asbps: -121, cbbps: 75, d: 0',
+    ])).toBe(true);
+
+    expect(isLikelyPumpSwapFallbackLog([
+      'Program 11111111111111111111111111111111 invoke [1]',
+      'Program PrntZBCXvR3VPW1cG8kxqASXCnQhmJpP6FEe3r4sA5g invoke [1]',
+      'Program log: No arbitrage...',
+    ])).toBe(false);
   });
 
   it('falls back to token and lamport deltas when parsing from a transaction', () => {

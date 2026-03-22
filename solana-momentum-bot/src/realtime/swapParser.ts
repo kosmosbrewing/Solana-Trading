@@ -34,6 +34,22 @@ const FALLBACK_SWAP_PATTERNS = [
   /pumpswap/i,
   /pumpfun/i,
 ];
+const PUMP_SWAP_FALLBACK_NOISE_PATTERNS = [
+  /no arbitrage/i,
+  /is_cashback_coin=false/i,
+];
+const PUMP_SWAP_FALLBACK_HINT_PATTERNS = [
+  /program log:\s*pi:/i,
+  /instruction:\s*swap/i,
+  /swap event/i,
+  /pumpswap/i,
+  /pumpfun/i,
+];
+const PUMP_SWAP_FALLBACK_HINT_PROGRAMS = [
+  PUMP_SWAP_PROGRAM,
+  'DDsnwb7dxKSjzTYDFjU8F6rpYNZa1sp7Fmfb2nGDAMEo',
+  'FsU1rcaEC361jBr9JE5wm7bpWRSTYeAMN4R2MCs11rNF',
+];
 
 interface SwapParseContext {
   poolAddress: string;
@@ -146,6 +162,15 @@ export function shouldFallbackToTransaction(logs: string[]): boolean {
 
 export function shouldForceFallbackToTransaction(poolMetadata?: RealtimePoolMetadata): boolean {
   return isPumpSwapPool(poolMetadata);
+}
+
+export function isLikelyPumpSwapFallbackLog(logs: string[]): boolean {
+  const joined = logs.join('\n');
+  if (PUMP_SWAP_FALLBACK_NOISE_PATTERNS.some((pattern) => pattern.test(joined))) {
+    return false;
+  }
+  return PUMP_SWAP_FALLBACK_HINT_PATTERNS.some((pattern) => pattern.test(joined))
+    || PUMP_SWAP_FALLBACK_HINT_PROGRAMS.some((program) => joined.includes(program));
 }
 
 function detectProgram(logs: string[]): string | undefined {

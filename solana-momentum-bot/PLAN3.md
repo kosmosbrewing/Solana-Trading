@@ -292,11 +292,20 @@ rg -n "PumpSwap|pumpswap|parseRate|blocked|unsupported" logs tmp data/realtime-s
       - `errors=0`
     - compatibility smoke (`fallback-batch-size=5`, 90s, free plan):
       - batch RPC unsupported 감지 후 single-request mode로 자동 downgrade
-      - `observed_notifications=4363`
-      - `total_swaps=31`
-      - `tx_fallback=29`
-      - `fallback_dropped=3001`
-      - `fallback_unparsed=329`
+      - baseline before backlog filter:
+        - `observed_notifications=4363`
+        - `total_swaps=31`
+        - `tx_fallback=29`
+        - `fallback_skipped=0`
+        - `fallback_dropped=3001`
+        - `fallback_unparsed=329`
+      - after PumpSwap noise/backpressure filter:
+        - `observed_notifications=1213`
+        - `total_swaps=43`
+        - `tx_fallback=40`
+        - `fallback_skipped=350`
+        - `fallback_dropped=0`
+        - `fallback_unparsed=320`
       - `errors=0`
 
 해석:
@@ -305,7 +314,8 @@ rg -n "PumpSwap|pumpswap|parseRate|blocked|unsupported" logs tmp data/realtime-s
 - 현재 실측 parser 성과는 `logs`가 아니라 `tx fallback` 중심이다.
 - 운영 기본값은 `queue 확대 + 보수적 rps`가 더 안정적이다.
 - paid batch RPC는 현재 플랜에서 막혀 있으므로, runtime은 자동으로 single-request fallback으로 내려간다.
-- 장시간 고볼륨 PumpSwap 풀에서는 parser 미구현보다 `fallback throughput / queue pressure`가 더 큰 병목이다.
+- PumpSwap noise/backpressure filter 적용 후, 동일 90초 smoke에서 `fallback_dropped`를 `3001 -> 0`으로 줄이면서 `total_swaps`를 `31 -> 43`으로 늘렸다.
+- 장시간 고볼륨 PumpSwap 풀에서는 parser 미구현보다 `fallback throughput / queue pressure`가 더 큰 병목이지만, 현재는 backlog-aware gating으로 완화 가능한 상태다.
 
 ---
 

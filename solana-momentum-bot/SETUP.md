@@ -95,11 +95,17 @@ DATABASE_URL=postgresql://momentum:momentum_secret@localhost:5432/momentum_bot
 SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=<helius-key>
 WALLET_PRIVATE_KEY=<base58-private-key>
 DATABASE_URL=postgresql://momentum:momentum_secret@localhost:5432/momentum_bot
+VPS_APP_PROFILE=shadow
 TRADING_MODE=paper
+REALTIME_ENABLED=true
+REALTIME_PERSISTENCE_ENABLED=true
 SCANNER_ENABLED=true
 MAX_WATCHLIST_SIZE=8
 SCANNER_REENTRY_COOLDOWN_MS=1800000
 EVENT_POLLING_INTERVAL_MS=1800000
+SHADOW_RUN_MINUTES=1440
+SHADOW_SIGNAL_TARGET=100
+SHADOW_HORIZON_SEC=30
 ```
 
 > 참고:
@@ -212,6 +218,17 @@ Running migrations (v0.3)...
   ✓ backtest_runs table created
 
 Migration complete!
+```
+
+## Step 5. VPS Runtime 기동
+
+```bash
+# build + migrate + pm2 start
+npm run deploy:vps
+
+# 상태 확인
+pm2 status
+pm2 logs momentum-shadow
 ```
 
 ### 생성되는 테이블

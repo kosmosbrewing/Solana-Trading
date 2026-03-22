@@ -48,6 +48,7 @@ async function main() {
   });
 
   const summary = summarizeRealtimeSignals(result.records, horizonSec);
+  const rs = result.rejectStats;
   const output = {
     datasetDir: path.resolve(datasetDir),
     dataset: result.dataset,
@@ -73,6 +74,7 @@ async function main() {
       edgeGateStatus: summary.assessment.gateStatus,
       edgeGateReasons: summary.assessment.gateReasons,
     },
+    rejectStats: rs,
   };
 
   if (args.includes('--json')) {
@@ -93,6 +95,32 @@ async function main() {
   console.log(`Decision: ${summary.assessment.decision} | Gate: ${summary.assessment.gateStatus}`);
   if (summary.assessment.gateReasons.length > 0) {
     console.log(`Gate reasons: ${summary.assessment.gateReasons.join(', ')}`);
+  }
+
+  // Trigger reject reason breakdown
+  console.log('─'.repeat(72));
+  console.log(`Trigger evaluations: ${rs.evaluations} (+${rs.insufficientCandles} skipped — candle history too short)`);
+  if (rs.evaluations > 0) {
+    const pct = (n: number) => `${n} (${((n / rs.evaluations) * 100).toFixed(1)}%)`;
+    const volumeOk = rs.evaluations - rs.volumeInsufficient;
+    console.log(`  volume_ok       : ${pct(volumeOk)}  [vm=${triggerConfig.volumeSurgeMultiplier}x threshold]`);
+    console.log(`  no_breakout     : ${pct(rs.noBreakout)}  [close <= ${triggerConfig.priceBreakoutLookback}-bar high]`);
+    console.log(`  confirm_fail    : ${pct(rs.confirmFail)}  [<${triggerConfig.confirmMinBars} bullish ${triggerConfig.confirmIntervalSec}s bars or <${(triggerConfig.confirmMinPriceChangePct * 100).toFixed(1)}% chg]`);
+    console.log(`  cooldown        : ${pct(rs.cooldown)}  [${triggerConfig.cooldownSec}s cooldown not elapsed]`);
+    console.log(`  signals_fired   : ${rs.signals}`);
+
+    // Bottleneck diagnosis
+    const bottleneck = ([
+      ['volume_insufficient', rs.volumeInsufficient],
+      ['no_breakout', rs.noBreakout],
+      ['confirm_fail', rs.confirmFail],
+      ['cooldown', rs.cooldown],
+    ] as [string, number][]).sort((a, b) => b[1] - a[1])[0];
+    if (rs.signals === 0 && rs.evaluations > 0) {
+      console.log(`  >> 0 signals: top bottleneck = ${bottleneck[0]} (${bottleneck[1]}/${rs.evaluations} evals blocked)`);
+    }
+  } else {
+    console.log('  (no primary-interval candles evaluated — check dataset or --primary-interval setting)');
   }
 }
 

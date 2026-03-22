@@ -33,12 +33,42 @@ const DEFAULT_ORDER_PARAMS: MomentumOrderParams = {
   tp2Multiplier: 3.5,
 };
 
+export interface TriggerRejectStats {
+  /** 총 primary 봉 평가 횟수 */
+  evaluations: number;
+  /** 발화된 신호 수 */
+  signals: number;
+  /** 봉 히스토리 부족 (lookback 미달) */
+  insufficientCandles: number;
+  /** volumeRatio < volumeSurgeMultiplier */
+  volumeInsufficient: number;
+  /** close <= 20봉 최고가 — 신고가 돌파 실패 */
+  noBreakout: number;
+  /** confirm 봉 중 양봉 미충족 또는 가격변화 미달 */
+  confirmFail: number;
+  /** 쿨다운 미경과 */
+  cooldown: number;
+}
+
 export class MomentumTrigger {
   private readonly config: MomentumTriggerConfig;
   private readonly lastSignalAt = new Map<string, number>();
+  private readonly rejectStats: TriggerRejectStats = {
+    evaluations: 0,
+    signals: 0,
+    insufficientCandles: 0,
+    volumeInsufficient: 0,
+    noBreakout: 0,
+    confirmFail: 0,
+    cooldown: 0,
+  };
 
   constructor(config: MomentumTriggerConfig) {
     this.config = config;
+  }
+
+  getRejectStats(): Readonly<TriggerRejectStats> {
+    return { ...this.rejectStats };
   }
 
   onCandle(candle: Candle, candleBuilder: MicroCandleBuilder): Signal | null {
@@ -49,8 +79,11 @@ export class MomentumTrigger {
     const lookback = Math.max(this.config.volumeSurgeLookback, this.config.priceBreakoutLookback);
     const candles = candleBuilder.getRecentCandles(candle.pairAddress, candle.intervalSec, lookback + 1);
     if (candles.length < lookback + 1) {
+      this.rejectStats.insufficientCandles++;
       return null;
     }
+
+    this.rejectStats.evaluations++;
 
     const current = candles[candles.length - 1];
     const previous = candles.slice(0, -1);
@@ -60,6 +93,12 @@ export class MomentumTrigger {
     const breakout = current.close > highestHigh;
     const confirmation = this.checkConfirmation(candle.pairAddress, candleBuilder);
     const cooldownReady = this.isCooldownReady(candle.pairAddress, current.timestamp.getTime() / 1000);
+
+    // 독립적으로 카운팅 (복수 조건 동시 실패 가능)
+    if (volumeRatio < this.config.volumeSurgeMultiplier) this.rejectStats.volumeInsufficient++;
+    if (!breakout) this.rejectStats.noBreakout++;
+    if (!confirmation.passed) this.rejectStats.confirmFail++;
+    if (!cooldownReady) this.rejectStats.cooldown++;
 
     if (
       volumeRatio < this.config.volumeSurgeMultiplier ||
@@ -74,6 +113,7 @@ export class MomentumTrigger {
     const timestampSec = Math.floor(current.timestamp.getTime() / 1000);
     const closeTimestampSec = timestampSec + current.intervalSec;
     this.lastSignalAt.set(candle.pairAddress, timestampSec);
+    this.rejectStats.signals++;
 
     return {
       action: 'BUY',

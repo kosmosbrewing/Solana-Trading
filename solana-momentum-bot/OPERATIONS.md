@@ -26,25 +26,28 @@ git clone <repo> && cd solana-momentum-bot
 # 2. .env 설정
 cp .env.example .env
 # 필수 값 입력: SOLANA_RPC_URL, WALLET_PRIVATE_KEY, DATABASE_URL
+# VPS_APP_PROFILE=shadow
 # TRADING_MODE=paper
-# SCANNER_ENABLED=true
-#
-# 참고:
-# - paper runtime 자체는 GeckoTerminal + DexScreener 중심이라 BIRDEYE_API_KEY가 필수는 아님
-# - 다만 scripts/deploy.sh는 아직 legacy 체크로 BIRDEYE_API_KEY 존재 여부를 검사함
+# REALTIME_ENABLED=true
 
 # 3. 자동 배포
-bash scripts/deploy.sh
+npm run deploy:vps
 ```
 
 ### Paper Mode .env 핵심 설정
 
 ```env
+VPS_APP_PROFILE=shadow
 TRADING_MODE=paper
+REALTIME_ENABLED=true
+REALTIME_PERSISTENCE_ENABLED=true
 SCANNER_ENABLED=true
 MAX_WATCHLIST_SIZE=8
 SCANNER_REENTRY_COOLDOWN_MS=1800000
 EVENT_POLLING_INTERVAL_MS=1800000
+SHADOW_RUN_MINUTES=1440
+SHADOW_SIGNAL_TARGET=100
+SHADOW_HORIZON_SEC=30
 # WS/Strategy D는 기본 false — 설정 불필요
 # BIRDEYE_WS_ENABLED=false (기본값)
 # STRATEGY_D_ENABLED=false (기본값)
@@ -58,9 +61,10 @@ EVENT_POLLING_INTERVAL_MS=1800000
 
 ### 가동 확인 체크리스트
 
-- [ ] `pm2 status` — `momentum-bot` online
-- [ ] `pm2 logs momentum-bot` — `Bot started (v0.5 — Phase 2 Core Live, mode: paper)` 확인
-- [ ] `Scanner started. Watchlist: 8 entries.` 확인
+- [ ] `pm2 status` — `momentum-shadow` online
+- [ ] `pm2 logs momentum-shadow` — shadow session start / export summary 확인
+- [ ] child runtime log에서 `Bot started ... mode: paper` 확인
+- [ ] child runtime log에서 `Scanner started. Watchlist: 8 entries.` 확인
 - [ ] `candidateDiscovered`가 실제 retained watchlist 후보에만 발생하는지 확인
 - [ ] Gate 평가 로그 출력
 - [ ] Telegram alert 수신 (`Bot started` 메시지)
@@ -80,10 +84,11 @@ EVENT_POLLING_INTERVAL_MS=1800000
 
 ```bash
 pm2 status              # 프로세스 상태
-pm2 logs momentum-bot   # 실시간 로그
+pm2 logs momentum-shadow # shadow runner 로그
+pm2 logs momentum-bot   # bot 단독 프로필일 때
 pm2 monit               # CPU/memory 모니터
-pm2 restart momentum-bot # 재시작
-pm2 stop momentum-bot   # 중지
+pm2 restart momentum-shadow # shadow 재시작
+pm2 stop momentum-shadow   # shadow 중지
 ```
 
 ### Telegram Alert 연결
@@ -203,11 +208,11 @@ TELEGRAM_CHAT_ID=<봇에게 메시지 보낸 후 getUpdates API로 확인>
 
 ### Default Collection Command
 
-운영 표준 경로. `.env`의 현재 realtime 기본값을 그대로 사용한다.
+운영 표준 경로. VPS에서는 `pm2`가 [vps-realtime-shadow.sh](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/scripts/vps-realtime-shadow.sh)를 반복 실행한다.
 
 ```bash
 cd /Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot
-npm run realtime-shadow -- --run-minutes 180 --signal-target 50 --horizon 30 --telegram
+pm2 start ecosystem.config.cjs --only momentum-shadow
 ```
 
 용도:
@@ -222,39 +227,6 @@ npm run realtime-shadow -- --run-minutes 180 --signal-target 50 --horizon 30 --t
 - export bundle
 - `shadow-summary.json`
 - Telegram digest (`--telegram` 사용 시)
-
-### Tuned Validation Command
-
-실험용 preset. signal density와 trigger path 검증을 빠르게 보기 위한 경로다.
-기본 운영 성과와 같은 표본으로 섞어 해석하지 않는다.
-
-```bash
-cd /Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot
-npm run realtime-shadow -- \
-  --run-minutes 30 \
-  --signal-target 10 \
-  --horizon 30 \
-  --outcome-horizons 30,60 \
-  --primary-interval 5 \
-  --confirm-interval 5 \
-  --volume-lookback 1 \
-  --volume-multiplier 1 \
-  --breakout-lookback 1 \
-  --confirm-bars 1 \
-  --confirm-change-pct 0 \
-  --cooldown-sec 60
-```
-
-용도:
-
-- trigger density 확인
-- early signal / gate rejection 경로 검증
-- replay/report smoke test
-
-주의:
-
-- 이 명령은 `experimental preset`이다.
-- 여기서 나온 signal count나 return은 기본 운영값과 직접 비교하지 않는다.
 
 ### Report-Only Command
 

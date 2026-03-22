@@ -79,7 +79,7 @@ run_set() {
   local label="vm${vm}_cb${cb}_bl${bl}_ccp${ccp}"
   local out_file="${TMP_DIR}/set-${label}.json"
 
-  if npx ts-node scripts/micro-backtest.ts \
+  if npx ts-node --transpile-only scripts/micro-backtest.ts \
       --dataset "${TMP_DIR}" \
       --volume-multiplier "${vm}" \
       --confirm-bars "${cb}" \

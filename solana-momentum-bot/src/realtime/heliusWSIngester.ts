@@ -20,16 +20,20 @@ export class HeliusWSIngester extends EventEmitter {
   private readonly fallbackRequestsPerSecond: number;
   private readonly fallbackBatchSize: number;
   private readonly maxFallbackQueue: number;
+  private readonly watchdogIntervalMs: number;
+  private readonly fallbackMaxRetries: number;
   private readonly subscriptions = new Map<string, number>();
   private readonly poolMetadata = new Map<string, RealtimePoolMetadata>();
   private readonly mintDecimals = new Map<string, number>();
-  private readonly fallbackQueue: Array<{ pool: string; signature: string; slot: number }> = [];
+  private readonly fallbackQueue: Array<{ pool: string; signature: string; slot: number; retries: number }> = [];
   private readonly pendingFallbacks = new Set<string>();
   private readonly fallbackStartsAt: number[] = [];
   private inFlightFallbacks = 0;
   private batchFallbackSupported = true;
   private fallbackTimer?: NodeJS.Timeout;
+  private watchdogTimer?: NodeJS.Timeout;
   private lastRateLimitWarnAt = 0;
+  private lastNotificationAt = 0;
 
   constructor(config: HeliusWSConfig) {
     super();
@@ -42,6 +46,8 @@ export class HeliusWSIngester extends EventEmitter {
     this.fallbackRequestsPerSecond = config.fallbackRequestsPerSecond ?? 4;
     this.fallbackBatchSize = Math.max(1, config.fallbackBatchSize ?? 5);
     this.maxFallbackQueue = config.maxFallbackQueue ?? 200;
+    this.watchdogIntervalMs = config.watchdogIntervalMs ?? 60_000;
+    this.fallbackMaxRetries = config.fallbackMaxRetries ?? 3;
   }
 
   setPoolMetadata(pool: string, metadata: RealtimePoolMetadata): void {
@@ -82,6 +88,11 @@ export class HeliusWSIngester extends EventEmitter {
     if (this.subscriptions.size > 0) {
       this.emit('connected');
       log.info(`Helius WS subscriptions active: ${this.subscriptions.size}`);
+      // 최초 구독 시각을 기준점으로 설정 — 이후 silentMs 계산의 baseline
+      if (this.lastNotificationAt === 0) {
+        this.lastNotificationAt = Date.now();
+      }
+      this.startWatchdog();
     }
   }
 
@@ -96,6 +107,10 @@ export class HeliusWSIngester extends EventEmitter {
       clearTimeout(this.fallbackTimer);
       this.fallbackTimer = undefined;
     }
+    if (this.watchdogTimer) {
+      clearTimeout(this.watchdogTimer);
+      this.watchdogTimer = undefined;
+    }
     this.fallbackQueue.length = 0;
     this.pendingFallbacks.clear();
     await this.unsubscribePools([...this.subscriptions.keys()]);
@@ -109,7 +124,30 @@ export class HeliusWSIngester extends EventEmitter {
     this.subscriptions.delete(pool);
   }
 
+  private startWatchdog(): void {
+    if (this.watchdogIntervalMs <= 0) return;
+    if (this.watchdogTimer) clearTimeout(this.watchdogTimer);
+
+    this.watchdogTimer = setTimeout(() => {
+      this.watchdogTimer = undefined;
+      const silentMs = Date.now() - this.lastNotificationAt;
+      if (silentMs >= this.watchdogIntervalMs && this.subscriptions.size > 0) {
+        log.warn(`WS silent for ${Math.round(silentMs / 1000)}s — re-subscribing`);
+        this.emit('stale', { silentMs });
+        // 현재 구독 목록으로 재구독 시도
+        void this.subscribePools([...this.subscriptions.keys()]).catch((error) => {
+          log.warn(`Watchdog re-subscribe failed: ${error}`);
+          this.emit('error', { pool: 'watchdog', error });
+        });
+      } else {
+        this.startWatchdog();
+      }
+    }, this.watchdogIntervalMs);
+  }
+
   private async handleLogNotification(pool: string, logs: Logs, slot: number): Promise<void> {
+    this.lastNotificationAt = Date.now();
+    this.startWatchdog(); // 매 알림마다 watchdog 리셋
     if (logs.err) return;
 
     const poolMetadata = await this.resolvePoolMetadata(pool);
@@ -148,7 +186,7 @@ export class HeliusWSIngester extends EventEmitter {
     this.enqueueFallback(pool, logs.signature, slot);
   }
 
-  private enqueueFallback(pool: string, signature: string, slot: number): void {
+  private enqueueFallback(pool: string, signature: string, slot: number, retries = 0): void {
     const key = `${pool}:${signature}`;
     if (this.pendingFallbacks.has(key)) return;
 
@@ -158,7 +196,7 @@ export class HeliusWSIngester extends EventEmitter {
     }
 
     this.pendingFallbacks.add(key);
-    this.fallbackQueue.push({ pool, signature, slot });
+    this.fallbackQueue.push({ pool, signature, slot, retries });
     this.emit('fallbackQueued', { pool, signature, queueSize: this.fallbackQueue.length });
     this.processFallbackQueue();
   }
@@ -190,6 +228,8 @@ export class HeliusWSIngester extends EventEmitter {
         this.emit('fallbackAttempt', { pool: next.pool, signature: next.signature });
       }
 
+      // catch/finally 공유 — 429 retry 예약된 키 추적용
+      const retryKeys = new Set<string>();
       void this.enrichSwapsFromTxBatch(batch)
         .then((results) => {
           for (const next of batch) {
@@ -218,18 +258,39 @@ export class HeliusWSIngester extends EventEmitter {
             this.lastRateLimitWarnAt = Date.now();
           }
           for (const next of batch) {
-            this.emit('error', { pool: next.pool, error });
-            this.emit('fallbackResult', {
-              pool: next.pool,
-              signature: next.signature,
-              outcome: 'error',
-            });
+            if (isRateLimited && next.retries < this.fallbackMaxRetries) {
+              // 429: 지수 백오프 재시도 (5s → 10s → 20s)
+              const key = `${next.pool}:${next.signature}`;
+              const delayMs = 5_000 * (2 ** next.retries);
+              retryKeys.add(key);
+              this.pendingFallbacks.delete(key);
+              setTimeout(() => {
+                this.enqueueFallback(next.pool, next.signature, next.slot, next.retries + 1);
+              }, delayMs);
+              this.emit('fallbackRetry', {
+                pool: next.pool,
+                signature: next.signature,
+                retries: next.retries + 1,
+                delayMs,
+              });
+            } else {
+              this.emit('error', { pool: next.pool, error });
+              this.emit('fallbackResult', {
+                pool: next.pool,
+                signature: next.signature,
+                outcome: 'error',
+              });
+            }
           }
         })
         .finally(() => {
           this.inFlightFallbacks -= 1;
           for (const next of batch) {
-            this.pendingFallbacks.delete(`${next.pool}:${next.signature}`);
+            const key = `${next.pool}:${next.signature}`;
+            // retry 예약된 항목은 catch에서 이미 삭제 + setTimeout으로 재추가 예정
+            if (!retryKeys.has(key)) {
+              this.pendingFallbacks.delete(key);
+            }
           }
           this.processFallbackQueue();
         });

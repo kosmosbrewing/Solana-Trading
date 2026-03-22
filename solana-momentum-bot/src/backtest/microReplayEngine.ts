@@ -1,4 +1,4 @@
-import { buildMomentumTriggerOrder, MomentumOrderParams, MomentumTrigger, MomentumTriggerConfig } from '../strategy';
+import { buildMomentumTriggerOrder, MomentumOrderParams, MomentumTrigger, MomentumTriggerConfig, TriggerRejectStats } from '../strategy';
 import { MicroCandleBuilder } from '../realtime';
 import { StoredRealtimeSwap } from '../realtime/replayStore';
 import { RealtimeOutcomeTracker, RealtimeSignalRecord, summarizeRealtimeSignals } from '../reporting';
@@ -21,6 +21,7 @@ export interface MicroReplayResult {
     replayedSignalCount: number;
     gateMode: 'off' | 'stored';
   };
+  rejectStats: TriggerRejectStats;
 }
 
 export async function replayRealtimeDataset(
@@ -82,6 +83,7 @@ export async function replayRealtimeDataset(
       replayedSignalCount: collectedRecords.length,
       gateMode,
     },
+    rejectStats: trigger.getRejectStats(),
   };
 }
 

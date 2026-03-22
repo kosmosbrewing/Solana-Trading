@@ -48,7 +48,7 @@ async function fetchTargetPools(gecko: GeckoTerminalClient): Promise<string[]> {
 async function appendSwapLine(poolAddress: string, swap: ParsedSwap): Promise<void> {
   const dir = path.join(OUTPUT_DIR, poolAddress);
   await mkdir(dir, { recursive: true });
-  const record = JSON.stringify({ ...swap, poolAddress, collectedAt: Date.now() });
+  const record = JSON.stringify({ ...swap, collectedAt: Date.now() });
   await appendFile(path.join(dir, 'raw-swaps.jsonl'), record + '\n', 'utf8');
 }
 
@@ -61,8 +61,11 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  const safeRpcDisplay = (() => {
+    try { return new URL(rpcHttpUrl).hostname; } catch { return '(invalid url)'; }
+  })();
   console.log(`[collector] Starting — output: ${OUTPUT_DIR}`);
-  console.log(`[collector] RPC: ${rpcHttpUrl}`);
+  console.log(`[collector] RPC: ${safeRpcDisplay}`);
   console.log(`[collector] maxSubscriptions: ${MAX_SUBSCRIPTIONS}`);
 
   await mkdir(OUTPUT_DIR, { recursive: true });

@@ -39,7 +39,16 @@ echo "${LOG_PREFIX} STALE — no swap writes in ${STALE_MINUTES}m. Restarting ${
 
 if command -v pm2 &>/dev/null; then
   pm2 restart "$PM2_PROCESS" --update-env 2>&1 | sed "s/^/${LOG_PREFIX} pm2: /"
-  echo "${LOG_PREFIX} Restart issued at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  RESTART_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "${LOG_PREFIX} Restart issued at ${RESTART_TS}"
+
+  # Telegram alert (TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID 환경변수 설정 시 전송)
+  if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+    MSG="⚠️ [watch-collector] STALE restart: ${PM2_PROCESS} — no swap data for ${STALE_MINUTES}m (${RESTART_TS})"
+    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+      -d chat_id="${TELEGRAM_CHAT_ID}" \
+      -d text="${MSG}" > /dev/null || echo "${LOG_PREFIX} WARN: Telegram alert failed"
+  fi
 else
   echo "${LOG_PREFIX} ERROR: pm2 not found in PATH — cannot restart"
   exit 1

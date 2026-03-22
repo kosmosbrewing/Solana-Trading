@@ -16,7 +16,7 @@
   - `npm run build`
   - `npx jest --runInBand test/swapParser.test.ts test/realtimeEligibility.test.ts test/realtimeAdmissionTracker.test.ts`
   - parser smoke:
-    - `npx ts-node scripts/test-helius-ws.ts` 또는 PumpSwap sample tx 기반 단건 파싱 확인
+    - VPS realtime shadow session log / dataset에서 PumpSwap coverage 확인
   - runtime observation:
     - `rg -n "Helius real-time pipeline connected|subscriptions active|parseRate|blocked|pumpswap|PumpSwap" logs tmp data/realtime-sessions`
     - `npx ts-node scripts/realtime-shadow-runner.ts --dataset-dir <session-dir> --json` when session data exists
@@ -208,9 +208,6 @@ npx jest --runInBand \
 ### Parser / Runtime Smoke
 
 ```bash
-# help / runtime smoke
-npx ts-node scripts/test-helius-ws.ts
-
 # 기존 또는 신규 realtime session 분석
 npx ts-node scripts/realtime-shadow-runner.ts \
   --dataset-dir <session-dir> \
@@ -268,7 +265,7 @@ rg -n "PumpSwap|pumpswap|parseRate|blocked|unsupported" logs tmp data/realtime-s
 - 검증
   - `npm run build`
   - `npx jest --runInBand test/swapParser.test.ts test/realtimeEligibility.test.ts test/realtimeAdmissionTracker.test.ts`
-  - `npx ts-node scripts/test-helius-ws.ts --help`
+  - `npm run realtime-shadow -- --help`
 - live smoke:
     - pool: `HJAqvquMLHxcx7BYwDixukJM4zYBaTDG69uDWbo18zv`
     - tuned fallback (`4 concurrency / 8 rps / queue 1000`):

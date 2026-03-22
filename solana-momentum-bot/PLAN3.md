@@ -264,6 +264,7 @@ rg -n "PumpSwap|pumpswap|parseRate|blocked|unsupported" logs tmp data/realtime-s
   - metadata-aware tx fallback 추가
   - tx fallback도 admission success로 집계
   - realtime fallback 설정값 추가 (`concurrency/rps/queue`)
+  - paid plan에서는 batch fallback 사용, free plan에서는 single-request mode로 자동 downgrade
 - 검증
   - `npm run build`
   - `npx jest --runInBand test/swapParser.test.ts test/realtimeEligibility.test.ts test/realtimeAdmissionTracker.test.ts`
@@ -282,13 +283,29 @@ rg -n "PumpSwap|pumpswap|parseRate|blocked|unsupported" logs tmp data/realtime-s
       - `fallback_skipped=0`
       - `fallback_unparsed=36`
       - `fallback_dropped=0`
+    - long-run balanced smoke (`2 concurrency / 4 rps / queue 1000`, 300s):
+      - `observed_notifications=22770`
+      - `total_swaps=204`
+      - `tx_fallback=200`
+      - `fallback_dropped=20579`
+      - `fallback_unparsed=987`
+      - `errors=0`
+    - compatibility smoke (`fallback-batch-size=5`, 90s, free plan):
+      - batch RPC unsupported 감지 후 single-request mode로 자동 downgrade
+      - `observed_notifications=4363`
+      - `total_swaps=31`
+      - `tx_fallback=29`
+      - `fallback_dropped=3001`
+      - `fallback_unparsed=329`
+      - `errors=0`
 
 해석:
 
 - PumpSwap pool이 더 이상 `not_swap_like` 때문에 전부 건너뛰어지지 않는다.
 - 현재 실측 parser 성과는 `logs`가 아니라 `tx fallback` 중심이다.
 - 운영 기본값은 `queue 확대 + 보수적 rps`가 더 안정적이다.
-- 남은 병목은 parser 미구현보다 `route/opaque tx coverage` 쪽에 더 가깝다.
+- paid batch RPC는 현재 플랜에서 막혀 있으므로, runtime은 자동으로 single-request fallback으로 내려간다.
+- 장시간 고볼륨 PumpSwap 풀에서는 parser 미구현보다 `fallback throughput / queue pressure`가 더 큰 병목이다.
 
 ---
 

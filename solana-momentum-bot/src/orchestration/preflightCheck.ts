@@ -31,6 +31,8 @@ export interface PreflightResult {
   totalTrades: number;
   winRate: number;
   rewardRisk: number;
+  edgeScore?: number;
+  edgeDecision?: string;
   reasons: string[];
 }
 
@@ -130,9 +132,13 @@ export async function runPreflightCheck(
   if (passed) {
     log.info(
       `✅ Pre-flight PASSED: ${report.totalTrades} trades, ` +
-      `WR=${(report.winRate * 100).toFixed(1)}%, R:R=${costAdjustedRR.toFixed(2)} (raw=${rawRR.toFixed(2)})`
+      `WR=${(report.winRate * 100).toFixed(1)}%, R:R=${costAdjustedRR.toFixed(2)} (raw=${rawRR.toFixed(2)}), ` +
+      `Edge=${report.edgeScore.toFixed(1)} (${report.edgeDecision})`
     );
   } else {
+    if (report.edgeGateStatus !== 'pass') {
+      reasons.push(`Edge gate ${report.edgeDecision}${report.edgeGateReasons.length > 0 ? ` (${report.edgeGateReasons.join(', ')})` : ''}`);
+    }
     const msg = `Pre-flight FAILED for live mode: ${reasons.join(' | ')}`;
     if (cfg.enforceGate) {
       log.error(`🚫 ${msg} — falling back to paper mode`);
@@ -147,6 +153,8 @@ export async function runPreflightCheck(
     totalTrades: report.totalTrades,
     winRate: report.winRate,
     rewardRisk: costAdjustedRR,
+    edgeScore: report.edgeScore,
+    edgeDecision: report.edgeDecision,
     reasons,
   };
 }

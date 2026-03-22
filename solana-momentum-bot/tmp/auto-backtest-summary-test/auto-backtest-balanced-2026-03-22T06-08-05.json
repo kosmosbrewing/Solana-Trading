@@ -1,0 +1,52 @@
+{
+  "generatedAt": "2026-03-22T06:08:05.836Z",
+  "mode": "BALANCED",
+  "sweep": false,
+  "requestedProfile": "balanced",
+  "requestedTop": 3,
+  "input": {
+    "manualPool": null,
+    "poolFile": null,
+    "csvDir": "./data",
+    "minTvl": 50000,
+    "minVol": 10000,
+    "minAge": 24,
+    "days": 7,
+    "balance": 1,
+    "totalPools": 1
+  },
+  "profiles": [
+    {
+      "profile": {
+        "name": "Balanced (PROD)",
+        "tag": "BAL",
+        "config": {
+          "recoveryPct": 0.85,
+          "maxConsecutiveLosses": 3,
+          "cooldownMinutes": 30,
+          "minPoolLiquidity": 50000,
+          "minTokenAgeHours": 24,
+          "maxHolderConcentration": 0.8,
+          "volumeSpikeParams": {},
+          "fibPullbackParams": {},
+          "maxRiskPerTrade": 0.01
+        }
+      },
+      "aggregate": {
+        "totalTrades": 17,
+        "avgPF": 1.7,
+        "avgWR": 0.52,
+        "avgExpectancyR": 0.22,
+        "totalPnlPct": 0.03,
+        "maxDD": 0.02,
+        "positivePoolRatio": 1,
+        "edgeScore": 82,
+        "stageScore": 82,
+        "stageDecision": "keep",
+        "edgeGateStatus": "pass",
+        "edgeGateReasons": []
+      },
+      "results": []
+    }
+  ]
+}

@@ -1,0 +1,94 @@
+{
+  "generatedAt": "2026-03-22T06:04:03.984Z",
+  "mode": "BALANCED",
+  "sweep": false,
+  "requestedProfile": "balanced",
+  "requestedTop": 3,
+  "input": {
+    "manualPool": null,
+    "poolFile": null,
+    "csvDir": "./data",
+    "minTvl": 50000,
+    "minVol": 10000,
+    "minAge": 24,
+    "days": 7,
+    "balance": 1,
+    "totalPools": 1
+  },
+  "profiles": [
+    {
+      "profile": {
+        "name": "Balanced (PROD)",
+        "tag": "BAL",
+        "config": {
+          "recoveryPct": 0.85,
+          "maxConsecutiveLosses": 3,
+          "cooldownMinutes": 30,
+          "minPoolLiquidity": 50000,
+          "minTokenAgeHours": 24,
+          "maxHolderConcentration": 0.8,
+          "volumeSpikeParams": {},
+          "fibPullbackParams": {},
+          "maxRiskPerTrade": 0.01
+        }
+      },
+      "aggregate": {
+        "totalTrades": 15,
+        "avgPF": 1.71,
+        "avgWR": 0.6667,
+        "avgExpectancyR": 0.4,
+        "totalPnlPct": 0.0206,
+        "maxDD": 0.0188,
+        "positivePoolRatio": 1,
+        "edgeScore": 73,
+        "stageScore": 81.1,
+        "stageDecision": "weak_sample",
+        "edgeGateStatus": "weak",
+        "edgeGateReasons": [
+          "totalTrades<20"
+        ]
+      },
+      "results": [
+        {
+          "pool": {
+            "address": "PAIR",
+            "symbol": "CHIBI",
+            "name": "CHIBI",
+            "tvlUsd": 50000,
+            "volume24hUsd": 100000,
+            "ageHours": 72
+          },
+          "metrics": {
+            "totalTrades": 15,
+            "winRate": 0.6667,
+            "netPnlPct": 0.0206,
+            "profitFactor": 1.71,
+            "maxDrawdownPct": 0.0188,
+            "sharpeRatio": 7.78,
+            "expectancyR": 4.000000000000001
+          },
+          "assessment": {
+            "edgeScore": 73,
+            "stageScore": 81.1,
+            "stageDecision": "weak_sample",
+            "edgeGateStatus": "weak",
+            "edgeGateReasons": [
+              "totalTrades<20"
+            ],
+            "edgeScoreBreakdown": {
+              "netPnl": 20,
+              "expectancy": 15,
+              "profitFactor": 10,
+              "sharpe": 15,
+              "maxDrawdown": 10,
+              "totalTrades": 3,
+              "total": 73,
+              "maxPossible": 90,
+              "normalized": 81.1
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

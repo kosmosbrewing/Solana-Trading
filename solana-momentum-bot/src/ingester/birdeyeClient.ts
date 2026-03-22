@@ -1,4 +1,4 @@
-import axios, { AxiosInstance } from 'axios';
+import axios, { AxiosError, AxiosInstance } from 'axios';
 import { createModuleLogger } from '../utils/logger';
 import { Candle, CandleInterval } from '../utils/types';
 import { buildDirectionalVolumeBuckets, DirectionalVolumeBucket } from './birdeyeTradeBuckets';
@@ -6,8 +6,9 @@ import { buildDirectionalVolumeBuckets, DirectionalVolumeBucket } from './birdey
 const log = createModuleLogger('BirdeyeClient');
 
 const BIRDEYE_BASE_URL = 'https://public-api.birdeye.so';
+type BirdeyeInterval = Exclude<CandleInterval, '5s' | '15s'>;
 
-const INTERVAL_TO_SECONDS: Record<CandleInterval, number> = {
+const INTERVAL_TO_SECONDS: Record<BirdeyeInterval, number> = {
   '1m': 60,
   '5m': 300,
   '15m': 900,
@@ -16,6 +17,7 @@ const INTERVAL_TO_SECONDS: Record<CandleInterval, number> = {
 };
 const MAX_TXS_PER_REQUEST = 50;
 const MAX_TX_PAGES = 200;
+const V3_RETRY_DELAYS_MS = [1500, 4000, 8000];
 
 interface BirdeyeOHLCV {
   unixTime: number;
@@ -24,6 +26,19 @@ interface BirdeyeOHLCV {
   l: number;
   c: number;
   v: number;
+}
+
+interface BirdeyeOHLCVV3 {
+  address: string;
+  unix_time: number;
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  v: number;
+  type?: string;
+  symbol?: string;
+  v_usd?: number;
 }
 
 // ─── Token Security (강화) ───
@@ -88,6 +103,10 @@ export class BirdeyeClient {
     timeFrom: number,
     timeTo: number
   ): Promise<Candle[]> {
+    if (!(intervalType in INTERVAL_TO_SECONDS)) {
+      throw new Error(`Unsupported Birdeye interval: ${intervalType}`);
+    }
+
     try {
       const response = await this.client.get('/defi/ohlcv/pair', {
         params: {
@@ -111,7 +130,7 @@ export class BirdeyeClient {
         return {
           pairAddress,
           timestamp: new Date(item.unixTime * 1000),
-          intervalSec: INTERVAL_TO_SECONDS[intervalType],
+          intervalSec: INTERVAL_TO_SECONDS[intervalType as BirdeyeInterval],
           open: item.o,
           high: item.h,
           low: item.l,
@@ -126,6 +145,64 @@ export class BirdeyeClient {
       log.error(`Failed to fetch OHLCV for ${pairAddress}: ${error}`);
       throw error;
     }
+  }
+
+  /**
+   * OHLCV V3 캔들 데이터 조회 (pair 기준).
+   * Why: 장기 백필은 trade bucket enrichment 없이 5000-record v3가 훨씬 효율적.
+   */
+  async getOHLCVV3Pair(
+    pairAddress: string,
+    intervalType: CandleInterval,
+    timeFrom: number,
+    timeTo: number
+  ): Promise<Candle[]> {
+    if (!(intervalType in INTERVAL_TO_SECONDS)) {
+      throw new Error(`Unsupported Birdeye interval: ${intervalType}`);
+    }
+
+    for (let attempt = 0; attempt <= V3_RETRY_DELAYS_MS.length; attempt++) {
+      try {
+        const response = await this.client.get('/defi/v3/ohlcv/pair', {
+          params: {
+            address: pairAddress,
+            type: intervalType,
+            time_from: timeFrom,
+            time_to: timeTo,
+          },
+        });
+
+        const items: BirdeyeOHLCVV3[] = response.data?.data?.items || [];
+
+        return items.map((item) => ({
+          pairAddress,
+          timestamp: new Date(item.unix_time * 1000),
+          intervalSec: INTERVAL_TO_SECONDS[intervalType as BirdeyeInterval],
+          open: item.o,
+          high: item.h,
+          low: item.l,
+          close: item.c,
+          volume: item.v,
+          // Why: v3 OHLCV pair 응답에는 directional volume / trade count가 없다.
+          buyVolume: 0,
+          sellVolume: 0,
+          tradeCount: 0,
+        }));
+      } catch (error) {
+        const status = error instanceof AxiosError ? error.response?.status : undefined;
+        const shouldRetry = status === 429 || (status !== undefined && status >= 500);
+        if (!shouldRetry || attempt === V3_RETRY_DELAYS_MS.length) {
+          log.error(`Failed to fetch OHLCV v3 pair for ${pairAddress}: ${error}`);
+          throw error;
+        }
+
+        const delayMs = V3_RETRY_DELAYS_MS[attempt];
+        log.warn(`Birdeye v3 OHLCV retry for ${pairAddress} in ${delayMs}ms (status=${status})`);
+        await sleep(delayMs);
+      }
+    }
+
+    return [];
   }
 
   /**
@@ -256,6 +333,10 @@ export class BirdeyeClient {
     timeFrom: number,
     timeTo: number
   ): Promise<Candle[]> {
+    if (!(intervalType in INTERVAL_TO_SECONDS)) {
+      throw new Error(`Unsupported Birdeye interval: ${intervalType}`);
+    }
+
     try {
       const response = await this.client.get('/defi/ohlcv', {
         params: {
@@ -270,7 +351,7 @@ export class BirdeyeClient {
       return items.map((item) => ({
         pairAddress: tokenMint,
         timestamp: new Date(item.unixTime * 1000),
-        intervalSec: INTERVAL_TO_SECONDS[intervalType],
+        intervalSec: INTERVAL_TO_SECONDS[intervalType as BirdeyeInterval],
         open: item.o,
         high: item.h,
         low: item.l,
@@ -439,4 +520,8 @@ export class BirdeyeClient {
     }
     return undefined;
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }

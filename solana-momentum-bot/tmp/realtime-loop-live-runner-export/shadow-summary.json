@@ -1,0 +1,100 @@
+{
+  "session": null,
+  "exportManifest": {
+    "version": 1,
+    "exportedAt": "2026-03-22T07:54:42.738Z",
+    "counts": {
+      "swaps": 197,
+      "candles": 63,
+      "signals": 2
+    }
+  },
+  "report": {
+    "generatedAt": "2026-03-22T07:54:42.738Z",
+    "datasetDir": "/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/tmp/realtime-loop-live-20260322-163634",
+    "horizonSec": 30,
+    "counts": {
+      "swaps": 197,
+      "candles": 63,
+      "signals": 2
+    },
+    "summary": {
+      "totalSignals": 2,
+      "executedSignals": 0,
+      "gateRejectedSignals": 1,
+      "avgGateLatencyMs": 30,
+      "p50GateLatencyMs": 1,
+      "p95GateLatencyMs": 59,
+      "avgSignalToFillLatencyMs": 0,
+      "p50SignalToFillLatencyMs": 0,
+      "p95SignalToFillLatencyMs": 0,
+      "selectedHorizonSec": 30,
+      "avgReturnPct": 0.0027253141586189916,
+      "avgAdjustedReturnPct": 0.0027253141586189916,
+      "avgMfePct": 0.0027253141586189916,
+      "avgMaePct": -0.0025800131996414257,
+      "assessment": {
+        "edgeScore": 50,
+        "stageScore": 55.55555555555556,
+        "decision": "reject_gate",
+        "gateStatus": "fail",
+        "gateReasons": [
+          "totalTrades<10"
+        ],
+        "breakdown": {
+          "netPnl": 5,
+          "expectancy": 20,
+          "profitFactor": 15,
+          "sharpe": 0,
+          "maxDrawdown": 10,
+          "totalTrades": 0,
+          "total": 50,
+          "maxPossible": 90,
+          "normalized": 55.55555555555556
+        }
+      }
+    },
+    "statusCounts": [
+      {
+        "status": "execution_viability_rejected",
+        "count": 1
+      },
+      {
+        "status": "gate_rejected",
+        "count": 1
+      }
+    ],
+    "reasonCounts": [
+      {
+        "reason": "insufficient_primary_candles",
+        "count": 1
+      },
+      {
+        "reason": "poor_execution_viability: effectiveRR=0.80 roundTripCost=0.65%",
+        "count": 1
+      }
+    ],
+    "latestSignal": {
+      "id": "volume_spike:Dfh5DzRgSvvCFDoYc2ciTkMrbDfRKybA4SoFbPmApump:2026-03-22T07:40:00.000Z",
+      "pairAddress": "Dfh5DzRgSvvCFDoYc2ciTkMrbDfRKybA4SoFbPmApump",
+      "signalTimestamp": "2026-03-22T07:40:00.000Z",
+      "completedAt": "2026-03-22T07:41:00.000Z",
+      "status": "execution_viability_rejected",
+      "filterReason": "poor_execution_viability: effectiveRR=0.80 roundTripCost=0.65%",
+      "adjustedReturnPct": 0.005150659168487434
+    },
+    "admission": {
+      "trackedPools": 5,
+      "allowedPools": 4,
+      "blockedPools": 1,
+      "blockedDetails": [
+        {
+          "pool": "4yT7Q54guro8wD59DsAUgmMHyJKZVZiSzyYKWXUS4Qsq",
+          "observedNotifications": 51,
+          "parseRatePct": 0,
+          "skippedRatePct": 100
+        }
+      ]
+    }
+  }
+}

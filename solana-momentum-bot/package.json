@@ -10,6 +10,7 @@
     "migrate": "ts-node scripts/migrate.ts",
     "backtest": "ts-node scripts/backtest.ts",
     "paper-report": "ts-node scripts/paper-report.ts",
+    "realtime-shadow": "ts-node scripts/realtime-shadow-runner.ts",
     "lint": "eslint src/ --ext .ts",
     "test": "jest --config jest.config.cjs"
   },

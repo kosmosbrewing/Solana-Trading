@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "updatedAt": "2026-03-22T07:41:33.312Z",
+  "entries": [
+    {
+      "pool": "4yT7Q54guro8wD59DsAUgmMHyJKZVZiSzyYKWXUS4Qsq",
+      "observedNotifications": 51,
+      "logParsed": 0,
+      "fallbackSkipped": 51,
+      "blocked": true
+    },
+    {
+      "pool": "8WwcNqdZjCY5Pt7AkhupAFknV2txca9sq6YBkGzLbvdt",
+      "observedNotifications": 6131,
+      "logParsed": 649,
+      "fallbackSkipped": 5482,
+      "blocked": false
+    },
+    {
+      "pool": "9iLsSRrDVVvogPa95fT5JP529GciBYxZHi5JJWzV6LUx",
+      "observedNotifications": 2,
+      "logParsed": 0,
+      "fallbackSkipped": 0,
+      "blocked": false
+    },
+    {
+      "pool": "AzpERGA42yXg7V5SDscjv6MGyGhc9fk4KRRZ7KV4jWrM",
+      "observedNotifications": 220,
+      "logParsed": 44,
+      "fallbackSkipped": 158,
+      "blocked": false
+    },
+    {
+      "pool": "4UcXqNgYKFxFMwwXfBBCk5HmyScWWSAKgEWBD75H1fgo",
+      "observedNotifications": 3,
+      "logParsed": 3,
+      "fallbackSkipped": 0,
+      "blocked": false
+    }
+  ]
+}

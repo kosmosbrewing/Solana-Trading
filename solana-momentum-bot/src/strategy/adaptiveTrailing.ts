@@ -31,13 +31,16 @@ export function calcRSI(candles: Candle[], period: number = 7): number {
  * 60~80     → ATR × 2.0 (보통)
  * < 60      → ATR × 1.0 (약한 → 타이트하게)
  *
- * 최소값: 항상 진입가 이상 (본전 보장)
+ * 본전 보장은 TP1 도달 이후에만 적용.
+ * TP1 미도달 시에는 stopLoss가 하한 — trailing이 SL보다 아래로 가지 않도록.
  */
 export function calcAdaptiveTrailingStop(
   candles: Candle[],
   atr: number,
   entryPrice: number,
-  peakPrice: number
+  peakPrice: number,
+  stopLoss?: number,
+  tp1Hit?: boolean,
 ): number {
   const rsi = calcRSI(candles, 7);
 
@@ -49,6 +52,10 @@ export function calcAdaptiveTrailingStop(
   const trailingDistance = atr * multiplier;
   const trailingStop = peakPrice - trailingDistance;
 
-  // 본전 보장
-  return Math.max(trailingStop, entryPrice);
+  // Why: TP1 전에 본전 보장하면 모멘텀 초기에 즉시 청산됨
+  // TP1 후에만 entryPrice를 하한으로, 그 전에는 stopLoss를 하한으로
+  if (tp1Hit) {
+    return Math.max(trailingStop, entryPrice);
+  }
+  return Math.max(trailingStop, stopLoss ?? entryPrice * 0.9);
 }

@@ -2,6 +2,12 @@ import { DEFAULT_BACKTEST_CONFIG } from '../backtest/types';
 import { replayDrawdownGuardState } from '../risk/drawdownGuard';
 import { CloseReason, StrategyName } from '../utils/types';
 import { summarizeRiskMetrics } from './riskMetrics';
+import {
+  assessMeasuredEdgeStage,
+  BacktestStageDecision,
+  EdgeGateStatus,
+  EdgeScoreBreakdown,
+} from './measurement';
 
 export interface PaperValidationTrade {
   strategy: StrategyName;
@@ -36,9 +42,12 @@ export interface StrategyValidationStats {
   losses: number;
   winRate: number;
   netPnl: number;
+  profitFactor: number;
   avgWinR: number;
   avgLossR: number;
+  expectancyR: number;
   rewardRisk: number;
+  sharpeRatio: number;
 }
 
 export interface PaperValidationReport {
@@ -47,9 +56,13 @@ export interface PaperValidationReport {
   losses: number;
   winRate: number;
   netPnl: number;
+  netPnlPct: number;
+  profitFactor: number;
   avgWinR: number;
   avgLossR: number;
+  expectancyR: number;
   rewardRisk: number;
+  sharpeRatio: number;
   strategyStats: StrategyValidationStats[];
   notTrendingFiltered: number;
   drawdownGuardFiltered: number;
@@ -57,6 +70,12 @@ export interface PaperValidationReport {
   filteredSignals: number;
   maxRealizedDrawdownPct: number;
   drawdownGuardHalted: boolean;
+  edgeScore: number;
+  stageScore: number;
+  edgeDecision: BacktestStageDecision;
+  edgeGateStatus: EdgeGateStatus;
+  edgeGateReasons: string[];
+  edgeScoreBreakdown: EdgeScoreBreakdown;
   criteria: {
     minTradesMet: boolean;
     winRateMet: boolean;
@@ -109,6 +128,15 @@ export function buildPaperValidationReport(
   const minTradesMet = overall.totalTrades >= minTrades;
   const winRateMet = overall.winRate >= minWinRate;
   const rewardRiskMet = overall.rewardRisk >= minRewardRisk;
+  const netPnlPct = initialBalance > 0 ? overall.netPnl / initialBalance : 0;
+  const edgeAssessment = assessMeasuredEdgeStage({
+    netPnlPct,
+    expectancyR: overall.expectancyR,
+    profitFactor: overall.profitFactor,
+    sharpeRatio: overall.sharpeRatio,
+    maxDrawdownPct: drawdown.drawdownPct,
+    totalTrades: overall.totalTrades,
+  });
 
   return {
     totalTrades: overall.totalTrades,
@@ -116,9 +144,13 @@ export function buildPaperValidationReport(
     losses: overall.losses,
     winRate: overall.winRate,
     netPnl: overall.netPnl,
+    netPnlPct,
+    profitFactor: overall.profitFactor,
     avgWinR: overall.avgWinR,
     avgLossR: overall.avgLossR,
+    expectancyR: overall.expectancyR,
     rewardRisk: overall.rewardRisk,
+    sharpeRatio: overall.sharpeRatio,
     strategyStats,
     notTrendingFiltered,
     drawdownGuardFiltered,
@@ -126,6 +158,12 @@ export function buildPaperValidationReport(
     filteredSignals,
     maxRealizedDrawdownPct: drawdown.drawdownPct,
     drawdownGuardHalted: drawdown.halted,
+    edgeScore: edgeAssessment.edgeScore,
+    stageScore: edgeAssessment.stageScore,
+    edgeDecision: edgeAssessment.decision,
+    edgeGateStatus: edgeAssessment.gateStatus,
+    edgeGateReasons: edgeAssessment.gateReasons,
+    edgeScoreBreakdown: edgeAssessment.breakdown,
     criteria: {
       minTradesMet,
       winRateMet,
@@ -150,8 +188,11 @@ function summarizeTrades(
     losses: summary.losses,
     winRate: summary.winRate,
     netPnl: summary.netPnl,
+    profitFactor: summary.profitFactor,
     avgWinR: summary.avgWinR,
     avgLossR: summary.avgLossR,
+    expectancyR: summary.expectancyR,
     rewardRisk: summary.rewardRisk,
+    sharpeRatio: summary.sharpeRatio,
   };
 }

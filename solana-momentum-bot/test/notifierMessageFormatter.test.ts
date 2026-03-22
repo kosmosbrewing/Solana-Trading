@@ -1,0 +1,167 @@
+import {
+  buildAlertMessage,
+  buildSignalMessage,
+  buildTradeCloseMessage,
+  buildTradeOpenMessage,
+} from '../src/notifier/messageFormatter';
+import { buildDailySummaryMessage } from '../src/notifier/dailySummaryFormatter';
+import { Order, Signal, Trade } from '../src/utils/types';
+
+describe('messageFormatter', () => {
+  it('escapes alert content for HTML parse mode', () => {
+    const message = buildAlertMessage('CRITICAL', 'Pool <Event>', 'bad & broken <tag>');
+
+    expect(message).toContain('🔴 <b>Critical Alert</b>');
+    expect(message).toContain('- 영역: Pool &lt;Event&gt;');
+    expect(message).toContain('- 내용: bad &amp; broken &lt;tag&gt;');
+  });
+
+  it('formats signal messages with friendly labels', () => {
+    const signal: Signal = {
+      action: 'BUY',
+      strategy: 'volume_spike',
+      pairAddress: 'PAIR1234567890',
+      price: 0.00001234,
+      timestamp: new Date('2026-03-22T00:00:00Z'),
+      meta: {
+        buyRatio: 0.62,
+        whaleScore: 12,
+      },
+      breakoutScore: {
+        volumeScore: 20,
+        buyRatioScore: 18,
+        multiTfScore: 10,
+        whaleScore: 12,
+        lpScore: 8,
+        mcapVolumeScore: 6,
+        totalScore: 74,
+        grade: 'A',
+      },
+      poolTvl: 120000,
+      spreadPct: 0.012,
+    };
+
+    const message = buildSignalMessage(signal);
+
+    expect(message).toContain('🟢 <b>시그널 감지</b>');
+    expect(message).toContain('- 전략: Volume Spike');
+    expect(message).toContain('- 점수: 74점 (A등급)');
+    expect(message).toContain('- TVL: $120000');
+    expect(message).toContain('세부 지표');
+    expect(message).toContain('- 매수 비중: 0.6200');
+  });
+
+  it('formats trade open and close messages with readable summaries', () => {
+    const order: Order = {
+      pairAddress: 'PAIR1234567890',
+      strategy: 'fib_pullback',
+      side: 'BUY',
+      price: 0.00123456,
+      quantity: 2,
+      stopLoss: 0.0011,
+      takeProfit1: 0.0014,
+      takeProfit2: 0.0016,
+      timeStopMinutes: 30,
+      breakoutScore: 58,
+      breakoutGrade: 'B',
+      sizeConstraint: 'RISK',
+    };
+
+    const openMessage = buildTradeOpenMessage(order, 'TX123');
+
+    expect(openMessage).toContain('🟢 <b>포지션 진입 완료</b>');
+    expect(openMessage).toContain('- 전략: Fib Pullback');
+    expect(openMessage).toContain('- 포지션 제한: 리스크 한도 기준');
+    expect(openMessage).toContain('- 시그널 점수: 58점 (B등급)');
+
+    const trade: Trade = {
+      id: 'trade-1',
+      pairAddress: 'PAIR1234567890',
+      strategy: 'fib_pullback',
+      side: 'SELL',
+      entryPrice: 0.00123456,
+      exitPrice: 0.0014,
+      quantity: 2,
+      pnl: 0.0003,
+      slippage: 0.011,
+      txSignature: 'TX456',
+      status: 'CLOSED',
+      createdAt: new Date('2026-03-22T00:00:00Z'),
+      closedAt: new Date('2026-03-22T02:30:00Z'),
+      stopLoss: 0.0011,
+      takeProfit1: 0.0014,
+      takeProfit2: 0.0016,
+      timeStopAt: new Date('2026-03-22T03:00:00Z'),
+      exitReason: 'TAKE_PROFIT_1',
+    };
+
+    const closeMessage = buildTradeCloseMessage(trade);
+
+    expect(closeMessage).toContain('✅ <b>포지션 종료</b>');
+    expect(closeMessage).toContain('- 종료 사유: 1차 익절');
+    expect(closeMessage).toContain('- 결과: 이익 실현');
+    expect(closeMessage).toContain('- 보유 시간: 2h 30m');
+    expect(closeMessage).toContain('+0.0003 SOL');
+  });
+
+  it('formats daily summary with risk and strategy sections', () => {
+    const message = buildDailySummaryMessage({
+      totalTrades: 5,
+      wins: 3,
+      losses: 2,
+      pnl: 0.12,
+      portfolioValue: 2,
+      bestTrade: { pair: 'ABCDEFGH12345678', pnl: 0.09, score: 71, grade: 'A' },
+      worstTrade: { pair: 'WXYZ9876543210', pnl: -0.02, score: 43, grade: 'C' },
+      signalsDetected: 12,
+      signalsExecuted: 5,
+      signalsFiltered: 7,
+      dailyLossUsed: 0.02,
+      dailyLossLimit: 0.05,
+      consecutiveLosses: 1,
+      uptime: 9 * 3_600_000 + 15 * 60_000,
+      restarts: 0,
+      realtimeAdmission: {
+        trackedPools: 4,
+        allowedPools: 3,
+        blockedPools: 1,
+        blockedDetails: [
+          {
+            pool: 'BLOCKEDPOOL123456789',
+            observedNotifications: 88,
+            parseRatePct: 0,
+            skippedRatePct: 96.59,
+          },
+        ],
+      },
+      edgeStats: [
+        {
+          strategy: 'momentum_cascade',
+          totalTrades: 5,
+          wins: 3,
+          losses: 2,
+          winRate: 0.6,
+          avgWinR: 1.5,
+          avgLossR: -1,
+          rewardRisk: 1.8,
+          sharpeRatio: 0.9,
+          maxConsecutiveLosses: 2,
+          edgeState: 'Confirmed',
+          kellyFraction: 0.08,
+          kellyEligible: true,
+        },
+      ],
+    }, '2026-03-22');
+
+    expect(message).toContain('📊 <b>Daily Report — 2026-03-22</b>');
+    expect(message).toContain('- 체결 거래: 5건 (승 3 / 패 2)');
+    expect(message).toContain('- 실현 손익: +0.1200 SOL (+6.0%)');
+    expect(message).toContain('- 일일 손실 사용률: 2.0% / 5.0% (여유 있음)');
+    expect(message).toContain('실시간 Admission');
+    expect(message).toContain('- 추적 풀: 4개 | 허용 3개 | 차단 1개');
+    expect(message).toContain('parse 0.0% / skip 96.6% / obs 88');
+    expect(message).toContain('전략 상태');
+    expect(message).toContain('Momentum Cascade: 검증 통과');
+    expect(message).toContain('Kelly 8.0%');
+  });
+});

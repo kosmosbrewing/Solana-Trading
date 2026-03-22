@@ -1,0 +1,28 @@
+# Batch seed pool list
+# Source:
+# - existing cached CSV pool addresses in ./data
+# - manual curation from GeckoTerminal trending on 2026-03-22
+# Goal:
+# - maximize unattended batch collection coverage with a conservative first pass
+
+# Existing cached addresses
+2poigHB9CBavDzkm488NtbBdw2keUqe9TWHzgeD574QV
+8WwcNqdZjCY5Pt7AkhupAFknV2txca9sq6YBkGzLbvdt
+9d9mb8kooFfaD3SctgZtkxQypkshx6ezhbKio89ixyy2
+A6KHMiFzn9AM7VKBtVP4fZNY9bCo2jP63R9dphaW1vrq
+C1CfVtbnUoW9y2ZgZkynn9di4eANZwqa4TPGHa7pfFFr
+CCmh7tvVRrCaExBn6Uu3AyDZr5P16WhJnZcLvAMHkec4
+Dd4hsmWhwEfkoRh2NxGXmbfYPh474K4yUXuoNmmPYALY
+ELX7QWM43XvQkJrz8DkuPdfjU8ZMY6xBMJpjYxCX3j9U
+F7Mo9iKj5rhKv9aXRHjkDXeUpiDc1JTV1S6gCg7gwqny
+HktfL7iwGKT5QHjywQkcDnZXScoh811k7akrMZJkCcEF
+UqYKdsVCTjv7gRtkhtYAu7RYQXVxFKadFrhoQ5iPyHu
+
+# Manual additions from current trending
+HJAqvquMLHxcx7BYwDixukJM4zYBaTDG69uDWbo18zv
+CuC5aRrjDx8RArTDTASDkszQ3Dy8Po6k2PXy2DfCRVYy
+ABPreqFYhZ4R2tbd4si7mj4Z9D3DcLEyMdarnJQC1QRJ
+FKishUG6nKtZCHRgDt6svg7uAAtCfkvGcdki8HCuU8ey
+AADJrfmWoHVXZhF1UkbHvNC5tqrBpkGdSaxtMYteDm2x
+DMAFL613XTipuA3jFNYczavWT7XsiYf9cR3qmRMZQhB6
+CSRJSQ5daTA9sehZAboPQYAJqbptJgzQ2e7aGduWzQ8U

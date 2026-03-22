@@ -15,6 +15,11 @@ function optional(key: string, fallback: string): string {
   return process.env[key] || fallback;
 }
 
+function boolOptional(key: string, fallback: boolean): boolean {
+  const value = process.env[key];
+  if (value == null || value === '') return fallback;
+  return value === 'true';
+}
 
 function numOptional(key: string, fallback: number): number {
   const v = process.env[key];
@@ -24,6 +29,16 @@ function numOptional(key: string, fallback: number): number {
     throw new Error(`Env var ${key} is not a valid number: "${v}"`);
   }
   return num;
+}
+
+function numListOptional(key: string, fallback: number[]): number[] {
+  const raw = process.env[key];
+  if (!raw) return fallback;
+  const values = raw
+    .split(',')
+    .map((item) => Number(item.trim()))
+    .filter((item) => Number.isFinite(item) && item > 0);
+  return values.length > 0 ? values : fallback;
 }
 
 const VALID_TRADING_MODES = ['paper', 'live'] as const;
@@ -134,6 +149,27 @@ export const config = {
 
   // ─── Birdeye WebSocket ───
   birdeyeWSEnabled: process.env.BIRDEYE_WS_ENABLED === 'true',
+
+  // ─── Helius Real-Time ───
+  heliusApiKey: optional('HELIUS_API_KEY', ''),
+  heliusWsUrl: optional('HELIUS_WS_URL', ''),
+  realtimeEnabled: boolOptional('REALTIME_ENABLED', false),
+  realtimePersistenceEnabled: boolOptional('REALTIME_PERSISTENCE_ENABLED', true),
+  realtimeDataDir: optional('REALTIME_DATA_DIR', path.resolve(process.cwd(), 'data/realtime')),
+  realtimeOutcomeHorizonsSec: numListOptional('REALTIME_OUTCOME_HORIZONS_SEC', [30, 60, 180, 300]),
+  realtimePrimaryIntervalSec: numOptional('REALTIME_PRIMARY_INTERVAL_SEC', 15),
+  realtimeConfirmIntervalSec: numOptional('REALTIME_CONFIRM_INTERVAL_SEC', 60),
+  realtimeVolumeSurgeLookback: numOptional('REALTIME_VOLUME_SURGE_LOOKBACK', 20),
+  realtimeVolumeSurgeMultiplier: numOptional('REALTIME_VOLUME_SURGE_MULTIPLIER', 3.0),
+  realtimePriceBreakoutLookback: numOptional('REALTIME_PRICE_BREAKOUT_LOOKBACK', 20),
+  realtimeConfirmMinBars: numOptional('REALTIME_CONFIRM_MIN_BARS', 3),
+  realtimeConfirmMinChangePct: numOptional('REALTIME_CONFIRM_MIN_CHANGE_PCT', 0.02),
+  realtimeCooldownSec: numOptional('REALTIME_COOLDOWN_SEC', 300),
+  realtimeMaxSubscriptions: numOptional('REALTIME_MAX_SUBSCRIPTIONS', 30),
+  realtimeSlMode: optional('REALTIME_SL_MODE', 'atr'),
+  realtimeSlAtrMultiplier: numOptional('REALTIME_SL_ATR_MULTIPLIER', 1.5),
+  realtimeSlSwingLookback: numOptional('REALTIME_SL_SWING_LOOKBACK', 5),
+  realtimeTimeStopMinutes: numOptional('REALTIME_TIME_STOP_MINUTES', 15),
 
   // ─── DexScreener ───
   dexScreenerApiKey: optional('DEXSCREENER_API_KEY', ''),

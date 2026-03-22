@@ -10,7 +10,7 @@
 import * as fs from 'fs';
 import path from 'path';
 import dotenv from 'dotenv';
-import { GeckoTerminalClient, GeckoPool, GeckoOHLCVBar } from '../src/ingester/geckoTerminalClient';
+import { GeckoTerminalClient, GeckoPool } from '../src/ingester/geckoTerminalClient';
 import {
   BacktestEngine,
   BacktestReporter,
@@ -19,6 +19,11 @@ import {
   BacktestConfig,
 } from '../src/backtest';
 import { Notifier } from '../src/notifier/notifier';
+import {
+  assessMeasuredEdgeStage,
+  BacktestStageAssessment,
+} from '../src/reporting/measurement';
+import { Candle, CandleInterval } from '../src/utils/types';
 
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
@@ -79,6 +84,12 @@ const PROD_DEFAULTS: Partial<BacktestConfig> = {
   fibPullbackParams: {},
 };
 
+const DEFAULT_INTERVAL: CandleInterval = '5m';
+const DEFAULT_INTERVAL_SEC = 300;
+const DEFAULT_DAYS = 7;
+const MAX_CANDLES_PER_CALL = 1000;
+const CHUNK_SPAN_SEC = (MAX_CANDLES_PER_CALL - 1) * DEFAULT_INTERVAL_SEC;
+
 // ─── Types ───
 
 interface PoolMeta {
@@ -93,6 +104,7 @@ interface PoolMeta {
 interface PoolBacktestResult {
   pool: PoolMeta;
   combined: BacktestResult;
+  assessment: BacktestStageAssessment;
 }
 
 interface ProfileResult {
@@ -102,8 +114,15 @@ interface ProfileResult {
     totalTrades: number;
     avgPF: number;
     avgWR: number;
+    avgExpectancyR: number;
     totalPnlPct: number;
     maxDD: number;
+    positivePoolRatio: number;
+    edgeScore: number;
+    stageScore: number;
+    stageDecision: string;
+    edgeGateStatus: string;
+    edgeGateReasons: string[];
   };
 }
 
@@ -117,10 +136,13 @@ async function main() {
   const profileName = getArg(args, '--profile') || 'balanced';
   const top = numArg(args, '--top', 10);
   const manualPool = getArg(args, '--pool');
+  const poolFile = getArg(args, '--pool-file');
   const csvDir = getArg(args, '--csv-dir') || path.resolve(__dirname, '../data');
+  const resultsDir = getArg(args, '--results-dir') || path.resolve(__dirname, '../results');
   const minTvl = numArg(args, '--min-tvl', 50_000);
   const minVol = numArg(args, '--min-vol', 10_000);
   const minAge = numArg(args, '--min-age', 24);
+  const days = numArg(args, '--days', DEFAULT_DAYS);
   const balance = numArg(args, '--balance', 1);
   const noNotify = args.includes('--no-notify');
 
@@ -136,7 +158,7 @@ async function main() {
   banner(`AUTO-BACKTEST [${mode}] | ${new Date().toISOString().slice(0, 16)} | ${balance} SOL`);
 
   const poolDataList = await collectOHLCV(
-    manualPool, csvDir, minTvl, minVol, minAge
+    manualPool, poolFile, csvDir, minTvl, minVol, minAge, days
   );
 
   if (poolDataList.length === 0) {
@@ -181,6 +203,25 @@ async function main() {
     }
   }
 
+  const summaryPath = saveRunSummary({
+    mode,
+    sweep,
+    profileName,
+    top,
+    manualPool,
+    poolFile,
+    csvDir,
+    resultsDir,
+    minTvl,
+    minVol,
+    minAge,
+    days,
+    balance,
+    totalPools: poolDataList.length,
+    profileResults,
+  });
+  log('SAVE', `Summary JSON: ${summaryPath}`);
+
   // ─── 4. 텔레그램 ───
 
   if (telegramEnabled && profileResults.some(pr => pr.results.length > 0)) {
@@ -209,17 +250,23 @@ async function main() {
 
 async function collectOHLCV(
   manualPool: string | undefined,
+  poolFile: string | undefined,
   csvDir: string,
   minTvl: number,
   minVol: number,
-  minAge: number
+  minAge: number,
+  days: number
 ): Promise<PoolMeta[]> {
   const gecko = new GeckoTerminalClient();
   let pools: GeckoPool[];
 
   if (manualPool) {
     log('POOL', `Manual: ${manualPool}`);
-    pools = [manualPoolEntry(manualPool, minTvl, minVol, minAge)];
+    pools = [await resolvePool(gecko, manualPool, minTvl, minVol, minAge)];
+  } else if (poolFile) {
+    const filePath = path.resolve(poolFile);
+    log('POOL', `Pool file: ${filePath}`);
+    pools = await loadPoolsFromFile(gecko, filePath, minTvl, minVol, minAge);
   } else {
     log('SCAN', 'GeckoTerminal Solana trending...');
     pools = await gecko.getTrendingPools();
@@ -245,17 +292,18 @@ async function collectOHLCV(
     const pool = filtered[i];
     const sym = pool.baseTokenSymbol || pool.name;
     const tag = `[${i + 1}/${filtered.length}] ${sym}`;
+    const csvPath = path.join(csvDir, `${pool.address}_300.csv`);
 
     try {
       process.stdout.write(`  ${tag} `);
-      const ohlcv = await gecko.getOHLCV(pool.address);
+      const candles = await fetchCandlesForDays(gecko, pool.address, days);
 
-      if (ohlcv.bars.length < 30) {
-        console.log(`skip (${ohlcv.bars.length} bars)`);
+      if (candles.length < 30) {
+        console.log(`skip (${candles.length} bars)`);
         continue;
       }
 
-      saveCsv(path.join(csvDir, `${pool.address}_300.csv`), ohlcv.bars);
+      saveCsv(csvPath, candles);
 
       const ageHours = pool.poolCreatedAt
         ? (Date.now() - new Date(pool.poolCreatedAt).getTime()) / 3_600_000
@@ -263,14 +311,14 @@ async function collectOHLCV(
 
       collected.push({
         address: pool.address,
-        symbol: ohlcv.baseTokenSymbol || pool.baseTokenSymbol || pool.name,
+        symbol: pool.baseTokenSymbol || pool.name,
         name: pool.name,
         tvlUsd: pool.tvlUsd,
         volume24hUsd: pool.volume24hUsd,
         ageHours,
       });
 
-      console.log(`${ohlcv.bars.length} bars cached`);
+      console.log(`${candles.length} bars cached`);
     } catch (err) {
       console.log(`FAIL: ${err instanceof Error ? err.message : err}`);
     }
@@ -314,7 +362,18 @@ async function runProfile(
       const { combined } = engine.runCombined(candles, pool.address);
 
       if (combined.totalTrades > 0) {
-        results.push({ pool, combined });
+        results.push({
+          pool,
+          combined,
+          assessment: assessMeasuredEdgeStage({
+            netPnlPct: combined.netPnlPct,
+            expectancyR: calcExpectancyR(combined),
+            profitFactor: combined.profitFactor,
+            sharpeRatio: combined.sharpeRatio,
+            maxDrawdownPct: combined.maxDrawdownPct,
+            totalTrades: combined.totalTrades,
+          }),
+        });
       }
     } catch {
       // CSV 로드 실패 등 — 무시
@@ -328,17 +387,54 @@ async function runProfile(
 
 function computeAggregate(results: PoolBacktestResult[]) {
   if (results.length === 0) {
-    return { totalTrades: 0, avgPF: 0, avgWR: 0, totalPnlPct: 0, maxDD: 0 };
+    return {
+      totalTrades: 0,
+      avgPF: 0,
+      avgWR: 0,
+      avgExpectancyR: 0,
+      totalPnlPct: 0,
+      maxDD: 0,
+      positivePoolRatio: 0,
+      edgeScore: 0,
+      stageScore: 0,
+      stageDecision: 'reject',
+      edgeGateStatus: 'fail',
+      edgeGateReasons: ['no_results'],
+    };
   }
 
   const totalTrades = results.reduce((s, r) => s + r.combined.totalTrades, 0);
   const pfs = results.map(r => r.combined.profitFactor).filter(p => p !== Infinity && p > 0);
   const avgPF = pfs.length > 0 ? pfs.reduce((s, p) => s + p, 0) / pfs.length : 0;
   const avgWR = results.reduce((s, r) => s + r.combined.winRate, 0) / results.length;
+  const avgExpectancyR = results.reduce((s, r) => s + calcExpectancyR(r.combined), 0) / results.length;
   const totalPnlPct = results.reduce((s, r) => s + r.combined.netPnlPct, 0) / results.length;
   const maxDD = Math.max(...results.map(r => r.combined.maxDrawdownPct));
+  const positivePoolRatio = results.filter(r => r.combined.netPnlPct > 0).length / results.length;
+  const assessment = assessMeasuredEdgeStage({
+    netPnlPct: totalPnlPct,
+    expectancyR: avgExpectancyR,
+    profitFactor: avgPF,
+    sharpeRatio: results.reduce((s, r) => s + r.combined.sharpeRatio, 0) / results.length,
+    maxDrawdownPct: maxDD,
+    totalTrades,
+    positiveTokenRatio: positivePoolRatio,
+  });
 
-  return { totalTrades, avgPF, avgWR, totalPnlPct, maxDD };
+  return {
+    totalTrades,
+    avgPF,
+    avgWR,
+    avgExpectancyR,
+    totalPnlPct,
+    maxDD,
+    positivePoolRatio,
+    edgeScore: assessment.edgeScore,
+    stageScore: assessment.stageScore,
+    stageDecision: assessment.decision,
+    edgeGateStatus: assessment.gateStatus,
+    edgeGateReasons: assessment.gateReasons,
+  };
 }
 
 // ─── 출력 ───
@@ -351,9 +447,9 @@ function printSweepComparison(profileResults: ProfileResult[], totalPools: numbe
 
   console.log(
     '  ' + pad('Profile', 20) + pad('Pools', 7) + pad('Trades', 8) +
-    pad('Avg PF', 8) + pad('Avg WR', 8) + pad('Avg PnL%', 10) + pad('Max DD%', 8)
+    pad('Avg PF', 8) + pad('Avg ExpR', 10) + pad('Avg PnL%', 10) + pad('Edge', 7) + pad('Decision', 13)
   );
-  console.log('  ' + '─'.repeat(69));
+  console.log('  ' + '─'.repeat(86));
 
   for (const pr of profileResults) {
     const a = pr.aggregate;
@@ -364,9 +460,10 @@ function printSweepComparison(profileResults: ProfileResult[], totalPools: numbe
       pad(String(pr.results.length), 7) +
       pad(String(a.totalTrades), 8) +
       pad(a.avgPF.toFixed(2), 8) +
-      pad((a.avgWR * 100).toFixed(0) + '%', 8) +
+      pad(a.avgExpectancyR.toFixed(2), 10) +
       pad((Number(pnl) >= 0 ? '+' : '') + pnl + '%', 10) +
-      pad((a.maxDD * 100).toFixed(1) + '%', 8)
+      pad(a.edgeScore.toFixed(1), 7) +
+      pad(a.stageDecision, 13)
     );
   }
 
@@ -375,9 +472,14 @@ function printSweepComparison(profileResults: ProfileResult[], totalPools: numbe
   // 최적 프로필 추천
   const best = profileResults
     .filter(pr => pr.aggregate.totalTrades > 0)
-    .sort((a, b) => b.aggregate.avgPF - a.aggregate.avgPF)[0];
+    .sort((a, b) => {
+      if (b.aggregate.edgeScore !== a.aggregate.edgeScore) {
+        return b.aggregate.edgeScore - a.aggregate.edgeScore;
+      }
+      return b.aggregate.avgPF - a.aggregate.avgPF;
+    })[0];
   if (best) {
-    console.log(`  Best PF: ${best.profile.name} (avg PF ${best.aggregate.avgPF.toFixed(2)})`);
+    console.log(`  Best Stage: ${best.profile.name} (edge ${best.aggregate.edgeScore.toFixed(1)}, ${best.aggregate.stageDecision})`);
   }
 }
 
@@ -395,9 +497,9 @@ function printProfileRanking(profile: Profile, results: PoolBacktestResult[]): v
   console.log(
     '  ' + pad('#', 4) + pad('Symbol', 10) + pad('Pool', 12) +
     pad('PF', 7) + pad('WR', 6) + pad('Trades', 8) +
-    pad('PnL%', 8) + pad('DD%', 7) + pad('TVL', 10) + 'Age'
+    pad('PnL%', 8) + pad('ExpR', 7) + pad('Edge', 7) + pad('Decision', 13) + pad('TVL', 10) + 'Age'
   );
-  console.log('  ' + '─'.repeat(76));
+  console.log('  ' + '─'.repeat(96));
 
   for (let i = 0; i < results.length; i++) {
     const { pool, combined: r } = results[i];
@@ -411,7 +513,9 @@ function printProfileRanking(profile: Profile, results: PoolBacktestResult[]): v
       pad((r.winRate * 100).toFixed(0) + '%', 6) +
       pad(String(r.totalTrades), 8) +
       pad((Number(pnlPct) >= 0 ? '+' : '') + pnlPct, 8) +
-      pad((r.maxDrawdownPct * 100).toFixed(1) + '%', 7) +
+      pad(calcExpectancyR(r).toFixed(2), 7) +
+      pad(results[i].assessment.edgeScore.toFixed(1), 7) +
+      pad(results[i].assessment.decision, 13) +
       pad('$' + fmt$(pool.tvlUsd), 10) +
       Math.round(pool.ageHours) + 'h'
     );
@@ -426,17 +530,26 @@ async function sendSweepTelegram(
   totalPools: number
 ): Promise<void> {
   const lines = [
-    `<b>Auto-Backtest Sweep</b>`,
-    `${new Date().toISOString().slice(0, 10)} | ${totalPools} pools`,
+    `<b>Auto-Backtest Profile Comparison</b>`,
+    `${new Date().toISOString().slice(0, 10)} | 검사한 풀 ${totalPools}개`,
+    `기준: PF 1.30+ 양호 / 1.00+ 보통 / 1.00 미만 주의`,
+    `기준: MDD 10% 이하 안정적 / 20% 이하 보통 / 그 이상 변동성 큼`,
     '',
   ];
 
   for (const pr of profileResults) {
     const a = pr.aggregate;
-    const pnl = (a.totalPnlPct * 100).toFixed(1);
+    const pnl = formatSignedPct(a.totalPnlPct);
+    const effective = getEffectiveProfileConfig(pr.profile);
     lines.push(
       `<b>${escapeHtml(pr.profile.name)}</b> [${pr.profile.tag}]`,
-      `${pr.results.length} pools | ${a.totalTrades}t | PF ${a.avgPF.toFixed(2)} | WR ${(a.avgWR * 100).toFixed(0)}% | ${Number(pnl) >= 0 ? '+' : ''}${pnl}% | DD ${(a.maxDD * 100).toFixed(1)}%`,
+      `- 진입 기준: Score ${effective.minBreakoutScore}+ | 리스크 ${formatPercent(effective.maxRiskPerTrade)} | 허용 MDD ${formatPercent(effective.maxDrawdownPct)}`,
+      `- 거래 발생 풀: ${pr.results.length}개 | 총 거래: ${a.totalTrades}회`,
+      `- 수익성(PF): ${a.avgPF.toFixed(2)} (${describeProfitFactor(a.avgPF)})`,
+      `- 기대값(ExpR): ${a.avgExpectancyR.toFixed(2)} | Edge ${a.edgeScore.toFixed(1)} (${a.stageDecision})`,
+      `- 승률: ${(a.avgWR * 100).toFixed(0)}%`,
+      `- 누적 손익: ${pnl}`,
+      `- 최대 낙폭(MDD): ${formatPercent(a.maxDD)} (${describeDrawdown(a.maxDD)})`,
       '',
     );
   }
@@ -451,18 +564,27 @@ async function sendTelegram(
   results: PoolBacktestResult[],
   totalPools: number
 ): Promise<void> {
+  const effective = getEffectiveProfileConfig(profile);
   const lines = [
-    `<b>Auto-Backtest</b> [${profile.tag}]`,
-    `${new Date().toISOString().slice(0, 10)} | ${totalPools} pools | ${results.length} traded`,
+    `<b>Auto-Backtest Result</b> [${profile.tag}]`,
+    `${new Date().toISOString().slice(0, 10)} | 검사한 풀 ${totalPools}개 | 거래 발생 ${results.length}개`,
+    `프로필: ${escapeHtml(profile.name)}`,
+    `진입 기준: Score ${effective.minBreakoutScore}+ | 1회 리스크 ${formatPercent(effective.maxRiskPerTrade)} | 허용 MDD ${formatPercent(effective.maxDrawdownPct)}`,
+    `해석: PF 높을수록 좋고, MDD 낮을수록 안정적`,
     '',
   ];
 
   for (let i = 0; i < results.length; i++) {
     const { pool, combined: r } = results[i];
-    const pnlPct = (r.netPnlPct * 100).toFixed(1);
+    const pnlPct = formatSignedPct(r.netPnlPct);
     lines.push(
       `<b>#${i + 1} ${escapeHtml(pool.symbol)}</b> <code>${pool.address.slice(0, 6)}..${pool.address.slice(-2)}</code>`,
-      `PF ${formatPF(r.profitFactor)} | WR ${(r.winRate * 100).toFixed(0)}% | ${r.totalTrades}t | ${Number(pnlPct) >= 0 ? '+' : ''}${pnlPct}% | DD ${(r.maxDrawdownPct * 100).toFixed(1)}%`,
+      `- 총평: ${describeOverallResult(r.profitFactor, r.netPnlPct, r.maxDrawdownPct)} | Edge ${results[i].assessment.edgeScore.toFixed(1)} (${results[i].assessment.decision})`,
+      `- 누적 손익: ${pnlPct}`,
+      `- 승률: ${(r.winRate * 100).toFixed(0)}% | 거래 수: ${r.totalTrades}회 | ExpR ${calcExpectancyR(r).toFixed(2)}`,
+      `- 수익성(PF): ${formatPF(r.profitFactor)} (${describeProfitFactor(r.profitFactor)})`,
+      `- 최대 낙폭(MDD): ${formatPercent(r.maxDrawdownPct)} (${describeDrawdown(r.maxDrawdownPct)})`,
+      `- 참고: TVL $${fmt$(pool.tvlUsd)} | 풀 나이 ${Math.round(pool.ageHours)}h`,
       '',
     );
   }
@@ -471,15 +593,237 @@ async function sendTelegram(
   log('TG', 'Report sent');
 }
 
+export interface AutoBacktestSummaryInput {
+  mode: string;
+  sweep: boolean;
+  profileName: string;
+  top: number;
+  manualPool?: string;
+  poolFile?: string;
+  csvDir: string;
+  resultsDir: string;
+  minTvl: number;
+  minVol: number;
+  minAge: number;
+  days: number;
+  balance: number;
+  totalPools: number;
+  profileResults: ProfileResult[];
+}
+
+export function buildAutoBacktestSummary(input: AutoBacktestSummaryInput) {
+  return {
+    generatedAt: new Date().toISOString(),
+    mode: input.mode,
+    sweep: input.sweep,
+    requestedProfile: input.profileName,
+    requestedTop: input.top,
+    input: {
+      manualPool: input.manualPool ?? null,
+      poolFile: input.poolFile ?? null,
+      csvDir: input.csvDir,
+      minTvl: input.minTvl,
+      minVol: input.minVol,
+      minAge: input.minAge,
+      days: input.days,
+      balance: input.balance,
+      totalPools: input.totalPools,
+    },
+    profiles: input.profileResults.map(pr => ({
+      profile: {
+        name: pr.profile.name,
+        tag: pr.profile.tag,
+        config: getEffectiveProfileConfig(pr.profile),
+      },
+      aggregate: pr.aggregate,
+      results: [...pr.results]
+        .sort((a, b) => comparePF(b.combined.profitFactor, a.combined.profitFactor))
+        .map(result => ({
+          pool: result.pool,
+          metrics: {
+            totalTrades: result.combined.totalTrades,
+            winRate: result.combined.winRate,
+            netPnlPct: result.combined.netPnlPct,
+            profitFactor: result.combined.profitFactor,
+            maxDrawdownPct: result.combined.maxDrawdownPct,
+            sharpeRatio: result.combined.sharpeRatio,
+            expectancyR: calcExpectancyR(result.combined),
+          },
+          assessment: {
+            edgeScore: result.assessment.edgeScore,
+            stageScore: result.assessment.stageScore,
+            stageDecision: result.assessment.decision,
+            edgeGateStatus: result.assessment.gateStatus,
+            edgeGateReasons: result.assessment.gateReasons,
+            edgeScoreBreakdown: result.assessment.breakdown,
+          },
+        })),
+    })),
+  };
+}
+
+export function saveRunSummary(input: AutoBacktestSummaryInput): string {
+  if (!fs.existsSync(input.resultsDir)) fs.mkdirSync(input.resultsDir, { recursive: true });
+
+  const summary = buildAutoBacktestSummary(input);
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const filename = `auto-backtest-${input.sweep ? 'sweep' : input.profileName}-${timestamp}.json`;
+  const outPath = path.join(input.resultsDir, filename);
+  fs.writeFileSync(outPath, JSON.stringify(summary, null, 2), 'utf-8');
+  return outPath;
+}
+
 // ─── CSV ───
 
-function saveCsv(filepath: string, bars: GeckoOHLCVBar[]): void {
+function saveCsv(filepath: string, candles: Candle[]): void {
   const header = 'timestamp,open,high,low,close,volume,trade_count,buy_volume,sell_volume';
-  const rows = bars.map(b => [b.timestamp, b.open, b.high, b.low, b.close, b.volume, 0, 0, 0].join(','));
+  const rows = candles.map(c => [
+    Math.floor(c.timestamp.getTime() / 1000),
+    c.open,
+    c.high,
+    c.low,
+    c.close,
+    c.volume,
+    c.tradeCount,
+    c.buyVolume,
+    c.sellVolume,
+  ].join(','));
   fs.writeFileSync(filepath, [header, ...rows].join('\n'), 'utf-8');
 }
 
 // ─── Helpers ───
+
+function getEffectiveProfileConfig(profile: Profile): Partial<BacktestConfig> {
+  return { ...PROD_DEFAULTS, ...profile.config };
+}
+
+function formatPercent(value?: number): string {
+  if (value == null) return 'N/A';
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+function formatSignedPct(value: number): string {
+  return `${value >= 0 ? '+' : ''}${(value * 100).toFixed(1)}%`;
+}
+
+function describeProfitFactor(value: number): string {
+  if (!Number.isFinite(value)) return '매우 강함';
+  if (value >= 1.3) return '양호';
+  if (value >= 1.0) return '보통';
+  return '주의';
+}
+
+function describeDrawdown(value: number): string {
+  if (value <= 0.10) return '안정적';
+  if (value <= 0.20) return '보통';
+  return '변동성 큼';
+}
+
+function describeOverallResult(profitFactor: number, pnlPct: number, maxDrawdownPct: number): string {
+  if (profitFactor >= 1.3 && pnlPct > 0 && maxDrawdownPct <= 0.15) {
+    return '수익성과 안정성이 모두 양호';
+  }
+  if (profitFactor >= 1.0 && pnlPct >= 0 && maxDrawdownPct <= 0.25) {
+    return '실사용 검토 가능';
+  }
+  if (pnlPct < 0 || profitFactor < 1.0) {
+    return '현재 기준으로는 비추천';
+  }
+  return '추가 확인 필요';
+}
+
+function calcExpectancyR(result: BacktestResult): number {
+  if (result.trades.length === 0) return 0;
+
+  const rMultiples = result.trades
+    .map(trade => {
+      const plannedRisk = Math.abs(trade.entryPrice - trade.stopLoss) * trade.quantity;
+      if (!Number.isFinite(plannedRisk) || plannedRisk <= 0) return Number.NaN;
+      return trade.pnlSol / plannedRisk;
+    })
+    .filter(value => Number.isFinite(value));
+
+  if (rMultiples.length === 0) return 0;
+  return rMultiples.reduce((sum, value) => sum + value, 0) / rMultiples.length;
+}
+
+async function fetchCandlesForDays(
+  gecko: GeckoTerminalClient,
+  poolAddress: string,
+  days: number
+): Promise<Candle[]> {
+  const now = Math.floor(Date.now() / 1000);
+  const from = now - days * 24 * 3600;
+  return fetchCandlesForRange(gecko, poolAddress, from, now);
+}
+
+async function fetchCandlesForRange(
+  gecko: GeckoTerminalClient,
+  poolAddress: string,
+  from: number,
+  to: number
+): Promise<Candle[]> {
+  const merged = new Map<number, Candle>();
+  let cursor = from;
+
+  while (cursor <= to) {
+    const chunkTo = Math.min(cursor + CHUNK_SPAN_SEC, to);
+    const candles = await gecko.getOHLCV(poolAddress, DEFAULT_INTERVAL, cursor, chunkTo);
+
+    for (const candle of candles) {
+      merged.set(candle.timestamp.getTime(), candle);
+    }
+
+    if (chunkTo >= to) break;
+    cursor = chunkTo + DEFAULT_INTERVAL_SEC;
+  }
+
+  return [...merged.values()].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+}
+
+async function loadPoolsFromFile(
+  gecko: GeckoTerminalClient,
+  filePath: string,
+  minTvl: number,
+  minVol: number,
+  minAge: number
+): Promise<GeckoPool[]> {
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`Pool file not found: ${filePath}`);
+  }
+
+  const addresses = fs.readFileSync(filePath, 'utf-8')
+    .split(/\r?\n/)
+    .map(line => line.split('#')[0].trim())
+    .filter(Boolean)
+    .map(line => line.split(/[,\s]+/)[0])
+    .filter(Boolean);
+
+  const pools: GeckoPool[] = [];
+
+  for (const address of addresses) {
+    pools.push(await resolvePool(gecko, address, minTvl, minVol, minAge));
+  }
+
+  return pools;
+}
+
+async function resolvePool(
+  gecko: GeckoTerminalClient,
+  address: string,
+  minTvl: number,
+  minVol: number,
+  minAge: number
+): Promise<GeckoPool> {
+  try {
+    const pool = await gecko.getPoolInfo(address);
+    if (pool) return pool;
+  } catch (error) {
+    log('POOL', `Fallback meta for ${address}: ${error instanceof Error ? error.message : error}`);
+  }
+
+  return manualPoolEntry(address, minTvl, minVol, minAge);
+}
 
 function manualPoolEntry(address: string, minTvl: number, minVol: number, minAge: number): GeckoPool {
   return {
@@ -543,17 +887,22 @@ Options:
   --profile <name>   프로필 선택 (default: balanced)
   --sweep            3개 프로필 동시 비교
   --pool <addr>      특정 풀 (트렌딩 탐색 건너뜀)
+  --pool-file <path> 풀 주소 목록 파일 (줄 단위)
   --top N            결과 수 (default: 10)
+  --days N           수집 기간 day 수 (default: 7)
   --balance N        초기 SOL (default: 1)
   --min-tvl N        최소 TVL (default: 50000)
   --min-vol N        최소 볼륨 (default: 10000)
   --min-age N        최소 나이h (default: 24)
   --csv-dir <path>   CSV 경로 (default: ./data)
+  --results-dir <p>  summary JSON 경로 (default: ./results)
   --no-notify        텔레그램 끄기
   `);
 }
 
-main().catch(error => {
-  console.error('Auto-backtest failed:', error);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch(error => {
+    console.error('Auto-backtest failed:', error);
+    process.exit(1);
+  });
+}

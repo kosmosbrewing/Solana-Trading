@@ -15,7 +15,7 @@ export interface ParamRange {
   step: number;
 }
 
-export type ObjectiveMetric = 'sharpeRatio' | 'netPnlPct' | 'profitFactor' | 'custom';
+export type ObjectiveMetric = 'sharpeRatio' | 'netPnlPct' | 'profitFactor' | 'expectancyR' | 'custom';
 
 export interface SweepConfig {
   params: Record<string, ParamRange>;
@@ -41,6 +41,7 @@ export interface SweepMetrics {
   profitFactor: number;
   maxDrawdownPct: number;
   totalTrades: number;
+  expectancyR: number;
 }
 
 export interface SweepResult {
@@ -156,6 +157,7 @@ function extractMetrics(result: BacktestResult): SweepMetrics {
     profitFactor: result.profitFactor,
     maxDrawdownPct: result.maxDrawdownPct,
     totalTrades: result.totalTrades,
+    expectancyR: calcExpectancyR(result),
   };
 }
 
@@ -164,6 +166,7 @@ function getObjectiveValue(metrics: SweepMetrics, objective: ObjectiveMetric): n
     case 'sharpeRatio': return metrics.sharpeRatio;
     case 'netPnlPct': return metrics.netPnlPct;
     case 'profitFactor': return metrics.profitFactor;
+    case 'expectancyR': return metrics.expectancyR;
     case 'custom': return metrics.sharpeRatio; // fallback
   }
 }
@@ -292,6 +295,7 @@ export function runParameterSweep(
         profitFactor: foldMetrics.reduce((s, m) => s + m.profitFactor, 0) / foldMetrics.length,
         maxDrawdownPct: Math.max(...foldMetrics.map(m => m.maxDrawdownPct)),
         totalTrades: foldMetrics.reduce((s, m) => s + m.totalTrades, 0),
+        expectancyR: foldMetrics.reduce((s, m) => s + m.expectancyR, 0) / foldMetrics.length,
       };
 
       if (!passesConstraints(avgMetrics, sweepConfig.constraints)) continue;
@@ -347,6 +351,7 @@ export function formatSweepReport(
 
   // Header
   const header = ['Rank', ...paramKeys, 'WR', 'Sharpe', 'PF', 'PnL%', 'MaxDD%', 'Trades'];
+  header.splice(header.length - 1, 0, 'ExpR');
   if (results[0].oosMetrics) {
     header.push('OOS_Sharpe', 'OOS_PnL%');
   }
@@ -360,6 +365,7 @@ export function formatSweepReport(
       `${(r.metrics.winRate * 100).toFixed(1)}%`,
       r.metrics.sharpeRatio.toFixed(2),
       r.metrics.profitFactor.toFixed(2),
+      r.metrics.expectancyR.toFixed(2),
       `${(r.metrics.netPnlPct * 100).toFixed(1)}%`,
       `${(r.metrics.maxDrawdownPct * 100).toFixed(1)}%`,
       String(r.metrics.totalTrades),
@@ -411,6 +417,21 @@ export function formatSweepReport(
   ].filter(Boolean);
 
   return lines.join('\n');
+}
+
+function calcExpectancyR(result: BacktestResult): number {
+  if (result.trades.length === 0) return 0;
+
+  const rMultiples = result.trades
+    .map(trade => {
+      const plannedRisk = Math.abs(trade.entryPrice - trade.stopLoss) * trade.quantity;
+      if (plannedRisk <= 0) return Number.NaN;
+      return trade.pnlSol / plannedRisk;
+    })
+    .filter(Number.isFinite);
+
+  if (rMultiples.length === 0) return 0;
+  return rMultiples.reduce((sum, value) => sum + value, 0) / rMultiples.length;
 }
 
 // Re-export for CLI

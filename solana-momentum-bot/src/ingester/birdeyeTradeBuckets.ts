@@ -8,8 +8,9 @@ export interface DirectionalVolumeBucket {
 
 type RawBirdeyeTrade = Record<string, unknown>;
 type TradeSide = 'buy' | 'sell';
+type BirdeyeInterval = Exclude<CandleInterval, '5s' | '15s'>;
 
-const INTERVAL_TO_SECONDS: Record<CandleInterval, number> = {
+const INTERVAL_TO_SECONDS: Record<BirdeyeInterval, number> = {
   '1m': 60,
   '5m': 300,
   '15m': 900,
@@ -25,7 +26,8 @@ export function buildDirectionalVolumeBuckets(
   trades: RawBirdeyeTrade[],
   intervalType: CandleInterval
 ): Map<number, DirectionalVolumeBucket> {
-  const intervalSec = INTERVAL_TO_SECONDS[intervalType];
+  const intervalSec = INTERVAL_TO_SECONDS[intervalType as BirdeyeInterval];
+  if (!intervalSec) return new Map();
   const buckets = new Map<number, DirectionalVolumeBucket>();
 
   for (const trade of trades) {

@@ -186,3 +186,100 @@ TELEGRAM_CHAT_ID=<봇에게 메시지 보낸 후 getUpdates API로 확인>
 - Strategy E는 Strategy A가 `Confirmed` 이상이고 expectancy가 양수일 때만 검토한다.
 - 강등 상태에서 Strategy E add-on을 live로 켜지 않는다.
 - `momentum_cascade`의 backtest parity는 확보됐지만, live enable 전에는 backtest 결과와 paper 로그를 함께 검토해야 한다.
+
+---
+
+## Realtime Shadow Operations
+
+`realtime shadow`는 Helius realtime paper session을 돌리면서
+`raw-swaps -> micro-candles -> realtime-signals -> export -> summary`
+를 자동 수집하는 운영 경로다.
+
+중요:
+
+- 점수는 [MEASUREMENT.md](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/MEASUREMENT.md) 기준 `Realtime Edge Score`로 해석한다.
+- gate latency, status mix, admission block은 **점수에 합산되지 않고** 운영 판단용 telemetry로 본다.
+- 아래 명령은 `default 운영`과 `tuned 실험`을 분리해서 사용한다.
+
+### Default Collection Command
+
+운영 표준 경로. `.env`의 현재 realtime 기본값을 그대로 사용한다.
+
+```bash
+cd /Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot
+npm run realtime-shadow -- --run-minutes 180 --signal-target 50 --horizon 30 --telegram
+```
+
+용도:
+
+- 장시간 shadow 수집
+- 표본 축적
+- 일일 summary/digest 생성
+
+출력:
+
+- session dataset dir
+- export bundle
+- `shadow-summary.json`
+- Telegram digest (`--telegram` 사용 시)
+
+### Tuned Validation Command
+
+실험용 preset. signal density와 trigger path 검증을 빠르게 보기 위한 경로다.
+기본 운영 성과와 같은 표본으로 섞어 해석하지 않는다.
+
+```bash
+cd /Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot
+npm run realtime-shadow -- \
+  --run-minutes 30 \
+  --signal-target 10 \
+  --horizon 30 \
+  --outcome-horizons 30,60 \
+  --primary-interval 5 \
+  --confirm-interval 5 \
+  --volume-lookback 1 \
+  --volume-multiplier 1 \
+  --breakout-lookback 1 \
+  --confirm-bars 1 \
+  --confirm-change-pct 0 \
+  --cooldown-sec 60
+```
+
+용도:
+
+- trigger density 확인
+- early signal / gate rejection 경로 검증
+- replay/report smoke test
+
+주의:
+
+- 이 명령은 `experimental preset`이다.
+- 여기서 나온 signal count나 return은 기본 운영값과 직접 비교하지 않는다.
+
+### Report-Only Command
+
+이미 수집된 dataset을 다시 실행 없이 요약할 때 사용한다.
+
+```bash
+cd /Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot
+npm run realtime-shadow -- \
+  --dataset-dir ./tmp/realtime-loop-live-20260322-163634 \
+  --export-dir ./tmp/realtime-loop-live-runner-export \
+  --horizon 30 \
+  --json
+```
+
+### 운영 해석 규칙
+
+| 조건 | 해석 |
+|------|------|
+| `signals < 10` | 점수 참고만, 전략 판단 금지 |
+| `10 <= signals < 50` | weak sample |
+| `50 <= signals < 100` | 비교 가능, 아직 보수적 |
+| `signals >= 100` | trigger density / rejection mix / avg return 해석 시작 |
+
+현재 우선순위:
+
+1. `default` 경로로 shadow signal 100건 이상 누적
+2. `execution_viability_rejected` 비중 확인
+3. 필요 시 `tuned` 경로로 density 실험

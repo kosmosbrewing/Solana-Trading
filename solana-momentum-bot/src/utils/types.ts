@@ -1,6 +1,6 @@
 // ─── Candle ───
 
-export type CandleInterval = '1m' | '5m' | '15m' | '1H' | '4H';
+export type CandleInterval = '5s' | '15s' | '1m' | '5m' | '15m' | '1H' | '4H';
 
 export interface Candle {
   pairAddress: string;

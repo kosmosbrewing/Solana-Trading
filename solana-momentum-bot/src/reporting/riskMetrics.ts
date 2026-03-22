@@ -11,8 +11,10 @@ export interface RiskMetricsSummary {
   losses: number;
   winRate: number;
   netPnl: number;
+  profitFactor: number;
   avgWinR: number;
   avgLossR: number;
+  expectancyR: number;
   rewardRisk: number;
   sharpeRatio: number;
   maxConsecutiveLosses: number;
@@ -24,9 +26,14 @@ export function summarizeRiskMetrics<T extends RiskLikeTrade>(trades: T[]): Risk
   const riskMultiples = trades.map(toRiskMultiple).filter(isFiniteNumber);
   const winRs = wins.map(toRiskMultiple).filter(isFiniteNumber);
   const lossRs = losses.map(toRiskMultiple).filter(isFiniteNumber).map(value => Math.abs(value));
+  const grossProfit = wins.reduce((sum, trade) => sum + trade.pnl, 0);
+  const grossLoss = Math.abs(losses.reduce((sum, trade) => sum + trade.pnl, 0));
   const rewardRisk = lossRs.length > 0
     ? average(winRs) / average(lossRs)
     : winRs.length > 0 ? Number.POSITIVE_INFINITY : 0;
+  const profitFactor = grossLoss > 0
+    ? grossProfit / grossLoss
+    : grossProfit > 0 ? Number.POSITIVE_INFINITY : 0;
 
   return {
     totalTrades: trades.length,
@@ -34,8 +41,10 @@ export function summarizeRiskMetrics<T extends RiskLikeTrade>(trades: T[]): Risk
     losses: losses.length,
     winRate: trades.length > 0 ? wins.length / trades.length : 0,
     netPnl: trades.reduce((sum, trade) => sum + trade.pnl, 0),
+    profitFactor,
     avgWinR: average(winRs),
     avgLossR: average(lossRs),
+    expectancyR: average(riskMultiples),
     rewardRisk,
     sharpeRatio: calcSharpe(riskMultiples),
     maxConsecutiveLosses: calcMaxConsecutiveLosses(trades),

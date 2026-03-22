@@ -170,6 +170,7 @@ async function main() {
 
     if (candles5m.length > 0) {
       reporter.printSummary(strategyA);
+      reporter.printMeasurementSummary(strategyA);
       if (showTrades) reporter.printTradeLog(strategyA.trades, tradesLimit);
       if (showEquity) reporter.printEquityCurve(strategyA);
     } else {
@@ -178,12 +179,14 @@ async function main() {
 
     if (candles5m.length > 0) {
       reporter.printSummary(strategyC);
+      reporter.printMeasurementSummary(strategyC);
       if (showTrades) reporter.printTradeLog(strategyC.trades, tradesLimit);
       if (showEquity) reporter.printEquityCurve(strategyC);
     }
 
     if (strategyA.totalTrades + strategyC.totalTrades > 0) {
       reporter.printSummary(combined);
+      reporter.printMeasurementSummary(combined);
       if (showEquity) reporter.printEquityCurve(combined);
     }
 
@@ -201,6 +204,7 @@ async function main() {
 
     const result = engine.run(candles, stratName, pairAddress);
     reporter.printSummary(result);
+    reporter.printMeasurementSummary(result);
     if (showTrades) reporter.printTradeLog(result.trades, tradesLimit);
     if (showEquity) reporter.printEquityCurve(result);
 
@@ -214,7 +218,11 @@ async function main() {
         path.join(exportDir, `equity_${stratName}.csv`),
         reporter.exportEquityCsv(result)
       );
-      console.log(`\nCSV exported to ${exportDir}`);
+      fs.writeFileSync(
+        path.join(exportDir, `summary_${stratName}.json`),
+        reporter.exportSummaryJson(result)
+      );
+      console.log(`\nArtifacts exported to ${exportDir}`);
     }
   }
 }
@@ -229,16 +237,19 @@ function exportResults(
   if (a.totalTrades > 0) {
     fs.writeFileSync(path.join(dir, 'trades_volume_spike.csv'), reporter.exportTradesCsv(a.trades));
     fs.writeFileSync(path.join(dir, 'equity_volume_spike.csv'), reporter.exportEquityCsv(a));
+    fs.writeFileSync(path.join(dir, 'summary_volume_spike.json'), reporter.exportSummaryJson(a));
   }
   if (c.totalTrades > 0) {
     fs.writeFileSync(path.join(dir, 'trades_fib_pullback.csv'), reporter.exportTradesCsv(c.trades));
     fs.writeFileSync(path.join(dir, 'equity_fib_pullback.csv'), reporter.exportEquityCsv(c));
+    fs.writeFileSync(path.join(dir, 'summary_fib_pullback.json'), reporter.exportSummaryJson(c));
   }
   if (combined.totalTrades > 0) {
     fs.writeFileSync(path.join(dir, 'trades_combined.csv'), reporter.exportTradesCsv(combined.trades));
     fs.writeFileSync(path.join(dir, 'equity_combined.csv'), reporter.exportEquityCsv(combined));
+    fs.writeFileSync(path.join(dir, 'summary_combined.json'), reporter.exportSummaryJson(combined));
   }
-  console.log(`\nCSV exported to ${dir}`);
+  console.log(`\nArtifacts exported to ${dir}`);
 }
 
 // ─── Arg Helpers ───

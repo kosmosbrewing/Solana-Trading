@@ -4,6 +4,7 @@ import { SOL_MINT } from '../utils/constants';
 import { createModuleLogger } from '../utils/logger';
 import { HeliusWSConfig, ParsedSwap, RealtimePoolMetadata } from './types';
 import {
+  isLikelyPumpSwapFallbackLog,
   parseSwapFromTransaction,
   shouldForceFallbackToTransaction,
   shouldFallbackToTransaction,
@@ -124,7 +125,23 @@ export class HeliusWSIngester extends EventEmitter {
     }
 
     this.emit('parseMiss', { pool, signature: logs.signature, slot });
-    if (!shouldForceFallbackToTransaction(poolMetadata) && !shouldFallbackToTransaction(logs.logs)) {
+    const forceFallback = shouldForceFallbackToTransaction(poolMetadata);
+    if (forceFallback) {
+      const joined = logs.logs.join('\n');
+      if (/no arbitrage/i.test(joined) || /is_cashback_coin=false/i.test(joined)) {
+        this.emit('fallbackSkipped', { pool, signature: logs.signature, reason: 'pump_noise_log' });
+        return;
+      }
+      const queueUtilization = this.maxFallbackQueue > 0
+        ? this.fallbackQueue.length / this.maxFallbackQueue
+        : 0;
+      if (queueUtilization >= 0.5 && !isLikelyPumpSwapFallbackLog(logs.logs)) {
+        this.emit('fallbackSkipped', { pool, signature: logs.signature, reason: 'pump_backpressure_skip' });
+        return;
+      }
+    }
+
+    if (!forceFallback && !shouldFallbackToTransaction(logs.logs)) {
       this.emit('fallbackSkipped', { pool, signature: logs.signature, reason: 'not_swap_like' });
       return;
     }

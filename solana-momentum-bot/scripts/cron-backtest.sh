@@ -26,8 +26,8 @@ CBS=(1 2 3)                  # confirmMinBars        — 확인 봉 수
 BLS=(5 10 20)                # priceBreakoutLookback — 신고가 기준 봉 수 (짧을수록 완화)
 CCPS=(0.005 0.010 0.020)     # confirmMinPriceChangePct — 확인봉 가격 변화 최소치
 
-# 병렬 실행 상한 — VPS 부하에 따라 조정 (권장: CPU코어 수 이하)
-PARALLEL_LIMIT=4
+# 병렬 실행 상한 — VPS 부하에 따라 조정 (권장: CPU코어 수 이하, 1vCPU=2)
+PARALLEL_LIMIT=2
 
 # ─────────────────────────────────────────────────────────────────────────────
 

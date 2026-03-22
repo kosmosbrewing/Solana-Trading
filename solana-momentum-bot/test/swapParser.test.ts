@@ -1,5 +1,8 @@
+import bs58 from 'bs58';
 import {
   parseSwapFromTransaction,
+  PUMP_SWAP_PROGRAM,
+  shouldForceFallbackToTransaction,
   shouldFallbackToTransaction,
   tryParseSwapFromLogs,
 } from '../src/realtime';
@@ -99,6 +102,79 @@ describe('swapParser', () => {
     expect(parsed?.priceNative).toBeCloseTo(0.132065032 / 19.405357, 12);
   });
 
+  it('parses direct PumpSwap instructions from a transaction when pool metadata is present', () => {
+    const buyInstructionData = encodePumpInstruction(
+      [102, 6, 61, 18, 1, 218, 235, 234],
+      1_250_000n,
+      250_000_000n,
+    );
+    const parsed = parseSwapFromTransaction({
+      blockTime: 1_700_000_200,
+      meta: {
+        err: null,
+        fee: 5_000,
+        innerInstructions: [],
+        loadedAddresses: { readonly: [], writable: [] },
+        logMessages: ['Program pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA invoke [1]'],
+        postBalances: [],
+        postTokenBalances: [],
+        preBalances: [],
+        preTokenBalances: [],
+        rewards: [],
+        status: { Ok: null },
+      },
+      slot: 999,
+      transaction: {
+        message: {
+          accountKeys: [],
+          instructions: [{
+            programId: { toBase58: () => PUMP_SWAP_PROGRAM },
+            accounts: [
+              { toBase58: () => 'pool-pump' },
+              { toBase58: () => 'user-1' },
+            ],
+            data: buyInstructionData,
+          }],
+          recentBlockhash: 'hash',
+        },
+        signatures: ['sig-pump'],
+      },
+    } as any, {
+      poolAddress: 'pool-pump',
+      signature: 'sig-pump',
+      slot: 999,
+      poolMetadata: {
+        dexId: 'pumpswap',
+        baseMint: 'mint-base',
+        quoteMint: 'So11111111111111111111111111111111111111112',
+        baseDecimals: 6,
+        quoteDecimals: 9,
+        poolProgram: PUMP_SWAP_PROGRAM,
+      },
+    });
+
+    expect(parsed).toMatchObject({
+      pool: 'pool-pump',
+      signature: 'sig-pump',
+      side: 'buy',
+      amountBase: 1.25,
+      amountQuote: 0.25,
+      slot: 999,
+      dexProgram: PUMP_SWAP_PROGRAM,
+      source: 'transaction',
+    });
+    expect(parsed?.priceNative).toBeCloseTo(0.2, 12);
+  });
+
+  it('forces fallback for PumpSwap pools even when logs are opaque', () => {
+    expect(shouldForceFallbackToTransaction({
+      dexId: 'pumpswap',
+      baseMint: 'mint-base',
+      quoteMint: 'So11111111111111111111111111111111111111112',
+      poolProgram: PUMP_SWAP_PROGRAM,
+    })).toBe(true);
+  });
+
   it('falls back to token and lamport deltas when parsing from a transaction', () => {
     const parsed = parseSwapFromTransaction({
       blockTime: 1_700_000_100,
@@ -173,3 +249,11 @@ describe('swapParser', () => {
     ])).toBe(false);
   });
 });
+
+function encodePumpInstruction(discriminator: number[], first: bigint, second: bigint): string {
+  const buffer = Buffer.alloc(24);
+  Buffer.from(discriminator).copy(buffer, 0);
+  buffer.writeBigUInt64LE(first, 8);
+  buffer.writeBigUInt64LE(second, 16);
+  return bs58.encode(buffer);
+}

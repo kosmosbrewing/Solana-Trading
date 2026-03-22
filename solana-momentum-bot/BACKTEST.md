@@ -314,11 +314,202 @@ realtime 쪽은 아래처럼 본다.
 
 ---
 
+## VPS 운영 구조: 수집 + 크론 백테스트
+
+### 아키텍처
+
+```
+VPS (상시 실행)
+┌─────────────────────────────────────────────────┐
+│  Helius WS Ingester (24/7)                      │
+│    → 온체인 swap 실시간 수신                      │
+│    → data/realtime-sessions/<date>/              │
+│        raw-swaps.jsonl        (원본 swap)        │
+│        micro-candles.jsonl    (1s/5s/15s/60s)    │
+│        realtime-signals.jsonl (trigger 발화)      │
+│        manifest.json          (세션 메타)         │
+└─────────────────────────────────────────────────┘
+          │
+          │  파일 시스템 공유 (같은 VPS)
+          ▼
+┌─────────────────────────────────────────────────┐
+│  Cron Job (매 N시간)                             │
+│    1. 최신 session 디렉토리 감지                  │
+│    2. micro-backtest × 파라미터셋 A/B/C/D 실행   │
+│    3. Edge Score 비교 → JSON 저장                │
+│    4. Telegram 알림 (요약)                       │
+└─────────────────────────────────────────────────┘
+```
+
+### 핵심 원칙
+
+1. **수집과 분석 분리** — 수집은 중단 없이 24/7, 분석은 크론으로 독립 실행
+2. **같은 데이터, 다른 파라미터** — 동일 `raw-swaps.jsonl`을 여러 파라미터로 반복 재생
+3. **누적 신뢰도** — signals 10 → 50 → 100으로 쌓이며 Edge Score 신뢰도 상승
+4. **비용 0** — Helius WS 구독은 크레딧 소비 없음
+
+### 수집 프로세스 (PM2 상시)
+
+```bash
+# ecosystem.config.cjs에 추가
+pm2 start scripts/realtime-shadow-runner.ts \
+  --name helius-collector \
+  --interpreter npx \
+  --interpreter-args "ts-node" \
+  -- --run-minutes 0 --signal-target 0 --verbose-runtime
+  # run-minutes=0, signal-target=0 → 무한 수집
+```
+
+출력:
+```
+data/realtime-sessions/
+  2026-03-23T00-00-00-000Z/
+    raw-swaps.jsonl           ← 원본 swap 데이터 (계속 append)
+    micro-candles.jsonl       ← 빌드된 마이크로캔들
+    realtime-signals.jsonl    ← trigger 발화 기록
+    manifest.json             ← 세션 메타 (풀 목록, 기간, swap 수)
+```
+
+### 크론 백테스트 (매 6시간)
+
+```bash
+# crontab -e
+0 */6 * * * /home/deploy/solana-momentum-bot/scripts/cron-backtest.sh >> /var/log/cron-backtest.log 2>&1
+```
+
+`scripts/cron-backtest.sh` 내용:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+# 최신 세션 디렉토리 감지
+SESSION=$(ls -td data/realtime-sessions/*/ 2>/dev/null | head -1)
+if [ -z "$SESSION" ]; then
+  echo "No session found"
+  exit 0
+fi
+
+SWAPS=$(wc -l < "$SESSION/raw-swaps.jsonl" 2>/dev/null || echo 0)
+echo "[$(date)] Session: $SESSION | Swaps: $SWAPS"
+
+if [ "$SWAPS" -lt 100 ]; then
+  echo "Insufficient swaps ($SWAPS < 100), skipping"
+  exit 0
+fi
+
+OUTDIR="results/cron-backtest/$(date +%Y-%m-%dT%H-%M)"
+mkdir -p "$OUTDIR"
+
+# 파라미터셋 A: 현재 기본값
+npx ts-node scripts/micro-backtest.ts \
+  --dataset "$SESSION" \
+  --volume-multiplier 3.0 --confirm-bars 3 --confirm-change-pct 0.02 \
+  --estimated-cost-pct 0.0065 --json > "$OUTDIR/params-A.json"
+
+# 파라미터셋 B: 스윕 최적값
+npx ts-node scripts/micro-backtest.ts \
+  --dataset "$SESSION" \
+  --volume-multiplier 2.5 --confirm-bars 3 --confirm-change-pct 0.02 \
+  --estimated-cost-pct 0.0065 --json > "$OUTDIR/params-B.json"
+
+# 파라미터셋 C: 공격적 (낮은 문턱)
+npx ts-node scripts/micro-backtest.ts \
+  --dataset "$SESSION" \
+  --volume-multiplier 2.0 --confirm-bars 2 --confirm-change-pct 0.01 \
+  --estimated-cost-pct 0.0065 --json > "$OUTDIR/params-C.json"
+
+# 파라미터셋 D: 보수적 (높은 문턱)
+npx ts-node scripts/micro-backtest.ts \
+  --dataset "$SESSION" \
+  --volume-multiplier 3.5 --confirm-bars 3 --confirm-change-pct 0.03 \
+  --estimated-cost-pct 0.0065 --json > "$OUTDIR/params-D.json"
+
+echo "[$(date)] Results saved to $OUTDIR"
+
+# 비교 요약 출력
+echo "=== Edge Score Comparison ==="
+for f in "$OUTDIR"/params-*.json; do
+  NAME=$(basename "$f" .json)
+  EDGE=$(jq -r '.summary.edgeScore' "$f")
+  SIGNALS=$(jq -r '.summary.totalSignals' "$f")
+  DECISION=$(jq -r '.summary.stageDecision' "$f")
+  echo "  $NAME: Edge=$EDGE Signals=$SIGNALS Decision=$DECISION"
+done
+```
+
+### 파라미터셋 정의
+
+| 셋 | volumeMultiplier | confirmBars | confirmChangePct | 의도 |
+|----|-----------------|-------------|-----------------|------|
+| A | 3.0 | 3 | 0.02 | 코드 기본값 |
+| B | 2.5 | 3 | 0.02 | 5분봉 스윕 최적 |
+| C | 2.0 | 2 | 0.01 | 공격적 (signal 많이) |
+| D | 3.5 | 3 | 0.03 | 보수적 (signal 적지만 정밀) |
+
+추가 가능한 파라미터 (현재 CLI 지원):
+
+| CLI 플래그 | 기본값 | 역할 |
+|-----------|--------|------|
+| `--primary-interval` | 15 | 주봉 주기(초) |
+| `--confirm-interval` | 60 | 확인봉 주기(초) |
+| `--volume-lookback` | 20 | 볼륨 평균 윈도우 |
+| `--breakout-lookback` | 20 | 가격 돌파 윈도우 |
+| `--cooldown-sec` | 300 | 재진입 대기(초) |
+
+> **주의:** SL/TP multiplier는 현재 CLI에 미노출. 필요 시 `--sl-atr-multiplier`, `--tp1-multiplier`, `--tp2-multiplier` 추가 구현 가능.
+
+### 판단 흐름
+
+```
+signals < 10   → 참고만, 의사결정 금지
+signals 10~49  → weak sample, 경향만 확인
+signals 50~99  → 파라미터 비교 가능
+signals ≥ 100  → Edge Score 해석 시작
+
+Edge Score 비교:
+  4개 파라미터셋 중 최고 Edge → 후보
+  후보의 stageDecision이 keep/keep_watch → Paper 50 trades 진행
+  후보의 stageDecision이 reject → 파라미터 재설계
+```
+
+### Telegram 알림 예시
+
+```
+📊 Cron Backtest (2026-03-24 06:00)
+Session: 2026-03-23, Swaps: 12,847
+
+  A (기본):    Edge 65 | 23 signals | keep_watch
+  B (스윕최적): Edge 72 | 31 signals | keep_watch
+  C (공격적):  Edge 58 | 47 signals | retune
+  D (보수적):  Edge 71 | 15 signals | weak_sample
+
+→ 파라미터셋 B 선도, 48h 후 재평가
+```
+
+### Paper 전환 기준
+
+크론 백테스트에서 아래 조건이 모두 충족되면 최적 파라미터로 Paper 50 trades 시작:
+
+| 조건 | 기준 |
+|------|------|
+| 누적 signals | ≥ 50 |
+| 최고 Edge Score | ≥ 70 |
+| stageDecision | keep 또는 keep_watch |
+| 양수 풀 비율 | ≥ 50% |
+| Expectancy | > 0 |
+
+---
+
 ## 예상 일정
 
 ```text
 Completed: auto-backtest.ts 복구 + pool-file 지원
 Completed: realtime shadow -> export -> replay -> report 경로 검증
-Next: realtime shadow 100-signal 누적
-Next: micro parameter sweep + execution viability 해석
+Completed: VPS 운영 구조 설계 (수집 + 크론 백테스트)
+In Progress: PumpSwap parser 추가 (PLAN3)
+Next: VPS 셋업 → Helius WS 상시 수집 시작
+Next: 크론 백테스트 배포 → 파라미터 비교 자동화
+Next: signals ≥ 50 도달 → 최적 파라미터 확정 → Paper 50 trades
 ```

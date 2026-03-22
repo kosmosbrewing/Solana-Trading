@@ -3,6 +3,7 @@ import { EventEmitter } from 'events';
 export interface RealtimeAdmissionStats {
   observedNotifications: number;
   logParsed: number;
+  fallbackParsed: number;
   fallbackSkipped: number;
   parseRatePct: number;
   skippedRatePct: number;
@@ -12,6 +13,7 @@ export interface RealtimeAdmissionSnapshotEntry {
   pool: string;
   observedNotifications: number;
   logParsed: number;
+  fallbackParsed: number;
   fallbackSkipped: number;
   blocked: boolean;
 }
@@ -25,6 +27,7 @@ interface RealtimeAdmissionConfig {
 interface MutableStats {
   observedNotifications: number;
   logParsed: number;
+  fallbackParsed: number;
   fallbackSkipped: number;
   blocked: boolean;
 }
@@ -40,6 +43,13 @@ export class RealtimeAdmissionTracker extends EventEmitter {
     const stats = this.getOrCreate(pool);
     stats.observedNotifications += 1;
     stats.logParsed += 1;
+    this.evaluate(pool, stats);
+  }
+
+  recordFallbackParsed(pool: string): void {
+    const stats = this.getOrCreate(pool);
+    stats.observedNotifications += 1;
+    stats.fallbackParsed += 1;
     this.evaluate(pool, stats);
   }
 
@@ -69,6 +79,7 @@ export class RealtimeAdmissionTracker extends EventEmitter {
       pool,
       observedNotifications: stats.observedNotifications,
       logParsed: stats.logParsed,
+      fallbackParsed: stats.fallbackParsed,
       fallbackSkipped: stats.fallbackSkipped,
       blocked: stats.blocked,
     }));
@@ -79,6 +90,7 @@ export class RealtimeAdmissionTracker extends EventEmitter {
       this.stats.set(entry.pool, {
         observedNotifications: entry.observedNotifications,
         logParsed: entry.logParsed,
+        fallbackParsed: entry.fallbackParsed ?? 0,
         fallbackSkipped: entry.fallbackSkipped,
         blocked: entry.blocked,
       });
@@ -92,6 +104,7 @@ export class RealtimeAdmissionTracker extends EventEmitter {
     const created: MutableStats = {
       observedNotifications: 0,
       logParsed: 0,
+      fallbackParsed: 0,
       fallbackSkipped: 0,
       blocked: false,
     };
@@ -115,7 +128,7 @@ export class RealtimeAdmissionTracker extends EventEmitter {
 
   private toPublicStats(stats: MutableStats): RealtimeAdmissionStats {
     const parseRatePct = stats.observedNotifications > 0
-      ? (stats.logParsed / stats.observedNotifications) * 100
+      ? ((stats.logParsed + stats.fallbackParsed) / stats.observedNotifications) * 100
       : 0;
     const skippedRatePct = stats.observedNotifications > 0
       ? (stats.fallbackSkipped / stats.observedNotifications) * 100
@@ -123,6 +136,7 @@ export class RealtimeAdmissionTracker extends EventEmitter {
     return {
       observedNotifications: stats.observedNotifications,
       logParsed: stats.logParsed,
+      fallbackParsed: stats.fallbackParsed,
       fallbackSkipped: stats.fallbackSkipped,
       parseRatePct: Number(parseRatePct.toFixed(2)),
       skippedRatePct: Number(skippedRatePct.toFixed(2)),

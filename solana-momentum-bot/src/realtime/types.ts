@@ -29,5 +29,6 @@ export interface HeliusWSConfig {
   maxSubscriptions: number;
   fallbackConcurrency?: number;
   fallbackRequestsPerSecond?: number;
+  fallbackBatchSize?: number;
   maxFallbackQueue?: number;
 }

@@ -549,6 +549,10 @@ async function main() {
       rpcWsUrl: buildHeliusWsUrl(),
       rpcHttpUrl: config.solanaRpcUrl,
       maxSubscriptions: config.realtimeMaxSubscriptions,
+      fallbackConcurrency: config.realtimeFallbackConcurrency,
+      fallbackRequestsPerSecond: config.realtimeFallbackRequestsPerSecond,
+      fallbackBatchSize: config.realtimeFallbackBatchSize,
+      maxFallbackQueue: config.realtimeMaxFallbackQueue,
     });
     for (const [pool, metadata] of realtimePoolMetadata.entries()) {
       heliusIngester.setPoolMetadata(pool, metadata);
@@ -581,6 +585,8 @@ async function main() {
       const logicalPair = realtimePoolAliases.get(swap.pool) ?? swap.pool;
       if (swap.source === 'logs') {
         realtimeAdmissionTracker?.recordLogParsed(swap.pool);
+      } else {
+        realtimeAdmissionTracker?.recordFallbackParsed(swap.pool);
       }
       if (realtimeReplayStore) {
         void realtimeReplayStore.appendSwap({

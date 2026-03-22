@@ -136,7 +136,7 @@ function buildRealtimeAdmissionSummary(ctx: BotContext): RealtimeAdmissionSummar
 
 function calculateParseRatePct(entry: RealtimeAdmissionSnapshotEntry): number {
   if (entry.observedNotifications <= 0) return 0;
-  return Number(((entry.logParsed / entry.observedNotifications) * 100).toFixed(2));
+  return Number((((entry.logParsed + (entry.fallbackParsed ?? 0)) / entry.observedNotifications) * 100).toFixed(2));
 }
 
 function calculateSkippedRatePct(entry: RealtimeAdmissionSnapshotEntry): number {

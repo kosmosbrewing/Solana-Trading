@@ -6,11 +6,23 @@ import {
   RAYDIUM_ROUTER_PROGRAM,
   RAYDIUM_V4_PROGRAM,
 } from './raydiumSwapLogParser';
+import {
+  isPumpSwapPool,
+  parsePumpSwapFromLogs,
+  parsePumpSwapFromTransaction,
+  PUMP_SWAP_PROGRAM,
+} from './pumpSwapParser';
 import { ParsedSwap, RealtimePoolMetadata, SwapSide } from './types';
 
-export { ORCA_WHIRLPOOL_PROGRAM, RAYDIUM_CLMM_PROGRAM, RAYDIUM_ROUTER_PROGRAM, RAYDIUM_V4_PROGRAM };
+export {
+  ORCA_WHIRLPOOL_PROGRAM,
+  PUMP_SWAP_PROGRAM,
+  RAYDIUM_CLMM_PROGRAM,
+  RAYDIUM_ROUTER_PROGRAM,
+  RAYDIUM_V4_PROGRAM,
+};
 
-const SUPPORTED_PROGRAMS = [RAYDIUM_V4_PROGRAM, RAYDIUM_CLMM_PROGRAM, ORCA_WHIRLPOOL_PROGRAM];
+const SUPPORTED_PROGRAMS = [RAYDIUM_V4_PROGRAM, RAYDIUM_CLMM_PROGRAM, ORCA_WHIRLPOOL_PROGRAM, PUMP_SWAP_PROGRAM];
 const FALLBACK_PROGRAM_HINTS = [...SUPPORTED_PROGRAMS, RAYDIUM_ROUTER_PROGRAM];
 const FALLBACK_SWAP_PATTERNS = [
   /process_swap_/i,
@@ -19,6 +31,8 @@ const FALLBACK_SWAP_PATTERNS = [
   /instruction:\s*two_hop_swap/i,
   /ray_log:/i,
   /swap event/i,
+  /pumpswap/i,
+  /pumpfun/i,
 ];
 
 interface SwapParseContext {
@@ -34,6 +48,9 @@ interface BalanceDelta {
 }
 
 export function tryParseSwapFromLogs(logs: string[], context: SwapParseContext): ParsedSwap | null {
+  const parsedPump = parsePumpSwapFromLogs(logs, context);
+  if (parsedPump) return parsedPump;
+
   const parsedRaydium = parseRaydiumSwapFromLogs(logs, context);
   if (parsedRaydium) return parsedRaydium;
 
@@ -65,8 +82,14 @@ export function parseSwapFromTransaction(
   tx: ParsedTransactionWithMeta,
   context: SwapParseContext
 ): ParsedSwap | null {
+  const parsedPump = parsePumpSwapFromTransaction(tx, context);
+  if (parsedPump) return parsedPump;
+
   const meta = tx.meta;
   if (!meta) return null;
+
+  const metadataAware = parseFromPoolMetadata(tx, context);
+  if (metadataAware) return metadataAware;
 
   const tokenDelta = pickLargestTokenDelta(tx);
   const nativeQuote = pickLargestLamportDelta(tx);
@@ -121,6 +144,10 @@ export function shouldFallbackToTransaction(logs: string[]): boolean {
     || FALLBACK_SWAP_PATTERNS.some((pattern) => pattern.test(joined));
 }
 
+export function shouldForceFallbackToTransaction(poolMetadata?: RealtimePoolMetadata): boolean {
+  return isPumpSwapPool(poolMetadata);
+}
+
 function detectProgram(logs: string[]): string | undefined {
   return FALLBACK_PROGRAM_HINTS.find((program) => logs.some((line) => line.includes(program)));
 }
@@ -165,6 +192,67 @@ function collectTokenDeltas(tx: ParsedTransactionWithMeta): BalanceDelta[] {
     .filter((amount) => Number.isFinite(amount) && Math.abs(amount) > 0)
     .map((amount) => ({ amount }))
     .sort((left, right) => Math.abs(right.amount) - Math.abs(left.amount));
+}
+
+function parseFromPoolMetadata(
+  tx: ParsedTransactionWithMeta,
+  context: SwapParseContext
+): ParsedSwap | null {
+  const metadata = context.poolMetadata;
+  if (!metadata) return null;
+
+  const baseDelta = sumMintDelta(tx, metadata.baseMint);
+  const quoteDelta = sumMintDelta(tx, metadata.quoteMint);
+  if (baseDelta == null || quoteDelta == null) return null;
+
+  const epsilon = 1e-12;
+  if (Math.abs(baseDelta) <= epsilon || Math.abs(quoteDelta) <= epsilon) return null;
+
+  let side: SwapSide | null = null;
+  if (baseDelta > epsilon && quoteDelta < -epsilon) {
+    side = 'buy';
+  } else if (baseDelta < -epsilon && quoteDelta > epsilon) {
+    side = 'sell';
+  } else {
+    return null;
+  }
+
+  const amountBase = Math.abs(baseDelta);
+  const amountQuote = Math.abs(quoteDelta);
+  if (amountBase <= 0 || amountQuote <= 0) return null;
+
+  return {
+    pool: context.poolAddress,
+    signature: context.signature,
+    timestamp: tx.blockTime ?? context.timestamp ?? Math.floor(Date.now() / 1000),
+    side,
+    priceNative: amountQuote / amountBase,
+    amountBase,
+    amountQuote,
+    slot: context.slot,
+    dexProgram: metadata.poolProgram ?? detectProgram(tx.meta?.logMessages ?? []),
+    source: 'transaction',
+  };
+}
+
+function sumMintDelta(tx: ParsedTransactionWithMeta, mint: string): number | null {
+  const pre = tx.meta?.preTokenBalances ?? [];
+  const post = tx.meta?.postTokenBalances ?? [];
+  let total = 0;
+  let found = false;
+
+  for (const balance of pre) {
+    if (balance.mint !== mint) continue;
+    total -= Number(balance.uiTokenAmount.uiAmountString ?? balance.uiTokenAmount.uiAmount ?? 0);
+    found = true;
+  }
+  for (const balance of post) {
+    if (balance.mint !== mint) continue;
+    total += Number(balance.uiTokenAmount.uiAmountString ?? balance.uiTokenAmount.uiAmount ?? 0);
+    found = true;
+  }
+
+  return found ? total : null;
 }
 
 function pickLargestLamportDelta(tx: ParsedTransactionWithMeta): BalanceDelta | null {

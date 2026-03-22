@@ -115,18 +115,20 @@ class RateLimiter {
 
 // ─── Signature Fetching ───
 
-async function fetchSignatures(
+// Why: getSignaturesForAddress는 시간 필터 불가, 최신→과거 역순.
+// 최신부터 maxSigs개만 빠르게 수집하고, 파싱 후 시간 기반 window 분할한다.
+async function fetchRecentSignatures(
   connection: Connection,
   pool: PublicKey,
-  fromTimestamp: number,
-  toTimestamp: number,
   limiter: RateLimiter,
+  maxSigs: number,
 ): Promise<string[]> {
   const allSigs: string[] = [];
   let before: string | undefined;
   let page = 0;
+  let retries = 0;
 
-  while (true) {
+  while (allSigs.length < maxSigs) {
     await limiter.wait();
     page++;
 
@@ -137,33 +139,34 @@ async function fetchSignatures(
     try {
       batch = await connection.getSignaturesForAddress(pool, options);
       limiter.onSuccess();
+      retries = 0;
     } catch (err: unknown) {
       if (isRateLimitError(err)) {
         limiter.onRateLimit();
-        log(`  429 rate limited, backing off...`);
         await sleep(2000);
         continue;
       }
-      throw err;
+      retries++;
+      if (retries > 3) throw err;
+      log(`    RPC error, retry ${retries}/3...`);
+      await sleep(3000 * retries);
+      continue;
     }
 
     if (batch.length === 0) break;
 
-    let hitFloor = false;
     for (const sig of batch) {
-      const bt = sig.blockTime ?? 0;
-      if (bt < fromTimestamp) {
-        hitFloor = true;
-        break;
-      }
-      if (bt <= toTimestamp && !sig.err) {
+      if (!sig.err) {
         allSigs.push(sig.signature);
+        if (allSigs.length >= maxSigs) break;
       }
     }
 
-    log(`  Page ${page}: ${batch.length} sigs (total ${allSigs.length})`);
+    if (page % 5 === 0) {
+      log(`  Page ${page}: ${allSigs.length}/${maxSigs} sigs`);
+    }
 
-    if (hitFloor || batch.length < 1000) break;
+    if (batch.length < 1000 || allSigs.length >= maxSigs) break;
     before = batch[batch.length - 1].signature;
   }
 
@@ -309,7 +312,7 @@ async function fetchTopPoolsFromGecko(count: number): Promise<PoolTarget[]> {
       const res = await axios.get(
         `https://api.geckoterminal.com/api/v2/networks/solana/pools`,
         {
-          params: { page, sort: 'h24_volume_usd_liquidity_desc', include: 'base_token,quote_token' },
+          params: { page, include: 'base_token,quote_token' },
           headers: { Accept: 'application/json' },
           timeout: 15_000,
         },
@@ -429,15 +432,38 @@ async function resolvePoolTargets(args: CliArgs): Promise<PoolTarget[]> {
 
 // ─── Replay ───
 
+// Why: window 기반 샘플링된 swaps는 시간 갭이 크므로, 연속 구간끼리 묶어 개별 replay
+function splitIntoWindows(swaps: StoredRealtimeSwap[], maxGapSec = 120): StoredRealtimeSwap[][] {
+  if (swaps.length === 0) return [];
+  const sorted = [...swaps].sort((a, b) => a.timestamp - b.timestamp);
+  const windows: StoredRealtimeSwap[][] = [[]];
+  let current = windows[0];
+  current.push(sorted[0]);
+
+  for (let i = 1; i < sorted.length; i++) {
+    const gap = sorted[i].timestamp - sorted[i - 1].timestamp;
+    if (gap > maxGapSec) {
+      current = [];
+      windows.push(current);
+    }
+    current.push(sorted[i]);
+  }
+
+  return windows.filter((w) => w.length >= 10);
+}
+
 async function runReplay(
   swaps: StoredRealtimeSwap[],
   triggerConfig: MomentumTriggerConfig,
   estimatedCostPct: number,
 ): Promise<PoolReplayResult['replayResult'] | null> {
-  if (swaps.length < 10) {
-    log(`  Skipping replay: only ${swaps.length} swaps`);
+  const windows = splitIntoWindows(swaps);
+  if (windows.length === 0) {
+    log(`  Skipping replay: no valid windows (need 10+ consecutive swaps)`);
     return null;
   }
+
+  log(`  Replay: ${windows.length} windows, sizes: [${windows.map((w) => w.length).join(', ')}]`);
 
   const options: MicroReplayOptions = {
     triggerConfig,
@@ -446,14 +472,45 @@ async function runReplay(
     estimatedCostPct,
   };
 
-  const result = await replayRealtimeDataset(swaps, options);
+  // Window별 replay 후 결과 합산
+  let totalSignals = 0;
+  let sumEdge = 0;
+  let sumReturn = 0;
+  let sumMfe = 0;
+  let sumMae = 0;
+  let windowsWithSignals = 0;
+
+  for (const window of windows) {
+    const result = await replayRealtimeDataset(window, options);
+    const signals = result.summary.totalSignals;
+    totalSignals += signals;
+    if (signals > 0) {
+      windowsWithSignals++;
+      sumEdge += result.summary.assessment.edgeScore;
+      sumReturn += result.summary.avgReturnPct;
+      sumMfe += result.summary.avgMfePct;
+      sumMae += result.summary.avgMaePct;
+    }
+  }
+
+  if (windowsWithSignals === 0) {
+    log(`  No signals across ${windows.length} windows`);
+    return {
+      edgeScore: 10,
+      avgReturnPct: 0,
+      avgMfePct: 0,
+      avgMaePct: 0,
+      decision: 'reject_gate',
+    };
+  }
 
   return {
-    edgeScore: result.summary.assessment.edgeScore,
-    avgReturnPct: result.summary.avgReturnPct,
-    avgMfePct: result.summary.avgMfePct,
-    avgMaePct: result.summary.avgMaePct,
-    decision: result.summary.assessment.decision,
+    edgeScore: sumEdge / windowsWithSignals,
+    avgReturnPct: sumReturn / windowsWithSignals,
+    avgMfePct: sumMfe / windowsWithSignals,
+    avgMaePct: sumMae / windowsWithSignals,
+    decision: sumEdge / windowsWithSignals >= 70 ? 'ready_for_paper'
+      : sumEdge / windowsWithSignals >= 50 ? 'keep_watch' : 'needs_tuning',
   };
 }
 
@@ -494,8 +551,8 @@ function parseArgs(argv: string[]): CliArgs {
     skipReplay: argv.includes('--skip-replay'),
     dryRun: argv.includes('--dry-run'),
     maxTxsPerPool: numArg(argv, '--max-txs-per-pool', 5000),
-    concurrency: numArg(argv, '--concurrency', 5),
-    minIntervalMs: numArg(argv, '--min-interval-ms', 25),
+    concurrency: numArg(argv, '--concurrency', 2),
+    minIntervalMs: numArg(argv, '--min-interval-ms', 200),
   };
 }
 
@@ -578,24 +635,23 @@ async function main() {
     totalCreditUsed += 3; // 3 getAccountInfo calls
     log(`  Program: ${metadata.poolProgram} | Decimals: base=${metadata.baseDecimals} quote=${metadata.quoteDecimals}`);
 
-    // 2. Fetch signatures
-    log('  Fetching signatures...');
-    const signatures = await fetchSignatures(
+    // 2. Fetch recent signatures (최신부터 maxTxsPerPool개)
+    log('  Fetching recent signatures...');
+    const allSignatures = await fetchRecentSignatures(
       connection,
       new PublicKey(target.poolAddress),
-      fromTimestamp,
-      toTimestamp,
       limiter,
+      args.dryRun ? 1000 : args.maxTxsPerPool,
     );
-    totalCreditUsed += Math.ceil(signatures.length / 1000); // ~1 credit per page
-    log(`  Found ${signatures.length} signatures`);
+    totalCreditUsed += Math.ceil(allSignatures.length / 1000);
+    log(`  Collected ${allSignatures.length} signatures`);
 
     if (args.dryRun) {
-      log(`  [dry-run] Skipping transaction fetch (would use ~${signatures.length * 100} credits)`);
+      log(`  [dry-run] Would fetch ${args.maxTxsPerPool} txs = ~${args.maxTxsPerPool * 100} credits`);
       continue;
     }
 
-    if (signatures.length === 0) {
+    if (allSignatures.length === 0) {
       log('  No signatures found, skipping');
       continue;
     }
@@ -604,7 +660,7 @@ async function main() {
     log('  Fetching & parsing transactions...');
     const { swaps, parseFailed, creditEstimate } = await fetchAndParseSwaps(
       connection,
-      signatures,
+      allSignatures,
       target,
       metadata,
       limiter,
@@ -628,7 +684,7 @@ async function main() {
       baseMint: target.baseMint,
       quoteMint: target.quoteMint,
       period: { from: new Date(fromTimestamp * 1000).toISOString(), to: new Date(toTimestamp * 1000).toISOString() },
-      counts: { signatures: signatures.length, swaps: swaps.length, parseFailed },
+      counts: { signatures: allSignatures.length, swaps: swaps.length, parseFailed },
       fetchedAt: new Date().toISOString(),
     };
     await writeFile(path.join(poolDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');

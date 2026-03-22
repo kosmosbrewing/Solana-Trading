@@ -23,6 +23,7 @@ describe('RealtimeAdmissionTracker', () => {
     expect(tracker.getStats('pool-noisy')).toEqual({
       observedNotifications: 50,
       logParsed: 0,
+      fallbackParsed: 0,
       fallbackSkipped: 50,
       parseRatePct: 0,
       skippedRatePct: 100,
@@ -41,12 +42,13 @@ describe('RealtimeAdmissionTracker', () => {
       tracker.recordFallbackSkipped('pool-good');
     }
     tracker.recordLogParsed('pool-good');
-    tracker.recordLogParsed('pool-good');
+    tracker.recordFallbackParsed('pool-good');
 
     expect(tracker.isBlocked('pool-good')).toBe(false);
     expect(tracker.getStats('pool-good')).toEqual({
       observedNotifications: 50,
-      logParsed: 2,
+      logParsed: 1,
+      fallbackParsed: 1,
       fallbackSkipped: 48,
       parseRatePct: 4,
       skippedRatePct: 96,

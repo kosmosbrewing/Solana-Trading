@@ -1,5 +1,5 @@
 import { SOL_MINT } from '../src/utils/constants';
-import { selectRealtimeEligiblePair } from '../src/realtime';
+import { PUMP_SWAP_PROGRAM, selectRealtimeEligiblePair } from '../src/realtime';
 
 function makePair(overrides: Record<string, unknown> = {}) {
   return {
@@ -75,5 +75,21 @@ describe('selectRealtimeEligiblePair', () => {
       eligible: false,
       reason: 'unsupported_pool_program',
     });
+  });
+
+  it('normalizes PumpSwap dex aliases and accepts supported pool owners', () => {
+    const result = selectRealtimeEligiblePair([
+      makePair({
+        dexId: 'pumpfun',
+        pairAddress: 'pair-pump',
+      }),
+    ], new Map([
+      ['pair-pump', PUMP_SWAP_PROGRAM],
+    ]));
+
+    expect(result.eligible).toBe(true);
+    expect(result.reason).toBe('eligible');
+    expect(result.pair?.pairAddress).toBe('pair-pump');
+    expect(result.pair?.dexId).toBe('pumpswap');
   });
 });

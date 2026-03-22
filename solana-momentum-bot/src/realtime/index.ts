@@ -13,11 +13,14 @@ export {
   tryParseSwapFromLogs,
   parseSwapFromTransaction,
   shouldFallbackToTransaction,
+  shouldForceFallbackToTransaction,
   RAYDIUM_V4_PROGRAM,
   RAYDIUM_CLMM_PROGRAM,
   ORCA_WHIRLPOOL_PROGRAM,
   RAYDIUM_ROUTER_PROGRAM,
+  PUMP_SWAP_PROGRAM,
 } from './swapParser';
+export { PUMP_SWAP_DEX_IDS } from './pumpSwapParser';
 export type { HeliusWSConfig, ParsedSwap, RealtimePoolMetadata, SwapSide, SwapSource } from './types';
 export type { StoredRealtimeSwap, StoredMicroCandle, RealtimeReplayManifest } from './replayStore';
 export type { RealtimeEligibilityResult, RealtimePairCandidate } from './realtimeEligibility';

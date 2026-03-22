@@ -100,7 +100,7 @@ async function loadAdmissionSummary(filePath?: string): Promise<RealtimeShadowAd
         pool: entry.pool,
         observedNotifications: entry.observedNotifications,
         parseRatePct: entry.observedNotifications > 0
-          ? Number(((entry.logParsed / entry.observedNotifications) * 100).toFixed(2))
+          ? Number((((entry.logParsed + (entry.fallbackParsed ?? 0)) / entry.observedNotifications) * 100).toFixed(2))
           : 0,
         skippedRatePct: entry.observedNotifications > 0
           ? Number(((entry.fallbackSkipped / entry.observedNotifications) * 100).toFixed(2))

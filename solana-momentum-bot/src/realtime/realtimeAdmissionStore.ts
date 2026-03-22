@@ -42,6 +42,7 @@ function isSnapshotEntry(value: unknown): value is RealtimeAdmissionSnapshotEntr
   return typeof candidate.pool === 'string'
     && typeof candidate.observedNotifications === 'number'
     && typeof candidate.logParsed === 'number'
+    && (candidate.fallbackParsed == null || typeof candidate.fallbackParsed === 'number')
     && typeof candidate.fallbackSkipped === 'number'
     && typeof candidate.blocked === 'boolean';
 }

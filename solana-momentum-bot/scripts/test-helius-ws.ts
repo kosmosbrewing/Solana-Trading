@@ -10,6 +10,10 @@ interface CliOptions {
   rpcHttpUrl: string;
   rpcWsUrl: string;
   maxSubscriptions: number;
+  fallbackConcurrency: number;
+  fallbackRequestsPerSecond: number;
+  fallbackBatchSize: number;
+  maxFallbackQueue: number;
   verbose: boolean;
   dexId?: string;
   baseMint?: string;
@@ -36,6 +40,10 @@ async function main() {
     rpcHttpUrl: options.rpcHttpUrl,
     rpcWsUrl: options.rpcWsUrl,
     maxSubscriptions: options.maxSubscriptions,
+    fallbackConcurrency: options.fallbackConcurrency,
+    fallbackRequestsPerSecond: options.fallbackRequestsPerSecond,
+    fallbackBatchSize: options.fallbackBatchSize,
+    maxFallbackQueue: options.maxFallbackQueue,
   });
   if (options.dexId && options.baseMint && options.quoteMint) {
     for (const pool of options.pools) {
@@ -164,6 +172,10 @@ function parseArgs(args: string[]): CliOptions {
     rpcHttpUrl,
     rpcWsUrl,
     maxSubscriptions: Math.max(pools.length, numArg(args, '--max-subscriptions', pools.length)),
+    fallbackConcurrency: numArg(args, '--fallback-concurrency', 2),
+    fallbackRequestsPerSecond: numArg(args, '--fallback-rps', 4),
+    fallbackBatchSize: numArg(args, '--fallback-batch-size', 5),
+    maxFallbackQueue: numArg(args, '--max-fallback-queue', 1000),
     verbose: args.includes('--verbose'),
     dexId: getArg(args, '--dex-id'),
     baseMint: getArg(args, '--base-mint'),
@@ -231,6 +243,10 @@ Options:
   --http-url <url>             Override HTTP RPC URL (default: SOLANA_RPC_URL)
   --ws-url <url>               Override WebSocket RPC URL (default: HELIUS_WS_URL or derived from HTTP URL)
   --max-subscriptions <n>      Subscription cap passed to HeliusWSIngester
+  --fallback-concurrency <n>   Transaction fallback concurrency (default: 2)
+  --fallback-rps <n>           Transaction fallback requests/sec (default: 4)
+  --fallback-batch-size <n>    Transactions fetched per fallback RPC call (default: 5)
+  --max-fallback-queue <n>     Max queued fallback tx fetches (default: 1000)
   --dex-id <id>                Optional pool dexId metadata (ex: raydium)
   --base-mint <address>        Optional base token mint for log-only parsing
   --quote-mint <address>       Optional quote token mint for log-only parsing

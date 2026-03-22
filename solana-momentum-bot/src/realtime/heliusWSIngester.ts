@@ -5,6 +5,7 @@ import { createModuleLogger } from '../utils/logger';
 import { HeliusWSConfig, ParsedSwap, RealtimePoolMetadata } from './types';
 import {
   parseSwapFromTransaction,
+  shouldForceFallbackToTransaction,
   shouldFallbackToTransaction,
   tryParseSwapFromLogs,
 } from './swapParser';
@@ -16,6 +17,7 @@ export class HeliusWSIngester extends EventEmitter {
   private readonly maxSubscriptions: number;
   private readonly fallbackConcurrency: number;
   private readonly fallbackRequestsPerSecond: number;
+  private readonly fallbackBatchSize: number;
   private readonly maxFallbackQueue: number;
   private readonly subscriptions = new Map<string, number>();
   private readonly poolMetadata = new Map<string, RealtimePoolMetadata>();
@@ -24,6 +26,7 @@ export class HeliusWSIngester extends EventEmitter {
   private readonly pendingFallbacks = new Set<string>();
   private readonly fallbackStartsAt: number[] = [];
   private inFlightFallbacks = 0;
+  private batchFallbackSupported = true;
   private fallbackTimer?: NodeJS.Timeout;
   private lastRateLimitWarnAt = 0;
 
@@ -36,6 +39,7 @@ export class HeliusWSIngester extends EventEmitter {
     this.maxSubscriptions = config.maxSubscriptions;
     this.fallbackConcurrency = config.fallbackConcurrency ?? 2;
     this.fallbackRequestsPerSecond = config.fallbackRequestsPerSecond ?? 4;
+    this.fallbackBatchSize = Math.max(1, config.fallbackBatchSize ?? 5);
     this.maxFallbackQueue = config.maxFallbackQueue ?? 200;
   }
 
@@ -120,7 +124,7 @@ export class HeliusWSIngester extends EventEmitter {
     }
 
     this.emit('parseMiss', { pool, signature: logs.signature, slot });
-    if (!shouldFallbackToTransaction(logs.logs)) {
+    if (!shouldForceFallbackToTransaction(poolMetadata) && !shouldFallbackToTransaction(logs.logs)) {
       this.emit('fallbackSkipped', { pool, signature: logs.signature, reason: 'not_swap_like' });
       return;
     }
@@ -161,21 +165,27 @@ export class HeliusWSIngester extends EventEmitter {
       this.inFlightFallbacks < this.fallbackConcurrency &&
       this.fallbackStartsAt.length < this.fallbackRequestsPerSecond
     ) {
-      const next = this.fallbackQueue.shift()!;
+      const batchSize = this.batchFallbackSupported ? this.fallbackBatchSize : 1;
+      const batch = this.fallbackQueue.splice(0, batchSize);
       this.inFlightFallbacks += 1;
       this.fallbackStartsAt.push(Date.now());
-      this.emit('fallbackAttempt', { pool: next.pool, signature: next.signature });
+      for (const next of batch) {
+        this.emit('fallbackAttempt', { pool: next.pool, signature: next.signature });
+      }
 
-      void this.enrichSwapFromTx(next.pool, next.signature, next.slot)
-        .then((fallback) => {
-          if (fallback) {
-            this.emit('fallbackResult', {
-              pool: next.pool,
-              signature: next.signature,
-              outcome: 'parsed',
-            });
-            this.emitSwap(fallback);
-          } else {
+      void this.enrichSwapsFromTxBatch(batch)
+        .then((results) => {
+          for (const next of batch) {
+            const fallback = results.get(`${next.pool}:${next.signature}`) ?? null;
+            if (fallback) {
+              this.emit('fallbackResult', {
+                pool: next.pool,
+                signature: next.signature,
+                outcome: 'parsed',
+              });
+              this.emitSwap(fallback);
+              continue;
+            }
             this.emit('fallbackResult', {
               pool: next.pool,
               signature: next.signature,
@@ -183,9 +193,27 @@ export class HeliusWSIngester extends EventEmitter {
             });
           }
         })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          const isRateLimited = message.includes('429');
+          if (!isRateLimited || Date.now() - this.lastRateLimitWarnAt > 5000) {
+            log.warn(`Swap fallback batch failed: ${error}`);
+            this.lastRateLimitWarnAt = Date.now();
+          }
+          for (const next of batch) {
+            this.emit('error', { pool: next.pool, error });
+            this.emit('fallbackResult', {
+              pool: next.pool,
+              signature: next.signature,
+              outcome: 'error',
+            });
+          }
+        })
         .finally(() => {
           this.inFlightFallbacks -= 1;
-          this.pendingFallbacks.delete(`${next.pool}:${next.signature}`);
+          for (const next of batch) {
+            this.pendingFallbacks.delete(`${next.pool}:${next.signature}`);
+          }
           this.processFallbackQueue();
         });
     }
@@ -203,37 +231,72 @@ export class HeliusWSIngester extends EventEmitter {
     }
   }
 
-  private async enrichSwapFromTx(
-    pool: string,
-    signature: string,
-    slot: number
-  ): Promise<ParsedSwap | null> {
-    try {
-      const tx = await this.connection.getParsedTransaction(signature, {
-        commitment: 'confirmed',
-        maxSupportedTransactionVersion: 0,
-      });
-      if (!tx) return null;
-      return parseSwapFromTransaction(tx, {
-        poolAddress: pool,
-        signature,
-        slot,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const isRateLimited = message.includes('429');
-      if (!isRateLimited || Date.now() - this.lastRateLimitWarnAt > 5000) {
-        log.warn(`Swap fallback failed for ${pool}: ${error}`);
-        this.lastRateLimitWarnAt = Date.now();
-        this.emit('error', { pool, error });
+  private async enrichSwapsFromTxBatch(
+    batch: Array<{ pool: string; signature: string; slot: number }>
+  ): Promise<Map<string, ParsedSwap | null>> {
+    let txs;
+    if (!this.batchFallbackSupported || batch.length === 1) {
+      txs = await Promise.all(batch.map((entry) => this.fetchParsedTransaction(entry.signature)));
+    } else {
+      try {
+        txs = await this.connection.getParsedTransactions(
+          batch.map((entry) => entry.signature),
+          {
+            commitment: 'confirmed',
+            maxSupportedTransactionVersion: 0,
+          }
+        );
+      } catch (error) {
+        if (this.isBatchUnsupportedError(error)) {
+          this.batchFallbackSupported = false;
+          log.info('Parsed transaction batch RPC unavailable on current plan; falling back to single-request mode');
+          txs = await Promise.all(batch.map((entry) => this.fetchParsedTransaction(entry.signature)));
+        } else {
+          throw error;
+        }
       }
-      this.emit('fallbackResult', {
-        pool,
-        signature,
-        outcome: 'error',
-      });
-      return null;
     }
+
+    const metadataCache = new Map<string, RealtimePoolMetadata | undefined>();
+    const results = new Map<string, ParsedSwap | null>();
+
+    for (let index = 0; index < batch.length; index += 1) {
+      const entry = batch[index];
+      const tx = txs[index];
+      if (!tx) {
+        results.set(`${entry.pool}:${entry.signature}`, null);
+        continue;
+      }
+
+      if (!metadataCache.has(entry.pool)) {
+        metadataCache.set(entry.pool, await this.resolvePoolMetadata(entry.pool));
+      }
+      const poolMetadata = metadataCache.get(entry.pool);
+      results.set(
+        `${entry.pool}:${entry.signature}`,
+        parseSwapFromTransaction(tx, {
+          poolAddress: entry.pool,
+          signature: entry.signature,
+          slot: entry.slot,
+          poolMetadata,
+        })
+      );
+    }
+
+    return results;
+  }
+
+  private fetchParsedTransaction(signature: string) {
+    return this.connection.getParsedTransaction(signature, {
+      commitment: 'confirmed',
+      maxSupportedTransactionVersion: 0,
+    });
+  }
+
+  private isBatchUnsupportedError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.includes('Batch requests are only available for paid plans')
+      || message.includes('code":-32403');
   }
 
   private emitSwap(swap: ParsedSwap): void {

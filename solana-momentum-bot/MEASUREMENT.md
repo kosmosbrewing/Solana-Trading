@@ -419,7 +419,81 @@ Paper는 아래와 같이 본다.
 
 ---
 
-## 현재 권장 해석
+## Current Status (2026-03-22)
+
+### 전체 진행 상황
+
+```text
+[완료] 5m CSV backtest (7일 × 10 tokens, 51 trades, WR 43%)
+[완료] Parameter sweep (2000 combos, 최적 파라미터 적용)
+[완료] Realtime pipeline 구현 (Helius WS → swap → candle → trigger → outcome)
+[완료] Realtime shadow runner 구현 (session 실행 → export → summary)
+[실패] Historical swap backfill 시도 (아래 상세)
+[진행] Realtime shadow 24h 실행 (PID 34576, signal 축적 중)
+[대기] Paper 50 trades 검증 (VPS 인프라 대기)
+```
+
+### Historical Swap Backfill 시도 결과 (2026-03-22)
+
+Helius RPC로 과거 온체인 swap을 수집해 micro replay하려 했으나 3가지 블로커로 중단.
+
+| 블로커 | 상세 | 영향 |
+|--------|------|------|
+| Parser 호환성 | `swapParser.ts`가 PumpSwap(Pump.fun AMM) 미지원 | GeckoTerminal trending 밈코인 대부분이 PumpSwap, 파싱 성공률 <1% |
+| API 시간 필터 불가 | `getSignaturesForAddress`에 timestamp 필터 없음 | 하루 118K sigs를 전체 순회해야 특정 시간대 도달, 풀당 30분+ |
+| 크레딧 비용 | 활성 풀 하루 100K+ txs × 100 credits/tx | 1풀 = 10M+ credits, 월 한도 초과 |
+
+추가 발견:
+
+- 균등 샘플링 → candle sparse (swap 간격 43초, 15초봉에 0~1개) → trigger 발화 불가
+- Window 기반 연속 샘플링 → window당 300 swaps = 3.5분, trigger의 최소 요구 8분 미달
+- Top pools (SOL/USDC 등) → 가격 변동 <1%, momentum breakout 없음
+
+결론:
+
+- `fetch-historical-swaps.ts` 스크립트는 구현 완료 (tsc 0 errors)
+- 실전 실행에서 비실용적 → **Realtime shadow로 전환**이 올바른 판단
+- PumpSwap parser 추가 시 Raydium 외 풀도 커버 가능하나 우선순위 낮음
+
+### Realtime Shadow 현황 (2026-03-22 19:27 KST~)
+
+| 항목 | 값 | 비고 |
+|------|-----|------|
+| 실행 모드 | 로컬 background (nohup) | PID 34576 |
+| 목표 | 1440분 (24h) or 100 signals | 먼저 도달하는 조건에서 종료 |
+| Scanner watchlist | 8 pools | CHIBI, DABURYU, TERAFAB 등 |
+| Helius WS | 1 subscription active | realtime swap 수신 중 |
+| 이전 최고 기록 | 197 swaps, 63 candles, 2 signals | 2026-03-22 이전 session |
+
+확인 명령:
+
+```bash
+# Signal 축적 현황
+find data/realtime-sessions -name "realtime-signals.jsonl" -exec wc -l {} \;
+
+# 프로세스 상태
+ps aux | grep realtime-shadow
+
+# 최근 로그
+tail -20 data/shadow-stdout.log
+```
+
+### Edge 검증 경로 정리
+
+```text
+현재 위치:
+  5m backtest → 후보 압축 완료 (volume_spike 1순위)
+  realtime shadow → signal 축적 중 (목표: 100 signals)
+  historical backfill → 중단 (비실용적)
+
+다음 단계:
+  1. shadow 24h 완료 → micro-backtest로 edge score 산출
+  2. signals >= 50 → trigger density / rejection mix 분석
+  3. edge score >= 70 → VPS paper 50 trades 진행
+  4. paper 50 trades 통과 → live 전환 판단
+```
+
+### 현재 권장 해석
 
 현재 7일 데이터셋은:
 
@@ -433,5 +507,6 @@ Paper는 아래와 같이 본다.
 ```text
 7일 스윕 = ranking
 30~90일 스윕 = validation
+realtime shadow = trigger edge 검증
 paper 50 trades = go/no-go
 ```

@@ -1,6 +1,6 @@
 # Trading Strategy — Quick Reference
 
-> Last updated: 2026-03-19
+> Last updated: 2026-03-22
 > Mission: 1 SOL → 100 SOL
 > 상세 기술 문서: `docs/product-specs/strategy-catalog.md`
 
@@ -21,15 +21,18 @@
 
 ### Strategy A: Volume Spike Breakout (`volume_spike`) — 코어
 
-5분봉 20봉 최고가 돌파 + 거래량 3배 이상 급증 시 진입.
+5분봉 20봉 최고가 돌파 + 거래량 급증 시 진입.
 
 ```
-진입: volume ≥ avg[20] × 3.0 AND close > highestHigh[20]
+진입: volume ≥ avg[20] × 2.5 AND close > highestHigh[20]
 SL:   현재 캔들 저가
 TP1:  entry + ATR(20) × 1.5  → 50% 청산, SL → 손익분기
-TP2:  entry + ATR(20) × 2.5  → 전량 청산
+TP2:  entry + ATR(20) × 3.5  → 전량 청산
 Time: 30분
 ```
+
+> **파라미터 스윕 변경 (2026-03-20):** volumeMultiplier 3.0→2.5, tp2 2.5→3.5.
+> 10 tokens × 2000 combos cross-validation, AvgSharpe 16.57, 6/8 positive tokens.
 
 **스코어 (0–100):** Volume(25) + BuyRatio(25) + MultiTF(20) + Whale(15) + LP(-10~15) + McapVol(10)
 **등급:** A(≥70) / B(≥50) / C(<50, 거부) — `min(100, total)` 캡
@@ -47,6 +50,30 @@ Time: 60분
 ```
 
 **스코어 (0–100):** Impulse(25) + FibPrecision(25) + VolClimax(20) + Reclaim(15) + LP(-10~15)
+
+### Realtime Micro-Candle Trigger (`MomentumTrigger`) — 검증 중
+
+5분봉 대신 **15초 마이크로캔들**로 실시간 모멘텀 감지. Helius WebSocket으로 온체인 swap을 직접 수신하여 캔들 생성.
+
+```
+Primary:  15s candle — volume surge 감지 (lookback 20봉 × 2.5배)
+Confirm:  60s candle — 확인봉 3개 중 2개 양봉 + 최소 +0.3% 가격 변동
+Trigger:  primary surge + confirm breakout → Signal 발행
+```
+
+**핵심 차이 (vs 5분봉):**
+- 응답 속도: 5분 → 15초 (20x 빠른 감지)
+- 데이터 소스: Birdeye API → Helius WS (온체인 직접)
+- 캔들 구성: OHLCV 집계 → swap 이벤트 기반 실시간 빌드
+- 최소 데이터: volumeLookback(20) × 15s + confirmBars(3) × 60s = **8분**
+
+**검증 상태 (2026-03-22):**
+- 구현 완료: `MomentumTrigger`, `MicroCandleBuilder`, `heliusWSIngester`
+- Realtime Shadow 실행 중 (24h, 목표 100 signals)
+- Edge Score 미확정 — shadow 완료 후 `micro-backtest.ts`로 측정 예정
+
+> 관련 코드: `src/strategy/momentumTrigger.ts`, `src/realtime/microCandleBuilder.ts`
+> 설정: `REALTIME_ENABLED=true`, `REALTIME_PRIMARY_INTERVAL_SEC=15`, `REALTIME_CONFIRM_INTERVAL_SEC=60`
 
 ### Strategy D: New LP Sniper (`new_lp_sniper`) — 실험 (sandbox)
 
@@ -205,7 +232,7 @@ LP/ownership 감산과 곱셈 누적.
 
 | 파라미터 | 기본값 | 비고 |
 |---------|--------|------|
-| `volumeSpikeMultiplier` | 3.0 | Strategy A 진입 배수 |
+| `volumeSpikeMultiplier` | 2.5 | Strategy A 진입 배수 (sweep: 3.0→2.5) |
 | `volumeSpikeLookback` | 20 | 평균 볼륨 윈도우 |
 | `minBreakoutScore` | 50 | 최소 통과 점수 |
 | `minBuyRatio` | 0.65 | 최소 매수 비율 |
@@ -247,6 +274,28 @@ LP/ownership 감산과 곱셈 누적.
 | `impactTier1MaxImpact` | 0.015 | Impact 축소값 (1.5%) |
 | `impactTier2Sol` | 20 | Impact 추가 축소 equity |
 | `impactTier2MaxImpact` | 0.01 | Impact 추가 축소값 (1%) |
+| **Realtime 파라미터** | | |
+| `REALTIME_ENABLED` | false | Realtime micro-candle 활성화 |
+| `REALTIME_PRIMARY_INTERVAL_SEC` | 15 | 마이크로캔들 주기 (초) |
+| `REALTIME_CONFIRM_INTERVAL_SEC` | 60 | 확인봉 주기 (초) |
+| `REALTIME_VOLUME_SURGE_LOOKBACK` | 20 | 볼륨 평균 윈도우 (봉 수) |
+| `REALTIME_VOLUME_SURGE_MULTIPLIER` | 2.5 | 볼륨 서지 배수 |
+| `REALTIME_CONFIRM_BARS` | 3 | 확인봉 필요 수 |
+| `REALTIME_CONFIRM_BULLISH_RATIO` | 0.6 | 확인봉 양봉 비율 |
+| `REALTIME_MIN_PRICE_CHANGE_PCT` | 0.003 | 확인봉 최소 가격 변동 (0.3%) |
+
+---
+
+## 검증 현황 (2026-03-22)
+
+| 항목 | 상태 | 비고 |
+|------|------|------|
+| 5분봉 CSV 백테스트 | 완료 | 7/10 토큰, WR 43%, PnL +1.2% |
+| 파라미터 스윕 | 완료 | 10 tokens × 2000 combos, 최적 파라미터 적용 |
+| Historical Swap 백필 | 실패 | PumpSwap 파서 미지원 + API 시간필터 부재 |
+| Realtime Shadow | 진행 중 | 24h 실행, 목표 100 signals |
+| Paper 50-trade 검증 | 대기 | VPS 인프라 셋업 후 시작 (SOL-39) |
+| 라이브 전환 | 대기 | Paper 검증 완료 후 |
 
 ---
 

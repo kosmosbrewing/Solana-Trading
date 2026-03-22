@@ -1,5 +1,6 @@
 import { SOL_MINT } from '../utils/constants';
-import { ORCA_WHIRLPOOL_PROGRAM, RAYDIUM_CLMM_PROGRAM, RAYDIUM_V4_PROGRAM } from './swapParser';
+import { ORCA_WHIRLPOOL_PROGRAM, PUMP_SWAP_PROGRAM, RAYDIUM_CLMM_PROGRAM, RAYDIUM_V4_PROGRAM } from './swapParser';
+import { isPumpSwapDexId } from './pumpSwapParser';
 
 export interface RealtimePairCandidate {
   dexId: string;
@@ -15,10 +16,13 @@ export interface RealtimeEligibilityResult<T extends RealtimePairCandidate> {
   reason: string;
 }
 
-export const SUPPORTED_REALTIME_DEX_IDS = new Set(['raydium', 'orca']);
+export const SUPPORTED_REALTIME_DEX_IDS = new Set(['raydium', 'orca', 'pumpswap', 'pumpfun', 'pump-swap']);
 export const SUPPORTED_REALTIME_POOL_PROGRAMS = new Map<string, Set<string>>([
   ['raydium', new Set([RAYDIUM_V4_PROGRAM, RAYDIUM_CLMM_PROGRAM])],
   ['orca', new Set([ORCA_WHIRLPOOL_PROGRAM])],
+  ['pumpswap', new Set([PUMP_SWAP_PROGRAM])],
+  ['pumpfun', new Set([PUMP_SWAP_PROGRAM])],
+  ['pump-swap', new Set([PUMP_SWAP_PROGRAM])],
 ]);
 
 export function selectRealtimeEligiblePair<T extends RealtimePairCandidate>(
@@ -29,7 +33,12 @@ export function selectRealtimeEligiblePair<T extends RealtimePairCandidate>(
     return { eligible: false, reason: 'no_pairs' };
   }
 
-  const supportedDexPairs = pairs.filter((pair) => SUPPORTED_REALTIME_DEX_IDS.has(pair.dexId));
+  const normalizedPairs = pairs.map((pair) => ({
+    ...pair,
+    dexId: normalizeDexId(pair.dexId),
+  }));
+
+  const supportedDexPairs = normalizedPairs.filter((pair) => SUPPORTED_REALTIME_DEX_IDS.has(pair.dexId));
   if (supportedDexPairs.length === 0) {
     return { eligible: false, reason: 'unsupported_dex' };
   }
@@ -64,4 +73,8 @@ export function selectRealtimeEligiblePair<T extends RealtimePairCandidate>(
     pair: ranked[0],
     reason: 'eligible',
   };
+}
+
+function normalizeDexId(dexId: string): string {
+  return isPumpSwapDexId(dexId) ? 'pumpswap' : dexId;
 }

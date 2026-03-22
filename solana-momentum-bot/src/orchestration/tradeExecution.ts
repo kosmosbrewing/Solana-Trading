@@ -214,6 +214,30 @@ export function shouldActivateRunner(
   return { activate: false, sizeMultiplier: 0 };
 }
 
+async function loadTradeMonitoringSnapshot(
+  trade: Trade,
+  ctx: BotContext
+): Promise<{ trade: Trade; recentCandles: Candle[]; currentPrice: number } | undefined> {
+  const recentCandles = await ctx.candleStore.getRecentCandles(
+    trade.pairAddress,
+    300,
+    10
+  );
+  const realtimePrice = ctx.realtimeCandleBuilder?.getCurrentPrice(trade.pairAddress) ?? null;
+  const candlePrice = recentCandles[recentCandles.length - 1]?.close;
+  const currentPrice = realtimePrice ?? candlePrice;
+
+  if (currentPrice == null) {
+    return undefined;
+  }
+
+  return {
+    trade,
+    recentCandles,
+    currentPrice,
+  };
+}
+
 export async function checkOpenPositions(ctx: BotContext): Promise<void> {
   const balanceSol = ctx.tradingMode === 'paper' && ctx.paperBalance != null
     ? ctx.paperBalance
@@ -228,19 +252,9 @@ export async function checkOpenPositions(ctx: BotContext): Promise<void> {
     return;
   }
 
-  const monitoredTrades = await Promise.all(openTrades.map(async trade => {
-    const recentCandles = await ctx.candleStore.getRecentCandles(
-      trade.pairAddress,
-      300,
-      10
-    );
-    if (recentCandles.length === 0) return undefined;
-    return {
-      trade,
-      recentCandles,
-      currentPrice: recentCandles[recentCandles.length - 1].close,
-    };
-  }));
+  const monitoredTrades = await Promise.all(
+    openTrades.map((trade) => loadTradeMonitoringSnapshot(trade, ctx))
+  );
   const activeTrades = monitoredTrades.filter((item): item is NonNullable<typeof item> => !!item);
   const portfolioWithUnrealized = ctx.riskManager.applyUnrealizedDrawdown(
     portfolio,
@@ -352,6 +366,12 @@ export async function checkOpenPositions(ctx: BotContext): Promise<void> {
     }
 
     if (trade.trailingStop && recentCandles.length >= 8) {
+      // Why: 진입 직후 adaptive stop = entryPrice가 되어 즉시 청산되는 문제 방지
+      // 최소 1봉(5분) 보유 후에만 trailing stop 평가
+      const minTrailingHoldMs = config.defaultTimeframe * 1000; // 1봉 = 300s
+      const trailingHoldDuration = Date.now() - trade.createdAt.getTime();
+      if (trailingHoldDuration < minTrailingHoldMs) continue;
+
       const atr = calcATR(recentCandles, 7);
       const recentPeak = Math.max(...recentCandles.map(c => c.high));
       const peakPrice = Math.max(trade.highWaterMark ?? trade.entryPrice, recentPeak);
@@ -359,7 +379,9 @@ export async function checkOpenPositions(ctx: BotContext): Promise<void> {
         await ctx.tradeStore.updateHighWaterMark(trade.id, peakPrice);
         trade.highWaterMark = peakPrice;
       }
-      const adaptiveStop = calcAdaptiveTrailingStop(recentCandles, atr, trade.entryPrice, peakPrice);
+      // Why: TP1 후 잔여 trade는 SL이 entryPrice로 올라감 → tp1Hit 근사 판별
+      const tp1Hit = trade.stopLoss >= trade.entryPrice;
+      const adaptiveStop = calcAdaptiveTrailingStop(recentCandles, atr, trade.entryPrice, peakPrice, trade.stopLoss, tp1Hit);
 
       if (currentPrice <= adaptiveStop && currentPrice > trade.stopLoss) {
         log.info(`Adaptive trailing stop triggered for trade ${trade.id} at ${currentPrice}`);

@@ -1,7 +1,13 @@
 import { Pool } from 'pg';
 import path from 'path';
 import dotenv from 'dotenv';
-import { buildPaperValidationReport, PaperValidationSignal, PaperValidationTrade } from '../src/reporting';
+import {
+  buildPaperValidationReport,
+  PaperValidationSignal,
+  PaperValidationTrade,
+  summarizeRealtimeSignals,
+} from '../src/reporting';
+import { RealtimeReplayStore } from '../src/realtime';
 
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
@@ -10,12 +16,6 @@ async function main() {
   if (args.includes('--help')) {
     printHelp();
     process.exit(0);
-  }
-
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) {
-    console.error('DATABASE_URL not set. paper-report requires a populated paper-mode database.');
-    process.exit(1);
   }
 
   const pairAddress = getArg(args, '--pair');
@@ -27,29 +27,57 @@ async function main() {
   const initialBalance = numArg(args, '--initial-balance', 10);
   const maxDrawdownPct = numArg(args, '--max-drawdown', 0.3);
   const recoveryPct = numArg(args, '--recovery-pct', 0.85);
+  const realtimeDir = getArg(args, '--realtime-dir') || process.env.REALTIME_DATA_DIR;
+  const realtimeHorizon = numArg(args, '--realtime-horizon', 180);
+  const skipDb = args.includes('--skip-db');
   const asJson = args.includes('--json');
 
-  const pool = new Pool({ connectionString: databaseUrl });
-  try {
-    const trades = await loadPaperTrades(pool, pairAddress, start, end);
-    const signals = await loadSignals(pool, pairAddress, start, end);
-    const report = buildPaperValidationReport(trades, signals, {
-      initialBalance,
-      minTrades,
-      minWinRate,
-      minRewardRisk,
-      maxDrawdownPct,
-      recoveryPct,
-    });
+  const databaseUrl = skipDb ? '' : process.env.DATABASE_URL;
+  let report: ReturnType<typeof buildPaperValidationReport> | null = null;
+  if (databaseUrl) {
+    const pool = new Pool({ connectionString: databaseUrl });
+    try {
+      const trades = await loadPaperTrades(pool, pairAddress, start, end);
+      const signals = await loadSignals(pool, pairAddress, start, end);
+      report = buildPaperValidationReport(trades, signals, {
+        initialBalance,
+        minTrades,
+        minWinRate,
+        minRewardRisk,
+        maxDrawdownPct,
+        recoveryPct,
+      });
+    } finally {
+      await pool.end();
+    }
+  }
 
-    if (asJson) {
+  const realtimeSummary = realtimeDir
+    ? await loadRealtimeSummary(realtimeDir, realtimeHorizon)
+    : null;
+
+  if (!report && !realtimeSummary) {
+    console.error('No paper DB report or realtime dataset available. Set DATABASE_URL and/or --realtime-dir.');
+    process.exit(1);
+  }
+
+  if (asJson) {
+    if (report && !realtimeSummary) {
       console.log(JSON.stringify(report, null, 2));
       return;
     }
+    console.log(JSON.stringify({
+      paper: report,
+      realtime: realtimeSummary,
+    }, null, 2));
+    return;
+  }
 
+  if (report) {
     printReport(report, { pairAddress, start, end, minTrades, minWinRate, minRewardRisk });
-  } finally {
-    await pool.end();
+  }
+  if (realtimeSummary && realtimeDir) {
+    printRealtimeSummary(realtimeSummary, realtimeHorizon, realtimeDir);
   }
 }
 
@@ -126,21 +154,53 @@ function printReport(
   console.log(`Win Rate: ${(report.winRate * 100).toFixed(2)}% (target ${(context.minWinRate * 100).toFixed(0)}%)`);
   console.log(`Reward/Risk: ${fmtNumber(report.rewardRisk)} (target ${context.minRewardRisk.toFixed(2)})`);
   console.log(`Net PnL: ${report.netPnl.toFixed(6)} SOL`);
+  console.log(`Net PnL %: ${(report.netPnlPct * 100).toFixed(2)}%`);
+  console.log(`Profit Factor: ${fmtNumber(report.profitFactor)} | Sharpe: ${fmtNumber(report.sharpeRatio)} | ExpR: ${fmtNumber(report.expectancyR)}`);
+  console.log(`Edge Score: ${report.edgeScore.toFixed(1)} | Decision: ${report.edgeDecision} | Gate: ${report.edgeGateStatus}`);
   console.log(`Signals: executed=${report.executedSignals} filtered=${report.filteredSignals}`);
-  console.log(`EventScore filters(no_event_context): ${report.noEventContextFiltered}`);
+  console.log(`Trend/Event filters: ${report.notTrendingFiltered}`);
   console.log(`Drawdown guard filters: ${report.drawdownGuardFiltered}`);
   console.log(`Max realized drawdown: ${(report.maxRealizedDrawdownPct * 100).toFixed(2)}%`);
   console.log(`Phase 2 ready: ${report.criteria.phase2Ready ? 'YES' : 'NO'}`);
+  if (report.edgeGateReasons.length > 0) {
+    console.log(`Edge gate reasons: ${report.edgeGateReasons.join(', ')}`);
+  }
   console.log('-'.repeat(72));
   for (const stat of report.strategyStats) {
     console.log(
       `${stat.strategy}: trades=${stat.totalTrades}, winRate=${(stat.winRate * 100).toFixed(2)}%, ` +
-      `R:R=${fmtNumber(stat.rewardRisk)}, netPnl=${stat.netPnl.toFixed(6)} SOL`
+      `R:R=${fmtNumber(stat.rewardRisk)}, PF=${fmtNumber(stat.profitFactor)}, ExpR=${fmtNumber(stat.expectancyR)}, netPnl=${stat.netPnl.toFixed(6)} SOL`
     );
   }
   console.log('-'.repeat(72));
-  console.log(`Observed EventScore gate: ${report.criteria.eventScoreGateObserved ? 'YES' : 'NO'}`);
+  console.log(`Observed Attention gate: ${report.criteria.attentionGateObserved ? 'YES' : 'NO'}`);
   console.log(`Observed DrawdownGuard halt: ${report.criteria.drawdownGuardObserved ? 'YES' : 'NO'}`);
+}
+
+async function loadRealtimeSummary(realtimeDir: string, horizonSec: number) {
+  const store = new RealtimeReplayStore(path.resolve(realtimeDir));
+  const records = await store.loadSignals();
+  if (records.length === 0) return null;
+  return summarizeRealtimeSignals(records, horizonSec);
+}
+
+function printRealtimeSummary(
+  summary: ReturnType<typeof summarizeRealtimeSignals>,
+  horizonSec: number,
+  realtimeDir: string
+) {
+  console.log('\nRealtime Shadow Summary');
+  console.log('='.repeat(72));
+  console.log(`Dir: ${path.resolve(realtimeDir)}`);
+  console.log(`Signals: total=${summary.totalSignals} executed=${summary.executedSignals} gateRejected=${summary.gateRejectedSignals}`);
+  console.log(`Horizon: ${horizonSec}s | Avg Return: ${(summary.avgReturnPct * 100).toFixed(2)}% | Avg Adj Return: ${(summary.avgAdjustedReturnPct * 100).toFixed(2)}%`);
+  console.log(`Avg MFE: ${(summary.avgMfePct * 100).toFixed(2)}% | Avg MAE: ${(summary.avgMaePct * 100).toFixed(2)}%`);
+  console.log(`Gate latency avg=${summary.avgGateLatencyMs.toFixed(1)}ms p50=${summary.p50GateLatencyMs.toFixed(1)}ms p95=${summary.p95GateLatencyMs.toFixed(1)}ms`);
+  console.log(`Signal->fill avg=${summary.avgSignalToFillLatencyMs.toFixed(1)}ms p50=${summary.p50SignalToFillLatencyMs.toFixed(1)}ms p95=${summary.p95SignalToFillLatencyMs.toFixed(1)}ms`);
+  console.log(`Edge Score: ${summary.assessment.edgeScore.toFixed(1)} | Decision: ${summary.assessment.decision} | Gate: ${summary.assessment.gateStatus}`);
+  if (summary.assessment.gateReasons.length > 0) {
+    console.log(`Edge gate reasons: ${summary.assessment.gateReasons.join(', ')}`);
+  }
 }
 
 function getArg(args: string[], flag: string): string | undefined {
@@ -193,11 +253,15 @@ Options:
   --initial-balance <sol>   Starting balance for drawdown replay (default: 10)
   --max-drawdown <ratio>    DrawdownGuard threshold (default: 0.3)
   --recovery-pct <ratio>    DrawdownGuard recovery ratio (default: 0.85)
+  --realtime-dir <path>     Optional realtime shadow dataset directory
+  --realtime-horizon <sec>  Realtime summary horizon in seconds (default: 180)
+  --skip-db                 Ignore DATABASE_URL and print realtime-only report if available
   --json                    Print machine-readable report
 
 Notes:
   - Trades are filtered to status='CLOSED' and tx_signature='PAPER_TRADE'.
   - signal_audit_log has no mode column, so run this against a paper-only DB or a clean time window.
+  - If DATABASE_URL is missing, realtime-only summary can still be printed with --realtime-dir.
 `);
 }
 

@@ -1,5 +1,5 @@
 import { GateEvaluationResult, evaluateExecutionViabilityForOrder } from '../gate';
-import { buildFibPullbackOrder, buildVolumeSpikeOrder } from '../strategy';
+import { buildFibPullbackOrder, buildMomentumTriggerOrder, buildVolumeSpikeOrder } from '../strategy';
 import { checkStaleSignal } from '../state';
 import { config } from '../utils/config';
 import { createModuleLogger } from '../utils/logger';
@@ -9,12 +9,30 @@ import { BotContext } from './types';
 
 const log = createModuleLogger('SignalProcessor');
 
+export interface SignalProcessingResult {
+  status:
+    | 'executed_paper'
+    | 'executed_live'
+    | 'execution_failed'
+    | 'gate_rejected'
+    | 'trading_halted'
+    | 'execution_lock'
+    | 'stale'
+    | 'risk_rejected'
+    | 'regime_blocked'
+    | 'wallet_limit'
+    | 'execution_viability_rejected';
+  filterReason?: string;
+  tradeId?: string;
+  txSignature?: string;
+}
+
 export async function processSignal(
   signal: Signal,
   candles: Candle[],
   ctx: BotContext,
   gateResult: GateEvaluationResult
-): Promise<void> {
+): Promise<SignalProcessingResult> {
   const grade = gateResult.breakoutScore.grade;
   const totalScore = gateResult.breakoutScore.totalScore;
 
@@ -42,34 +60,43 @@ export async function processSignal(
 
   if (ctx.tradingHaltedReason) {
     log.warn(`Signal filtered: trading halted (${ctx.tradingHaltedReason})`);
-    await ctx.auditLogger.logSignal({
-      ...buildSignalAuditBase(signal, candles[candles.length - 1], gateResult),
-      action: 'FILTERED',
-      filterReason: ctx.tradingHaltedReason,
-    });
-    return;
-  }
+      await ctx.auditLogger.logSignal({
+        ...buildSignalAuditBase(signal, candles[candles.length - 1], gateResult),
+        action: 'FILTERED',
+        filterReason: ctx.tradingHaltedReason,
+      });
+      return {
+        status: 'trading_halted',
+        filterReason: ctx.tradingHaltedReason,
+      };
+    }
 
   if (gateResult.rejected) {
     const filterReason = gateResult.filterReason || `Score ${totalScore} rejected by gate threshold`;
     log.info(`Signal filtered: ${filterReason}`);
-    await ctx.auditLogger.logSignal({
-      ...buildSignalAuditBase(signal, candles[candles.length - 1], gateResult),
-      action: 'FILTERED',
-      filterReason,
-    });
-    return;
-  }
+      await ctx.auditLogger.logSignal({
+        ...buildSignalAuditBase(signal, candles[candles.length - 1], gateResult),
+        action: 'FILTERED',
+        filterReason,
+      });
+      return {
+        status: 'gate_rejected',
+        filterReason,
+      };
+    }
 
   if (!ctx.executionLock.acquire()) {
     log.info('Signal skipped — execution lock held');
-    await ctx.auditLogger.logSignal({
-      ...buildSignalAuditBase(signal, candles[candles.length - 1], gateResult),
-      action: 'FILTERED',
-      filterReason: 'Execution lock held',
-    });
-    return;
-  }
+      await ctx.auditLogger.logSignal({
+        ...buildSignalAuditBase(signal, candles[candles.length - 1], gateResult),
+        action: 'FILTERED',
+        filterReason: 'Execution lock held',
+      });
+      return {
+        status: 'execution_lock',
+        filterReason: 'Execution lock held',
+      };
+    }
 
   try {
     const candleAgeMs = Date.now() - candles[candles.length - 1].timestamp.getTime();
@@ -82,13 +109,16 @@ export async function processSignal(
 
     if (staleResult.isStale) {
       log.info(`Stale signal: ${staleResult.reason}`);
-      await ctx.auditLogger.logSignal({
-        ...buildSignalAuditBase(signal, candles[candles.length - 1], gateResult),
-        action: 'STALE',
-        filterReason: staleResult.reason,
-      });
-      return;
-    }
+        await ctx.auditLogger.logSignal({
+          ...buildSignalAuditBase(signal, candles[candles.length - 1], gateResult),
+          action: 'STALE',
+          filterReason: staleResult.reason,
+        });
+        return {
+          status: 'stale',
+          filterReason: staleResult.reason,
+        };
+      }
 
     await ctx.notifier.sendSignal(signal);
 
@@ -108,13 +138,16 @@ export async function processSignal(
 
     if (!riskResult.approved) {
       log.warn(`Order rejected by risk manager: ${riskResult.reason}`);
-      await ctx.auditLogger.logSignal({
-        ...buildSignalAuditBase(signal, candles[candles.length - 1], gateResult),
-        action: 'RISK_REJECTED',
-        filterReason: riskResult.reason,
-      });
-      return;
-    }
+        await ctx.auditLogger.logSignal({
+          ...buildSignalAuditBase(signal, candles[candles.length - 1], gateResult),
+          action: 'RISK_REJECTED',
+          filterReason: riskResult.reason,
+        });
+        return {
+          status: 'risk_rejected',
+          filterReason: riskResult.reason,
+        };
+      }
 
     if (riskResult.appliedAdjustments && riskResult.appliedAdjustments.length > 0) {
       log.warn(
@@ -141,7 +174,10 @@ export async function processSignal(
           action: 'FILTERED',
           filterReason: `Regime ${regime} — no new entries`,
         });
-        return;
+        return {
+          status: 'regime_blocked',
+          filterReason: `Regime ${regime} — no new entries`,
+        };
       }
       if (regimeMult < 1) {
         quantity *= regimeMult;
@@ -159,13 +195,26 @@ export async function processSignal(
           action: 'RISK_REJECTED',
           filterReason: walletLimit.filterReason,
         });
-        return;
+        return {
+          status: 'wallet_limit',
+          filterReason: walletLimit.filterReason,
+        };
       }
     }
 
     let order: Order;
     if (signal.strategy === 'volume_spike') {
-      order = buildVolumeSpikeOrder(signal, candles, quantity);
+      order = signal.meta.realtimeSignal === 1
+        ? buildMomentumTriggerOrder(signal, candles, quantity, {
+          slMode: (config.realtimeSlMode as 'atr' | 'swing_low' | 'candle_low'),
+          slAtrMultiplier: config.realtimeSlAtrMultiplier,
+          slSwingLookback: config.realtimeSlSwingLookback,
+          timeStopMinutes: config.realtimeTimeStopMinutes,
+          atrPeriod: 14,
+          tp1Multiplier: 1.5,
+          tp2Multiplier: 3.5,
+        })
+        : buildVolumeSpikeOrder(signal, candles, quantity);
     } else if (signal.strategy === 'fib_pullback') {
       order = buildFibPullbackOrder(signal, candles, quantity, {
         timeStopMinutes: config.fibTimeStopMinutes,
@@ -185,15 +234,18 @@ export async function processSignal(
       rrReject: config.executionRrReject,
       rrPass: config.executionRrPass,
     });
-    if (actualExecution.rejected) {
-      log.warn(`Signal filtered after size-aware execution check: ${actualExecution.filterReason}`);
-      await ctx.auditLogger.logSignal({
-        ...buildSignalAuditBase(signal, candles[candles.length - 1], gateResult),
-        action: 'FILTERED',
-        filterReason: actualExecution.filterReason,
-      });
-      return;
-    }
+      if (actualExecution.rejected) {
+        log.warn(`Signal filtered after size-aware execution check: ${actualExecution.filterReason}`);
+        await ctx.auditLogger.logSignal({
+          ...buildSignalAuditBase(signal, candles[candles.length - 1], gateResult),
+          action: 'FILTERED',
+          filterReason: actualExecution.filterReason,
+        });
+        return {
+          status: 'execution_viability_rejected',
+          filterReason: actualExecution.filterReason,
+        };
+      }
     if (actualExecution.sizeMultiplier < 1) {
       order.quantity *= actualExecution.sizeMultiplier;
       quantity = order.quantity;
@@ -208,8 +260,8 @@ export async function processSignal(
       { signal: signal.meta, score: totalScore, grade }
     );
 
-    try {
-      let txSignature = 'PAPER_TRADE';
+      try {
+        let txSignature = 'PAPER_TRADE';
 
       if (ctx.tradingMode === 'paper') {
         log.info(`[PAPER] Simulating execution: ${JSON.stringify(order)}`);
@@ -257,11 +309,21 @@ export async function processSignal(
       }
 
       log.info(`Trade opened: ${txSignature}`);
-    } catch (error) {
-      log.error(`Trade execution failed: ${error}`);
-      await ctx.positionStore.updateState(positionId, 'ORDER_FAILED');
-      await ctx.notifier.sendError('trade_execution', error).catch(() => {});
-    }
+        return {
+          status: ctx.tradingMode === 'paper' ? 'executed_paper' : 'executed_live',
+          tradeId: positionId,
+          txSignature,
+        };
+      } catch (error) {
+        log.error(`Trade execution failed: ${error}`);
+        await ctx.positionStore.updateState(positionId, 'ORDER_FAILED');
+        await ctx.notifier.sendError('trade_execution', error).catch(() => {});
+        return {
+          status: 'execution_failed',
+          filterReason: error instanceof Error ? error.message : String(error),
+          tradeId: positionId,
+        };
+      }
   } finally {
     ctx.executionLock.release();
   }

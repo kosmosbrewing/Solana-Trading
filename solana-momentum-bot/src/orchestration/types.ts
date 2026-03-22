@@ -6,13 +6,15 @@ import { SpreadMeasurer } from '../gate/spreadMeasurer';
 import { GeckoTerminalClient, BirdeyeClient } from '../ingester';
 import { BirdeyeWSClient } from '../ingester/birdeyeWSClient';
 import { Notifier } from '../notifier';
-import { PaperMetricsTracker } from '../reporting';
+import { MicroCandleBuilder, RealtimeAdmissionTracker } from '../realtime';
+import { PaperMetricsTracker, RealtimeOutcomeTracker, RealtimeSignalLogger } from '../reporting';
 import { RiskManager, RegimeFilter } from '../risk';
 import { ScannerEngine, SocialMentionTracker } from '../scanner';
 import { ExecutionLock, PositionStore } from '../state';
 import { UniverseEngine } from '../universe';
 import { HealthMonitor } from '../utils/healthMonitor';
 import { TradingMode } from '../utils/config';
+import { RealtimeReplayStore } from '../realtime';
 
 export interface BotContext {
   tradingMode: TradingMode;
@@ -49,6 +51,16 @@ export interface BotContext {
   eventScoreStore?: EventScoreStore;
   /** Phase 3: Wallet manager (main + sandbox isolation) */
   walletManager?: WalletManager;
+  /** Realtime micro-candle source (optional — Helius WS mode) */
+  realtimeCandleBuilder?: MicroCandleBuilder;
+  /** Realtime noisy-pool admission state (optional — Helius WS mode) */
+  realtimeAdmissionTracker?: RealtimeAdmissionTracker;
+  /** Realtime signal outcome tracker (optional — Helius WS mode) */
+  realtimeOutcomeTracker?: RealtimeOutcomeTracker;
+  /** Realtime signal logger (optional — Helius WS mode) */
+  realtimeSignalLogger?: RealtimeSignalLogger;
+  /** Realtime replay persistence store (optional — Helius WS mode) */
+  realtimeReplayStore?: RealtimeReplayStore;
   /** Paper 모드 시뮬레이션 잔고 (SOL). PnL에 따라 동적 업데이트 */
   paperBalance?: number;
 }

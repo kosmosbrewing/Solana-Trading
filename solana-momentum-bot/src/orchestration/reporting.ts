@@ -1,3 +1,5 @@
+import { DailySummaryReport, RealtimeAdmissionSummary } from '../notifier/dailySummaryFormatter';
+import { RealtimeAdmissionSnapshotEntry } from '../realtime';
 import { EdgeTracker } from '../reporting';
 import { config } from '../utils/config';
 import { createModuleLogger } from '../utils/logger';
@@ -88,7 +90,8 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
     uptime: status.uptime,
     restarts: 0,
     edgeStats: edgeTracker.getAllStrategyStats(),
-  });
+    realtimeAdmission: buildRealtimeAdmissionSummary(ctx),
+  } satisfies DailySummaryReport);
 
   // Phase 1B: Paper metrics + regime status
   if (ctx.paperMetrics) {
@@ -103,4 +106,40 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
       `breadth=${(regime.breadthPct * 100).toFixed(0)}% follow=${(regime.followThroughPct * 100).toFixed(0)}%`
     );
   }
+}
+
+function buildRealtimeAdmissionSummary(ctx: BotContext): RealtimeAdmissionSummary | undefined {
+  if (!ctx.realtimeAdmissionTracker) return undefined;
+
+  const entries = ctx.realtimeAdmissionTracker.exportSnapshot();
+  if (entries.length === 0) return undefined;
+
+  const blockedDetails = entries
+    .filter((entry) => entry.blocked)
+    .map((entry) => ({
+      pool: entry.pool,
+      observedNotifications: entry.observedNotifications,
+      parseRatePct: calculateParseRatePct(entry),
+      skippedRatePct: calculateSkippedRatePct(entry),
+    }))
+    .sort((left, right) => right.observedNotifications - left.observedNotifications)
+    .slice(0, 3);
+
+  const blockedPools = entries.filter((entry) => entry.blocked).length;
+  return {
+    trackedPools: entries.length,
+    allowedPools: entries.length - blockedPools,
+    blockedPools,
+    blockedDetails,
+  };
+}
+
+function calculateParseRatePct(entry: RealtimeAdmissionSnapshotEntry): number {
+  if (entry.observedNotifications <= 0) return 0;
+  return Number(((entry.logParsed / entry.observedNotifications) * 100).toFixed(2));
+}
+
+function calculateSkippedRatePct(entry: RealtimeAdmissionSnapshotEntry): number {
+  if (entry.observedNotifications <= 0) return 0;
+  return Number(((entry.fallbackSkipped / entry.observedNotifications) * 100).toFixed(2));
 }

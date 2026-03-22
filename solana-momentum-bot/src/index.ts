@@ -9,29 +9,107 @@ import { BirdeyeWSClient } from './ingester/birdeyeWSClient';
 import { EventMonitor, EventScoreStore } from './event';
 import { CandleStore, TradeStore } from './candle';
 import { RiskManager, RiskConfig, RegimeFilter } from './risk';
-import { PaperMetricsTracker } from './reporting';
+import { PaperMetricsTracker, RealtimeOutcomeTracker, RealtimeSignalLogger } from './reporting';
 import { Executor, ExecutorConfig, WalletManager } from './executor';
 import { Notifier } from './notifier';
+import {
+  HeliusWSIngester,
+  MicroCandleBuilder,
+  RealtimeAdmissionTracker,
+  RealtimeAdmissionStore,
+  RealtimePoolOwnerResolver,
+  RealtimeReplayStore,
+  selectRealtimeEligiblePair,
+  type RealtimePoolMetadata,
+} from './realtime';
 import { UniverseEngine, UniverseEngineConfig } from './universe';
 import { ScannerEngine, ScannerEngineConfig, DexScreenerClient, SocialMentionTracker } from './scanner';
 import { ExecutionLock, PositionStore, runRecovery } from './state';
 import { SignalAuditLogger } from './audit';
 import { scheduleDailySummary } from './orchestration/reporting';
 import { handleNewCandle } from './orchestration/candleHandler';
+import { handleRealtimeSignal } from './orchestration/realtimeHandler';
 import { evaluateNewLpSniper, buildNewLpOrder, prepareNewLpCandidate } from './strategy/newLpSniper';
+import { MomentumTrigger } from './strategy';
 import { checkOpenPositions, closeTrade } from './orchestration/tradeExecution';
 import { runPreflightCheck } from './orchestration/preflightCheck';
 import { SpreadMeasurer } from './gate/spreadMeasurer';
 import { SOL_MINT } from './utils/constants';
 import { BotContext } from './orchestration/types';
+import path from 'path';
 
 const log = createModuleLogger('Main');
 const SCANNER_INGESTER_QUEUE_GAP_MS = 10_000;
 const REGIME_SOL_CACHE_TTL_MS = 60 * 60 * 1000;
+const REALTIME_ADMISSION_MIN_OBSERVED = 50;
+const REALTIME_ADMISSION_MIN_PARSE_RATE_PCT = 1;
+const REALTIME_ADMISSION_MIN_SKIPPED_RATE_PCT = 90;
+function buildHeliusWsUrl(): string {
+  if (config.heliusWsUrl) return config.heliusWsUrl;
+  if (config.solanaRpcUrl.startsWith('https://')) {
+    return `wss://${config.solanaRpcUrl.slice('https://'.length)}`;
+  }
+  if (config.solanaRpcUrl.startsWith('http://')) {
+    return `ws://${config.solanaRpcUrl.slice('http://'.length)}`;
+  }
+  return config.solanaRpcUrl;
+}
 
 async function main() {
   const tradingMode = config.tradingMode;
   log.info(`=== Solana Momentum Bot v0.5 starting (mode: ${tradingMode}) ===`);
+  const realtimePoolTargets = new Map<string, string>();
+  const realtimePoolAliases = new Map<string, string>();
+  const realtimePoolMetadata = new Map<string, RealtimePoolMetadata>();
+  const realtimeModeEnabled = config.realtimeEnabled;
+  const realtimePoolOwnerResolver = realtimeModeEnabled
+    ? new RealtimePoolOwnerResolver(config.solanaRpcUrl)
+    : null;
+  const realtimeAdmissionTracker = realtimeModeEnabled
+    ? new RealtimeAdmissionTracker({
+      minObservedNotifications: REALTIME_ADMISSION_MIN_OBSERVED,
+      minParseRatePct: REALTIME_ADMISSION_MIN_PARSE_RATE_PCT,
+      minSkippedRatePct: REALTIME_ADMISSION_MIN_SKIPPED_RATE_PCT,
+    })
+    : null;
+  const realtimeAdmissionStore = realtimeModeEnabled
+    ? new RealtimeAdmissionStore(path.resolve(process.cwd(), 'data/realtime-admission.json'))
+    : null;
+  let heliusIngester: HeliusWSIngester | null = null;
+  let realtimeCandleBuilder: MicroCandleBuilder | null = null;
+  const realtimeReplayStore = realtimeModeEnabled && config.realtimePersistenceEnabled
+    ? new RealtimeReplayStore(path.resolve(config.realtimeDataDir))
+    : null;
+  const realtimeSignalLogger = realtimeReplayStore
+    ? new RealtimeSignalLogger(realtimeReplayStore)
+    : null;
+  const realtimeOutcomeTracker = realtimeSignalLogger
+    ? new RealtimeOutcomeTracker({
+      horizonsSec: config.realtimeOutcomeHorizonsSec,
+      observationIntervalSec: 5,
+    }, realtimeSignalLogger)
+    : null;
+
+  const setRealtimePoolTarget = (logicalPair: string, subscriptionPair: string) => {
+    realtimePoolTargets.set(logicalPair, subscriptionPair);
+    realtimePoolAliases.set(subscriptionPair, logicalPair);
+  };
+  const setRealtimePoolMetadata = (subscriptionPair: string, metadata: RealtimePoolMetadata) => {
+    realtimePoolMetadata.set(subscriptionPair, metadata);
+  };
+  const removeRealtimePoolTarget = (logicalPair: string) => {
+    const existing = realtimePoolTargets.get(logicalPair);
+    realtimePoolTargets.delete(logicalPair);
+    if (existing) {
+      realtimePoolAliases.delete(existing);
+      realtimePoolMetadata.delete(existing);
+      heliusIngester?.clearPoolMetadata(existing);
+    }
+  };
+  const resolveRealtimePools = (logicalPairs: string[]) =>
+    logicalPairs
+      .map((pair) => realtimePoolTargets.get(pair))
+      .filter((pair): pair is string => Boolean(pair));
 
   // ─── 공유 DB Pool ─────────────────────────────────
   // M-20: pool exhaustion 방지 — max connections 제한 + idle timeout
@@ -102,6 +180,13 @@ async function main() {
     twitterBearerToken: config.twitterBearerToken,
     influencerMinFollowers: config.socialInfluencerMinFollowers,
   });
+  if (realtimeAdmissionTracker && realtimeAdmissionStore) {
+    const snapshot = await realtimeAdmissionStore.load();
+    realtimeAdmissionTracker.importSnapshot(snapshot);
+    if (snapshot.length > 0) {
+      log.info(`Loaded realtime admission snapshot: ${snapshot.length} pools`);
+    }
+  }
 
   // Phase 2: Jupiter quote-based spread/fee measurer (H-2/H-3)
   const spreadMeasurer = new SpreadMeasurer({
@@ -291,11 +376,43 @@ async function main() {
         const entry = ingesterQueue.shift()!;
         try {
           // Why: GeckoTerminal OHLCV는 pool address 필요 (token mint ≠ pool address)
-          // DexScreener로 token mint → 최고 유동성 pool address 변환
-          const poolAddress = await dexScreenerClient.getBestPoolAddress(entry.tokenMint);
+          // DexScreener pair 목록에서 최고 유동성 pair를 선택
+          const pairs = await dexScreenerClient.getTokenPairs(entry.tokenMint);
+          pairs.sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
+          const bestPair = pairs[0];
+          const poolAddress = bestPair?.pairAddress;
           if (!poolAddress) {
             log.warn(`No pool found for ${entry.symbol} (${entry.tokenMint}), skipping ingester`);
             continue;
+          }
+
+          const poolOwners = realtimeModeEnabled && realtimePoolOwnerResolver
+            ? await realtimePoolOwnerResolver.resolveOwners(pairs.map((pair) => pair.pairAddress))
+            : undefined;
+          const admissionPairs = realtimeAdmissionTracker
+            ? pairs.filter((pair) => !realtimeAdmissionTracker.isBlocked(pair.pairAddress))
+            : pairs;
+          const realtimeEligibility = selectRealtimeEligiblePair(admissionPairs, poolOwners);
+          if (realtimeEligibility.eligible && realtimeEligibility.pair) {
+            setRealtimePoolTarget(entry.tokenMint, realtimeEligibility.pair.pairAddress);
+            setRealtimePoolMetadata(realtimeEligibility.pair.pairAddress, {
+              dexId: realtimeEligibility.pair.dexId,
+              baseMint: realtimeEligibility.pair.baseToken?.address || entry.tokenMint,
+              quoteMint: realtimeEligibility.pair.quoteToken?.address || SOL_MINT,
+              quoteDecimals: realtimeEligibility.pair.quoteToken?.address === SOL_MINT ? 9 : undefined,
+              poolProgram: poolOwners?.get(realtimeEligibility.pair.pairAddress) ?? undefined,
+            });
+            heliusIngester?.setPoolMetadata(
+              realtimeEligibility.pair.pairAddress,
+              realtimePoolMetadata.get(realtimeEligibility.pair.pairAddress)!
+            );
+          } else {
+            removeRealtimePoolTarget(entry.tokenMint);
+            if (realtimeModeEnabled) {
+              log.info(
+                `Realtime skipped for ${entry.symbol} (${entry.tokenMint}) — ${realtimeEligibility.reason}`
+              );
+            }
           }
           await ingester.addPair({
             pairAddress: entry.tokenMint,  // CandleHandler watchlist matching key
@@ -304,6 +421,11 @@ async function main() {
             pollIntervalMs: config.defaultTimeframe * 1000,
             isTokenMint: true,
           });
+          if (heliusIngester) {
+            await heliusIngester.subscribePools(
+              resolveRealtimePools(universeEngine.getWatchlist().map((pool) => pool.pairAddress))
+            );
+          }
         } catch (err) {
           log.warn(`Failed to add ingester for ${entry.symbol}: ${err}`);
         }
@@ -341,6 +463,7 @@ async function main() {
     });
     scanner.on('candidateEvicted', (tokenMint: string) => {
       log.info(`Scanner: evicted ${tokenMint}`);
+      removeRealtimePoolTarget(tokenMint);
       ingester.removePair(tokenMint);
       universeEngine.removePool(tokenMint);
     });
@@ -370,6 +493,9 @@ async function main() {
   };
 
   const universeEngine = new UniverseEngine(geckoClient, universeConfig, dexScreenerClient);
+  if (targetPair) {
+    setRealtimePoolTarget(targetPair, targetPair);
+  }
 
   eventMonitor.on('events', (scores) => {
     for (const score of scores) {
@@ -409,9 +535,121 @@ async function main() {
     spreadMeasurer,
     eventScoreStore,
     walletManager,
+    realtimeAdmissionTracker: realtimeAdmissionTracker ?? undefined,
+    realtimeOutcomeTracker: realtimeOutcomeTracker ?? undefined,
+    realtimeSignalLogger: realtimeSignalLogger ?? undefined,
+    realtimeReplayStore: realtimeReplayStore ?? undefined,
     // Why: Paper 모드에서 온체인 잔고 대신 시뮬레이션 잔고 (기본 1 SOL)
     paperBalance: effectiveMode === 'paper' ? config.paperInitialBalance : undefined,
   };
+
+  if (realtimeModeEnabled) {
+    const realtimeIntervals = [5, config.realtimePrimaryIntervalSec, config.realtimeConfirmIntervalSec];
+    heliusIngester = new HeliusWSIngester({
+      rpcWsUrl: buildHeliusWsUrl(),
+      rpcHttpUrl: config.solanaRpcUrl,
+      maxSubscriptions: config.realtimeMaxSubscriptions,
+    });
+    for (const [pool, metadata] of realtimePoolMetadata.entries()) {
+      heliusIngester.setPoolMetadata(pool, metadata);
+    }
+    realtimeCandleBuilder = new MicroCandleBuilder({
+      intervals: realtimeIntervals,
+      maxHistory: 200,
+    });
+    const trigger = new MomentumTrigger({
+      primaryIntervalSec: config.realtimePrimaryIntervalSec,
+      confirmIntervalSec: config.realtimeConfirmIntervalSec,
+      volumeSurgeLookback: config.realtimeVolumeSurgeLookback,
+      volumeSurgeMultiplier: config.realtimeVolumeSurgeMultiplier,
+      priceBreakoutLookback: config.realtimePriceBreakoutLookback,
+      confirmMinBars: config.realtimeConfirmMinBars,
+      confirmMinPriceChangePct: config.realtimeConfirmMinChangePct,
+      cooldownSec: config.realtimeCooldownSec,
+    });
+
+    ctx.realtimeCandleBuilder = realtimeCandleBuilder;
+
+    heliusIngester.on('connected', () => {
+      healthMonitor.setWsConnected(true);
+      log.info('Helius real-time pipeline connected');
+    });
+    heliusIngester.on('disconnected', () => {
+      healthMonitor.setWsConnected(false);
+    });
+    heliusIngester.on('swap', (swap) => {
+      const logicalPair = realtimePoolAliases.get(swap.pool) ?? swap.pool;
+      if (swap.source === 'logs') {
+        realtimeAdmissionTracker?.recordLogParsed(swap.pool);
+      }
+      if (realtimeReplayStore) {
+        void realtimeReplayStore.appendSwap({
+          ...swap,
+          pairAddress: logicalPair,
+          poolAddress: swap.pool,
+          tokenMint: logicalPair,
+        }).catch((error) => {
+          log.warn(`Failed to persist realtime swap: ${error}`);
+        });
+      }
+      realtimeCandleBuilder!.onSwap({
+        ...swap,
+        pool: logicalPair,
+      });
+    });
+    heliusIngester.on('parseMiss', ({ pool }: { pool: string }) => {
+      realtimeAdmissionTracker?.recordParseMiss(pool);
+    });
+    heliusIngester.on('fallbackSkipped', ({ pool }: { pool: string }) => {
+      realtimeAdmissionTracker?.recordFallbackSkipped(pool);
+    });
+    realtimeAdmissionTracker?.on('blocked', async ({
+      pool,
+      stats,
+    }: {
+      pool: string;
+      stats: { observedNotifications: number; logParsed: number; fallbackSkipped: number; parseRatePct: number; skippedRatePct: number };
+    }) => {
+      const logicalPair = realtimePoolAliases.get(pool);
+      log.warn(
+        `Realtime admission blocked ${pool} parseRate=${stats.parseRatePct}% skippedRate=${stats.skippedRatePct}% observed=${stats.observedNotifications}`
+      );
+      if (logicalPair) {
+        removeRealtimePoolTarget(logicalPair);
+      }
+      if (realtimeAdmissionStore) {
+        await realtimeAdmissionStore.save(realtimeAdmissionTracker.exportSnapshot());
+      }
+      await heliusIngester!.subscribePools(
+        resolveRealtimePools(universeEngine.getWatchlist().map((entry) => entry.pairAddress))
+      );
+    });
+    heliusIngester.on('error', async ({ pool, error }: { pool: string; error: unknown }) => {
+      log.warn(`Helius WS error for ${pool}: ${error}`);
+      await notifier.sendError('helius_ws', error).catch(() => {});
+    });
+    realtimeCandleBuilder.on('candle', async (candle: Candle) => {
+      try {
+        if (realtimeReplayStore) {
+          await realtimeReplayStore.appendCandle({
+            ...candle,
+            tokenMint: candle.pairAddress,
+          });
+        }
+        await realtimeOutcomeTracker?.onCandle(candle);
+        if (candle.intervalSec >= 60) {
+          await candleStore.insertCandles([candle]);
+        }
+        const signal = trigger.onCandle(candle, realtimeCandleBuilder!);
+        if (signal) {
+          await handleRealtimeSignal(signal, realtimeCandleBuilder!, ctx);
+        }
+      } catch (error) {
+        log.error(`Realtime candle handling failed: ${error}`);
+        await notifier.sendError('realtime_candle', error).catch(() => {});
+      }
+    });
+  }
 
   universeEngine.on('poolEvent', async (event: { type: string; pairAddress: string; detail: string }) => {
     if (event.type === 'RUG_PULL' || event.type === 'LP_DROP') {
@@ -479,6 +717,10 @@ async function main() {
 
   ingester.on('candles', async (candles: Candle[]) => {
     healthMonitor.updateCandleTime();
+
+    if (realtimeModeEnabled) {
+      return;
+    }
 
     const lastCandle = candles[candles.length - 1];
     try {
@@ -586,6 +828,19 @@ async function main() {
   await eventMonitor.start();
   await universeEngine.start();
 
+  if (realtimeModeEnabled && heliusIngester && realtimeCandleBuilder) {
+    realtimeCandleBuilder.start();
+    await heliusIngester.subscribePools(resolveRealtimePools(
+      universeEngine.getWatchlist().map((pool) => pool.pairAddress)
+    ));
+    universeEngine.on('watchlistUpdated', (pools: { pairAddress: string }[]) => {
+      void heliusIngester!.subscribePools(
+        resolveRealtimePools(pools.map((pool) => pool.pairAddress))
+      );
+    });
+    log.info('Real-time Helius pipeline started');
+  }
+
   // Phase 1A: Start scanner + WS
   if (birdeyeWS) {
     birdeyeWS.start();
@@ -616,11 +871,18 @@ async function main() {
     clearInterval(positionCheckInterval);
     clearInterval(regimeInterval);
     clearInterval(pruneInterval);
+    if (realtimeAdmissionTracker && realtimeAdmissionStore) {
+      await realtimeAdmissionStore.save(realtimeAdmissionTracker.exportSnapshot()).catch((error) => {
+        log.warn(`Failed to persist realtime admission snapshot: ${error}`);
+      });
+    }
     await ingester.stop();
     eventMonitor.stop();
     universeEngine.stop();
     if (scanner) scanner.stop();
     if (birdeyeWS) birdeyeWS.stop();
+    if (realtimeCandleBuilder) realtimeCandleBuilder.stop();
+    if (heliusIngester) await heliusIngester.stop();
     executionLock.destroy();
     healthMonitor.stop();
     await dbPool.end();

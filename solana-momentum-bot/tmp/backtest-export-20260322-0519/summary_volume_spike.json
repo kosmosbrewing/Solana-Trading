@@ -1,0 +1,45 @@
+{
+  "strategy": "volume_spike",
+  "pairAddress": "HJAqvquMLHxcx7BYwDixukJM4zYBaTDG69uDWbo18zv",
+  "candleCount": 812,
+  "dateRange": {
+    "start": "2026-03-19T09:40:00.000Z",
+    "end": "2026-03-22T05:20:00.000Z"
+  },
+  "totalTrades": 15,
+  "wins": 10,
+  "losses": 5,
+  "winRate": 0.6666666666666666,
+  "grossPnl": 0.20634758710022189,
+  "netPnl": 0.20634758710022189,
+  "netPnlPct": 0.02063475871002219,
+  "finalEquity": 10.20634758710022,
+  "profitFactor": 1.711033844368744,
+  "maxDrawdown": 0.18845312321574031,
+  "maxDrawdownPct": 0.01884531232157403,
+  "sharpeRatio": 7.77955872502568,
+  "avgWinPct": 0.15865965655006892,
+  "avgLossPct": -0.08217617174956884,
+  "largestWin": 0.19592923424921968,
+  "largestLoss": -0.10402383757906845,
+  "avgHoldingBars": 2.4,
+  "expectancyR": 0.3984008473381584,
+  "edgeScore": 73,
+  "stageScore": 81.11111111111111,
+  "stageDecision": "weak_sample",
+  "edgeGateStatus": "weak",
+  "edgeGateReasons": [
+    "totalTrades<20"
+  ],
+  "edgeScoreBreakdown": {
+    "netPnl": 20,
+    "expectancy": 15,
+    "profitFactor": 10,
+    "sharpe": 15,
+    "maxDrawdown": 10,
+    "totalTrades": 3,
+    "total": 73,
+    "maxPossible": 90,
+    "normalized": 81.11111111111111
+  }
+}

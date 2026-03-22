@@ -1,0 +1,8 @@
+{"pairAddress":"pool-1","poolAddress":"pool-1","pool":"pool-1","signature":"a1","timestamp":1,"side":"buy","priceNative":1,"amountBase":10,"amountQuote":5,"slot":1,"source":"logs"}
+{"pairAddress":"pool-1","poolAddress":"pool-1","pool":"pool-1","signature":"a2","timestamp":4,"side":"buy","priceNative":1.05,"amountBase":10,"amountQuote":12,"slot":2,"source":"logs"}
+{"pairAddress":"pool-1","poolAddress":"pool-1","pool":"pool-1","signature":"b1","timestamp":6,"side":"buy","priceNative":1.06,"amountBase":10,"amountQuote":6,"slot":3,"source":"logs"}
+{"pairAddress":"pool-1","poolAddress":"pool-1","pool":"pool-1","signature":"b2","timestamp":9,"side":"buy","priceNative":1.12,"amountBase":10,"amountQuote":20,"slot":4,"source":"logs"}
+{"pairAddress":"pool-1","poolAddress":"pool-1","pool":"pool-1","signature":"c1","timestamp":11,"side":"buy","priceNative":1.13,"amountBase":10,"amountQuote":7,"slot":5,"source":"logs"}
+{"pairAddress":"pool-1","poolAddress":"pool-1","pool":"pool-1","signature":"c2","timestamp":14,"side":"buy","priceNative":1.2,"amountBase":10,"amountQuote":22,"slot":6,"source":"logs"}
+{"pairAddress":"pool-1","poolAddress":"pool-1","pool":"pool-1","signature":"d1","timestamp":41,"side":"buy","priceNative":1.28,"amountBase":10,"amountQuote":10,"slot":7,"source":"logs"}
+{"pairAddress":"pool-1","poolAddress":"pool-1","pool":"pool-1","signature":"e1","timestamp":71,"side":"buy","priceNative":1.35,"amountBase":10,"amountQuote":10,"slot":8,"source":"logs"}

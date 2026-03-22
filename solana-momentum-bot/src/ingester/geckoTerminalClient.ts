@@ -14,9 +14,10 @@ const log = createModuleLogger('GeckoTerminal');
 
 const GECKO_BASE_URL = 'https://api.geckoterminal.com/api/v2';
 const NETWORK = 'solana';
+type GeckoInterval = Exclude<CandleInterval, '5s' | '15s'>;
 
 // Why: GeckoTerminal OHLCV uses timeframe + aggregate, Birdeye uses '5m' string
-const INTERVAL_MAP: Record<CandleInterval, { timeframe: string; aggregate: number; seconds: number }> = {
+const INTERVAL_MAP: Record<GeckoInterval, { timeframe: string; aggregate: number; seconds: number }> = {
   '1m': { timeframe: 'minute', aggregate: 1, seconds: 60 },
   '5m': { timeframe: 'minute', aggregate: 5, seconds: 300 },
   '15m': { timeframe: 'minute', aggregate: 15, seconds: 900 },
@@ -127,7 +128,7 @@ export class GeckoTerminalClient {
     timeFrom: number,
     timeTo: number
   ): Promise<Candle[]> {
-    const mapping = INTERVAL_MAP[intervalType];
+    const mapping = INTERVAL_MAP[intervalType as GeckoInterval];
     if (!mapping) throw new Error(`Unsupported interval: ${intervalType}`);
 
     const limit = Math.min(

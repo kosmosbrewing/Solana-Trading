@@ -1,7 +1,12 @@
 /* eslint-disable no-console */
 // Why: reporter.ts는 CLI 출력 전용 모듈이므로 console.log 허용
-import { EdgeTracker } from '../reporting';
+import { assessMeasuredEdgeStage, BacktestStageAssessment, EdgeTracker } from '../reporting';
 import { BacktestResult, BacktestTrade } from './types';
+
+export interface BacktestMeasurementSummary {
+  expectancyR: number;
+  assessment: BacktestStageAssessment;
+}
 
 /**
  * 백테스트 결과 리포터
@@ -79,6 +84,18 @@ export class BacktestReporter {
 
     // Exit Reason Breakdown
     this.printExitBreakdown(result.trades);
+    console.log(hr);
+  }
+
+  printMeasurementSummary(result: BacktestResult): void {
+    const summary = this.buildMeasurementSummary(result);
+    const hr = '─'.repeat(60);
+    console.log(`  Measurement:     Edge ${summary.assessment.edgeScore.toFixed(1)} / Stage ${summary.assessment.stageScore.toFixed(1)}`);
+    console.log(`  Decision:        ${summary.assessment.decision} | Gate ${summary.assessment.gateStatus}`);
+    console.log(`  Expectancy(R):   ${summary.expectancyR.toFixed(2)}`);
+    if (summary.assessment.gateReasons.length > 0) {
+      console.log(`  Gate Reasons:    ${summary.assessment.gateReasons.join(', ')}`);
+    }
     console.log(hr);
   }
 
@@ -195,6 +212,43 @@ export class BacktestReporter {
     return [header, ...rows].join('\n');
   }
 
+  exportSummaryJson(result: BacktestResult): string {
+    const summary = this.buildMeasurementSummary(result);
+    return JSON.stringify({
+      strategy: result.strategy,
+      pairAddress: result.pairAddress,
+      candleCount: result.candleCount,
+      dateRange: {
+        start: result.dateRange.start.toISOString(),
+        end: result.dateRange.end.toISOString(),
+      },
+      totalTrades: result.totalTrades,
+      wins: result.wins,
+      losses: result.losses,
+      winRate: result.winRate,
+      grossPnl: result.grossPnl,
+      netPnl: result.netPnl,
+      netPnlPct: result.netPnlPct,
+      finalEquity: result.finalEquity,
+      profitFactor: result.profitFactor,
+      maxDrawdown: result.maxDrawdown,
+      maxDrawdownPct: result.maxDrawdownPct,
+      sharpeRatio: result.sharpeRatio,
+      avgWinPct: result.avgWinPct,
+      avgLossPct: result.avgLossPct,
+      largestWin: result.largestWin,
+      largestLoss: result.largestLoss,
+      avgHoldingBars: result.avgHoldingBars,
+      expectancyR: summary.expectancyR,
+      edgeScore: summary.assessment.edgeScore,
+      stageScore: summary.assessment.stageScore,
+      stageDecision: summary.assessment.decision,
+      edgeGateStatus: summary.assessment.gateStatus,
+      edgeGateReasons: summary.assessment.gateReasons,
+      edgeScoreBreakdown: summary.assessment.breakdown,
+    }, null, 2);
+  }
+
   private printExitBreakdown(trades: BacktestTrade[]): void {
     if (trades.length === 0) return;
 
@@ -236,6 +290,21 @@ export class BacktestReporter {
     }
     console.log('  ' + '─'.repeat(60));
   }
+
+  private buildMeasurementSummary(result: BacktestResult): BacktestMeasurementSummary {
+    const expectancyR = calcExpectancyR(result);
+    return {
+      expectancyR,
+      assessment: assessMeasuredEdgeStage({
+        netPnlPct: result.netPnlPct,
+        expectancyR,
+        profitFactor: result.profitFactor,
+        sharpeRatio: result.sharpeRatio,
+        maxDrawdownPct: result.maxDrawdownPct,
+        totalTrades: result.totalTrades,
+      }),
+    };
+  }
 }
 
 // ─── Helpers ───
@@ -250,4 +319,19 @@ function fmt(d: Date): string {
 
 function pad(s: string, len: number): string {
   return s.padEnd(len);
+}
+
+function calcExpectancyR(result: BacktestResult): number {
+  if (result.trades.length === 0) return 0;
+
+  const rMultiples = result.trades
+    .map(trade => {
+      const plannedRisk = Math.abs(trade.entryPrice - trade.stopLoss) * trade.quantity;
+      if (!Number.isFinite(plannedRisk) || plannedRisk <= 0) return Number.NaN;
+      return trade.pnlSol / plannedRisk;
+    })
+    .filter(value => Number.isFinite(value));
+
+  if (rMultiples.length === 0) return 0;
+  return rMultiples.reduce((sum, value) => sum + value, 0) / rMultiples.length;
 }

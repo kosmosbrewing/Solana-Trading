@@ -23,6 +23,12 @@ import {
   SweepMetrics,
   generateGrid,
 } from '../src/backtest/paramSweep';
+import {
+  assessBacktestStage,
+  BacktestStageDecision,
+  EdgeGateStatus,
+  EdgeScoreBreakdown,
+} from '../src/reporting/measurement';
 
 // ─── CSV Loader ───
 
@@ -91,6 +97,7 @@ function extractMetrics(result: any): SweepMetrics {
     profitFactor: result.profitFactor,
     maxDrawdownPct: result.maxDrawdownPct,
     totalTrades: result.totalTrades,
+    expectancyR: calcExpectancyR(result),
   };
 }
 
@@ -132,6 +139,13 @@ interface MultiTokenResult {
   avgWinRate: number;
   avgPF: number;
   avgMaxDD: number;
+  avgExpectancyR: number;
+  edgeScore: number;
+  stageScore: number;
+  stageDecision: BacktestStageDecision;
+  edgeGateStatus: EdgeGateStatus;
+  edgeGateReasons: string[];
+  edgeScoreBreakdown: EdgeScoreBreakdown;
   totalTrades: number;
   positiveTokens: number;
   totalTokens: number;
@@ -202,7 +216,18 @@ async function main() {
         totalTrades += metrics.totalTrades;
         if (metrics.netPnlPct > 0) positiveTokens++;
       } catch {
-        perToken.push({ name, metrics: { netPnlPct: 0, winRate: 0, sharpeRatio: 0, profitFactor: 0, maxDrawdownPct: 0, totalTrades: 0 } });
+        perToken.push({
+          name,
+          metrics: {
+            netPnlPct: 0,
+            winRate: 0,
+            sharpeRatio: 0,
+            profitFactor: 0,
+            maxDrawdownPct: 0,
+            totalTrades: 0,
+            expectancyR: 0,
+          },
+        });
       }
     }
 
@@ -224,6 +249,17 @@ async function main() {
       ? activeTokens.reduce((s, t) => s + (isFinite(t.metrics.profitFactor) ? t.metrics.profitFactor : 5), 0) / totalTokens : 0;
     const avgMaxDD = totalTokens > 0
       ? Math.max(...activeTokens.map(t => t.metrics.maxDrawdownPct)) : 0;
+    const avgExpectancyR = totalTokens > 0
+      ? activeTokens.reduce((s, t) => s + t.metrics.expectancyR, 0) / totalTokens : 0;
+    const stageAssessment = assessBacktestStage({
+      netPnlPct: avgPnlPct,
+      expectancyR: avgExpectancyR,
+      profitFactor: avgPF,
+      sharpeRatio: avgSharpe,
+      maxDrawdownPct: avgMaxDD,
+      totalTrades,
+      positiveTokenRatio: positiveRatio,
+    });
 
     results.push({
       rank: 0,
@@ -233,6 +269,13 @@ async function main() {
       avgWinRate,
       avgPF,
       avgMaxDD,
+      avgExpectancyR,
+      edgeScore: stageAssessment.edgeScore,
+      stageScore: stageAssessment.stageScore,
+      stageDecision: stageAssessment.decision,
+      edgeGateStatus: stageAssessment.gateStatus,
+      edgeGateReasons: stageAssessment.gateReasons,
+      edgeScoreBreakdown: stageAssessment.breakdown,
       totalTrades,
       positiveTokens,
       totalTokens,
@@ -253,6 +296,7 @@ async function main() {
     if (args.objective === 'sharpeRatio') return b.avgSharpe - a.avgSharpe;
     if (args.objective === 'netPnlPct') return b.avgPnlPct - a.avgPnlPct;
     if (args.objective === 'profitFactor') return b.avgPF - a.avgPF;
+    if (args.objective === 'expectancyR') return b.avgExpectancyR - a.avgExpectancyR;
     return b.avgSharpe - a.avgSharpe;
   });
 
@@ -270,8 +314,8 @@ async function main() {
 
   // Header
   const hdr = ['#', ...paramKeys.map(k => k.length > 10 ? k.slice(0, 10) : k),
-    'AvgSharpe', 'AvgPnL%', 'AvgWR', 'AvgPF', 'MaxDD%', 'Trades', '+Tokens'];
-  console.log(hdr.map(h => h.padStart(11)).join(''));
+    'AvgSharpe', 'AvgExpR', 'AvgPnL%', 'AvgWR', 'AvgPF', 'MaxDD%', 'Trades', '+Tokens', 'Edge', 'Decision'];
+  console.log(hdr.map(h => h.padStart(11)).join(' '));
   console.log('─'.repeat(hdr.length * 12));
 
   for (const r of topN) {
@@ -279,14 +323,17 @@ async function main() {
       String(r.rank),
       ...paramKeys.map(k => r.params[k].toFixed(3)),
       r.avgSharpe.toFixed(2),
+      r.avgExpectancyR.toFixed(2),
       `${(r.avgPnlPct * 100).toFixed(2)}%`,
       `${(r.avgWinRate * 100).toFixed(1)}%`,
       r.avgPF.toFixed(2),
       `${(r.avgMaxDD * 100).toFixed(2)}%`,
       String(r.totalTrades),
       `${r.positiveTokens}/${r.totalTokens}`,
+      r.edgeScore.toFixed(1),
+      r.stageDecision,
     ];
-    console.log(row.map(v => v.padStart(11)).join(''));
+    console.log(row.map(v => v.padStart(11)).join(' '));
   }
 
   // Per-token breakdown for #1
@@ -297,8 +344,9 @@ async function main() {
       const pnl = (t.metrics.netPnlPct * 100).toFixed(2);
       const wr = (t.metrics.winRate * 100).toFixed(1);
       const sharpe = t.metrics.sharpeRatio.toFixed(2);
+      const expectancy = t.metrics.expectancyR.toFixed(2);
       const pf = isFinite(t.metrics.profitFactor) ? t.metrics.profitFactor.toFixed(2) : 'Inf';
-      console.log(`  ${t.name}: ${t.metrics.totalTrades} trades | PnL ${pnl}% | WR ${wr}% | Sharpe ${sharpe} | PF ${pf}`);
+      console.log(`  ${t.name}: ${t.metrics.totalTrades} trades | PnL ${pnl}% | WR ${wr}% | ExpR ${expectancy} | Sharpe ${sharpe} | PF ${pf}`);
     }
   }
 
@@ -334,9 +382,17 @@ async function main() {
       avgWinRate: r.avgWinRate,
       avgPF: r.avgPF,
       avgMaxDD: r.avgMaxDD,
+      avgExpectancyR: r.avgExpectancyR,
+      edgeScore: r.edgeScore,
+      stageScore: r.stageScore,
+      stageDecision: r.stageDecision,
+      edgeGateStatus: r.edgeGateStatus,
+      edgeGateReasons: r.edgeGateReasons,
+      edgeScoreBreakdown: r.edgeScoreBreakdown,
       totalTrades: r.totalTrades,
       positiveTokens: r.positiveTokens,
       totalTokens: r.totalTokens,
+      positiveRatio: r.positiveRatio,
     })),
   }, null, 2));
   console.log(`\nResults saved to ${outPath}`);
@@ -354,6 +410,22 @@ function getModeValue(values: number[]): number {
     if (c > maxCount) { maxCount = c; mode = v; }
   }
   return mode;
+}
+
+function calcExpectancyR(result: any): number {
+  const trades = Array.isArray(result?.trades) ? result.trades : [];
+  if (trades.length === 0) return 0;
+
+  const rMultiples = trades
+    .map((trade: any) => {
+      const plannedRisk = Math.abs(Number(trade.entryPrice) - Number(trade.stopLoss)) * Number(trade.quantity);
+      if (!Number.isFinite(plannedRisk) || plannedRisk <= 0) return Number.NaN;
+      return Number(trade.pnlSol) / plannedRisk;
+    })
+    .filter((value: number) => Number.isFinite(value));
+
+  if (rMultiples.length === 0) return 0;
+  return rMultiples.reduce((sum: number, value: number) => sum + value, 0) / rMultiples.length;
 }
 
 main().catch(err => {

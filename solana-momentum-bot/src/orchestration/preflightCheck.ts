@@ -96,7 +96,7 @@ export async function runPreflightCheck(
   }>(`
     SELECT strategy, action, filter_reason
     FROM signal_audit_log
-    ORDER BY created_at ASC
+    ORDER BY timestamp ASC
   `);
 
   const signals: PaperValidationSignal[] = signalsResult.rows.map(row => ({

@@ -125,14 +125,16 @@ export function summarizeRealtimeSignals(
         Boolean(item.horizon)
     );
 
-  const pseudoTrades = horizonRecords
-    .filter((item) => item.record.orderPreview?.stopLoss != null)
-    .map((item) => ({
-      entryPrice: item.record.referencePrice,
-      stopLoss: item.record.orderPreview!.stopLoss,
-      quantity: 1,
-      pnl: item.horizon.adjustedReturnPct * item.record.referencePrice,
-    }));
+  // Why: 균등 포지션(SOL 기준) 트레이딩에서는 카운트 가중치가 달러 가중치보다 정확.
+  // 토큰 가격이 천차만별인 밈코인에서 dollar-weighted는 고가 토큰에 편향됨.
+  // pnl = adjustedReturnPct (정규화), entryPrice/stopLoss 고정으로 R-multiple 일관성 유지.
+  // orderPreview 없는 백테스트 신호도 평가 가능.
+  const pseudoTrades = horizonRecords.map((item) => ({
+    entryPrice: 1,
+    stopLoss: 0.9,
+    quantity: 1,
+    pnl: item.horizon.adjustedReturnPct,
+  }));
 
   const risk = summarizeRiskMetrics(pseudoTrades);
   const executedSignals = records.filter((record) =>
@@ -154,9 +156,8 @@ export function summarizeRealtimeSignals(
   const avgAdjustedReturnPct = average(horizonRecords.map((item) => item.horizon.adjustedReturnPct));
   const avgMfePct = average(horizonRecords.map((item) => item.horizon.mfePct));
   const avgMaePct = average(horizonRecords.map((item) => item.horizon.maePct));
-  const notional = horizonRecords.reduce((sum, item) => sum + item.record.referencePrice, 0);
-  const netPnlPct = notional > 0
-    ? pseudoTrades.reduce((sum, trade) => sum + trade.pnl, 0) / notional
+  const netPnlPct = pseudoTrades.length > 0
+    ? pseudoTrades.reduce((sum, trade) => sum + trade.pnl, 0) / pseudoTrades.length
     : 0;
 
   return {

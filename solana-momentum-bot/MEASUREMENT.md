@@ -2,6 +2,8 @@
 
 > Created: 2026-03-22
 > Goal: 사명 달성도와 백테스트/페이퍼/라이브 결과를 같은 프레임으로 비교한다
+> Document type: reference policy
+> Authority: score 해석과 stage/composite 판단의 기준 문서
 
 ---
 

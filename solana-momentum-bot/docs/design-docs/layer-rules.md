@@ -1,6 +1,6 @@
 # Layer Rules — 모듈 의존성 방향 규칙
 
-> 상세 다이어그램은 `ARCHITECTURE.md` §3 참조
+> 상세 다이어그램은 `../../ARCHITECTURE.md` §3 참조
 
 ## 의존성 방향 (단방향만 허용)
 

@@ -31,4 +31,4 @@
 - 열린 WebSocket 연결 종료
 - 진행 중인 트레이드 상태 저장
 - DB 풀 종료
-- pm2 graceful_shutdown_timeout: 30초
+- pm2 `kill_timeout`: 10초 (`ecosystem.config.cjs`)

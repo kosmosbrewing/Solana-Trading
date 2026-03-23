@@ -1,8 +1,9 @@
-# REFACTORING.md
+# Realtime Measurement Refactor
 
 > Created: 2026-03-22
 > Purpose: realtime trigger edge를 측정 가능하게 만들고, 그 데이터를 replay/backtest에 재사용할 수 있게 한다.
 > Document type: execution spec for today's work
+> Authority: historical execution spec. 현재 운영 기준은 `REALTIME.md`, `OPERATIONS.md`, `MEASUREMENT.md`를 우선한다.
 
 ---
 
@@ -145,7 +146,7 @@ Status: `done`
 - Gecko coexist 여부 명시
 
 대상 파일:
-- [REFACTORING.md](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/REFACTORING.md)
+- [realtime-measurement-refactor.md](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/docs/exec-plans/completed/realtime-measurement-refactor.md)
 - [config.ts](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/src/utils/config.ts)
 - [.env.example](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/.env.example)
 

@@ -298,26 +298,32 @@ Signal
   │    ├─ exit-liquidity 프록시 → sell-side depth 검증
   │    └─ Token-2022 transfer fee → reject
   │
-  ├─ Gate 1: AttentionScore 컨텍스트 (live: 필수)
+  ├─ Gate 1: AttentionScore 컨텍스트 (runtime gate 경로에서 필수)
   │    └─ WatchlistScore 없음 → reject (not_trending)
   │
-  ├─ Gate 2: 전략 스코어
-  │    ├─ 전략별 5팩터 점수 합산 (0–100)
-  │    ├─ AttentionScore 존재 시 +0~20점 (eventScore/5)
-  │    └─ totalScore < 50 → reject (grade_rejected)
-  │
-  ├─ Gate 3: Execution Viability
-  │    ├─ Jupiter quote → 실제 price impact 확인
+  ├─ Gate 2A: Execution Viability
+  │    ├─ AMM 비용 모델 기반 effectiveRR 계산
   │    ├─ effectiveRR = (reward - cost) / (risk + cost)
   │    ├─ effectiveRR < 1.2 → reject
   │    ├─ 1.2 ≤ effectiveRR < 1.5 → 50% 사이징
   │    └─ effectiveRR ≥ 1.5 → 100% 사이징
   │
-  ├─ Gate 4: Token Safety (v2: Age Bucket Graduated Sizing)
+  ├─ Gate 2B: Quote Gate (async)
+  │    ├─ Jupiter quote → 실제 entry price impact 확인
+  │    ├─ priceImpact > maxPriceImpact(기본 2%) → reject
+  │    └─ high impact zone(기본 상한의 60% 초과) → 50% 사이징
+  │
+  ├─ Gate 3: 전략 스코어
+  │    ├─ 전략별 5팩터 점수 합산 (0–100)
+  │    ├─ AttentionScore 존재 시 +0~20점 (attentionScore/5)
+  │    └─ totalScore < 50 → reject (grade_rejected)
+  │
+  ├─ Gate 4: Token Safety (v4: Age Bucket Graduated Sizing)
   │    ├─ Pool TVL < $50K → reject
-  │    ├─ Token age < 20min → reject (hard floor)
-  │    ├─ Token age 20min~2h → size × 0.25
-  │    ├─ Token age 2h~24h → size × 0.5
+  │    ├─ Token age < 15min → reject (hard floor)
+  │    ├─ Token age 15min~1h → size × 0.25
+  │    ├─ Token age 1h~4h → size × 0.5
+  │    ├─ Token age 4h~24h → size × 0.75
   │    ├─ Token age ≥ 24h → size × 1.0
   │    ├─ Top10 holders > 80% → reject
   │    ├─ LP not burned → 50% 사이징 (age bucket과 곱셈 누적)

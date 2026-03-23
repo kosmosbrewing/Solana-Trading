@@ -3,6 +3,8 @@
 > Created: 2026-03-22
 > Updated: 2026-03-22 (realtime micro replay 경로 반영)
 > Goal: 5분봉 대량 백테스트와 realtime micro replay를 분리해 각각의 역할로 edge를 검증한다
+> Document type: working guide
+> Authority: 백테스트 워크플로 기준 문서. 아키텍처/전략 정의는 `ARCHITECTURE.md`, `docs/product-specs/strategy-catalog.md`, `MEASUREMENT.md`를 우선한다.
 
 ---
 

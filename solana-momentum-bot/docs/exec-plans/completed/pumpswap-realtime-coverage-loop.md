@@ -1,10 +1,12 @@
-# PLAN3: Ralph Loop — PumpSwap Parser + Realtime Coverage 확장
+# Ralph Loop — PumpSwap Parser + Realtime Coverage 확장
 
 > Created: 2026-03-22
 > Mode: `ralph-loop`
 > Goal: PumpSwap(Pump.fun AMM) swap 파싱을 추가해 realtime shadow의 풀 커버리지와 signal density를 높인다.
 > Mission fit: 설명 가능한 realtime trigger 표본을 더 빠르게 쌓기 위해, 현재 누락된 주요 밈코인 AMM를 parser/runtime에 편입한다.
 > Status: parser/eligibility/fallback 구현 완료, runtime smoke 검증 완료
+> Document type: execution loop record
+> Authority: historical loop spec. 현재 realtime 운영 기준은 `REALTIME.md`, `OPERATIONS.md`, `MEASUREMENT.md`를 우선한다.
 
 ---
 
@@ -43,7 +45,7 @@
 |---|---|---|
 | `swapParser` PumpSwap 지원 | 없음 | Raydium/Orca 외 AMM는 로그 파싱 미지원 |
 | `realtimeEligibility` PumpSwap 허용 | 없음 | dexId/programId 레벨에서 실시간 대상에서 빠질 가능성 높음 |
-| `PLAN3.md` 기존 초안 | 있음 | 아이디어와 예상 구현은 있으나 loop/validation 구조가 부족 |
+| 기존 loop 초안 | 있음 | 아이디어와 예상 구현은 있으나 loop/validation 구조가 부족 |
 | `PumpSwap` 관련 코드 검색 | 결과 없음 | 현재 저장소에 관련 상수/파서/테스트가 아직 없다 |
 
 ### 현재 남은 리스크

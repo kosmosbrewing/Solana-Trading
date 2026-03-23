@@ -8,3 +8,13 @@ coverage/
 # Backtest data & results
 data/*.csv
 results/
+
+# Runtime collected data (대용량, 재수집 가능)
+data/realtime/
+data/realtime-swaps/
+data/realtime-sessions/
+data/realtime-admission.json
+data/historical-swaps/
+
+# Patch 백업
+*.bak

@@ -72,9 +72,19 @@ export function tryParseSwapFromLogs(logs: string[], context: SwapParseContext):
 
   const joined = logs.join('\n');
   const side = parseSide(joined);
-  const amountBase = parseNumeric(joined, ['base_amount', 'amount_in', 'token_in', 'amount_base']);
-  const amountQuote = parseNumeric(joined, ['quote_amount', 'amount_out', 'token_out', 'amount_quote']);
   const priceNative = parseNumeric(joined, ['price_native', 'price', 'execution_price']);
+
+  // Why: amount_in/amount_out은 트레이더 관점 레이블 (내가 넣는 것/받는 것).
+  //   BUY:  amount_in = SOL(quote), amount_out = tokens(base)
+  //   SELL: amount_in = tokens(base), amount_out = SOL(quote)
+  // base_amount / amount_base 등 명시적 레이블은 방향 무관하게 그대로 사용.
+  const amountIn  = parseNumeric(joined, ['amount_in',  'token_in']);
+  const amountOut = parseNumeric(joined, ['amount_out', 'token_out']);
+  const amountBase = parseNumeric(joined, ['base_amount', 'amount_base'])
+    ?? (side === 'buy' ? amountOut : amountIn);
+  const amountQuote = parseNumeric(joined, ['quote_amount', 'amount_quote'])
+    ?? (side === 'buy' ? amountIn : amountOut);
+
   if (!side || amountBase == null || amountQuote == null) return null;
 
   const resolvedPrice = priceNative ?? amountQuote / amountBase;

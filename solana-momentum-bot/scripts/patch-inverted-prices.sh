@@ -2,7 +2,8 @@
 # patch-inverted-prices.sh
 #
 # generic log parser 버그로 역전 저장된 priceNative 수정
-#   - 대상: source='logs' AND amountQuote > amountBase * 1000
+#   - 대상: source='logs' AND amountQuote > amountBase
+#          (밈코인: 항상 token >> SOL, 역전 시 amountQuote(토큰) > amountBase(SOL))
 #   - 수정: amountBase <-> amountQuote 교환, priceNative = amountQuote_new / amountBase_new
 #
 # Usage:
@@ -75,8 +76,9 @@ for (const file of files) {
     const quote = typeof row.amountQuote === 'number' ? row.amountQuote : null;
 
     // Why: source='logs' 경로의 generic parser만 역전 가능.
-    // amountQuote(토큰) > amountBase(SOL) * 1000 -> base/quote가 바뀐 것.
-    if (src === 'logs' && base != null && quote != null && base > 0 && quote > base * 1000) {
+    // 밈코인은 token qty >> SOL qty 이므로 amountQuote > amountBase 이면 반드시 역전.
+    // (1000x 임계값은 너무 보수적 — ratio가 100~999x인 케이스를 놓침)
+    if (src === 'logs' && base != null && quote != null && base > 0 && quote > base) {
       row.amountBase  = quote;
       row.amountQuote = base;
       row.priceNative = base / quote;

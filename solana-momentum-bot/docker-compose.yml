@@ -9,6 +9,15 @@ services:
       POSTGRES_USER: momentum
       POSTGRES_PASSWORD: momentum_secret
       POSTGRES_DB: momentum_bot
+    # Why: 1GB VPS 환경 — 기본 설정은 300MB+ 소비, 제한으로 ~150MB로 절약
+    command: >
+      postgres
+      -c shared_buffers=64MB
+      -c work_mem=4MB
+      -c max_connections=20
+      -c maintenance_work_mem=32MB
+      -c effective_cache_size=128MB
+    mem_limit: 200m
     volumes:
       - timescale_data:/home/postgres/pgdata/data
     healthcheck:

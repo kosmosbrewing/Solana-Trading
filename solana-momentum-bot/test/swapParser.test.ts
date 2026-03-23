@@ -245,6 +245,83 @@ describe('swapParser', () => {
     });
   });
 
+  it('does not use generic log parsing when pool metadata is present but specialized parsing fails', () => {
+    const parsed = tryParseSwapFromLogs([
+      'Program log: side=buy',
+      'Program log: base_amount=4472054486131',
+      'Program log: quote_amount=3086451325',
+    ], {
+      poolAddress: 'pool-1',
+      signature: 'sig-meta-log',
+      slot: 999,
+      timestamp: 1_700_000_300,
+      poolMetadata: {
+        dexId: 'raydium',
+        baseMint: 'mint-base',
+        quoteMint: 'So11111111111111111111111111111111111111112',
+        baseDecimals: 6,
+        quoteDecimals: 9,
+        poolProgram: '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8',
+      },
+    });
+
+    expect(parsed).toBeNull();
+  });
+
+  it('does not use heuristic transaction parsing when pool metadata is present but mint deltas do not match', () => {
+    const parsed = parseSwapFromTransaction({
+      blockTime: 1_700_000_400,
+      meta: {
+        err: null,
+        fee: 5_000,
+        innerInstructions: [],
+        loadedAddresses: { readonly: [], writable: [] },
+        logMessages: ['Program log: swap'],
+        postBalances: [900_000_000, 0],
+        postTokenBalances: [{
+          accountIndex: 1,
+          mint: 'other-mint',
+          owner: 'owner-1',
+          programId: 'token-program',
+          uiTokenAmount: { amount: '1500', decimals: 3, uiAmount: 1.5, uiAmountString: '1.5' },
+        }],
+        preBalances: [1_000_000_000, 0],
+        preTokenBalances: [{
+          accountIndex: 1,
+          mint: 'other-mint',
+          owner: 'owner-1',
+          programId: 'token-program',
+          uiTokenAmount: { amount: '0', decimals: 3, uiAmount: 0, uiAmountString: '0' },
+        }],
+        rewards: [],
+        status: { Ok: null },
+      },
+      slot: 2,
+      transaction: {
+        message: {
+          accountKeys: [],
+          instructions: [],
+          recentBlockhash: 'hash',
+        },
+        signatures: ['sig-meta-tx'],
+      },
+    } as any, {
+      poolAddress: 'pool-1',
+      signature: 'sig-meta-tx',
+      slot: 999,
+      poolMetadata: {
+        dexId: 'raydium',
+        baseMint: 'mint-base',
+        quoteMint: 'So11111111111111111111111111111111111111112',
+        baseDecimals: 6,
+        quoteDecimals: 9,
+        poolProgram: '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8',
+      },
+    });
+
+    expect(parsed).toBeNull();
+  });
+
   it('marks router and explicit swap logs as fallback candidates', () => {
     expect(shouldFallbackToTransaction([
       'Program routeUGWgWzqBWFcrCfv8tritsqukccJPu3q5GPP3xS invoke [1]',

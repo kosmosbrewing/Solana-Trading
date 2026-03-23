@@ -85,7 +85,11 @@ async function main() {
   console.log('\nMicro Replay Backtest');
   console.log('='.repeat(72));
   console.log(`Dataset: ${output.datasetDir}`);
-  console.log(`Swaps: ${result.dataset.swapCount} | Signals: ${summary.totalSignals} | Gate mode: ${gateMode}`);
+  console.log(
+    `Swaps: ${result.dataset.keptSwapCount}/${result.dataset.swapCount}` +
+    ` (dropped ${result.dataset.droppedSwapCount})` +
+    ` | Signals: ${summary.totalSignals} | Gate mode: ${gateMode}`
+  );
   console.log(`Avg Return (${horizonSec}s): ${(summary.avgReturnPct * 100).toFixed(2)}%`);
   console.log(`Avg Adjusted Return (${horizonSec}s): ${(summary.avgAdjustedReturnPct * 100).toFixed(2)}%`);
   console.log(`Avg MFE: ${(summary.avgMfePct * 100).toFixed(2)}% | Avg MAE: ${(summary.avgMaePct * 100).toFixed(2)}%`);

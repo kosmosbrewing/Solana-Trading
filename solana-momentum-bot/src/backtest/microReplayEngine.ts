@@ -3,6 +3,7 @@ import { MicroCandleBuilder } from '../realtime';
 import { StoredRealtimeSwap } from '../realtime/replayStore';
 import { RealtimeOutcomeTracker, RealtimeSignalRecord, summarizeRealtimeSignals } from '../reporting';
 import { Candle } from '../utils/types';
+import { sanitizeReplaySwaps } from './replaySwapSanitizer';
 
 export interface MicroReplayOptions {
   triggerConfig: MomentumTriggerConfig;
@@ -18,6 +19,8 @@ export interface MicroReplayResult {
   summary: ReturnType<typeof summarizeRealtimeSignals>;
   dataset: {
     swapCount: number;
+    keptSwapCount: number;
+    droppedSwapCount: number;
     replayedSignalCount: number;
     gateMode: 'off' | 'stored';
   };
@@ -28,7 +31,8 @@ export async function replayRealtimeDataset(
   swaps: StoredRealtimeSwap[],
   options: MicroReplayOptions
 ): Promise<MicroReplayResult> {
-  const orderedSwaps = [...swaps].sort((left, right) => left.timestamp - right.timestamp);
+  const sanitized = sanitizeReplaySwaps(swaps);
+  const orderedSwaps = sanitized.swaps;
   const horizonsSec = options.horizonsSec ?? [30, 60, 180, 300];
   const builder = new MicroCandleBuilder({
     intervals: [5, options.triggerConfig.primaryIntervalSec, options.triggerConfig.confirmIntervalSec],
@@ -79,7 +83,9 @@ export async function replayRealtimeDataset(
     records: collectedRecords.sort((left, right) => Date.parse(left.signalTimestamp) - Date.parse(right.signalTimestamp)),
     summary: summarizeRealtimeSignals(collectedRecords, horizonsSec.includes(180) ? 180 : horizonsSec[0] ?? 180),
     dataset: {
-      swapCount: orderedSwaps.length,
+      swapCount: swaps.length,
+      keptSwapCount: sanitized.keptCount,
+      droppedSwapCount: sanitized.droppedCount,
       replayedSignalCount: collectedRecords.length,
       gateMode,
     },

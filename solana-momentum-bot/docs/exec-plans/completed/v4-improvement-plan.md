@@ -4,6 +4,8 @@
 > **구현 완료: 2026-03-19** (Step 1~6 전체 + 품질 점검 2회)
 > 근거: 1→100 SOL 달성 조건 점검 결과
 > 전제: v3 (Runner, Ultra, TP1 연장) 구현 완료
+> Document type: completed implementation record
+> Authority: historical plan. 현재 동작의 기준은 `STRATEGY.md`, `README.md`, `docs/product-specs/strategy-catalog.md`, `src/utils/config.ts`를 우선한다.
 
 ---
 

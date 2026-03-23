@@ -8,3 +8,8 @@
 - 기술 부채: `docs/exec-plans/tech-debt-tracker.md`
 - 코딩 컨벤션: `docs/CONVENTIONS.md`
 - 보안 규칙: `docs/SECURITY.md`
+
+## Document Roles
+- 현재 동작의 기준 문서: `AGENTS.md`, `ARCHITECTURE.md`, `PROJECT.md`, `OPERATIONS.md`, `docs/product-specs/strategy-catalog.md`, `MEASUREMENT.md`
+- 워크플로 가이드: `BACKTEST.md`, `REALTIME.md`
+- 실행 메모/이력: `docs/exec-plans/completed/*.md`

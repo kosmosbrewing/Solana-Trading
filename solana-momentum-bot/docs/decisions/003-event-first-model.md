@@ -26,5 +26,5 @@
 
 ## 관련 문서
 
-- `docs/design-docs/2-stage-entry.md` — 상세 설계
-- `src/event/eventScorer.ts` — AttentionScore 구현
+- `../design-docs/2-stage-entry.md` — 상세 설계
+- `../../src/event/eventScorer.ts` — AttentionScore 구현

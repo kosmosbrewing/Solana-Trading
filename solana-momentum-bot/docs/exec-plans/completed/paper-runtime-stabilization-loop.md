@@ -1,9 +1,11 @@
-# PLAN2: Ralph Loop — Paper Runtime 안정화
+# Ralph Loop — Paper Runtime 안정화
 
 > Created: 2026-03-21
 > Mode: `ralph-loop`
 > Goal: paper runtime을 50-trade 검증 가능한 상태로 안정화한다.
 > Mission fit: 설명 가능한 후보만 안정적으로 추적하고, 무인 paper 운영에서 데이터 연속성과 성과 추적을 먼저 확보한다.
+> Document type: execution loop record
+> Authority: historical loop spec. 현재 paper 운영 기준은 `OPERATIONS.md`와 `docs/product-specs/paper-validation.md`를 우선한다.
 
 ---
 

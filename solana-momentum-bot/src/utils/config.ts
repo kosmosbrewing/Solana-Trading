@@ -61,7 +61,7 @@ export const config = {
   targetPairAddress: optional('TARGET_PAIR_ADDRESS', ''),
 
   // Data
-  // Why: Birdeye optional — GeckoTerminal + DexScreener로 대체 (PLAN1.md)
+  // Why: Birdeye optional — GeckoTerminal + DexScreener로 대체 (docs/exec-plans/completed/paper-data-plane-transition.md)
   birdeyeApiKey: optional('BIRDEYE_API_KEY', ''),
   databaseUrl: required('DATABASE_URL'),
 

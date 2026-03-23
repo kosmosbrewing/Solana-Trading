@@ -3,6 +3,8 @@
 > Last updated: 2026-03-21
 > Scope: Paper runtime 기준 데이터 플레인 전환 결과와 운영 제약 정리
 > Status: 전환 구현 완료, 운영 안정화 진행 중
+> Document type: operational note
+> Authority: 전환 배경과 제약을 설명하는 참고 문서. 현재 운영값은 `OPERATIONS.md`를 우선한다.
 
 ---
 

@@ -3,6 +3,8 @@
 > Created: 2026-03-22
 > Updated: 2026-03-22
 > Goal: Helius realtime shadow, historical swap backfill, micro replay를 하나의 실행 경로로 정리해 초봉 momentum edge를 검증한다
+> Document type: working guide
+> Authority: realtime validation 워크플로 기준 문서. 운영 절차는 `OPERATIONS.md`, 점수 해석은 `MEASUREMENT.md`를 우선한다.
 
 ---
 

@@ -3,8 +3,8 @@
 ## 지갑 키 보호
 
 - `WALLET_PRIVATE_KEY`는 `.env`에서만 관리. 코드/로그/커밋에 절대 노출 금지.
-- `SANDBOX_WALLET_KEY` 동일 적용.
-- `.gitignore`에 `.env`, `*.key` 포함 필수.
+- `SANDBOX_WALLET_PRIVATE_KEY`도 동일 적용.
+- 현재 레포는 `.gitignore`에 `.env`를 포함한다. 별도 키 파일을 도입하면 `*.key`도 함께 무시하도록 추가한다.
 - 로그 출력 시 키/서명 값은 truncate 처리.
 
 ## API 키 보호
@@ -35,4 +35,4 @@
 
 - `npm audit` 주기적 실행
 - 의존성 업데이트 시 lock file diff 확인
-- `.env.example`에는 값 없이 키 이름만 기록
+- `.env.example`에는 실제 비밀값을 넣지 않는다. placeholder와 기본 운영값만 기록한다.

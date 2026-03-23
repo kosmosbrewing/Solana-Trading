@@ -27,5 +27,5 @@
 
 ## 관련 문서
 
-- `docs/design-docs/risk-tier-system.md` — 상세 설계
-- `src/risk/riskTier.ts` — 구현
+- `../design-docs/risk-tier-system.md` — 상세 설계
+- `../../src/risk/riskTier.ts` — 구현

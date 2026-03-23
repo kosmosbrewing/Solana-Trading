@@ -52,4 +52,39 @@ describe('microReplayEngine', () => {
     expect(result.summary.totalSignals).toBe(1);
     expect(result.summary.avgReturnPct).toBeGreaterThan(0);
   });
+
+  it('drops absurd swap-price outliers before replaying', async () => {
+    const swaps: StoredRealtimeSwap[] = [
+      makeSwap(1, 1.00, 5, 'a1'),
+      makeSwap(4, 1.05, 12, 'a2'),
+      makeSwap(6, 1.06, 6, 'b1'),
+      makeSwap(9, 1.12, 20, 'b2'),
+      makeSwap(11, 1.13, 7, 'c1'),
+      makeSwap(12, 1e9, 50, 'outlier'),
+      makeSwap(14, 1.20, 22, 'c2'),
+      makeSwap(41, 1.28, 10, 'd1'),
+      makeSwap(71, 1.35, 10, 'e1'),
+    ];
+
+    const result = await replayRealtimeDataset(swaps, {
+      triggerConfig: {
+        primaryIntervalSec: 5,
+        confirmIntervalSec: 5,
+        volumeSurgeLookback: 1,
+        volumeSurgeMultiplier: 1,
+        priceBreakoutLookback: 1,
+        confirmMinBars: 1,
+        confirmMinPriceChangePct: 0,
+        cooldownSec: 300,
+      },
+      horizonsSec: [30, 60],
+      gateMode: 'off',
+    });
+
+    expect(result.dataset.swapCount).toBe(9);
+    expect(result.dataset.droppedSwapCount).toBe(1);
+    expect(result.dataset.keptSwapCount).toBe(8);
+    expect(result.records).toHaveLength(1);
+    expect(result.summary.avgAdjustedReturnPct).toBeLessThan(1);
+  });
 });

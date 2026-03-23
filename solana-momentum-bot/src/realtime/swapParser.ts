@@ -70,6 +70,12 @@ export function tryParseSwapFromLogs(logs: string[], context: SwapParseContext):
   const parsedRaydium = parseRaydiumSwapFromLogs(logs, context);
   if (parsedRaydium) return parsedRaydium;
 
+  // Why: 메타데이터가 있는 지원 풀은 전용 parser 또는 tx fallback만 신뢰한다.
+  // generic log parser는 raw integer 로그를 decimal 보정 없이 읽어 price 오염을 만들 수 있다.
+  if (context.poolMetadata) {
+    return null;
+  }
+
   const joined = logs.join('\n');
   const side = parseSide(joined);
   const priceNative = parseNumeric(joined, ['price_native', 'price', 'execution_price']);
@@ -116,6 +122,10 @@ export function parseSwapFromTransaction(
 
   const metadataAware = parseFromPoolMetadata(tx, context);
   if (metadataAware) return metadataAware;
+
+  // Why: 추적 대상 풀의 mint 메타데이터가 있는데도 정확한 mint delta를 못 맞춘 경우,
+  // largest-delta heuristic은 라우터/부가 transfer를 swap으로 오인할 가능성이 높다.
+  if (context.poolMetadata) return null;
 
   const tokenDelta = pickLargestTokenDelta(tx);
   const nativeQuote = pickLargestLamportDelta(tx);

@@ -1,6 +1,6 @@
 # Strategy Reference
 
-> Last updated: 2026-03-21
+> Last updated: 2026-03-25
 > Mission: 1 SOL → 100 SOL
 > Documented strategies: Volume Spike (A), Fib Pullback (C), New LP Sniper (D), Momentum Cascade (E)
 > Runtime focus: A/C core, D sandbox, E conditional add-on
@@ -23,7 +23,9 @@ Stage 2: 지금 들어가도 되는가?  → Gate System (Security → Score →
 
 - watchlist는 breadth보다 안정성을 우선한다. 즉시 prune될 후보까지 backfill하지 않는다.
 - `MAX_WATCHLIST_SIZE=8`, `SCANNER_REENTRY_COOLDOWN_MS=1800000`이 현재 권장 운영값이다.
+- live/paper bootstrap에서는 `REALTIME_MAX_SUBSCRIPTIONS=5`, `REALTIME_SEED_BACKFILL_ENABLED=false`가 현재 보수 운영값이다.
 - GeckoTerminal는 평균 req/min보다 burst/concurrency가 더 큰 제약이라, 요청 직렬화와 backfill spacing을 함께 사용한다.
+- Helius realtime은 batch 미지원 시 single-request fallback을 억제해 startup 429 storm을 피한다.
 - SOL 4H regime는 Gecko 4H 캔들을 캐시해 같은 버킷을 반복 조회하지 않는다.
 
 ### 핵심 제약 — 이 시장에서는 "의도한 손절"보다 "실제 exit 손실"이 더 중요하다

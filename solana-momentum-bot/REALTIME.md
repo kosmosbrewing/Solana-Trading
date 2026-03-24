@@ -246,6 +246,12 @@ Helius Developer 기준 대략 이렇게 본다.
 
 이 값은 운영 전 rough estimate로만 보고, 실제 billing은 Helius 대시보드를 기준으로 확인한다.
 
+운영 메모:
+
+- 현재 runtime은 `batch parsed transaction 미지원 -> single-request fallback` 폭주를 막기 위해
+  `REALTIME_DISABLE_SINGLE_TX_FALLBACK_ON_BATCH_UNSUPPORTED=true`를 기본으로 둔다.
+- startup `recent swap seed`는 `REALTIME_SEED_BACKFILL_ENABLED=false`로 끄고 안정성을 먼저 보는 운영이 가능하다.
+
 ### Safety Controls
 
 | 옵션 | 역할 |

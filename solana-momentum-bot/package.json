@@ -15,6 +15,7 @@
     "realtime-shadow": "ts-node scripts/realtime-shadow-runner.ts",
     "vps:shadow": "bash scripts/vps-realtime-shadow.sh",
     "deploy:vps": "bash scripts/deploy.sh",
+    "restart:bot-ops": "bash scripts/restart-bot-and-ops.sh",
     "lint": "eslint src/ --ext .ts",
     "test": "jest --config jest.config.cjs"
   },

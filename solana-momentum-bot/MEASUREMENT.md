@@ -95,8 +95,8 @@ Stage Score =
 |---|---|---|
 | PM2 runtime | `momentum-bot online`, `fork_mode`, `restarts = 0` after recreation | 현재는 기동 안정화된 상태 |
 | Live bootstrap | 진행 중 | full live composite 측정 이전 단계 |
-| Helius plan | Developer tier | Free 대비 headroom은 늘었지만, `transactionSubscribe` 급 전환을 바로 정당화하진 않음 |
-| GeckoTerminal | 429 관찰됨, retry path 존재 | 즉시 치명 장애는 아니지만 execution quality 리스크 |
+| Helius plan | Developer tier | Free 대비 headroom은 늘었지만 startup `seed backfill` burst는 여전히 관찰 필요 |
+| GeckoTerminal | 429 관찰됨, retry path 존재 | 즉시 치명 장애는 아니지만 watchlist churn / backfill quality 리스크 |
 | `helius-collector` | 별도 프로세스 중지 가능 | 본체 runtime과 분리 운영 여부 점검 필요 |
 
 ### 3. Stage별 측정 가능 상태

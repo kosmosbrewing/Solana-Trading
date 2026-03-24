@@ -1,6 +1,6 @@
 # Operations Guide
 
-> Last updated: 2026-03-21
+> Last updated: 2026-03-25
 > Scope: VPS 배포 + paper 운영 점검 + risk tier demotion + live 운영 판단
 
 ---
@@ -43,6 +43,10 @@ REALTIME_ENABLED=true
 REALTIME_PERSISTENCE_ENABLED=true
 SCANNER_ENABLED=true
 MAX_WATCHLIST_SIZE=8
+REALTIME_MAX_SUBSCRIPTIONS=5
+REALTIME_SEED_BACKFILL_ENABLED=false
+REALTIME_DISABLE_SINGLE_TX_FALLBACK_ON_BATCH_UNSUPPORTED=true
+REALTIME_SEED_ALLOW_SINGLE_TX_FALLBACK=false
 SCANNER_REENTRY_COOLDOWN_MS=1800000
 EVENT_POLLING_INTERVAL_MS=1800000
 SHADOW_RUN_MINUTES=1440
@@ -58,12 +62,15 @@ SHADOW_HORIZON_SEC=30
 - `MAX_WATCHLIST_SIZE=8`은 paper 안정화용 보수값이다.
 - watchlist를 늘리기 전에 `429`, `Poll failed`, `No candle received`가 먼저 안정화돼야 한다.
 - scanner churn 억제를 위해 `SCANNER_REENTRY_COOLDOWN_MS=1800000`을 유지한다.
-- Free-tier Helius는 `REALTIME_DISABLE_SINGLE_TX_FALLBACK_ON_BATCH_UNSUPPORTED=true`,
-  `REALTIME_SEED_ALLOW_SINGLE_TX_FALLBACK=false`를 유지한다.
+- 현재 live/paper bootstrap 기본은 Helius `Developer` tier 기준이다.
+- startup burst가 남아 있으면 `REALTIME_SEED_BACKFILL_ENABLED=false`를 유지한다.
+- `REALTIME_DISABLE_SINGLE_TX_FALLBACK_ON_BATCH_UNSUPPORTED=true`,
+  `REALTIME_SEED_ALLOW_SINGLE_TX_FALLBACK=false`는 Helius 플랜과 무관하게 유지한다.
 
 ### 가동 확인 체크리스트
 
 - [ ] `pm2 status` — `momentum-shadow` online
+- [ ] `pm2 list` — legacy `momentum` 프로세스가 남아 있지 않은지 확인
 - [ ] `pm2 logs momentum-shadow` — shadow session start / export summary 확인
 - [ ] child runtime log에서 `Bot started ... mode: paper` 확인
 - [ ] child runtime log에서 `Scanner started. Watchlist: 8 entries.` 확인
@@ -113,6 +120,7 @@ TELEGRAM_CHAT_ID=<봇에게 메시지 보낸 후 getUpdates API로 확인>
 | Memory > 500MB | 메모리 릭 가능성 | `pm2 restart momentum-bot` + 로그 확인 |
 | Scanner 0 candidates | 시장 비활성, Gecko/Dex 소스 문제, 필터 과도 | `Trending discovery` 로그, `SCANNER_MIN_WATCHLIST_SCORE`, `MIN_POOL_TVL` 확인 |
 | `GeckoTerminal 429 rate limited` 반복 | burst/concurrency 또는 watchlist churn | `MAX_WATCHLIST_SIZE=8` 유지, `SCANNER_REENTRY_COOLDOWN_MS` 확인, startup/backfill churn 로그 확인 |
+| `Realtime seed backfill failed ... 429` 반복 | Helius startup burst | `REALTIME_SEED_BACKFILL_ENABLED=false` 유지, `REALTIME_MAX_SUBSCRIPTIONS=5` 확인 |
 | `No candle received for ... minutes` | 특정 pair poll 누락 또는 Gecko 지연 | pair별 backfill/poll 로그 확인, regime/event 주기 과도 여부 점검 |
 
 ### 운영 해석 메모

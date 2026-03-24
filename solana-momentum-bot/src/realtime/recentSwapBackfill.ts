@@ -27,6 +27,7 @@ export interface RecentSwapBackfillOptions {
   lookbackSec: number;
   maxSignatures?: number;
   nowSec?: number;
+  allowSingleFetchFallback?: boolean;
 }
 
 const DEFAULT_MAX_SIGNATURES = 80;
@@ -63,7 +64,8 @@ export async function fetchRecentSwapsForPool(
 
   const transactions = await loadParsedTransactions(
     connection,
-    recent.map((entry) => entry.signature)
+    recent.map((entry) => entry.signature),
+    options.allowSingleFetchFallback ?? true
   );
 
   return recent
@@ -83,15 +85,28 @@ export async function fetchRecentSwapsForPool(
 
 async function loadParsedTransactions(
   connection: RecentSwapBackfillConnection,
-  signatures: string[]
+  signatures: string[],
+  allowSingleFetchFallback: boolean
 ): Promise<Array<ParsedTransactionWithMeta | null>> {
   if (signatures.length === 0) return [];
 
   try {
     return await connection.getParsedTransactions(signatures, PARSED_TX_OPTIONS);
-  } catch {
+  } catch (error) {
+    if (!allowSingleFetchFallback && isBatchUnsupportedError(error)) {
+      return signatures.map(() => null);
+    }
+    if (!allowSingleFetchFallback) {
+      throw error;
+    }
     return Promise.all(
       signatures.map((signature) => connection.getParsedTransaction(signature, PARSED_TX_OPTIONS))
     );
   }
+}
+
+function isBatchUnsupportedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('Batch requests are only available for paid plans')
+    || message.includes('code":-32403');
 }

@@ -58,6 +58,8 @@ SHADOW_HORIZON_SEC=30
 - `MAX_WATCHLIST_SIZE=8`은 paper 안정화용 보수값이다.
 - watchlist를 늘리기 전에 `429`, `Poll failed`, `No candle received`가 먼저 안정화돼야 한다.
 - scanner churn 억제를 위해 `SCANNER_REENTRY_COOLDOWN_MS=1800000`을 유지한다.
+- Free-tier Helius는 `REALTIME_DISABLE_SINGLE_TX_FALLBACK_ON_BATCH_UNSUPPORTED=true`,
+  `REALTIME_SEED_ALLOW_SINGLE_TX_FALLBACK=false`를 유지한다.
 
 ### 가동 확인 체크리스트
 

@@ -21,6 +21,7 @@ export class HeliusWSIngester extends EventEmitter {
   private readonly fallbackRequestsPerSecond: number;
   private readonly fallbackBatchSize: number;
   private readonly maxFallbackQueue: number;
+  private readonly disableSingleTxFallbackOnBatchUnsupported: boolean;
   private readonly watchdogIntervalMs: number;
   private readonly fallbackMaxRetries: number;
   private readonly subscriptions = new Map<string, number>();
@@ -31,6 +32,7 @@ export class HeliusWSIngester extends EventEmitter {
   private readonly fallbackStartsAt: number[] = [];
   private inFlightFallbacks = 0;
   private batchFallbackSupported = true;
+  private batchUnsupportedWarned = false;
   private fallbackTimer?: NodeJS.Timeout;
   private watchdogTimer?: NodeJS.Timeout;
   private lastRateLimitWarnAt = 0;
@@ -47,6 +49,8 @@ export class HeliusWSIngester extends EventEmitter {
     this.fallbackRequestsPerSecond = config.fallbackRequestsPerSecond ?? 4;
     this.fallbackBatchSize = Math.max(1, config.fallbackBatchSize ?? 5);
     this.maxFallbackQueue = config.maxFallbackQueue ?? 200;
+    this.disableSingleTxFallbackOnBatchUnsupported =
+      config.disableSingleTxFallbackOnBatchUnsupported ?? true;
     this.watchdogIntervalMs = config.watchdogIntervalMs ?? 60_000;
     this.fallbackMaxRetries = config.fallbackMaxRetries ?? 3;
   }
@@ -61,7 +65,7 @@ export class HeliusWSIngester extends EventEmitter {
 
   async backfillRecentSwaps(
     pool: string,
-    options: { lookbackSec: number; maxSignatures?: number }
+    options: { lookbackSec: number; maxSignatures?: number; allowSingleFetchFallback?: boolean }
   ): Promise<ParsedSwap[]> {
     const poolMetadata = await this.resolvePoolMetadata(pool);
     return fetchRecentSwapsForPool(this.connection, pool, poolMetadata, options);
@@ -322,7 +326,9 @@ export class HeliusWSIngester extends EventEmitter {
     batch: Array<{ pool: string; signature: string; slot: number }>
   ): Promise<Map<string, ParsedSwap | null>> {
     let txs;
-    if (!this.batchFallbackSupported || batch.length === 1) {
+    if (!this.batchFallbackSupported && this.disableSingleTxFallbackOnBatchUnsupported) {
+      txs = batch.map(() => null);
+    } else if (!this.batchFallbackSupported || batch.length === 1) {
       txs = await Promise.all(batch.map((entry) => this.fetchParsedTransaction(entry.signature)));
     } else {
       try {
@@ -336,8 +342,18 @@ export class HeliusWSIngester extends EventEmitter {
       } catch (error) {
         if (this.isBatchUnsupportedError(error)) {
           this.batchFallbackSupported = false;
-          log.info('Parsed transaction batch RPC unavailable on current plan; falling back to single-request mode');
-          txs = await Promise.all(batch.map((entry) => this.fetchParsedTransaction(entry.signature)));
+          if (this.disableSingleTxFallbackOnBatchUnsupported) {
+            if (!this.batchUnsupportedWarned) {
+              log.warn(
+                'Parsed transaction batch RPC unavailable on current plan; suppressing single-request fallback to avoid rate-limit storms'
+              );
+              this.batchUnsupportedWarned = true;
+            }
+            txs = batch.map(() => null);
+          } else {
+            log.info('Parsed transaction batch RPC unavailable on current plan; falling back to single-request mode');
+            txs = await Promise.all(batch.map((entry) => this.fetchParsedTransaction(entry.signature)));
+          }
         } else {
           throw error;
         }

@@ -447,11 +447,14 @@ async function main() {
               realtimeEligibility.pair.pairAddress,
               realtimePoolMetadata.get(realtimeEligibility.pair.pairAddress)!
             );
-            if (heliusIngester && realtimeCandleBuilder) {
+            if (heliusIngester && realtimeCandleBuilder && config.realtimeSeedBackfillEnabled) {
               const lookbackSec = getRealtimeSeedLookbackSec();
               const recentSwaps = await heliusIngester.backfillRecentSwaps(
                 realtimeEligibility.pair.pairAddress,
-                { lookbackSec }
+                {
+                  lookbackSec,
+                  allowSingleFetchFallback: config.realtimeSeedAllowSingleTxFallback,
+                }
               );
               if (recentSwaps.length > 0) {
                 const seeded = realtimeCandleBuilder.seedSwaps(
@@ -623,6 +626,8 @@ async function main() {
       fallbackRequestsPerSecond: config.realtimeFallbackRequestsPerSecond,
       fallbackBatchSize: config.realtimeFallbackBatchSize,
       maxFallbackQueue: config.realtimeMaxFallbackQueue,
+      disableSingleTxFallbackOnBatchUnsupported:
+        config.realtimeDisableSingleTxFallbackOnBatchUnsupported,
     });
     for (const [pool, metadata] of realtimePoolMetadata.entries()) {
       heliusIngester.setPoolMetadata(pool, metadata);

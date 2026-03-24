@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import { Connection, Logs, PublicKey } from '@solana/web3.js';
 import { SOL_MINT } from '../utils/constants';
 import { createModuleLogger } from '../utils/logger';
+import { fetchRecentSwapsForPool } from './recentSwapBackfill';
 import { HeliusWSConfig, ParsedSwap, RealtimePoolMetadata } from './types';
 import {
   isLikelyPumpSwapFallbackLog,
@@ -56,6 +57,14 @@ export class HeliusWSIngester extends EventEmitter {
 
   clearPoolMetadata(pool: string): void {
     this.poolMetadata.delete(pool);
+  }
+
+  async backfillRecentSwaps(
+    pool: string,
+    options: { lookbackSec: number; maxSignatures?: number }
+  ): Promise<ParsedSwap[]> {
+    const poolMetadata = await this.resolvePoolMetadata(pool);
+    return fetchRecentSwapsForPool(this.connection, pool, poolMetadata, options);
   }
 
   async subscribePools(pools: string[]): Promise<void> {

@@ -5,6 +5,7 @@ import { buildMomentumTriggerOrder } from '../strategy';
 import { config } from '../utils/config';
 import { createModuleLogger } from '../utils/logger';
 import { Signal } from '../utils/types';
+import { resolveRealtimeDiscoveryTelemetry } from './realtimeDiscoveryTelemetry';
 import { processSignal } from './signalProcessor';
 import { BotContext } from './types';
 
@@ -50,6 +51,11 @@ export async function handleRealtimeSignal(
 
   const scoresByMint = ctx.eventMonitor.getScoresByMint();
   const attentionScore = scoresByMint.get(poolInfo.tokenMint);
+  const discoveryTelemetry = resolveRealtimeDiscoveryTelemetry(
+    ctx,
+    poolInfo.tokenMint,
+    signal.timestamp.toISOString()
+  );
   const poolTvl = poolInfo.tvl;
   const lastClose = candles[candles.length - 1].close;
   const lastLow = candles[candles.length - 1].low;
@@ -61,21 +67,23 @@ export async function handleRealtimeSignal(
 
   let tokenSecurityData = undefined;
   let exitLiquidityData = undefined;
-  if (useAsyncGates && ctx.birdeyeClient) {
+  if (config.securityGateEnabled && ctx.onchainSecurityClient) {
     try {
       const [secData, exitData] = await Promise.all([
-        config.securityGateEnabled
-          ? ctx.birdeyeClient.getTokenSecurityDetailed(poolInfo.tokenMint)
-          : Promise.resolve(undefined),
-        config.securityGateEnabled
-          ? ctx.birdeyeClient.getExitLiquidity(poolInfo.tokenMint)
-          : Promise.resolve(undefined),
+        ctx.onchainSecurityClient.getTokenSecurityDetailed(poolInfo.tokenMint),
+        ctx.onchainSecurityClient.getExitLiquidity(poolInfo.tokenMint),
       ]);
       tokenSecurityData = secData;
       exitLiquidityData = exitData;
     } catch (error) {
       log.warn(`Realtime security data fetch failed for ${poolInfo.tokenMint}: ${error}`);
+      tokenSecurityData = null;
+      exitLiquidityData = null;
     }
+  } else if (config.securityGateEnabled) {
+    log.warn(`Realtime security gate enabled without onchain client for ${poolInfo.tokenMint}`);
+    tokenSecurityData = null;
+    exitLiquidityData = null;
   }
 
   let measuredSpreadPct: number | undefined;
@@ -221,6 +229,8 @@ export async function handleRealtimeSignal(
         ammFeePct: signal.meta.ammFeePct,
         mevMarginPct: signal.meta.mevMarginPct,
         currentVolume24hUsd: signal.meta.currentVolume24hUsd,
+        discoveryTimestamp: discoveryTelemetry?.discoveryTimestamp,
+        triggerWarmupLatencyMs: discoveryTelemetry?.triggerWarmupLatencyMs,
       },
     }, recentObservationCandles);
   }
@@ -264,6 +274,11 @@ async function trackRealtimeShadowSignal({
     (signal.spreadPct ?? poolInfo?.spreadPct ?? 0) +
     (signal.meta.ammFeePct ?? poolInfo?.ammFeePct ?? 0) +
     (signal.meta.mevMarginPct ?? poolInfo?.mevMarginPct ?? 0);
+  const discoveryTelemetry = resolveRealtimeDiscoveryTelemetry(
+    ctx,
+    poolInfo?.tokenMint,
+    signal.timestamp.toISOString()
+  );
 
   ctx.realtimeOutcomeTracker.track({
     version: 1,
@@ -310,6 +325,8 @@ async function trackRealtimeShadowSignal({
       ammFeePct: signal.meta.ammFeePct ?? poolInfo.ammFeePct,
       mevMarginPct: signal.meta.mevMarginPct ?? poolInfo.mevMarginPct,
       currentVolume24hUsd: poolInfo.dailyVolume,
+      discoveryTimestamp: discoveryTelemetry?.discoveryTimestamp,
+      triggerWarmupLatencyMs: discoveryTelemetry?.triggerWarmupLatencyMs,
     } : undefined,
   }, recentObservationCandles);
 }

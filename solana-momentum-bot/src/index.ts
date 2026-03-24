@@ -4,7 +4,14 @@ import { createModuleLogger } from './utils/logger';
 import { HealthMonitor } from './utils/healthMonitor';
 import { Candle } from './utils/types';
 
-import { GeckoTerminalClient, BirdeyeClient, Ingester, IngesterConfig } from './ingester';
+import {
+  GeckoTerminalClient,
+  BirdeyeClient,
+  Ingester,
+  IngesterConfig,
+  OnchainSecurityClient,
+  attachBirdeyeListingSource,
+} from './ingester';
 import { BirdeyeWSClient } from './ingester/birdeyeWSClient';
 import { EventMonitor, EventScoreStore } from './event';
 import { CandleStore, TradeStore } from './candle';
@@ -23,7 +30,13 @@ import {
   type RealtimePoolMetadata,
 } from './realtime';
 import { UniverseEngine, UniverseEngineConfig } from './universe';
-import { ScannerEngine, ScannerEngineConfig, DexScreenerClient, SocialMentionTracker } from './scanner';
+import {
+  ScannerEngine,
+  ScannerEngineConfig,
+  DexScreenerClient,
+  SocialMentionTracker,
+  attachScannerFreshListingSource,
+} from './scanner';
 import { ExecutionLock, PositionStore, runRecovery } from './state';
 import { SignalAuditLogger } from './audit';
 import { scheduleDailySummary } from './orchestration/reporting';
@@ -44,6 +57,7 @@ const REGIME_SOL_CACHE_TTL_MS = 60 * 60 * 1000;
 const REALTIME_ADMISSION_MIN_OBSERVED = 50;
 const REALTIME_ADMISSION_MIN_PARSE_RATE_PCT = 1;
 const REALTIME_ADMISSION_MIN_SKIPPED_RATE_PCT = 90;
+const REALTIME_TRIGGER_SEED_BUFFER_BARS = 4;
 function buildHeliusWsUrl(): string {
   if (config.heliusWsUrl) return config.heliusWsUrl;
   if (config.solanaRpcUrl.startsWith('https://')) {
@@ -53,6 +67,18 @@ function buildHeliusWsUrl(): string {
     return `ws://${config.solanaRpcUrl.slice('http://'.length)}`;
   }
   return config.solanaRpcUrl;
+}
+
+function getRealtimeSeedLookbackSec(): number {
+  const primaryLookbackBars = Math.max(
+    config.realtimeVolumeSurgeLookback,
+    config.realtimePriceBreakoutLookback
+  ) + 1;
+  const primaryLookbackSec =
+    (primaryLookbackBars + REALTIME_TRIGGER_SEED_BUFFER_BARS) * config.realtimePrimaryIntervalSec;
+  const confirmLookbackSec =
+    (config.realtimeConfirmMinBars + 1) * config.realtimeConfirmIntervalSec;
+  return Math.max(primaryLookbackSec, confirmLookbackSec);
 }
 
 async function main() {
@@ -163,8 +189,9 @@ async function main() {
 
   // ─── Initialize modules ─────────────────────────────
   const geckoClient = new GeckoTerminalClient();
-  // Why: Birdeye optional — Security Gate + Strategy D only (live mode)
+  // Why: Birdeye optional — overview/legacy REST + Strategy D WS 보조용
   const birdeyeClient = config.birdeyeApiKey ? new BirdeyeClient(config.birdeyeApiKey) : null;
+  const onchainSecurityClient = new OnchainSecurityClient(config.solanaRpcUrl);
   const eventMonitor = new EventMonitor(geckoClient, {
     pollingIntervalMs: config.eventPollingIntervalMs,
     minAttentionScore: config.eventMinScore,
@@ -267,6 +294,66 @@ async function main() {
 
   // ─── Phase 1A: Birdeye WebSocket (requires API key) ──
   let birdeyeWS: BirdeyeWSClient | null = null;
+  const handleStrategyDListingCandidate = async (
+    listingCandidate: import('./strategy/newLpSniper').NewLpListingInput,
+    sourceLabel: string
+  ): Promise<void> => {
+    if (!config.strategyDEnabled || !walletManager.hasSandboxWallet()) return;
+    if (!listingCandidate.address) return;
+
+    try {
+      const strategyDParams = {
+        ticketSizeSol: config.strategyDTicketSol,
+        minAgeMinutes: config.strategyDMinAge,
+        maxAgeMinutes: config.strategyDMaxAge,
+        takeProfitMultiplier: config.strategyDTpMultiplier,
+      };
+      const prepared = await prepareNewLpCandidate(listingCandidate, {
+        getTokenSecurityDetailed: (tokenMint) => onchainSecurityClient.getTokenSecurityDetailed(tokenMint),
+        getExitLiquidity: (tokenMint) => onchainSecurityClient.getExitLiquidity(tokenMint),
+      }, {
+        params: strategyDParams,
+        securityGate: {
+          minExitLiquidityUsd: config.minExitLiquidityUsd,
+        },
+        quoteGate: {
+          jupiterApiUrl: config.jupiterApiUrl,
+          jupiterApiKey: config.jupiterApiKey || undefined,
+        },
+      });
+
+      if (!prepared.candidate) {
+        log.debug(
+          `Strategy D skipped ${listingCandidate.symbol ?? listingCandidate.address} ` +
+          `(${sourceLabel}): ${prepared.rejectionReason ?? 'unknown'}`
+        );
+        return;
+      }
+
+      const signal = evaluateNewLpSniper(prepared.candidate, strategyDParams);
+      if (signal.action !== 'BUY') return;
+
+      const walletLimit = walletManager.checkTradeLimits('new_lp_sniper', signal.meta.ticketSizeSol * signal.price);
+      if (!walletLimit.allowed) {
+        log.info(`Strategy D blocked: ${walletLimit.reason}`);
+        return;
+      }
+
+      const order = buildNewLpOrder(signal, strategyDParams);
+      log.info(
+        `Strategy D signal (${sourceLabel}): ${prepared.candidate.tokenSymbol} ticket=${order.quantity} SOL ` +
+        `impact=${((prepared.quoteGate?.priceImpactPct ?? 0) * 100).toFixed(2)}%`
+      );
+
+      if (effectiveMode === 'paper') {
+        log.info(`[PAPER] Strategy D: ${JSON.stringify(order)}`);
+      }
+      // Live execution은 Jito bundle + sandbox wallet 통합 후 활성화
+    } catch (err) {
+      log.warn(`Strategy D evaluation failed (${sourceLabel}): ${err}`);
+    }
+  };
+
   if (config.birdeyeWSEnabled && config.birdeyeApiKey) {
     birdeyeWS = new BirdeyeWSClient({
       apiKey: config.birdeyeApiKey,
@@ -282,61 +369,10 @@ async function main() {
       log.error(`Birdeye WS error: ${err.message}`);
     });
     // H-05: Strategy D — New LP Sniper event handler
-    if (config.strategyDEnabled && walletManager.hasSandboxWallet() && birdeyeClient) {
-      birdeyeWS.on('newListing', async (update: { address: string; symbol?: string; liquidity?: number; liquidityAddedAt?: number }) => {
-        if (!update.address || !birdeyeClient) return;
-        try {
-          const strategyDParams = {
-            ticketSizeSol: config.strategyDTicketSol,
-            minAgeMinutes: config.strategyDMinAge,
-            maxAgeMinutes: config.strategyDMaxAge,
-            takeProfitMultiplier: config.strategyDTpMultiplier,
-          };
-          const prepared = await prepareNewLpCandidate(update, {
-            getTokenSecurityDetailed: (tokenMint) => birdeyeClient!.getTokenSecurityDetailed(tokenMint),
-            getExitLiquidity: (tokenMint) => birdeyeClient!.getExitLiquidity(tokenMint),
-            getTokenOverview: (tokenMint) => birdeyeClient!.getTokenOverview(tokenMint),
-          }, {
-            params: strategyDParams,
-            securityGate: {
-              minExitLiquidityUsd: config.minExitLiquidityUsd,
-            },
-            quoteGate: {
-              jupiterApiUrl: config.jupiterApiUrl,
-              jupiterApiKey: config.jupiterApiKey || undefined,
-            },
-          });
-
-          if (!prepared.candidate) {
-            log.debug(
-              `Strategy D skipped ${update.symbol ?? update.address}: ${prepared.rejectionReason ?? 'unknown'}`
-            );
-            return;
-          }
-
-          const signal = evaluateNewLpSniper(prepared.candidate, strategyDParams);
-          if (signal.action !== 'BUY') return;
-
-          const walletLimit = walletManager.checkTradeLimits('new_lp_sniper', signal.meta.ticketSizeSol * signal.price);
-          if (!walletLimit.allowed) {
-            log.info(`Strategy D blocked: ${walletLimit.reason}`);
-            return;
-          }
-
-          const order = buildNewLpOrder(signal, strategyDParams);
-          log.info(
-            `Strategy D signal: ${prepared.candidate.tokenSymbol} ticket=${order.quantity} SOL ` +
-            `impact=${((prepared.quoteGate?.priceImpactPct ?? 0) * 100).toFixed(2)}%`
-          );
-
-          if (effectiveMode === 'paper') {
-            log.info(`[PAPER] Strategy D: ${JSON.stringify(order)}`);
-          }
-          // Live execution은 Jito bundle + sandbox wallet 통합 후 활성화
-        } catch (err) {
-          log.warn(`Strategy D evaluation failed: ${err}`);
-        }
-      });
+    if (config.strategyDEnabled && walletManager.hasSandboxWallet()) {
+      attachBirdeyeListingSource(birdeyeWS, (listingCandidate) =>
+        handleStrategyDListingCandidate(listingCandidate, 'birdeye_ws')
+      );
     }
 
     log.info('Birdeye WebSocket client initialized');
@@ -351,11 +387,12 @@ async function main() {
   if (config.scannerEnabled) {
     const scannerConfig: ScannerEngineConfig = {
       geckoClient,
-      birdeyeWS,
       dexScreenerClient,
       maxWatchlistSize: config.maxWatchlistSize,
       minWatchlistScore: config.scannerMinWatchlistScore,
       trendingPollIntervalMs: config.scannerTrendingPollMs,
+      geckoNewPoolIntervalMs: config.scannerGeckoNewPoolMs,
+      dexDiscoveryIntervalMs: config.scannerDexDiscoveryMs,
       dexEnrichIntervalMs: config.scannerDexEnrichMs,
       laneAMinAgeSec: config.scannerLaneAMinAgeSec,
       laneBMaxAgeSec: config.scannerLaneBMaxAgeSec,
@@ -365,6 +402,10 @@ async function main() {
       socialMentionTracker, // H-02: social score → WatchlistScore 연동
     };
     scanner = new ScannerEngine(scannerConfig);
+    attachScannerFreshListingSource(scanner, (listingCandidate) => {
+      if (birdeyeWS) return;
+      return handleStrategyDListingCandidate(listingCandidate, listingCandidate.source);
+    });
     // Bridge: Scanner → Ingester + UniverseEngine (rate limit 방지 큐)
     const ingesterQueue: import('./scanner').WatchlistEntry[] = [];
     let ingesterQueueRunning = false;
@@ -406,6 +447,35 @@ async function main() {
               realtimeEligibility.pair.pairAddress,
               realtimePoolMetadata.get(realtimeEligibility.pair.pairAddress)!
             );
+            if (heliusIngester && realtimeCandleBuilder) {
+              const lookbackSec = getRealtimeSeedLookbackSec();
+              const recentSwaps = await heliusIngester.backfillRecentSwaps(
+                realtimeEligibility.pair.pairAddress,
+                { lookbackSec }
+              );
+              if (recentSwaps.length > 0) {
+                const seeded = realtimeCandleBuilder.seedSwaps(
+                  recentSwaps.map((swap) => ({
+                    ...swap,
+                    pool: entry.tokenMint,
+                  }))
+                );
+                log.info(
+                  `Realtime seed applied for ${entry.symbol}: ${seeded} swaps ` +
+                  `(${Math.round(lookbackSec / 60)}m lookback)`
+                );
+                if (realtimeReplayStore) {
+                  await Promise.all(recentSwaps.map((swap) =>
+                    realtimeReplayStore.appendSwap({
+                      ...swap,
+                      pairAddress: entry.tokenMint,
+                      poolAddress: swap.pool,
+                      tokenMint: entry.tokenMint,
+                    })
+                  ));
+                }
+              }
+            }
           } else {
             removeRealtimePoolTarget(entry.tokenMint);
             if (realtimeModeEnabled) {
@@ -528,7 +598,7 @@ async function main() {
     scanner: scanner ?? undefined,
     geckoClient,
     birdeyeClient: birdeyeClient ?? undefined,
-    birdeyeWS: birdeyeWS ?? undefined,
+    onchainSecurityClient,
     regimeFilter,
     paperMetrics,
     socialMentionTracker,

@@ -1,10 +1,9 @@
 import { createModuleLogger } from '../utils/logger';
-import { Signal, Order, Candle } from '../utils/types';
+import { Signal, Order } from '../utils/types';
 import type {
   ExitLiquidityData,
   TokenSecurityData,
-} from '../ingester/birdeyeClient';
-import type { WSNewListingUpdate } from '../ingester/birdeyeWSClient';
+} from '../ingester/onchainSecurity';
 import {
   evaluateSecurityGate,
   type SecurityGateConfig,
@@ -55,6 +54,7 @@ export interface NewListingCandidate {
   tokenMint: string;
   tokenSymbol: string;
   pairAddress: string;
+  sourceLabel?: string;
   liquidityUsd: number;
   liquidityAddedAt: Date;
   price: number;
@@ -73,7 +73,7 @@ export interface NewListingCandidate {
 export interface PrepareNewLpCandidateDependencies {
   getTokenSecurityDetailed(tokenMint: string): Promise<TokenSecurityData | null>;
   getExitLiquidity(tokenMint: string): Promise<ExitLiquidityData | null>;
-  getTokenOverview(tokenMint: string): Promise<Record<string, unknown> | undefined>;
+  getTokenOverview?(tokenMint: string): Promise<Record<string, unknown> | undefined>;
   evaluateQuoteGate?: (
     tokenMint: string,
     estimatedPositionSol: number,
@@ -94,11 +94,18 @@ export interface PreparedNewLpCandidateResult {
   quoteGate?: QuoteGateResult;
 }
 
+export interface NewLpListingInput {
+  address?: string;
+  symbol?: string;
+  price?: number;
+  liquidity?: number;
+  liquidityAddedAt?: number;
+  decimals?: number;
+  source?: string;
+}
+
 export async function prepareNewLpCandidate(
-  update: Pick<
-    WSNewListingUpdate,
-    'address' | 'symbol' | 'liquidity' | 'liquidityAddedAt' | 'decimals'
-  >,
+  update: NewLpListingInput,
   deps: PrepareNewLpCandidateDependencies,
   options: PrepareNewLpCandidateOptions = {}
 ): Promise<PreparedNewLpCandidateResult> {
@@ -112,7 +119,7 @@ export async function prepareNewLpCandidate(
   const [securityData, exitLiquidityData, overview] = await Promise.all([
     deps.getTokenSecurityDetailed(update.address),
     deps.getExitLiquidity(update.address),
-    deps.getTokenOverview(update.address),
+    deps.getTokenOverview?.(update.address) ?? Promise.resolve(undefined),
   ]);
 
   const securityGate = evaluateSecurityGate(
@@ -143,6 +150,7 @@ export async function prepareNewLpCandidate(
   }
 
   const price = resolveListingPrice({
+    listingPrice: update.price,
     overview,
     decimals: update.decimals,
     quoteGate,
@@ -164,6 +172,7 @@ export async function prepareNewLpCandidate(
       tokenMint: update.address,
       tokenSymbol: update.symbol ?? 'UNKNOWN',
       pairAddress: update.address,
+      sourceLabel: update.source,
       liquidityUsd,
       liquidityAddedAt: new Date(update.liquidityAddedAt ?? Date.now()),
       price,
@@ -182,7 +191,7 @@ export async function prepareNewLpCandidate(
  * Strategy D: New LP Sniper — 옵션성 베팅.
  *
  * 코어 전략이 아닌 별도 지갑의 고정 티켓 베팅:
- *   - Birdeye WS new_listing/new_pair 이벤트로 후보 수집
+ *   - 외부 listing source 이벤트로 후보 수집
  *   - age 3~20분 필터
  *   - 강화된 security gate 전항목 통과 필수
  *   - Jupiter route + impact 검증
@@ -252,6 +261,7 @@ export function evaluateNewLpSniper(
     pairAddress: candidate.pairAddress,
     price: candidate.price,
     timestamp: new Date(),
+    sourceLabel: candidate.sourceLabel,
     meta: {
       ageMinutes,
       liquidityUsd: candidate.liquidityUsd,
@@ -285,6 +295,7 @@ export function buildNewLpOrder(
     side: 'BUY',
     price: signal.price,
     quantity: ticketSol,
+    sourceLabel: signal.sourceLabel,
     stopLoss,
     takeProfit1,
     takeProfit2,
@@ -295,11 +306,16 @@ export function buildNewLpOrder(
 }
 
 function resolveListingPrice(input: {
+  listingPrice?: number;
   overview?: Record<string, unknown>;
   decimals?: number;
   quoteGate: QuoteGateResult;
   ticketSizeSol: number;
 }): number {
+  if (Number.isFinite(input.listingPrice) && (input.listingPrice ?? 0) > 0) {
+    return input.listingPrice ?? 0;
+  }
+
   const overviewPrice = parsePositiveNumber(
     input.overview,
     ['price', 'priceUsd', 'priceUSD', 'value', 'valueUsd']

@@ -4,7 +4,7 @@
 > Mission: 1 SOL → 100 SOL
 > Documented strategies: Volume Spike (A), Fib Pullback (C), New LP Sniper (D), Momentum Cascade (E)
 > Runtime focus: A/C core, D sandbox, E conditional add-on
-> Runtime note: 현재 paper 데이터 경로는 GeckoTerminal + DexScreener 중심이며, Birdeye WS/security 관련 표기는 live/optional roadmap를 함께 포함한다.
+> Runtime note: 현재 paper/runtime 핵심 경로는 GeckoTerminal + DexScreener + Helius RPC 중심이며, Birdeye는 Strategy D optional event provider / legacy tooling에만 남아 있다.
 
 ---
 
@@ -15,7 +15,7 @@
 봇은 순수 모멘텀 추격자가 아니다. **이벤트 컨텍스트**가 선행하고, **온체인 트리거**가 확인될 때만 진입한다.
 
 ```
-Stage 1: 왜 움직이는가?  → AttentionScore (GeckoTerminal trending + DexScreener 보조, optional Birdeye WS)
+Stage 1: 왜 움직이는가?  → AttentionScore (GeckoTerminal trending + DexScreener 보조)
 Stage 2: 지금 들어가도 되는가?  → Gate System (Security → Score → Execution → Risk)
 ```
 
@@ -157,7 +157,7 @@ Grade: A(≥70) / B(≥50) / C(<50, reject)
 소스:
   GeckoTerminal trending + OHLCV polling
   DexScreener enrichment
-  optional Birdeye WS → live/phase 2+ 실시간 보강
+  Birdeye WS 미사용
 ```
 
 ### Lane B: Fresh Listing (향후 Strategy D 대상)
@@ -170,8 +170,10 @@ Grade: A(≥70) / B(≥50) / C(<50, reject)
   강화된 security gate
 
 소스:
-  optional Birdeye WS → SUBSCRIBE_TOKEN_NEW_LISTING / SUBSCRIBE_NEW_PAIR
-  live에서는 security / exit-liquidity gate 추가
+  scanner lane-B fallback
+  Gecko new_pools + Dex boosts / latest token profiles / community takeovers / ads
+  optional Birdeye WS adapter
+  live에서는 security / quote / exit-liquidity soft protection 추가
 ```
 
 ### 왜 분리하는가
@@ -194,10 +196,11 @@ Grade: A(≥70) / B(≥50) / C(<50, reject)
 
 | 소스 | 역할 | 갱신 주기 |
 |------|------|----------|
-| **GeckoTerminal** | trending discovery + OHLCV + regime 입력 | 5분 / 15분 / 30분 polling |
-| **DexScreener API** | 주목도 보강, pair 메타, liquidity/volume 보강 | 1~5분 |
+| **GeckoTerminal** | trending fallback + OHLCV + regime 입력 | 5분 / 15분 / 30분 polling |
+| **DexScreener API** | 주목도 보강, pair 메타, fast discovery source | 1~5분 |
 | **Jupiter Quote API** | price impact / route quality / freshness gate | 진입 전 |
-| **Birdeye WebSocket / REST** | optional live 보강, security / exit-liquidity gate | 필요 시 |
+| **Helius RPC** | token security 온체인 조회 | 진입 전 / 필요 시 |
+| **Birdeye WebSocket / REST** | optional Strategy D event provider / legacy tooling | 필요 시 |
 
 ### Optional Birdeye WebSocket 구독 타입
 
@@ -212,7 +215,7 @@ SUBSCRIBE_NEW_PAIR           — 신규 페어 생성
 SUBSCRIBE_BASE_QUOTE_PRICE   — 임의 페어 가격 변동
 ```
 
-**플랜 요구사항:** WS 연결은 Premium Plus(500 conn) 이상, Free/Standard는 WS 미지원.
+**플랜 요구사항:** WS는 optional provider다. 미사용 시 scanner lane-B fallback으로 대체 가능하다.
 
 ### DexScreener 피처 (랭킹 보조, 매수 트리거 아님)
 
@@ -249,24 +252,18 @@ GET /swap/quote?inputMint=SOL&outputMint={token}&amount={estimatedSize}
 
 ### Security Gate 강화
 
-> **플랜 요구사항:** token_security → Premium+, exit-liquidity → Premium+
+> 현재 핵심 security 입력은 Helius RPC 온체인 조회다. exit liquidity는 quote/sell impact 프록시와 함께 본다.
 
 ```
-Birdeye GET /defi/token_security (X-API-KEY 헤더):
-  - is_honeypot → reject
-  - is_freezable → reject
-  - is_mintable → reject (또는 사이징 50%)
-  - has_transfer_fee → reject (Token-2022 TransferFeeExtension)
-  - freeze_authority_present → reject
-  - top10_holder_pct > 80% → reject
+Helius RPC / 온체인 조회:
+  - freeze authority present → reject
+  - mint authority present → reject
+  - transfer fee config present → reject (Token-2022 TransferFeeExtension)
+  - top10 holder pct > threshold → reject
 
-Birdeye GET /defi/v3/token/exit-liquidity (단일 토큰, 2025-06 추가):
-  - exit-liquidity 실측 (null이면 미지원 토큰 → 사이징 50%)
+Quote / sell impact 프록시:
+  - exit-liquidity 미확인(null) → soft sizing reduction
   - sell-side depth가 entry size 대비 충분한지
-
-보조 — Birdeye /defi/v3/token/trade-data/single:
-  - 24h sell volume / buy volume ratio
-  - 최근 대형 매도 체결 존재 여부
 ```
 
 ### Watchlist Score 체계 (AttentionScore 대체)
@@ -294,7 +291,7 @@ WatchlistScore = f(
 Signal
   │
   ├─ Gate 0: Security Gate (신규 — 최우선)
-  │    ├─ Birdeye token_security → honeypot/freezable/mintable/transfer_fee reject
+  │    ├─ Helius RPC security → mint/freeze/transfer_fee/holder reject
   │    ├─ exit-liquidity 프록시 → sell-side depth 검증
   │    └─ Token-2022 transfer fee → reject
   │
@@ -587,17 +584,17 @@ effectiveRR = (rewardPct - roundTripCost) / (riskPct + roundTripCost)
 ### 위험 요인
 
 - 신규 토큰은 security gate를 더 세게 걸어야 함
-- Birdeye security: honeypot, freezable, mintable, freeze authority, transfer fees, top holders
+- Helius RPC security + Quote Gate + soft exit-liquidity protection이 핵심
 - Token-2022 TransferFeeExtension → 매 전송마다 자동 fee → 차트가 좋아 보여도 기대값 파괴
 - Jito 없이 초저지연 스나이핑은 MEV 봇에 의해 샌드위치 당함
 
 ### 진입 로직 (초안)
 
 ```
-Birdeye WS: SUBSCRIBE_TOKEN_NEW_LISTING / SUBSCRIBE_NEW_PAIR
+listing source: optional Birdeye WS adapter or scanner lane-B fallback
   → age 3~20분 필터
-  → Birdeye token_security 전항목 통과
-  → exit-liquidity 최소 threshold
+  → Helius RPC security gate 통과
+  → exit-liquidity soft protection
   → Jupiter quote gate (route 존재 + impact < 5%)
   → Jito bundle로 TX 전송
   → 고정 티켓: 0.01~0.05 SOL (risk% 사이징 아님)
@@ -848,7 +845,8 @@ Birdeye WS: SUBSCRIBE_TOKEN_NEW_LISTING / SUBSCRIBE_NEW_PAIR
 | 파라미터 | 현재 값 | 메모 |
 |---------|--------|------|
 | `maxWatchlistSize` | 8 권장 | paper 안정화 보수값 |
-| `scannerTrendingPollMs` | 300,000 (5분) | trending poll |
+| `scannerGeckoNewPoolMs` | 60,000 (1분) | Gecko `new_pools` fast discovery poll |
+| `scannerTrendingPollMs` | 600,000 (10분) | ranking fallback trending poll |
 | `scannerDexEnrichMs` | 300,000 (5분) | Dex 보강 주기 |
 | `scannerReentryCooldownMs` | 1,800,000 (30분) | evict 직후 재진입 차단 |
 

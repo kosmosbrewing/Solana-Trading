@@ -5,6 +5,7 @@ import { config } from '../utils/config';
 import { createModuleLogger } from '../utils/logger';
 import { Candle, Order, Signal } from '../utils/types';
 import { buildSignalAuditBase, recordOpenedTrade, runnerStateMap, syncTradingHalts } from './tradeExecution';
+import { buildPositionSignalData } from './signalTrace';
 import { BotContext } from './types';
 
 const log = createModuleLogger('SignalProcessor');
@@ -257,7 +258,7 @@ export async function processSignal(
 
     const positionId = await ctx.positionStore.createPosition(
       signal.pairAddress,
-      { signal: signal.meta, score: totalScore, grade }
+      buildPositionSignalData(signal, gateResult, totalScore, grade)
     );
 
       try {
@@ -299,6 +300,7 @@ export async function processSignal(
           id: positionId,
           pairAddress: signal.pairAddress,
           strategy: signal.strategy,
+          sourceLabel: signal.sourceLabel,
           entryPrice: order.price,
           quantity: order.quantity,
           entryTime: new Date(),

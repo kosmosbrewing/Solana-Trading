@@ -146,7 +146,7 @@ reporting/paperValidation.ts → risk/drawdownGuard (replayDrawdownGuardState)
 
 **필수 필드:** tradingMode, candleStore, tradeStore, riskManager, executor, notifier, healthMonitor, universeEngine, eventMonitor, executionLock, positionStore, auditLogger
 
-**선택 필드 (Phase별 활성화):** scanner, birdeyeClient, birdeyeWS, regimeFilter, paperMetrics, socialMentionTracker, spreadMeasurer, eventScoreStore, walletManager
+**선택 필드 (Phase별 활성화):** scanner, geckoClient, birdeyeClient, onchainSecurityClient, regimeFilter, paperMetrics, socialMentionTracker, spreadMeasurer, eventScoreStore, walletManager
 
 ## 6. 핵심 전략
 

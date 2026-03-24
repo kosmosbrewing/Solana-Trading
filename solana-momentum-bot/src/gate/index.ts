@@ -4,7 +4,7 @@ import { buildTokenSafety } from './safetyGate';
 import { evaluateExecutionViability, ExecutionViabilityResult } from './executionViability';
 import { evaluateSecurityGate, SecurityGateResult } from './securityGate';
 import { evaluateQuoteGate, QuoteGateResult } from './quoteGate';
-import { TokenSecurityData, ExitLiquidityData } from '../ingester/birdeyeClient';
+import { TokenSecurityData, ExitLiquidityData } from '../ingester/onchainSecurity';
 import { createModuleLogger } from '../utils/logger';
 import {
   applyAttentionScoreComponent,
@@ -33,9 +33,9 @@ export interface EvaluateGatesInput {
   estimatedPositionSol?: number;
 
   // ─── Phase 1A: Security + Quote Gate ───
-  /** Token security data from Birdeye (null = skip security gate) */
+  /** Token security data from current security source (onchain RPC in runtime) */
   tokenSecurityData?: TokenSecurityData | null;
-  /** Exit liquidity data from Birdeye (null = skip) */
+  /** Exit liquidity proxy data (null = skip / soft fallback) */
   exitLiquidityData?: ExitLiquidityData | null;
   /** Jupiter API config for quote gate */
   quoteGateConfig?: { jupiterApiUrl: string; jupiterApiKey?: string; maxPriceImpact?: number };

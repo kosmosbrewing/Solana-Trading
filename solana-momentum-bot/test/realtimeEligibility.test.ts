@@ -1,5 +1,5 @@
 import { SOL_MINT } from '../src/utils/constants';
-import { PUMP_SWAP_PROGRAM, selectRealtimeEligiblePair } from '../src/realtime';
+import { PUMP_SWAP_PROGRAM, RAYDIUM_CPMM_PROGRAM, selectRealtimeEligiblePair } from '../src/realtime';
 
 function makePair(overrides: Record<string, unknown> = {}) {
   return {
@@ -60,6 +60,20 @@ describe('selectRealtimeEligiblePair', () => {
 
     expect(result.eligible).toBe(true);
     expect(result.pair?.pairAddress).toBe('pair-v4');
+  });
+
+  it('accepts Raydium CPMM pool owners as realtime-eligible', () => {
+    const result = selectRealtimeEligiblePair([
+      makePair({ pairAddress: 'pair-cpmm', liquidity: { usd: 2500 } }),
+    ], new Map([
+      ['pair-cpmm', RAYDIUM_CPMM_PROGRAM],
+    ]));
+
+    expect(result).toMatchObject({
+      eligible: true,
+      reason: 'eligible',
+    });
+    expect(result.pair?.pairAddress).toBe('pair-cpmm');
   });
 
   it('rejects pairs when all supported dex candidates have unsupported pool owners', () => {

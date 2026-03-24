@@ -21,6 +21,36 @@ export interface DexScreenerOrder {
   paymentTimestamp?: number;
 }
 
+export interface DexScreenerLink {
+  type: string;
+  label?: string;
+  url: string;
+}
+
+export interface DexScreenerTokenProfile {
+  tokenAddress: string;
+  chainId: string;
+  url?: string;
+  icon?: string;
+  header?: string;
+  description?: string;
+  links?: DexScreenerLink[];
+}
+
+export interface DexScreenerCommunityTakeover extends DexScreenerTokenProfile {
+  claimDate?: string;
+}
+
+export interface DexScreenerAd {
+  tokenAddress: string;
+  chainId: string;
+  url?: string;
+  date?: string;
+  type?: string;
+  durationHours?: number;
+  impressions?: number;
+}
+
 /** Token pair data from /latest/dex/tokens endpoint */
 export interface DexScreenerPair {
   chainId: string;
@@ -85,8 +115,46 @@ export class DexScreenerClient {
         status: String(o.status ?? ''),
         paymentTimestamp: o.paymentTimestamp != null ? Number(o.paymentTimestamp) : undefined,
       }));
-    } catch (error) {
+    } catch {
       log.debug(`No paid orders for ${tokenAddress}`);
+      return [];
+    }
+  }
+
+  /** Latest token profiles — 신규 토큰/프로필 등록 feed */
+  async getLatestTokenProfiles(): Promise<DexScreenerTokenProfile[]> {
+    try {
+      const data = await this.getWithRetry('/token-profiles/latest/v1');
+      return this.normalizeTokenProfiles(data);
+    } catch (error) {
+      log.warn(`Failed to fetch latest token profiles: ${error}`);
+      return [];
+    }
+  }
+
+  /** Latest community takeovers — 신규 CTO/커뮤니티 전환 feed */
+  async getLatestCommunityTakeovers(): Promise<DexScreenerCommunityTakeover[]> {
+    try {
+      const data = await this.getWithRetry('/community-takeovers/latest/v1');
+      const profiles = this.normalizeTokenProfiles(data);
+      const items = Array.isArray(data) ? data : [];
+      return profiles.map((profile, index) => ({
+        ...profile,
+        claimDate: items[index]?.claimDate as string | undefined,
+      }));
+    } catch (error) {
+      log.warn(`Failed to fetch latest community takeovers: ${error}`);
+      return [];
+    }
+  }
+
+  /** Latest ads — 신규 광고 집행 토큰 feed */
+  async getLatestAds(): Promise<DexScreenerAd[]> {
+    try {
+      const data = await this.getWithRetry('/ads/latest/v1');
+      return this.normalizeAds(data);
+    } catch (error) {
+      log.warn(`Failed to fetch latest ads: ${error}`);
       return [];
     }
   }
@@ -201,6 +269,46 @@ export class DexScreenerClient {
         description: b.description as string | undefined,
         url: b.url as string | undefined,
       }));
+  }
+
+  private normalizeTokenProfiles(data: unknown): DexScreenerTokenProfile[] {
+    const items = Array.isArray(data) ? data : [];
+    return items
+      .filter((profile: Record<string, unknown>) => profile.chainId === 'solana')
+      .map((profile: Record<string, unknown>) => ({
+        tokenAddress: String(profile.tokenAddress ?? ''),
+        chainId: 'solana',
+        url: profile.url as string | undefined,
+        icon: profile.icon as string | undefined,
+        header: profile.header as string | undefined,
+        description: profile.description as string | undefined,
+        links: Array.isArray(profile.links)
+          ? profile.links
+            .map((link: Record<string, unknown>) => ({
+              type: String(link.type ?? ''),
+              label: link.label as string | undefined,
+              url: String(link.url ?? ''),
+            }))
+            .filter((link) => Boolean(link.url))
+          : undefined,
+      }))
+      .filter((profile) => Boolean(profile.tokenAddress));
+  }
+
+  private normalizeAds(data: unknown): DexScreenerAd[] {
+    const items = Array.isArray(data) ? data : [];
+    return items
+      .filter((ad: Record<string, unknown>) => ad.chainId === 'solana')
+      .map((ad: Record<string, unknown>) => ({
+        tokenAddress: String(ad.tokenAddress ?? ''),
+        chainId: 'solana',
+        url: ad.url as string | undefined,
+        date: ad.date as string | undefined,
+        type: ad.type as string | undefined,
+        durationHours: ad.durationHours != null ? Number(ad.durationHours) : undefined,
+        impressions: ad.impressions != null ? Number(ad.impressions) : undefined,
+      }))
+      .filter((ad) => Boolean(ad.tokenAddress));
   }
 
   /**

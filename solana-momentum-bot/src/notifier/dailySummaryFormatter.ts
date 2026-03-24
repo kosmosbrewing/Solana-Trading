@@ -1,4 +1,4 @@
-import { StrategyEdgeStats } from '../reporting';
+import { SourceOutcomeStats, StrategyEdgeStats } from '../reporting';
 import {
   escapeHtml,
   formatDuration,
@@ -40,6 +40,7 @@ export interface DailySummaryReport {
   uptime: number;
   restarts: number;
   edgeStats?: StrategyEdgeStats[];
+  sourceOutcomes?: SourceOutcomeStats[];
   realtimeAdmission?: RealtimeAdmissionSummary;
 }
 
@@ -105,6 +106,17 @@ export function buildDailySummaryMessage(report: DailySummaryReport, dateLabel: 
         `승률 ${formatPercent(stat.winRate)} | 손익비 ${formatRewardRisk(stat.rewardRisk)} | ` +
         `Sharpe ${stat.sharpeRatio.toFixed(2)} | 최대 연속 손실 ${stat.maxConsecutiveLosses} | ` +
         `Kelly ${stat.kellyEligible ? formatPercent(stat.kellyFraction) : '잠금'}`
+      );
+    }
+  }
+
+  const visibleSourceOutcomes = (report.sourceOutcomes ?? []).filter(stat => stat.totalTrades > 0);
+  if (visibleSourceOutcomes.length > 0) {
+    lines.push('', '소스 성과');
+    for (const stat of visibleSourceOutcomes.slice(0, 5)) {
+      lines.push(
+        `- ${escapeHtml(stat.sourceLabel)}: ${stat.totalTrades}건 | ` +
+        `승률 ${formatPercent(stat.winRate)} | 손익 ${formatSignedSol(stat.pnl)}`
       );
     }
   }

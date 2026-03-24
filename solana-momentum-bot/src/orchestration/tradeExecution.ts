@@ -6,6 +6,7 @@ import { calcATR, calcAdaptiveTrailingStop, checkExhaustion } from '../strategy'
 import { PositionStore } from '../state';
 import { RiskManager } from '../risk';
 import { BotContext } from './types';
+import { buildGateTraceSnapshot } from './signalTrace';
 
 const log = createModuleLogger('TradeExecution');
 
@@ -67,7 +68,7 @@ export function checkDegradedCondition(
  * v2: Degraded Exit phase 1 실행 — TP1 partial 패턴 따라 부분 청산 + 잔여분 새 trade 생성
  * (C-2 fix: closeTrade가 trade를 CLOSED 처리하므로 잔여분은 새 trade로 생성)
  */
-async function handleDegradedExitPhase1(
+export async function handleDegradedExitPhase1(
   trade: Trade,
   currentPrice: number,
   ctx: BotContext
@@ -528,6 +529,7 @@ export async function recordOpenedTrade(
     pairAddress: order.pairAddress,
     strategy: order.strategy,
     side: order.side,
+    sourceLabel: signal.sourceLabel,
     entryPrice: order.price,
     quantity: order.quantity,
     stopLoss: order.stopLoss,
@@ -563,6 +565,9 @@ export function buildSignalAuditBase(
   return {
     pairAddress: signal.pairAddress,
     strategy: signal.strategy,
+    sourceLabel: signal.sourceLabel,
+    attentionScore: gateResult.attentionScore?.attentionScore,
+    attentionConfidence: gateResult.attentionScore?.confidence,
     ...signal.breakoutScore!,
     candleClose: signal.price,
     volume: candle.volume,
@@ -572,6 +577,7 @@ export function buildSignalAuditBase(
     spreadPct: signal.spreadPct,
     effectiveRR: gateResult.executionViability.effectiveRR,
     roundTripCost: gateResult.executionViability.roundTripCost,
+    gateTrace: buildGateTraceSnapshot(gateResult),
   };
 }
 

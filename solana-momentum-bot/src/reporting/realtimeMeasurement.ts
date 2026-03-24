@@ -83,6 +83,8 @@ export interface RealtimeSignalRecord {
     ammFeePct?: number;
     mevMarginPct?: number;
     currentVolume24hUsd?: number;
+    discoveryTimestamp?: string;
+    triggerWarmupLatencyMs?: number;
   };
   horizons: RealtimeSignalHorizonOutcome[];
   summary: {
@@ -103,6 +105,9 @@ export interface RealtimeMeasurementSummary {
   avgSignalToFillLatencyMs: number;
   p50SignalToFillLatencyMs: number;
   p95SignalToFillLatencyMs: number;
+  avgTriggerWarmupLatencyMs: number;
+  p50TriggerWarmupLatencyMs: number;
+  p95TriggerWarmupLatencyMs: number;
   selectedHorizonSec: number;
   avgReturnPct: number;
   avgAdjustedReturnPct: number;
@@ -151,6 +156,9 @@ export function summarizeRealtimeSignals(
         ? Math.max(0, processedMs - signalMs)
         : record.processing.latencyMs;
     });
+  const triggerWarmupLatencies = records
+    .map((record) => record.context?.triggerWarmupLatencyMs)
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
 
   const avgReturnPct = average(horizonRecords.map((item) => item.horizon.returnPct));
   const avgAdjustedReturnPct = average(horizonRecords.map((item) => item.horizon.adjustedReturnPct));
@@ -170,6 +178,9 @@ export function summarizeRealtimeSignals(
     avgSignalToFillLatencyMs: average(fillLatencies),
     p50SignalToFillLatencyMs: percentile(fillLatencies, 50),
     p95SignalToFillLatencyMs: percentile(fillLatencies, 95),
+    avgTriggerWarmupLatencyMs: average(triggerWarmupLatencies),
+    p50TriggerWarmupLatencyMs: percentile(triggerWarmupLatencies, 50),
+    p95TriggerWarmupLatencyMs: percentile(triggerWarmupLatencies, 95),
     selectedHorizonSec: horizonSec,
     avgReturnPct,
     avgAdjustedReturnPct,

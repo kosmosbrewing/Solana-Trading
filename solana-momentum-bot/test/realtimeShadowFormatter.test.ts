@@ -22,6 +22,9 @@ describe('buildRealtimeShadowSummaryMessage', () => {
         avgSignalToFillLatencyMs: 80,
         p50SignalToFillLatencyMs: 80,
         p95SignalToFillLatencyMs: 90,
+        avgTriggerWarmupLatencyMs: 45000,
+        p50TriggerWarmupLatencyMs: 45000,
+        p95TriggerWarmupLatencyMs: 90000,
         selectedHorizonSec: 30,
         avgReturnPct: 0.012,
         avgAdjustedReturnPct: 0.011,
@@ -83,6 +86,7 @@ describe('buildRealtimeShadowSummaryMessage', () => {
     expect(message).toContain('Horizon 30s: avg +1.1%');
     expect(message).toContain('executed_paper: 1');
     expect(message).toContain('insufficient_primary_candles: 1');
+    expect(message).toContain('Warmup latency: avg 45.0s / p95 90.0s');
     expect(message).toContain('PAIR1234...7890');
     expect(message).toContain('tracked 4 / allowed 3 / blocked 1');
   });

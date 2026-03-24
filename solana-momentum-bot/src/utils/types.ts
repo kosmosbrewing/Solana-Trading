@@ -41,6 +41,36 @@ export interface BreakoutScoreDetail {
   components?: BreakoutScoreComponent[];
 }
 
+export interface GateTraceSnapshot {
+  attentionScore?: number;
+  attentionConfidence?: 'low' | 'medium' | 'high';
+  attentionSources?: string[];
+  rejected: boolean;
+  filterReason?: string;
+  gradeSizeMultiplier: number;
+  security?: {
+    approved: boolean;
+    reason?: string;
+    sizeMultiplier: number;
+    flags: string[];
+  };
+  quote?: {
+    approved: boolean;
+    reason?: string;
+    routeFound: boolean;
+    priceImpactPct?: number;
+    sizeMultiplier: number;
+  };
+  execution: {
+    rejected: boolean;
+    filterReason?: string;
+    effectiveRR: number;
+    roundTripCost: number;
+    sizeMultiplier: number;
+  };
+  sellImpactPct?: number;
+}
+
 export interface Signal {
   action: SignalAction;
   strategy: StrategyName;
@@ -48,6 +78,7 @@ export interface Signal {
   price: number;
   timestamp: Date;
   meta: Record<string, number>;
+  sourceLabel?: string;
   breakoutScore?: BreakoutScoreDetail;
   poolTvl?: number;
   spreadPct?: number;
@@ -86,6 +117,7 @@ export interface Order {
   side: TradeSide;
   price: number;
   quantity: number;
+  sourceLabel?: string;
   stopLoss: number;
   takeProfit1: number;
   takeProfit2: number;
@@ -104,6 +136,7 @@ export interface Trade {
   strategy: StrategyName;
   side: TradeSide;
   entryPrice: number;
+  sourceLabel?: string;
   exitPrice?: number;
   quantity: number;
   pnl?: number;
@@ -251,6 +284,9 @@ export type AlertLevel = 'CRITICAL' | 'WARNING' | 'TRADE' | 'INFO';
 export interface SignalAuditEntry {
   pairAddress: string;
   strategy: StrategyName;
+  sourceLabel?: string;
+  attentionScore?: number;
+  attentionConfidence?: 'low' | 'medium' | 'high';
   volumeScore?: number;
   buyRatioScore?: number;
   multiTfScore?: number;
@@ -274,4 +310,5 @@ export interface SignalAuditEntry {
   slippageActual?: number;
   effectiveRR?: number;
   roundTripCost?: number;
+  gateTrace?: GateTraceSnapshot;
 }

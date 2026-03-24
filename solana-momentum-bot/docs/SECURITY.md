@@ -10,7 +10,8 @@
 ## API 키 보호
 
 - `BIRDEYE_API_KEY`, `JUPITER_API_KEY`, `TELEGRAM_BOT_TOKEN` — 모두 .env
-- Rate limit 준수: Birdeye (30/min), Jupiter (600/min)
+- `BIRDEYE_API_KEY`는 optional. 현재 핵심 runtime은 Birdeye 없이도 기동 가능
+- Rate limit 준수: Jupiter (600/min), DexScreener/GeckoTerminal는 각 client backoff 정책 준수
 - API 키 에러 시 로그에 키 값 출력 금지
 
 ## RPC 보안
@@ -27,8 +28,8 @@
 
 ## 온체인 보안
 
-- SecurityGate: honeypot, freeze authority, 전송 수수료 체크
-- Exit liquidity 검증 (Birdeye API)
+- SecurityGate: 온체인 mint authority / freeze authority / Token-2022 transfer fee / top holder concentration 체크
+- Exit liquidity 검증: Quote Gate / sell impact / liquidity proxy 기반 soft protection
 - Token holder 집중도 검증 (top 10 holders > 50% → 거부)
 
 ## CI 보안

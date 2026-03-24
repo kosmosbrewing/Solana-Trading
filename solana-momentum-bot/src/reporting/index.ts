@@ -2,6 +2,7 @@ export * from './edgeTracker';
 export * from './measurement';
 export * from './paperValidation';
 export * from './paperMetrics';
+export * from './sourceOutcome';
 export * from './realtimeMeasurement';
 export * from './realtimeShadowReport';
 export * from './realtimeSignalLogger';

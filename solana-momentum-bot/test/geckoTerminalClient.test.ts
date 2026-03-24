@@ -98,4 +98,62 @@ describe('GeckoTerminalClient', () => {
     expect(a).toHaveLength(1);
     expect(b).toHaveLength(1);
   });
+
+  it('maps new pools endpoint into discovery candidates', async () => {
+    const get = jest.fn().mockResolvedValue({
+      data: {
+        data: [{
+          attributes: {
+            address: 'pool-new-1',
+            name: 'NEW/SOL',
+            reserve_in_usd: '75000',
+            base_token_price_usd: '0.15',
+            volume_usd: { h24: '125000' },
+            market_cap_usd: '300000',
+            pool_created_at: '2026-03-24T00:00:00.000Z',
+            transactions: { h24: { buys: 11, sells: 5 } },
+          },
+          relationships: {
+            base_token: { data: { id: 'solana_mint-new-1' } },
+          },
+        }],
+        included: [{
+          id: 'solana_mint-new-1',
+          attributes: { symbol: 'NEW', address: 'mint-new-1', name: 'New Token' },
+        }],
+      },
+    });
+
+    (axios.create as jest.Mock).mockReturnValue({ get });
+
+    const client = new GeckoTerminalClient();
+    const result = await client.getNewPoolTokens(10);
+
+    expect(get).toHaveBeenCalledWith(
+      '/networks/solana/new_pools',
+      expect.objectContaining({
+        params: expect.objectContaining({
+          page: 1,
+          include: 'base_token,quote_token',
+        }),
+      })
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      address: 'mint-new-1',
+      symbol: 'NEW',
+      liquidityUsd: 75000,
+      volume24hUsd: 125000,
+      price: 0.15,
+      marketCap: 300000,
+      updatedAt: '2026-03-24T00:00:00.000Z',
+      raw: {
+        discovery_source: 'gecko_new_pool',
+        pool_address: 'pool-new-1',
+        pool_created_at: '2026-03-24T00:00:00.000Z',
+        buys_24h: 11,
+        sells_24h: 5,
+      },
+    });
+  });
 });

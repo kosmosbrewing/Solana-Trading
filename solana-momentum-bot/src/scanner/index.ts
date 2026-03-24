@@ -1,6 +1,8 @@
 export { ScannerEngine } from './scannerEngine';
 export type { WatchlistEntry, ScannerEngineConfig } from './scannerEngine';
+export { attachScannerFreshListingSource, mapScannerFreshEntry } from './listingSourceAdapter';
 export { DexScreenerClient } from './dexScreenerClient';
+export { buildDexBoostDiscoveryCandidates } from './dexBoostDiscovery';
 export type { DexScreenerBoost, DexScreenerOrder } from './dexScreenerClient';
 export { calcWatchlistScore } from './watchlistScore';
 export type { WatchlistScoreInput, WatchlistScoreResult } from './watchlistScore';

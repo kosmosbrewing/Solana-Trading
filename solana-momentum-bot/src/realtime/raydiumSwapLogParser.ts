@@ -5,6 +5,7 @@ import { ParsedSwap, RealtimePoolMetadata, SwapSide } from './types';
 
 export const RAYDIUM_V4_PROGRAM = '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8';
 export const RAYDIUM_CLMM_PROGRAM = 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK';
+export const RAYDIUM_CPMM_PROGRAM = 'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C';
 export const ORCA_WHIRLPOOL_PROGRAM = 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc';
 export const RAYDIUM_ROUTER_PROGRAM = 'routeUGWgWzqBWFcrCfv8tritsqukccJPu3q5GPP3xS';
 

@@ -191,6 +191,18 @@ export class GeckoTerminalClient {
   }
 
   /**
+   * New pools discovered on GeckoTerminal.
+   * Why: scanner discovery는 trending fallback이 아니라 신규 풀 feed가 우선이어야 함
+   */
+  async getNewPoolTokens(limit = 20): Promise<BirdeyeTrendingToken[]> {
+    const data = await this.get<RawTrendingResponse>(
+      `/networks/${NETWORK}/new_pools`,
+      { page: 1, include: 'base_token,quote_token' }
+    );
+    return this.mapDiscoveryResponseToTokens(data, 'gecko_new_pool').slice(0, limit);
+  }
+
+  /**
    * Raw Trending Pools — GeckoPool[] 형태 (DexScreener enrichment용)
    */
   async getTrendingPools(): Promise<GeckoPool[]> {
@@ -338,9 +350,16 @@ export class GeckoTerminalClient {
       `/networks/${NETWORK}/trending_pools`,
       { page: 1, duration: '24h', include: 'base_token,quote_token' }
     );
+    const result = this.mapDiscoveryResponseToTokens(data, 'gecko_trending');
+    this.trendingCache = { data: result, fetchedAt: Date.now() };
+    return result;
+  }
 
+  private mapDiscoveryResponseToTokens(
+    data: RawTrendingResponse | undefined,
+    discoverySource: string
+  ): BirdeyeTrendingToken[] {
     if (!data?.data || !Array.isArray(data.data)) {
-      this.trendingCache = { data: [], fetchedAt: Date.now() };
       return [];
     }
 
@@ -357,7 +376,7 @@ export class GeckoTerminalClient {
       }
     }
 
-    const result: BirdeyeTrendingToken[] = data.data
+    return data.data
       .map((pool, index): BirdeyeTrendingToken | null => {
         const attrs = pool.attributes;
         if (!attrs) return null;
@@ -367,6 +386,7 @@ export class GeckoTerminalClient {
         const address = baseToken?.address || baseTokenId?.replace('solana_', '') || '';
         if (!address) return null;
 
+        const poolCreatedAt = attrs.pool_created_at ?? new Date().toISOString();
         return {
           address,
           symbol: baseToken?.symbol || attrs.name?.split('/')[0] || 'UNKNOWN',
@@ -377,9 +397,10 @@ export class GeckoTerminalClient {
           volume24hUsd: parseFloat(attrs.volume_usd?.h24 || '0') || undefined,
           liquidityUsd: parseFloat(attrs.reserve_in_usd || '0') || undefined,
           marketCap: attrs.market_cap_usd ? parseFloat(attrs.market_cap_usd) : undefined,
-          updatedAt: new Date().toISOString(),
+          updatedAt: discoverySource === 'gecko_new_pool' ? poolCreatedAt : new Date().toISOString(),
           source: 'token_trending' as const,
           raw: {
+            discovery_source: discoverySource,
             pool_address: attrs.address,
             pool_created_at: attrs.pool_created_at,
             fdv_usd: attrs.fdv_usd,
@@ -388,10 +409,7 @@ export class GeckoTerminalClient {
           },
         };
       })
-      .filter((t): t is BirdeyeTrendingToken => t !== null);
-
-    this.trendingCache = { data: result, fetchedAt: Date.now() };
-    return result;
+      .filter((token): token is BirdeyeTrendingToken => token !== null);
   }
 }
 

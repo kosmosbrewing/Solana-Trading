@@ -21,6 +21,7 @@ export class TradeStore {
           strategy        TEXT NOT NULL,
           side            TEXT NOT NULL,
           entry_price     NUMERIC NOT NULL,
+          source_label    TEXT,
           exit_price      NUMERIC,
           quantity        NUMERIC NOT NULL,
           pnl             NUMERIC,
@@ -43,6 +44,11 @@ export class TradeStore {
       `);
 
       await client.query(`
+        ALTER TABLE trades
+        ADD COLUMN IF NOT EXISTS source_label TEXT;
+      `);
+
+      await client.query(`
         CREATE INDEX IF NOT EXISTS idx_trades_status ON trades (status);
         CREATE INDEX IF NOT EXISTS idx_trades_created ON trades (created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_trades_pair ON trades (pair_address, created_at DESC);
@@ -56,13 +62,14 @@ export class TradeStore {
 
   async insertTrade(trade: Omit<Trade, 'id'>): Promise<string> {
     const result = await this.pool.query(
-      `INSERT INTO trades (pair_address, strategy, side, entry_price, quantity,
+      `INSERT INTO trades (pair_address, strategy, side, entry_price, source_label, quantity,
         stop_loss, take_profit1, take_profit2, trailing_stop, high_water_mark, time_stop_at,
         status, tx_signature, breakout_score, breakout_grade, size_constraint)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
        RETURNING id`,
       [
         trade.pairAddress, trade.strategy, trade.side, trade.entryPrice,
+        trade.sourceLabel ?? null,
         trade.quantity, trade.stopLoss, trade.takeProfit1, trade.takeProfit2,
         trade.trailingStop || null, trade.highWaterMark ?? trade.entryPrice, trade.timeStopAt, trade.status,
         trade.txSignature || null,
@@ -183,6 +190,7 @@ function rowToTrade(row: Record<string, unknown>): Trade {
     strategy: row.strategy as Trade['strategy'],
     side: row.side as Trade['side'],
     entryPrice: Number(row.entry_price),
+    sourceLabel: row.source_label as string | undefined,
     exitPrice: row.exit_price != null ? Number(row.exit_price) : undefined,
     quantity: Number(row.quantity),
     pnl: row.pnl != null ? Number(row.pnl) : undefined,

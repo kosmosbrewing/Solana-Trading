@@ -42,12 +42,26 @@ export class MicroCandleBuilder extends EventEmitter {
   }
 
   onSwap(swap: ParsedSwap): void {
+    this.applySwapEvent(swap, true);
+  }
+
+  seedSwaps(swaps: ParsedSwap[]): number {
+    const ordered = [...swaps].sort((left, right) => left.timestamp - right.timestamp || left.slot - right.slot);
+    for (const swap of ordered) {
+      this.applySwapEvent(swap, false);
+    }
+    return ordered.length;
+  }
+
+  private applySwapEvent(swap: ParsedSwap, emitEvents: boolean): void {
     this.lastPriceByPool.set(swap.pool, swap.priceNative);
-    this.emit('tick', {
-      pool: swap.pool,
-      price: swap.priceNative,
-      timestamp: swap.timestamp,
-    });
+    if (emitEvents) {
+      this.emit('tick', {
+        pool: swap.pool,
+        price: swap.priceNative,
+        timestamp: swap.timestamp,
+      });
+    }
 
     for (const intervalSec of this.intervals) {
       const bucketStartSec = this.getBucketStartSec(swap.timestamp, intervalSec);
@@ -55,8 +69,8 @@ export class MicroCandleBuilder extends EventEmitter {
       const existing = candleMap.get(intervalSec);
 
       if (existing && existing.timestamp.getTime() / 1000 !== bucketStartSec) {
-        this.closeCandle(existing);
-        this.fillMissingBuckets(swap.pool, intervalSec, existing, bucketStartSec);
+        this.closeCandle(existing, emitEvents);
+        this.fillMissingBuckets(swap.pool, intervalSec, existing, bucketStartSec, emitEvents);
         candleMap.delete(intervalSec);
       }
 
@@ -99,13 +113,14 @@ export class MicroCandleBuilder extends EventEmitter {
     pool: string,
     intervalSec: number,
     previousCandle: Candle,
-    nextBucketStartSec: number
+    nextBucketStartSec: number,
+    emitEvents = true
   ): void {
     let bucketStartSec = previousCandle.timestamp.getTime() / 1000 + intervalSec;
     while (bucketStartSec < nextBucketStartSec) {
       const synthetic = this.createSyntheticCandle(pool, intervalSec, bucketStartSec, previousCandle.close);
       this.pushClosedCandle(synthetic);
-      this.emit('candle', synthetic);
+      if (emitEvents) this.emit('candle', synthetic);
       bucketStartSec += intervalSec;
     }
   }
@@ -157,9 +172,9 @@ export class MicroCandleBuilder extends EventEmitter {
     else candle.sellVolume += swap.amountQuote;
   }
 
-  private closeCandle(candle: Candle): void {
+  private closeCandle(candle: Candle, emitEvents = true): void {
     this.pushClosedCandle({ ...candle });
-    this.emit('candle', { ...candle });
+    if (emitEvents) this.emit('candle', { ...candle });
   }
 
   private pushClosedCandle(candle: Candle): void {

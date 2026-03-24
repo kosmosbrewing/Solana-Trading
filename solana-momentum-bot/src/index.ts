@@ -427,9 +427,16 @@ async function main() {
             continue;
           }
 
-          const poolOwners = realtimeModeEnabled && realtimePoolOwnerResolver
-            ? await realtimePoolOwnerResolver.resolveOwners(pairs.map((pair) => pair.pairAddress))
-            : undefined;
+          let poolOwners: Map<string, string | null> | undefined;
+          if (realtimeModeEnabled && realtimePoolOwnerResolver) {
+            try {
+              poolOwners = await realtimePoolOwnerResolver.resolveOwners(
+                pairs.map((pair) => pair.pairAddress)
+              );
+            } catch (error) {
+              log.warn(`Realtime pool owner resolve failed for ${entry.symbol}: ${error}`);
+            }
+          }
           const admissionPairs = realtimeAdmissionTracker
             ? pairs.filter((pair) => !realtimeAdmissionTracker.isBlocked(pair.pairAddress))
             : pairs;
@@ -449,13 +456,18 @@ async function main() {
             );
             if (heliusIngester && realtimeCandleBuilder && config.realtimeSeedBackfillEnabled) {
               const lookbackSec = getRealtimeSeedLookbackSec();
-              const recentSwaps = await heliusIngester.backfillRecentSwaps(
-                realtimeEligibility.pair.pairAddress,
-                {
-                  lookbackSec,
-                  allowSingleFetchFallback: config.realtimeSeedAllowSingleTxFallback,
-                }
-              );
+              let recentSwaps: import('./realtime').ParsedSwap[] = [];
+              try {
+                recentSwaps = await heliusIngester.backfillRecentSwaps(
+                  realtimeEligibility.pair.pairAddress,
+                  {
+                    lookbackSec,
+                    allowSingleFetchFallback: config.realtimeSeedAllowSingleTxFallback,
+                  }
+                );
+              } catch (error) {
+                log.warn(`Realtime seed backfill failed for ${entry.symbol}: ${error}`);
+              }
               if (recentSwaps.length > 0) {
                 const seeded = realtimeCandleBuilder.seedSwaps(
                   recentSwaps.map((swap) => ({

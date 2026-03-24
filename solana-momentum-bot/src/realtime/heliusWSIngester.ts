@@ -134,8 +134,8 @@ export class HeliusWSIngester extends EventEmitter {
       if (silentMs >= this.watchdogIntervalMs && this.subscriptions.size > 0) {
         log.warn(`WS silent for ${Math.round(silentMs / 1000)}s — re-subscribing`);
         this.emit('stale', { silentMs });
-        // 현재 구독 목록으로 재구독 시도
-        void this.subscribePools([...this.subscriptions.keys()]).catch((error) => {
+        // 현재 구독 목록을 실제로 재연결해야 silent socket을 복구할 수 있음
+        void this.reconnectSubscriptions().catch((error) => {
           log.warn(`Watchdog re-subscribe failed: ${error}`);
           this.emit('error', { pool: 'watchdog', error });
         });
@@ -251,17 +251,17 @@ export class HeliusWSIngester extends EventEmitter {
           }
         })
         .catch((error) => {
-          const message = error instanceof Error ? error.message : String(error);
-          const isRateLimited = message.includes('429');
+          const retryable = this.isRetryableFallbackError(error);
+          const isRateLimited = this.isRateLimitedFallbackError(error);
           if (!isRateLimited || Date.now() - this.lastRateLimitWarnAt > 5000) {
             log.warn(`Swap fallback batch failed: ${error}`);
             this.lastRateLimitWarnAt = Date.now();
           }
           for (const next of batch) {
-            if (isRateLimited && next.retries < this.fallbackMaxRetries) {
-              // 429: 지수 백오프 재시도 (5s → 10s → 20s)
+            if (retryable && next.retries < this.fallbackMaxRetries) {
+              // 재시도 가능한 fetch/429 오류는 지수 백오프로 복구
               const key = `${next.pool}:${next.signature}`;
-              const delayMs = 5_000 * (2 ** next.retries);
+              const delayMs = this.getFallbackRetryDelayMs(error, next.retries);
               retryKeys.add(key);
               this.pendingFallbacks.delete(key);
               setTimeout(() => {
@@ -371,10 +371,46 @@ export class HeliusWSIngester extends EventEmitter {
     });
   }
 
+  private async reconnectSubscriptions(): Promise<void> {
+    const pools = [...this.subscriptions.keys()];
+    if (pools.length === 0) return;
+
+    this.lastNotificationAt = Date.now();
+    await this.unsubscribePools(pools);
+    await this.subscribePools(pools);
+  }
+
   private isBatchUnsupportedError(error: unknown): boolean {
     const message = error instanceof Error ? error.message : String(error);
     return message.includes('Batch requests are only available for paid plans')
       || message.includes('code":-32403');
+  }
+
+  private isRetryableFallbackError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+    return this.isRateLimitedFallbackError(error) || [
+      'fetch failed',
+      'network error',
+      'timeout',
+      'timed out',
+      'socket hang up',
+      'econnreset',
+      'econnrefused',
+      'eai_again',
+      'enotfound',
+    ].some((token) => message.includes(token));
+  }
+
+  private isRateLimitedFallbackError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.includes('429');
+  }
+
+  private getFallbackRetryDelayMs(error: unknown, retries: number): number {
+    if (this.isRateLimitedFallbackError(error)) {
+      return 5_000 * (2 ** retries);
+    }
+    return 1_000 * (2 ** retries);
   }
 
   private emitSwap(swap: ParsedSwap): void {

@@ -49,6 +49,7 @@ import { runPreflightCheck } from './orchestration/preflightCheck';
 import { SpreadMeasurer } from './gate/spreadMeasurer';
 import { SOL_MINT } from './utils/constants';
 import { BotContext } from './orchestration/types';
+import { buildRuntimeDriftSnapshot, evaluateRuntimeDriftWarnings } from './ops/runtimeDrift';
 import path from 'path';
 
 const log = createModuleLogger('Main');
@@ -84,6 +85,25 @@ function getRealtimeSeedLookbackSec(): number {
 async function main() {
   const tradingMode = config.tradingMode;
   log.info(`=== Solana Momentum Bot v0.5 starting (mode: ${tradingMode}) ===`);
+  const runtimeSnapshot = buildRuntimeDriftSnapshot({
+    processName: process.env.name,
+    pid: process.pid,
+    tradingMode,
+    realtimeEnabled: config.realtimeEnabled,
+    jupiterApiUrl: config.jupiterApiUrl,
+    pm2AllowedProcesses: config.pm2AllowedProcesses,
+  });
+  log.info(`Runtime snapshot: ${JSON.stringify(runtimeSnapshot)}`);
+  for (const warning of evaluateRuntimeDriftWarnings({
+    processName: process.env.name,
+    pid: process.pid,
+    tradingMode,
+    realtimeEnabled: config.realtimeEnabled,
+    jupiterApiUrl: config.jupiterApiUrl,
+    pm2AllowedProcesses: config.pm2AllowedProcesses,
+  })) {
+    log.warn(`Runtime drift warning: ${warning}`);
+  }
   const realtimePoolTargets = new Map<string, string>();
   const realtimePoolAliases = new Map<string, string>();
   const realtimePoolMetadata = new Map<string, RealtimePoolMetadata>();

@@ -71,7 +71,7 @@ export const config = {
   databaseUrl: required('DATABASE_URL'),
 
   // Jupiter
-  jupiterApiUrl: optional('JUPITER_API_URL', 'https://quote-api.jup.ag/v6'),
+  jupiterApiUrl: optional('JUPITER_API_URL', 'https://api.jup.ag'),
 
   // Notification
   telegramBotToken: optional('TELEGRAM_BOT_TOKEN', ''),

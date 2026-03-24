@@ -15,6 +15,11 @@ function optional(key: string, fallback: string): string {
   return process.env[key] || fallback;
 }
 
+function listOptional(key: string, fallback: string[]): string[] {
+  const raw = process.env[key];
+  return raw ? raw.split(',').map((item) => item.trim()).filter(Boolean) : fallback;
+}
+
 function boolOptional(key: string, fallback: boolean): boolean {
   const value = process.env[key];
   if (value == null || value === '') return fallback;
@@ -71,6 +76,8 @@ export const config = {
   // Notification
   telegramBotToken: optional('TELEGRAM_BOT_TOKEN', ''),
   telegramChatId: optional('TELEGRAM_CHAT_ID', ''),
+  telegramAdminUserId: optional('TELEGRAM_ADMIN_USER_ID', ''),
+  pm2AllowedProcesses: listOptional('PM2_ALLOWED_PROCESSES', ['momentum-bot', 'momentum-shadow']),
 
   // Trading Mode
   tradingMode: parseTradingMode(),

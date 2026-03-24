@@ -75,6 +75,10 @@ export class Notifier {
     await this.send(msg);
   }
 
+  async sendMessage(message: string): Promise<void> {
+    await this.send(message);
+  }
+
   // ─── Trade-specific alerts ───
 
   async sendSignal(signal: Signal): Promise<void> {

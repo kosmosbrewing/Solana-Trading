@@ -1,10 +1,13 @@
 import { config } from '../utils/config';
 import { createModuleLogger } from '../utils/logger';
 import { Notifier } from '../notifier';
+import { Pm2AlertMonitor } from './pm2AlertMonitor';
+import { buildPm2HealthSummary } from './pm2Health';
 import { Pm2Service } from './pm2Service';
 import {
   formatActionMessage,
   formatErrorMessage,
+  formatHealthMessage,
   formatHelpMessage,
   formatLogsMessage,
   formatStatusMessage,
@@ -25,8 +28,10 @@ async function main() {
   const notifier = new Notifier(config.telegramBotToken, config.telegramChatId);
   const updateClient = new TelegramUpdateClient(config.telegramBotToken);
   const pm2Service = new Pm2Service();
+  const alertMonitor = new Pm2AlertMonitor(pm2Service, notifier, config.pm2AllowedProcesses);
   let offset = await getInitialOffset(updateClient);
 
+  await alertMonitor.initialize();
   registerShutdownHandlers();
   log.info(`Ops bot started for chat ${config.telegramChatId}`);
 
@@ -35,8 +40,9 @@ async function main() {
       const updates = await updateClient.getUpdates(offset, POLL_TIMEOUT_SEC);
       for (const update of updates) {
         offset = update.update_id + 1;
-        await handleUpdate(update, notifier, pm2Service);
+        await handleUpdate(update, notifier, pm2Service, alertMonitor);
       }
+      await alertMonitor.tick();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       log.error(`Polling failed: ${message}`);
@@ -47,7 +53,12 @@ async function main() {
   log.info('Ops bot stopped');
 }
 
-async function handleUpdate(update: TelegramUpdate, notifier: Notifier, pm2Service: Pm2Service): Promise<void> {
+async function handleUpdate(
+  update: TelegramUpdate,
+  notifier: Notifier,
+  pm2Service: Pm2Service,
+  alertMonitor: Pm2AlertMonitor
+): Promise<void> {
   const message = extractMessage(update);
   if (!message?.text) return;
 
@@ -71,11 +82,16 @@ async function handleUpdate(update: TelegramUpdate, notifier: Notifier, pm2Servi
       case 'status':
       case 'list':
         await notifier.sendMessage(formatStatusMessage(
-          (await pm2Service.listProcesses())
-            .filter((process) => config.pm2AllowedProcesses.includes(process.name))
+          await listAllowedProcesses(pm2Service)
+        ));
+        return;
+      case 'health':
+        await notifier.sendMessage(formatHealthMessage(
+          buildPm2HealthSummary(await listAllowedProcesses(pm2Service))
         ));
         return;
       case 'restart':
+        alertMonitor.markManualAction(parsed.command.processName);
         await notifier.sendMessage(formatActionMessage(
           'restart',
           parsed.command.processName,
@@ -83,6 +99,7 @@ async function handleUpdate(update: TelegramUpdate, notifier: Notifier, pm2Servi
         ));
         return;
       case 'stop':
+        alertMonitor.markManualAction(parsed.command.processName);
         await notifier.sendMessage(formatActionMessage(
           'stop',
           parsed.command.processName,
@@ -133,6 +150,11 @@ function registerShutdownHandlers(): void {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function listAllowedProcesses(pm2Service: Pm2Service) {
+  return (await pm2Service.listProcesses())
+    .filter((process) => config.pm2AllowedProcesses.includes(process.name));
 }
 
 void main().catch((error) => {

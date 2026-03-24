@@ -2,6 +2,7 @@ import axios, { AxiosError, AxiosInstance } from 'axios';
 import { createModuleLogger } from '../utils/logger';
 import { Candle, CandleInterval } from '../utils/types';
 import { buildDirectionalVolumeBuckets, DirectionalVolumeBucket } from './birdeyeTradeBuckets';
+import type { ExitLiquidityData, TokenSecurityData } from './onchainSecurity';
 
 const log = createModuleLogger('BirdeyeClient');
 
@@ -39,27 +40,6 @@ interface BirdeyeOHLCVV3 {
   type?: string;
   symbol?: string;
   v_usd?: number;
-}
-
-// ─── Token Security (강화) ───
-
-export interface TokenSecurityData {
-  isHoneypot: boolean;
-  isFreezable: boolean;
-  isMintable: boolean;
-  hasTransferFee: boolean;
-  freezeAuthorityPresent: boolean;
-  top10HolderPct: number;
-  creatorPct: number;
-  ownerAddress?: string;
-  creatorAddress?: string;
-}
-
-export interface ExitLiquidityData {
-  exitLiquidityUsd: number | null;
-  sellVolume24h: number;
-  buyVolume24h: number;
-  sellBuyRatio: number;
 }
 
 export interface BirdeyeTrendingToken {

@@ -1,5 +1,11 @@
 import { SOL_MINT } from '../utils/constants';
-import { ORCA_WHIRLPOOL_PROGRAM, PUMP_SWAP_PROGRAM, RAYDIUM_CLMM_PROGRAM, RAYDIUM_V4_PROGRAM } from './swapParser';
+import {
+  ORCA_WHIRLPOOL_PROGRAM,
+  PUMP_SWAP_PROGRAM,
+  RAYDIUM_CLMM_PROGRAM,
+  RAYDIUM_CPMM_PROGRAM,
+  RAYDIUM_V4_PROGRAM,
+} from './swapParser';
 import { isPumpSwapDexId } from './pumpSwapParser';
 
 export interface RealtimePairCandidate {
@@ -18,7 +24,7 @@ export interface RealtimeEligibilityResult<T extends RealtimePairCandidate> {
 
 export const SUPPORTED_REALTIME_DEX_IDS = new Set(['raydium', 'orca', 'pumpswap', 'pumpfun', 'pump-swap']);
 export const SUPPORTED_REALTIME_POOL_PROGRAMS = new Map<string, Set<string>>([
-  ['raydium', new Set([RAYDIUM_V4_PROGRAM, RAYDIUM_CLMM_PROGRAM])],
+  ['raydium', new Set([RAYDIUM_V4_PROGRAM, RAYDIUM_CLMM_PROGRAM, RAYDIUM_CPMM_PROGRAM])],
   ['orca', new Set([ORCA_WHIRLPOOL_PROGRAM])],
   ['pumpswap', new Set([PUMP_SWAP_PROGRAM])],
   ['pumpfun', new Set([PUMP_SWAP_PROGRAM])],

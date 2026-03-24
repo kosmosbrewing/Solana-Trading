@@ -180,6 +180,7 @@ Stage Score =
 | Safety bypass | 최근 `30일` 기준 `hard reject condition bypass count > 0`이면 실패 | paper, live |
 
 Backtest에서는 Attention timeline / attribution 데이터가 없는 경우 Mission Gate를 `N/A` 처리한다.
+Paper/live에서는 `signal_audit_log`, `position signal_data`, daily summary의 `source별 outcome` 섹션을 함께 확인한다.
 
 ---
 

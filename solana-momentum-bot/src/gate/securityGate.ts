@@ -1,5 +1,5 @@
 import { createModuleLogger } from '../utils/logger';
-import { TokenSecurityData, ExitLiquidityData } from '../ingester/birdeyeClient';
+import { TokenSecurityData, ExitLiquidityData } from '../ingester/onchainSecurity';
 
 const log = createModuleLogger('SecurityGate');
 

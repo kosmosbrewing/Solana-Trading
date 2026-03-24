@@ -1,4 +1,8 @@
-import { isAuthorizedControlMessage, parseControlCommand } from '../src/ops/telegramControlPolicy';
+import {
+  isAuthorizedControlMessage,
+  listProcessAliases,
+  parseControlCommand,
+} from '../src/ops/telegramControlPolicy';
 import { TelegramMessage } from '../src/ops/telegramTypes';
 
 const ALLOWED_PROCESSES = ['momentum-bot', 'momentum-shadow'];
@@ -24,11 +28,24 @@ describe('telegramControlPolicy', () => {
     expect(parsed).toEqual({ kind: 'command', command: { type: 'status' } });
   });
 
+  test('parses health command', () => {
+    const parsed = parseControlCommand('/health', ALLOWED_PROCESSES);
+    expect(parsed).toEqual({ kind: 'command', command: { type: 'health' } });
+  });
+
   test('parses process commands for allowed processes', () => {
     const parsed = parseControlCommand('/restart momentum-shadow', ALLOWED_PROCESSES);
     expect(parsed).toEqual({
       kind: 'command',
       command: { type: 'restart', processName: 'momentum-shadow' },
+    });
+  });
+
+  test('parses aliases for allowed processes', () => {
+    const parsed = parseControlCommand('/logs shadow', ALLOWED_PROCESSES);
+    expect(parsed).toEqual({
+      kind: 'command',
+      command: { type: 'logs', processName: 'momentum-shadow' },
     });
   });
 
@@ -41,11 +58,16 @@ describe('telegramControlPolicy', () => {
     const parsed = parseControlCommand('/stop random-service', ALLOWED_PROCESSES);
     expect(parsed).toEqual({
       kind: 'error',
-      message: 'Process not allowed: random-service. Allowed: momentum-bot, momentum-shadow',
+      message: 'Process not allowed: random-service. Allowed: momentum-bot/bot, momentum-shadow/shadow',
     });
   });
 
   test('ignores plain text messages', () => {
     expect(parseControlCommand('hello', ALLOWED_PROCESSES)).toEqual({ kind: 'ignored' });
+  });
+
+  test('lists derived process aliases', () => {
+    expect(listProcessAliases('momentum-bot')).toEqual(['momentum-bot', 'bot']);
+    expect(listProcessAliases('momentum-shadow')).toEqual(['momentum-shadow', 'shadow']);
   });
 });

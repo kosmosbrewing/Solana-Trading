@@ -148,7 +148,9 @@ export const config = {
   // ─── Scanner (Phase 1A) ───
   scannerEnabled: process.env.SCANNER_ENABLED === 'true',
   scannerMinWatchlistScore: numOptional('SCANNER_MIN_WATCHLIST_SCORE', 30),
-  scannerTrendingPollMs: numOptional('SCANNER_TRENDING_POLL_MS', 300_000),
+  scannerTrendingPollMs: numOptional('SCANNER_TRENDING_POLL_MS', 600_000),
+  scannerGeckoNewPoolMs: numOptional('SCANNER_GECKO_NEW_POOL_MS', 60_000),
+  scannerDexDiscoveryMs: numOptional('SCANNER_DEX_DISCOVERY_MS', 60_000),
   scannerDexEnrichMs: numOptional('SCANNER_DEX_ENRICH_MS', 300_000),
   scannerLaneAMinAgeSec: numOptional('SCANNER_LANE_A_MIN_AGE_SEC', 3_600),
   scannerLaneBMaxAgeSec: numOptional('SCANNER_LANE_B_MAX_AGE_SEC', 1_200),

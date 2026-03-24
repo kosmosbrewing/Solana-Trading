@@ -75,11 +75,62 @@ describe('NewLpSniper async preparation', () => {
     expect(result.candidate?.recommendedTicketSizeSol).toBeCloseTo(0.02, 8);
   });
 
+  it('does not require Birdeye overview when quote fallback is available', async () => {
+    const result = await prepareNewLpCandidate(baseUpdate, {
+      getTokenSecurityDetailed: async () => safeSecurity,
+      getExitLiquidity: async () => ({
+        exitLiquidityUsd: 18_000,
+        sellVolume24h: 8_000,
+        buyVolume24h: 10_000,
+        sellBuyRatio: 0.8,
+      }),
+      evaluateQuoteGate: async () => ({
+        approved: true,
+        priceImpactPct: 0.015,
+        routeFound: true,
+        outAmountLamports: 4_000_000n,
+        sizeMultiplier: 1,
+      }),
+    });
+
+    expect(result.rejectionReason).toBeUndefined();
+    expect(result.candidate?.price).toBeCloseTo(0.005, 8);
+    expect(result.candidate?.liquidityUsd).toBe(12_000);
+  });
+
+  it('prefers listing-source price without overview or decimals', async () => {
+    const result = await prepareNewLpCandidate({
+      ...baseUpdate,
+      price: 0.015,
+      decimals: undefined,
+    }, {
+      getTokenSecurityDetailed: async () => safeSecurity,
+      getExitLiquidity: async () => ({
+        exitLiquidityUsd: 18_000,
+        sellVolume24h: 8_000,
+        buyVolume24h: 10_000,
+        sellBuyRatio: 0.8,
+      }),
+      evaluateQuoteGate: async () => ({
+        approved: true,
+        priceImpactPct: 0.02,
+        routeFound: true,
+        outAmountLamports: 1_000_000n,
+        sizeMultiplier: 1,
+      }),
+    });
+
+    expect(result.rejectionReason).toBeUndefined();
+    expect(result.candidate?.price).toBeCloseTo(0.015, 8);
+    expect(result.candidate?.liquidityUsd).toBe(12_000);
+  });
+
   it('propagates reduced ticket sizing into signal and order creation', () => {
     const signal = evaluateNewLpSniper({
       tokenMint: 'mint-1',
       tokenSymbol: 'TEST',
       pairAddress: 'mint-1',
+      sourceLabel: 'scanner_dex_token_profile',
       liquidityUsd: 20_000,
       liquidityAddedAt: new Date(Date.now() - 5 * 60_000),
       price: 0.25,
@@ -92,9 +143,36 @@ describe('NewLpSniper async preparation', () => {
 
     expect(signal.action).toBe('BUY');
     expect(signal.meta.ticketSizeSol).toBeCloseTo(0.0075, 8);
+    expect(signal.sourceLabel).toBe('scanner_dex_token_profile');
 
     const order = buildNewLpOrder(signal);
     expect(order.quantity).toBeCloseTo(0.0075, 8);
     expect(order.slippageBps).toBe(500);
+    expect(order.sourceLabel).toBe('scanner_dex_token_profile');
+  });
+
+  it('preserves listing source label during async preparation', async () => {
+    const result = await prepareNewLpCandidate({
+      ...baseUpdate,
+      source: 'scanner_dex_token_profile',
+    }, {
+      getTokenSecurityDetailed: async () => safeSecurity,
+      getExitLiquidity: async () => ({
+        exitLiquidityUsd: 18_000,
+        sellVolume24h: 8_000,
+        buyVolume24h: 10_000,
+        sellBuyRatio: 0.8,
+      }),
+      evaluateQuoteGate: async () => ({
+        approved: true,
+        priceImpactPct: 0.015,
+        routeFound: true,
+        outAmountLamports: 4_000_000n,
+        sizeMultiplier: 1,
+      }),
+    });
+
+    expect(result.rejectionReason).toBeUndefined();
+    expect(result.candidate?.sourceLabel).toBe('scanner_dex_token_profile');
   });
 });

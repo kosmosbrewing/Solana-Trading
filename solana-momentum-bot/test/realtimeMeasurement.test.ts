@@ -42,6 +42,10 @@ function makeRecord(): RealtimeSignalRecord {
       status: 'executed_paper',
       txSignature: 'PAPER_TRADE',
     },
+    context: {
+      discoveryTimestamp: '2026-03-21T23:59:30.000Z',
+      triggerWarmupLatencyMs: 30000,
+    },
     horizons: [
       {
         horizonSec: 180,
@@ -71,6 +75,7 @@ describe('summarizeRealtimeSignals', () => {
     expect(summary.avgAdjustedReturnPct).toBeCloseTo(0.14, 6);
     expect(summary.avgGateLatencyMs).toBe(120);
     expect(summary.avgSignalToFillLatencyMs).toBe(280);
+    expect(summary.avgTriggerWarmupLatencyMs).toBe(30000);
     expect(summary.assessment.edgeScore).toBeGreaterThan(0);
   });
 });

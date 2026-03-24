@@ -1,10 +1,15 @@
 // pm2 ecosystem config for solana-momentum-bot
 // Usage: pm2 start ecosystem.config.cjs
+function buildProfileBootArgs(command) {
+  return ['-lc', `source ~/.profile && exec ${command}`];
+}
+
 module.exports = {
   apps: [
     {
       name: 'momentum-bot',
-      script: 'dist/index.js',
+      script: '/bin/bash',
+      args: buildProfileBootArgs('node dist/index.js'),
       cwd: __dirname,
       // Why: HTTP listener가 없는 worker 프로세스라 cluster_mode 이점이 없음
       //       Node 22 + PM2 cluster 조합에서 startup AggregateError 루프 방지
@@ -28,8 +33,8 @@ module.exports = {
     },
     {
       name: 'momentum-shadow',
-      script: 'scripts/vps-realtime-shadow.sh',
-      interpreter: '/bin/bash',
+      script: '/bin/bash',
+      args: buildProfileBootArgs('/bin/bash scripts/vps-realtime-shadow.sh'),
       cwd: __dirname,
       instances: 1,
       autorestart: true,
@@ -48,7 +53,8 @@ module.exports = {
     },
     {
       name: 'momentum-ops-bot',
-      script: 'dist/ops/telegramControlBot.js',
+      script: '/bin/bash',
+      args: buildProfileBootArgs('node dist/ops/telegramControlBot.js'),
       cwd: __dirname,
       exec_mode: 'fork',
       instances: 1,

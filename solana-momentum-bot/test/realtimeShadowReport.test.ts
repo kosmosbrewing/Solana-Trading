@@ -65,6 +65,10 @@ describe('buildRealtimeShadowReport', () => {
         status: 'execution_viability_rejected',
         filterReason: 'poor_execution_viability',
       },
+      context: {
+        discoveryTimestamp: '2026-03-21T23:59:00.000Z',
+        triggerWarmupLatencyMs: 60000,
+      },
       horizons: [
         {
           horizonSec: 30,
@@ -116,6 +120,7 @@ describe('buildRealtimeShadowReport', () => {
 
     expect(report.counts).toEqual({ swaps: 1, candles: 1, signals: 1 });
     expect(report.summary.totalSignals).toBe(1);
+    expect(report.summary.avgTriggerWarmupLatencyMs).toBe(60000);
     expect(report.statusCounts).toEqual([
       { status: 'execution_viability_rejected', count: 1 },
     ]);

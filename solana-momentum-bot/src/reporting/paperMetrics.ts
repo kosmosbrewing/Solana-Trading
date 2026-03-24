@@ -6,6 +6,7 @@ export interface PaperTradeRecord {
   id: string;
   pairAddress: string;
   strategy: string;
+  sourceLabel?: string;
   entryPrice: number;
   exitPrice?: number;
   quantity: number;
@@ -49,6 +50,8 @@ export interface PaperMetricsSummary {
   avgTimeToFillMs: number;
   /** Trades per regime */
   tradesByRegime: Record<string, { count: number; winRate: number }>;
+  /** Trades per discovery/listing source */
+  tradesBySource: Record<string, { count: number; winRate: number }>;
   /** TP1 hit rate (follow-through metric for RegimeFilter) */
   tp1HitRate: number;
 }
@@ -134,15 +137,28 @@ export class PaperMetricsTracker {
 
     // Trades by regime
     const regimeMap: Record<string, { count: number; wins: number }> = {};
+    const sourceMap: Record<string, { count: number; wins: number }> = {};
     for (const t of recent) {
       const r = t.regimeAtEntry ?? 'unknown';
       if (!regimeMap[r]) regimeMap[r] = { count: 0, wins: 0 };
       regimeMap[r].count++;
       if (t.exitPrice! > t.entryPrice) regimeMap[r].wins++;
+
+      const source = t.sourceLabel ?? 'unknown';
+      if (!sourceMap[source]) sourceMap[source] = { count: 0, wins: 0 };
+      sourceMap[source].count++;
+      if (t.exitPrice! > t.entryPrice) sourceMap[source].wins++;
     }
     const tradesByRegime: Record<string, { count: number; winRate: number }> = {};
+    const tradesBySource: Record<string, { count: number; winRate: number }> = {};
     for (const [r, v] of Object.entries(regimeMap)) {
       tradesByRegime[r] = { count: v.count, winRate: v.count > 0 ? v.wins / v.count : 0 };
+    }
+    for (const [source, value] of Object.entries(sourceMap)) {
+      tradesBySource[source] = {
+        count: value.count,
+        winRate: value.count > 0 ? value.wins / value.count : 0,
+      };
     }
 
     return {
@@ -165,6 +181,7 @@ export class PaperMetricsTracker {
         ? avgFill.reduce((s, t) => s + t.timeToFillMs!, 0) / avgFill.length
         : 0,
       tradesByRegime,
+      tradesBySource,
       tp1HitRate: recent.length > 0 ? tp1Hits.length / recent.length : 0,
     };
   }
@@ -184,6 +201,13 @@ export class PaperMetricsTracker {
       lines.push('Regime:');
       for (const [regime, data] of Object.entries(s.tradesByRegime)) {
         lines.push(`  ${regime}: ${data.count} trades, WR ${(data.winRate * 100).toFixed(0)}%`);
+      }
+    }
+
+    if (Object.keys(s.tradesBySource).length > 0) {
+      lines.push('Source:');
+      for (const [source, data] of Object.entries(s.tradesBySource)) {
+        lines.push(`  ${source}: ${data.count} trades, WR ${(data.winRate * 100).toFixed(0)}%`);
       }
     }
 

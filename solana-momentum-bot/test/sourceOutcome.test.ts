@@ -1,0 +1,95 @@
+import { summarizeTradesBySource } from '../src/reporting';
+import type { Trade } from '../src/utils/types';
+
+describe('summarizeTradesBySource', () => {
+  it('aggregates closed trades by source label', () => {
+    const trades: Trade[] = [
+      {
+        id: 't-1',
+        pairAddress: 'pair-1',
+        strategy: 'new_lp_sniper',
+        side: 'BUY',
+        entryPrice: 1,
+        sourceLabel: 'scanner_dex_boost',
+        exitPrice: 1.2,
+        quantity: 1,
+        pnl: 0.2,
+        status: 'CLOSED',
+        createdAt: new Date(),
+        closedAt: new Date(),
+        stopLoss: 0.8,
+        takeProfit1: 1.1,
+        takeProfit2: 1.3,
+        timeStopAt: new Date(),
+      },
+      {
+        id: 't-2',
+        pairAddress: 'pair-2',
+        strategy: 'new_lp_sniper',
+        side: 'BUY',
+        entryPrice: 1,
+        sourceLabel: 'scanner_dex_boost',
+        exitPrice: 0.9,
+        quantity: 1,
+        pnl: -0.1,
+        status: 'CLOSED',
+        createdAt: new Date(),
+        closedAt: new Date(),
+        stopLoss: 0.8,
+        takeProfit1: 1.1,
+        takeProfit2: 1.3,
+        timeStopAt: new Date(),
+      },
+      {
+        id: 't-3',
+        pairAddress: 'pair-3',
+        strategy: 'volume_spike',
+        side: 'BUY',
+        entryPrice: 1,
+        quantity: 1,
+        pnl: 0.05,
+        status: 'CLOSED',
+        createdAt: new Date(),
+        closedAt: new Date(),
+        stopLoss: 0.8,
+        takeProfit1: 1.1,
+        takeProfit2: 1.3,
+        timeStopAt: new Date(),
+      },
+      {
+        id: 't-4',
+        pairAddress: 'pair-4',
+        strategy: 'fib_pullback',
+        side: 'BUY',
+        entryPrice: 1,
+        sourceLabel: 'scanner_dex_token_profile',
+        quantity: 1,
+        status: 'OPEN',
+        createdAt: new Date(),
+        stopLoss: 0.8,
+        takeProfit1: 1.1,
+        takeProfit2: 1.3,
+        timeStopAt: new Date(),
+      },
+    ];
+
+    expect(summarizeTradesBySource(trades)).toEqual([
+      {
+        sourceLabel: 'scanner_dex_boost',
+        totalTrades: 2,
+        wins: 1,
+        losses: 1,
+        winRate: 0.5,
+        pnl: 0.1,
+      },
+      {
+        sourceLabel: 'unknown',
+        totalTrades: 1,
+        wins: 1,
+        losses: 0,
+        winRate: 1,
+        pnl: 0.05,
+      },
+    ]);
+  });
+});

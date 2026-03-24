@@ -1,16 +1,21 @@
 import { Pm2ProcessStatus } from './pm2Service';
+import { Pm2HealthSummary } from './pm2Health';
+import { listProcessAliases } from './telegramControlPolicy';
 
 const TELEGRAM_LIMIT = 4000;
 
 export function formatHelpMessage(allowedProcesses: string[]): string {
-  const processes = allowedProcesses.map((name) => `<code>${escapeHtml(name)}</code>`).join(', ');
+  const processes = allowedProcesses
+    .map((name) => `<code>${escapeHtml(listProcessAliases(name).join('/'))}</code>`)
+    .join(', ');
   return [
     '<b>PM2 Control Commands</b>',
     '<code>/status</code> 상태 요약',
     '<code>/list</code> 상태 요약',
-    '<code>/restart &lt;name&gt;</code> 프로세스 재시작',
-    '<code>/stop &lt;name&gt;</code> 프로세스 중지',
-    '<code>/logs &lt;name&gt;</code> 최근 로그 30줄',
+    '<code>/health</code> 가용성 상태 점검',
+    '<code>/restart &lt;name|alias&gt;</code> 프로세스 재시작',
+    '<code>/stop &lt;name|alias&gt;</code> 프로세스 중지',
+    '<code>/logs &lt;name|alias&gt;</code> 최근 로그 30줄',
     `Allowed: ${processes}`,
   ].join('\n');
 }
@@ -25,8 +30,12 @@ export function formatStatusMessage(processes: Pm2ProcessStatus[]): string {
     .map((process) => {
       const uptime = process.uptimeMs == null ? 'n/a' : formatDuration(process.uptimeMs);
       const pid = process.pid == null ? 'n/a' : String(process.pid);
+      const aliases = listProcessAliases(process.name).slice(1);
+      const title = aliases.length > 0
+        ? `<b>${escapeHtml(process.name)}</b> <code>(${escapeHtml(aliases.join(', '))})</code>`
+        : `<b>${escapeHtml(process.name)}</b>`;
       return [
-        `<b>${escapeHtml(process.name)}</b>`,
+        title,
         `status=${escapeHtml(process.status)}`,
         `pid=${pid}`,
         `restarts=${process.restarts}`,
@@ -57,6 +66,24 @@ export function formatErrorMessage(message: string): string {
   return trimTelegramMessage(`<b>ERROR</b>\n${escapeHtml(message)}`);
 }
 
+export function formatHealthMessage(summary: Pm2HealthSummary): string {
+  const lines = summary.processes
+    .sort((a, b) => a.process.name.localeCompare(b.process.name))
+    .map((entry) => {
+      const aliases = listProcessAliases(entry.process.name).slice(1);
+      const label = aliases.length > 0
+        ? `${entry.process.name} (${aliases.join(', ')})`
+        : entry.process.name;
+      const reasons = entry.reasons.length > 0 ? ` | ${entry.reasons.join(', ')}` : '';
+      return `${iconForLevel(entry.level)} <code>${escapeHtml(label)}</code> ${escapeHtml(entry.level)}${escapeHtml(reasons)}`;
+    });
+
+  return trimTelegramMessage([
+    `<b>PM2 Health</b> ${iconForLevel(summary.overall)} <b>${escapeHtml(summary.overall.toUpperCase())}</b>`,
+    ...lines,
+  ].join('\n'));
+}
+
 function trimTelegramMessage(message: string): string {
   if (message.length <= TELEGRAM_LIMIT) return message;
   return `${message.slice(0, TELEGRAM_LIMIT - 15)}\n...<i>truncated</i>`;
@@ -73,6 +100,17 @@ function formatDuration(durationMs: number): string {
 function truncateText(value: string, maxLength: number): string {
   if (value.length <= maxLength) return value;
   return `${value.slice(0, maxLength - 13)}\n...truncated`;
+}
+
+function iconForLevel(level: 'healthy' | 'degraded' | 'down'): string {
+  switch (level) {
+    case 'healthy':
+      return '🟢';
+    case 'degraded':
+      return '🟡';
+    case 'down':
+      return '🔴';
+  }
 }
 
 function escapeHtml(value: string): string {

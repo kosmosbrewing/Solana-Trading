@@ -1,6 +1,7 @@
 import { LAMPORTS_PER_SOL, ParsedTransactionWithMeta } from '@solana/web3.js';
 import {
   ORCA_WHIRLPOOL_PROGRAM,
+  RAYDIUM_CPMM_PROGRAM,
   parseRaydiumSwapFromLogs,
   RAYDIUM_CLMM_PROGRAM,
   RAYDIUM_ROUTER_PROGRAM,
@@ -17,12 +18,19 @@ import { ParsedSwap, RealtimePoolMetadata, SwapSide } from './types';
 export {
   ORCA_WHIRLPOOL_PROGRAM,
   PUMP_SWAP_PROGRAM,
+  RAYDIUM_CPMM_PROGRAM,
   RAYDIUM_CLMM_PROGRAM,
   RAYDIUM_ROUTER_PROGRAM,
   RAYDIUM_V4_PROGRAM,
 };
 
-const SUPPORTED_PROGRAMS = [RAYDIUM_V4_PROGRAM, RAYDIUM_CLMM_PROGRAM, ORCA_WHIRLPOOL_PROGRAM, PUMP_SWAP_PROGRAM];
+const SUPPORTED_PROGRAMS = [
+  RAYDIUM_V4_PROGRAM,
+  RAYDIUM_CLMM_PROGRAM,
+  RAYDIUM_CPMM_PROGRAM,
+  ORCA_WHIRLPOOL_PROGRAM,
+  PUMP_SWAP_PROGRAM,
+];
 const FALLBACK_PROGRAM_HINTS = [...SUPPORTED_PROGRAMS, RAYDIUM_ROUTER_PROGRAM];
 const FALLBACK_SWAP_PATTERNS = [
   /process_swap_/i,
@@ -181,7 +189,8 @@ export function shouldFallbackToTransaction(logs: string[]): boolean {
 }
 
 export function shouldForceFallbackToTransaction(poolMetadata?: RealtimePoolMetadata): boolean {
-  return isPumpSwapPool(poolMetadata);
+  return isPumpSwapPool(poolMetadata)
+    || poolMetadata?.poolProgram === RAYDIUM_CPMM_PROGRAM;
 }
 
 export function isLikelyPumpSwapFallbackLog(logs: string[]): boolean {

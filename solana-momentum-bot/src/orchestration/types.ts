@@ -3,8 +3,7 @@ import { CandleStore, TradeStore } from '../candle';
 import { EventMonitor, EventScoreStore } from '../event';
 import { Executor, WalletManager } from '../executor';
 import { SpreadMeasurer } from '../gate/spreadMeasurer';
-import { GeckoTerminalClient, BirdeyeClient } from '../ingester';
-import { BirdeyeWSClient } from '../ingester/birdeyeWSClient';
+import { GeckoTerminalClient, BirdeyeClient, OnchainSecurityClient } from '../ingester';
 import { Notifier } from '../notifier';
 import { MicroCandleBuilder, RealtimeAdmissionTracker } from '../realtime';
 import { PaperMetricsTracker, RealtimeOutcomeTracker, RealtimeSignalLogger } from '../reporting';
@@ -35,10 +34,10 @@ export interface BotContext {
   scanner?: ScannerEngine;
   /** GeckoTerminal client (OHLCV, trending — Birdeye 대체) */
   geckoClient?: GeckoTerminalClient;
-  /** Birdeye REST client (optional — Security Gate/Strategy D only) */
+  /** Birdeye REST client (optional — overview/legacy fetch only) */
   birdeyeClient?: BirdeyeClient;
-  /** Phase 1A: Birdeye WS client (null = polling fallback) */
-  birdeyeWS?: BirdeyeWSClient;
+  /** Helius RPC 기반 Security Gate client */
+  onchainSecurityClient?: OnchainSecurityClient;
   /** Phase 1B: Market Regime Filter */
   regimeFilter?: RegimeFilter;
   /** Phase 1B: Paper Trading Metrics Tracker */

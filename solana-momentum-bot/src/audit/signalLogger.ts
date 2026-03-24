@@ -16,12 +16,15 @@ export class SignalAuditLogger {
 
   async initialize(): Promise<void> {
     await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS signal_audit_log (
-        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        timestamp       TIMESTAMPTZ DEFAULT now(),
-        pair_address    TEXT NOT NULL,
-        strategy        TEXT NOT NULL,
-        volume_score    INTEGER,
+        CREATE TABLE IF NOT EXISTS signal_audit_log (
+          id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          timestamp       TIMESTAMPTZ DEFAULT now(),
+          pair_address    TEXT NOT NULL,
+          strategy        TEXT NOT NULL,
+          source_label    TEXT,
+          attention_score NUMERIC,
+          attention_confidence TEXT,
+          volume_score    INTEGER,
         buy_ratio_score INTEGER,
         multi_tf_score  INTEGER,
         whale_score     INTEGER,
@@ -43,7 +46,8 @@ export class SignalAuditLogger {
         pnl             NUMERIC,
         slippage_actual NUMERIC,
         effective_rr    NUMERIC,
-        round_trip_cost NUMERIC
+        round_trip_cost NUMERIC,
+        gate_trace      JSONB
       );
 
       CREATE INDEX IF NOT EXISTS idx_signal_audit_strategy
@@ -54,7 +58,11 @@ export class SignalAuditLogger {
     await this.pool.query(`
       ALTER TABLE signal_audit_log
       ADD COLUMN IF NOT EXISTS effective_rr NUMERIC,
-      ADD COLUMN IF NOT EXISTS round_trip_cost NUMERIC
+      ADD COLUMN IF NOT EXISTS round_trip_cost NUMERIC,
+      ADD COLUMN IF NOT EXISTS source_label TEXT,
+      ADD COLUMN IF NOT EXISTS attention_score NUMERIC,
+      ADD COLUMN IF NOT EXISTS attention_confidence TEXT,
+      ADD COLUMN IF NOT EXISTS gate_trace JSONB
     `);
     log.info('SignalAuditLogger initialized');
   }
@@ -62,17 +70,18 @@ export class SignalAuditLogger {
   async logSignal(entry: SignalAuditEntry): Promise<string> {
     const result = await this.pool.query(
       `INSERT INTO signal_audit_log (
-        pair_address, strategy,
+        pair_address, strategy, source_label, attention_score, attention_confidence,
         volume_score, buy_ratio_score, multi_tf_score, whale_score, lp_score,
         total_score, grade,
         candle_close, volume, buy_volume, sell_volume,
         pool_tvl, spread_pct,
         action, filter_reason, position_size, size_constraint,
-        effective_rr, round_trip_cost
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+        effective_rr, round_trip_cost, gate_trace
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
       RETURNING id`,
       [
-        entry.pairAddress, entry.strategy,
+        entry.pairAddress, entry.strategy, entry.sourceLabel ?? null,
+        entry.attentionScore ?? null, entry.attentionConfidence ?? null,
         entry.volumeScore ?? null, entry.buyRatioScore ?? null,
         entry.multiTfScore ?? null, entry.whaleScore ?? null, entry.lpScore ?? null,
         entry.totalScore, entry.grade,
@@ -82,6 +91,7 @@ export class SignalAuditLogger {
         entry.action, entry.filterReason ?? null,
         entry.positionSize ?? null, entry.sizeConstraint ?? null,
         entry.effectiveRR ?? null, entry.roundTripCost ?? null,
+        entry.gateTrace ?? null,
       ]
     );
     return result.rows[0].id;

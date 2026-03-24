@@ -18,6 +18,13 @@ export function buildRealtimeShadowSummaryMessage(report: RealtimeShadowReport):
     `- Gate latency: avg ${report.summary.avgGateLatencyMs.toFixed(1)}ms / p95 ${report.summary.p95GateLatencyMs.toFixed(1)}ms`,
   ];
 
+  if (report.summary.p95TriggerWarmupLatencyMs > 0) {
+    lines.push(
+      `- Warmup latency: avg ${(report.summary.avgTriggerWarmupLatencyMs / 1000).toFixed(1)}s / ` +
+        `p95 ${(report.summary.p95TriggerWarmupLatencyMs / 1000).toFixed(1)}s`
+    );
+  }
+
   if (report.statusCounts.length > 0) {
     lines.push('', '<b>Status</b>');
     for (const entry of report.statusCounts.slice(0, 5)) {

@@ -50,21 +50,23 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
   let tokenSecurityData = undefined;
   let exitLiquidityData = undefined;
 
-  if (useAsyncGates && ctx.birdeyeClient) {
+  if (config.securityGateEnabled && ctx.onchainSecurityClient) {
     try {
       const [secData, exitData] = await Promise.all([
-        config.securityGateEnabled
-          ? ctx.birdeyeClient.getTokenSecurityDetailed(poolInfo.tokenMint)
-          : Promise.resolve(undefined),
-        config.securityGateEnabled
-          ? ctx.birdeyeClient.getExitLiquidity(poolInfo.tokenMint)
-          : Promise.resolve(undefined),
+        ctx.onchainSecurityClient.getTokenSecurityDetailed(poolInfo.tokenMint),
+        ctx.onchainSecurityClient.getExitLiquidity(poolInfo.tokenMint),
       ]);
       tokenSecurityData = secData;
       exitLiquidityData = exitData;
     } catch (error) {
       log.warn(`Security data fetch failed for ${poolInfo.tokenMint}: ${error}`);
+      tokenSecurityData = null;
+      exitLiquidityData = null;
     }
+  } else if (config.securityGateEnabled) {
+    log.warn(`Security gate enabled without onchain client for ${poolInfo.tokenMint}`);
+    tokenSecurityData = null;
+    exitLiquidityData = null;
   }
 
   const quoteGateConfig = config.quoteGateEnabled ? {

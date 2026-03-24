@@ -3,6 +3,7 @@ export { RealtimeReplayStore } from './replayStore';
 export { RealtimeAdmissionTracker } from './realtimeAdmissionTracker';
 export { RealtimeAdmissionStore } from './realtimeAdmissionStore';
 export { MicroCandleBuilder } from './microCandleBuilder';
+export { fetchRecentSwapsForPool } from './recentSwapBackfill';
 export { RealtimePoolOwnerResolver } from './poolOwnerResolver';
 export {
   SUPPORTED_REALTIME_DEX_IDS,
@@ -17,6 +18,7 @@ export {
   shouldForceFallbackToTransaction,
   RAYDIUM_V4_PROGRAM,
   RAYDIUM_CLMM_PROGRAM,
+  RAYDIUM_CPMM_PROGRAM,
   ORCA_WHIRLPOOL_PROGRAM,
   RAYDIUM_ROUTER_PROGRAM,
   PUMP_SWAP_PROGRAM,

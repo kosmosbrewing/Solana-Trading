@@ -2,8 +2,13 @@ import { EventEmitter } from 'events';
 import { createModuleLogger } from '../utils/logger';
 import { BirdeyeTrendingToken } from '../ingester/birdeyeClient';
 import { GeckoTerminalClient } from '../ingester/geckoTerminalClient';
-import { BirdeyeWSClient, WSPriceUpdate, WSNewListingUpdate, WSNewPairUpdate } from '../ingester/birdeyeWSClient';
 import { DexScreenerClient } from './dexScreenerClient';
+import {
+  buildDexAdDiscoveryCandidates,
+  buildDexBoostDiscoveryCandidates,
+  buildDexCommunityTakeoverDiscoveryCandidates,
+  buildDexProfileDiscoveryCandidates,
+} from './dexBoostDiscovery';
 import { calcWatchlistScore, WatchlistScoreInput, WatchlistScoreResult } from './watchlistScore';
 import { SocialMentionTracker } from './socialMentionTracker';
 import { PoolInfo } from '../utils/types';
@@ -15,6 +20,7 @@ export interface WatchlistEntry {
   pairAddress: string;
   symbol: string;
   name?: string;
+  discoverySource: string;
   lane: 'A' | 'B';             // A = Mature, B = Fresh
   watchlistScore: WatchlistScoreResult;
   poolInfo?: PoolInfo;
@@ -26,8 +32,6 @@ export interface WatchlistEntry {
 export interface ScannerEngineConfig {
   /** GeckoTerminal client (Birdeye 대체) */
   geckoClient: GeckoTerminalClient;
-  /** Birdeye WebSocket client (optional — falls back to polling if null) */
-  birdeyeWS: BirdeyeWSClient | null;
   /** DexScreener client (optional) */
   dexScreenerClient: DexScreenerClient | null;
   /** Maximum watchlist size */
@@ -36,6 +40,10 @@ export interface ScannerEngineConfig {
   minWatchlistScore: number;
   /** Polling interval for trending discovery (ms, fallback when WS unavailable) */
   trendingPollIntervalMs: number;
+  /** Polling interval for Gecko new-pool discovery (ms) */
+  geckoNewPoolIntervalMs: number;
+  /** DexScreener discovery interval (ms) */
+  dexDiscoveryIntervalMs: number;
   /** DexScreener enrichment interval (ms) */
   dexEnrichIntervalMs: number;
   /** Lane A minimum token age (seconds) */
@@ -54,7 +62,7 @@ export interface ScannerEngineConfig {
  * ScannerEngine — Multi-pair 동적 watchlist 관리.
  *
  * 기능:
- *   1. Birdeye trending + WS new listing/pair → 후보 발견
+ *   1. Gecko trending + Dex boosts/profiles → 후보 발견
  *   2. DexScreener boosts/orders → WatchlistScore 보강
  *   3. Lane A (Mature) / Lane B (Fresh) 분류
  *   4. 동적 watchlist 유지 (score 기반 eviction)
@@ -69,6 +77,8 @@ export class ScannerEngine extends EventEmitter {
   private watchlist: Map<string, WatchlistEntry> = new Map(); // key = tokenMint
   private evictedCooldowns: Map<string, number> = new Map();
   private trendingTimer: ReturnType<typeof setInterval> | null = null;
+  private geckoNewPoolTimer: ReturnType<typeof setInterval> | null = null;
+  private dexDiscoveryTimer: ReturnType<typeof setInterval> | null = null;
   private dexEnrichTimer: ReturnType<typeof setInterval> | null = null;
   private running = false;
 
@@ -100,12 +110,13 @@ export class ScannerEngine extends EventEmitter {
 
     log.info('Scanner starting...');
 
-    // Wire WS events if available
-    if (this.config.birdeyeWS) {
-      this.config.birdeyeWS.on('price', (update: WSPriceUpdate) => this.handlePriceUpdate(update));
-      this.config.birdeyeWS.on('newListing', (update: WSNewListingUpdate) => this.handleNewListing(update));
-      this.config.birdeyeWS.on('newPair', (update: WSNewPairUpdate) => this.handleNewPair(update));
+    // Initial discovery via DexScreener
+    if (this.config.dexScreenerClient) {
+      await this.discoverFromDexSources();
     }
+
+    // Initial discovery via Gecko new pools
+    await this.discoverFromGeckoNewPools();
 
     // Initial discovery via trending
     await this.discoverFromTrending();
@@ -116,11 +127,24 @@ export class ScannerEngine extends EventEmitter {
       );
     }
 
-    // Schedule recurring trending poll
+    // Schedule recurring Gecko new-pool discovery
+    this.geckoNewPoolTimer = setInterval(
+      () => this.discoverFromGeckoNewPools().catch(e => log.error(`Gecko new pool discovery error: ${e}`)),
+      this.config.geckoNewPoolIntervalMs
+    );
+
+    // Schedule recurring trending fallback poll
     this.trendingTimer = setInterval(
       () => this.discoverFromTrending().catch(e => log.error(`Trending poll error: ${e}`)),
       this.config.trendingPollIntervalMs
     );
+
+    if (this.config.dexScreenerClient) {
+      this.dexDiscoveryTimer = setInterval(
+        () => this.discoverFromDexSources().catch(e => log.error(`Dex discovery error: ${e}`)),
+        this.config.dexDiscoveryIntervalMs
+      );
+    }
 
     // Schedule DexScreener enrichment
     if (this.config.dexScreenerClient) {
@@ -136,6 +160,8 @@ export class ScannerEngine extends EventEmitter {
   stop(): void {
     this.running = false;
     if (this.trendingTimer) { clearInterval(this.trendingTimer); this.trendingTimer = null; }
+    if (this.geckoNewPoolTimer) { clearInterval(this.geckoNewPoolTimer); this.geckoNewPoolTimer = null; }
+    if (this.dexDiscoveryTimer) { clearInterval(this.dexDiscoveryTimer); this.dexDiscoveryTimer = null; }
     if (this.dexEnrichTimer) { clearInterval(this.dexEnrichTimer); this.dexEnrichTimer = null; }
     this.config.socialMentionTracker?.stopFilteredStream();
     log.info('Scanner stopped.');
@@ -145,6 +171,10 @@ export class ScannerEngine extends EventEmitter {
 
   private async discoverFromTrending(): Promise<void> {
     try {
+      if (!this.shouldRunTrendingDiscovery()) {
+        log.debug('Trending discovery skipped: Dex sources already filled watchlist');
+        return;
+      }
       this.cleanupCooldowns();
       const previousMints = new Set(this.watchlist.keys());
       const tokens = await this.config.geckoClient.getTrendingTokens(20);
@@ -163,6 +193,23 @@ export class ScannerEngine extends EventEmitter {
     }
   }
 
+  private async discoverFromGeckoNewPools(): Promise<void> {
+    const getNewPoolTokens = this.config.geckoClient.getNewPoolTokens?.bind(this.config.geckoClient);
+    if (!getNewPoolTokens) return;
+
+    try {
+      const candidates = await getNewPoolTokens(20);
+      await this.considerDiscoveryCandidates(candidates, 'Gecko new pool discovery');
+    } catch (error) {
+      log.warn(`Gecko new pool discovery failed: ${error}`);
+    }
+  }
+
+  private shouldRunTrendingDiscovery(): boolean {
+    if (!this.config.dexScreenerClient) return true;
+    return this.watchlist.size < this.config.maxWatchlistSize;
+  }
+
   private async evaluateCandidate(token: BirdeyeTrendingToken): Promise<WatchlistEntry | undefined> {
     if (!token.address || this.isCoolingDown(token.address)) {
       return undefined;
@@ -178,6 +225,8 @@ export class ScannerEngine extends EventEmitter {
       priceChange24hPct: token.priceChange24hPct,
       volume24hUsd: token.volume24hUsd,
       liquidityUsd: token.liquidityUsd,
+      boostAmount: token.raw?.boost_total_amount as number | undefined,
+      hasPaidOrders: token.raw?.has_paid_orders as boolean | undefined,
       socialScore,
     };
 
@@ -202,6 +251,7 @@ export class ScannerEngine extends EventEmitter {
       pairAddress: token.address, // will be resolved later if pair differs
       symbol: token.symbol,
       name: token.name,
+      discoverySource: this.resolveDiscoverySource(token),
       lane,
       watchlistScore: scoreResult,
       poolInfo: {
@@ -241,57 +291,11 @@ export class ScannerEngine extends EventEmitter {
     return null; // in between — doesn't fit either lane
   }
 
-  // ─── WS Event Handlers ───
-
-  private handlePriceUpdate(update: WSPriceUpdate): void {
-    const entry = this.watchlist.get(update.tokenMint);
-    if (!entry) return;
-    entry.lastPriceUsd = update.price;
-    entry.lastUpdatedAt = new Date();
-  }
-
-  private handleNewListing(update: WSNewListingUpdate): void {
-    if (!update.address) return;
-    if (this.watchlist.has(update.address)) return;
-    if ((update.liquidity ?? 0) < this.config.minLiquidityUsd) return;
-
-    log.info(`New listing detected: ${update.symbol ?? update.address} liq=${update.liquidity}`);
-
-    // Create a minimal trending token to evaluate
-    const token: BirdeyeTrendingToken = {
-      address: update.address,
-      symbol: update.symbol ?? 'UNKNOWN',
-      name: update.name,
-      rank: 999, // not ranked
-      liquidityUsd: update.liquidity,
-      source: 'token_trending',
-      raw: update as unknown as Record<string, unknown>,
-    };
-
-    this.considerCandidate(token).catch(e =>
-      log.error(`Failed to evaluate new listing ${update.address}: ${e}`)
-    );
-  }
-
-  private handleNewPair(update: WSNewPairUpdate): void {
-    if (!update.baseMint) return;
-    if (this.watchlist.has(update.baseMint)) return;
-    if ((update.liquidity ?? 0) < this.config.minLiquidityUsd) return;
-
-    log.info(`New pair detected: ${update.pairAddress} base=${update.baseMint} liq=${update.liquidity}`);
-
-    const token: BirdeyeTrendingToken = {
-      address: update.baseMint,
-      symbol: 'NEW_PAIR',
-      rank: 999,
-      liquidityUsd: update.liquidity,
-      source: 'token_trending',
-      raw: update as unknown as Record<string, unknown>,
-    };
-
-    this.considerCandidate(token).catch(e =>
-      log.error(`Failed to evaluate new pair ${update.pairAddress}: ${e}`)
-    );
+  private resolveDiscoverySource(token: BirdeyeTrendingToken): string {
+    const discoverySource = token.raw?.discovery_source;
+    return typeof discoverySource === 'string' && discoverySource.length > 0
+      ? discoverySource
+      : 'gecko_trending';
   }
 
   // ─── DexScreener Enrichment ───
@@ -300,9 +304,10 @@ export class ScannerEngine extends EventEmitter {
     if (!this.config.dexScreenerClient) return;
 
     try {
-      const [latestBoosts, topBoosts] = await Promise.all([
+      const [latestBoosts, topBoosts, latestProfiles] = await Promise.all([
         this.config.dexScreenerClient.getLatestBoosts(),
         this.config.dexScreenerClient.getTopBoosts(),
+        this.config.dexScreenerClient.getLatestTokenProfiles(),
       ]);
 
       // Index boosts by token address
@@ -332,19 +337,8 @@ export class ScannerEngine extends EventEmitter {
         }
       }
 
-      // Also check for new candidates from boosts
-      for (const boost of latestBoosts) {
-        if (!this.watchlist.has(boost.tokenAddress) && boost.totalAmount >= 100) {
-          const token: BirdeyeTrendingToken = {
-            address: boost.tokenAddress,
-            symbol: 'BOOSTED',
-            rank: 999,
-            source: 'token_trending',
-            raw: boost as unknown as Record<string, unknown>,
-          };
-          await this.considerCandidate(token);
-        }
-      }
+      await this.considerDexBoostCandidates([...latestBoosts, ...topBoosts]);
+      await this.considerDexProfileCandidates(latestProfiles);
 
       if (enriched > 0) {
         log.info(`DexScreener enriched ${enriched} watchlist entries`);
@@ -352,6 +346,113 @@ export class ScannerEngine extends EventEmitter {
       }
     } catch (error) {
       log.warn(`DexScreener enrichment error: ${error}`);
+    }
+  }
+
+  private async discoverFromDexSources(): Promise<void> {
+    await this.discoverFromDexBoosts();
+    await this.discoverFromDexProfiles();
+    await this.discoverFromDexCommunityTakeovers();
+    await this.discoverFromDexAds();
+  }
+
+  private async discoverFromDexBoosts(): Promise<void> {
+    if (!this.config.dexScreenerClient) return;
+
+    try {
+      const [latestBoosts, topBoosts] = await Promise.all([
+        this.config.dexScreenerClient.getLatestBoosts(),
+        this.config.dexScreenerClient.getTopBoosts(),
+      ]);
+      await this.considerDexBoostCandidates([...latestBoosts, ...topBoosts]);
+    } catch (error) {
+      log.warn(`Dex boost discovery failed: ${error}`);
+    }
+  }
+
+  private async discoverFromDexProfiles(): Promise<void> {
+    if (!this.config.dexScreenerClient) return;
+
+    try {
+      const latestProfiles = await this.config.dexScreenerClient.getLatestTokenProfiles();
+      await this.considerDexProfileCandidates(latestProfiles);
+    } catch (error) {
+      log.warn(`Dex profile discovery failed: ${error}`);
+    }
+  }
+
+  private async discoverFromDexCommunityTakeovers(): Promise<void> {
+    if (!this.config.dexScreenerClient) return;
+
+    try {
+      const takeovers = await this.config.dexScreenerClient.getLatestCommunityTakeovers();
+      if (takeovers.length === 0) return;
+      const candidates = await buildDexCommunityTakeoverDiscoveryCandidates(
+        this.config.dexScreenerClient,
+        takeovers,
+        5
+      );
+      await this.considerDiscoveryCandidates(candidates, 'Dex community takeover discovery');
+    } catch (error) {
+      log.warn(`Dex community takeover discovery failed: ${error}`);
+    }
+  }
+
+  private async discoverFromDexAds(): Promise<void> {
+    if (!this.config.dexScreenerClient) return;
+
+    try {
+      const ads = await this.config.dexScreenerClient.getLatestAds();
+      if (ads.length === 0) return;
+      const candidates = await buildDexAdDiscoveryCandidates(
+        this.config.dexScreenerClient,
+        ads,
+        5
+      );
+      await this.considerDiscoveryCandidates(candidates, 'Dex ad discovery');
+    } catch (error) {
+      log.warn(`Dex ad discovery failed: ${error}`);
+    }
+  }
+
+  private async considerDexBoostCandidates(boosts: import('./dexScreenerClient').DexScreenerBoost[]): Promise<void> {
+    if (!this.config.dexScreenerClient || boosts.length === 0) return;
+
+    const candidates = await buildDexBoostDiscoveryCandidates(
+      this.config.dexScreenerClient,
+      boosts
+    );
+    await this.considerDiscoveryCandidates(candidates, 'Dex boost discovery');
+  }
+
+  private async considerDexProfileCandidates(
+    profiles: import('./dexScreenerClient').DexScreenerTokenProfile[]
+  ): Promise<void> {
+    if (!this.config.dexScreenerClient || profiles.length === 0) return;
+
+    const candidates = await buildDexProfileDiscoveryCandidates(
+      this.config.dexScreenerClient,
+      profiles,
+      5
+    );
+    await this.considerDiscoveryCandidates(candidates, 'Dex profile discovery');
+  }
+
+  private async considerDiscoveryCandidates(
+    candidates: BirdeyeTrendingToken[],
+    label: string
+  ): Promise<void> {
+    const previousMints = new Set(this.watchlist.keys());
+    let discovered = 0;
+    for (const token of candidates) {
+      if (this.watchlist.has(token.address)) continue;
+      if ((token.liquidityUsd ?? 0) < this.config.minLiquidityUsd) continue;
+      const entry = await this.evaluateCandidate(token);
+      if (entry) discovered += 1;
+    }
+    if (discovered > 0) {
+      log.info(`${label}: ${discovered} new candidates`);
+      this.finalizeWatchlist(previousMints);
     }
   }
 
@@ -368,9 +469,6 @@ export class ScannerEngine extends EventEmitter {
       this.watchlist.delete(entry.tokenMint);
       this.markEvicted(entry.tokenMint);
       this.config.socialMentionTracker?.unregisterTrackedToken(entry.tokenMint);
-      if (this.config.birdeyeWS) {
-        this.config.birdeyeWS.unsubscribeAll(entry.tokenMint);
-      }
       log.info(`- Watchlist evicted: ${entry.symbol} score=${entry.watchlistScore.totalScore}`);
       this.emit('candidateEvicted', entry.tokenMint);
     }
@@ -384,6 +482,7 @@ export class ScannerEngine extends EventEmitter {
       tokenMint,
       pairAddress,
       symbol,
+      discoverySource: 'manual',
       lane: 'A',
       watchlistScore: {
         totalScore: 100,
@@ -443,12 +542,8 @@ export class ScannerEngine extends EventEmitter {
       [entry.name ?? '']
     );
 
-    if (this.config.birdeyeWS) {
-      this.config.birdeyeWS.subscribePrice(entry.tokenMint);
-    }
-
     log.info(
-      `+ Watchlist: ${entry.symbol} lane=${entry.lane} ` +
+      `+ Watchlist: ${entry.symbol} source=${entry.discoverySource} lane=${entry.lane} ` +
       `score=${entry.watchlistScore.totalScore} grade=${entry.watchlistScore.grade}`
     );
     this.emit('candidateDiscovered', entry);

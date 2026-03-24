@@ -3,6 +3,7 @@ import {
   isLikelyPumpSwapFallbackLog,
   parseSwapFromTransaction,
   PUMP_SWAP_PROGRAM,
+  RAYDIUM_CPMM_PROGRAM,
   shouldForceFallbackToTransaction,
   shouldFallbackToTransaction,
   tryParseSwapFromLogs,
@@ -173,6 +174,15 @@ describe('swapParser', () => {
       baseMint: 'mint-base',
       quoteMint: 'So11111111111111111111111111111111111111112',
       poolProgram: PUMP_SWAP_PROGRAM,
+    })).toBe(true);
+  });
+
+  it('forces transaction fallback for Raydium CPMM pools', () => {
+    expect(shouldForceFallbackToTransaction({
+      dexId: 'raydium',
+      baseMint: 'mint-base',
+      quoteMint: 'So11111111111111111111111111111111111111112',
+      poolProgram: RAYDIUM_CPMM_PROGRAM,
     })).toBe(true);
   });
 

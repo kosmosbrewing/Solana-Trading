@@ -151,6 +151,24 @@ describe('messageFormatter', () => {
           kellyEligible: true,
         },
       ],
+      sourceOutcomes: [
+        {
+          sourceLabel: 'scanner_dex_boost',
+          totalTrades: 3,
+          wins: 2,
+          losses: 1,
+          winRate: 2 / 3,
+          pnl: 0.08,
+        },
+        {
+          sourceLabel: 'unknown',
+          totalTrades: 2,
+          wins: 1,
+          losses: 1,
+          winRate: 0.5,
+          pnl: 0.04,
+        },
+      ],
     }, '2026-03-22');
 
     expect(message).toContain('📊 <b>Daily Report — 2026-03-22</b>');
@@ -163,5 +181,8 @@ describe('messageFormatter', () => {
     expect(message).toContain('전략 상태');
     expect(message).toContain('Momentum Cascade: 검증 통과');
     expect(message).toContain('Kelly 8.0%');
+    expect(message).toContain('소스 성과');
+    expect(message).toContain('scanner_dex_boost: 3건 | 승률 66.7% | 손익 +0.0800 SOL');
+    expect(message).toContain('unknown: 2건 | 승률 50.0% | 손익 +0.0400 SOL');
   });
 });

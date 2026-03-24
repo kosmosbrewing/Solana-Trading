@@ -4,6 +4,7 @@ export type ControlCommand =
   | { type: 'help' }
   | { type: 'status' }
   | { type: 'list' }
+  | { type: 'health' }
   | { type: 'restart'; processName: string }
   | { type: 'stop'; processName: string }
   | { type: 'logs'; processName: string };
@@ -28,8 +29,8 @@ export function parseControlCommand(text: string | undefined, allowedProcesses: 
 
   const [rawCommand, ...args] = text.trim().split(/\s+/);
   const command = rawCommand.toLowerCase().replace(/@.+$/, '');
-  const processName = args[0];
-  const allowedList = allowedProcesses.join(', ');
+  const processToken = args[0];
+  const allowedList = formatAllowedProcesses(allowedProcesses);
 
   switch (command) {
     case '/help':
@@ -38,12 +39,14 @@ export function parseControlCommand(text: string | undefined, allowedProcesses: 
       return { kind: 'command', command: { type: 'status' } };
     case '/list':
       return { kind: 'command', command: { type: 'list' } };
+    case '/health':
+      return { kind: 'command', command: { type: 'health' } };
     case '/restart':
-      return parseProcessCommand('restart', processName, allowedProcesses, allowedList);
+      return parseProcessCommand('restart', processToken, allowedProcesses, allowedList);
     case '/stop':
-      return parseProcessCommand('stop', processName, allowedProcesses, allowedList);
+      return parseProcessCommand('stop', processToken, allowedProcesses, allowedList);
     case '/logs':
-      return parseProcessCommand('logs', processName, allowedProcesses, allowedList);
+      return parseProcessCommand('logs', processToken, allowedProcesses, allowedList);
     default:
       return { kind: 'error', message: `Unknown command: ${command}` };
   }
@@ -51,17 +54,40 @@ export function parseControlCommand(text: string | undefined, allowedProcesses: 
 
 function parseProcessCommand(
   type: 'restart' | 'stop' | 'logs',
-  processName: string | undefined,
+  processToken: string | undefined,
   allowedProcesses: string[],
   allowedList: string
 ): ParsedControlCommand {
-  if (!processName) {
+  if (!processToken) {
     return { kind: 'error', message: `Missing process name. Allowed: ${allowedList}` };
   }
 
-  if (!allowedProcesses.includes(processName)) {
-    return { kind: 'error', message: `Process not allowed: ${processName}. Allowed: ${allowedList}` };
+  const processName = resolveProcessName(processToken, allowedProcesses);
+  if (!processName) {
+    return { kind: 'error', message: `Process not allowed: ${processToken}. Allowed: ${allowedList}` };
   }
 
   return { kind: 'command', command: { type, processName } };
+}
+
+export function listProcessAliases(processName: string): string[] {
+  const match = processName.match(/^momentum-(.+?)(?:-bot)?$/);
+  if (!match) return [processName];
+  return [processName, match[1]];
+}
+
+function resolveProcessName(processToken: string, allowedProcesses: string[]): string | null {
+  const normalizedToken = processToken.toLowerCase();
+  for (const processName of allowedProcesses) {
+    if (listProcessAliases(processName).map((alias) => alias.toLowerCase()).includes(normalizedToken)) {
+      return processName;
+    }
+  }
+  return null;
+}
+
+function formatAllowedProcesses(allowedProcesses: string[]): string {
+  return allowedProcesses
+    .map((processName) => listProcessAliases(processName).join('/'))
+    .join(', ');
 }

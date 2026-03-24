@@ -1,6 +1,6 @@
 import { DailySummaryReport, RealtimeAdmissionSummary } from '../notifier/dailySummaryFormatter';
 import { RealtimeAdmissionSnapshotEntry } from '../realtime';
-import { EdgeTracker } from '../reporting';
+import { EdgeTracker, summarizeTradesBySource } from '../reporting';
 import { config } from '../utils/config';
 import { createModuleLogger } from '../utils/logger';
 import { BotContext } from './types';
@@ -47,6 +47,7 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
 
   const wins = closedTodayTrades.filter(t => (t.pnl || 0) > 0);
   const losses = closedTodayTrades.filter(t => (t.pnl || 0) <= 0);
+  const sourceOutcomes = summarizeTradesBySource(closedTodayTrades);
   const portfolio = await ctx.riskManager.getPortfolioState(balance);
 
   let bestTrade: { pair: string; pnl: number; score: number; grade: string } | undefined;
@@ -90,6 +91,7 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
     uptime: status.uptime,
     restarts: 0,
     edgeStats: edgeTracker.getAllStrategyStats(),
+    sourceOutcomes,
     realtimeAdmission: buildRealtimeAdmissionSummary(ctx),
   } satisfies DailySummaryReport);
 

@@ -65,4 +65,33 @@ describe('MicroCandleBuilder', () => {
     builder.stop();
     jest.useRealTimers();
   });
+
+  it('seeds historical swaps without emitting realtime events', () => {
+    const builder = new MicroCandleBuilder({
+      intervals: [5],
+      maxHistory: 10,
+    });
+    const emitted: string[] = [];
+    builder.on('candle', () => emitted.push('candle'));
+    builder.on('tick', () => emitted.push('tick'));
+
+    const seeded = builder.seedSwaps([
+      makeSwap({ timestamp: 1, priceNative: 1.0, amountQuote: 2 }),
+      makeSwap({ timestamp: 3, priceNative: 1.2, amountQuote: 3 }),
+      makeSwap({ timestamp: 6, priceNative: 1.1, amountQuote: 4, signature: 'sig-2' }),
+    ]);
+
+    const candles = builder.getRecentCandles('pool-1', 5, 10);
+    expect(seeded).toBe(3);
+    expect(candles).toHaveLength(1);
+    expect(candles[0]).toMatchObject({
+      open: 1.0,
+      high: 1.2,
+      low: 1.0,
+      close: 1.2,
+      volume: 5,
+      tradeCount: 2,
+    });
+    expect(emitted).toEqual([]);
+  });
 });

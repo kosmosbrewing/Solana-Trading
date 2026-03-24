@@ -94,9 +94,21 @@ export class Notifier {
   }
 
   async sendError(context: string, error: unknown): Promise<void> {
-    await this.sendCritical(context,
-      `Error: ${error instanceof Error ? error.message : String(error)}`
-    );
+    const message = error instanceof Error ? error.message : String(error);
+    const normalized = normalizeThrottleMessage(message);
+
+    if (isTransientErrorMessage(message)) {
+      const key = `transient-error:${context}:${normalized}`;
+      if (this.isThrottled(key, 2 * 60 * 1000)) return;
+      this.updateThrottle(key);
+      await this.send(buildAlertMessage('WARNING', context, `Transient error: ${message}`));
+      return;
+    }
+
+    const key = `critical-error:${context}:${normalized}`;
+    if (this.isThrottled(key, 60 * 1000)) return;
+    this.updateThrottle(key);
+    await this.sendCritical(context, `Error: ${message}`);
   }
 
   async sendDailySummary(report: DailySummaryReport): Promise<void> {
@@ -156,4 +168,29 @@ export class Notifier {
       log.error(`Telegram send failed: ${error}`);
     }
   }
+}
+
+function isTransientErrorMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return [
+    '429',
+    'rate limit',
+    'fetch failed',
+    'network error',
+    'timeout',
+    'timed out',
+    'socket hang up',
+    'econnreset',
+    'econnrefused',
+    'eai_again',
+    'enotfound',
+  ].some((token) => normalized.includes(token));
+}
+
+function normalizeThrottleMessage(message: string): string {
+  return message
+    .toLowerCase()
+    .replace(/\d+/g, '#')
+    .replace(/\s+/g, ' ')
+    .trim();
 }

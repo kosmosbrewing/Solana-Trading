@@ -86,30 +86,19 @@ export class Ingester extends EventEmitter {
     const now = Math.floor(Date.now() / 1000);
     const twoHoursAgo = now - 7200;
 
-    // 429 재시도: 최대 2회, exponential backoff
-    for (let attempt = 0; attempt <= 2; attempt++) {
-      try {
-        const candles = await this.fetchCandles(cfg, twoHoursAgo, now);
+    try {
+      const candles = await this.fetchCandlesWithRetry(cfg, twoHoursAgo, now, 'backfill');
 
-        if (candles.length > 0) {
-          await this.candleStore.insertCandles(candles);
-          this.lastFetchTime.set(cfg.pairAddress, now);
-          log.info(`Backfilled ${candles.length} candles for ${cfg.pairAddress}`);
-          // Backfill 후 마지막 캔들로 전략 평가 트리거
-          this.emit('candles', candles);
-        }
-        return; // 성공 시 종료
-      } catch (error: unknown) {
-        const is429 = error instanceof Error && error.message.includes('429');
-        if (is429 && attempt < 2) {
-          const delay = Math.pow(2, attempt + 1) * 2000;
-          log.warn(`Backfill 429 for ${cfg.pairAddress}, retrying in ${delay}ms (${attempt + 1}/2)`);
-          await new Promise(r => setTimeout(r, delay));
-          continue;
-        }
-        log.error(`Backfill failed for ${cfg.pairAddress}: ${error}`);
-        this.emit('error', { pairAddress: cfg.pairAddress, error });
+      if (candles.length > 0) {
+        await this.candleStore.insertCandles(candles);
+        this.lastFetchTime.set(cfg.pairAddress, now);
+        log.info(`Backfilled ${candles.length} candles for ${cfg.pairAddress}`);
+        // Backfill 후 마지막 캔들로 전략 평가 트리거
+        this.emit('candles', candles);
       }
+    } catch (error) {
+      log.error(`Backfill failed for ${cfg.pairAddress}: ${error}`);
+      this.emit('error', { pairAddress: cfg.pairAddress, error });
     }
   }
 
@@ -120,7 +109,7 @@ export class Ingester extends EventEmitter {
     const lastTime = this.lastFetchTime.get(cfg.pairAddress) || (now - 600);
 
     try {
-      const candles = await this.fetchCandles(cfg, lastTime, now);
+      const candles = await this.fetchCandlesWithRetry(cfg, lastTime, now, 'poll');
 
       if (candles.length > 0) {
         await this.candleStore.insertCandles(candles);
@@ -189,4 +178,98 @@ export class Ingester extends EventEmitter {
     }
     return hash % (maxOffsetMs + 1);
   }
+
+  private async fetchCandlesWithRetry(
+    cfg: IngesterConfig,
+    timeFrom: number,
+    timeTo: number,
+    phase: 'backfill' | 'poll'
+  ) {
+    const maxRetries = 2;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await this.fetchCandles(cfg, timeFrom, timeTo);
+      } catch (error) {
+        const retryable = this.isRetryableFetchError(error);
+        if (!retryable || attempt >= maxRetries || !this.running) {
+          throw error;
+        }
+
+        const delayMs = this.getRetryDelayMs(error, attempt);
+        const reason = this.describeRetryableError(error);
+        log.warn(
+          `${phase} retryable error for ${cfg.pairAddress}: ${reason}. ` +
+          `Retrying in ${delayMs}ms (${attempt + 1}/${maxRetries})`
+        );
+        await sleep(delayMs);
+      }
+    }
+
+    return [];
+  }
+
+  private isRetryableFetchError(error: unknown): boolean {
+    const status = this.extractStatusCode(error);
+    if (status === 429 || (status !== undefined && status >= 500)) {
+      return true;
+    }
+
+    const message = this.getErrorMessage(error).toLowerCase();
+    return [
+      '429',
+      'rate limit',
+      'fetch failed',
+      'timeout',
+      'timed out',
+      'socket hang up',
+      'econnreset',
+      'econnrefused',
+      'eai_again',
+      'enotfound',
+      'network error',
+    ].some((token) => message.includes(token));
+  }
+
+  private getRetryDelayMs(error: unknown, attempt: number): number {
+    const status = this.extractStatusCode(error);
+    const retryAfterMs = this.extractRetryAfterMs(error);
+    if (retryAfterMs !== undefined) {
+      return retryAfterMs;
+    }
+    if (status === 429) {
+      return 2_000 * (2 ** (attempt + 1));
+    }
+    return 1_000 * (attempt + 1);
+  }
+
+  private extractRetryAfterMs(error: unknown): number | undefined {
+    const retryAfter = (error as {
+      response?: { headers?: Record<string, string | string[] | undefined> };
+    })?.response?.headers?.['retry-after'];
+    const value = Array.isArray(retryAfter) ? retryAfter[0] : retryAfter;
+    const seconds = Number(value);
+    return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : undefined;
+  }
+
+  private extractStatusCode(error: unknown): number | undefined {
+    const status = (error as { response?: { status?: number } })?.response?.status;
+    return typeof status === 'number' ? status : undefined;
+  }
+
+  private describeRetryableError(error: unknown): string {
+    const status = this.extractStatusCode(error);
+    if (status !== undefined) {
+      return `status=${status}`;
+    }
+    return this.getErrorMessage(error);
+  }
+
+  private getErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

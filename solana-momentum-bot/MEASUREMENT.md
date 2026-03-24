@@ -75,6 +75,84 @@ Stage Score =
 
 ---
 
+## Current Snapshot (2026-03-24 UTC)
+
+이 섹션은 정책 문서의 부록 역할을 한다.
+점수 산식 자체를 바꾸지 않고, **현재 코드베이스와 운영 상태를 measurement 프레임에 맞춰 해석**한다.
+
+### 1. 코드베이스 준비도
+
+| 항목 | 현재 상태 | 근거 |
+|---|---|---|
+| 전략/게이트/리스크/실행 배선 | 구현 완료 수준 | Strategy A/C/D/E, 5+1 gate, Risk Tier, WalletManager, realtime path 존재 |
+| 측정 파이프라인 | 구현 완료 수준 | backtest, paper validation, realtime shadow telemetry, audit log 존재 |
+| 테스트 상태 | 양호 | `2026-03-24` 기준 `40 suites / 172 tests` 통과 |
+| 운영 프로세스 관리 | 개선 완료, 추가 관찰 필요 | PM2 `fork_mode` 전환 후 startup loop 해소 |
+
+### 2. 운영 상태 스냅샷
+
+| 구분 | 현재 상태 | 해석 |
+|---|---|---|
+| PM2 runtime | `momentum-bot online`, `fork_mode`, `restarts = 0` after recreation | 현재는 기동 안정화된 상태 |
+| Live bootstrap | 진행 중 | full live composite 측정 이전 단계 |
+| Helius plan | Free tier | realtime fallback/429 여유가 작음 |
+| GeckoTerminal | 429 관찰됨, retry path 존재 | 즉시 치명 장애는 아니지만 execution quality 리스크 |
+| `helius-collector` | 별도 프로세스 중지 가능 | 본체 runtime과 분리 운영 여부 점검 필요 |
+
+### 3. Stage별 측정 가능 상태
+
+| 단계 | 현재 측정 가능 여부 | 현재 판단 |
+|---|---|---|
+| Backtest | 가능 | `Edge Score` 중심으로 평가 가능 |
+| Realtime Shadow | 가능 | `Realtime Edge Score + execution telemetry` 해석 가능 |
+| Paper | 부분 가능 | 정책은 준비됐지만 현재 `50 trades` 표본이 없음 |
+| Live | 불충분 | `Composite Score` 계산에 필요한 표본과 안정성 구간이 아직 부족 |
+
+### 4. Gate 관점 현재 판단
+
+| Gate | 현재 판단 | 이유 |
+|---|---|---|
+| Mission Gate | 아직 판정 불가 (`N/A`) | 최근 `50 executed trades` 표본 부족 |
+| Execution Gate | 아직 통과 판정 불가 | 최근 `24h uptime`, `20 measured trades`, `20 measured exits` 기준 미충족 |
+| Edge Gate | backtest 기준만 부분 판정 가능 | paper/live 실표본 부족 |
+
+### 5. 사명 근접도 해석
+
+현재 상태를 `1 SOL -> 100 SOL` 사명 관점에서 해석하면 아래와 같다.
+
+- **구현 근접도**: 높음
+  - 사명을 실행할 시스템은 거의 다 만들어졌다.
+- **검증 근접도**: 낮음
+  - 아직 paper/live 표본이 부족해 사명 달성 가능성을 입증하지 못했다.
+- **운영 근접도**: 중간
+  - 라이브 bootstrap은 시작했지만, 24h+ 안정 운영과 quote/fill 품질 검증이 더 필요하다.
+
+즉, 현재 위치는 아래 한 줄로 요약한다.
+
+> **Mission engine is mostly built, but mission proof is still early-stage.**
+
+### 6. 현재 공식 판단
+
+`2026-03-24` 기준 현재 공식 판단은 다음과 같다.
+
+- **Backtest**: 채택 후보 압축용으로 사용 가능
+- **Realtime Shadow**: execution telemetry 해석 가능
+- **Paper**: 아직 live gate 통과 전 단계
+- **Live**: bootstrap 관찰 단계이며, 아직 `full Composite` 평가 대상으로 간주하지 않는다
+
+### 7. 다음 인정 기준
+
+현재 상태에서 다음 중 하나라도 충족되기 전까지는 “사명에 근접했다”라고 표현하지 않는다.
+
+1. Paper `50 trades` 이상 + expectancy 양수
+2. 최근 `24h` uptime `>= 95%` + unhandled crash `<= 1`
+3. 최근 `20 measured trades` 기준 quote quality 기준 충족
+4. 최근 `50 executed trades` 기준 Mission Gate 항목 충족
+
+위 4개가 확보되면 그때부터 `Live Composite`를 공식 판단 기준으로 승격한다.
+
+---
+
 ## Level 1: Mission Score
 
 사명 적합도 점수. 단순 수익보다 우선한다.

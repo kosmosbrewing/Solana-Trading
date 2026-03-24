@@ -6,6 +6,9 @@ module.exports = {
       name: 'momentum-bot',
       script: 'dist/index.js',
       cwd: __dirname,
+      // Why: HTTP listener가 없는 worker 프로세스라 cluster_mode 이점이 없음
+      //       Node 22 + PM2 cluster 조합에서 startup AggregateError 루프 방지
+      exec_mode: 'fork',
       instances: 1,
       autorestart: true,
       max_restarts: 10,

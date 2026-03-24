@@ -179,6 +179,12 @@ export const config = {
   realtimeFallbackRequestsPerSecond: numOptional('REALTIME_FALLBACK_RPS', 4),
   realtimeFallbackBatchSize: numOptional('REALTIME_FALLBACK_BATCH_SIZE', 5),
   realtimeMaxFallbackQueue: numOptional('REALTIME_MAX_FALLBACK_QUEUE', 1000),
+  realtimeDisableSingleTxFallbackOnBatchUnsupported: boolOptional(
+    'REALTIME_DISABLE_SINGLE_TX_FALLBACK_ON_BATCH_UNSUPPORTED',
+    true
+  ),
+  realtimeSeedBackfillEnabled: boolOptional('REALTIME_SEED_BACKFILL_ENABLED', true),
+  realtimeSeedAllowSingleTxFallback: boolOptional('REALTIME_SEED_ALLOW_SINGLE_TX_FALLBACK', false),
   realtimeSlMode: optional('REALTIME_SL_MODE', 'atr'),
   realtimeSlAtrMultiplier: numOptional('REALTIME_SL_ATR_MULTIPLIER', 1.5),
   realtimeSlSwingLookback: numOptional('REALTIME_SL_SWING_LOOKBACK', 5),

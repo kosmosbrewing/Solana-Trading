@@ -33,6 +33,13 @@ jest.mock('@solana/web3.js', () => {
 
 import { HeliusWSIngester } from '../src/realtime';
 
+interface HeliusTestInternals {
+  enqueueFallback: (pool: string, signature: string, slot: number) => void;
+  enrichSwapsFromTxBatch: (
+    batch: Array<{ pool: string; signature: string; slot: number }>
+  ) => Promise<Map<string, unknown>>;
+}
+
 describe('HeliusWSIngester', () => {
   beforeEach(() => {
     jest.useFakeTimers();
@@ -75,6 +82,7 @@ describe('HeliusWSIngester', () => {
       fallbackMaxRetries: 2,
       watchdogIntervalMs: 0,
     });
+    const testIngester = ingester as unknown as HeliusTestInternals;
     const retries: Array<{ pool: string; signature: string; retries: number; delayMs: number }> = [];
     const errors: unknown[] = [];
     const results: Array<{ outcome: string }> = [];
@@ -87,7 +95,7 @@ describe('HeliusWSIngester', () => {
     ingester.on('error', ({ error }) => errors.push(error));
     ingester.on('fallbackResult', (event) => results.push(event));
 
-    (ingester as any).enqueueFallback('pool-1', 'sig-1', 123);
+    testIngester.enqueueFallback('pool-1', 'sig-1', 123);
     await jest.advanceTimersByTimeAsync(1_000);
     await Promise.resolve();
 
@@ -100,5 +108,34 @@ describe('HeliusWSIngester', () => {
     }));
     expect(errors).toHaveLength(0);
     expect(results).toContainEqual(expect.objectContaining({ outcome: 'unparsed' }));
+  });
+
+  it('suppresses single-request fallback when batch parsed transactions are unavailable', async () => {
+    const ingester = new HeliusWSIngester({
+      rpcHttpUrl: 'https://rpc.example.com',
+      rpcWsUrl: 'wss://rpc.example.com',
+      maxSubscriptions: 4,
+      fallbackConcurrency: 1,
+      fallbackRequestsPerSecond: 10,
+      fallbackBatchSize: 2,
+      fallbackMaxRetries: 0,
+      disableSingleTxFallbackOnBatchUnsupported: true,
+      watchdogIntervalMs: 0,
+    });
+    const testIngester = ingester as unknown as HeliusTestInternals;
+
+    mockGetParsedTransactions.mockRejectedValueOnce(
+      new Error('Batch requests are only available for paid plans')
+    );
+
+    const results = await testIngester.enrichSwapsFromTxBatch([
+      { pool: 'pool-1', signature: 'sig-1', slot: 123 },
+      { pool: 'pool-1', signature: 'sig-2', slot: 124 },
+    ]);
+
+    expect(mockGetParsedTransactions).toHaveBeenCalledTimes(1);
+    expect(mockGetParsedTransaction).not.toHaveBeenCalled();
+    expect(results.get('pool-1:sig-1')).toBeNull();
+    expect(results.get('pool-1:sig-2')).toBeNull();
   });
 });

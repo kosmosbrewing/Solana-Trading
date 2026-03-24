@@ -137,4 +137,32 @@ describe('fetchRecentSwapsForPool', () => {
 
     expect(swaps).toEqual([]);
   });
+
+  it('skips seed parsing instead of single-fetch fallback when batch RPC is unsupported', async () => {
+    const getParsedTransaction = jest.fn(async () => null);
+
+    const swaps = await fetchRecentSwapsForPool({
+      getSignaturesForAddress: async () => [
+        { signature: 'sig-hot', slot: 210, blockTime: 210 },
+      ],
+      getParsedTransactions: async () => {
+        throw new Error('Batch requests are only available for paid plans');
+      },
+      getParsedTransaction,
+    }, SOL_MINT, {
+      dexId: 'raydium',
+      baseMint: 'mint-base',
+      quoteMint: QUOTE_MINT,
+      baseDecimals: 6,
+      quoteDecimals: 6,
+      poolProgram: RAYDIUM_V4_PROGRAM,
+    }, {
+      lookbackSec: 30,
+      nowSec: 220,
+      allowSingleFetchFallback: false,
+    });
+
+    expect(swaps).toEqual([]);
+    expect(getParsedTransaction).not.toHaveBeenCalled();
+  });
 });

@@ -164,7 +164,7 @@ describe('messageFormatter', () => {
         hours: 24,
         lastCandleAt: '2026-03-22T08:45:00.000Z',
         timeSinceLastCandleMs: 15 * 60 * 1000,
-        filterReasonCounts: [
+        gateFilterReasonCounts: [
           { reason: 'quote_rejected: Quote error', count: 7 },
           { reason: 'security_rejected: Token is freezable', count: 3 },
         ],
@@ -187,10 +187,12 @@ describe('messageFormatter', () => {
         pollFailureCounts: [
           { source: 'gecko_ingester', count: 1 },
         ],
-        realtimeCandidateAcceptance: {
-          accepted: 6,
+        realtimeCandidateReadiness: {
+          totalCandidates: 10,
           prefiltered: 4,
-          acceptanceRate: 0.6,
+          admissionSkipped: 2,
+          ready: 6,
+          readinessRate: 0.6,
         },
       },
       edgeStats: [
@@ -244,7 +246,7 @@ describe('messageFormatter', () => {
     expect(message).toContain('Data Plane (24h)');
     expect(message).toContain('- 최근 캔들: 0h 15m 전 (2026-03-22T08:45:00.000Z)');
     expect(message).toContain('- realtime-ready ratio: 6/10 (60.0%)');
-    expect(message).toContain('gate reject: quote_rejected: Quote error=7, security_rejected: Token is freezable=3');
+    expect(message).toContain('gate reject (unique token): quote_rejected: Quote error=7, security_rejected: Token is freezable=3');
     expect(message).toContain('pre-watchlist reject: unsupported_dex source=dex_boost dex=meteora=4');
     expect(message).toContain('realtime skip: unsupported_pool_program=5');
     expect(message).toContain('realtime skip detail: unsupported_pool_program source=gecko_new_pool dex=raydium=5');

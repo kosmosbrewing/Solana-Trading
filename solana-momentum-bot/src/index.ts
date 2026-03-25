@@ -20,6 +20,7 @@ import {
   PaperMetricsTracker,
   RealtimeOutcomeTracker,
   RealtimeSignalLogger,
+  RuntimeDiagnosticsStore,
   RuntimeDiagnosticsTracker,
 } from './reporting';
 import { Executor, ExecutorConfig, WalletManager } from './executor';
@@ -145,6 +146,9 @@ async function main() {
   const realtimeAdmissionStore = realtimeModeEnabled
     ? new RealtimeAdmissionStore(path.resolve(process.cwd(), 'data/realtime-admission.json'))
     : null;
+  const runtimeDiagnosticsStore = realtimeModeEnabled
+    ? new RuntimeDiagnosticsStore(path.resolve(config.realtimeDataDir, 'runtime-diagnostics.json'))
+    : null;
   let heliusIngester: HeliusWSIngester | null = null;
   let realtimeCandleBuilder: MicroCandleBuilder | null = null;
   const realtimeReplayStore = realtimeModeEnabled && config.realtimePersistenceEnabled
@@ -232,7 +236,16 @@ async function main() {
   }
 
   // ─── Initialize modules ─────────────────────────────
-  const runtimeDiagnosticsTracker = new RuntimeDiagnosticsTracker();
+  const runtimeDiagnosticsInitialEvents = runtimeDiagnosticsStore
+    ? await runtimeDiagnosticsStore.load()
+    : [];
+  const runtimeDiagnosticsTracker = new RuntimeDiagnosticsTracker(
+    runtimeDiagnosticsStore ?? undefined,
+    runtimeDiagnosticsInitialEvents
+  );
+  if (runtimeDiagnosticsInitialEvents.length > 0) {
+    log.info(`Loaded runtime diagnostics snapshot: ${runtimeDiagnosticsInitialEvents.length} events`);
+  }
   const geckoClient = new GeckoTerminalClient((source) => {
     runtimeDiagnosticsTracker.recordRateLimit(source);
   });
@@ -452,13 +465,14 @@ async function main() {
           typeof token.raw?.discovery_source === 'string' ? token.raw.discovery_source : undefined;
         const dexId = typeof token.raw?.dex_id === 'string' ? token.raw.dex_id : undefined;
         const pairAddress = typeof token.raw?.pair_address === 'string' ? token.raw.pair_address : undefined;
-        const mismatch = detectRealtimeDiscoveryMismatch({
-          dexId,
-          quoteTokenAddress:
-            typeof token.raw?.quote_token_address === 'string' ? token.raw.quote_token_address : undefined,
-        });
+          const mismatch = detectRealtimeDiscoveryMismatch({
+            dexId,
+            quoteTokenAddress:
+              typeof token.raw?.quote_token_address === 'string' ? token.raw.quote_token_address : undefined,
+          });
         if (mismatch) {
           runtimeDiagnosticsTracker.recordPreWatchlistReject({
+            tokenMint: token.address,
             reason: mismatch,
             source: discoverySource,
             dexId,
@@ -474,6 +488,7 @@ async function main() {
             });
             if (poolProgramMismatch) {
               runtimeDiagnosticsTracker.recordPreWatchlistReject({
+                tokenMint: token.address,
                 reason: poolProgramMismatch,
                 source: discoverySource,
                 dexId,
@@ -584,6 +599,7 @@ async function main() {
             removeRealtimePoolTarget(entry.tokenMint);
             if (realtimeModeEnabled) {
               runtimeDiagnosticsTracker.recordAdmissionSkip({
+                tokenMint: entry.tokenMint,
                 reason: realtimeEligibility.reason,
                 source: entry.discoverySource,
                 dexId: admissionPairs[0]?.dexId,
@@ -618,7 +634,10 @@ async function main() {
     };
 
     scanner.on('candidateDiscovered', (entry: import('./scanner').WatchlistEntry) => {
-      runtimeDiagnosticsTracker.recordRealtimeCandidateAccepted(entry.discoverySource);
+      runtimeDiagnosticsTracker.recordRealtimeCandidateSeen({
+        tokenMint: entry.tokenMint,
+        source: entry.discoverySource,
+      });
       log.info(`Scanner: new candidate ${entry.symbol} lane=${entry.lane} score=${entry.watchlistScore.totalScore}`);
 
       // UniverseEngine은 즉시 추가 (API 호출 없음)
@@ -1073,6 +1092,9 @@ async function main() {
         log.warn(`Failed to persist realtime admission snapshot: ${error}`);
       });
     }
+    await runtimeDiagnosticsTracker.flush().catch((error) => {
+      log.warn(`Failed to persist runtime diagnostics snapshot: ${error}`);
+    });
     await ingester.stop();
     eventMonitor.stop();
     universeEngine.stop();

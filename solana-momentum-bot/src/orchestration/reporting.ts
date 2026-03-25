@@ -35,7 +35,7 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
   const [signalCadence, tradeCadence, filterReasonCounts] = await Promise.all([
     ctx.auditLogger.getCadenceSignalSummary(cadenceHours),
     ctx.tradeStore.getCadenceTradeSummary(cadenceHours),
-    ctx.auditLogger.getRecentFilterReasonCounts(rejectionMixHours),
+    ctx.auditLogger.getRecentGateFilterReasonCounts(rejectionMixHours),
   ]);
   const balance = ctx.tradingMode === 'paper' && ctx.paperBalance != null
     ? ctx.paperBalance
@@ -127,20 +127,22 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
 
 function buildDailyRejectionMixSummary(params: {
   hours: number;
-  filterReasonCounts: Array<{ reason: string; count: number }>;
-  runtimeDiagnostics?: {
-    admissionSkipCounts: Array<{ reason: string; count: number }>;
-    admissionSkipDetailCounts: Array<{ label: string; count: number }>;
-    preWatchlistRejectCounts: Array<{ reason: string; count: number }>;
-    preWatchlistRejectDetailCounts: Array<{ label: string; count: number }>;
-    rateLimitCounts: Array<{ source: string; count: number }>;
-    pollFailureCounts: Array<{ source: string; count: number }>;
-    realtimeCandidateAcceptance: {
-      accepted: number;
-      prefiltered: number;
-      acceptanceRate: number;
+    filterReasonCounts: Array<{ reason: string; count: number }>;
+    runtimeDiagnostics?: {
+      admissionSkipCounts: Array<{ reason: string; count: number }>;
+      admissionSkipDetailCounts: Array<{ label: string; count: number }>;
+      preWatchlistRejectCounts: Array<{ reason: string; count: number }>;
+      preWatchlistRejectDetailCounts: Array<{ label: string; count: number }>;
+      rateLimitCounts: Array<{ source: string; count: number }>;
+      pollFailureCounts: Array<{ source: string; count: number }>;
+      realtimeCandidateReadiness: {
+        totalCandidates: number;
+        prefiltered: number;
+        admissionSkipped: number;
+        ready: number;
+        readinessRate: number;
+      };
     };
-  };
   lastCandleAt?: Date;
 }): DailySummaryReport['rejectionMix'] {
   const nowMs = Date.now();
@@ -150,17 +152,19 @@ function buildDailyRejectionMixSummary(params: {
     timeSinceLastCandleMs: params.lastCandleAt
       ? Math.max(0, nowMs - params.lastCandleAt.getTime())
       : undefined,
-    filterReasonCounts: params.filterReasonCounts,
+    gateFilterReasonCounts: params.filterReasonCounts,
     admissionSkipCounts: params.runtimeDiagnostics?.admissionSkipCounts ?? [],
     admissionSkipDetailCounts: params.runtimeDiagnostics?.admissionSkipDetailCounts ?? [],
     preWatchlistRejectCounts: params.runtimeDiagnostics?.preWatchlistRejectCounts ?? [],
     preWatchlistRejectDetailCounts: params.runtimeDiagnostics?.preWatchlistRejectDetailCounts ?? [],
     rateLimitCounts: params.runtimeDiagnostics?.rateLimitCounts ?? [],
     pollFailureCounts: params.runtimeDiagnostics?.pollFailureCounts ?? [],
-    realtimeCandidateAcceptance: params.runtimeDiagnostics?.realtimeCandidateAcceptance ?? {
-      accepted: 0,
+    realtimeCandidateReadiness: params.runtimeDiagnostics?.realtimeCandidateReadiness ?? {
+      totalCandidates: 0,
       prefiltered: 0,
-      acceptanceRate: 0,
+      admissionSkipped: 0,
+      ready: 0,
+      readinessRate: 0,
     },
   };
 }

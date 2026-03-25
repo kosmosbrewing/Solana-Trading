@@ -56,6 +56,10 @@ export interface ScannerEngineConfig {
   minLiquidityUsd: number;
   /** H-02: Social mention tracker for WatchlistScore enrichment */
   socialMentionTracker?: SocialMentionTracker;
+  /** Realtime mode pre-watchlist candidate filter */
+  candidateFilter?: (
+    token: BirdeyeTrendingToken
+  ) => { allowed: boolean; reason?: string } | Promise<{ allowed: boolean; reason?: string }>;
 }
 
 /**
@@ -212,6 +216,17 @@ export class ScannerEngine extends EventEmitter {
 
   private async evaluateCandidate(token: BirdeyeTrendingToken): Promise<WatchlistEntry | undefined> {
     if (!token.address || this.isCoolingDown(token.address)) {
+      return undefined;
+    }
+
+    const candidateFilterResult = this.config.candidateFilter
+      ? await this.config.candidateFilter(token)
+      : undefined;
+    if (candidateFilterResult && !candidateFilterResult.allowed) {
+      log.info(
+        `Candidate ${token.symbol} skipped pre-watchlist: ${candidateFilterResult.reason ?? 'filtered'} ` +
+        `source=${this.resolveDiscoverySource(token)} ${formatCandidateFilterContext(token)}`
+      );
       return undefined;
     }
 
@@ -579,4 +594,14 @@ export class ScannerEngine extends EventEmitter {
       }
     }
   }
+}
+
+function formatCandidateFilterContext(token: BirdeyeTrendingToken): string {
+  const dexId = typeof token.raw?.dex_id === 'string' ? token.raw.dex_id : undefined;
+  const quoteTokenAddress =
+    typeof token.raw?.quote_token_address === 'string' ? token.raw.quote_token_address : undefined;
+  const parts = [];
+  if (dexId) parts.push(`dexId=${dexId}`);
+  if (quoteTokenAddress) parts.push(`quote=${quoteTokenAddress}`);
+  return parts.join(' ');
 }

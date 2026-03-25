@@ -1,5 +1,7 @@
-import { appendFile, mkdir, readFile, writeFile } from 'fs/promises';
+import { createReadStream } from 'fs';
+import { access, appendFile, mkdir, writeFile } from 'fs/promises';
 import path from 'path';
+import readline from 'readline';
 import { Candle } from '../utils/types';
 import { ParsedSwap } from './types';
 import { RealtimeSignalRecord } from '../reporting/realtimeMeasurement';
@@ -67,8 +69,21 @@ export class RealtimeReplayStore {
       .filter((row): row is StoredMicroCandle => row !== null);
   }
 
+  async *streamCandles(filePath = this.candlesPath): AsyncGenerator<StoredMicroCandle> {
+    for await (const row of streamJsonLines<Record<string, unknown>>(filePath, (value): value is Record<string, unknown> => Boolean(value && typeof value === 'object'))) {
+      const candle = deserializeCandle(row);
+      if (candle) {
+        yield candle;
+      }
+    }
+  }
+
   async loadSignals(filePath = this.signalsPath): Promise<RealtimeSignalRecord[]> {
     return loadJsonLines<RealtimeSignalRecord>(filePath, isRealtimeSignalRecord);
+  }
+
+  async hasCandles(filePath = this.candlesPath): Promise<boolean> {
+    return hasReadableFile(filePath);
   }
 
   async exportRange(outputDir: string, options: { start?: Date; end?: Date }): Promise<RealtimeReplayManifest> {
@@ -112,22 +127,44 @@ export async function loadJsonLines<T>(
   filePath: string,
   guard: (value: unknown) => value is T
 ): Promise<T[]> {
+  const rows: T[] = [];
+  for await (const row of streamJsonLines(filePath, guard)) {
+    rows.push(row);
+  }
+  return rows;
+}
+
+export async function* streamJsonLines<T>(
+  filePath: string,
+  guard: (value: unknown) => value is T
+): AsyncGenerator<T> {
+  if (!(await hasReadableFile(filePath))) {
+    return;
+  }
+
+  const input = createReadStream(filePath, { encoding: 'utf8' });
+  const reader = readline.createInterface({
+    input,
+    crlfDelay: Infinity,
+  });
+
   try {
-    const raw = await readFile(filePath, 'utf8');
-    return raw
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        try {
-          return JSON.parse(line) as unknown;
-        } catch {
-          return null;
+    for await (const line of reader) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      try {
+        const value = JSON.parse(trimmed) as unknown;
+        if (guard(value)) {
+          yield value;
         }
-      })
-      .filter((value): value is T => value !== null && guard(value));
-  } catch {
-    return [];
+      } catch {
+        continue;
+      }
+    }
+  } finally {
+    reader.close();
+    input.destroy();
   }
 }
 
@@ -197,4 +234,13 @@ function inRange(valueMs: number, start?: Date, end?: Date): boolean {
   if (start && valueMs < start.getTime()) return false;
   if (end && valueMs > end.getTime()) return false;
   return true;
+}
+
+async function hasReadableFile(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
 }

@@ -98,6 +98,8 @@
 ## Required Actions
 
 ### R1. `12h / 24h no-entry`를 공식 cadence alarm으로 승격
+> Status: implemented in code — daily summary/runtime verification pending
+
 - `0 trade`를 단순 관찰이 아니라 운영 failure signal로 본다.
 1. runtime summary에 `time_since_last_signal`, `time_since_last_trade` 추가
 2. `12h no entry`, `24h no closed trade` 알림 기준 정의
@@ -105,6 +107,8 @@
 - 완료 기준: "왜 아직 0 trade인가"를 매번 수동 로그 확인 없이 바로 볼 수 있다.
 
 ### R2. rejection mix를 cadence 관점으로 집계
+> Status: implemented in code — daily summary/runtime verification pending
+
 - `0 trade`의 원인을 alpha와 운영 경로로 분리한다.
 - `unsupported_dex`
 - `non_sol_quote`
@@ -117,6 +121,8 @@
 - 완료 기준: `0 trade`가 signal 부족인지, watchlist 품질 문제인지, gate fail-closed인지, execution 문제인지 바로 분류 가능하다.
 
 ### R3. discovery → realtime admission mismatch 줄이기
+> Status: partially implemented in code — pre-watchlist `unsupported_dex` / `non_sol_quote` / `unsupported_pool_program` filter + richer skip log + `realtime-ready ratio`/source-dex detail summary added, coverage/runtime verification pending
+
 - realtime에서 어차피 못 받을 후보를 discovery/watchlist 단계에서 더 일찍 거른다.
 1. **realtime mode 기준으로** discovery/watchlist 단계에서 realtime 미지원 DEX pair를 미리 제외하거나 강한 감점 적용
 2. supported realtime dex/SOL quote 후보를 discovery ranking에 반영
@@ -147,6 +153,8 @@
 - 완료 기준: 위 조건에서는 `PLAN3`의 runtime drift 검증을 다시 여는 규칙이 명시된다.
 
 ### R6. mission readiness의 최소 통과 조건을 다시 고정
+> Decision: readiness 판정은 daily summary가 아니라 별도 measurement report / `MEASUREMENT.md` 기준으로 유지한다.
+
 1. `Signal >= 1/hour` 대략 충족
 2. `Trade >= 1/6 hours` 대략 충족
 3. 50-trade 수집이 현실적인 속도로 시작

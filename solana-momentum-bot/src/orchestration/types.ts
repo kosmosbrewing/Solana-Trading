@@ -6,7 +6,7 @@ import { SpreadMeasurer } from '../gate/spreadMeasurer';
 import { GeckoTerminalClient, BirdeyeClient, OnchainSecurityClient } from '../ingester';
 import { Notifier } from '../notifier';
 import { MicroCandleBuilder, RealtimeAdmissionTracker } from '../realtime';
-import { PaperMetricsTracker, RealtimeOutcomeTracker, RealtimeSignalLogger } from '../reporting';
+import { PaperMetricsTracker, RealtimeOutcomeTracker, RealtimeSignalLogger, RuntimeDiagnosticsTracker } from '../reporting';
 import { RiskManager, RegimeFilter } from '../risk';
 import { ScannerEngine, SocialMentionTracker } from '../scanner';
 import { ExecutionLock, PositionStore } from '../state';
@@ -60,6 +60,8 @@ export interface BotContext {
   realtimeSignalLogger?: RealtimeSignalLogger;
   /** Realtime replay persistence store (optional — Helius WS mode) */
   realtimeReplayStore?: RealtimeReplayStore;
+  /** Runtime diagnostics tracker (optional — cadence/data-plane summary) */
+  runtimeDiagnosticsTracker?: RuntimeDiagnosticsTracker;
   /** Paper 모드 시뮬레이션 잔고 (SOL). PnL에 따라 동적 업데이트 */
   paperBalance?: number;
 }

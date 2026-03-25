@@ -53,6 +53,14 @@ export class MicroCandleBuilder extends EventEmitter {
     return ordered.length;
   }
 
+  ingestClosedCandle(candle: Candle, emitEvents = true): void {
+    this.lastPriceByPool.set(candle.pairAddress, candle.close);
+    this.pushClosedCandle({ ...candle });
+    if (emitEvents) {
+      this.emit('candle', { ...candle });
+    }
+  }
+
   private applySwapEvent(swap: ParsedSwap, emitEvents: boolean): void {
     this.lastPriceByPool.set(swap.pool, swap.priceNative);
     if (emitEvents) {

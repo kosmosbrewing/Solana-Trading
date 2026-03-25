@@ -128,4 +128,57 @@ export class SignalAuditLogger {
       filtered: Number(row.filtered),
     };
   }
+
+  async getCadenceSignalSummary(hours: number[]): Promise<{
+    lastSignalAt?: Date;
+    windows: Array<{ hours: number; detected: number; executed: number; filtered: number }>;
+  }> {
+    const latestResult = await this.pool.query(`
+      SELECT MAX(timestamp) AS last_signal_at
+      FROM signal_audit_log
+    `);
+    const lastSignalAtRaw = latestResult.rows[0]?.last_signal_at;
+    const windows = [];
+
+    for (const hour of hours) {
+      const result = await this.pool.query(`
+        SELECT
+          COUNT(*) AS total,
+          COUNT(*) FILTER (WHERE action = 'EXECUTED') AS executed,
+          COUNT(*) FILTER (WHERE action != 'EXECUTED') AS filtered
+        FROM signal_audit_log
+        WHERE timestamp >= now() - ($1::text || ' hours')::interval
+      `, [String(hour)]);
+      const row = result.rows[0];
+      windows.push({
+        hours: hour,
+        detected: Number(row.total),
+        executed: Number(row.executed),
+        filtered: Number(row.filtered),
+      });
+    }
+
+    return {
+      lastSignalAt: lastSignalAtRaw ? new Date(lastSignalAtRaw as string) : undefined,
+      windows,
+    };
+  }
+
+  async getRecentFilterReasonCounts(hours: number): Promise<Array<{ reason: string; count: number }>> {
+    const result = await this.pool.query(`
+      SELECT
+        COALESCE(filter_reason, 'unknown') AS reason,
+        COUNT(*)::INTEGER AS count
+      FROM signal_audit_log
+      WHERE timestamp >= now() - ($1::text || ' hours')::interval
+        AND action != 'EXECUTED'
+      GROUP BY COALESCE(filter_reason, 'unknown')
+      ORDER BY COUNT(*) DESC, reason ASC
+    `, [String(hours)]);
+
+    return result.rows.map((row) => ({
+      reason: String(row.reason),
+      count: Number(row.count),
+    }));
+  }
 }

@@ -23,6 +23,41 @@ export interface RealtimeAdmissionSummary {
   }>;
 }
 
+export interface DailyCadenceSummary {
+  lastSignalAt?: string;
+  lastTradeAt?: string;
+  lastClosedTradeAt?: string;
+  timeSinceLastSignalMs?: number;
+  timeSinceLastTradeMs?: number;
+  timeSinceLastClosedTradeMs?: number;
+  windows: Array<{
+    hours: number;
+    detectedSignals: number;
+    executedSignals: number;
+    filteredSignals: number;
+    trades: number;
+    closedTrades: number;
+  }>;
+}
+
+export interface DailyRejectionMixSummary {
+  hours: number;
+  lastCandleAt?: string;
+  timeSinceLastCandleMs?: number;
+  filterReasonCounts: Array<{ reason: string; count: number }>;
+  admissionSkipCounts: Array<{ reason: string; count: number }>;
+  admissionSkipDetailCounts: Array<{ label: string; count: number }>;
+  preWatchlistRejectCounts: Array<{ reason: string; count: number }>;
+  preWatchlistRejectDetailCounts: Array<{ label: string; count: number }>;
+  rateLimitCounts: Array<{ source: string; count: number }>;
+  pollFailureCounts: Array<{ source: string; count: number }>;
+  realtimeCandidateAcceptance: {
+    accepted: number;
+    prefiltered: number;
+    acceptanceRate: number;
+  };
+}
+
 export interface DailySummaryReport {
   totalTrades: number;
   wins: number;
@@ -42,6 +77,8 @@ export interface DailySummaryReport {
   edgeStats?: StrategyEdgeStats[];
   sourceOutcomes?: SourceOutcomeStats[];
   realtimeAdmission?: RealtimeAdmissionSummary;
+  cadence?: DailyCadenceSummary;
+  rejectionMix?: DailyRejectionMixSummary;
 }
 
 export function buildDailySummaryMessage(report: DailySummaryReport, dateLabel: string): string {
@@ -98,6 +135,50 @@ export function buildDailySummaryMessage(report: DailySummaryReport, dateLabel: 
     }
   }
 
+  if (report.cadence) {
+    lines.push(
+      '',
+      'Cadence',
+      `- 최근 시그널: ${formatCadenceAge(report.cadence.timeSinceLastSignalMs, report.cadence.lastSignalAt)}`,
+      `- 최근 진입: ${formatCadenceAge(report.cadence.timeSinceLastTradeMs, report.cadence.lastTradeAt)}`,
+      `- 최근 종료: ${formatCadenceAge(report.cadence.timeSinceLastClosedTradeMs, report.cadence.lastClosedTradeAt)}`,
+    );
+
+    for (const window of report.cadence.windows) {
+      lines.push(
+        `- 최근 ${window.hours}h: signal ${window.detectedSignals} / 실행 ${window.executedSignals} / 제외 ${window.filteredSignals} / 진입 ${window.trades} / 종료 ${window.closedTrades}`
+      );
+    }
+
+    const cadenceWarnings = buildCadenceWarnings(report.cadence);
+    if (cadenceWarnings.length > 0) {
+      lines.push('- cadence 경고: ' + cadenceWarnings.join(', '));
+    }
+  }
+
+  if (report.rejectionMix) {
+    lines.push(
+      '',
+      `Data Plane (${report.rejectionMix.hours}h)`,
+      `- 최근 캔들: ${formatCadenceAge(report.rejectionMix.timeSinceLastCandleMs, report.rejectionMix.lastCandleAt)}`,
+      `- realtime-ready ratio: ${report.rejectionMix.realtimeCandidateAcceptance.accepted}/` +
+      `${report.rejectionMix.realtimeCandidateAcceptance.accepted + report.rejectionMix.realtimeCandidateAcceptance.prefiltered} ` +
+      `(${formatPercent(report.rejectionMix.realtimeCandidateAcceptance.acceptanceRate)})`,
+    );
+
+    appendCountSection(lines, 'gate reject', report.rejectionMix.filterReasonCounts, 'reason');
+    appendLabelCountSection(lines, 'pre-watchlist reject', report.rejectionMix.preWatchlistRejectDetailCounts);
+    appendCountSection(lines, 'realtime skip', report.rejectionMix.admissionSkipCounts, 'reason');
+    appendLabelCountSection(lines, 'realtime skip detail', report.rejectionMix.admissionSkipDetailCounts);
+    appendCountSection(lines, '429', report.rejectionMix.rateLimitCounts, 'source');
+    appendCountSection(lines, 'poll failure', report.rejectionMix.pollFailureCounts, 'source');
+
+    const rejectionWarnings = buildRejectionWarnings(report.rejectionMix);
+    if (rejectionWarnings.length > 0) {
+      lines.push('- data-plane 경고: ' + rejectionWarnings.join(', '));
+    }
+  }
+
   if (visibleEdgeStats.length > 0) {
     lines.push('', '전략 상태');
     for (const stat of visibleEdgeStats) {
@@ -130,4 +211,76 @@ function describeDailyLoss(used: number, limit: number): string {
   if (usage >= 1) return '한도 초과';
   if (usage >= 0.7) return '주의 구간';
   return '여유 있음';
+}
+
+function formatCadenceAge(ageMs?: number, iso?: string): string {
+  if (typeof ageMs !== 'number' || !Number.isFinite(ageMs) || !iso) {
+    return 'never';
+  }
+  return `${formatDuration(ageMs)} 전 (${iso})`;
+}
+
+function buildCadenceWarnings(cadence: DailyCadenceSummary): string[] {
+  const warnings: string[] = [];
+  if (typeof cadence.timeSinceLastTradeMs === 'number' && cadence.timeSinceLastTradeMs >= 12 * 3_600_000) {
+    warnings.push('12h no entry');
+  }
+  if (
+    typeof cadence.timeSinceLastClosedTradeMs !== 'number' ||
+    cadence.timeSinceLastClosedTradeMs >= 24 * 3_600_000
+  ) {
+    warnings.push('24h no closed trade');
+  }
+  return warnings;
+}
+
+function appendCountSection<TKey extends 'reason' | 'source'>(
+  lines: string[],
+  label: string,
+  items: Array<{ count: number } & Record<TKey, string>>,
+  key: TKey
+): void {
+  if (items.length === 0) {
+    lines.push(`- ${label}: none`);
+    return;
+  }
+  const top = items
+    .slice(0, 5)
+    .map((item) => `${item[key]}=${item.count}`)
+    .join(', ');
+  lines.push(`- ${label}: ${escapeHtml(top)}`);
+}
+
+function buildRejectionWarnings(summary: DailyRejectionMixSummary): string[] {
+  const warnings: string[] = [];
+  if (
+    typeof summary.timeSinceLastCandleMs !== 'number' ||
+    summary.timeSinceLastCandleMs >= 10 * 60 * 1000
+  ) {
+    warnings.push('no candle >= 10m');
+  }
+  if (summary.rateLimitCounts.reduce((sum, item) => sum + item.count, 0) > 0) {
+    warnings.push('429 observed');
+  }
+  if (summary.realtimeCandidateAcceptance.accepted + summary.realtimeCandidateAcceptance.prefiltered > 0
+    && summary.realtimeCandidateAcceptance.acceptanceRate < 0.7) {
+    warnings.push('low realtime-ready ratio');
+  }
+  return warnings;
+}
+
+function appendLabelCountSection(
+  lines: string[],
+  label: string,
+  items: Array<{ label: string; count: number }>
+): void {
+  if (items.length === 0) {
+    lines.push(`- ${label}: none`);
+    return;
+  }
+  const top = items
+    .slice(0, 5)
+    .map((item) => `${item.label}=${item.count}`)
+    .join(', ');
+  lines.push(`- ${label}: ${escapeHtml(top)}`);
 }

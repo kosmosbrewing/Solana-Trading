@@ -6,6 +6,8 @@ export { MicroCandleBuilder } from './microCandleBuilder';
 export { fetchRecentSwapsForPool } from './recentSwapBackfill';
 export { RealtimePoolOwnerResolver } from './poolOwnerResolver';
 export {
+  detectRealtimeDiscoveryMismatch,
+  detectRealtimePoolProgramMismatch,
   SUPPORTED_REALTIME_DEX_IDS,
   SUPPORTED_REALTIME_POOL_PROGRAMS,
   selectRealtimeEligiblePair,
@@ -26,5 +28,10 @@ export {
 export { PUMP_SWAP_DEX_IDS } from './pumpSwapParser';
 export type { HeliusWSConfig, ParsedSwap, RealtimePoolMetadata, SwapSide, SwapSource } from './types';
 export type { StoredRealtimeSwap, StoredMicroCandle, RealtimeReplayManifest } from './replayStore';
-export type { RealtimeEligibilityResult, RealtimePairCandidate } from './realtimeEligibility';
+export type {
+  RealtimeDiscoveryCandidateMeta,
+  RealtimePoolProgramCandidateMeta,
+  RealtimeEligibilityResult,
+  RealtimePairCandidate,
+} from './realtimeEligibility';
 export type { RealtimeAdmissionSnapshotEntry, RealtimeAdmissionStats } from './realtimeAdmissionTracker';

@@ -16,7 +16,12 @@ import { BirdeyeWSClient } from './ingester/birdeyeWSClient';
 import { EventMonitor, EventScoreStore } from './event';
 import { CandleStore, TradeStore } from './candle';
 import { RiskManager, RiskConfig, RegimeFilter } from './risk';
-import { PaperMetricsTracker, RealtimeOutcomeTracker, RealtimeSignalLogger } from './reporting';
+import {
+  PaperMetricsTracker,
+  RealtimeOutcomeTracker,
+  RealtimeSignalLogger,
+  RuntimeDiagnosticsTracker,
+} from './reporting';
 import { Executor, ExecutorConfig, WalletManager } from './executor';
 import { Notifier } from './notifier';
 import {
@@ -26,6 +31,8 @@ import {
   RealtimeAdmissionStore,
   RealtimePoolOwnerResolver,
   RealtimeReplayStore,
+  detectRealtimeDiscoveryMismatch,
+  detectRealtimePoolProgramMismatch,
   selectRealtimeEligiblePair,
   type RealtimePoolMetadata,
 } from './realtime';
@@ -80,6 +87,23 @@ function getRealtimeSeedLookbackSec(): number {
   const confirmLookbackSec =
     (config.realtimeConfirmMinBars + 1) * config.realtimeConfirmIntervalSec;
   return Math.max(primaryLookbackSec, confirmLookbackSec);
+}
+
+function formatRealtimeEligibilityContext(
+  pairs: Array<{ dexId: string; quoteToken?: { address: string; symbol?: string } }>
+): string {
+  const dexIds = [...new Set(pairs.map((pair) => pair.dexId).filter(Boolean))].slice(0, 3);
+  const quoteSymbols = [
+    ...new Set(
+      pairs
+        .map((pair) => pair.quoteToken?.symbol ?? pair.quoteToken?.address)
+        .filter((value): value is string => Boolean(value))
+    ),
+  ].slice(0, 3);
+  const parts = [];
+  if (dexIds.length > 0) parts.push(`dexId=${dexIds.join('|')}`);
+  if (quoteSymbols.length > 0) parts.push(`quote=${quoteSymbols.join('|')}`);
+  return parts.join(' ');
 }
 
 async function main() {
@@ -208,7 +232,10 @@ async function main() {
   }
 
   // ─── Initialize modules ─────────────────────────────
-  const geckoClient = new GeckoTerminalClient();
+  const runtimeDiagnosticsTracker = new RuntimeDiagnosticsTracker();
+  const geckoClient = new GeckoTerminalClient((source) => {
+    runtimeDiagnosticsTracker.recordRateLimit(source);
+  });
   // Why: Birdeye optional — overview/legacy REST + Strategy D WS 보조용
   const birdeyeClient = config.birdeyeApiKey ? new BirdeyeClient(config.birdeyeApiKey) : null;
   const onchainSecurityClient = new OnchainSecurityClient(config.solanaRpcUrl);
@@ -420,6 +447,45 @@ async function main() {
       // Why: Scanner minLiquidity는 SafetyGate minPoolLiquidity 이상이어야 함 (config gap 방지)
       minLiquidityUsd: Math.max(config.eventMinLiquidityUsd, config.minPoolLiquidity),
       socialMentionTracker, // H-02: social score → WatchlistScore 연동
+      candidateFilter: realtimeModeEnabled ? async (token) => {
+        const discoverySource =
+          typeof token.raw?.discovery_source === 'string' ? token.raw.discovery_source : undefined;
+        const dexId = typeof token.raw?.dex_id === 'string' ? token.raw.dex_id : undefined;
+        const pairAddress = typeof token.raw?.pair_address === 'string' ? token.raw.pair_address : undefined;
+        const mismatch = detectRealtimeDiscoveryMismatch({
+          dexId,
+          quoteTokenAddress:
+            typeof token.raw?.quote_token_address === 'string' ? token.raw.quote_token_address : undefined,
+        });
+        if (mismatch) {
+          runtimeDiagnosticsTracker.recordPreWatchlistReject({
+            reason: mismatch,
+            source: discoverySource,
+            dexId,
+          });
+          return { allowed: false, reason: mismatch };
+        }
+        if (realtimePoolOwnerResolver && pairAddress && dexId) {
+          try {
+            const owners = await realtimePoolOwnerResolver.resolveOwners([pairAddress]);
+            const poolProgramMismatch = detectRealtimePoolProgramMismatch({
+              dexId,
+              poolOwner: owners.get(pairAddress),
+            });
+            if (poolProgramMismatch) {
+              runtimeDiagnosticsTracker.recordPreWatchlistReject({
+                reason: poolProgramMismatch,
+                source: discoverySource,
+                dexId,
+              });
+              return { allowed: false, reason: poolProgramMismatch };
+            }
+          } catch (error) {
+            log.debug(`Realtime prefilter owner resolve skipped for ${token.symbol}: ${error}`);
+          }
+        }
+        return { allowed: true };
+      } : undefined,
     };
     scanner = new ScannerEngine(scannerConfig);
     attachScannerFreshListingSource(scanner, (listingCandidate) => {
@@ -486,6 +552,9 @@ async function main() {
                   }
                 );
               } catch (error) {
+                if (String(error).includes('429')) {
+                  runtimeDiagnosticsTracker.recordRateLimit('helius_seed_backfill');
+                }
                 log.warn(`Realtime seed backfill failed for ${entry.symbol}: ${error}`);
               }
               if (recentSwaps.length > 0) {
@@ -514,8 +583,14 @@ async function main() {
           } else {
             removeRealtimePoolTarget(entry.tokenMint);
             if (realtimeModeEnabled) {
+              runtimeDiagnosticsTracker.recordAdmissionSkip({
+                reason: realtimeEligibility.reason,
+                source: entry.discoverySource,
+                dexId: admissionPairs[0]?.dexId,
+              });
               log.info(
-                `Realtime skipped for ${entry.symbol} (${entry.tokenMint}) — ${realtimeEligibility.reason}`
+                `Realtime skipped for ${entry.symbol} (${entry.tokenMint}) — ${realtimeEligibility.reason} ` +
+                `${formatRealtimeEligibilityContext(admissionPairs)}`
               );
             }
           }
@@ -543,6 +618,7 @@ async function main() {
     };
 
     scanner.on('candidateDiscovered', (entry: import('./scanner').WatchlistEntry) => {
+      runtimeDiagnosticsTracker.recordRealtimeCandidateAccepted(entry.discoverySource);
       log.info(`Scanner: new candidate ${entry.symbol} lane=${entry.lane} score=${entry.watchlistScore.totalScore}`);
 
       // UniverseEngine은 즉시 추가 (API 호출 없음)
@@ -644,6 +720,7 @@ async function main() {
     realtimeOutcomeTracker: realtimeOutcomeTracker ?? undefined,
     realtimeSignalLogger: realtimeSignalLogger ?? undefined,
     realtimeReplayStore: realtimeReplayStore ?? undefined,
+    runtimeDiagnosticsTracker,
     // Why: Paper 모드에서 온체인 잔고 대신 시뮬레이션 잔고 (기본 1 SOL)
     paperBalance: effectiveMode === 'paper' ? config.paperInitialBalance : undefined,
   };
@@ -738,6 +815,9 @@ async function main() {
       );
     });
     heliusIngester.on('error', async ({ pool, error }: { pool: string; error: unknown }) => {
+      if (String(error).includes('429')) {
+        runtimeDiagnosticsTracker.recordRateLimit('helius_ws');
+      }
       log.warn(`Helius WS error for ${pool}: ${error}`);
       await notifier.sendError('helius_ws', error).catch(() => {});
     });
@@ -845,6 +925,10 @@ async function main() {
   });
 
   ingester.on('error', async ({ pairAddress, error }: { pairAddress: string; error: unknown }) => {
+    runtimeDiagnosticsTracker.recordPollFailure('gecko_ingester');
+    if (String(error).includes('429')) {
+      runtimeDiagnosticsTracker.recordRateLimit('gecko_ingester');
+    }
     log.error(`Ingester error for ${pairAddress}: ${error}`);
     await notifier.sendError('ingester', error).catch(() => {});
   });

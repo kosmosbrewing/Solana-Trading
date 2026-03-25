@@ -8,3 +8,4 @@ export * from './realtimeShadowReport';
 export * from './realtimeSignalLogger';
 export * from './realtimeOutcomeTracker';
 export * from './runtimeDiagnosticsTracker';
+export * from './runtimeDiagnosticsStore';

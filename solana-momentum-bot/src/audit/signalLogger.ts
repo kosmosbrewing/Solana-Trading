@@ -164,16 +164,25 @@ export class SignalAuditLogger {
     };
   }
 
-  async getRecentFilterReasonCounts(hours: number): Promise<Array<{ reason: string; count: number }>> {
+  async getRecentGateFilterReasonCounts(hours: number): Promise<Array<{ reason: string; count: number }>> {
     const result = await this.pool.query(`
       SELECT
         COALESCE(filter_reason, 'unknown') AS reason,
-        COUNT(*)::INTEGER AS count
+        COUNT(DISTINCT pair_address)::INTEGER AS count
       FROM signal_audit_log
       WHERE timestamp >= now() - ($1::text || ' hours')::interval
-        AND action != 'EXECUTED'
+        AND action = 'FILTERED'
+        AND (
+          filter_reason LIKE 'security_rejected:%'
+          OR filter_reason LIKE 'quote_rejected:%'
+          OR filter_reason LIKE 'poor_execution_viability:%'
+          OR filter_reason LIKE 'exit_illiquid:%'
+          OR filter_reason LIKE 'buy_ratio %'
+          OR filter_reason LIKE 'Score %'
+          OR filter_reason = 'not_trending'
+        )
       GROUP BY COALESCE(filter_reason, 'unknown')
-      ORDER BY COUNT(*) DESC, reason ASC
+      ORDER BY COUNT(DISTINCT pair_address) DESC, reason ASC
     `, [String(hours)]);
 
     return result.rows.map((row) => ({

@@ -44,17 +44,19 @@ export interface DailyRejectionMixSummary {
   hours: number;
   lastCandleAt?: string;
   timeSinceLastCandleMs?: number;
-  filterReasonCounts: Array<{ reason: string; count: number }>;
+  gateFilterReasonCounts: Array<{ reason: string; count: number }>;
   admissionSkipCounts: Array<{ reason: string; count: number }>;
   admissionSkipDetailCounts: Array<{ label: string; count: number }>;
   preWatchlistRejectCounts: Array<{ reason: string; count: number }>;
   preWatchlistRejectDetailCounts: Array<{ label: string; count: number }>;
   rateLimitCounts: Array<{ source: string; count: number }>;
   pollFailureCounts: Array<{ source: string; count: number }>;
-  realtimeCandidateAcceptance: {
-    accepted: number;
+  realtimeCandidateReadiness: {
+    totalCandidates: number;
     prefiltered: number;
-    acceptanceRate: number;
+    admissionSkipped: number;
+    ready: number;
+    readinessRate: number;
   };
 }
 
@@ -161,12 +163,12 @@ export function buildDailySummaryMessage(report: DailySummaryReport, dateLabel: 
       '',
       `Data Plane (${report.rejectionMix.hours}h)`,
       `- 최근 캔들: ${formatCadenceAge(report.rejectionMix.timeSinceLastCandleMs, report.rejectionMix.lastCandleAt)}`,
-      `- realtime-ready ratio: ${report.rejectionMix.realtimeCandidateAcceptance.accepted}/` +
-      `${report.rejectionMix.realtimeCandidateAcceptance.accepted + report.rejectionMix.realtimeCandidateAcceptance.prefiltered} ` +
-      `(${formatPercent(report.rejectionMix.realtimeCandidateAcceptance.acceptanceRate)})`,
+      `- realtime-ready ratio: ${report.rejectionMix.realtimeCandidateReadiness.ready}/` +
+      `${report.rejectionMix.realtimeCandidateReadiness.totalCandidates} ` +
+      `(${formatPercent(report.rejectionMix.realtimeCandidateReadiness.readinessRate)})`,
     );
 
-    appendCountSection(lines, 'gate reject', report.rejectionMix.filterReasonCounts, 'reason');
+    appendCountSection(lines, 'gate reject (unique token)', report.rejectionMix.gateFilterReasonCounts, 'reason');
     appendLabelCountSection(lines, 'pre-watchlist reject', report.rejectionMix.preWatchlistRejectDetailCounts);
     appendCountSection(lines, 'realtime skip', report.rejectionMix.admissionSkipCounts, 'reason');
     appendLabelCountSection(lines, 'realtime skip detail', report.rejectionMix.admissionSkipDetailCounts);
@@ -262,8 +264,10 @@ function buildRejectionWarnings(summary: DailyRejectionMixSummary): string[] {
   if (summary.rateLimitCounts.reduce((sum, item) => sum + item.count, 0) > 0) {
     warnings.push('429 observed');
   }
-  if (summary.realtimeCandidateAcceptance.accepted + summary.realtimeCandidateAcceptance.prefiltered > 0
-    && summary.realtimeCandidateAcceptance.acceptanceRate < 0.7) {
+  if (
+    summary.realtimeCandidateReadiness.totalCandidates > 0 &&
+    summary.realtimeCandidateReadiness.readinessRate < 0.7
+  ) {
     warnings.push('low realtime-ready ratio');
   }
   return warnings;

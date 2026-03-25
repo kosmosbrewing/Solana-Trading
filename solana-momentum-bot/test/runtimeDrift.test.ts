@@ -35,4 +35,28 @@ describe('runtimeDrift', () => {
       'legacy_jupiter_quote_host',
     ]);
   });
+
+  it('warns on root Jupiter API URLs that omit the swap path', () => {
+    expect(evaluateRuntimeDriftWarnings({
+      processName: 'momentum-bot',
+      pid: 4321,
+      tradingMode: 'live',
+      realtimeEnabled: true,
+      jupiterApiUrl: 'https://api.jup.ag',
+      pm2AllowedProcesses: ['momentum-bot', 'momentum-shadow'],
+    })).toEqual([
+      'misconfigured_jupiter_api_url=https://api.jup.ag',
+    ]);
+  });
+
+  it('does not warn on normalized Jupiter swap URLs', () => {
+    expect(evaluateRuntimeDriftWarnings({
+      processName: 'momentum-bot',
+      pid: 4321,
+      tradingMode: 'live',
+      realtimeEnabled: true,
+      jupiterApiUrl: 'https://api.jup.ag/swap/v1',
+      pm2AllowedProcesses: ['momentum-bot', 'momentum-shadow'],
+    })).toEqual([]);
+  });
 });

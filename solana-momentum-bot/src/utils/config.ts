@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import path from 'path';
+import { normalizeJupiterSwapApiUrl } from './jupiterApi';
 
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
@@ -57,6 +58,9 @@ function parseTradingMode(): TradingMode {
   return raw as TradingMode;
 }
 
+const jupiterApiKey = optional('JUPITER_API_KEY', '');
+const jupiterApiUrl = normalizeJupiterSwapApiUrl(optional('JUPITER_API_URL', ''), jupiterApiKey);
+
 export const config = {
   // Solana
   solanaRpcUrl: required('SOLANA_RPC_URL'),
@@ -71,7 +75,7 @@ export const config = {
   databaseUrl: required('DATABASE_URL'),
 
   // Jupiter
-  jupiterApiUrl: optional('JUPITER_API_URL', 'https://api.jup.ag'),
+  jupiterApiUrl,
 
   // Notification
   telegramBotToken: optional('TELEGRAM_BOT_TOKEN', ''),
@@ -194,7 +198,7 @@ export const config = {
   dexScreenerApiKey: optional('DEXSCREENER_API_KEY', ''),
 
   // ─── Jupiter API Key + Ultra API (ADR-005: Jito 보완재) ───
-  jupiterApiKey: optional('JUPITER_API_KEY', ''),
+  jupiterApiKey,
   // Why: ADR-005 — Jito 미사용 경로 또는 Jito fallback으로만 활성화
   useJupiterUltra: process.env.USE_JUPITER_ULTRA === 'true', // default: false
 

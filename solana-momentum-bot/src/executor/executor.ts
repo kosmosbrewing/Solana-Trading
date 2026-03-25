@@ -9,6 +9,7 @@ import { createModuleLogger } from '../utils/logger';
 import { Order } from '../utils/types';
 import { SOL_MINT } from '../utils/constants';
 import { JitoClient } from './jitoClient';
+import { normalizeJupiterSwapApiUrl } from '../utils/jupiterApi';
 
 const log = createModuleLogger('Executor');
 
@@ -85,9 +86,17 @@ export class Executor {
   constructor(executorConfig: ExecutorConfig) {
     this.connection = new Connection(executorConfig.solanaRpcUrl, 'confirmed');
     this.wallet = Keypair.fromSecretKey(bs58.decode(executorConfig.walletPrivateKey));
+    const normalizedJupiterApiUrl = normalizeJupiterSwapApiUrl(
+      executorConfig.jupiterApiUrl,
+      executorConfig.jupiterApiKey
+    );
+    const jupiterHeaders = executorConfig.jupiterApiKey
+      ? { 'x-api-key': executorConfig.jupiterApiKey }
+      : undefined;
     this.jupiterClient = axios.create({
-      baseURL: executorConfig.jupiterApiUrl,
+      baseURL: normalizedJupiterApiUrl,
       timeout: 15000,
+      headers: jupiterHeaders,
     });
     this.maxSlippageBps = Math.round(executorConfig.maxSlippage * 10000);
     this.maxRetries = executorConfig.maxRetries;

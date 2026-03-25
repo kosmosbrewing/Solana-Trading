@@ -58,11 +58,11 @@ const mockV6Post = jest.fn();
 const mockUltraGet = jest.fn();
 const mockUltraPost = jest.fn();
 
-const mockAxiosCreate = jest.fn().mockImplementation((cfg: { baseURL: string }) => {
-  if (cfg.baseURL && cfg.baseURL.includes('api.jup.ag')) {
-    return { get: mockUltraGet, post: mockUltraPost };
+const mockAxiosCreate = jest.fn().mockImplementation((cfg: { baseURL: string; headers?: Record<string, string> }) => {
+  if (cfg.baseURL?.includes('/swap/v1')) {
+    return { get: mockV6Get, post: mockV6Post };
   }
-  return { get: mockV6Get, post: mockV6Post };
+  return { get: mockUltraGet, post: mockUltraPost };
 });
 
 jest.mock('axios', () => ({
@@ -135,7 +135,7 @@ describe('Executor Ultra V3', () => {
   it('Ultra enabled + API key → Ultra client 생성됨', async () => {
     mockAxiosCreate.mockClear();
 
-    const executor = new Executor({
+    new Executor({
       ...BASE_CONFIG,
       useJupiterUltra: true,
       jupiterApiKey: 'test-api-key-123',
@@ -146,7 +146,35 @@ describe('Executor Ultra V3', () => {
     expect(mockAxiosCreate).toHaveBeenCalledTimes(2);
     expect(mockAxiosCreate).toHaveBeenCalledWith(
       expect.objectContaining({
+        baseURL: 'https://api.jup.ag/swap/v1',
+        headers: expect.objectContaining({
+          'x-api-key': 'test-api-key-123',
+        }),
+      })
+    );
+    expect(mockAxiosCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
         baseURL: 'https://api.jup.ag',
+        headers: expect.objectContaining({
+          'x-api-key': 'test-api-key-123',
+        }),
+      })
+    );
+  });
+
+  it('v6 client includes API key header when present', async () => {
+    mockAxiosCreate.mockClear();
+
+    new Executor({
+      ...BASE_CONFIG,
+      jupiterApiUrl: 'https://api.jup.ag/swap/v1',
+      jupiterApiKey: 'test-api-key-123',
+      useJupiterUltra: false,
+    });
+
+    expect(mockAxiosCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseURL: 'https://api.jup.ag/swap/v1',
         headers: expect.objectContaining({
           'x-api-key': 'test-api-key-123',
         }),

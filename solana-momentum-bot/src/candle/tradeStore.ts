@@ -181,6 +181,46 @@ export class TradeStore {
     );
     return result.rows.map(rowToTrade);
   }
+
+  async getCadenceTradeSummary(hours: number[]): Promise<{
+    lastTradeAt?: Date;
+    lastClosedTradeAt?: Date;
+    windows: Array<{ hours: number; trades: number; closedTrades: number }>;
+  }> {
+    const latestResult = await this.pool.query(`
+      SELECT
+        MAX(created_at) AS last_trade_at,
+        MAX(closed_at) FILTER (WHERE status = 'CLOSED') AS last_closed_trade_at
+      FROM trades
+    `);
+    const lastTradeAtRaw = latestResult.rows[0]?.last_trade_at;
+    const lastClosedTradeAtRaw = latestResult.rows[0]?.last_closed_trade_at;
+    const windows = [];
+
+    for (const hour of hours) {
+      const result = await this.pool.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE created_at >= now() - ($1::text || ' hours')::interval) AS trades,
+          COUNT(*) FILTER (
+            WHERE status = 'CLOSED'
+              AND closed_at >= now() - ($1::text || ' hours')::interval
+          ) AS closed_trades
+        FROM trades
+      `, [String(hour)]);
+      const row = result.rows[0];
+      windows.push({
+        hours: hour,
+        trades: Number(row.trades),
+        closedTrades: Number(row.closed_trades),
+      });
+    }
+
+    return {
+      lastTradeAt: lastTradeAtRaw ? new Date(lastTradeAtRaw as string) : undefined,
+      lastClosedTradeAt: lastClosedTradeAtRaw ? new Date(lastClosedTradeAtRaw as string) : undefined,
+      windows,
+    };
+  }
 }
 
 function rowToTrade(row: Record<string, unknown>): Trade {

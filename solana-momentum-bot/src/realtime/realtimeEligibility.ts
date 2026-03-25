@@ -22,6 +22,16 @@ export interface RealtimeEligibilityResult<T extends RealtimePairCandidate> {
   reason: string;
 }
 
+export interface RealtimeDiscoveryCandidateMeta {
+  dexId?: string | null;
+  quoteTokenAddress?: string | null;
+}
+
+export interface RealtimePoolProgramCandidateMeta {
+  dexId?: string | null;
+  poolOwner?: string | null;
+}
+
 export const SUPPORTED_REALTIME_DEX_IDS = new Set(['raydium', 'orca', 'pumpswap', 'pumpfun', 'pump-swap']);
 export const SUPPORTED_REALTIME_POOL_PROGRAMS = new Map<string, Set<string>>([
   ['raydium', new Set([RAYDIUM_V4_PROGRAM, RAYDIUM_CLMM_PROGRAM, RAYDIUM_CPMM_PROGRAM])],
@@ -30,6 +40,33 @@ export const SUPPORTED_REALTIME_POOL_PROGRAMS = new Map<string, Set<string>>([
   ['pumpfun', new Set([PUMP_SWAP_PROGRAM])],
   ['pump-swap', new Set([PUMP_SWAP_PROGRAM])],
 ]);
+
+export function detectRealtimeDiscoveryMismatch(
+  candidate: RealtimeDiscoveryCandidateMeta
+): 'unsupported_dex' | 'non_sol_quote' | null {
+  const normalizedDexId = candidate.dexId ? normalizeDexId(candidate.dexId) : undefined;
+  if (normalizedDexId && !SUPPORTED_REALTIME_DEX_IDS.has(normalizedDexId)) {
+    return 'unsupported_dex';
+  }
+  if (candidate.quoteTokenAddress && candidate.quoteTokenAddress !== SOL_MINT) {
+    return 'non_sol_quote';
+  }
+  return null;
+}
+
+export function detectRealtimePoolProgramMismatch(
+  candidate: RealtimePoolProgramCandidateMeta
+): 'unsupported_pool_program' | null {
+  const normalizedDexId = candidate.dexId ? normalizeDexId(candidate.dexId) : undefined;
+  if (!normalizedDexId || !candidate.poolOwner) {
+    return null;
+  }
+  const supportedPrograms = SUPPORTED_REALTIME_POOL_PROGRAMS.get(normalizedDexId);
+  if (!supportedPrograms) {
+    return null;
+  }
+  return supportedPrograms.has(candidate.poolOwner) ? null : 'unsupported_pool_program';
+}
 
 export function selectRealtimeEligiblePair<T extends RealtimePairCandidate>(
   pairs: T[],

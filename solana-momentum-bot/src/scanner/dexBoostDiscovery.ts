@@ -145,6 +145,10 @@ export async function buildDexTokenDiscoveryCandidate(
     source: 'token_trending',
     raw: {
       ...seed.raw,
+      pair_address: bestPair.pairAddress,
+      dex_id: bestPair.dexId,
+      base_token_address: bestPair.baseToken.address,
+      quote_token_address: bestPair.quoteToken.address,
       pool_created_at: bestPair.pairCreatedAt ? new Date(bestPair.pairCreatedAt).toISOString() : undefined,
       buys_24h: bestPair.txns.h24?.buys ?? 0,
       sells_24h: bestPair.txns.h24?.sells ?? 0,

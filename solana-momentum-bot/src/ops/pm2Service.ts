@@ -1,4 +1,6 @@
 import { spawn } from 'child_process';
+import fs from 'fs';
+import path from 'path';
 
 export interface Pm2ProcessStatus {
   name: string;
@@ -17,6 +19,20 @@ interface Pm2CommandOutput {
 
 const ANSI_PATTERN = /\u001b\[[0-9;]*m/g;
 const ENV_ASSIGNMENT_PATTERN = /\b([A-Z0-9_]*(TOKEN|SECRET|KEY|PASSWORD)[A-Z0-9_]*)=([^\s]+)/g;
+const LOG_FILES: Record<string, { out: string; error: string }> = {
+  'momentum-bot': {
+    out: 'logs/bot-out.log',
+    error: 'logs/bot-error.log',
+  },
+  'momentum-shadow': {
+    out: 'logs/shadow-out.log',
+    error: 'logs/shadow-error.log',
+  },
+  'momentum-ops-bot': {
+    out: 'logs/ops-out.log',
+    error: 'logs/ops-error.log',
+  },
+};
 
 export class Pm2Service {
   async listProcesses(): Promise<Pm2ProcessStatus[]> {
@@ -51,13 +67,27 @@ export class Pm2Service {
   }
 
   async readLogs(name: string, lines = 30): Promise<string> {
-    const output = await this.run(['logs', name, '--lines', String(lines), '--nostream'], 20_000);
+    const files = resolveLogFiles(name);
+    const existingFiles = files.filter((file) => fs.existsSync(file));
+    if (existingFiles.length === 0) {
+      throw new Error(`No log files found for ${name}`);
+    }
+
+    const output = await this.runCommand(
+      'tail',
+      ['-n', String(lines), '-v', ...existingFiles],
+      20_000
+    );
     return sanitizePm2Output(joinOutput(output));
   }
 
   private run(args: string[], timeoutMs = 15_000): Promise<Pm2CommandOutput> {
+    return this.runCommand('pm2', args, timeoutMs);
+  }
+
+  private runCommand(command: string, args: string[], timeoutMs: number): Promise<Pm2CommandOutput> {
     return new Promise((resolve, reject) => {
-      const child = spawn('pm2', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
       const stdout: string[] = [];
       const stderr: string[] = [];
       let settled = false;
@@ -66,7 +96,7 @@ export class Pm2Service {
         if (settled) return;
         settled = true;
         child.kill('SIGKILL');
-        reject(new Error(`pm2 command timed out: ${args.join(' ')}`));
+        reject(new Error(`${command} command timed out: ${args.join(' ')}`));
       }, timeoutMs);
 
       child.stdout.on('data', (chunk) => stdout.push(String(chunk)));
@@ -86,10 +116,18 @@ export class Pm2Service {
           resolve(output);
           return;
         }
-        reject(new Error(sanitizePm2Output(joinOutput(output)) || `pm2 exited with code ${code}`));
+        reject(new Error(sanitizePm2Output(joinOutput(output)) || `${command} exited with code ${code}`));
       });
     });
   }
+}
+
+function resolveLogFiles(name: string): string[] {
+  const entry = LOG_FILES[name];
+  if (!entry) {
+    throw new Error(`No log file mapping defined for ${name}`);
+  }
+  return [entry.error, entry.out].map((file) => path.resolve(process.cwd(), file));
 }
 
 function joinOutput(output: Pm2CommandOutput): string {

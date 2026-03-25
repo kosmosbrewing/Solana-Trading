@@ -7,3 +7,4 @@ export * from './realtimeMeasurement';
 export * from './realtimeShadowReport';
 export * from './realtimeSignalLogger';
 export * from './realtimeOutcomeTracker';
+export * from './runtimeDiagnosticsTracker';

@@ -1,6 +1,8 @@
+/* eslint-disable no-console */
+
 import path from 'path';
 import dotenv from 'dotenv';
-import { replayRealtimeDataset } from '../src/backtest/microReplayEngine';
+import { replayRealtimeCandlesStream, replayRealtimeDataset } from '../src/backtest/microReplayEngine';
 import { RealtimeReplayStore } from '../src/realtime';
 import { MomentumTriggerConfig } from '../src/strategy';
 import { summarizeRealtimeSignals } from '../src/reporting';
@@ -16,8 +18,12 @@ async function main() {
 
   const datasetDir = getArg(args, '--dataset') || process.env.REALTIME_DATA_DIR || './data/realtime';
   const gateMode = (getArg(args, '--gate-mode') || 'off') as 'off' | 'stored';
+  const inputMode = (getArg(args, '--input-mode') || 'auto') as 'auto' | 'swaps' | 'candles';
   if (!['off', 'stored'].includes(gateMode)) {
     throw new Error(`Invalid --gate-mode: ${gateMode}`);
+  }
+  if (!['auto', 'swaps', 'candles'].includes(inputMode)) {
+    throw new Error(`Invalid --input-mode: ${inputMode}`);
   }
 
   const horizonsSec = parseNumList(getArg(args, '--horizons')) || [30, 60, 180, 300];
@@ -33,19 +39,25 @@ async function main() {
     cooldownSec: numArg(args, '--cooldown-sec', 300),
   };
 
-  const store = new RealtimeReplayStore(path.resolve(datasetDir));
-  const [swaps, storedSignals] = await Promise.all([
-    store.loadSwaps(path.join(path.resolve(datasetDir), 'raw-swaps.jsonl')),
-    store.loadSignals(path.join(path.resolve(datasetDir), 'realtime-signals.jsonl')),
-  ]);
-
-  const result = await replayRealtimeDataset(swaps, {
-    triggerConfig,
-    horizonsSec,
-    gateMode,
-    storedSignals,
-    estimatedCostPct: numArg(args, '--estimated-cost-pct', 0),
-  });
+  const resolvedDatasetDir = path.resolve(datasetDir);
+  const store = new RealtimeReplayStore(resolvedDatasetDir);
+  const storedSignals = await store.loadSignals(path.join(resolvedDatasetDir, 'realtime-signals.jsonl'));
+  const resolvedInputMode = await resolveInputMode(store, inputMode, resolvedDatasetDir);
+  const result = resolvedInputMode === 'candles'
+    ? await replayRealtimeCandlesStream(store.streamCandles(path.join(resolvedDatasetDir, 'micro-candles.jsonl')), {
+      triggerConfig,
+      horizonsSec,
+      gateMode,
+      storedSignals,
+      estimatedCostPct: numArg(args, '--estimated-cost-pct', 0),
+    })
+    : await replayRealtimeDataset(await store.loadSwaps(path.join(resolvedDatasetDir, 'raw-swaps.jsonl')), {
+      triggerConfig,
+      horizonsSec,
+      gateMode,
+      storedSignals,
+      estimatedCostPct: numArg(args, '--estimated-cost-pct', 0),
+    });
 
   const summary = summarizeRealtimeSignals(result.records, horizonSec);
   const rs = result.rejectStats;
@@ -53,6 +65,7 @@ async function main() {
     datasetDir: path.resolve(datasetDir),
     dataset: result.dataset,
     config: {
+      inputMode: resolvedInputMode,
       triggerConfig,
       gateMode,
       horizonsSec,
@@ -85,11 +98,10 @@ async function main() {
   console.log('\nMicro Replay Backtest');
   console.log('='.repeat(72));
   console.log(`Dataset: ${output.datasetDir}`);
-  console.log(
-    `Swaps: ${result.dataset.keptSwapCount}/${result.dataset.swapCount}` +
-    ` (dropped ${result.dataset.droppedSwapCount})` +
-    ` | Signals: ${summary.totalSignals} | Gate mode: ${gateMode}`
-  );
+  const datasetSummary = result.dataset.inputMode === 'candles'
+    ? `Candles: ${result.dataset.keptCandleCount}/${result.dataset.candleCount} (dropped ${result.dataset.droppedCandleCount})`
+    : `Swaps: ${result.dataset.keptSwapCount}/${result.dataset.swapCount} (dropped ${result.dataset.droppedSwapCount})`;
+  console.log(`${datasetSummary} | Signals: ${summary.totalSignals} | Gate mode: ${gateMode}`);
   console.log(`Avg Return (${horizonSec}s): ${(summary.avgReturnPct * 100).toFixed(2)}%`);
   console.log(`Avg Adjusted Return (${horizonSec}s): ${(summary.avgAdjustedReturnPct * 100).toFixed(2)}%`);
   console.log(`Avg MFE: ${(summary.avgMfePct * 100).toFixed(2)}% | Avg MAE: ${(summary.avgMaePct * 100).toFixed(2)}%`);
@@ -152,6 +164,18 @@ function parseNumList(raw?: string): number[] | undefined {
   return parsed.length > 0 ? parsed : undefined;
 }
 
+async function resolveInputMode(
+  store: RealtimeReplayStore,
+  requested: 'auto' | 'swaps' | 'candles',
+  datasetDir: string
+): Promise<'swaps' | 'candles'> {
+  if (requested === 'swaps' || requested === 'candles') {
+    return requested;
+  }
+  if (await store.hasCandles(path.join(datasetDir, 'micro-candles.jsonl'))) return 'candles';
+  return 'swaps';
+}
+
 function printHelp() {
   console.log(`
 Usage:
@@ -159,6 +183,7 @@ Usage:
 
 Options:
   --dataset <path>            Realtime dataset directory
+  --input-mode <mode>         auto | swaps | candles (default: auto, prefers candles)
   --gate-mode <off|stored>    Use trigger-only replay or stored gate outcomes (default: off)
   --horizons <csv>            Horizon list in seconds (default: 30,60,180,300)
   --horizon <sec>             Primary horizon for printed summary (default: 180)

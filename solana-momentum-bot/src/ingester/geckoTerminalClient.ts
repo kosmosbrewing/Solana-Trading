@@ -109,8 +109,10 @@ export class GeckoTerminalClient {
   private trendingCache: { data: BirdeyeTrendingToken[]; fetchedAt: number } | null = null;
   private trendingInFlight: Promise<BirdeyeTrendingToken[]> | null = null;
   private static readonly TRENDING_CACHE_TTL_MS = 60_000;
+  private onRateLimited?: (source: string) => void;
 
-  constructor() {
+  constructor(onRateLimited?: (source: string) => void) {
+    this.onRateLimited = onRateLimited;
     this.client = axios.create({
       baseURL: GECKO_BASE_URL,
       timeout: 15_000,
@@ -318,6 +320,7 @@ export class GeckoTerminalClient {
         return res.data;
       } catch (err) {
         if (err instanceof AxiosError && err.response?.status === 429) {
+          this.onRateLimited?.('gecko_terminal');
           this.currentRateLimitMs = Math.min(this.currentRateLimitMs * 2, 10_000);
           log.warn(`GeckoTerminal 429 rate limited. Backing off ${RETRY_DELAY_MS / 1000}s (next gap: ${this.currentRateLimitMs}ms)...`);
           await sleep(RETRY_DELAY_MS);
@@ -382,7 +385,9 @@ export class GeckoTerminalClient {
         if (!attrs) return null;
 
         const baseTokenId = pool.relationships?.base_token?.data?.id;
+        const quoteTokenId = pool.relationships?.quote_token?.data?.id;
         const baseToken = baseTokenId ? tokenMap.get(baseTokenId) : undefined;
+        const quoteToken = quoteTokenId ? tokenMap.get(quoteTokenId) : undefined;
         const address = baseToken?.address || baseTokenId?.replace('solana_', '') || '';
         if (!address) return null;
 
@@ -402,6 +407,8 @@ export class GeckoTerminalClient {
           raw: {
             discovery_source: discoverySource,
             pool_address: attrs.address,
+            base_token_address: baseToken?.address ?? baseTokenId?.replace('solana_', ''),
+            quote_token_address: quoteToken?.address ?? quoteTokenId?.replace('solana_', ''),
             pool_created_at: attrs.pool_created_at,
             fdv_usd: attrs.fdv_usd,
             buys_24h: attrs.transactions?.h24?.buys,

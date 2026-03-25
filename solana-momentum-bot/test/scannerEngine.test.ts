@@ -1,5 +1,6 @@
 import { ScannerEngine } from '../src/scanner/scannerEngine';
 import { SocialMentionTracker } from '../src/scanner/socialMentionTracker';
+import { detectRealtimeDiscoveryMismatch } from '../src/realtime';
 import type { BirdeyeTrendingToken } from '../src/ingester/birdeyeClient';
 
 describe('ScannerEngine social tracker wiring', () => {
@@ -178,6 +179,78 @@ describe('ScannerEngine social tracker wiring', () => {
     expect(scanner.getWatchlist().map(entry => entry.tokenMint)).toContain('mint-new');
     expect(scanner.getEntry('mint-new')?.discoverySource).toBe('gecko_new_pool');
     expect(geckoClient.getNewPoolTokens).toHaveBeenCalledWith(20);
+  });
+
+  it('skips realtime-ineligible candidates before they reach the watchlist', async () => {
+    const geckoClient = {
+      getTrendingTokens: jest.fn().mockResolvedValue([
+        makeToken('mint-unsupported', 'BAD', 1, 300_000, 120_000, {
+          dex_id: 'meteora',
+          quote_token_address: 'So11111111111111111111111111111111111111112',
+        }),
+        makeToken('mint-supported', 'GOOD', 2, 200_000, 100_000, {
+          dex_id: 'raydium',
+          quote_token_address: 'So11111111111111111111111111111111111111112',
+        }),
+      ]),
+    };
+    const scanner = new ScannerEngine({
+      geckoClient: geckoClient as never,
+      dexScreenerClient: null,
+      maxWatchlistSize: 10,
+      minWatchlistScore: 0,
+      trendingPollIntervalMs: 60_000,
+      geckoNewPoolIntervalMs: 60_000,
+      dexDiscoveryIntervalMs: 60_000,
+      dexEnrichIntervalMs: 60_000,
+      laneAMinAgeSec: 3600,
+      laneBMaxAgeSec: 1200,
+      minLiquidityUsd: 1000,
+      candidateFilter: (token) => {
+        const mismatch = detectRealtimeDiscoveryMismatch({
+          dexId: typeof token.raw?.dex_id === 'string' ? token.raw.dex_id : undefined,
+          quoteTokenAddress:
+            typeof token.raw?.quote_token_address === 'string' ? token.raw.quote_token_address : undefined,
+        });
+        return mismatch ? { allowed: false, reason: mismatch } : { allowed: true };
+      },
+    });
+
+    await scanner.start();
+    scanner.stop();
+
+    expect(scanner.getWatchlist().map(entry => entry.tokenMint)).toEqual(['mint-supported']);
+  });
+
+  it('supports async pre-watchlist filters for unsupported pool programs', async () => {
+    const geckoClient = {
+      getTrendingTokens: jest.fn().mockResolvedValue([
+        makeToken('mint-owner-bad', 'OWN', 1, 300_000, 120_000, {
+          dex_id: 'raydium',
+          pair_address: 'pair-owner-bad',
+          quote_token_address: 'So11111111111111111111111111111111111111112',
+        }),
+      ]),
+    };
+    const scanner = new ScannerEngine({
+      geckoClient: geckoClient as never,
+      dexScreenerClient: null,
+      maxWatchlistSize: 10,
+      minWatchlistScore: 0,
+      trendingPollIntervalMs: 60_000,
+      geckoNewPoolIntervalMs: 60_000,
+      dexDiscoveryIntervalMs: 60_000,
+      dexEnrichIntervalMs: 60_000,
+      laneAMinAgeSec: 3600,
+      laneBMaxAgeSec: 1200,
+      minLiquidityUsd: 1000,
+      candidateFilter: async () => ({ allowed: false, reason: 'unsupported_pool_program' }),
+    });
+
+    await scanner.start();
+    scanner.stop();
+
+    expect(scanner.getWatchlist()).toHaveLength(0);
   });
 
   it('discovers candidates from latest Dex token profiles when trending is empty', async () => {

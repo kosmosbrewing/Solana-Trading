@@ -134,6 +134,65 @@ describe('messageFormatter', () => {
           },
         ],
       },
+      cadence: {
+        lastSignalAt: '2026-03-22T08:00:00.000Z',
+        lastTradeAt: '2026-03-21T18:00:00.000Z',
+        lastClosedTradeAt: undefined,
+        timeSinceLastSignalMs: 60 * 60 * 1000,
+        timeSinceLastTradeMs: 15 * 60 * 60 * 1000,
+        timeSinceLastClosedTradeMs: undefined,
+        windows: [
+          {
+            hours: 6,
+            detectedSignals: 4,
+            executedSignals: 1,
+            filteredSignals: 3,
+            trades: 0,
+            closedTrades: 0,
+          },
+          {
+            hours: 12,
+            detectedSignals: 9,
+            executedSignals: 2,
+            filteredSignals: 7,
+            trades: 0,
+            closedTrades: 0,
+          },
+        ],
+      },
+      rejectionMix: {
+        hours: 24,
+        lastCandleAt: '2026-03-22T08:45:00.000Z',
+        timeSinceLastCandleMs: 15 * 60 * 1000,
+        filterReasonCounts: [
+          { reason: 'quote_rejected: Quote error', count: 7 },
+          { reason: 'security_rejected: Token is freezable', count: 3 },
+        ],
+        preWatchlistRejectCounts: [
+          { reason: 'unsupported_dex', count: 4 },
+        ],
+        preWatchlistRejectDetailCounts: [
+          { label: 'unsupported_dex source=dex_boost dex=meteora', count: 4 },
+        ],
+        admissionSkipCounts: [
+          { reason: 'unsupported_pool_program', count: 5 },
+        ],
+        admissionSkipDetailCounts: [
+          { label: 'unsupported_pool_program source=gecko_new_pool dex=raydium', count: 5 },
+        ],
+        rateLimitCounts: [
+          { source: 'gecko_terminal', count: 4 },
+          { source: 'helius_seed_backfill', count: 2 },
+        ],
+        pollFailureCounts: [
+          { source: 'gecko_ingester', count: 1 },
+        ],
+        realtimeCandidateAcceptance: {
+          accepted: 6,
+          prefiltered: 4,
+          acceptanceRate: 0.6,
+        },
+      },
       edgeStats: [
         {
           strategy: 'momentum_cascade',
@@ -178,6 +237,20 @@ describe('messageFormatter', () => {
     expect(message).toContain('실시간 Admission');
     expect(message).toContain('- 추적 풀: 4개 | 허용 3개 | 차단 1개');
     expect(message).toContain('parse 0.0% / skip 96.6% / obs 88');
+    expect(message).toContain('Cadence');
+    expect(message).toContain('- 최근 시그널: 1h 0m 전 (2026-03-22T08:00:00.000Z)');
+    expect(message).toContain('- 최근 6h: signal 4 / 실행 1 / 제외 3 / 진입 0 / 종료 0');
+    expect(message).toContain('cadence 경고: 12h no entry, 24h no closed trade');
+    expect(message).toContain('Data Plane (24h)');
+    expect(message).toContain('- 최근 캔들: 0h 15m 전 (2026-03-22T08:45:00.000Z)');
+    expect(message).toContain('- realtime-ready ratio: 6/10 (60.0%)');
+    expect(message).toContain('gate reject: quote_rejected: Quote error=7, security_rejected: Token is freezable=3');
+    expect(message).toContain('pre-watchlist reject: unsupported_dex source=dex_boost dex=meteora=4');
+    expect(message).toContain('realtime skip: unsupported_pool_program=5');
+    expect(message).toContain('realtime skip detail: unsupported_pool_program source=gecko_new_pool dex=raydium=5');
+    expect(message).toContain('429: gecko_terminal=4, helius_seed_backfill=2');
+    expect(message).toContain('poll failure: gecko_ingester=1');
+    expect(message).toContain('data-plane 경고: no candle >= 10m, 429 observed, low realtime-ready ratio');
     expect(message).toContain('전략 상태');
     expect(message).toContain('Momentum Cascade: 검증 통과');
     expect(message).toContain('Kelly 8.0%');

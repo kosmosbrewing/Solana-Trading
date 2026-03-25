@@ -88,6 +88,9 @@ SHADOW_HORIZON_SEC=30
 - `No candle received` 경고 빈도
 - `dynamic pair added / backfilled` churn
 - `explained entry ratio`
+- `gate reject (unique token)` 상위 이유
+- `pre-watchlist reject` / `realtime skip` 상위 이유
+- `realtime-ready ratio`
 
 ### 모니터링 명령어
 
@@ -122,6 +125,14 @@ TELEGRAM_CHAT_ID=<봇에게 메시지 보낸 후 getUpdates API로 확인>
 | `GeckoTerminal 429 rate limited` 반복 | burst/concurrency 또는 watchlist churn | `MAX_WATCHLIST_SIZE=8` 유지, `SCANNER_REENTRY_COOLDOWN_MS` 확인, startup/backfill churn 로그 확인 |
 | `Realtime seed backfill failed ... 429` 반복 | Helius startup burst | `REALTIME_SEED_BACKFILL_ENABLED=false` 유지, `REALTIME_MAX_SUBSCRIPTIONS=5` 확인 |
 | `No candle received for ... minutes` | 특정 pair poll 누락 또는 Gecko 지연 | pair별 backfill/poll 로그 확인, regime/event 주기 과도 여부 점검 |
+
+### Daily Summary 해석 원칙
+
+- `gate reject`는 `FILTERED 전체`가 아니라 **gate-origin reject만** 본다.
+- count는 event 수가 아니라 **unique token 수** 기준으로 해석한다.
+- `realtime-ready ratio`는 단순 watchlist accept 비율이 아니라,
+  `prefilter reject + admission skip + ready candidate`를 모두 포함한 **실제 realtime-ready 비율**이다.
+- `24h Data Plane` 수치는 `data/realtime/runtime-diagnostics.json`을 통해 PM2 restart 후에도 이어진다.
 
 ### 운영 해석 메모
 

@@ -1,9 +1,9 @@
 # PLAN3.md
 
 > Updated: 2026-03-25
-> Purpose: `Developer` 업그레이드 이후 live canary의 **현재 runtime blocker**를 active next-step plan으로 기록한다.
-> Scope: 이번 문서는 누적 운영 결과 중에서도 "지금 당장 다음에 고칠 것"만 남긴다.
-> Relationship: `PLAN2.md`의 누적 blocker/아키텍처 보강과 중복하지 않고, 현재 runtime delta만 다룬다.
+> Purpose: `Developer` 업그레이드 직후 live canary의 **runtime blocker**를 기록한 historical note다.
+> Scope: 현재 active next-step plan은 `PLAN4.md`를 우선한다.
+> Relationship: `PLAN4.md` 이전에 확인한 runtime delta와 그 해결 과정을 남긴다.
 
 ---
 
@@ -20,7 +20,7 @@
 
 한 줄 요약:
 
-> 현재 next-step blocker는 전략이 아니라 `Jupiter quote endpoint / runtime setting drift`다.
+> 당시 next-step blocker는 전략이 아니라 `Jupiter quote endpoint / runtime setting drift`였고, 이 항목은 현재 코드에 반영됐다.
 
 ---
 
@@ -219,6 +219,11 @@
 3. gate rejection telemetry 노출
 4. `NO_SECURITY_DATA` 재발 시 원인 추적
 5. 그 다음에만 security gate policy 완화 여부 검토
+
+Status note:
+
+- `1~3`은 현재 코드에 반영됐다.
+- 현재 active 운영 해석과 다음 단계는 `PLAN4.md`를 기준으로 본다.
 
 ---
 

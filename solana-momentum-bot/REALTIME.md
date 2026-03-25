@@ -143,6 +143,7 @@ realtime 및 historical replay는 같은 데이터 계층을 공유한다.
 | `raw-swaps.jsonl` | 원본 swap 이벤트. replay의 최하위 원천 데이터 |
 | `micro-candles.jsonl` | swap으로부터 생성된 synthetic candles |
 | `realtime-signals.jsonl` | trigger 결과, processing status, gate reason, horizon outcome |
+| `runtime-diagnostics.json` | restart-safe runtime diagnostics snapshot. 24h data-plane summary 원천 |
 | `manifest.json` | export metadata |
 | `shadow-summary.json` | runner가 만든 session 요약 |
 
@@ -151,6 +152,18 @@ realtime 및 historical replay는 같은 데이터 계층을 공유한다.
 - `raw-swaps`를 남겨야 trigger 로직이 바뀌어도 다시 재생 가능하다.
 - `micro-candles`를 남겨야 빠른 재분석이 가능하다.
 - `realtime-signals`를 남겨야 stored-gate replay와 trigger-only replay를 비교할 수 있다.
+- `runtime-diagnostics`를 남겨야 PM2 restart 이후에도 `429`, pre-watchlist reject, realtime skip, realtime-ready ratio를 같은 24h 창으로 해석할 수 있다.
+
+### Runtime Diagnostics Semantics
+
+운영 summary의 realtime diagnostics는 아래 기준을 따른다.
+
+- `gate reject`는 gate-origin reject만 집계한다.
+- `STALE`, `RISK_REJECTED`, wallet/risk halt는 별도 downstream rejection으로 본다.
+- `realtime-ready ratio`는
+  - 분자: 실제 realtime-ready까지 도달한 **unique token**
+  - 분모: pre-watchlist reject + post-watchlist admission skip + ready candidate를 합친 **unique token**
+- 따라서 이 지표는 event-frequency가 아니라 candidate pipeline quality를 보는 지표다.
 
 ---
 

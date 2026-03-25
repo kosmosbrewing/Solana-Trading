@@ -212,6 +212,18 @@ Paper/live에서는 `signal_audit_log`, `position signal_data`, daily summary의
 
 위 조건이면 점수와 무관하게 보류한다.
 
+### Rejection Quality Interpretation
+
+운영 summary에서 `Rejection quality`를 해석할 때는 아래 원칙을 강제한다.
+
+- `gate reject`는 `FILTERED 전체`가 아니라 **gate-origin reject**만 포함한다.
+  - 예: `security_rejected:*`, `quote_rejected:*`, `poor_execution_viability:*`, `exit_illiquid:*`, `not_trending`, score/buy-ratio hard reject
+- `STALE`, `RISK_REJECTED`, `Execution lock held`, wallet/risk halt 같은 downstream rejection은 gate reject에 섞지 않는다.
+- daily summary의 rejection count는 event-frequency가 아니라 **unique token 기준**으로 본다.
+- `24h` data-plane / rejection summary는 PM2 restart 후에도 이어지는 **restart-safe telemetry**여야 한다.
+
+즉 `Rejection quality`는 "운영 실패가 몇 번 났는가"가 아니라 "고유 후보 기준으로 어떤 종류의 reject가 일관되게 발생하는가"를 보는 항목이다.
+
 ### Realtime Shadow Execution Interpretation
 
 realtime shadow 단계에서는 아래를 우선 본다.

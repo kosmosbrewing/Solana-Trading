@@ -107,7 +107,7 @@
 - 완료 기준: "왜 아직 0 trade인가"를 매번 수동 로그 확인 없이 바로 볼 수 있다.
 
 ### R2. rejection mix를 cadence 관점으로 집계
-> Status: implemented in code — daily summary/runtime verification pending
+> Status: implemented in code — `gate-only + unique-token` semantics / restart-safe 24h persistence added, runtime verification pending
 
 - `0 trade`의 원인을 alpha와 운영 경로로 분리한다.
 - `unsupported_dex`
@@ -118,10 +118,14 @@
 - `quote_rejected`
 - `429/hour`
 - `poll failed / no candle received`
+- 집계 원칙:
+  - `gate reject`는 `FILTERED 전체`가 아니라 **실제 gate-origin reject만** 포함한다.
+  - count 기준은 event-frequency가 아니라 **unique token** 기준으로 본다.
+  - `24h` data-plane summary는 PM2 restart 후에도 이어져야 한다.
 - 완료 기준: `0 trade`가 signal 부족인지, watchlist 품질 문제인지, gate fail-closed인지, execution 문제인지 바로 분류 가능하다.
 
 ### R3. discovery → realtime admission mismatch 줄이기
-> Status: partially implemented in code — pre-watchlist `unsupported_dex` / `non_sol_quote` / `unsupported_pool_program` filter + richer skip log + `realtime-ready ratio`/source-dex detail summary added, coverage/runtime verification pending
+> Status: implemented in code — pre-watchlist `unsupported_dex` / `non_sol_quote` / `unsupported_pool_program` filter + richer skip log + unique-token `realtime-ready ratio`/source-dex detail summary added, runtime verification pending
 
 - realtime에서 어차피 못 받을 후보를 discovery/watchlist 단계에서 더 일찍 거른다.
 1. **realtime mode 기준으로** discovery/watchlist 단계에서 realtime 미지원 DEX pair를 미리 제외하거나 강한 감점 적용
@@ -181,4 +185,4 @@
 
 ---
 ## One-Line Summary
-> `PLAN3` 이후의 핵심 문제는 quote DNS가 아니라, live canary가 아직 mission을 검증할 만큼 trade cadence를 만들지 못한다는 점이다. 다음 작업은 전략 튜닝보다 먼저 `0 trade`의 구조적 원인을 telemetry와 admission quality 관점에서 드러내는 것이다.
+> `PLAN3` 이후의 핵심 문제는 quote DNS가 아니라, live canary가 아직 mission을 검증할 만큼 trade cadence를 만들지 못한다는 점이다. 현재는 `0 trade`의 구조적 원인을 **gate-only / unique-token / restart-safe telemetry**로 해석 가능한 상태까지 왔고, 다음은 운영 결과로 cadence 개선 여부를 검증하는 단계다.

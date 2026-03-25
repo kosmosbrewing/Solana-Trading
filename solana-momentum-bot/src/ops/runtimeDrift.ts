@@ -45,5 +45,26 @@ export function evaluateRuntimeDriftWarnings(input: RuntimeDriftInput): string[]
     warnings.push('legacy_jupiter_quote_host');
   }
 
+  if (isMisconfiguredJupiterApiUrl(input.jupiterApiUrl)) {
+    warnings.push(`misconfigured_jupiter_api_url=${input.jupiterApiUrl}`);
+  }
+
   return warnings;
+}
+
+function isMisconfiguredJupiterApiUrl(rawUrl: string): boolean {
+  try {
+    const url = new URL(rawUrl);
+    if (
+      url.hostname !== 'api.jup.ag' &&
+      url.hostname !== 'lite-api.jup.ag'
+    ) {
+      return false;
+    }
+
+    const normalizedPath = url.pathname.replace(/\/+$/, '') || '/';
+    return normalizedPath !== '/swap/v1';
+  } catch {
+    return false;
+  }
 }

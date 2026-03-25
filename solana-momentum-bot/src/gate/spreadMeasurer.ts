@@ -1,6 +1,10 @@
 import axios from 'axios';
 import { createModuleLogger } from '../utils/logger';
 import { SOL_MINT, LAMPORTS_PER_SOL } from '../utils/constants';
+import {
+  JUPITER_KEYLESS_SWAP_API_URL,
+  normalizeJupiterSwapApiUrl,
+} from '../utils/jupiterApi';
 
 const log = createModuleLogger('SpreadMeasurer');
 
@@ -32,7 +36,7 @@ export interface SpreadMeasurerConfig {
 }
 
 const DEFAULT_CONFIG: SpreadMeasurerConfig = {
-  jupiterApiUrl: 'https://api.jup.ag',
+  jupiterApiUrl: JUPITER_KEYLESS_SWAP_API_URL,
   probeSizeLamports: 100_000_000, // 0.1 SOL
   timeoutMs: 5000,
   cacheTTLMs: 60_000,
@@ -53,7 +57,14 @@ export class SpreadMeasurer {
   private cache = new Map<string, SpreadMeasurement>();
 
   constructor(config: Partial<SpreadMeasurerConfig> = {}) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    const mergedConfig = { ...DEFAULT_CONFIG, ...config };
+    this.config = {
+      ...mergedConfig,
+      jupiterApiUrl: normalizeJupiterSwapApiUrl(
+        mergedConfig.jupiterApiUrl,
+        mergedConfig.jupiterApiKey
+      ),
+    };
   }
 
   /**

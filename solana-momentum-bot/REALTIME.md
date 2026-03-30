@@ -1,7 +1,7 @@
 # Realtime Edge Validation Guide
 
 > Created: 2026-03-22
-> Updated: 2026-03-22
+> Updated: 2026-03-30
 > Goal: Helius realtime shadow, historical swap backfill, micro replay를 하나의 실행 경로로 정리해 초봉 momentum edge를 검증한다
 > Document type: working guide
 > Authority: realtime validation 워크플로 기준 문서. 운영 절차는 `OPERATIONS.md`, 점수 해석은 `MEASUREMENT.md`를 우선한다.
@@ -16,7 +16,7 @@
 2. `historical onchain swap backfill`
 3. `micro replay backtest`
 
-`7일 5m` 대량 백테스트는 [BACKTEST.md](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/BACKTEST.md), 점수 해석은 [MEASUREMENT.md](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/MEASUREMENT.md), 운영 명령은 [OPERATIONS.md](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/OPERATIONS.md)를 기준으로 본다.
+`7일 5m` 대량 백테스트는 [`BACKTEST.md`](./BACKTEST.md), 점수 해석은 [`MEASUREMENT.md`](./MEASUREMENT.md), 운영 명령은 [`OPERATIONS.md`](./OPERATIONS.md)를 기준으로 본다.
 
 ### Quick Start
 
@@ -51,13 +51,14 @@
 | Micro replay backtest | 구현됨 | 저장된 realtime dataset을 오프라인 재생 가능 |
 | Historical swap fetch | 구현됨 | 과거 onchain swap을 수집해 replay dataset 생성 가능 |
 | Measurement integration | 구현됨 | realtime 결과는 `Realtime Edge Score`로 요약 가능 |
-| 표본 수 | 아직 부족 | 최신 live snapshot은 `signals=2` 수준으로 전략 판단엔 약함 |
+| 표본 수 | 아직 부족 | 현재도 signal sample size 부족으로 전략 판정엔 약함 |
 
 ### Latest Validation Snapshot
 
 실데이터 기준 최신 검증 스냅샷:
 
-- 이 snapshot은 `default 운영`이 아니라 `tuned validation` 실행 기준이다.
+- 이 snapshot은 historical validation 기준이다.
+- 현재 live 운영의 최종 판단은 [`PLAN4.md`](./PLAN4.md), [`20260331.md`](./20260331.md)를 우선한다.
 
 - runtime log:
   - `Helius real-time pipeline connected`
@@ -86,16 +87,16 @@
 
 | 레이어 | 파일 | 역할 |
 |---|---|---|
-| Realtime ingest | [heliusWSIngester.ts](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/src/realtime/heliusWSIngester.ts) | Helius websocket 이벤트 수신 |
-| Swap parsing | [swapParser.ts](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/src/realtime/swapParser.ts) | transaction/log -> parsed swap |
-| Micro candle | [microCandleBuilder.ts](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/src/realtime/microCandleBuilder.ts) | `1s/5s/15s/1m` synthetic candle 생성 |
-| Trigger | [momentumTrigger.ts](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/src/strategy/momentumTrigger.ts) | breakout + volume surge signal 산출 |
-| Runtime gating | [realtimeHandler.ts](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/src/orchestration/realtimeHandler.ts) | execution viability, rejection reason, shadow logging |
-| Persistence | [replayStore.ts](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/src/realtime/replayStore.ts) | realtime dataset 저장/로드/export |
-| Measurement | [realtimeMeasurement.ts](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/src/reporting/realtimeMeasurement.ts) | signal outcome 요약, score, gate 판정 |
-| Runner | [realtime-shadow-runner.ts](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/scripts/realtime-shadow-runner.ts) | session orchestration |
-| Replay CLI | [micro-backtest.ts](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/scripts/micro-backtest.ts) | offline replay/backtest |
-| Historical fetch | [fetch-historical-swaps.ts](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/scripts/fetch-historical-swaps.ts) | 과거 swap 수집 + replay |
+| Realtime ingest | `src/realtime/heliusWSIngester.ts` | Helius websocket 이벤트 수신 |
+| Swap parsing | `src/realtime/swapParser.ts` | transaction/log -> parsed swap |
+| Micro candle | `src/realtime/microCandleBuilder.ts` | `1s/5s/15s/1m` synthetic candle 생성 |
+| Trigger | `src/strategy/momentumTrigger.ts` | breakout + volume surge signal 산출 |
+| Runtime gating | `src/orchestration/realtimeHandler.ts` | execution viability, rejection reason, shadow logging |
+| Persistence | `src/realtime/replayStore.ts` | realtime dataset 저장/로드/export |
+| Measurement | `src/reporting/realtimeMeasurement.ts` | signal outcome 요약, score, gate 판정 |
+| Runner | `scripts/realtime-shadow-runner.ts` | session orchestration |
+| Replay CLI | `scripts/micro-backtest.ts` | offline replay/backtest |
+| Historical fetch | `scripts/fetch-historical-swaps.ts` | 과거 swap 수집 + replay |
 
 ### Realtime Data Flow
 
@@ -171,7 +172,7 @@ realtime 및 historical replay는 같은 데이터 계층을 공유한다.
 
 realtime shadow는 실제 paper runtime을 돌리되, 목적은 주문 성과보다 `signal outcome measurement`에 둔다.
 
-실행 명령은 [OPERATIONS.md](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/OPERATIONS.md)를 기준으로 한다.
+실행 명령은 [`OPERATIONS.md`](./OPERATIONS.md)를 기준으로 한다.
 
 ### Default Path
 
@@ -334,7 +335,7 @@ npx ts-node scripts/micro-backtest.ts \
 
 ## Measurement Interpretation
 
-realtime 결과는 [MEASUREMENT.md](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/MEASUREMENT.md) 기준으로 해석한다.
+realtime 결과는 [`MEASUREMENT.md`](./MEASUREMENT.md) 기준으로 해석한다.
 
 ### 현재 규칙
 

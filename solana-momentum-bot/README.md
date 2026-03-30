@@ -8,6 +8,17 @@ Solana DEX 이벤트 기반 트레이딩 봇. Birdeye WS/Trending, DexScreener, 
 
 ---
 
+## Current Status
+
+- 인프라 블로커였던 `quote 401`, `executor 401`, BUY sizing 단위 버그는 해소됐다.
+- historical baseline에서는 live 12건이 체결됐지만, 성과는 음수였다.
+- `2026-03-30` post-patch canary 12.2시간은 진입 0건이었고, 당시 직접 blocker는 주로 `poor_execution_viability`와 pair blacklist였다.
+- 이후 execution viability telemetry patch를 넣고 fresh run을 재시작했지만, 최신 확인 구간에서는 아직 BUY 시그널 표본이 없어 새 telemetry를 평가하지 못했다.
+
+현재 운영 판단은 [`PLAN4.md`](./PLAN4.md)와 [`20260331.md`](./20260331.md)를 우선한다.
+
+---
+
 ## Reference Docs
 
 - `docs/product-specs/strategy-catalog.md` — Strategy A/C/D/E 흐름과 게이트 설계
@@ -20,6 +31,8 @@ Solana DEX 이벤트 기반 트레이딩 봇. Birdeye WS/Trending, DexScreener, 
   - `AGENTS.md` — 에이전트 작업 규칙과 저장소 문서 맵
   - `ARCHITECTURE.md` — 모듈 책임, 의존성 방향, 데이터 흐름
   - `PROJECT.md` — 제품 목표와 운영 원칙
+  - `PLAN4.md` — 현재 live canary 해석과 next step
+  - `20260331.md` — post-patch canary + telemetry patch 기록
   - `OPERATIONS.md` — 실제 운영 절차와 runbook
   - `docs/product-specs/strategy-catalog.md` — 전략/Gate/Risk 제품 명세
   - `MEASUREMENT.md` — 점수 해석과 stage score 정책
@@ -27,6 +40,8 @@ Solana DEX 이벤트 기반 트레이딩 봇. Birdeye WS/Trending, DexScreener, 
   - `BACKTEST.md` — 백테스트 워크플로와 해석 가이드
   - `REALTIME.md` — realtime shadow/replay 검증 가이드
 - Historical or execution notes
+  - `20260330.md`
+  - `PLAN3.md`
   - `docs/exec-plans/completed/realtime-measurement-refactor.md`
   - `docs/exec-plans/completed/v4-improvement-plan.md`
   - `docs/exec-plans/completed/paper-data-plane-transition.md`
@@ -71,10 +86,10 @@ Solana DEX 이벤트 기반 트레이딩 봇. Birdeye WS/Trending, DexScreener, 
 
 ### Strategy A: Volume Spike Breakout (`volume_spike`)
 
-**개념:** 5분봉 기준 20봉 최고가를 돌파하면서 거래량이 평균 3배 이상 급증할 때 진입. 전형적인 모멘텀 브레이크아웃.
+**개념:** 5분봉 기준 20봉 최고가를 돌파하면서 거래량이 평균 대비 크게 급증할 때 진입하는 코어 모멘텀 브레이크아웃.
 
 **진입 조건 (AND):**
-- `currentVolume ≥ avgVolume[20] × 3.0`
+- `currentVolume ≥ avgVolume[20] × 2.5`
 - `close > highestHigh[20]`
 
 **주문 파라미터:**
@@ -82,7 +97,7 @@ Solana DEX 이벤트 기반 트레이딩 봇. Birdeye WS/Trending, DexScreener, 
 |------|-----|
 | Stop Loss | 현재 캔들 저가 |
 | TP1 | entry + ATR(20) × 1.5 |
-| TP2 | entry + ATR(20) × 2.5 |
+| TP2 | entry + ATR(20) × 3.5 |
 | Time Stop | 30분 |
 
 **스코어링 (0–100점):**

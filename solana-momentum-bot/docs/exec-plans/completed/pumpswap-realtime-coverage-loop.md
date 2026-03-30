@@ -151,8 +151,8 @@
 - PumpSwap log에서 buy/sell와 수량을 직접 디코딩
 
 **대상 파일**
-- [pumpSwapParser.ts](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/src/realtime/pumpSwapParser.ts)
-- [swapParser.test.ts](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/test/swapParser.test.ts) 또는 신규 test
+- `src/realtime/pumpSwapParser.ts`
+- `test/swapParser.test.ts` 또는 신규 test
 
 **완료 기준**
 - known sample에 대해 side/base/quote/price가 재현 가능
@@ -164,8 +164,8 @@
 - PumpSwap를 기존 realtime parser 파이프라인에 연결
 
 **대상 파일**
-- [swapParser.ts](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/src/realtime/swapParser.ts)
-- [index.ts](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/src/realtime/index.ts)
+- `src/realtime/swapParser.ts`
+- `src/realtime/index.ts`
 
 **완료 기준**
 - PumpSwap program id가 지원 목록에 포함
@@ -177,8 +177,8 @@
 - PumpSwap 풀을 realtime watchlist 대상에 포함
 
 **대상 파일**
-- [realtimeEligibility.ts](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/src/realtime/realtimeEligibility.ts)
-- [realtimeEligibility.test.ts](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/test/realtimeEligibility.test.ts)
+- `src/realtime/realtimeEligibility.ts`
+- `test/realtimeEligibility.test.ts`
 
 **완료 기준**
 - alias dexId 허용

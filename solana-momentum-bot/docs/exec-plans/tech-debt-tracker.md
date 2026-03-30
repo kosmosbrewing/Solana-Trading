@@ -1,48 +1,37 @@
 # Tech Debt Tracker
 
-> 통합 출처: issues-archive.md + 하네스 리팩토링 갭 분석
-> Last updated: 2026-03-18
+> Last updated: 2026-03-30
+> Scope: 현재 운영과 직접 맞닿은 기술 부채만 남긴다.
 
-## Mission Readiness: 9.5/10
+## Current Mission Readiness
 
-코어 런타임, 전략 배선, 리스크 관리, 백테스트/리포팅 완료.
-감사 결과: CRITICAL 24건, HIGH 33건, MEDIUM 20건+ 전부 해결.
-최근 완료: SOL_MINT 상수 중앙화, Exit Gate 구현, RegimeFilter 데이터소스 수정.
-남은 외부 연동: X Filtered Stream 1건.
+- 인프라 블로커: 해소
+- 운영 해석 부채: 남아 있음
+- 핵심 문제: 기능 부재보다 live canary 해석 품질
 
----
+## High Priority
 
-## 🔴 Critical
-
-| ID | 항목 | 현재 상태 | 해결 방안 |
+| ID | 항목 | 현재 상태 | 다음 조치 |
 |---|---|---|---|
-| TD-1 | `backtest/engine.ts` 1082줄 | 300줄 제한 3.6배 초과 | 전략 라우팅/집계/루프 3파일 분리 |
-| TD-2 | 300줄 초과 파일 13개 | CI 검증 미적용 | P1b에서 Tier별 분리 |
-| TD-3 | risk/ ↔ reporting/ 순환 의존성 | 런타임 문제 없으나 구조적 위험 | 공유 타입 utils/ 추출 |
+| TD-1 | `effectiveRR` 해석 표본 부족 | telemetry patch는 완료, BUY 표본 없음 | 첫 BUY 시그널에서 pre/post-size 비교 확인 |
+| TD-2 | blacklist pair 재유입 통제 부족 | 동일 loser pair 재점유 가능성 남음 | scanner cooldown 보강 필요 여부 판단 |
+| TD-3 | Gecko `429` data-plane noise | 지속 발생 | cadence 해석과 분리 추적 |
+| TD-4 | oversized file debt | 일부 핵심 문서/모듈 여전히 큼 | 기능 작업과 분리해 점진 정리 |
 
-## 🟡 Medium
+## Medium Priority
 
-| ID | 항목 | 현재 상태 | 해결 방안 |
+| ID | 항목 | 현재 상태 | 다음 조치 |
 |---|---|---|---|
-| TD-4 | process.env 직접 접근 3건 | config.ts 우회 | P1a-2에서 중앙화 |
-| TD-5 | console.log 46건 (reporter.ts) | no-console: off | eslint-disable 예외 + warn 활성화 |
-| TD-6 | 6개 모듈 테스트 부재 | orchestration 등 핵심 흐름 미테스트 | P1b-2에서 우선 추가 |
-| TD-7 | X Filtered Stream 미검증 | 코드 완료, 외부 인증 대기 | Bearer token + rule 등록 필요 |
+| TD-5 | `risk/` ↔ `reporting/` 순환 의존 | 구조적 위험 잔존 | 공유 타입/계산 경계 재정리 |
+| TD-6 | venue-aware cost model | 가정값 비중 큼 | 실거래 cost 실측 후 보정 |
+| TD-7 | realtime/watchlist churn 관측성 | 로그는 있으나 요약이 약함 | source별 retained/reject 집계 강화 |
 
-## 🟢 Low
+## Resolved Recently
 
-| ID | 항목 | 현재 상태 | 해결 방안 |
-|---|---|---|---|
-| TD-8 | Health endpoint HTTP 미노출 | HealthMonitor 내부용 | P2에서 HTTP endpoint 추가 |
-| TD-9 | DB 스키마 문서 미자동화 | 수동 관리 | P2-1에서 자동 생성 |
-| TD-10 | Birdeye WS → Helius WS 전환 | 아이디어 단계 | 비용/안정성 이슈 발생 시 검토 |
-
-## ✅ Recently Resolved
-
-| ID | 항목 | 해결 일시 | 내용 |
-|---|---|---|---|
-| TD-R1 | SOL_MINT 상수 4파일 중복 | 2026-03-18 | `utils/constants.ts` 추출, 4파일 import 전환 |
-| TD-R2 | RegimeFilter 데이터소스 버그 | 2026-03-18 | SOL_USDC_PAIR(mint)→getTokenOHLCV(mint) 수정 |
-| TD-R3 | Exit Gate 미구현 | 2026-03-18 | SpreadMeasurer.measureSellImpact + gate/index.ts Exit Gate 추가 |
-| TD-R4 | getTokenOHLCV 에러 핸들링 불일치 | 2026-03-18 | return [] → throw error (getOHLCV와 일관) |
-| TD-R5 | gate/index.ts import 순서 버그 | 2026-03-18 | const log 위치 수정 |
+| ID | 항목 | 해결 시점 |
+|---|---|---|
+| TD-R1 | quote endpoint / executor 401 | 2026-03-25 |
+| TD-R2 | BUY sizing SOL/token unit mismatch | 2026-03-25 |
+| TD-R3 | Security Gate Birdeye hard dependency | 2026-03-24 |
+| TD-R4 | execution viability probe 단위 정합성 | 2026-03-30 |
+| TD-R5 | pre-gate / post-size execution telemetry persistence | 2026-03-30 |

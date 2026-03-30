@@ -428,7 +428,14 @@ export class BacktestEngine {
       // Why: 진입 직후 adaptiveStop=entryPrice(본전 스탑)이 되어 1봉 만에 exit하는 오탐 방지
       if (barsHeld >= 2 && trailingStop && monitorCandles.length >= 8) {
         const atr = calcATR(monitorCandles, 7);
-        const adaptiveStop = calcAdaptiveTrailingStop(monitorCandles, atr, entryPrice, peakPrice);
+        const adaptiveStop = calcAdaptiveTrailingStop(
+          monitorCandles,
+          atr,
+          entryPrice,
+          peakPrice,
+          order.stopLoss,
+          tp1Hit
+        );
         if (currentPrice <= adaptiveStop && currentPrice > order.stopLoss) {
           return this.makeTrade(
             id, strategy, pairAddress, order, entryIdx, i,
@@ -641,7 +648,14 @@ export class BacktestEngine {
       // Adaptive trailing — 최소 2봉 보유 후 활성화
       if (cascadeBarsHeld >= 2 && trailingStop && monitorCandles.length >= 8) {
         const atr = calcATR(monitorCandles, 7);
-        const adaptiveStop = calcAdaptiveTrailingStop(monitorCandles, atr, entryPrice, peakPrice);
+        const adaptiveStop = calcAdaptiveTrailingStop(
+          monitorCandles,
+          atr,
+          entryPrice,
+          peakPrice,
+          activeSL,
+          cascadeState.tp1Hit
+        );
         if (currentPrice <= adaptiveStop && currentPrice > activeSL) {
           return this.makeTrade(
             id, 'momentum_cascade', pairAddress, order, entryIdx, i,

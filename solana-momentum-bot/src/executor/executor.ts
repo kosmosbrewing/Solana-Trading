@@ -2,6 +2,7 @@ import axios, { AxiosInstance } from 'axios';
 import {
   Connection,
   Keypair,
+  PublicKey,
   VersionedTransaction,
 } from '@solana/web3.js';
 import bs58 from 'bs58';
@@ -38,6 +39,8 @@ export interface SwapResult {
   txSignature: string;
   expectedOutAmount: bigint;   // Jupiter quote 예상 수신량
   actualOutAmount?: bigint;    // 온체인 실제 수신량 (확인 가능 시)
+  actualOutUiAmount?: number;  // 실제 수신량 (UI amount)
+  outputDecimals?: number;     // output mint decimals
   slippageBps: number;         // 실제 슬리피지 (bps)
 }
 
@@ -77,6 +80,7 @@ export class Executor {
   private wallet: Keypair;
   private jupiterClient: AxiosInstance;
   private ultraClient?: AxiosInstance;
+  private mintDecimals = new Map<string, number>();
   private maxSlippageBps: number;
   private maxRetries: number;
   private jitoClient?: JitoClient;
@@ -220,6 +224,7 @@ export class Executor {
         : 0;
     }
     // outputAmountResult 없으면 actualOutAmount=undefined 유지 (before 없이 비교 불가)
+    const outputMetrics = await this.resolveOutputMetrics(outputMint, actualOutAmount);
 
     log.info(
       `Ultra swap complete: sig=${result.signature}, expected=${expectedOut}, ` +
@@ -230,6 +235,7 @@ export class Executor {
       txSignature: result.signature,
       expectedOutAmount: expectedOut,
       actualOutAmount,
+      ...outputMetrics,
       slippageBps: actualSlippageBps,
     };
   }
@@ -268,6 +274,10 @@ export class Executor {
         const actualSlippageBps = expectedOut > 0n
           ? Number((expectedOut - actualOutAmount) * 10000n / expectedOut)
           : 0;
+        const outputMetrics = await this.resolveOutputMetrics(
+          outputMint,
+          actualOutAmount > 0n ? actualOutAmount : undefined
+        );
 
         log.info(
           `Swap complete: expected=${expectedOut}, actual=${actualOutAmount}, slippage=${actualSlippageBps}bps`
@@ -277,6 +287,7 @@ export class Executor {
           txSignature,
           expectedOutAmount: expectedOut,
           actualOutAmount: actualOutAmount > 0n ? actualOutAmount : undefined,
+          ...outputMetrics,
           slippageBps: actualSlippageBps,
         };
       } catch (error) {
@@ -297,10 +308,17 @@ export class Executor {
    * 주문 기반 매수 실행
    */
   async executeBuy(order: Order): Promise<SwapResult> {
-    const amountLamports = BigInt(Math.floor(order.quantity * 1e9));
+    const entryNotionalSol = order.quantity * order.price;
+    const amountLamports = BigInt(Math.floor(entryNotionalSol * 1e9));
+    if (amountLamports <= 0n) {
+      throw new Error(
+        `Invalid BUY notional: quantity=${order.quantity} price=${order.price}`
+      );
+    }
 
     log.info(
-      `Executing BUY: ${order.quantity} SOL → ${order.pairAddress} (strategy: ${order.strategy})`
+      `Executing BUY: ${entryNotionalSol} SOL ` +
+      `(~${order.quantity} tokens) → ${order.pairAddress} (strategy: ${order.strategy})`
     );
 
     return this.executeSwap(SOL_MINT, order.pairAddress, amountLamports);
@@ -331,12 +349,42 @@ export class Executor {
   async getTokenBalance(tokenMint: string): Promise<bigint> {
     const accounts = await this.connection.getTokenAccountsByOwner(
       this.wallet.publicKey,
-      { mint: await import('@solana/web3.js').then(m => new m.PublicKey(tokenMint)) }
+      { mint: new PublicKey(tokenMint) }
     );
     if (accounts.value.length === 0) return 0n;
 
     const info = await this.connection.getTokenAccountBalance(accounts.value[0].pubkey);
     return BigInt(info.value.amount);
+  }
+
+  private async resolveOutputMetrics(
+    outputMint: string,
+    actualOutAmount?: bigint
+  ): Promise<Pick<SwapResult, 'actualOutUiAmount' | 'outputDecimals'>> {
+    if (actualOutAmount == null) return {};
+    const outputDecimals = outputMint === SOL_MINT ? 9 : await this.getMintDecimals(outputMint);
+    if (outputDecimals == null) return {};
+    return {
+      actualOutUiAmount: toUiAmount(actualOutAmount, outputDecimals),
+      outputDecimals,
+    };
+  }
+
+  private async getMintDecimals(mint: string): Promise<number | undefined> {
+    const cached = this.mintDecimals.get(mint);
+    if (cached != null) return cached;
+    try {
+      const accountInfo = await this.connection.getParsedAccountInfo(new PublicKey(mint));
+      const parsed = accountInfo.value?.data as { parsed?: { info?: { decimals?: number } } } | undefined;
+      const decimals = parsed?.parsed?.info?.decimals;
+      if (typeof decimals === 'number') {
+        this.mintDecimals.set(mint, decimals);
+        return decimals;
+      }
+    } catch (error) {
+      log.warn(`Failed to resolve mint decimals for ${mint}: ${error}`);
+    }
+    return undefined;
   }
 
   private async getQuote(
@@ -412,4 +460,14 @@ export class Executor {
     log.info(`TX confirmed: ${signature}`);
     return signature;
   }
+}
+
+function toUiAmount(amount: bigint, decimals: number): number {
+  const negative = amount < 0n;
+  const raw = (negative ? -amount : amount).toString().padStart(decimals + 1, '0');
+  const splitAt = raw.length - decimals;
+  const integer = raw.slice(0, splitAt);
+  const fraction = decimals > 0 ? raw.slice(splitAt).replace(/0+$/, '') : '';
+  const value = fraction ? `${integer}.${fraction}` : integer;
+  return Number(negative ? `-${value}` : value);
 }

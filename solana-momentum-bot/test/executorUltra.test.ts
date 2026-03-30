@@ -199,6 +199,31 @@ describe('Executor Ultra V3', () => {
     expect(executor).toBeDefined();
   });
 
+  it('executeBuy uses order notional in SOL, not raw token quantity', async () => {
+    const executor = new Executor({
+      ...BASE_CONFIG,
+      useJupiterUltra: false,
+    });
+
+    await executor.executeBuy({
+      pairAddress: 'TokenMint1111111111111111111111111111111111',
+      strategy: 'volume_spike',
+      side: 'BUY',
+      price: 0.125,
+      quantity: 2,
+      stopLoss: 0.1,
+      takeProfit1: 0.15,
+      takeProfit2: 0.2,
+      timeStopMinutes: 15,
+    });
+
+    expect(mockV6Get).toHaveBeenCalledWith('/quote', expect.objectContaining({
+      params: expect.objectContaining({
+        amount: '250000000',
+      }),
+    }));
+  });
+
   it('Ultra 응답 파싱 — SwapResult 정상 구조', () => {
     // Ultra 응답 구조 검증 (타입 레벨)
     const mockUltraResult = {

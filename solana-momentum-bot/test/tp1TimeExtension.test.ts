@@ -67,6 +67,7 @@ describe('TP1 Time Stop Extension', () => {
       },
       tradeStore: {
         closeTrade: jest.fn().mockResolvedValue(undefined),
+        updateHighWaterMark: jest.fn().mockResolvedValue(undefined),
         insertTrade: jest.fn().mockImplementation((trade: Omit<Trade, 'id'>) => {
           capturedTrades.push(trade);
           return Promise.resolve('new-trade-id');
@@ -163,6 +164,7 @@ describe('TP1 Time Stop Extension', () => {
       },
       tradeStore: {
         closeTrade: jest.fn().mockResolvedValue(undefined),
+        updateHighWaterMark: jest.fn().mockResolvedValue(undefined),
         insertTrade: jest.fn().mockImplementation((t: Omit<Trade, 'id'>) => {
           capturedTrades.push(t);
           return Promise.resolve('new-trade-id');

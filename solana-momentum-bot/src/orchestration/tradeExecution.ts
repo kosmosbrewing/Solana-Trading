@@ -7,6 +7,7 @@ import { PositionStore } from '../state';
 import { RiskManager } from '../risk';
 import { BotContext } from './types';
 import { buildGateTraceSnapshot } from './signalTrace';
+import { summarizeTradeObservation } from './tradeMonitoring';
 
 const log = createModuleLogger('TradeExecution');
 
@@ -17,6 +18,20 @@ interface DegradedState {
   partialSoldAt: Date;
   /** 원본 trade의 pairAddress (잔여분 새 trade 매칭용) */
   pairAddress: string;
+}
+
+export interface EntryExecutionSummary {
+  entryPrice: number;
+  quantity: number;
+  plannedEntryPrice: number;
+  plannedQuantity: number;
+  entrySlippageBps: number;
+  entrySlippagePct: number;
+  expectedOutAmount?: string;
+  actualOutAmount?: string;
+  outputDecimals?: number;
+  effectiveRR: number;
+  roundTripCost: number;
 }
 
 /** trade.id → DegradedState (실제 트리거된 거래만 포함) */
@@ -295,30 +310,37 @@ export async function checkOpenPositions(ctx: BotContext): Promise<void> {
       }
     }
 
+    const observation = summarizeTradeObservation(trade, recentCandles, currentPrice);
+    if (!trade.highWaterMark || observation.peakPrice > trade.highWaterMark) {
+      await ctx.tradeStore.updateHighWaterMark(trade.id, observation.peakPrice);
+      trade.highWaterMark = observation.peakPrice;
+    }
+
     if (now >= trade.timeStopAt) {
       log.info(`Time stop triggered for trade ${trade.id}`);
       await closeTrade(trade, 'TIME_STOP', ctx, currentPrice);
       continue;
     }
 
-    if (currentPrice <= trade.stopLoss) {
-      const penetrationPct = ((trade.stopLoss - currentPrice) / trade.stopLoss) * 100;
+    if (observation.observedLow <= trade.stopLoss) {
+      const stopLossPrice = currentPrice <= trade.stopLoss ? currentPrice : trade.stopLoss;
+      const penetrationPct = ((trade.stopLoss - observation.observedLow) / trade.stopLoss) * 100;
       if (penetrationPct > 1) {
         log.warn(
-          `SL penetration warning: price ${currentPrice} is ${penetrationPct.toFixed(1)}% below SL ${trade.stopLoss}. ` +
+          `SL penetration warning: low ${observation.observedLow} is ${penetrationPct.toFixed(1)}% below SL ${trade.stopLoss}. ` +
           `Actual exit slippage may be significant.`
         );
       }
-      log.info(`Stop loss triggered for trade ${trade.id} at ${currentPrice}`);
-      await closeTrade(trade, 'STOP_LOSS', ctx, currentPrice);
+      log.info(`Stop loss triggered for trade ${trade.id} at ${stopLossPrice}`);
+      await closeTrade(trade, 'STOP_LOSS', ctx, stopLossPrice);
       continue;
     }
 
-    if (currentPrice >= trade.takeProfit2) {
+    if (observation.observedHigh >= trade.takeProfit2) {
       // v3: Runner Extension — Grade A(full) / Grade B(50% partial) runner 분기
       const runnerResult = shouldActivateRunner(trade, ctx);
       if (runnerResult.activate && !runnerStateMap.has(trade.id)) {
-        if (runnerResult.sizeMultiplier >= 1.0) {
+        if (runnerResult.sizeMultiplier >= 1.0 && currentPrice >= trade.takeProfit2) {
           // Grade A: 전량 trailing-only
           runnerStateMap.set(trade.id, true);
           const newStopLoss = trade.takeProfit1;
@@ -336,20 +358,24 @@ export async function checkOpenPositions(ctx: BotContext): Promise<void> {
           await ctx.notifier.sendTradeAlert(
             `Runner activated (A): ${trade.strategy} ${trade.id}, trailing from TP2`
           );
-        } else {
+          continue;
+        }
+        if (runnerResult.sizeMultiplier < 1.0) {
           // Grade B: 50% TP2 매도 + 50% trailing (TP1 partial 패턴)
           await handleRunnerGradeBPartial(trade, currentPrice, ctx);
+          continue;
         }
-        continue;
       }
-      log.info(`Take profit 2 triggered for trade ${trade.id} at ${currentPrice}`);
-      await closeTrade(trade, 'TAKE_PROFIT_2', ctx, currentPrice);
+      const takeProfit2Price = currentPrice >= trade.takeProfit2 ? currentPrice : trade.takeProfit2;
+      log.info(`Take profit 2 triggered for trade ${trade.id} at ${takeProfit2Price}`);
+      await closeTrade(trade, 'TAKE_PROFIT_2', ctx, takeProfit2Price);
       continue;
     }
 
-    if (currentPrice >= trade.takeProfit1) {
-      log.info(`Take profit 1 triggered for trade ${trade.id} at ${currentPrice}`);
-      await handleTakeProfit1Partial(trade, currentPrice, ctx);
+    if (observation.observedHigh >= trade.takeProfit1) {
+      const takeProfit1Price = currentPrice >= trade.takeProfit1 ? currentPrice : trade.takeProfit1;
+      log.info(`Take profit 1 triggered for trade ${trade.id} at ${takeProfit1Price}`);
+      await handleTakeProfit1Partial(trade, takeProfit1Price, ctx);
       continue;
     }
 
@@ -367,26 +393,27 @@ export async function checkOpenPositions(ctx: BotContext): Promise<void> {
     }
 
     if (trade.trailingStop && recentCandles.length >= 8) {
-      // Why: 진입 직후 adaptive stop = entryPrice가 되어 즉시 청산되는 문제 방지
-      // 최소 1봉(5분) 보유 후에만 trailing stop 평가
-      const minTrailingHoldMs = config.defaultTimeframe * 1000; // 1봉 = 300s
+      // Why: backtest와 동일하게 최소 2봉 보유 후 trailing 활성화
+      const minTrailingHoldMs = config.defaultTimeframe * 1000 * 2;
       const trailingHoldDuration = Date.now() - trade.createdAt.getTime();
       if (trailingHoldDuration < minTrailingHoldMs) continue;
 
       const atr = calcATR(recentCandles, 7);
-      const recentPeak = Math.max(...recentCandles.map(c => c.high));
-      const peakPrice = Math.max(trade.highWaterMark ?? trade.entryPrice, recentPeak);
-      if (!trade.highWaterMark || peakPrice > trade.highWaterMark) {
-        await ctx.tradeStore.updateHighWaterMark(trade.id, peakPrice);
-        trade.highWaterMark = peakPrice;
-      }
       // Why: TP1 후 잔여 trade는 SL이 entryPrice로 올라감 → tp1Hit 근사 판별
       const tp1Hit = trade.stopLoss >= trade.entryPrice;
-      const adaptiveStop = calcAdaptiveTrailingStop(recentCandles, atr, trade.entryPrice, peakPrice, trade.stopLoss, tp1Hit);
+      const adaptiveStop = calcAdaptiveTrailingStop(
+        recentCandles,
+        atr,
+        trade.entryPrice,
+        observation.peakPrice,
+        trade.stopLoss,
+        tp1Hit
+      );
 
-      if (currentPrice <= adaptiveStop && currentPrice > trade.stopLoss) {
-        log.info(`Adaptive trailing stop triggered for trade ${trade.id} at ${currentPrice}`);
-        await closeTrade(trade, 'TRAILING_STOP', ctx, currentPrice);
+      if (observation.observedLow <= adaptiveStop && observation.observedLow > trade.stopLoss) {
+        const trailingPrice = currentPrice <= adaptiveStop ? currentPrice : adaptiveStop;
+        log.info(`Adaptive trailing stop triggered for trade ${trade.id} at ${trailingPrice}`);
+        await closeTrade(trade, 'TRAILING_STOP', ctx, trailingPrice);
       }
     }
   }
@@ -467,6 +494,7 @@ export async function closeTrade(
       exitPrice,
       pnl,
       slippage: executionSlippage,
+      txSignature,
       status: 'CLOSED' as const,
       exitReason: reason,
     };
@@ -510,33 +538,54 @@ export async function recordOpenedTrade(
   gateResult: GateEvaluationResult,
   order: Order,
   totalScore: number,
-  quantity: number,
   sizeConstraint: Trade['sizeConstraint'],
-  txSignature: string
+  txSignature: string,
+  executionSummary: EntryExecutionSummary
 ): Promise<void> {
+  const openedOrder: Order = {
+    ...order,
+    price: executionSummary.entryPrice,
+    quantity: executionSummary.quantity,
+  };
   await ctx.positionStore.updateState(positionId, 'ENTRY_CONFIRMED', {
-    entryPrice: order.price,
-    quantity: order.quantity,
-    stopLoss: order.stopLoss,
-    takeProfit1: order.takeProfit1,
-    takeProfit2: order.takeProfit2,
-    trailingStop: order.trailingStop,
+    signalData: {
+      execution: {
+        plannedEntryPrice: executionSummary.plannedEntryPrice,
+        plannedQuantity: executionSummary.plannedQuantity,
+        entryPrice: executionSummary.entryPrice,
+        quantity: executionSummary.quantity,
+        entrySlippageBps: executionSummary.entrySlippageBps,
+        entrySlippagePct: executionSummary.entrySlippagePct,
+        expectedOutAmount: executionSummary.expectedOutAmount,
+        actualOutAmount: executionSummary.actualOutAmount,
+        outputDecimals: executionSummary.outputDecimals,
+        effectiveRR: executionSummary.effectiveRR,
+        roundTripCost: executionSummary.roundTripCost,
+      },
+    },
+    entryPrice: openedOrder.price,
+    quantity: openedOrder.quantity,
+    stopLoss: openedOrder.stopLoss,
+    takeProfit1: openedOrder.takeProfit1,
+    takeProfit2: openedOrder.takeProfit2,
+    trailingStop: openedOrder.trailingStop,
     txEntry: txSignature,
   });
 
-  const timeStopAt = new Date(Date.now() + order.timeStopMinutes * 60 * 1000);
+  const timeStopAt = new Date(Date.now() + openedOrder.timeStopMinutes * 60 * 1000);
   await ctx.tradeStore.insertTrade({
-    pairAddress: order.pairAddress,
-    strategy: order.strategy,
-    side: order.side,
+    pairAddress: openedOrder.pairAddress,
+    strategy: openedOrder.strategy,
+    side: openedOrder.side,
+    tokenSymbol: openedOrder.tokenSymbol,
     sourceLabel: signal.sourceLabel,
-    entryPrice: order.price,
-    quantity: order.quantity,
-    stopLoss: order.stopLoss,
-    takeProfit1: order.takeProfit1,
-    takeProfit2: order.takeProfit2,
-    trailingStop: order.trailingStop,
-    highWaterMark: order.price,
+    entryPrice: openedOrder.price,
+    quantity: openedOrder.quantity,
+    stopLoss: openedOrder.stopLoss,
+    takeProfit1: openedOrder.takeProfit1,
+    takeProfit2: openedOrder.takeProfit2,
+    trailingStop: openedOrder.trailingStop,
+    highWaterMark: openedOrder.price,
     timeStopAt,
     status: 'OPEN',
     txSignature,
@@ -548,12 +597,14 @@ export async function recordOpenedTrade(
 
   await ctx.positionStore.updateState(positionId, 'MONITORING');
   ctx.healthMonitor.updateTradeTime();
-  await ctx.notifier.sendTradeOpen(order, txSignature);
+  await ctx.notifier.sendTradeOpen(openedOrder, txSignature);
   await ctx.auditLogger.logSignal({
     ...buildSignalAuditBase(signal, lastCandle, gateResult),
     action: 'EXECUTED',
-    positionSize: quantity,
+    positionSize: executionSummary.quantity,
     sizeConstraint,
+    effectiveRR: executionSummary.effectiveRR,
+    roundTripCost: executionSummary.roundTripCost,
   });
 }
 

@@ -20,6 +20,7 @@ export class TradeStore {
           pair_address    TEXT NOT NULL,
           strategy        TEXT NOT NULL,
           side            TEXT NOT NULL,
+          token_symbol    TEXT,
           entry_price     NUMERIC NOT NULL,
           source_label    TEXT,
           exit_price      NUMERIC,
@@ -49,6 +50,11 @@ export class TradeStore {
       `);
 
       await client.query(`
+        ALTER TABLE trades
+        ADD COLUMN IF NOT EXISTS token_symbol TEXT;
+      `);
+
+      await client.query(`
         CREATE INDEX IF NOT EXISTS idx_trades_status ON trades (status);
         CREATE INDEX IF NOT EXISTS idx_trades_created ON trades (created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_trades_pair ON trades (pair_address, created_at DESC);
@@ -62,13 +68,13 @@ export class TradeStore {
 
   async insertTrade(trade: Omit<Trade, 'id'>): Promise<string> {
     const result = await this.pool.query(
-      `INSERT INTO trades (pair_address, strategy, side, entry_price, source_label, quantity,
+      `INSERT INTO trades (pair_address, strategy, side, token_symbol, entry_price, source_label, quantity,
         stop_loss, take_profit1, take_profit2, trailing_stop, high_water_mark, time_stop_at,
         status, tx_signature, breakout_score, breakout_grade, size_constraint)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
        RETURNING id`,
       [
-        trade.pairAddress, trade.strategy, trade.side, trade.entryPrice,
+        trade.pairAddress, trade.strategy, trade.side, trade.tokenSymbol ?? null, trade.entryPrice,
         trade.sourceLabel ?? null,
         trade.quantity, trade.stopLoss, trade.takeProfit1, trade.takeProfit2,
         trade.trailingStop || null, trade.highWaterMark ?? trade.entryPrice, trade.timeStopAt, trade.status,
@@ -229,6 +235,7 @@ function rowToTrade(row: Record<string, unknown>): Trade {
     pairAddress: row.pair_address as string,
     strategy: row.strategy as Trade['strategy'],
     side: row.side as Trade['side'],
+    tokenSymbol: row.token_symbol as string | undefined,
     entryPrice: Number(row.entry_price),
     sourceLabel: row.source_label as string | undefined,
     exitPrice: row.exit_price != null ? Number(row.exit_price) : undefined,

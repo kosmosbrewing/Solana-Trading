@@ -164,8 +164,9 @@ export class UniverseEngine extends EventEmitter {
           return {
             pairAddress,
             tokenMint: pair.baseToken.address || pairAddress,
+            symbol: pair.baseToken.symbol || undefined,
             tvl: pair.liquidity?.usd || 0,
-            marketCap: pair.marketCap,
+            marketCap: pair.marketCap ?? pair.fdv,
             dailyVolume: pair.volume?.h24 || 0,
             tradeCount24h: (pair.txns?.h24?.buys || 0) + (pair.txns?.h24?.sells || 0),
             spreadPct: await this.estimateSpreadProxy(pairAddress),
@@ -186,8 +187,9 @@ export class UniverseEngine extends EventEmitter {
       return {
         pairAddress,
         tokenMint: poolInfo.baseTokenAddress || pairAddress,
+        symbol: poolInfo.baseTokenSymbol || undefined,
         tvl: poolInfo.tvlUsd,
-        marketCap: poolInfo.marketCapUsd,
+        marketCap: poolInfo.marketCapUsd ?? poolInfo.fdvUsd,
         dailyVolume: poolInfo.volume24hUsd,
         tradeCount24h: poolInfo.buys24h + poolInfo.sells24h,
         spreadPct: await this.estimateSpreadProxy(pairAddress),

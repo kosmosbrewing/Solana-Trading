@@ -75,6 +75,7 @@ export interface Signal {
   action: SignalAction;
   strategy: StrategyName;
   pairAddress: string;
+  tokenSymbol?: string;
   price: number;
   timestamp: Date;
   meta: Record<string, number>;
@@ -115,8 +116,9 @@ export interface Order {
   pairAddress: string;
   strategy: StrategyName;
   side: TradeSide;
+  tokenSymbol?: string;
   price: number;
-  quantity: number;
+  quantity: number; // token units, not SOL notional
   sourceLabel?: string;
   stopLoss: number;
   takeProfit1: number;
@@ -135,10 +137,11 @@ export interface Trade {
   pairAddress: string;
   strategy: StrategyName;
   side: TradeSide;
+  tokenSymbol?: string;
   entryPrice: number;
   sourceLabel?: string;
   exitPrice?: number;
-  quantity: number;
+  quantity: number; // token units, not SOL notional
   pnl?: number;
   slippage?: number;
   txSignature?: string;
@@ -260,6 +263,7 @@ export interface HealthStatus {
 export interface PoolInfo {
   pairAddress: string;
   tokenMint: string;
+  symbol?: string;
   tvl: number;
   marketCap?: number;
   dailyVolume: number;

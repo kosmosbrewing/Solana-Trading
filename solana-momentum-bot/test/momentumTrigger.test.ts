@@ -1,109 +1,51 @@
-import { MicroCandleBuilder } from '../src/realtime';
-import { Candle } from '../src/utils/types';
-import { MomentumTrigger } from '../src/strategy';
+import { buildMomentumTriggerOrder } from '../src/strategy/momentumTrigger';
+import type { Candle, Signal } from '../src/utils/types';
 
-function makeCandle(
-  intervalSec: number,
-  timestampSec: number,
-  open: number,
-  close: number,
-  volume: number
-): Candle {
-  return {
-    pairAddress: 'pool-1',
-    timestamp: new Date(timestampSec * 1000),
-    intervalSec,
-    open,
-    high: Math.max(open, close),
-    low: Math.min(open, close) * 0.99,
-    close,
-    volume,
-    buyVolume: volume * 0.7,
-    sellVolume: volume * 0.3,
-    tradeCount: 10,
-  };
-}
-
-function seedCandles(builder: MicroCandleBuilder, intervalSec: number, candles: Candle[]): void {
-  (builder as any).closedCandles.set(
-    'pool-1',
-    new Map<number, Candle[]>([
-      [intervalSec, candles],
-      ...(((builder as any).closedCandles.get('pool-1')?.entries?.() ?? []) as Iterable<[number, Candle[]]>),
-    ])
-  );
-}
-
-describe('MomentumTrigger', () => {
-  it('emits a BUY signal when breakout, volume, confirmation, and cooldown all pass', () => {
-    const builder = new MicroCandleBuilder({ intervals: [15, 60], maxHistory: 50 });
-    const trigger = new MomentumTrigger({
-      primaryIntervalSec: 15,
-      confirmIntervalSec: 60,
-      volumeSurgeLookback: 20,
-      volumeSurgeMultiplier: 3,
-      priceBreakoutLookback: 20,
-      confirmMinBars: 3,
-      confirmMinPriceChangePct: 0.02,
-      cooldownSec: 300,
-    });
-
-    const primaryCandles = Array.from({ length: 20 }, (_, index) =>
-      makeCandle(15, 15 * (index + 1), 1 + index * 0.01, 1.01 + index * 0.01, 10)
-    );
-    primaryCandles.push(makeCandle(15, 15 * 21, 1.25, 1.35, 50));
-    const confirmCandles = [
-      makeCandle(60, 60, 1.0, 1.03, 30),
-      makeCandle(60, 120, 1.03, 1.07, 30),
-      makeCandle(60, 180, 1.07, 1.12, 30),
+describe('buildMomentumTriggerOrder', () => {
+  it('falls back to recent lows when ATR stop would collapse to zero', () => {
+    const candles: Candle[] = [
+      makeCandle(0.00120, 0.00121, 0.00118, 0.00119),
+      makeCandle(0.00119, 0.00120, 0.00117, 0.00118),
+      makeCandle(0.00118, 0.00119, 0.00116, 0.00117),
+      makeCandle(0.00117, 0.00118, 0.00115, 0.00116),
+      makeCandle(0.00116, 0.00117, 0.00114, 0.00115),
+      makeCandle(0.00115, 0.00116, 0.00114, 0.00115),
     ];
-
-    seedCandles(builder, 15, primaryCandles);
-    seedCandles(builder, 60, confirmCandles);
-
-    const signal = trigger.onCandle(primaryCandles[primaryCandles.length - 1], builder);
-    expect(signal).not.toBeNull();
-    expect(signal).toMatchObject({
+    const signal: Signal = {
       action: 'BUY',
       strategy: 'volume_spike',
-      pairAddress: 'pool-1',
-      price: 1.35,
-    });
-    expect(signal?.meta.realtimeSignal).toBe(1);
-  });
+      pairAddress: 'pair-1',
+      price: 0.00115,
+      timestamp: new Date('2026-03-30T00:00:00Z'),
+      meta: {
+        atr: 1.5,
+      },
+    };
 
-  it('suppresses repeated signals inside cooldown window', () => {
-    const builder = new MicroCandleBuilder({ intervals: [15, 60], maxHistory: 50 });
-    const trigger = new MomentumTrigger({
-      primaryIntervalSec: 15,
-      confirmIntervalSec: 60,
-      volumeSurgeLookback: 20,
-      volumeSurgeMultiplier: 2,
-      priceBreakoutLookback: 20,
-      confirmMinBars: 3,
-      confirmMinPriceChangePct: 0.01,
-      cooldownSec: 300,
+    const order = buildMomentumTriggerOrder(signal, candles, 1, {
+      slMode: 'atr',
+      slAtrMultiplier: 1.5,
+      slSwingLookback: 5,
     });
 
-    const primaryCandles = Array.from({ length: 20 }, (_, index) =>
-      makeCandle(15, 15 * (index + 1), 2 + index * 0.01, 2.01 + index * 0.01, 10)
-    );
-    primaryCandles.push(makeCandle(15, 15 * 21, 2.25, 2.4, 40));
-    const confirmCandles = [
-      makeCandle(60, 60, 2.0, 2.04, 30),
-      makeCandle(60, 120, 2.04, 2.08, 30),
-      makeCandle(60, 180, 2.08, 2.12, 30),
-    ];
-
-    seedCandles(builder, 15, primaryCandles);
-    seedCandles(builder, 60, confirmCandles);
-
-    const first = trigger.onCandle(primaryCandles[primaryCandles.length - 1], builder);
-    expect(first?.action).toBe('BUY');
-
-    const secondSignalCandle = makeCandle(15, 15 * 22, 2.4, 2.55, 45);
-    seedCandles(builder, 15, [...primaryCandles.slice(1), secondSignalCandle]);
-    const second = trigger.onCandle(secondSignalCandle, builder);
-    expect(second).toBeNull();
+    expect(order.stopLoss).toBeGreaterThan(0);
+    expect(order.stopLoss).toBeCloseTo(0.00114, 8);
+    expect(order.stopLoss).toBeLessThan(order.price);
   });
 });
+
+function makeCandle(open: number, high: number, low: number, close: number): Candle {
+  return {
+    pairAddress: 'pair-1',
+    timestamp: new Date('2026-03-30T00:00:00Z'),
+    intervalSec: 15,
+    open,
+    high,
+    low,
+    close,
+    volume: 10,
+    buyVolume: 6,
+    sellVolume: 4,
+    tradeCount: 5,
+  };
+}

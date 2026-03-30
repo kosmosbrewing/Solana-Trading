@@ -1,15 +1,17 @@
 import { SourceOutcomeStats, StrategyEdgeStats } from '../reporting';
 import {
+  formatStrategy,
+} from './messageFormatter';
+import {
   escapeHtml,
   formatDuration,
-  formatEdgeState,
   formatPercent,
   formatRewardRisk,
   formatSignedPercent,
   formatSignedSol,
-  formatStrategy,
   shortenAddress,
-} from './messageFormatter';
+} from './formatting';
+import { formatEdgeState } from './messageFormatter';
 
 export interface RealtimeAdmissionSummary {
   trackedPools: number;

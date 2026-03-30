@@ -55,6 +55,7 @@ export class PositionStore {
     id: string,
     state: PositionState,
     updates: Partial<{
+      signalData: Record<string, unknown>;
       entryPrice: number;
       quantity: number;
       stopLoss: number;
@@ -70,6 +71,12 @@ export class PositionStore {
     const setClauses = ['state = $2', 'updated_at = now()'];
     const params: unknown[] = [id, state];
     let idx = 3;
+
+    if (updates.signalData !== undefined) {
+      setClauses.push(`signal_data = COALESCE(signal_data, '{}'::jsonb) || $${idx}::jsonb`);
+      params.push(JSON.stringify(updates.signalData));
+      idx++;
+    }
 
     const fieldMap: Record<string, string> = {
       entryPrice: 'entry_price',

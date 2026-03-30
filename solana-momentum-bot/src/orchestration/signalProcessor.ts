@@ -1,10 +1,17 @@
 import { GateEvaluationResult, evaluateExecutionViabilityForOrder } from '../gate';
+import type { SwapResult } from '../executor';
 import { buildFibPullbackOrder, buildMomentumTriggerOrder, buildVolumeSpikeOrder } from '../strategy';
 import { checkStaleSignal } from '../state';
 import { config } from '../utils/config';
 import { createModuleLogger } from '../utils/logger';
 import { Candle, Order, Signal } from '../utils/types';
-import { buildSignalAuditBase, recordOpenedTrade, runnerStateMap, syncTradingHalts } from './tradeExecution';
+import {
+  buildSignalAuditBase,
+  EntryExecutionSummary,
+  recordOpenedTrade,
+  runnerStateMap,
+  syncTradingHalts,
+} from './tradeExecution';
 import { buildPositionSignalData } from './signalTrace';
 import { BotContext } from './types';
 
@@ -121,8 +128,6 @@ export async function processSignal(
         };
       }
 
-    await ctx.notifier.sendSignal(signal);
-
     const riskResult = await ctx.riskManager.checkOrder(
       {
         pairAddress: signal.pairAddress,
@@ -227,6 +232,7 @@ export async function processSignal(
     order.breakoutScore = totalScore;
     order.breakoutGrade = grade;
     order.sizeConstraint = riskResult.sizeConstraint;
+    order.tokenSymbol = signal.tokenSymbol;
 
     const actualExecution = evaluateExecutionViabilityForOrder(order, signal.poolTvl || 0, {
       ammFeePct: signal.meta.ammFeePct,
@@ -241,6 +247,8 @@ export async function processSignal(
           ...buildSignalAuditBase(signal, candles[candles.length - 1], gateResult),
           action: 'FILTERED',
           filterReason: actualExecution.filterReason,
+          effectiveRR: actualExecution.effectiveRR,
+          roundTripCost: actualExecution.roundTripCost,
         });
         return {
           status: 'execution_viability_rejected',
@@ -256,6 +264,8 @@ export async function processSignal(
       );
     }
 
+    await ctx.notifier.sendSignal(signal);
+
     const positionId = await ctx.positionStore.createPosition(
       signal.pairAddress,
       buildPositionSignalData(signal, gateResult, totalScore, grade)
@@ -263,31 +273,33 @@ export async function processSignal(
 
       try {
         let txSignature = 'PAPER_TRADE';
+        let buyResult: SwapResult | undefined;
 
-      if (ctx.tradingMode === 'paper') {
-        log.info(`[PAPER] Simulating execution: ${JSON.stringify(order)}`);
-      } else {
-        await ctx.positionStore.updateState(positionId, 'ORDER_SUBMITTED');
-        const buyResult = await ctx.executor.executeBuy(order);
-        txSignature = buyResult.txSignature;
+        if (ctx.tradingMode === 'paper') {
+          log.info(`[PAPER] Simulating execution: ${JSON.stringify(order)}`);
+        } else {
+          await ctx.positionStore.updateState(positionId, 'ORDER_SUBMITTED');
+          buyResult = await ctx.executor.executeBuy(order);
+          txSignature = buyResult.txSignature;
 
-        if (buyResult.slippageBps > 0) {
-          log.info(`Entry slippage: ${buyResult.slippageBps}bps`);
+          if (buyResult.slippageBps > 0) {
+            log.info(`Entry slippage: ${buyResult.slippageBps}bps`);
+          }
         }
-      }
+        const executionSummary = buildEntryExecutionSummary(order, actualExecution, buyResult);
 
-      await recordOpenedTrade(
-        ctx,
-        positionId,
-        signal,
-        candles[candles.length - 1],
-        gateResult,
-        order,
-        totalScore,
-        quantity,
-        riskResult.sizeConstraint,
-        txSignature
-      );
+        await recordOpenedTrade(
+          ctx,
+          positionId,
+          signal,
+          candles[candles.length - 1],
+          gateResult,
+          order,
+          totalScore,
+          riskResult.sizeConstraint,
+          txSignature,
+          executionSummary
+        );
 
       if (ctx.tradingMode === 'paper' && ctx.paperBalance != null) {
         const entryNotionalSol = order.quantity * order.price;
@@ -319,7 +331,10 @@ export async function processSignal(
       } catch (error) {
         log.error(`Trade execution failed: ${error}`);
         await ctx.positionStore.updateState(positionId, 'ORDER_FAILED');
-        await ctx.notifier.sendError('trade_execution', error).catch(() => {});
+        const executionError = error instanceof Error
+          ? new Error(`${signal.strategy} ${signal.pairAddress}: ${error.message}`)
+          : new Error(`${signal.strategy} ${signal.pairAddress}: ${String(error)}`);
+        await ctx.notifier.sendError('trade_execution', executionError).catch(() => {});
         return {
           status: 'execution_failed',
           filterReason: error instanceof Error ? error.message : String(error),
@@ -329,4 +344,31 @@ export async function processSignal(
   } finally {
     ctx.executionLock.release();
   }
+}
+
+function buildEntryExecutionSummary(
+  order: Order,
+  actualExecution: { effectiveRR: number; roundTripCost: number },
+  buyResult?: SwapResult
+): EntryExecutionSummary {
+  const actualQuantity = buyResult?.actualOutUiAmount && buyResult.actualOutUiAmount > 0
+    ? buyResult.actualOutUiAmount
+    : order.quantity;
+  const entryNotionalSol = order.quantity * order.price;
+  const entryPrice = actualQuantity > 0 ? entryNotionalSol / actualQuantity : order.price;
+  const entrySlippagePct = order.price > 0 ? (entryPrice - order.price) / order.price : 0;
+
+  return {
+    entryPrice,
+    quantity: actualQuantity,
+    plannedEntryPrice: order.price,
+    plannedQuantity: order.quantity,
+    entrySlippageBps: buyResult?.slippageBps ?? 0,
+    entrySlippagePct,
+    expectedOutAmount: buyResult?.expectedOutAmount?.toString(),
+    actualOutAmount: buyResult?.actualOutAmount?.toString(),
+    outputDecimals: buyResult?.outputDecimals,
+    effectiveRR: actualExecution.effectiveRR,
+    roundTripCost: actualExecution.roundTripCost,
+  };
 }

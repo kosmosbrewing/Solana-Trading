@@ -36,11 +36,11 @@
 
 - `done`: realtime pipeline은 이미 코드에 존재한다.
   - 관련 파일:
-    - [index.ts](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/src/index.ts)
-    - [heliusWSIngester.ts](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/src/realtime/heliusWSIngester.ts)
-    - [microCandleBuilder.ts](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/src/realtime/microCandleBuilder.ts)
-    - [momentumTrigger.ts](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/src/strategy/momentumTrigger.ts)
-    - [realtimeHandler.ts](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/src/orchestration/realtimeHandler.ts)
+    - `src/index.ts`
+    - `src/realtime/heliusWSIngester.ts`
+    - `src/realtime/microCandleBuilder.ts`
+    - `src/strategy/momentumTrigger.ts`
+    - `src/orchestration/realtimeHandler.ts`
 - `done`: `REALTIME_ENABLED=true`일 때 Helius realtime 경로가 시작된다.
 - `done`: 현재 WS URL은 기본적으로 `SOLANA_RPC_URL`에서 파생되며, `HELIUS_WS_URL`은 override 용도다.
 - `done`: 현재 코드에서는 `HELIUS_API_KEY` 자체가 realtime 모드의 필수 조건은 아니다.
@@ -58,8 +58,8 @@
 
 - `done`: backtest/paper/auto-backtest용 measurement 체계는 존재한다.
   - 관련 파일:
-    - [MEASUREMENT.md](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/MEASUREMENT.md)
-    - [measurement.ts](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/src/reporting/measurement.ts)
+    - `MEASUREMENT.md`
+    - `src/reporting/measurement.ts`
 - `done`: realtime trigger의 `30s/60s/180s/300s` outcome 측정 경로가 존재한다.
 - `done`: realtime trigger 전용 logger / outcome tracker / replay dataset 저장 계층이 추가됐다.
 - `done`: realtime summary/report builder와 Telegram formatter가 추가됐다.
@@ -102,7 +102,7 @@
 - gate latency와 signal-to-fill latency를 p50/p95로 볼 수 있다.
 - raw swap / micro candle / realtime signal event를 replay 가능한 형태로 저장할 수 있다.
 - 하루치 dataset으로 deterministic replay backtest를 돌릴 수 있다.
-- replay 결과에도 [MEASUREMENT.md](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/MEASUREMENT.md)의 edge score를 적용할 수 있다.
+- replay 결과에도 `MEASUREMENT.md`의 edge score를 적용할 수 있다.
 
 ---
 
@@ -146,9 +146,9 @@ Status: `done`
 - Gecko coexist 여부 명시
 
 대상 파일:
-- [realtime-measurement-refactor.md](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/docs/exec-plans/completed/realtime-measurement-refactor.md)
-- [config.ts](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/src/utils/config.ts)
-- [.env.example](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/.env.example)
+- `docs/exec-plans/completed/realtime-measurement-refactor.md`
+- `src/utils/config.ts`
+- `.env.example`
 
 Definition of Done:
 - 문서와 실제 코드의 env semantics가 일치한다.

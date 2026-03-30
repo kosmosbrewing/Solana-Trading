@@ -144,7 +144,7 @@
 
 - `paperBalance`가 realized PnL을 반영한다.
 - `npx ts-node scripts/paper-report.ts` 결과가 baseline과 모순되지 않는다.
-- [paper-validation.md](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/docs/product-specs/paper-validation.md) 기준의 50-trade 수집이 현실적인 cadence로 시작된다.
+- `docs/product-specs/paper-validation.md` 기준의 50-trade 수집이 현실적인 cadence로 시작된다.
 
 ---
 

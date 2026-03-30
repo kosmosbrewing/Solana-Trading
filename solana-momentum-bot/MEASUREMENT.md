@@ -465,7 +465,7 @@ realtime shadow 운영은 아래 규칙을 사용한다.
 | `50 <= signals < 100` | 비교 가능, 아직 보수적 |
 | `signals >= 100` | trigger density / rejection mix / avg return 해석 시작 |
 
-실행 명령은 [OPERATIONS.md](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/OPERATIONS.md)의
+실행 명령은 [`OPERATIONS.md`](./OPERATIONS.md)의
 `Realtime Shadow Operations` 섹션을 따른다.
 
 ---

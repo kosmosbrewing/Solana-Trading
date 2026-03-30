@@ -1,7 +1,18 @@
 # Operations Guide
 
-> Last updated: 2026-03-25
+> Last updated: 2026-03-30
 > Scope: VPS 배포 + paper 운영 점검 + risk tier demotion + live 운영 판단
+
+---
+
+## Current Live Bootstrap Note
+
+- 현재 live 판단의 기준 문서는 [`PLAN4.md`](./PLAN4.md)와 [`20260331.md`](./20260331.md)다.
+- latest fresh run은 `2026-03-30 22:22:46 UTC`에 시작됐고, 최신 확인 구간에서는 아직 BUY 시그널 표본이 없다.
+- 따라서 지금 운영에서 가장 중요한 체크포인트는 아래 3개다.
+  - 첫 `Signal: BUY` 발생 여부
+  - `execution.preGate` / `execution.postSize` telemetry 저장 여부
+  - blacklist pair 재유입과 Gecko `429`를 분리해서 기록하는지 여부
 
 ---
 
@@ -223,16 +234,16 @@ TELEGRAM_CHAT_ID=<봇에게 메시지 보낸 후 getUpdates API로 확인>
 
 중요:
 
-- 점수는 [MEASUREMENT.md](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/MEASUREMENT.md) 기준 `Realtime Edge Score`로 해석한다.
+- 점수는 [`MEASUREMENT.md`](./MEASUREMENT.md) 기준 `Realtime Edge Score`로 해석한다.
 - gate latency, status mix, admission block은 **점수에 합산되지 않고** 운영 판단용 telemetry로 본다.
 - 아래 명령은 `default 운영`과 `tuned 실험`을 분리해서 사용한다.
 
 ### Default Collection Command
 
-운영 표준 경로. VPS에서는 `pm2`가 [vps-realtime-shadow.sh](/Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot/scripts/vps-realtime-shadow.sh)를 반복 실행한다.
+운영 표준 경로. VPS에서는 `pm2`가 `scripts/vps-realtime-shadow.sh`를 반복 실행한다.
 
 ```bash
-cd /Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot
+cd /root/Solana/Solana-Trading/solana-momentum-bot
 pm2 start ecosystem.config.cjs --only momentum-shadow
 ```
 
@@ -254,7 +265,7 @@ pm2 start ecosystem.config.cjs --only momentum-shadow
 이미 수집된 dataset을 다시 실행 없이 요약할 때 사용한다.
 
 ```bash
-cd /Users/igyubin/Desktop/projects/01_shakishaki/Solana/solana-momentum-bot
+cd /root/Solana/Solana-Trading/solana-momentum-bot
 npm run realtime-shadow -- \
   --dataset-dir ./tmp/realtime-loop-live-20260322-163634 \
   --export-dir ./tmp/realtime-loop-live-runner-export \

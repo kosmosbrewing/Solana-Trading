@@ -1,6 +1,6 @@
 # Strategy Reference
 
-> Last updated: 2026-03-25
+> Last updated: 2026-03-30
 > Mission: 1 SOL → 100 SOL
 > Documented strategies: Volume Spike (A), Fib Pullback (C), New LP Sniper (D), Momentum Cascade (E)
 > Runtime focus: A/C core, D sandbox, E conditional add-on
@@ -41,13 +41,13 @@ Stage 2: 지금 들어가도 되는가?  → Gate System (Security → Score →
 
 ### 개요
 
-직전 20봉 대비 볼륨이 3배 이상 폭등하면서 최고가를 돌파할 때 진입. 전형적인 모멘텀 브레이크아웃 전략.
+직전 20봉 대비 볼륨이 크게 급증하면서 최고가를 돌파할 때 진입하는 코어 모멘텀 브레이크아웃 전략.
 
 ### 진입 조건 (AND)
 
 | 조건 | 수식 | 기본값 |
 |------|------|--------|
-| 볼륨 스파이크 | `currentVolume ≥ avgVolume[20] × multiplier` | 3.0x |
+| 볼륨 스파이크 | `currentVolume ≥ avgVolume[20] × multiplier` | 2.5x |
 | 가격 돌파 | `close > highestHigh[20]` | 20봉 최고가 |
 
 ### 주문 구조
@@ -55,7 +55,7 @@ Stage 2: 지금 들어가도 되는가?  → Gate System (Security → Score →
 ```
 SL  = 현재 봉 저가 (candle.low)
 TP1 = entry + ATR(20) × 1.5
-TP2 = entry + ATR(20) × 2.5
+TP2 = entry + ATR(20) × 3.5
 Time Stop = 30분
 ```
 

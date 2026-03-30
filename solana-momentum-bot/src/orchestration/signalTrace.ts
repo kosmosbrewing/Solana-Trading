@@ -2,8 +2,16 @@ import { GateEvaluationResult } from '../gate';
 import { BreakoutGrade, GateTraceSnapshot, Signal } from '../utils/types';
 
 export function buildGateTraceSnapshot(
-  gateResult: GateEvaluationResult
+  gateResult: GateEvaluationResult,
+  options: {
+    postSizeExecution?: GateEvaluationResult['executionViability'];
+  } = {}
 ): GateTraceSnapshot {
+  const preGateExecution = buildExecutionTrace(gateResult.executionViability);
+  const postSizeExecution = options.postSizeExecution
+    ? buildExecutionTrace(options.postSizeExecution)
+    : undefined;
+
   return {
     attentionScore: gateResult.attentionScore?.attentionScore,
     attentionConfidence: gateResult.attentionScore?.confidence,
@@ -29,11 +37,9 @@ export function buildGateTraceSnapshot(
       }
       : undefined,
     execution: {
-      rejected: gateResult.executionViability.rejected,
-      filterReason: gateResult.executionViability.filterReason,
-      effectiveRR: gateResult.executionViability.effectiveRR,
-      roundTripCost: gateResult.executionViability.roundTripCost,
-      sizeMultiplier: gateResult.executionViability.sizeMultiplier,
+      ...preGateExecution,
+      preGate: preGateExecution,
+      postSize: postSizeExecution,
     },
     sellImpactPct: gateResult.sellImpactPct,
   };
@@ -43,7 +49,8 @@ export function buildPositionSignalData(
   signal: Signal,
   gateResult: GateEvaluationResult,
   totalScore: number,
-  grade: BreakoutGrade
+  grade: BreakoutGrade,
+  postSizeExecution?: GateEvaluationResult['executionViability']
 ): Record<string, unknown> {
   return {
     signal: signal.meta,
@@ -53,6 +60,24 @@ export function buildPositionSignalData(
     attentionScore: gateResult.attentionScore?.attentionScore,
     attentionConfidence: gateResult.attentionScore?.confidence,
     breakoutScore: gateResult.breakoutScore,
-    gateTrace: buildGateTraceSnapshot(gateResult),
+    gateTrace: buildGateTraceSnapshot(gateResult, { postSizeExecution }),
+  };
+}
+
+function buildExecutionTrace(
+  execution: GateEvaluationResult['executionViability']
+): GateTraceSnapshot['execution'] {
+  return {
+    rejected: execution.rejected,
+    filterReason: execution.filterReason,
+    effectiveRR: execution.effectiveRR,
+    roundTripCost: execution.roundTripCost,
+    sizeMultiplier: execution.sizeMultiplier,
+    riskPct: execution.riskPct,
+    rewardPct: execution.rewardPct,
+    entryPriceImpactPct: execution.entryPriceImpactPct,
+    exitPriceImpactPct: execution.exitPriceImpactPct,
+    quantity: execution.quantity,
+    notionalSol: execution.notionalSol,
   };
 }

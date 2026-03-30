@@ -287,7 +287,7 @@ function applySellImpactGate(result: GateEvaluationResult, input: EvaluateGatesI
 export type { FibPullbackGateConfig } from './scoreGate';
 export { buildTokenSafety } from './safetyGate';
 export { getGradeSizeMultiplier } from './sizingGate';
-export { evaluateExecutionViabilityForOrder } from './executionViability';
+export { evaluateExecutionViability, evaluateExecutionViabilityForOrder } from './executionViability';
 export type { ExecutionViabilityResult } from './executionViability';
 export { evaluateSecurityGate } from './securityGate';
 export type { SecurityGateResult, SecurityGateConfig } from './securityGate';

@@ -69,6 +69,12 @@ const gateResult: GateEvaluationResult = {
     roundTripCost: 0.035,
     sizeMultiplier: 0.5,
     rejected: false,
+    riskPct: 0.04,
+    rewardPct: 0.12,
+    entryPriceImpactPct: 0.01,
+    exitPriceImpactPct: 0.013,
+    quantity: 0.24,
+    notionalSol: 0.3,
   },
   securityGate: {
     approved: true,
@@ -86,9 +92,18 @@ const gateResult: GateEvaluationResult = {
   sellImpactPct: 0.02,
 };
 
+const postSizeExecution = {
+  ...gateResult.executionViability,
+  effectiveRR: 2.1,
+  roundTripCost: 0.029,
+  sizeMultiplier: 1,
+  quantity: 0.12,
+  notionalSol: 0.15,
+};
+
 describe('signal trace persistence helpers', () => {
   it('builds a gate trace snapshot with attention and gate details', () => {
-    const trace = buildGateTraceSnapshot(gateResult);
+    const trace = buildGateTraceSnapshot(gateResult, { postSizeExecution });
 
     expect(trace).toMatchObject({
       attentionScore: 78,
@@ -112,13 +127,30 @@ describe('signal trace persistence helpers', () => {
         effectiveRR: 1.8,
         roundTripCost: 0.035,
         sizeMultiplier: 0.5,
+        riskPct: 0.04,
+        rewardPct: 0.12,
+        entryPriceImpactPct: 0.01,
+        exitPriceImpactPct: 0.013,
+        quantity: 0.24,
+        notionalSol: 0.3,
+        preGate: {
+          effectiveRR: 1.8,
+          quantity: 0.24,
+          notionalSol: 0.3,
+        },
+        postSize: {
+          effectiveRR: 2.1,
+          roundTripCost: 0.029,
+          quantity: 0.12,
+          notionalSol: 0.15,
+        },
       },
       sellImpactPct: 0.02,
     });
   });
 
   it('embeds attention and gate trace into position signal data', () => {
-    const signalData = buildPositionSignalData(signal, gateResult, 72, 'A');
+    const signalData = buildPositionSignalData(signal, gateResult, 72, 'A', postSizeExecution);
 
     expect(signalData).toMatchObject({
       score: 72,
@@ -133,15 +165,21 @@ describe('signal trace persistence helpers', () => {
       gateTrace: {
         gradeSizeMultiplier: 0.3,
         sellImpactPct: 0.02,
+        execution: {
+          postSize: {
+            effectiveRR: 2.1,
+          },
+        },
       },
     });
   });
 
   it('adds attention and gate trace to audit base payloads', () => {
-    const auditBase = buildSignalAuditBase(signal, candle, gateResult);
+    const auditBase = buildSignalAuditBase(signal, candle, gateResult, postSizeExecution);
 
     expect(auditBase.attentionScore).toBe(78);
     expect(auditBase.attentionConfidence).toBe('high');
+    expect(auditBase.effectiveRR).toBe(2.1);
     expect(auditBase.gateTrace).toMatchObject({
       attentionSources: ['dex_boost', 'community'],
       security: {
@@ -149,6 +187,9 @@ describe('signal trace persistence helpers', () => {
       },
       execution: {
         effectiveRR: 1.8,
+        postSize: {
+          effectiveRR: 2.1,
+        },
       },
       sellImpactPct: 0.02,
     });

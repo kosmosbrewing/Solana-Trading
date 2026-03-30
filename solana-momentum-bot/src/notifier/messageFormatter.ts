@@ -1,4 +1,3 @@
-import { StrategyEdgeStats } from '../reporting';
 import {
   AlertLevel,
   BreakoutGrade,
@@ -9,6 +8,16 @@ import {
   StrategyName,
   Trade,
 } from '../utils/types';
+import {
+  escapeHtml,
+  formatDuration,
+  formatPercent,
+  formatSignedPercent,
+  formatSignedSol,
+  shortenAddress,
+} from './formatting';
+import { buildSignalDetailLines, buildSignalSummaryLines } from './signalMessageHelpers';
+
 const STRATEGY_LABELS: Record<StrategyName, string> = {
   volume_spike: 'Volume Spike',
   fib_pullback: 'Fib Pullback',
@@ -42,24 +51,6 @@ const EDGE_STATE_LABELS: Record<string, string> = {
   Proven: '장기 검증 통과',
 };
 
-const META_LABELS: Record<string, string> = {
-  buyRatio: '매수 비중',
-  buyRatioScore: '매수 비중 점수',
-  volumeScore: '거래량 점수',
-  volumeRatio: '거래량 배수',
-  volumeSpike: '거래량 급증',
-  multiTfScore: '멀티 타임프레임 점수',
-  whaleScore: '고래 점수',
-  lpScore: 'LP 점수',
-  totalScore: '총점',
-  spreadPct: '스프레드',
-  top10HolderPct: '상위 10 보유 비중',
-  marketCap: '시가총액',
-  marketCapUsd: '시가총액(USD)',
-  mcapVolumeScore: '시총/거래량 점수',
-  mevMarginPct: 'MEV 여유폭',
-};
-
 export function buildAlertMessage(level: AlertLevel, context: string, message: string): string {
   const title = level === 'CRITICAL' ? 'Critical Alert' : 'Warning Alert';
   return [
@@ -72,37 +63,39 @@ export function buildAlertMessage(level: AlertLevel, context: string, message: s
 export function buildSignalMessage(signal: Signal): string {
   const grade = signal.breakoutScore?.grade ?? 'N/A';
   const score = signal.breakoutScore?.totalScore ?? 0;
-  const metaLines = Object.entries(signal.meta).map(([key, value]) =>
-    `- ${escapeHtml(formatMetaLabel(key))}: ${formatMetricValue(value)}`
-  );
+  const summaryLines = buildSignalSummaryLines(signal);
+  const detailLines = buildSignalDetailLines(signal);
 
   return [
-    `🟢 <b>시그널 감지</b>`,
-    `- 액션: ${escapeHtml(signal.action)}`,
+    `🟢 <b>${escapeHtml(signal.action)} 시그널</b>`,
+    buildInstrumentLine(signal.tokenSymbol, signal.pairAddress),
     `- 전략: ${escapeHtml(formatStrategy(signal.strategy))}`,
-    `- 페어: <code>${escapeHtml(signal.pairAddress)}</code>`,
+    `- 컨트랙트: <code>${escapeHtml(signal.pairAddress)}</code>`,
     `- 현재 가격: ${signal.price.toFixed(8)}`,
-    `- 점수: ${score}점 (${escapeHtml(formatGrade(grade))})`,
-    signal.poolTvl ? `- TVL: $${formatUsd(signal.poolTvl)}` : '',
-    signal.spreadPct != null ? `- 스프레드: ${formatPercent(signal.spreadPct)}` : '',
-    metaLines.length > 0 ? '' : '',
-    metaLines.length > 0 ? '세부 지표' : '',
-    ...metaLines,
+    `- 품질 점수: ${score}점 (${escapeHtml(formatGrade(grade))})`,
+    ...summaryLines,
+    detailLines.length > 0 ? '' : '',
+    detailLines.length > 0 ? '세부 지표' : '',
+    ...detailLines,
   ].filter(Boolean).join('\n');
 }
 
 export function buildTradeOpenMessage(order: Order, txSignature?: string): string {
+  const entryNotionalSol = order.price * order.quantity;
   return [
     `🟢 <b>포지션 진입 완료</b>`,
+    buildInstrumentLine(order.tokenSymbol, order.pairAddress),
     `- 전략: ${escapeHtml(formatStrategy(order.strategy))}`,
-    `- 페어: <code>${escapeHtml(order.pairAddress)}</code>`,
+    `- 컨트랙트: <code>${escapeHtml(order.pairAddress)}</code>`,
     `- 진입 가격: ${order.price.toFixed(8)}`,
-    `- 주문 수량: ${order.quantity.toFixed(6)} SOL`,
+    `- 진입 금액: ${entryNotionalSol.toFixed(6)} SOL`,
+    `- 수량: ${order.quantity.toFixed(6)}${order.tokenSymbol ? ` ${escapeHtml(order.tokenSymbol)}` : ''}`,
+    buildExitLevelLine('손절', order.price, order.stopLoss, order.quantity, 'stop'),
+    buildExitLevelLine('1차 익절', order.price, order.takeProfit1, order.quantity, 'take_profit'),
+    buildExitLevelLine('2차 익절', order.price, order.takeProfit2, order.quantity, 'take_profit'),
     `- 포지션 제한: ${escapeHtml(formatSizeConstraint(order.sizeConstraint))}`,
-    `- 손절가: ${order.stopLoss.toFixed(8)}`,
-    `- 익절가: 1차 ${order.takeProfit1.toFixed(8)} / 2차 ${order.takeProfit2.toFixed(8)}`,
     order.breakoutScore != null
-      ? `- 시그널 점수: ${order.breakoutScore}점 (${escapeHtml(formatGrade(order.breakoutGrade ?? 'N/A'))})`
+      ? `- 시그널 품질: ${order.breakoutScore}점 (${escapeHtml(formatGrade(order.breakoutGrade ?? 'N/A'))})`
       : '',
     txSignature ? `- 트랜잭션: <code>${escapeHtml(txSignature)}</code>` : '',
   ].filter(Boolean).join('\n');
@@ -116,8 +109,9 @@ export function buildTradeCloseMessage(trade: Trade): string {
 
   return [
     `${pnl != null && pnl >= 0 ? '✅' : '❌'} <b>포지션 종료</b>`,
+    buildInstrumentLine(trade.tokenSymbol, trade.pairAddress),
     `- 전략: ${escapeHtml(formatStrategy(trade.strategy))}`,
-    `- 페어: <code>${escapeHtml(trade.pairAddress)}</code>`,
+    `- 컨트랙트: <code>${escapeHtml(trade.pairAddress)}</code>`,
     `- 종료 사유: ${escapeHtml(formatCloseReason(trade.exitReason))}`,
     `- 결과: ${resultLabel}`,
     `- 가격: ${trade.entryPrice.toFixed(8)} → ${trade.exitPrice?.toFixed(8) ?? 'N/A'}`,
@@ -137,26 +131,11 @@ export function buildRecoveryReportMessage(details: string[]): string {
   ].join('\n');
 }
 
-export function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
 function calculatePnlPct(trade: Trade): number | null {
   if (trade.pnl == null) return null;
   const notional = trade.entryPrice * trade.quantity;
   if (!Number.isFinite(notional) || notional <= 0) return null;
   return trade.pnl / notional;
-}
-
-function formatMetaLabel(key: string): string {
-  return META_LABELS[key] ?? startCase(key);
-}
-
-function formatMetricValue(value: number): string {
-  return Number.isInteger(value) ? String(value) : value.toFixed(4);
 }
 
 export function formatStrategy(strategy: StrategyName): string {
@@ -181,42 +160,41 @@ export function formatEdgeState(value: string): string {
   return EDGE_STATE_LABELS[value] ?? value;
 }
 
-function formatUsd(value: number): string {
-  return value.toFixed(0);
+function buildInstrumentLine(symbol: string | undefined, pairAddress: string): string {
+  if (symbol) {
+    return `- 종목: <b>${escapeHtml(symbol)}</b>`;
+  }
+  return `- 종목: <b>${escapeHtml(shortenAddress(pairAddress))}</b> (ticker 미확인)`;
 }
 
-export function formatPercent(value: number): string {
-  return `${(value * 100).toFixed(1)}%`;
+function buildExitLevelLine(
+  label: string,
+  entryPrice: number,
+  targetPrice: number,
+  quantity: number,
+  kind: 'stop' | 'take_profit'
+): string {
+  if (
+    !Number.isFinite(entryPrice) || entryPrice <= 0 ||
+    !Number.isFinite(targetPrice) || targetPrice <= 0 ||
+    !Number.isFinite(quantity) || quantity <= 0
+  ) {
+    return `- ${label}: 미설정 (유효한 ${kind === 'stop' ? '손절가' : '목표가'} 없음 / 재검토 필요)`;
+  }
+  const pnlSol = (targetPrice - entryPrice) * quantity;
+  const pnlPct = entryPrice > 0 ? (targetPrice - entryPrice) / entryPrice : null;
+  const reviewNeeded = kind === 'stop'
+    ? !(targetPrice > 0 && targetPrice < entryPrice)
+    : !(targetPrice > entryPrice);
+  return [
+    `- ${label}: ${targetPrice.toFixed(8)} `,
+    `(${formatSignedSolDetailed(pnlSol)}`,
+    pnlPct != null ? ` / ${formatSignedPercent(pnlPct)}` : '',
+    reviewNeeded ? ' / 재검토 필요' : '',
+    ')',
+  ].join('');
 }
 
-export function formatSignedPercent(value: number): string {
-  return `${value >= 0 ? '+' : ''}${(value * 100).toFixed(1)}%`;
-}
-
-export function formatSignedSol(value?: number): string {
-  if (value == null) return 'N/A';
-  return `${value >= 0 ? '+' : ''}${value.toFixed(4)} SOL`;
-}
-
-export function formatRewardRisk(value: number): string {
-  return Number.isFinite(value) ? value.toFixed(2) : 'inf';
-}
-
-export function shortenAddress(value: string): string {
-  return value.length <= 12 ? value : `${value.slice(0, 8)}...${value.slice(-4)}`;
-}
-
-export function formatDuration(ms: number): string {
-  const hours = Math.floor(ms / 3_600_000);
-  const minutes = Math.floor((ms % 3_600_000) / 60_000);
-  return `${hours}h ${minutes}m`;
-}
-
-function startCase(value: string): string {
-  return value
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .replace(/_/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/\b\w/g, char => char.toUpperCase());
+function formatSignedSolDetailed(value: number): string {
+  return `${value >= 0 ? '+' : ''}${value.toFixed(6)} SOL`;
 }

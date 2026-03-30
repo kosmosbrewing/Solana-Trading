@@ -644,6 +644,7 @@ async function main() {
       universeEngine.addPoolDirect({
         pairAddress: entry.tokenMint,
         tokenMint: entry.tokenMint,
+        symbol: entry.symbol,
         tvl: entry.poolInfo?.tvl ?? 0,
         marketCap: entry.poolInfo?.marketCap,
         dailyVolume: entry.poolInfo?.dailyVolume ?? 0,

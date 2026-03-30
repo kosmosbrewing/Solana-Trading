@@ -21,11 +21,22 @@ describe('messageFormatter', () => {
       action: 'BUY',
       strategy: 'volume_spike',
       pairAddress: 'PAIR1234567890',
+      tokenSymbol: 'PAIR',
       price: 0.00001234,
       timestamp: new Date('2026-03-22T00:00:00Z'),
       meta: {
+        primaryIntervalSec: 60,
+        confirmIntervalSec: 15,
+        primaryCandleStartSec: Date.parse('2026-03-22T00:00:05Z') / 1000,
+        primaryCandleCloseSec: Date.parse('2026-03-22T00:01:05Z') / 1000,
+        avgVolume: 123456,
+        currentVolume: 9876543,
+        currentVolume24hUsd: 12345678,
+        ammFeePct: 0.003,
         buyRatio: 0.62,
         whaleScore: 12,
+        marketCapUsd: 2345678,
+        volumeMcapRatio: 0.42,
       },
       breakoutScore: {
         volumeScore: 20,
@@ -43,12 +54,21 @@ describe('messageFormatter', () => {
 
     const message = buildSignalMessage(signal);
 
-    expect(message).toContain('🟢 <b>시그널 감지</b>');
+    expect(message).toContain('🟢 <b>BUY 시그널</b>');
+    expect(message).toContain('- 종목: <b>PAIR</b>');
     expect(message).toContain('- 전략: Volume Spike');
-    expect(message).toContain('- 점수: 74점 (A등급)');
-    expect(message).toContain('- TVL: $120000');
+    expect(message).toContain('- 컨트랙트: <code>PAIR1234567890</code>');
+    expect(message).toContain('- 품질 점수: 74점 (A등급)');
+    expect(message).toContain('- MC / TVL: $2.35M / $120K');
+    expect(message).toContain('- 24H 거래대금 / 시총: $12.3M / 42.0%');
+    expect(message).toContain('- 스프레드 / AMM 수수료: 1.2% / 0.3%');
     expect(message).toContain('세부 지표');
+    expect(message).toContain('- 메인 봉 / 확인 봉: 1m / 15s');
+    expect(message).toContain('- 캔들: 2026-03-22 09:00:05.00 → 2026-03-22 09:01:05.00');
+    expect(message).toContain('- 평균 / 현재 거래량: $123K / $9.88M');
     expect(message).toContain('- 매수 비중: 0.6200');
+    expect(message).toContain('- 고래 점수: 12');
+    expect(message).not.toContain('시가총액(USD)');
   });
 
   it('formats trade open and close messages with readable summaries', () => {
@@ -56,6 +76,7 @@ describe('messageFormatter', () => {
       pairAddress: 'PAIR1234567890',
       strategy: 'fib_pullback',
       side: 'BUY',
+      tokenSymbol: 'PAIR',
       price: 0.00123456,
       quantity: 2,
       stopLoss: 0.0011,
@@ -70,9 +91,15 @@ describe('messageFormatter', () => {
     const openMessage = buildTradeOpenMessage(order, 'TX123');
 
     expect(openMessage).toContain('🟢 <b>포지션 진입 완료</b>');
+    expect(openMessage).toContain('- 종목: <b>PAIR</b>');
     expect(openMessage).toContain('- 전략: Fib Pullback');
+    expect(openMessage).toContain('- 진입 금액: 0.002469 SOL');
+    expect(openMessage).toContain('- 수량: 2.000000 PAIR');
+    expect(openMessage).toContain('- 손절: 0.00110000 (-0.000269 SOL / -10.9%)');
+    expect(openMessage).toContain('- 1차 익절: 0.00140000 (+0.000331 SOL / +13.4%)');
+    expect(openMessage).toContain('- 2차 익절: 0.00160000 (+0.000731 SOL / +29.6%)');
     expect(openMessage).toContain('- 포지션 제한: 리스크 한도 기준');
-    expect(openMessage).toContain('- 시그널 점수: 58점 (B등급)');
+    expect(openMessage).toContain('- 시그널 품질: 58점 (B등급)');
 
     const trade: Trade = {
       id: 'trade-1',
@@ -102,6 +129,48 @@ describe('messageFormatter', () => {
     expect(closeMessage).toContain('- 결과: 이익 실현');
     expect(closeMessage).toContain('- 보유 시간: 2h 30m');
     expect(closeMessage).toContain('+0.0003 SOL');
+  });
+
+  it('falls back to contract label and hides invalid stop-loss math in alerts', () => {
+    const order: Order = {
+      pairAddress: 'PAIR1234567890ABCDEFG',
+      strategy: 'volume_spike',
+      side: 'BUY',
+      price: 0.006947,
+      quantity: 1,
+      stopLoss: 0,
+      takeProfit1: 0.0075,
+      takeProfit2: 0.0081,
+      timeStopMinutes: 30,
+    };
+
+    const openMessage = buildTradeOpenMessage(order);
+    expect(openMessage).toContain('- 종목: <b>PAIR1234...DEFG</b> (ticker 미확인)');
+    expect(openMessage).toContain('- 손절: 미설정 (유효한 손절가 없음 / 재검토 필요)');
+    expect(openMessage).not.toContain('-100.0%');
+
+    const trade: Trade = {
+      id: 'trade-fallback',
+      pairAddress: 'PAIR1234567890ABCDEFG',
+      strategy: 'volume_spike',
+      side: 'SELL',
+      entryPrice: 0.006947,
+      exitPrice: 0.0065,
+      quantity: 1,
+      pnl: -0.000447,
+      status: 'CLOSED',
+      createdAt: new Date('2026-03-22T00:00:00Z'),
+      closedAt: new Date('2026-03-22T00:05:00Z'),
+      stopLoss: 0.0067,
+      takeProfit1: 0.0075,
+      takeProfit2: 0.0081,
+      timeStopAt: new Date('2026-03-22T00:30:00Z'),
+      exitReason: 'STOP_LOSS',
+    };
+
+    const closeMessage = buildTradeCloseMessage(trade);
+    expect(closeMessage).toContain('- 종목: <b>PAIR1234...DEFG</b> (ticker 미확인)');
+    expect(closeMessage).toContain('- 종료 사유: 손절');
   });
 
   it('formats daily summary with risk and strategy sections', () => {

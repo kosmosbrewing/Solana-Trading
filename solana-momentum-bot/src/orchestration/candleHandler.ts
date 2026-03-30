@@ -96,7 +96,12 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
     });
 
     if (signal.action === 'BUY') {
+      signal.tokenSymbol = poolInfo.symbol;
       signal.meta.currentVolume24hUsd = poolInfo.dailyVolume;
+      if (poolInfo.marketCap !== undefined) signal.meta.marketCapUsd = poolInfo.marketCap;
+      if (poolInfo.marketCap && poolInfo.marketCap > 0 && poolInfo.dailyVolume > 0) {
+        signal.meta.volumeMcapRatio = poolInfo.dailyVolume / poolInfo.marketCap;
+      }
       const prevTvl = ctx.previousTvl.get(candle.pairAddress) || poolTvl;
       const gateInput = buildLiveGateInput({
         signal,
@@ -167,7 +172,9 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
       });
 
       if (fibSignal.action === 'BUY') {
+        fibSignal.tokenSymbol = poolInfo.symbol;
         fibSignal.meta.currentVolume24hUsd = poolInfo.dailyVolume;
+        if (poolInfo.marketCap !== undefined) fibSignal.meta.marketCapUsd = poolInfo.marketCap;
         const prevTvl = ctx.previousTvl.get(candle.pairAddress) || poolTvl;
         const gateInput = buildLiveGateInput({
           signal: fibSignal,

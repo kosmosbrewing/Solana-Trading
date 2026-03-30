@@ -9,6 +9,7 @@ describe('config', () => {
       WALLET_PRIVATE_KEY: 'mock-private-key',
       DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',
       JUPITER_API_URL: '',
+      JUPITER_API_KEY: '',
     };
   });
 

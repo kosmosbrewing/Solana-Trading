@@ -4,7 +4,7 @@ import {
   formatPercent,
   formatSignedPercent,
   shortenAddress,
-} from './messageFormatter';
+} from './formatting';
 
 export function buildRealtimeShadowSummaryMessage(report: RealtimeShadowReport): string {
   const lines: string[] = [

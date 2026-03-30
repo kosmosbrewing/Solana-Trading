@@ -208,8 +208,18 @@ function resolveStopLoss(
   }
 
   if (atr > 0) {
-    return Math.max(0, entryPrice - atr * config.slAtrMultiplier);
+    const atrStop = entryPrice - atr * config.slAtrMultiplier;
+    if (atrStop > 0 && atrStop < entryPrice) {
+      return atrStop;
+    }
   }
-
-  return candleLow;
+  // ATR 기반 stop이 비정상일 때 0으로 내려가지 않도록 유효한 최근 저점을 사용한다.
+  const lookback = Math.min(config.slSwingLookback, candles.length);
+  const swingLow = lookback > 0 ? calcLowestLow(candles, lookback) : candleLow;
+  const fallbackStops = [candleLow, swingLow]
+    .filter((value) => Number.isFinite(value) && value > 0 && value < entryPrice);
+  if (fallbackStops.length > 0) {
+    return Math.max(...fallbackStops);
+  }
+  return Math.max(entryPrice * 0.9, Number.EPSILON);
 }

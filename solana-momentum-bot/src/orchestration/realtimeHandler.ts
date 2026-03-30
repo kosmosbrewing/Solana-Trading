@@ -97,6 +97,11 @@ export async function handleRealtimeSignal(
   }
 
   signal.meta.currentVolume24hUsd = poolInfo.dailyVolume;
+  signal.tokenSymbol = poolInfo.symbol;
+  if (poolInfo.marketCap !== undefined) signal.meta.marketCapUsd = poolInfo.marketCap;
+  if (poolInfo.marketCap && poolInfo.marketCap > 0 && poolInfo.dailyVolume > 0) {
+    signal.meta.volumeMcapRatio = poolInfo.dailyVolume / poolInfo.marketCap;
+  }
   const gateInput = buildLiveGateInput({
     signal,
     candles,
@@ -179,7 +184,7 @@ export async function handleRealtimeSignal(
       referencePrice: signal.price,
       signalTimestamp: signal.timestamp.toISOString(),
       estimatedCostPct,
-      tokenSymbol: (poolInfo as { symbol?: string }).symbol,
+      tokenSymbol: poolInfo.symbol,
       trigger: {
         primaryIntervalSec: signal.meta.primaryIntervalSec ?? config.realtimePrimaryIntervalSec,
         confirmIntervalSec: signal.meta.confirmIntervalSec ?? config.realtimeConfirmIntervalSec,

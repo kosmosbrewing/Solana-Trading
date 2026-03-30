@@ -540,7 +540,8 @@ export async function recordOpenedTrade(
   totalScore: number,
   sizeConstraint: Trade['sizeConstraint'],
   txSignature: string,
-  executionSummary: EntryExecutionSummary
+  executionSummary: EntryExecutionSummary,
+  postSizeExecution?: GateEvaluationResult['executionViability']
 ): Promise<void> {
   const openedOrder: Order = {
     ...order,
@@ -599,7 +600,7 @@ export async function recordOpenedTrade(
   ctx.healthMonitor.updateTradeTime();
   await ctx.notifier.sendTradeOpen(openedOrder, txSignature);
   await ctx.auditLogger.logSignal({
-    ...buildSignalAuditBase(signal, lastCandle, gateResult),
+    ...buildSignalAuditBase(signal, lastCandle, gateResult, postSizeExecution),
     action: 'EXECUTED',
     positionSize: executionSummary.quantity,
     sizeConstraint,
@@ -611,8 +612,10 @@ export async function recordOpenedTrade(
 export function buildSignalAuditBase(
   signal: Signal,
   candle: Candle,
-  gateResult: GateEvaluationResult
+  gateResult: GateEvaluationResult,
+  postSizeExecution?: GateEvaluationResult['executionViability']
 ) {
+  const persistedExecution = postSizeExecution ?? gateResult.executionViability;
   return {
     pairAddress: signal.pairAddress,
     strategy: signal.strategy,
@@ -626,9 +629,9 @@ export function buildSignalAuditBase(
     sellVolume: candle.sellVolume,
     poolTvl: signal.poolTvl || 0,
     spreadPct: signal.spreadPct,
-    effectiveRR: gateResult.executionViability.effectiveRR,
-    roundTripCost: gateResult.executionViability.roundTripCost,
-    gateTrace: buildGateTraceSnapshot(gateResult),
+    effectiveRR: persistedExecution.effectiveRR,
+    roundTripCost: persistedExecution.roundTripCost,
+    gateTrace: buildGateTraceSnapshot(gateResult, { postSizeExecution }),
   };
 }
 

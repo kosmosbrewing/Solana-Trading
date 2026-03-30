@@ -67,6 +67,38 @@ export interface GateTraceSnapshot {
     effectiveRR: number;
     roundTripCost: number;
     sizeMultiplier: number;
+    riskPct?: number;
+    rewardPct?: number;
+    entryPriceImpactPct?: number;
+    exitPriceImpactPct?: number;
+    quantity?: number;
+    notionalSol?: number;
+    preGate?: {
+      rejected: boolean;
+      filterReason?: string;
+      effectiveRR: number;
+      roundTripCost: number;
+      sizeMultiplier: number;
+      riskPct?: number;
+      rewardPct?: number;
+      entryPriceImpactPct?: number;
+      exitPriceImpactPct?: number;
+      quantity?: number;
+      notionalSol?: number;
+    };
+    postSize?: {
+      rejected: boolean;
+      filterReason?: string;
+      effectiveRR: number;
+      roundTripCost: number;
+      sizeMultiplier: number;
+      riskPct?: number;
+      rewardPct?: number;
+      entryPriceImpactPct?: number;
+      exitPriceImpactPct?: number;
+      quantity?: number;
+      notionalSol?: number;
+    };
   };
   sellImpactPct?: number;
 }

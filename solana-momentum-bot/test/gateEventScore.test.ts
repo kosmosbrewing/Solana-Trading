@@ -1,4 +1,9 @@
-import { evaluateExecutionViabilityForOrder, evaluateGates, evaluateGatesAsync } from '../src/gate';
+import {
+  evaluateExecutionViability,
+  evaluateExecutionViabilityForOrder,
+  evaluateGates,
+  evaluateGatesAsync,
+} from '../src/gate';
 import { buildLiveGateInput } from '../src/gate/liveGateInput';
 import type { AttentionScore } from '../src/event/types';
 import type { Candle, PoolInfo, Signal } from '../src/utils/types';
@@ -251,6 +256,33 @@ describe('AttentionScore gate integration', () => {
     expect(tinyProbe.rejected).toBe(false);
     expect(actualSize.rejected).toBe(true);
     expect(actualSize.filterReason).toContain('poor_execution_viability');
+  });
+
+  it('converts SOL probe notionals into token quantity for pre-gate execution viability', () => {
+    const pricedSignal: Signal = {
+      ...signal,
+      price: 2,
+      meta: { atr: 0.2, volumeRatio: 3 },
+    };
+    const pricedCandles: Candle[] = [
+      {
+        ...candles[0],
+        low: 1.9,
+        close: 2,
+      },
+    ];
+
+    const result = evaluateExecutionViability(
+      pricedSignal,
+      pricedCandles,
+      { ...poolInfo, tvl: 1_000 },
+      0.5
+    );
+
+    expect(result.notionalSol).toBeCloseTo(0.5, 6);
+    expect(result.quantity).toBeCloseTo(0.25, 6);
+    expect(result.entryPriceImpactPct).toBeGreaterThanOrEqual(0);
+    expect(result.exitPriceImpactPct).toBeGreaterThanOrEqual(0);
   });
 });
 

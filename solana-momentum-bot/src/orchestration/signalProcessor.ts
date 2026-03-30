@@ -81,6 +81,7 @@ export async function processSignal(
 
   if (gateResult.rejected) {
     const filterReason = gateResult.filterReason || `Score ${totalScore} rejected by gate threshold`;
+    logExecutionViabilityTelemetry('Pre-gate execution reject', gateResult.executionViability);
     log.info(`Signal filtered: ${filterReason}`);
       await ctx.auditLogger.logSignal({
         ...buildSignalAuditBase(signal, candles[candles.length - 1], gateResult),
@@ -234,33 +235,44 @@ export async function processSignal(
     order.sizeConstraint = riskResult.sizeConstraint;
     order.tokenSymbol = signal.tokenSymbol;
 
-    const actualExecution = evaluateExecutionViabilityForOrder(order, signal.poolTvl || 0, {
+    const sizeAwareExecution = evaluateExecutionViabilityForOrder(order, signal.poolTvl || 0, {
       ammFeePct: signal.meta.ammFeePct,
       mevMarginPct: signal.meta.mevMarginPct,
     }, {
       rrReject: config.executionRrReject,
       rrPass: config.executionRrPass,
     });
-      if (actualExecution.rejected) {
-        log.warn(`Signal filtered after size-aware execution check: ${actualExecution.filterReason}`);
+    let postSizeExecution = sizeAwareExecution;
+    if (sizeAwareExecution.sizeMultiplier < 1 && !sizeAwareExecution.rejected) {
+      order.quantity *= sizeAwareExecution.sizeMultiplier;
+      quantity = order.quantity;
+      postSizeExecution = evaluateExecutionViabilityForOrder(order, signal.poolTvl || 0, {
+        ammFeePct: signal.meta.ammFeePct,
+        mevMarginPct: signal.meta.mevMarginPct,
+      }, {
+        rrReject: config.executionRrReject,
+        rrPass: config.executionRrPass,
+      });
+    }
+    logExecutionViabilityComparison(gateResult.executionViability, postSizeExecution);
+      if (postSizeExecution.rejected) {
+        log.warn(`Signal filtered after size-aware execution check: ${postSizeExecution.filterReason}`);
         await ctx.auditLogger.logSignal({
-          ...buildSignalAuditBase(signal, candles[candles.length - 1], gateResult),
+          ...buildSignalAuditBase(signal, candles[candles.length - 1], gateResult, postSizeExecution),
           action: 'FILTERED',
-          filterReason: actualExecution.filterReason,
-          effectiveRR: actualExecution.effectiveRR,
-          roundTripCost: actualExecution.roundTripCost,
+          filterReason: postSizeExecution.filterReason,
+          effectiveRR: postSizeExecution.effectiveRR,
+          roundTripCost: postSizeExecution.roundTripCost,
         });
         return {
           status: 'execution_viability_rejected',
-          filterReason: actualExecution.filterReason,
+          filterReason: postSizeExecution.filterReason,
         };
       }
-    if (actualExecution.sizeMultiplier < 1) {
-      order.quantity *= actualExecution.sizeMultiplier;
-      quantity = order.quantity;
+    if (sizeAwareExecution.sizeMultiplier < 1) {
       log.info(
-        `Actual-size execution haircut applied: x${actualExecution.sizeMultiplier.toFixed(2)} ` +
-        `effectiveRR=${actualExecution.effectiveRR.toFixed(2)}`
+        `Actual-size execution haircut applied: x${sizeAwareExecution.sizeMultiplier.toFixed(2)} ` +
+        `effectiveRR=${postSizeExecution.effectiveRR.toFixed(2)}`
       );
     }
 
@@ -268,7 +280,7 @@ export async function processSignal(
 
     const positionId = await ctx.positionStore.createPosition(
       signal.pairAddress,
-      buildPositionSignalData(signal, gateResult, totalScore, grade)
+      buildPositionSignalData(signal, gateResult, totalScore, grade, postSizeExecution)
     );
 
       try {
@@ -286,7 +298,7 @@ export async function processSignal(
             log.info(`Entry slippage: ${buyResult.slippageBps}bps`);
           }
         }
-        const executionSummary = buildEntryExecutionSummary(order, actualExecution, buyResult);
+        const executionSummary = buildEntryExecutionSummary(order, postSizeExecution, buyResult);
 
         await recordOpenedTrade(
           ctx,
@@ -298,7 +310,8 @@ export async function processSignal(
           totalScore,
           riskResult.sizeConstraint,
           txSignature,
-          executionSummary
+          executionSummary,
+          postSizeExecution
         );
 
       if (ctx.tradingMode === 'paper' && ctx.paperBalance != null) {
@@ -371,4 +384,43 @@ function buildEntryExecutionSummary(
     effectiveRR: actualExecution.effectiveRR,
     roundTripCost: actualExecution.roundTripCost,
   };
+}
+
+function logExecutionViabilityTelemetry(
+  prefix: string,
+  execution: GateEvaluationResult['executionViability']
+): void {
+  if (!execution.filterReason?.startsWith('poor_execution_viability')) return;
+  log.warn(
+    `${prefix}: effectiveRR=${execution.effectiveRR.toFixed(2)} ` +
+    `risk=${formatPct(execution.riskPct)} reward=${formatPct(execution.rewardPct)} ` +
+    `entryImpact=${formatPct(execution.entryPriceImpactPct)} exitImpact=${formatPct(execution.exitPriceImpactPct)} ` +
+    `roundTrip=${formatPct(execution.roundTripCost)} ` +
+    `probeNotional=${formatMaybe(execution.notionalSol, 4)}SOL ` +
+    `probeQty=${formatMaybe(execution.quantity, 6)}`
+  );
+}
+
+function logExecutionViabilityComparison(
+  preGate: GateEvaluationResult['executionViability'],
+  postSize: ReturnType<typeof evaluateExecutionViabilityForOrder>
+): void {
+  log.info(
+    `Execution viability compare: preGateRR=${preGate.effectiveRR.toFixed(2)} ` +
+    `postSizeRR=${postSize.effectiveRR.toFixed(2)} ` +
+    `preGateNotional=${formatMaybe(preGate.notionalSol, 4)}SOL ` +
+    `postSizeNotional=${formatMaybe(postSize.notionalSol, 4)}SOL ` +
+    `preGateQty=${formatMaybe(preGate.quantity, 6)} ` +
+    `postSizeQty=${formatMaybe(postSize.quantity, 6)}`
+  );
+}
+
+function formatPct(value?: number): string {
+  if (value == null || !Number.isFinite(value)) return 'n/a';
+  return `${(value * 100).toFixed(2)}%`;
+}
+
+function formatMaybe(value?: number, digits = 2): string {
+  if (value == null || !Number.isFinite(value)) return 'n/a';
+  return value.toFixed(digits);
 }

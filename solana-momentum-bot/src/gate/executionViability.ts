@@ -15,15 +15,22 @@ export interface ExecutionViabilityResult {
   sizeMultiplier: number;
   rejected: boolean;
   filterReason?: string;
+  riskPct?: number;
+  rewardPct?: number;
+  entryPriceImpactPct?: number;
+  exitPriceImpactPct?: number;
+  quantity?: number;
+  notionalSol?: number;
 }
 
 export function evaluateExecutionViability(
   signal: Signal,
   candles: Candle[],
   poolInfo: PoolInfo,
-  estimatedQuantitySol?: number
+  estimatedPositionSol?: number
 ): ExecutionViabilityResult {
-  const probeQty = estimatedQuantitySol ?? 1;
+  const probeNotionalSol = estimatedPositionSol ?? 1;
+  const probeQty = signal.price > 0 ? probeNotionalSol / signal.price : 0;
   const order = signal.strategy === 'fib_pullback'
     ? buildFibPullbackOrder(signal, candles, probeQty)
     : buildVolumeSpikeOrder(signal, candles, probeQty);
@@ -48,6 +55,12 @@ export function evaluateExecutionViabilityForOrder(
       sizeMultiplier: 0,
       rejected: true,
       filterReason: 'poor_execution_viability: zero_quantity',
+      riskPct: 0,
+      rewardPct: 0,
+      entryPriceImpactPct: 0,
+      exitPriceImpactPct: 0,
+      quantity: order.quantity,
+      notionalSol: 0,
     };
   }
 
@@ -55,9 +68,10 @@ export function evaluateExecutionViabilityForOrder(
   const mevMarginPct = costs.mevMarginPct ?? DEFAULT_MEV_MARGIN_PCT;
   const riskPct = order.price > 0 ? Math.max((order.price - order.stopLoss) / order.price, 0) : 0;
   const rewardPct = order.price > 0 ? Math.max((order.takeProfit2 - order.price) / order.price, 0) : 0;
+  const notionalSol = order.price * order.quantity;
   // Why fee=0, mev=0: estimateSlippage()에 순수 price impact만 추출, AMM fee/MEV는 별도 가산(L59).
   // ⚠️ live 전환 시 Jupiter quote 기반으로 교체하면 fee가 이미 포함되므로 이중계산 주의.
-  const entryPriceImpact = estimateSlippage(order.price * order.quantity, poolTvl, 0, 0);
+  const entryPriceImpact = estimateSlippage(notionalSol, poolTvl, 0, 0);
   const exitPriceImpact = estimateSlippage(order.takeProfit2 * order.quantity, poolTvl, 0, 0);
   const roundTripCost = entryPriceImpact + exitPriceImpact + ammFeePct + mevMarginPct;
   const effectiveRR = riskPct > 0
@@ -74,6 +88,12 @@ export function evaluateExecutionViabilityForOrder(
       sizeMultiplier: 0,
       rejected: true,
       filterReason: formatExecutionFilterReason(effectiveRR, roundTripCost),
+      riskPct,
+      rewardPct,
+      entryPriceImpactPct: entryPriceImpact,
+      exitPriceImpactPct: exitPriceImpact,
+      quantity: order.quantity,
+      notionalSol,
     };
   }
 
@@ -83,6 +103,12 @@ export function evaluateExecutionViabilityForOrder(
       roundTripCost,
       sizeMultiplier: 0.5,
       rejected: false,
+      riskPct,
+      rewardPct,
+      entryPriceImpactPct: entryPriceImpact,
+      exitPriceImpactPct: exitPriceImpact,
+      quantity: order.quantity,
+      notionalSol,
     };
   }
 
@@ -91,6 +117,12 @@ export function evaluateExecutionViabilityForOrder(
     roundTripCost,
     sizeMultiplier: 1,
     rejected: false,
+    riskPct,
+    rewardPct,
+    entryPriceImpactPct: entryPriceImpact,
+    exitPriceImpactPct: exitPriceImpact,
+    quantity: order.quantity,
+    notionalSol,
   };
 }
 

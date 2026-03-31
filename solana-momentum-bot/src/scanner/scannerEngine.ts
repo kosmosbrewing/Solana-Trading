@@ -56,6 +56,8 @@ export interface ScannerEngineConfig {
   minLiquidityUsd: number;
   /** H-02: Social mention tracker for WatchlistScore enrichment */
   socialMentionTracker?: SocialMentionTracker;
+  /** R3: 블랙리스트 pair 재진입 차단 — pairAddress → boolean */
+  blacklistCheck?: (pairAddress: string) => boolean;
   /** Realtime mode pre-watchlist candidate filter */
   candidateFilter?: (
     token: BirdeyeTrendingToken
@@ -84,6 +86,7 @@ export class ScannerEngine extends EventEmitter {
   private geckoNewPoolTimer: ReturnType<typeof setInterval> | null = null;
   private dexDiscoveryTimer: ReturnType<typeof setInterval> | null = null;
   private dexEnrichTimer: ReturnType<typeof setInterval> | null = null;
+  private blacklistEvictTimer: ReturnType<typeof setInterval> | null = null;
   private running = false;
 
   constructor(config: ScannerEngineConfig) {
@@ -150,6 +153,14 @@ export class ScannerEngine extends EventEmitter {
       );
     }
 
+    // R3: 블랙리스트 pair 주기적 제거 (5분)
+    if (this.config.blacklistCheck) {
+      this.blacklistEvictTimer = setInterval(
+        () => this.evictBlacklistedEntries(),
+        5 * 60_000
+      );
+    }
+
     // Schedule DexScreener enrichment
     if (this.config.dexScreenerClient) {
       this.dexEnrichTimer = setInterval(
@@ -167,6 +178,7 @@ export class ScannerEngine extends EventEmitter {
     if (this.geckoNewPoolTimer) { clearInterval(this.geckoNewPoolTimer); this.geckoNewPoolTimer = null; }
     if (this.dexDiscoveryTimer) { clearInterval(this.dexDiscoveryTimer); this.dexDiscoveryTimer = null; }
     if (this.dexEnrichTimer) { clearInterval(this.dexEnrichTimer); this.dexEnrichTimer = null; }
+    if (this.blacklistEvictTimer) { clearInterval(this.blacklistEvictTimer); this.blacklistEvictTimer = null; }
     this.config.socialMentionTracker?.stopFilteredStream();
     log.info('Scanner stopped.');
   }
@@ -219,6 +231,15 @@ export class ScannerEngine extends EventEmitter {
       return undefined;
     }
 
+    // R3: 블랙리스트 pair 재진입 차단
+    const pairAddress = typeof token.raw?.pair_address === 'string'
+      ? token.raw.pair_address
+      : token.address;
+    if (this.config.blacklistCheck?.(pairAddress)) {
+      log.info(`Candidate ${token.symbol} skipped: pair blacklisted by edge tracker (${pairAddress})`);
+      return undefined;
+    }
+
     const candidateFilterResult = this.config.candidateFilter
       ? await this.config.candidateFilter(token)
       : undefined;
@@ -263,14 +284,14 @@ export class ScannerEngine extends EventEmitter {
 
     const entry: WatchlistEntry = {
       tokenMint: token.address,
-      pairAddress: token.address, // will be resolved later if pair differs
+      pairAddress, // R3: raw.pair_address 우선, 없으면 token.address
       symbol: token.symbol,
       name: token.name,
       discoverySource: this.resolveDiscoverySource(token),
       lane,
       watchlistScore: scoreResult,
       poolInfo: {
-        pairAddress: token.address,
+        pairAddress,
         tokenMint: token.address,
         tvl: token.liquidityUsd ?? 0,
         marketCap: token.marketCap,
@@ -593,6 +614,28 @@ export class ScannerEngine extends EventEmitter {
         this.evictedCooldowns.delete(tokenMint);
       }
     }
+  }
+
+  /**
+   * R3: watchlist 내 블랙리스트 pair를 제거한다.
+   * 주기적으로 호출되어 슬롯 점유를 방지한다.
+   */
+  evictBlacklistedEntries(): number {
+    if (!this.config.blacklistCheck) return 0;
+    let evicted = 0;
+    for (const [tokenMint, entry] of this.watchlist) {
+      if (this.config.blacklistCheck(entry.pairAddress)) {
+        this.watchlist.delete(tokenMint);
+        this.config.socialMentionTracker?.unregisterTrackedToken(tokenMint);
+        log.info(`- Watchlist blacklist evict: ${entry.symbol} pair=${entry.pairAddress}`);
+        this.emit('candidateEvicted', tokenMint);
+        evicted++;
+      }
+    }
+    if (evicted > 0) {
+      this.emit('watchlistUpdated', this.getWatchlist());
+    }
+    return evicted;
   }
 }
 

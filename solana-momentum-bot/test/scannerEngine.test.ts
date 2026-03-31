@@ -552,6 +552,143 @@ describe('ScannerEngine social tracker wiring', () => {
   });
 });
 
+describe('ScannerEngine blacklist integration (R3)', () => {
+  it('rejects candidates whose pair is blacklisted', async () => {
+    const blacklisted = new Set(['mint-bad']);
+    const geckoClient = {
+      getTrendingTokens: jest.fn().mockResolvedValue([
+        makeToken('mint-bad', 'BAD', 1, 1_000_000, 500_000),
+        makeToken('mint-good', 'GOOD', 2, 800_000, 400_000),
+      ]),
+    };
+    const scanner = new ScannerEngine({
+      geckoClient: geckoClient as never,
+      dexScreenerClient: null,
+      maxWatchlistSize: 10,
+      minWatchlistScore: 0,
+      trendingPollIntervalMs: 60_000,
+      geckoNewPoolIntervalMs: 60_000,
+      dexDiscoveryIntervalMs: 60_000,
+      dexEnrichIntervalMs: 60_000,
+      laneAMinAgeSec: 3600,
+      laneBMaxAgeSec: 1200,
+      minLiquidityUsd: 1000,
+      blacklistCheck: (pairAddress) => blacklisted.has(pairAddress),
+    });
+
+    await scanner.start();
+    scanner.stop();
+
+    const mints = scanner.getWatchlist().map(e => e.tokenMint);
+    expect(mints).toContain('mint-good');
+    expect(mints).not.toContain('mint-bad');
+  });
+
+  it('evicts existing watchlist entries that become blacklisted', async () => {
+    const blacklisted = new Set<string>();
+    const geckoClient = {
+      getTrendingTokens: jest.fn().mockResolvedValue([
+        makeToken('mint-a', 'AAA', 1, 1_000_000, 500_000),
+        makeToken('mint-b', 'BBB', 2, 800_000, 400_000),
+      ]),
+    };
+    const scanner = new ScannerEngine({
+      geckoClient: geckoClient as never,
+      dexScreenerClient: null,
+      maxWatchlistSize: 10,
+      minWatchlistScore: 0,
+      trendingPollIntervalMs: 60_000,
+      geckoNewPoolIntervalMs: 60_000,
+      dexDiscoveryIntervalMs: 60_000,
+      dexEnrichIntervalMs: 60_000,
+      laneAMinAgeSec: 3600,
+      laneBMaxAgeSec: 1200,
+      minLiquidityUsd: 1000,
+      blacklistCheck: (pairAddress) => blacklisted.has(pairAddress),
+    });
+
+    await scanner.start();
+    scanner.stop();
+    expect(scanner.getWatchlist()).toHaveLength(2);
+
+    // pair가 블랙리스트에 추가됨
+    blacklisted.add('mint-a');
+    const evicted = scanner.evictBlacklistedEntries();
+
+    expect(evicted).toBe(1);
+    expect(scanner.getWatchlist().map(e => e.tokenMint)).toEqual(['mint-b']);
+  });
+
+  it('uses raw pair_address for blacklist check when available', async () => {
+    const checkedAddresses: string[] = [];
+    const geckoClient = {
+      getTrendingTokens: jest.fn().mockResolvedValue([
+        makeToken('mint-x', 'XXX', 1, 1_000_000, 500_000, {
+          pair_address: 'real-pair-x',
+        }),
+      ]),
+    };
+    const scanner = new ScannerEngine({
+      geckoClient: geckoClient as never,
+      dexScreenerClient: null,
+      maxWatchlistSize: 10,
+      minWatchlistScore: 0,
+      trendingPollIntervalMs: 60_000,
+      geckoNewPoolIntervalMs: 60_000,
+      dexDiscoveryIntervalMs: 60_000,
+      dexEnrichIntervalMs: 60_000,
+      laneAMinAgeSec: 3600,
+      laneBMaxAgeSec: 1200,
+      minLiquidityUsd: 1000,
+      blacklistCheck: (pairAddress) => {
+        checkedAddresses.push(pairAddress);
+        return false;
+      },
+    });
+
+    await scanner.start();
+    scanner.stop();
+
+    expect(checkedAddresses).toContain('real-pair-x');
+    // entry.pairAddress도 raw.pair_address로 저장되어야 eviction key space가 일치
+    expect(scanner.getEntry('mint-x')?.pairAddress).toBe('real-pair-x');
+  });
+
+  it('evicts by raw pair_address when it differs from tokenMint', async () => {
+    const blacklisted = new Set<string>();
+    const geckoClient = {
+      getTrendingTokens: jest.fn().mockResolvedValue([
+        makeToken('mint-y', 'YYY', 1, 1_000_000, 500_000, {
+          pair_address: 'real-pair-y',
+        }),
+      ]),
+    };
+    const scanner = new ScannerEngine({
+      geckoClient: geckoClient as never,
+      dexScreenerClient: null,
+      maxWatchlistSize: 10,
+      minWatchlistScore: 0,
+      trendingPollIntervalMs: 60_000,
+      geckoNewPoolIntervalMs: 60_000,
+      dexDiscoveryIntervalMs: 60_000,
+      dexEnrichIntervalMs: 60_000,
+      laneAMinAgeSec: 3600,
+      laneBMaxAgeSec: 1200,
+      minLiquidityUsd: 1000,
+      blacklistCheck: (pairAddress) => blacklisted.has(pairAddress),
+    });
+
+    await scanner.start();
+    scanner.stop();
+    expect(scanner.getWatchlist()).toHaveLength(1);
+
+    // tokenMint가 아닌 real pair_address로 블랙리스트 → eviction 동작해야 함
+    blacklisted.add('real-pair-y');
+    expect(scanner.evictBlacklistedEntries()).toBe(1);
+    expect(scanner.getWatchlist()).toHaveLength(0);
+  });
+});
+
 function makeToken(
   address: string,
   symbol: string,

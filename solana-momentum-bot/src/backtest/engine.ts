@@ -191,6 +191,10 @@ export class BacktestEngine {
       const actualExecution = evaluateExecutionViabilityForOrder(order, gatePoolInfo.tvl, {
         ammFeePct: gatePoolInfo.ammFeePct,
         mevMarginPct: gatePoolInfo.mevMarginPct,
+      }, {
+        rrReject: this.config.executionRrReject,
+        rrPass: this.config.executionRrPass,
+        rrBasis: this.config.executionRrBasis,
       });
       if (actualExecution.rejected) {
         riskState.positionOpen = false;
@@ -851,6 +855,9 @@ export class BacktestEngine {
         minBuyRatio: this.config.minBuyRatio,
         minBreakoutScore: this.config.minBreakoutScore,
       },
+      executionRrReject: this.config.executionRrReject,
+      executionRrPass: this.config.executionRrPass,
+      executionRrBasis: this.config.executionRrBasis,
       attentionScore: timelineScore ?? this.config.gateAttentionScore ?? this.config.gateEventScore,
       requireAttentionScore: this.config.requireAttentionScore ?? this.config.requireEventScore,
     });
@@ -1051,6 +1058,10 @@ export class BacktestEngine {
     const actualExecution = evaluateExecutionViabilityForOrder(order, gatePoolInfo.tvl, {
       ammFeePct: gatePoolInfo.ammFeePct,
       mevMarginPct: gatePoolInfo.mevMarginPct,
+    }, {
+      rrReject: this.config.executionRrReject,
+      rrPass: this.config.executionRrPass,
+      rrBasis: this.config.executionRrBasis,
     });
     if (actualExecution.rejected) {
       riskState.positionOpen = false;

@@ -250,8 +250,10 @@ export const config = {
   concurrentTier2Sol: numOptional('CONCURRENT_TIER_2_SOL', 20),  // 이 equity 이상이면 3 concurrent
 
   // ─── v4: Execution R:R 임계값 (Step 1C) ───
-  executionRrReject: numOptional('EXECUTION_RR_REJECT', 1.2),  // hard reject 기준
-  executionRrPass: numOptional('EXECUTION_RR_PASS', 1.5),      // full pass 기준 (미만이면 0.5x)
+  executionRrReject: numOptional('EXECUTION_RR_REJECT', 0.8),  // TP1 기준 하향 (기존 1.2)
+  executionRrPass: numOptional('EXECUTION_RR_PASS', 1.0),      // TP1 기준 하향 (기존 1.5)
+  /** effectiveRR 계산 기준: 'tp1' = TP1 reward, 'tp2' = TP2 reward (기존 동작) */
+  executionRrBasis: optional('EXECUTION_RR_BASIS', 'tp1') as 'tp1' | 'tp2',
 
   // ─── v4: Position Cap 설정 가능화 (Step 1B) ───
   maxPositionPct: numOptional('MAX_POSITION_PCT', 0.20), // 포트폴리오 대비 최대 포지션 비율
@@ -275,6 +277,20 @@ export const config = {
     { upperHours: numOptional('AGE_BUCKET_2_UPPER_HOURS', 4), multiplier: numOptional('AGE_BUCKET_2_MULTIPLIER', 0.5) },
     { upperHours: numOptional('AGE_BUCKET_3_UPPER_HOURS', 24), multiplier: numOptional('AGE_BUCKET_3_MULTIPLIER', 0.75) },
   ],
+
+  // ─── v5: "수익은 길게, 손실은 짧게" 파라미터 ───
+  /** TP1 배수 (ATR × N). 기존 1.5 → 1.0 */
+  tp1Multiplier: numOptional('TP1_MULTIPLIER', 1.0),
+  /** TP2 배수 (ATR × N). 기존 3.5 → 10.0 (실질 cap 제거) */
+  tp2Multiplier: numOptional('TP2_MULTIPLIER', 10.0),
+  /** SL ATR 배수 (entry - ATR × N). 기존 candle.low → ATR × 1.0 */
+  slAtrMultiplier: numOptional('SL_ATR_MULTIPLIER', 1.0),
+  /** TimeStop (분). 기존 30 → 20 */
+  timeStopMinutes: numOptional('TIME_STOP_MINUTES', 20),
+  /** TP1 부분 청산 비율. 기존 0.5 → 0.3 */
+  tp1PartialPct: numOptional('TP1_PARTIAL_PCT', 0.3),
+  /** Trailing 활성화: true = TP1 이후만, false = 기존 (min hold 이후) */
+  trailingAfterTp1Only: boolOptional('TRAILING_AFTER_TP1_ONLY', true),
 
   // ─── v2: Degraded Exit (P0-3) ───
   degradedExitEnabled: process.env.DEGRADED_EXIT_ENABLED === 'true', // default: false — paper 검증 먼저

@@ -17,6 +17,7 @@ import { EventMonitor, EventScoreStore } from './event';
 import { CandleStore, TradeStore } from './candle';
 import { RiskManager, RiskConfig, RegimeFilter } from './risk';
 import {
+  EdgeTracker,
   PaperMetricsTracker,
   RealtimeOutcomeTracker,
   RealtimeSignalLogger,
@@ -44,6 +45,7 @@ import {
   DexScreenerClient,
   SocialMentionTracker,
   attachScannerFreshListingSource,
+  createScannerBlacklistCheck,
 } from './scanner';
 import { ExecutionLock, PositionStore, runRecovery } from './state';
 import { SignalAuditLogger } from './audit';
@@ -439,7 +441,10 @@ async function main() {
   }
 
   // ─── DexScreener Client (free — API key optional) ─────
-  const dexScreenerClient = new DexScreenerClient(config.dexScreenerApiKey || undefined);
+  const dexScreenerClient = new DexScreenerClient(
+    config.dexScreenerApiKey || undefined,
+    (source) => { runtimeDiagnosticsTracker.recordRateLimit(source); }
+  );
   log.info('DexScreener client initialized');
 
   // ─── Phase 1A: Scanner Engine ─────────────────────
@@ -460,6 +465,8 @@ async function main() {
       // Why: Scanner minLiquidity는 SafetyGate minPoolLiquidity 이상이어야 함 (config gap 방지)
       minLiquidityUsd: Math.max(config.eventMinLiquidityUsd, config.minPoolLiquidity),
       socialMentionTracker, // H-02: social score → WatchlistScore 연동
+      // R3: 블랙리스트 pair 재진입 차단
+      blacklistCheck: await createScannerBlacklistCheck(tradeStore),
       candidateFilter: realtimeModeEnabled ? async (token) => {
         const discoverySource =
           typeof token.raw?.discovery_source === 'string' ? token.raw.discovery_source : undefined;

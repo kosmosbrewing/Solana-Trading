@@ -45,6 +45,9 @@ export interface BacktestConfig {
   eventScoreTimeline?: BacktestAttentionScoreEntry[];
   /** Optional pool metadata used by shared gate evaluation */
   gatePoolInfo?: Partial<PoolInfo>;
+  executionRrReject?: number;
+  executionRrPass?: number;
+  executionRrBasis?: 'tp1' | 'tp2';
   /** Strategy params overrides */
   volumeSpikeParams: Partial<VolumeSpikeParams>;
   fibPullbackParams: Partial<FibPullbackParams>;
@@ -74,6 +77,9 @@ export const DEFAULT_BACKTEST_CONFIG: BacktestConfig = {
     lpBurned: null,
     ownershipRenounced: null,
   },
+  executionRrReject: 0.8,
+  executionRrPass: 1.0,
+  executionRrBasis: 'tp1',
   volumeSpikeParams: {},
   fibPullbackParams: {},
 };

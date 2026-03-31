@@ -72,8 +72,10 @@ export class DexScreenerClient {
   private client: AxiosInstance;
   private lastRequestMs = 0;
   private readonly minIntervalMs = 1_100; // ~60 req/min
+  private readonly onRateLimited?: (source: string) => void;
 
-  constructor(apiKey?: string) {
+  constructor(apiKey?: string, onRateLimited?: (source: string) => void) {
+    this.onRateLimited = onRateLimited;
     const headers: Record<string, string> = {};
     if (apiKey) headers['X-API-KEY'] = apiKey;
     this.client = axios.create({
@@ -322,6 +324,7 @@ export class DexScreenerClient {
     } catch (err) {
       if (err instanceof AxiosError && err.response?.status === 429) {
         const retryAfter = Number(err.response.headers['retry-after'] || 5) * 1000;
+        this.onRateLimited?.('dex_screener');
         log.warn(`DexScreener 429 rate limited. Backing off ${retryAfter}ms...`);
         await new Promise(r => setTimeout(r, retryAfter));
         this.lastRequestMs = Date.now();

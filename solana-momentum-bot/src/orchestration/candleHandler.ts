@@ -13,7 +13,8 @@ import { BotContext } from './types';
 const log = createModuleLogger('CandleHandler');
 
 export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<void> {
-  const candles = await ctx.candleStore.getRecentCandles(
+  const candles = await loadRecentCandles(
+    ctx,
     candle.pairAddress,
     candle.intervalSec,
     30
@@ -165,7 +166,8 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
 
   // Strategy C: Fib Pullback (5분봉) — 임펄스 후 되돌림 매수
   if (candle.intervalSec === 300) {
-    const fibCandles = await ctx.candleStore.getRecentCandles(
+    const fibCandles = await loadRecentCandles(
+      ctx,
       candle.pairAddress,
       candle.intervalSec,
       Math.max(config.fibImpulseWindowBars + 10, 30)
@@ -250,4 +252,16 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
   }
 
   ctx.previousTvl.set(candle.pairAddress, poolTvl);
+}
+
+async function loadRecentCandles(
+  ctx: BotContext,
+  pairAddress: string,
+  intervalSec: number,
+  limit: number
+): Promise<Candle[]> {
+  if (ctx.internalCandleSource) {
+    return ctx.internalCandleSource.getRecentCandles(pairAddress, intervalSec, limit);
+  }
+  return ctx.candleStore.getRecentCandles(pairAddress, intervalSec, limit);
 }

@@ -5,14 +5,14 @@
 
 ---
 
-## Current Live Bootstrap Note
+## Current Operations Note
 
-- 현재 live 판단의 기준 문서는 [`PLAN4.md`](./PLAN4.md)와 [`20260331.md`](./20260331.md)다.
-- latest fresh run은 `2026-03-30 22:22:46 UTC`에 시작됐고, 최신 확인 구간에서는 아직 BUY 시그널 표본이 없다.
-- 따라서 지금 운영에서 가장 중요한 체크포인트는 아래 3개다.
-  - 첫 `Signal: BUY` 발생 여부
-  - `execution.preGate` / `execution.postSize` telemetry 저장 여부
-  - blacklist pair 재유입과 Gecko `429`를 분리해서 기록하는지 여부
+- 현재 active execution 기준 문서는 [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md)다.
+- 완료된 root plan / canary history는 [`PLAN_CMPL.md`](./PLAN_CMPL.md)에 archive했다.
+- 운영에서 계속 중요한 체크포인트는 아래 3개다.
+  - paper/live runtime sanity를 재기동 후에도 설명할 수 있는지
+  - `execution.preGate` / `execution.postSize` telemetry가 계속 일관되게 남는지
+  - data-plane noise와 전략 문제를 섞지 않고 기록하는지
 
 ---
 

@@ -1,0 +1,99 @@
+import type { DexScreenerPair } from './dexScreenerClient';
+import type { TokenPairResolver } from './tokenPairResolver';
+import type { ObservedPairCandidate } from '../utils/observedPair';
+
+/**
+ * HeliusPoolRegistry — 실시간/온체인 경로에서 확인한 pair metadata를 내부 캐시에 축적한다.
+ */
+export class HeliusPoolRegistry implements TokenPairResolver {
+  private readonly pairsByToken = new Map<string, Map<string, DexScreenerPair>>();
+
+  async getTokenPairs(tokenAddress: string): Promise<DexScreenerPair[]> {
+    const pairs = this.pairsByToken.get(tokenAddress);
+    if (!pairs) return [];
+
+    return [...pairs.values()].sort((left, right) =>
+      (right.liquidity?.usd || 0) - (left.liquidity?.usd || 0)
+      || (right.volume?.h24 || 0) - (left.volume?.h24 || 0)
+      || left.pairAddress.localeCompare(right.pairAddress)
+    );
+  }
+
+  async getBestPoolAddress(tokenMint: string): Promise<string | null> {
+    const pairs = await this.getTokenPairs(tokenMint);
+    return pairs[0]?.pairAddress ?? null;
+  }
+
+  upsertPairs(pairs: DexScreenerPair[]): void {
+    for (const pair of pairs) {
+      this.upsertPair(pair);
+    }
+  }
+
+  upsertPair(pair: DexScreenerPair): void {
+    this.upsertTokenPair(pair.baseToken.address, pair);
+    this.upsertTokenPair(pair.quoteToken.address, pair);
+  }
+
+  upsertObservedPair(candidate: ObservedPairCandidate): void {
+    if (!candidate.pairAddress || !candidate.baseTokenAddress || !candidate.quoteTokenAddress) {
+      return;
+    }
+
+    const existing = this.findExistingPair(candidate.baseTokenAddress, candidate.pairAddress)
+      ?? this.findExistingPair(candidate.quoteTokenAddress, candidate.pairAddress);
+
+    const merged: DexScreenerPair = {
+      chainId: 'solana',
+      dexId: candidate.dexId || existing?.dexId || '',
+      pairAddress: candidate.pairAddress,
+      baseToken: {
+        address: candidate.baseTokenAddress,
+        name: existing?.baseToken.name || candidate.baseTokenSymbol || '',
+        symbol: candidate.baseTokenSymbol || existing?.baseToken.symbol || '',
+      },
+      quoteToken: {
+        address: candidate.quoteTokenAddress,
+        name: existing?.quoteToken.name || candidate.quoteTokenSymbol || '',
+        symbol: candidate.quoteTokenSymbol || existing?.quoteToken.symbol || '',
+      },
+      priceUsd: candidate.priceUsd ?? existing?.priceUsd ?? 0,
+      liquidity: {
+        usd: candidate.liquidityUsd ?? existing?.liquidity.usd ?? 0,
+        base: existing?.liquidity.base ?? 0,
+        quote: existing?.liquidity.quote ?? 0,
+      },
+      volume: {
+        h24: candidate.volume24hUsd ?? existing?.volume.h24,
+      },
+      priceChange: existing?.priceChange ?? {},
+      txns: {
+        h24: {
+          buys: candidate.buys24h ?? existing?.txns.h24?.buys ?? 0,
+          sells: candidate.sells24h ?? existing?.txns.h24?.sells ?? 0,
+        },
+      },
+      marketCap: candidate.marketCap ?? existing?.marketCap,
+      fdv: candidate.fdv ?? existing?.fdv,
+      pairCreatedAt: candidate.pairCreatedAt ?? existing?.pairCreatedAt,
+    };
+
+    this.upsertPair(merged);
+  }
+
+  clearToken(tokenAddress: string): void {
+    this.pairsByToken.delete(tokenAddress);
+  }
+
+  private upsertTokenPair(tokenAddress: string, pair: DexScreenerPair): void {
+    if (!tokenAddress) return;
+
+    const existingPairs = this.pairsByToken.get(tokenAddress) ?? new Map<string, DexScreenerPair>();
+    existingPairs.set(pair.pairAddress, pair);
+    this.pairsByToken.set(tokenAddress, existingPairs);
+  }
+
+  private findExistingPair(tokenAddress: string, pairAddress: string): DexScreenerPair | null {
+    return this.pairsByToken.get(tokenAddress)?.get(pairAddress) ?? null;
+  }
+}

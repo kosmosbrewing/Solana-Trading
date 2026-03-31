@@ -179,6 +179,7 @@ export const config = {
   realtimeConfirmMinChangePct: numOptional('REALTIME_CONFIRM_MIN_CHANGE_PCT', 0.02),
   realtimeCooldownSec: numOptional('REALTIME_COOLDOWN_SEC', 300),
   realtimeMaxSubscriptions: numOptional('REALTIME_MAX_SUBSCRIPTIONS', 30),
+  realtimePoolDiscoveryEnabled: boolOptional('REALTIME_POOL_DISCOVERY_ENABLED', true),
   realtimeFallbackConcurrency: numOptional('REALTIME_FALLBACK_CONCURRENCY', 2),
   realtimeFallbackRequestsPerSecond: numOptional('REALTIME_FALLBACK_RPS', 4),
   realtimeFallbackBatchSize: numOptional('REALTIME_FALLBACK_BATCH_SIZE', 5),

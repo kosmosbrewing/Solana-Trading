@@ -1,5 +1,5 @@
 import { SignalAuditLogger } from '../audit';
-import { CandleStore, TradeStore } from '../candle';
+import { CandleStore, InternalCandleSource, TradeStore } from '../candle';
 import { EventMonitor, EventScoreStore } from '../event';
 import { Executor, WalletManager } from '../executor';
 import { SpreadMeasurer } from '../gate/spreadMeasurer';
@@ -18,6 +18,7 @@ import { RealtimeReplayStore } from '../realtime';
 export interface BotContext {
   tradingMode: TradingMode;
   candleStore: CandleStore;
+  internalCandleSource?: InternalCandleSource;
   tradeStore: TradeStore;
   riskManager: RiskManager;
   executor: Executor;

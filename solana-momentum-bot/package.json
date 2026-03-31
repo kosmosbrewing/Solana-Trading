@@ -16,6 +16,7 @@
     "vps:shadow": "bash scripts/vps-realtime-shadow.sh",
     "deploy:vps": "bash scripts/deploy.sh",
     "restart:bot-ops": "bash scripts/restart-bot-and-ops.sh",
+    "docs:lint": "node scripts/docs-lint.js && bash scripts/check-docs-freshness.sh",
     "lint": "eslint src/ --ext .ts",
     "test": "jest --config jest.config.cjs"
   },

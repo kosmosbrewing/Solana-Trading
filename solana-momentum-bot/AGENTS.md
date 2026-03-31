@@ -11,9 +11,8 @@
 ### 운영 기준
 | 문서 | 설명 |
 |---|---|
-| [`PLAN4.md`](./PLAN4.md) | 현재 live canary 해석과 다음 운영 우선순위 |
-| [`20260331.md`](./20260331.md) | 2026-03-30 post-patch canary와 후속 telemetry 패치 기록 |
 | [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md) | 현재 active execution plan |
+| [`OPERATIONS.md`](./OPERATIONS.md) | 현재 운영 runbook |
 
 ### 구조/정책 기준
 | 문서 | 설명 |
@@ -28,7 +27,9 @@
 | 문서 | 설명 |
 |---|---|
 | [`README.md`](./README.md) | 저장소 개요와 문서 가이드 |
-| [`STRATEGY.md`](./STRATEGY.md) | 전략 quick reference |
+| [`PLAN.md`](./PLAN.md) | mission charter와 plan hierarchy |
+| [`STRATEGY.md`](./STRATEGY.md) | 현재 전략/Gate/Risk quick reference |
+| [`STRATEGY_NOTES.md`](./STRATEGY_NOTES.md) | 전략 구조적 한계와 다음 전략 가설 memo |
 | [`REALTIME.md`](./REALTIME.md) | realtime shadow / replay 워크플로 |
 | [`BACKTEST.md`](./BACKTEST.md) | batch backtest 워크플로 |
 | [`docs/exec-plans/tech-debt-tracker.md`](./docs/exec-plans/tech-debt-tracker.md) | 현재 기술 부채 목록 |
@@ -36,8 +37,7 @@
 ### historical notes
 | 문서 | 설명 |
 |---|---|
-| [`PLAN3.md`](./PLAN3.md) | quote endpoint / runtime drift historical blocker |
-| [`20260330.md`](./20260330.md) | 12-trade live baseline 분석 |
+| [`PLAN_CMPL.md`](./PLAN_CMPL.md) | 완료된 plan / canary history archive |
 
 ## 에이전트 작업 규칙
 
@@ -51,6 +51,8 @@
 
 ## 문서 정리 원칙
 
-- 현재 동작의 기준은 `PLAN4.md`와 `20260331.md`를 우선한다.
+- 현재 동작의 기준은 `PLAN.md`, `docs/exec-plans/active/1sol-to-100sol.md`, `STRATEGY.md`, `OPERATIONS.md`를 우선한다.
+- 완료된 root plan/handoff는 `PLAN_CMPL.md`로 이관하고, 원본 파일은 필요 없으면 삭제한다.
 - dated handoff는 historical note로만 유지하고, 현재 판단과 충돌하면 최신 plan 문서를 따른다.
 - 중복 메모는 남기지 않는다. 새로운 운영 해석은 기존 handoff를 덧붙이기보다 기준 문서에 흡수한다.
+- root stub 파일은 `README.md`나 active 문서 목록에 개별 나열하지 않는다.

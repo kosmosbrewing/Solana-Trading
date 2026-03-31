@@ -28,6 +28,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Docs lint
+        run: npm run docs:lint
+
       - name: TypeScript build
         run: npm run build
 
@@ -35,10 +38,7 @@ jobs:
         run: npm test
 
       - name: ESLint
-        run: npx eslint src/
-
-      - name: Docs freshness check
-        run: bash scripts/check-docs-freshness.sh
+        run: npm run lint
 
       # Why: 파일 분리 완료 전까지 check-structure.sh는 실패하므로 continue-on-error
       # P1b 완료 후 continue-on-error: false로 변경

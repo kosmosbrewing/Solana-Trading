@@ -49,3 +49,19 @@
 - 직접 `axios.get()` 금지
 - 반드시 해당 Client 모듈 경유 (`BirdeyeClient`, `DexScreenerClient` 등)
 - 새 외부 API 연동 시 `ingester/` 또는 해당 모듈에 Client 클래스 추가
+
+## 문서 메타데이터
+
+- 핵심 문서는 상단에 최소 아래 2개를 둔다:
+  - `Status:`
+  - `Updated:`
+- 권장 추가 메타:
+  - `Purpose:`
+  - `Use with:` 또는 `Archive:`
+- 상태값은 아래 4개 중 하나를 우선 사용한다:
+  - `current`
+  - `active`
+  - `completed`
+  - `archived`
+- 삭제 가능한 redirect 파일은 오래 유지하지 않는다.
+- 완료된 plan / handoff / dated note는 가능한 한 archive 문서 하나로 흡수한다.

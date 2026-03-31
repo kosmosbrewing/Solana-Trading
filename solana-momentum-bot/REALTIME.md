@@ -58,7 +58,8 @@
 실데이터 기준 최신 검증 스냅샷:
 
 - 이 snapshot은 historical validation 기준이다.
-- 현재 live 운영의 최종 판단은 [`PLAN4.md`](./PLAN4.md), [`20260331.md`](./20260331.md)를 우선한다.
+- 현재 active execution plan은 [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md)이고,
+  완료된 plan/canary history는 [`PLAN_CMPL.md`](./PLAN_CMPL.md)를 본다.
 
 - runtime log:
   - `Helius real-time pipeline connected`

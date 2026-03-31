@@ -1,84 +1,130 @@
 # PLAN.md
 
-> Updated: 2026-03-30
-> Mission: `1 SOL -> 100 SOL`
-> Role: 상위 mission roadmap
-> Relationship: 현재 운영 해석은 [`PLAN4.md`](./PLAN4.md), 세부 historical note는 [`20260331.md`](./20260331.md)를 우선한다.
+> Status: current mission charter
+> Updated: 2026-03-31
+> Purpose: 이 저장소의 장기 목표, 운영 원칙, 문서 계층을 고정한다.
+> Use with: [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md) for current active execution work, [`PLAN_CMPL.md`](./PLAN_CMPL.md) for archived plans.
+
+## Role
+
+이 문서는 "지금 당장 무엇을 할 것인가"를 세부적으로 지시하지 않는다.
+대신 아래 3가지만 고정한다.
+
+1. 이 봇이 무엇을 하려는가
+2. 어떤 원칙으로 운영 판단을 내리는가
+3. 하위 plan 문서를 어떻게 읽어야 하는가
+
+즉:
+
+- 현재 active execution work는 [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md)
+- 완료된 plan / dated canary history는 [`PLAN_CMPL.md`](./PLAN_CMPL.md)
+- 이 문서는 그 둘의 상위 헌장이다
+
+## Mission
+
+> 가격이 움직여서 사는 게 아니라, 움직일 이유가 있고, 실제로 움직이기 시작할 때 산다.
+
+최종 목표는 `1 SOL -> 100 SOL` 자체가 아니라,
+설명 가능한 진입, 보수적 리스크 관리, 반복 가능한 기대값을 가진 자동화 경로를 만드는 것이다.
 
 ## Operating Principles
 
 ### P1. 설명 없는 급등을 사지 않는다
-- live 기본은 `requireAttentionScore=true`다.
-- source attribution 또는 context 없는 진입은 성공으로 해석하지 않는다.
+
+- 기본 경로는 `requireAttentionScore=true`를 전제로 해석한다.
+- source attribution 또는 context가 빠진 진입은 성공 사례로 세지지 않는다.
 
 ### P2. Context와 Trigger를 분리한다
-- Context는 왜 볼 만한가, Trigger는 지금 들어가도 되는가다.
-- 브레이크아웃은 진입 트리거이지 알파 전체가 아니다.
+
+- Context는 "왜 봐야 하는가"
+- Trigger는 "지금 들어가도 되는가"
+- 브레이크아웃은 알파 전체가 아니라 진입 트리거다.
 
 ### P3. 측정 없이 승격하지 않는다
-- `Mission Gate`, `Execution Gate`, `Edge Gate`를 통과하기 전까지 live는 bootstrap 해석으로만 본다.
+
+- `Mission Gate`
+- `Execution Gate`
+- `Edge Gate`
+
+위 3축이 충족되기 전까지 live는 bootstrap 해석으로만 본다.
 
 ### P4. 실행 품질을 먼저 고친다
-- quote decay, sell impact, price impact, telemetry 정합성이 확보되지 않으면 성과 해석을 보류한다.
+
+- quote decay
+- sell impact
+- execution viability telemetry
+- gate trace 정합성
+
+이 경로가 불안정하면 수익성 해석도 보류한다.
 
 ### P5. 전략 수보다 검증된 경로를 우선한다
-- 승자인지 증명되지 않은 경로를 늘리지 않는다.
 
-## Current Bottlenecks
+- 새 전략 추가보다 현재 경로의 explainability와 replayability를 우선한다.
+- 증명되지 않은 전략은 문서상 후보로 남을 수 있어도 운영 우선순위를 차지하지 않는다.
 
-- 인프라 블로커는 해소됐다.
-- 전략이 완전히 죽은 것은 아니다. 과거 baseline에서 12건 체결은 있었다.
-- 하지만 cadence는 아직 안정적으로 증명되지 않았다.
-- 현재 핵심 blocker는 아래 4개다.
+## Plan Hierarchy
 
-1. `effectiveRR` gate가 pre-gate 단계에서 완전 차단을 만드는지 여부
-2. pair blacklist와 scanner 재유입이 cadence를 다시 죽이는지 여부
-3. Gecko `429`와 unsupported venue churn이 watchlist 품질을 얼마나 훼손하는지
-4. 새 telemetry 패치 이후 BUY 시그널 표본이 아직 없어서 진짜 blocker를 재확인하지 못했다는 점
+### Layer 1. 상위 헌장
 
-## Current Roadmap
+- [`PLAN.md`](./PLAN.md)
+- 변하지 않는 mission, 원칙, 판정 구조
 
-### Horizon 1. Explainable Live Bootstrap
-- 목표: live를 계속 운영하면서도 설명 가능한 진입과 traceability를 유지한다.
-- 완료 기준:
-  - signal / gate / risk / execution / exit trace가 일관되게 남는다.
-  - `execution.preGate` / `execution.postSize` 비교가 restart 후에도 분석 가능하다.
+### Layer 2. 현재 active execution plan
 
-### Horizon 2. First Reliable Edge Diagnosis
-- 목표: `poor_execution_viability`의 직접 원인을 분리한다.
-- 완료 기준:
-  - 첫 post-patch BUY 시그널에서 pre-gate vs post-size RR 비교 확보
-  - blacklist pair 재유입 여부 확인
-  - round-trip cost / TP2-SL 구조 중 어느 쪽이 실제 blocker인지 구분
+- [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md)
+- 현재 검증 순서와 실행 우선순위를 정한다
+
+### Layer 3. completed archive
+
+- [`PLAN_CMPL.md`](./PLAN_CMPL.md)
+- 완료된 plan과 dated canary history를 모은 archive다
+
+## Mission Horizons
+
+### Horizon 1. Explainable Bootstrap
+
+목표:
+- signal -> gate -> risk -> execution -> exit trace가 일관되게 남는다.
+- `execution.preGate` / `execution.postSize` 비교가 분석 가능하다.
+
+### Horizon 2. First Reliable Diagnosis
+
+목표:
+- `poor_execution_viability`가 실제 blocker인지
+- blacklist 재유입이 cadence를 죽이는지
+- data-plane noise가 해석을 얼마나 오염시키는지
+
+를 분리한다.
 
 ### Horizon 3. Gate-Proven Sample
-- 목표: 50-trade를 의미 있게 쌓는다.
-- 진입 조건:
-  - cadence가 다시 살아난다.
-  - `Edge Gate`를 왜곡하는 운영 노이즈가 분리된다.
 
-### Horizon 4. Survival Proof
-- 목표: 기대값과 리스크 관리가 동시에 반복 확인된다.
+목표:
+- 충분한 trade/sample을 쌓아 Mission/Execution/Edge를 같은 프레임으로 읽는다.
+
+### Horizon 4. Survival Before Compounding
+
+목표:
+- 기대값이 있어도 파산하지 않는 구조를 먼저 증명한다.
 
 ### Horizon 5. Compound Carefully
-- 목표: 검증된 경로만 천천히 키운다.
 
-## Near-Term Focus
+목표:
+- 검증된 경로만 천천히 키운다.
 
-1. 첫 BUY 시그널이 다시 나오도록 런타임을 더 관찰한다.
-2. BUY 발생 시 `execution.preGate` / `execution.postSize` snapshot을 우선 확인한다.
-3. 동일 loser pair가 blacklist 상태로 scanner/watchlist를 반복 점유하는지 확인한다.
-4. Gecko `429`와 unsupported venue churn은 alpha blocker와 분리해서 기록한다.
-5. telemetry가 확보되기 전에는 RR threshold, TP2, blacklist 완화 같은 파라미터 조정을 서두르지 않는다.
+## Decision Rules
 
-## What Not To Do
+### Do
 
-- 표본 없이 RR threshold를 낮추는 것
-- blacklist를 감으로 완화하는 것
-- `Gecko 429`를 곧바로 전략 실패로 해석하는 것
-- 12-trade baseline만으로 수익성 결론을 확정하는 것
-- 새 BUY 표본 없이 2차, 3차 파라미터 튜닝을 반복하는 것
+- 현재 active 판단은 항상 최신 active execution plan으로 읽는다.
+- historical 문서는 "왜 지금 이렇게 됐는가"를 이해할 때만 참고한다.
+- 파라미터 조정보다 먼저 telemetry와 표본 부족 문제를 분리한다.
+
+### Do Not
+
+- 오래된 handoff를 현재 active blocker로 재승격하지 않는다.
+- 표본 없이 RR threshold, TP 구조, blacklist를 감으로 완화하지 않는다.
+- archived note를 source of truth처럼 읽지 않는다.
 
 ## One-Line Summary
 
-> 지금 단계의 일은 더 많은 기능을 만드는 것이 아니라, post-patch live canary에서 첫 BUY 표본을 확보해 실제 blocker가 `pre-gate RR`, `post-size RR`, `blacklist`, `data-plane noise` 중 무엇인지 분리하는 것이다.
+> `PLAN.md`의 역할은 어떤 문서가 현재 active이고 어떤 문서가 archive인지를 고정하는 것이다.

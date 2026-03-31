@@ -6,6 +6,7 @@
 | 레이어 규칙 | `layer-rules.md` | ✅ 확정 | 2026-03-18 |
 | 2-Stage Entry 모델 | `2-stage-entry.md` | ✅ 확정 | 2026-03-18 |
 | Risk Tier 시스템 | `risk-tier-system.md` | ✅ 확정 | 2026-03-18 |
+| Helius Data Plane Transition | `helius-data-plane-transition.md` | 🟡 제안 | 2026-03-31 |
 
 ## Gate 체인 개요
 

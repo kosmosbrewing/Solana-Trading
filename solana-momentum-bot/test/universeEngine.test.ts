@@ -1,15 +1,19 @@
 import { GeckoTerminalClient } from '../src/ingester/geckoTerminalClient';
+import { InternalCandleSource } from '../src/candle';
 import { UniverseEngine } from '../src/universe/universeEngine';
 import type { Candle } from '../src/utils/types';
 
 describe('UniverseEngine spread proxy', () => {
-  it('hydrates watchlist spreadPct from recent 1m candles', async () => {
+  it('hydrates watchlist spreadPct from internal recent 1m candles before Gecko fallback', async () => {
     const mockGeckoClient = {
-      getOHLCV: jest.fn().mockResolvedValue(makeCandles()),
+      getOHLCV: jest.fn().mockResolvedValue([]),
       getPoolInfo: jest.fn().mockResolvedValue(null),
       getTrendingTokens: jest.fn().mockResolvedValue([]),
       getTrendingPools: jest.fn().mockResolvedValue([]),
     } as unknown as GeckoTerminalClient;
+    const internalCandleSource = {
+      getRecentCandles: jest.fn().mockResolvedValue(makeCandles()),
+    } as unknown as InternalCandleSource;
 
     const mockDexScreener = {
       getTokenPairs: jest.fn().mockResolvedValue([{
@@ -32,7 +36,7 @@ describe('UniverseEngine spread proxy', () => {
       params: { maxSpreadPct: 0.03 },
       refreshIntervalMs: 300_000,
       poolAddresses: ['pair-1'],
-    }, mockDexScreener as never);
+    }, mockDexScreener as never, internalCandleSource);
 
     await engine.refresh();
 
@@ -40,6 +44,8 @@ describe('UniverseEngine spread proxy', () => {
     expect(watchlist).toHaveLength(1);
     expect(watchlist[0].spreadPct).toBeGreaterThan(0);
     expect(watchlist[0].spreadPct).toBeCloseTo((1.02 - 1.0) / 1.01, 6);
+    expect(internalCandleSource.getRecentCandles).toHaveBeenCalledWith('pair-1', 60, 3);
+    expect(mockGeckoClient.getOHLCV).not.toHaveBeenCalled();
   });
 
   it('falls back to fdv when marketCap is unavailable', async () => {

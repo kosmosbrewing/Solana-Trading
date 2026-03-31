@@ -18,6 +18,9 @@ const log = createModuleLogger('Scanner');
 export interface WatchlistEntry {
   tokenMint: string;
   pairAddress: string;
+  dexId?: string;
+  baseTokenAddress?: string;
+  quoteTokenAddress?: string;
   symbol: string;
   name?: string;
   discoverySource: string;
@@ -234,6 +237,8 @@ export class ScannerEngine extends EventEmitter {
     // R3: 블랙리스트 pair 재진입 차단
     const pairAddress = typeof token.raw?.pair_address === 'string'
       ? token.raw.pair_address
+      : typeof token.raw?.pool_address === 'string'
+        ? token.raw.pool_address
       : token.address;
     if (this.config.blacklistCheck?.(pairAddress)) {
       log.info(`Candidate ${token.symbol} skipped: pair blacklisted by edge tracker (${pairAddress})`);
@@ -285,6 +290,13 @@ export class ScannerEngine extends EventEmitter {
     const entry: WatchlistEntry = {
       tokenMint: token.address,
       pairAddress, // R3: raw.pair_address 우선, 없으면 token.address
+      dexId: typeof token.raw?.dex_id === 'string' ? token.raw.dex_id : undefined,
+      baseTokenAddress: typeof token.raw?.base_token_address === 'string'
+        ? token.raw.base_token_address
+        : token.address,
+      quoteTokenAddress: typeof token.raw?.quote_token_address === 'string'
+        ? token.raw.quote_token_address
+        : undefined,
       symbol: token.symbol,
       name: token.name,
       discoverySource: this.resolveDiscoverySource(token),

@@ -2,6 +2,12 @@ export { HeliusWSIngester } from './heliusWSIngester';
 export { RealtimeReplayStore } from './replayStore';
 export { RealtimeAdmissionTracker } from './realtimeAdmissionTracker';
 export { RealtimeAdmissionStore } from './realtimeAdmissionStore';
+export {
+  HeliusPoolDiscovery,
+  SUPPORTED_POOL_DISCOVERY_PROGRAMS,
+  extractObservedPoolCandidate,
+  looksLikePoolInitLogs,
+} from './poolDiscovery';
 export { MicroCandleBuilder } from './microCandleBuilder';
 export { fetchRecentSwapsForPool } from './recentSwapBackfill';
 export { RealtimePoolOwnerResolver } from './poolOwnerResolver';

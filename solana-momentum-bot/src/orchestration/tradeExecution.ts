@@ -234,11 +234,9 @@ async function loadTradeMonitoringSnapshot(
   trade: Trade,
   ctx: BotContext
 ): Promise<{ trade: Trade; recentCandles: Candle[]; currentPrice: number } | undefined> {
-  const recentCandles = await ctx.candleStore.getRecentCandles(
-    trade.pairAddress,
-    300,
-    10
-  );
+  const recentCandles = ctx.internalCandleSource
+    ? await ctx.internalCandleSource.getRecentCandles(trade.pairAddress, 300, 10)
+    : await ctx.candleStore.getRecentCandles(trade.pairAddress, 300, 10);
   const realtimePrice = ctx.realtimeCandleBuilder?.getCurrentPrice(trade.pairAddress) ?? null;
   const candlePrice = recentCandles[recentCandles.length - 1]?.close;
   const currentPrice = realtimePrice ?? candlePrice;

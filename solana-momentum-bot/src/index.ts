@@ -14,7 +14,7 @@ import {
 } from './ingester';
 import { BirdeyeWSClient } from './ingester/birdeyeWSClient';
 import { EventMonitor, EventScoreStore } from './event';
-import { CandleStore, TradeStore } from './candle';
+import { CandleStore, InternalCandleSource, TradeStore } from './candle';
 import { RiskManager, RiskConfig, RegimeFilter } from './risk';
 import {
   EdgeTracker,
@@ -27,6 +27,7 @@ import {
 import { Executor, ExecutorConfig, WalletManager } from './executor';
 import { Notifier } from './notifier';
 import {
+  HeliusPoolDiscovery,
   HeliusWSIngester,
   MicroCandleBuilder,
   RealtimeAdmissionTracker,
@@ -42,7 +43,9 @@ import { UniverseEngine, UniverseEngineConfig } from './universe';
 import {
   ScannerEngine,
   ScannerEngineConfig,
+  CompositeTokenPairResolver,
   DexScreenerClient,
+  HeliusPoolRegistry,
   SocialMentionTracker,
   attachScannerFreshListingSource,
   createScannerBlacklistCheck,
@@ -132,6 +135,7 @@ async function main() {
   })) {
     log.warn(`Runtime drift warning: ${warning}`);
   }
+  const heliusPoolRegistry = new HeliusPoolRegistry();
   const realtimePoolTargets = new Map<string, string>();
   const realtimePoolAliases = new Map<string, string>();
   const realtimePoolMetadata = new Map<string, RealtimePoolMetadata>();
@@ -150,6 +154,7 @@ async function main() {
     ? new RealtimeAdmissionStore(path.resolve(process.cwd(), 'data/realtime-admission.json'))
     : null;
   let heliusIngester: HeliusWSIngester | null = null;
+  let heliusPoolDiscovery: HeliusPoolDiscovery | null = null;
   let realtimeCandleBuilder: MicroCandleBuilder | null = null;
 
   const setRealtimePoolTarget = (logicalPair: string, subscriptionPair: string) => {
@@ -158,6 +163,15 @@ async function main() {
   };
   const setRealtimePoolMetadata = (subscriptionPair: string, metadata: RealtimePoolMetadata) => {
     realtimePoolMetadata.set(subscriptionPair, metadata);
+    const logicalPair = realtimePoolAliases.get(subscriptionPair);
+    heliusPoolRegistry.upsertObservedPair({
+      pairAddress: subscriptionPair,
+      dexId: metadata.dexId,
+      baseTokenAddress: metadata.baseMint || logicalPair || subscriptionPair,
+      baseTokenSymbol: logicalPair && logicalPair !== subscriptionPair ? logicalPair : undefined,
+      quoteTokenAddress: metadata.quoteMint,
+      quoteTokenSymbol: metadata.quoteMint === SOL_MINT ? 'SOL' : undefined,
+    });
   };
   const removeRealtimePoolTarget = (logicalPair: string) => {
     const existing = realtimePoolTargets.get(logicalPair);
@@ -361,6 +375,7 @@ async function main() {
   const healthMonitor = new HealthMonitor();
   healthMonitor.setDbConnected(true);
   healthMonitor.start();
+  const internalCandleSource = new InternalCandleSource(candleStore);
 
   // ─── Execution Lock (v0.3) ─────────────────────────
   const executionLock = new ExecutionLock(async () => {
@@ -458,6 +473,7 @@ async function main() {
     config.dexScreenerApiKey || undefined,
     (source) => { runtimeDiagnosticsTracker.recordRateLimit(source); }
   );
+  const tokenPairResolver = new CompositeTokenPairResolver(heliusPoolRegistry, dexScreenerClient);
   log.info('DexScreener client initialized');
 
   // ─── Phase 1A: Scanner Engine ─────────────────────
@@ -537,10 +553,26 @@ async function main() {
       while (ingesterQueue.length > 0) {
         const entry = ingesterQueue.shift()!;
         try {
+          if (entry.pairAddress !== entry.tokenMint && entry.quoteTokenAddress) {
+            heliusPoolRegistry.upsertObservedPair({
+              pairAddress: entry.pairAddress,
+              dexId: entry.dexId,
+              baseTokenAddress: entry.baseTokenAddress || entry.tokenMint,
+              baseTokenSymbol: entry.symbol,
+              quoteTokenAddress: entry.quoteTokenAddress,
+              quoteTokenSymbol: entry.quoteTokenAddress === SOL_MINT ? 'SOL' : undefined,
+              priceUsd: entry.lastPriceUsd,
+              liquidityUsd: entry.poolInfo?.tvl,
+              volume24hUsd: entry.poolInfo?.dailyVolume,
+              marketCap: entry.poolInfo?.marketCap,
+              pairCreatedAt: undefined,
+            });
+          }
+
           // Why: GeckoTerminal OHLCV는 pool address 필요 (token mint ≠ pool address)
           // DexScreener pair 목록에서 최고 유동성 pair를 선택
-          const pairs = await dexScreenerClient.getTokenPairs(entry.tokenMint);
-          pairs.sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
+          const pairs = await tokenPairResolver.getTokenPairs(entry.tokenMint);
+          heliusPoolRegistry.upsertPairs(pairs);
           const bestPair = pairs[0];
           const poolAddress = bestPair?.pairAddress;
           if (!poolAddress) {
@@ -563,6 +595,15 @@ async function main() {
             : pairs;
           const realtimeEligibility = selectRealtimeEligiblePair(admissionPairs, poolOwners);
           if (realtimeEligibility.eligible && realtimeEligibility.pair) {
+            heliusPoolRegistry.upsertObservedPair({
+              pairAddress: realtimeEligibility.pair.pairAddress,
+              dexId: realtimeEligibility.pair.dexId,
+              baseTokenAddress: realtimeEligibility.pair.baseToken?.address || entry.tokenMint,
+              baseTokenSymbol: realtimeEligibility.pair.baseToken?.symbol || entry.symbol,
+              quoteTokenAddress: realtimeEligibility.pair.quoteToken?.address || SOL_MINT,
+              quoteTokenSymbol: realtimeEligibility.pair.quoteToken?.symbol,
+              liquidityUsd: realtimeEligibility.pair.liquidity?.usd,
+            });
             setRealtimePoolTarget(entry.tokenMint, realtimeEligibility.pair.pairAddress);
             setRealtimePoolMetadata(realtimeEligibility.pair.pairAddress, {
               dexId: realtimeEligibility.pair.dexId,
@@ -713,7 +754,12 @@ async function main() {
     poolAddresses: targetPair ? [targetPair] : [],
   };
 
-  const universeEngine = new UniverseEngine(geckoClient, universeConfig, dexScreenerClient);
+  const universeEngine = new UniverseEngine(
+    geckoClient,
+    universeConfig,
+    tokenPairResolver,
+    internalCandleSource
+  );
   if (targetPair) {
     setRealtimePoolTarget(targetPair, targetPair);
   }
@@ -734,6 +780,7 @@ async function main() {
   const ctx: BotContext = {
     tradingMode: effectiveMode,
     candleStore,
+    internalCandleSource,
     tradeStore,
     riskManager,
     executor,
@@ -778,6 +825,26 @@ async function main() {
       disableSingleTxFallbackOnBatchUnsupported:
         config.realtimeDisableSingleTxFallbackOnBatchUnsupported,
     });
+    if (config.realtimePoolDiscoveryEnabled) {
+      heliusPoolDiscovery = new HeliusPoolDiscovery({
+        rpcWsUrl: buildHeliusWsUrl(),
+        rpcHttpUrl: config.solanaRpcUrl,
+      });
+      heliusPoolDiscovery.on('poolDiscovered', (candidate) => {
+        heliusPoolRegistry.upsertObservedPair(candidate);
+        log.info(
+          `Helius pool discovered ${candidate.dexId ?? 'unknown'} ${candidate.pairAddress} ` +
+          `${candidate.baseTokenAddress}/${candidate.quoteTokenAddress}`
+        );
+      });
+      heliusPoolDiscovery.on('error', ({ programId, signature, error }: {
+        programId: string;
+        signature: string;
+        error: unknown;
+      }) => {
+        log.warn(`Helius pool discovery error for ${programId} ${signature}: ${error}`);
+      });
+    }
     for (const [pool, metadata] of realtimePoolMetadata.entries()) {
       heliusIngester.setPoolMetadata(pool, metadata);
     }
@@ -807,6 +874,17 @@ async function main() {
     });
     heliusIngester.on('swap', (swap) => {
       const logicalPair = realtimePoolAliases.get(swap.pool) ?? swap.pool;
+      const metadata = realtimePoolMetadata.get(swap.pool);
+      if (metadata) {
+        heliusPoolRegistry.upsertObservedPair({
+          pairAddress: swap.pool,
+          dexId: metadata.dexId,
+          baseTokenAddress: metadata.baseMint || logicalPair,
+          baseTokenSymbol: logicalPair !== swap.pool ? logicalPair : undefined,
+          quoteTokenAddress: metadata.quoteMint,
+          quoteTokenSymbol: metadata.quoteMint === SOL_MINT ? 'SOL' : undefined,
+        });
+      }
       if (swap.source === 'logs') {
         realtimeAdmissionTracker?.recordLogParsed(swap.pool);
       } else {
@@ -999,7 +1077,7 @@ async function main() {
 
       // SOL pool address 조회 (최초 1회만)
       if (!solPoolAddress) {
-        solPoolAddress = await dexScreenerClient.getBestPoolAddress(SOL_MINT);
+        solPoolAddress = await tokenPairResolver.getBestPoolAddress(SOL_MINT);
       }
 
       if (solPoolAddress) {
@@ -1010,7 +1088,15 @@ async function main() {
           && (nowMs - cachedSol4hCandles.fetchedAtMs) < REGIME_SOL_CACHE_TTL_MS;
 
         if (!useCachedCandles) {
-          const sol4hCandles = await geckoClient.getOHLCV(solPoolAddress, '4H', tenDaysAgo, now);
+          const internalSol4hCandles = await internalCandleSource.getCandlesInRange(
+            solPoolAddress,
+            4 * 3600,
+            new Date(tenDaysAgo * 1000),
+            new Date(now * 1000)
+          );
+          const sol4hCandles = internalSol4hCandles.length > 0
+            ? internalSol4hCandles
+            : await geckoClient.getOHLCV(solPoolAddress, '4H', tenDaysAgo, now);
           cachedSol4hCandles = {
             bucketStartMs: currentBucketStartMs,
             fetchedAtMs: nowMs,
@@ -1067,6 +1153,9 @@ async function main() {
 
   if (realtimeModeEnabled && heliusIngester && realtimeCandleBuilder) {
     realtimeCandleBuilder.start();
+    if (heliusPoolDiscovery) {
+      await heliusPoolDiscovery.start();
+    }
     await heliusIngester.subscribePools(resolveRealtimePools(
       universeEngine.getWatchlist().map((pool) => pool.pairAddress)
     ));
@@ -1094,7 +1183,11 @@ async function main() {
 
   // ─── Start ingester ─────────────────────────────────
   // Scanner 모드: 동적 addPair()를 위해 항상 start()
-  await ingester.start();
+  if (!realtimeModeEnabled) {
+    await ingester.start();
+  } else {
+    log.info('Gecko ingester skipped in realtime mode (internal candles active)');
+  }
   log.info('Bot is running. Press Ctrl+C to stop.');
 
   await notifier.sendInfo(`Bot started (v0.5 — Phase 2 Core Live, mode: ${effectiveMode})`);
@@ -1122,6 +1215,7 @@ async function main() {
     if (scanner) scanner.stop();
     if (birdeyeWS) birdeyeWS.stop();
     if (realtimeCandleBuilder) realtimeCandleBuilder.stop();
+    if (heliusPoolDiscovery) await heliusPoolDiscovery.stop();
     if (heliusIngester) await heliusIngester.stop();
     executionLock.destroy();
     healthMonitor.stop();

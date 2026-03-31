@@ -2,7 +2,8 @@ import { EventEmitter } from 'events';
 import { createModuleLogger } from '../utils/logger';
 import { PoolInfo } from '../utils/types';
 import { GeckoTerminalClient } from '../ingester/geckoTerminalClient';
-import { DexScreenerClient } from '../scanner/dexScreenerClient';
+import type { InternalCandleSource } from '../candle';
+import type { TokenPairLookupClient } from '../scanner';
 import {
   UniverseParams,
   DEFAULT_UNIVERSE_PARAMS,
@@ -27,7 +28,8 @@ export interface UniverseEngineConfig {
 export class UniverseEngine extends EventEmitter {
   private params: UniverseParams;
   private geckoClient: GeckoTerminalClient;
-  private dexScreenerClient: DexScreenerClient | null;
+  private internalCandleSource: InternalCandleSource | null;
+  private tokenPairLookupClient: TokenPairLookupClient | null;
   private refreshIntervalMs: number;
   private watchlist: PoolInfo[] = [];
   private previousTvl: Map<string, number> = new Map();
@@ -37,11 +39,13 @@ export class UniverseEngine extends EventEmitter {
   constructor(
     geckoClient: GeckoTerminalClient,
     config: UniverseEngineConfig,
-    dexScreenerClient?: DexScreenerClient | null
+    tokenPairLookupClient?: TokenPairLookupClient | null,
+    internalCandleSource?: InternalCandleSource | null
   ) {
     super();
     this.geckoClient = geckoClient;
-    this.dexScreenerClient = dexScreenerClient ?? null;
+    this.tokenPairLookupClient = tokenPairLookupClient ?? null;
+    this.internalCandleSource = internalCandleSource ?? null;
     this.params = { ...DEFAULT_UNIVERSE_PARAMS, ...config.params };
     this.refreshIntervalMs = config.refreshIntervalMs;
     this.poolAddresses = config.poolAddresses || [];
@@ -157,8 +161,8 @@ export class UniverseEngine extends EventEmitter {
   private async fetchPoolInfo(pairAddress: string): Promise<PoolInfo | null> {
     try {
       // DexScreener로 토큰 정보 조회
-      if (this.dexScreenerClient) {
-        const pairs = await this.dexScreenerClient.getTokenPairs(pairAddress);
+      if (this.tokenPairLookupClient) {
+        const pairs = await this.tokenPairLookupClient.getTokenPairs(pairAddress);
         if (pairs.length > 0) {
           const pair = pairs[0];
           return {
@@ -218,13 +222,7 @@ export class UniverseEngine extends EventEmitter {
 
   private async estimateSpreadProxy(pairAddress: string): Promise<number> {
     try {
-      const now = Math.floor(Date.now() / 1000);
-      const candles = await this.geckoClient.getOHLCV(
-        pairAddress,
-        '1m',
-        now - 180,
-        now
-      );
+      const candles = await this.getSpreadProxyCandles(pairAddress);
       if (candles.length === 0) return 0;
 
       const proxyValues = candles
@@ -238,5 +236,22 @@ export class UniverseEngine extends EventEmitter {
     } catch {
       return 0;
     }
+  }
+
+  private async getSpreadProxyCandles(pairAddress: string) {
+    const internalCandles = this.internalCandleSource
+      ? await this.internalCandleSource.getRecentCandles(pairAddress, 60, 3)
+      : [];
+    if (internalCandles.length > 0) {
+      return internalCandles;
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    return this.geckoClient.getOHLCV(
+      pairAddress,
+      '1m',
+      now - 180,
+      now
+    );
   }
 }

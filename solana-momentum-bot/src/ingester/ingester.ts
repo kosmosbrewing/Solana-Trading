@@ -2,9 +2,18 @@ import { EventEmitter } from 'events';
 import { GeckoTerminalClient } from './geckoTerminalClient';
 import { CandleStore } from '../candle/candleStore';
 import { createModuleLogger } from '../utils/logger';
-import { CandleInterval } from '../utils/types';
+import { Candle, CandleInterval } from '../utils/types';
 
 const log = createModuleLogger('Ingester');
+const INTERVAL_SECONDS: Record<CandleInterval, number> = {
+  '5s': 5,
+  '15s': 15,
+  '1m': 60,
+  '5m': 300,
+  '15m': 900,
+  '1H': 3600,
+  '4H': 14_400,
+};
 
 export interface IngesterConfig {
   pairAddress: string;
@@ -84,10 +93,19 @@ export class Ingester extends EventEmitter {
 
   private async backfill(cfg: IngesterConfig): Promise<void> {
     const now = Math.floor(Date.now() / 1000);
-    const twoHoursAgo = now - 7200;
+    const intervalSec = INTERVAL_SECONDS[cfg.intervalType];
+    const timeFrom = await this.resolveBackfillStartTime(cfg, now);
+    if (timeFrom == null) {
+      log.info(`Backfill skipped for ${cfg.pairAddress}: recent internal candles already present`);
+      const warmupCandles = await this.loadRecentStoredCandles(cfg, intervalSec, 30);
+      if (warmupCandles.length > 0) {
+        this.emit('candles', warmupCandles);
+      }
+      return;
+    }
 
     try {
-      const candles = await this.fetchCandlesWithRetry(cfg, twoHoursAgo, now, 'backfill');
+      const candles = await this.fetchCandlesWithRetry(cfg, timeFrom, now, 'backfill');
 
       if (candles.length > 0) {
         await this.candleStore.insertCandles(candles);
@@ -106,7 +124,16 @@ export class Ingester extends EventEmitter {
     if (!this.running) return;
 
     const now = Math.floor(Date.now() / 1000);
-    const lastTime = this.lastFetchTime.get(cfg.pairAddress) || (now - 600);
+    const intervalSec = INTERVAL_SECONDS[cfg.intervalType];
+    const latestStoredCandle = await this.loadLatestStoredCandle(cfg, intervalSec);
+    if (latestStoredCandle && this.hasFreshClosedCandle(latestStoredCandle, now, intervalSec)) {
+      const latestStoredSec = Math.floor(latestStoredCandle.timestamp.getTime() / 1000);
+      this.lastFetchTime.set(cfg.pairAddress, latestStoredSec);
+      log.debug(`Poll skipped for ${cfg.pairAddress}: latest internal candle is still current`);
+      return;
+    }
+
+    const lastTime = await this.resolvePollStartTime(cfg, now);
 
     try {
       const candles = await this.fetchCandlesWithRetry(cfg, lastTime, now, 'poll');
@@ -267,6 +294,74 @@ export class Ingester extends EventEmitter {
 
   private getErrorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
+  }
+
+  private async resolveBackfillStartTime(
+    cfg: IngesterConfig,
+    nowSec: number
+  ): Promise<number | null> {
+    const intervalSec = INTERVAL_SECONDS[cfg.intervalType];
+    const latestStoredCandle = await this.loadLatestStoredCandle(cfg, intervalSec);
+    const latestStoredSec = latestStoredCandle
+      ? Math.floor(latestStoredCandle.timestamp.getTime() / 1000)
+      : null;
+
+    if (latestStoredSec != null) {
+      this.lastFetchTime.set(cfg.pairAddress, latestStoredSec);
+      if (latestStoredSec >= nowSec - intervalSec * 2) {
+        return null;
+      }
+      return Math.max(nowSec - 7200, latestStoredSec + intervalSec);
+    }
+
+    return nowSec - 7200;
+  }
+
+  private async resolvePollStartTime(
+    cfg: IngesterConfig,
+    nowSec: number
+  ): Promise<number> {
+    const existing = this.lastFetchTime.get(cfg.pairAddress);
+    if (existing != null) {
+      return existing;
+    }
+
+    const intervalSec = INTERVAL_SECONDS[cfg.intervalType];
+    const latestStoredCandle = await this.loadLatestStoredCandle(cfg, intervalSec);
+    if (latestStoredCandle) {
+      const latestStoredSec = Math.floor(latestStoredCandle.timestamp.getTime() / 1000);
+      this.lastFetchTime.set(cfg.pairAddress, latestStoredSec);
+      return latestStoredSec + intervalSec;
+    }
+
+    return nowSec - Math.max(intervalSec * 2, 600);
+  }
+
+  private async loadLatestStoredCandle(
+    cfg: IngesterConfig,
+    intervalSec: number
+  ): Promise<Candle | null> {
+    const candles = await this.candleStore.getRecentCandles(cfg.pairAddress, intervalSec, 1);
+    return candles[0] ?? null;
+  }
+
+  private async loadRecentStoredCandles(
+    cfg: IngesterConfig,
+    intervalSec: number,
+    limit: number
+  ): Promise<Candle[]> {
+    return this.candleStore.getRecentCandles(cfg.pairAddress, intervalSec, limit);
+  }
+
+  private hasFreshClosedCandle(
+    candle: Candle,
+    nowSec: number,
+    intervalSec: number
+  ): boolean {
+    const latestStoredSec = Math.floor(candle.timestamp.getTime() / 1000);
+    const currentBucketStartSec = Math.floor(nowSec / intervalSec) * intervalSec;
+    const latestClosedBucketStartSec = currentBucketStartSec - intervalSec;
+    return latestStoredSec >= latestClosedBucketStartSec;
   }
 }
 

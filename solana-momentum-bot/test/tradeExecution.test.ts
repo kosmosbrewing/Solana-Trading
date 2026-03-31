@@ -71,7 +71,7 @@ describe('tradeExecution paper balance', () => {
       takeProfit1: 1.1,
       takeProfit2: 1.2,
       highWaterMark: 1.0,
-      timeStopAt: new Date('2026-03-23T00:00:00Z'),
+      timeStopAt: new Date(Date.now() + 3600_000),
     };
 
     const candleStore = {
@@ -140,6 +140,93 @@ describe('tradeExecution paper balance', () => {
     expect(tradeStore.closeTrade).toHaveBeenCalledTimes(1);
     const [, exitPrice] = tradeStore.closeTrade.mock.calls[0];
     expect(exitPrice).toBeCloseTo(1.21, 8);
+  });
+
+  it('uses internal aggregated candles for open-position monitoring when available', async () => {
+    const trade: Trade = {
+      id: 'trade-int',
+      pairAddress: 'pair-int',
+      strategy: 'volume_spike',
+      side: 'BUY',
+      entryPrice: 1.0,
+      quantity: 1.0,
+      status: 'OPEN',
+      createdAt: new Date('2026-03-21T00:00:00Z'),
+      stopLoss: 0.9,
+      takeProfit1: 1.1,
+      takeProfit2: 1.2,
+      highWaterMark: 1.0,
+      timeStopAt: new Date(Date.now() + 3600_000),
+    };
+
+    const candleStore = {
+      getRecentCandles: jest.fn().mockResolvedValue([]),
+    };
+    const internalCandleSource = {
+      getRecentCandles: jest.fn().mockResolvedValue([{
+        pairAddress: 'pair-int',
+        timestamp: new Date('2026-03-22T00:00:00Z'),
+        intervalSec: 300,
+        open: 1.0,
+        high: 1.22,
+        low: 0.99,
+        close: 1.02,
+        volume: 100,
+        buyVolume: 60,
+        sellVolume: 40,
+        tradeCount: 10,
+      }]),
+    };
+    const tradeStore = {
+      closeTrade: jest.fn().mockResolvedValue(undefined),
+      failTrade: jest.fn().mockResolvedValue(undefined),
+      updateHighWaterMark: jest.fn().mockResolvedValue(undefined),
+    };
+    const notifier = {
+      sendTradeClose: jest.fn().mockResolvedValue(undefined),
+      sendError: jest.fn().mockResolvedValue(undefined),
+      sendCritical: jest.fn().mockResolvedValue(undefined),
+      sendInfo: jest.fn().mockResolvedValue(undefined),
+      sendTradeAlert: jest.fn().mockResolvedValue(undefined),
+    };
+    const positionStore = {
+      getOpenPositions: jest.fn().mockResolvedValue([]),
+      updateState: jest.fn().mockResolvedValue(undefined),
+    };
+    const healthMonitor = {
+      updateTradeTime: jest.fn(),
+      updatePositions: jest.fn(),
+      updateDailyPnl: jest.fn(),
+    };
+    const riskManager = {
+      getPortfolioState: jest.fn().mockResolvedValue({
+        openTrades: [trade],
+        dailyPnl: 0,
+      }),
+      applyUnrealizedDrawdown: jest.fn().mockImplementation((portfolio) => portfolio),
+      getActiveHalt: jest.fn().mockReturnValue(null),
+    };
+    const ctx = {
+      tradingMode: 'paper',
+      paperBalance: 10,
+      candleStore,
+      internalCandleSource,
+      tradeStore,
+      notifier,
+      positionStore,
+      healthMonitor,
+      riskManager,
+      executor: { getBalance: jest.fn() },
+      realtimeCandleBuilder: { getCurrentPrice: jest.fn().mockReturnValue(null) },
+    } as unknown as BotContext;
+
+    await checkOpenPositions(ctx);
+
+    expect(internalCandleSource.getRecentCandles).toHaveBeenCalledWith('pair-int', 300, 10);
+    expect(candleStore.getRecentCandles).not.toHaveBeenCalled();
+    expect(tradeStore.closeTrade).toHaveBeenCalledTimes(1);
+    const [, exitPrice] = tradeStore.closeTrade.mock.calls[0];
+    expect(exitPrice).toBeCloseTo(1.2, 8);
   });
 
   it('uses the sell transaction signature in the close notification for live exits', async () => {

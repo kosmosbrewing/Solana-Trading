@@ -1,4 +1,5 @@
 export * from './edgeTracker';
+export * from './edgeInputSanitizer';
 export * from './measurement';
 export * from './paperValidation';
 export * from './paperMetrics';

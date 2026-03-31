@@ -1,4 +1,5 @@
 import { Pool } from 'pg';
+import { sanitizeEdgeLikeTrades } from '../reporting/edgeInputSanitizer';
 import { buildPaperValidationReport, PaperValidationTrade, PaperValidationSignal } from '../reporting/paperValidation';
 import { createModuleLogger } from '../utils/logger';
 import { TradingMode } from '../utils/config';
@@ -14,6 +15,11 @@ export interface PreflightConfig {
   enforceGate: boolean;
   /** H-13: 실행 비용 보정 — R:R에서 차감할 round-trip cost (spread+fee, default: 0.01 = 1%) */
   estimatedCostPct: number;
+  /** Live startup requires a keyed Jupiter path unless explicitly disabled. */
+  requireJupiterApiKey: boolean;
+  hasJupiterApiKey: boolean;
+  minMainWalletBalanceSol: number;
+  mainWalletBalanceSol?: number;
 }
 
 const DEFAULT_PREFLIGHT: PreflightConfig = {
@@ -23,6 +29,9 @@ const DEFAULT_PREFLIGHT: PreflightConfig = {
   minRewardRisk: 2.0,
   enforceGate: true,
   estimatedCostPct: 0.01,
+  requireJupiterApiKey: true,
+  hasJupiterApiKey: false,
+  minMainWalletBalanceSol: 0.05,
 };
 
 export interface PreflightResult {
@@ -105,7 +114,12 @@ export async function runPreflightCheck(
     filterReason: row.filter_reason,
   }));
 
-  const report = buildPaperValidationReport(trades, signals, {
+  const sanitizedTrades = sanitizeEdgeLikeTrades(trades);
+  if (sanitizedTrades.droppedCount > 0) {
+    log.warn(`Pre-flight excluded ${sanitizedTrades.droppedCount} invalid closed trade(s) from edge inputs`);
+  }
+
+  const report = buildPaperValidationReport(sanitizedTrades.trades, signals, {
     minTrades: cfg.minTrades,
     minWinRate: cfg.minWinRate,
     minRewardRisk: cfg.minRewardRisk,
@@ -113,7 +127,11 @@ export async function runPreflightCheck(
 
   // H-13: risk-adjusted R:R — paper R:R에서 round-trip 실행 비용 차감
   const rawRR = report.rewardRisk;
-  const costAdjustedRR = rawRR > 0 ? rawRR - (cfg.estimatedCostPct * 2 * rawRR) : rawRR;
+  const costAdjustedRR = !Number.isFinite(rawRR)
+    ? rawRR
+    : rawRR > 0
+      ? rawRR - (cfg.estimatedCostPct * 2 * rawRR)
+      : rawRR;
   const rrMet = costAdjustedRR >= cfg.minRewardRisk;
 
   const reasons: string[] = [];
@@ -126,8 +144,28 @@ export async function runPreflightCheck(
   if (!rrMet) {
     reasons.push(`Cost-adjusted R:R ${costAdjustedRR.toFixed(2)} < ${cfg.minRewardRisk.toFixed(1)} (raw=${rawRR.toFixed(2)}, cost=${(cfg.estimatedCostPct * 100).toFixed(1)}%)`);
   }
+  if (cfg.requireJupiterApiKey && !cfg.hasJupiterApiKey) {
+    reasons.push('JUPITER_API_KEY missing — live quote/execution likely to fail');
+  }
+  if (
+    typeof cfg.mainWalletBalanceSol === 'number' &&
+    Number.isFinite(cfg.mainWalletBalanceSol) &&
+    cfg.mainWalletBalanceSol < cfg.minMainWalletBalanceSol
+  ) {
+    reasons.push(
+      `Main wallet balance ${cfg.mainWalletBalanceSol.toFixed(4)} SOL < ${cfg.minMainWalletBalanceSol.toFixed(4)} SOL`
+    );
+  }
 
-  const passed = report.criteria.minTradesMet && report.criteria.winRateMet && rrMet;
+  const passed = report.criteria.minTradesMet
+    && report.criteria.winRateMet
+    && rrMet
+    && !(cfg.requireJupiterApiKey && !cfg.hasJupiterApiKey)
+    && !(
+      typeof cfg.mainWalletBalanceSol === 'number' &&
+      Number.isFinite(cfg.mainWalletBalanceSol) &&
+      cfg.mainWalletBalanceSol < cfg.minMainWalletBalanceSol
+    );
 
   if (passed) {
     log.info(

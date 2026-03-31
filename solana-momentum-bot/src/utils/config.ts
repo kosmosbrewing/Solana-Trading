@@ -220,6 +220,7 @@ export const config = {
 
   // ─── Phase 2: Pre-flight Gate ───
   preflightEnforceGate: process.env.PREFLIGHT_ENFORCE_GATE !== 'false', // default: true
+  livePreflightMinWalletBalanceSol: numOptional('LIVE_PREFLIGHT_MIN_WALLET_BALANCE_SOL', 0.05),
 
   // ─── Phase 2: X/Twitter Social Mentions (C-2) ───
   twitterBearerToken: optional('TWITTER_BEARER_TOKEN', ''),

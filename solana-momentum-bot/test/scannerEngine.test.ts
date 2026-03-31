@@ -185,7 +185,7 @@ describe('ScannerEngine social tracker wiring', () => {
     const geckoClient = {
       getTrendingTokens: jest.fn().mockResolvedValue([
         makeToken('mint-unsupported', 'BAD', 1, 300_000, 120_000, {
-          dex_id: 'meteora',
+          dex_id: 'lifinity',
           quote_token_address: 'So11111111111111111111111111111111111111112',
         }),
         makeToken('mint-supported', 'GOOD', 2, 200_000, 100_000, {

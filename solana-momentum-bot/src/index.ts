@@ -200,26 +200,38 @@ async function main() {
   await eventScoreStore.initialize();
   log.info('Database initialized');
 
+  const notifier = new Notifier(config.telegramBotToken, config.telegramChatId);
+  const walletManager = new WalletManager({
+    solanaRpcUrl: config.solanaRpcUrl,
+    mainWalletKey: config.walletPrivateKey,
+    sandboxWalletKey: config.sandboxWalletKey || undefined,
+    sandboxDailyLossLimitSol: config.sandboxDailyLossLimitSol,
+    sandboxMaxPositionSol: config.sandboxMaxPositionSol,
+  }, dbPool);
+
   // ─── Phase 2: Pre-flight check (live mode gate) ────
   let effectiveMode = tradingMode;
   if (tradingMode === 'live') {
     try {
+      const mainWalletBalanceSol = await walletManager.getBalance('main');
       const preflight = await runPreflightCheck(dbPool, {
         tradingMode,
         enforceGate: config.preflightEnforceGate,
+        requireJupiterApiKey: true,
+        hasJupiterApiKey: Boolean(config.jupiterApiKey),
+        minMainWalletBalanceSol: config.livePreflightMinWalletBalanceSol,
+        mainWalletBalanceSol,
       });
       if (!preflight.passed && config.preflightEnforceGate) {
         log.warn('Falling back to paper mode — pre-flight criteria not met');
         effectiveMode = 'paper';
-        await new Notifier(config.telegramBotToken, config.telegramChatId)
-          .sendWarning('PreFlight', `Live mode blocked: ${preflight.reasons.join(', ')}`);
+        await notifier.sendWarning('PreFlight', `Live mode blocked: ${preflight.reasons.join(', ')}`);
       }
     } catch (err) {
       // H-27: DB query 실패 시 안전하게 paper mode fallback (live 진입 차단)
       log.error(`Pre-flight DB query failed: ${err}. Falling back to paper mode.`);
       effectiveMode = 'paper';
-      await new Notifier(config.telegramBotToken, config.telegramChatId)
-        .sendWarning('PreFlight', `DB query failed — forced paper mode`);
+      await notifier.sendWarning('PreFlight', `DB query failed — forced paper mode`);
     }
   }
 
@@ -339,16 +351,7 @@ async function main() {
   };
   const executor = new Executor(executorConfig);
 
-  const notifier = new Notifier(config.telegramBotToken, config.telegramChatId);
-
   // ─── Phase 3: Wallet Manager (main + sandbox isolation) ───
-  const walletManager = new WalletManager({
-    solanaRpcUrl: config.solanaRpcUrl,
-    mainWalletKey: config.walletPrivateKey,
-    sandboxWalletKey: config.sandboxWalletKey || undefined,
-    sandboxDailyLossLimitSol: config.sandboxDailyLossLimitSol,
-    sandboxMaxPositionSol: config.sandboxMaxPositionSol,
-  }, dbPool);
   await walletManager.initDailyPnlStore();
 
   // ─── Phase 1B: Regime Filter + Paper Metrics ────────

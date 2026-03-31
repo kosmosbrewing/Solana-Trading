@@ -21,4 +21,24 @@ describe('createScannerBlacklistCheck', () => {
     expect(blacklistCheck('pair-weak')).toBe(true);
     expect(blacklistCheck('pair-good')).toBe(false);
   });
+
+  it('ignores corrupted closed trades when building the blacklist cache', async () => {
+    const tradeStore = {
+      getClosedTradesChronological: jest.fn().mockResolvedValue([
+        ...Array.from({ length: 5 }, (_, index) => ({
+          pairAddress: 'pair-corrupted',
+          strategy: 'volume_spike' as const,
+          entryPrice: 1,
+          stopLoss: 0,
+          quantity: 1,
+          pnl: -0.2,
+          closedAt: new Date(`2026-03-31T00:0${index}:00.000Z`),
+        })),
+      ]),
+    };
+
+    const blacklistCheck = await createScannerBlacklistCheck(tradeStore as never);
+
+    expect(blacklistCheck('pair-corrupted')).toBe(false);
+  });
 });

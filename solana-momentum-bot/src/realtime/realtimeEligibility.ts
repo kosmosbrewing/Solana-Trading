@@ -1,5 +1,11 @@
 import { SOL_MINT } from '../utils/constants';
 import {
+  isMeteoraDexId,
+  METEORA_DAMM_V1_PROGRAM,
+  METEORA_DAMM_V2_PROGRAM,
+  METEORA_DLMM_PROGRAM,
+} from './meteoraPrograms';
+import {
   ORCA_WHIRLPOOL_PROGRAM,
   PUMP_SWAP_PROGRAM,
   RAYDIUM_CLMM_PROGRAM,
@@ -32,13 +38,21 @@ export interface RealtimePoolProgramCandidateMeta {
   poolOwner?: string | null;
 }
 
-export const SUPPORTED_REALTIME_DEX_IDS = new Set(['raydium', 'orca', 'pumpswap', 'pumpfun', 'pump-swap']);
+export const SUPPORTED_REALTIME_DEX_IDS = new Set([
+  'raydium',
+  'orca',
+  'pumpswap',
+  'pumpfun',
+  'pump-swap',
+  'meteora',
+]);
 export const SUPPORTED_REALTIME_POOL_PROGRAMS = new Map<string, Set<string>>([
   ['raydium', new Set([RAYDIUM_V4_PROGRAM, RAYDIUM_CLMM_PROGRAM, RAYDIUM_CPMM_PROGRAM])],
   ['orca', new Set([ORCA_WHIRLPOOL_PROGRAM])],
   ['pumpswap', new Set([PUMP_SWAP_PROGRAM])],
   ['pumpfun', new Set([PUMP_SWAP_PROGRAM])],
   ['pump-swap', new Set([PUMP_SWAP_PROGRAM])],
+  ['meteora', new Set([METEORA_DLMM_PROGRAM, METEORA_DAMM_V1_PROGRAM, METEORA_DAMM_V2_PROGRAM])],
 ]);
 
 export function detectRealtimeDiscoveryMismatch(
@@ -119,5 +133,6 @@ export function selectRealtimeEligiblePair<T extends RealtimePairCandidate>(
 }
 
 function normalizeDexId(dexId: string): string {
+  if (isMeteoraDexId(dexId)) return 'meteora';
   return isPumpSwapDexId(dexId) ? 'pumpswap' : dexId;
 }

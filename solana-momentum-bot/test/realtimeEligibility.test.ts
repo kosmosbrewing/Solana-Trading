@@ -1,17 +1,18 @@
 import {
   detectRealtimeDiscoveryMismatch,
   detectRealtimePoolProgramMismatch,
+  METEORA_DLMM_PROGRAM,
   RAYDIUM_V4_PROGRAM,
   selectRealtimeEligiblePair,
 } from '../src/realtime';
 import { SOL_MINT } from '../src/utils/constants';
 
 describe('detectRealtimeDiscoveryMismatch', () => {
-  it('flags unsupported dex ids before realtime onboarding', () => {
+  it('allows Meteora SOL quote pairs after realtime onboarding', () => {
     expect(detectRealtimeDiscoveryMismatch({
       dexId: 'meteora',
       quoteTokenAddress: 'So11111111111111111111111111111111111111112',
-    })).toBe('unsupported_dex');
+    })).toBeNull();
   });
 
   it('flags non-SOL quote pairs before realtime onboarding', () => {
@@ -41,6 +42,13 @@ describe('detectRealtimeDiscoveryMismatch', () => {
       poolOwner: RAYDIUM_V4_PROGRAM,
     })).toBeNull();
   });
+
+  it('accepts Meteora pool programs when owner matches the normalized dex', () => {
+    expect(detectRealtimePoolProgramMismatch({
+      dexId: 'meteora-dlmm',
+      poolOwner: METEORA_DLMM_PROGRAM,
+    })).toBeNull();
+  });
 });
 
 describe('selectRealtimeEligiblePair', () => {
@@ -67,7 +75,7 @@ describe('selectRealtimeEligiblePair', () => {
   it('returns unsupported_dex when all pairs are unsupported', () => {
     const result = selectRealtimeEligiblePair([
       {
-        dexId: 'meteora',
+        dexId: 'lifinity',
         pairAddress: 'pair-unsupported',
         quoteToken: { address: SOL_MINT },
         liquidity: { usd: 100_000 },
@@ -134,5 +142,19 @@ describe('selectRealtimeEligiblePair', () => {
 
     expect(result.eligible).toBe(true);
     expect(result.pair?.pairAddress).toBe('pair-pump');
+  });
+
+  it('normalizes Meteora aliases on the live selector path', () => {
+    const result = selectRealtimeEligiblePair([
+      {
+        dexId: 'meteora-dlmm',
+        pairAddress: 'pair-meteora',
+        quoteToken: { address: SOL_MINT },
+        liquidity: { usd: 90_000 },
+      },
+    ]);
+
+    expect(result.eligible).toBe(true);
+    expect(result.pair?.pairAddress).toBe('pair-meteora');
   });
 });

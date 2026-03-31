@@ -170,4 +170,75 @@ describe('RiskManager unrealized drawdown', () => {
     expect(result.approved).toBe(false);
     expect(result.reason).toContain('Pair blacklisted by edge tracker');
   });
+
+  it('does not blacklist a pair when only corrupted closed trades exist', async () => {
+    const tradeStore = {
+      getClosedTradesChronological: jest.fn().mockResolvedValue(
+        Array.from({ length: 5 }, (_, index) => ({
+          id: `bad-${index}`,
+          pairAddress: 'pair-corrupted',
+          strategy: 'volume_spike',
+          side: 'BUY',
+          entryPrice: 10,
+          exitPrice: 0,
+          quantity: 0.1,
+          pnl: -0.05,
+          status: 'CLOSED',
+          createdAt: new Date(`2026-03-15T00:0${index}:00.000Z`),
+          closedAt: new Date(`2026-03-15T00:1${index}:00.000Z`),
+          stopLoss: 0,
+          takeProfit1: 11,
+          takeProfit2: 12,
+          timeStopAt: new Date(`2026-03-15T01:0${index}:00.000Z`),
+        }))
+      ),
+    } as unknown as TradeStore;
+    const manager = new RiskManager({
+      maxRiskPerTrade: 0.01,
+      maxDailyLoss: 0.05,
+      maxDrawdownPct: 0.30,
+      recoveryPct: 0.85,
+      maxConsecutiveLosses: 3,
+      cooldownMinutes: 30,
+      maxSlippage: 0.05,
+      minPoolLiquidity: 50_000,
+      minTokenAgeHours: 24,
+      maxHolderConcentration: 0.8,
+    }, tradeStore);
+    const portfolio: PortfolioState = {
+      balanceSol: 10,
+      equitySol: 10,
+      openTrades: [],
+      dailyPnl: 0,
+      consecutiveLosses: 0,
+      drawdownGuard: {
+        peakBalanceSol: 10,
+        currentBalanceSol: 10,
+        drawdownPct: 0,
+        recoveryBalanceSol: 8.5,
+        halted: false,
+      },
+      riskTier: {
+        edgeState: 'Bootstrap',
+        maxRiskPerTrade: 0.01,
+        maxDailyLoss: 0.05,
+        maxDrawdownPct: 0.30,
+        recoveryPct: 0.85,
+        kellyFraction: 0,
+        kellyApplied: false,
+        kellyMode: 'fixed',
+      },
+    };
+
+    const result = await manager.checkOrder({
+      pairAddress: 'pair-corrupted',
+      strategy: 'volume_spike',
+      side: 'BUY',
+      price: 10,
+      stopLoss: 9,
+    }, portfolio);
+
+    expect(result.approved).toBe(true);
+    expect(result.reason).toBeUndefined();
+  });
 });

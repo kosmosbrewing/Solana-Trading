@@ -1,6 +1,7 @@
 import bs58 from 'bs58';
 import {
   isLikelyPumpSwapFallbackLog,
+  METEORA_DLMM_PROGRAM,
   parseSwapFromTransaction,
   PUMP_SWAP_PROGRAM,
   RAYDIUM_CPMM_PROGRAM,
@@ -206,6 +207,15 @@ describe('swapParser', () => {
       baseMint: 'mint-base',
       quoteMint: 'So11111111111111111111111111111111111111112',
       poolProgram: RAYDIUM_CPMM_PROGRAM,
+    })).toBe(true);
+  });
+
+  it('forces transaction fallback for Meteora pools', () => {
+    expect(shouldForceFallbackToTransaction({
+      dexId: 'meteora',
+      baseMint: 'mint-base',
+      quoteMint: 'So11111111111111111111111111111111111111112',
+      poolProgram: METEORA_DLMM_PROGRAM,
     })).toBe(true);
   });
 

@@ -26,6 +26,13 @@ export {
   PUMP_SWAP_PROGRAM,
 } from './swapParser';
 export { PUMP_SWAP_DEX_IDS } from './pumpSwapParser';
+export {
+  isMeteoraDexId,
+  METEORA_DAMM_V1_PROGRAM,
+  METEORA_DAMM_V2_PROGRAM,
+  METEORA_DEX_IDS,
+  METEORA_DLMM_PROGRAM,
+} from './meteoraPrograms';
 export type { HeliusWSConfig, ParsedSwap, RealtimePoolMetadata, SwapSide, SwapSource } from './types';
 export type { StoredRealtimeSwap, StoredMicroCandle, RealtimeReplayManifest } from './replayStore';
 export type {

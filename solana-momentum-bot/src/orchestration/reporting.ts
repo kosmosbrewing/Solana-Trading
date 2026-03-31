@@ -1,6 +1,6 @@
 import { DailySummaryReport, RealtimeAdmissionSummary } from '../notifier/dailySummaryFormatter';
 import { RealtimeAdmissionSnapshotEntry } from '../realtime';
-import { EdgeTracker, summarizeTradesBySource } from '../reporting';
+import { EdgeTracker, sanitizeEdgeLikeTrades, summarizeTradesBySource } from '../reporting';
 import { config } from '../utils/config';
 import { createModuleLogger } from '../utils/logger';
 import { BotContext } from './types';
@@ -42,14 +42,14 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
     : await ctx.executor.getBalance();
   const status = ctx.healthMonitor.getStatus();
   const edgeTracker = new EdgeTracker(
-    closedTodayTrades.map(trade => ({
+    sanitizeEdgeLikeTrades(closedTodayTrades.map(trade => ({
       pairAddress: trade.pairAddress,
       strategy: trade.strategy,
       entryPrice: trade.entryPrice,
       stopLoss: trade.stopLoss,
       quantity: trade.quantity,
       pnl: trade.pnl ?? 0,
-    }))
+    }))).trades
   );
 
   const wins = closedTodayTrades.filter(t => (t.pnl || 0) > 0);

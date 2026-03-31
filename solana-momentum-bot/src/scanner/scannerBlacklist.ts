@@ -1,5 +1,5 @@
 import type { TradeStore } from '../candle';
-import { EdgeTracker } from '../reporting';
+import { EdgeTracker, sanitizeEdgeLikeTrades } from '../reporting';
 
 type ScannerBlacklistTradeStore = Pick<TradeStore, 'getClosedTradesChronological'>;
 
@@ -18,14 +18,14 @@ export async function createScannerBlacklistCheck(
     lastRefreshAttemptMs = Date.now();
     refreshingPromise = tradeStore.getClosedTradesChronological()
       .then((trades) => {
-        const edgeTracker = new EdgeTracker(trades.map((trade) => ({
+        const edgeTracker = new EdgeTracker(sanitizeEdgeLikeTrades(trades.map((trade) => ({
           pairAddress: trade.pairAddress,
           strategy: trade.strategy,
           entryPrice: trade.entryPrice,
           stopLoss: trade.stopLoss,
           quantity: trade.quantity,
           pnl: trade.pnl ?? 0,
-        })));
+        }))).trades);
         cachedBlacklist = new Set(edgeTracker.getBlacklistedPairs().map((pair) => pair.pairAddress));
         lastRefreshMs = Date.now();
       })

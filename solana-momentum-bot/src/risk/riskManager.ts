@@ -3,7 +3,7 @@ import {
   RiskCheckResult, TokenSafety, PortfolioState, SizeConstraint, BreakoutGrade, DrawdownGuardState, StrategyName,
 } from '../utils/types';
 import { TradeStore } from '../candle/tradeStore';
-import { EdgeTracker, EdgeTrackerTrade } from '../reporting';
+import { EdgeTracker, EdgeTrackerTrade, sanitizeEdgeLikeTrades } from '../reporting';
 import { checkTokenSafety as evaluateTokenSafety, SafetyGateResult } from '../gate/safetyGate';
 import { getGradeSizeMultiplier } from '../gate/sizingGate';
 import { calculateLiquiditySize, LiquidityParams, DEFAULT_LIQUIDITY_PARAMS } from './liquiditySizer';
@@ -449,7 +449,7 @@ export class RiskManager {
 
   private async getClosedEdgeTrades(): Promise<EdgeTrackerTrade[]> {
     const closedTrades = await this.tradeStore.getClosedTradesChronological();
-    return closedTrades.map(toEdgeTrackerTrade);
+    return sanitizeEdgeLikeTrades(closedTrades.map(toEdgeTrackerTrade)).trades;
   }
 }
 

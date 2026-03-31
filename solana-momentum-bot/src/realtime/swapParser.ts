@@ -1,5 +1,10 @@
 import { LAMPORTS_PER_SOL, ParsedTransactionWithMeta } from '@solana/web3.js';
 import {
+  METEORA_DAMM_V1_PROGRAM,
+  METEORA_DAMM_V2_PROGRAM,
+  METEORA_DLMM_PROGRAM,
+} from './meteoraPrograms';
+import {
   ORCA_WHIRLPOOL_PROGRAM,
   RAYDIUM_CPMM_PROGRAM,
   parseRaydiumSwapFromLogs,
@@ -15,6 +20,9 @@ import {
 import { ParsedSwap, RealtimePoolMetadata, SwapSide } from './types';
 
 export {
+  METEORA_DAMM_V1_PROGRAM,
+  METEORA_DAMM_V2_PROGRAM,
+  METEORA_DLMM_PROGRAM,
   ORCA_WHIRLPOOL_PROGRAM,
   PUMP_SWAP_PROGRAM,
   RAYDIUM_CPMM_PROGRAM,
@@ -29,6 +37,9 @@ const SUPPORTED_PROGRAMS = [
   RAYDIUM_CPMM_PROGRAM,
   ORCA_WHIRLPOOL_PROGRAM,
   PUMP_SWAP_PROGRAM,
+  METEORA_DLMM_PROGRAM,
+  METEORA_DAMM_V1_PROGRAM,
+  METEORA_DAMM_V2_PROGRAM,
 ];
 const FALLBACK_PROGRAM_HINTS = [...SUPPORTED_PROGRAMS, RAYDIUM_ROUTER_PROGRAM];
 const FALLBACK_SWAP_PATTERNS = [
@@ -40,6 +51,9 @@ const FALLBACK_SWAP_PATTERNS = [
   /swap event/i,
   /pumpswap/i,
   /pumpfun/i,
+  /meteora/i,
+  /dlmm/i,
+  /damm/i,
 ];
 const PUMP_SWAP_FALLBACK_NOISE_PATTERNS = [
   /no arbitrage/i,
@@ -197,6 +211,10 @@ export function shouldFallbackToTransaction(logs: string[]): boolean {
 
 export function shouldForceFallbackToTransaction(poolMetadata?: RealtimePoolMetadata): boolean {
   return isPumpSwapPool(poolMetadata)
+    || poolMetadata?.dexId === 'meteora'
+    || poolMetadata?.poolProgram === METEORA_DLMM_PROGRAM
+    || poolMetadata?.poolProgram === METEORA_DAMM_V1_PROGRAM
+    || poolMetadata?.poolProgram === METEORA_DAMM_V2_PROGRAM
     || poolMetadata?.poolProgram === RAYDIUM_CPMM_PROGRAM;
 }
 

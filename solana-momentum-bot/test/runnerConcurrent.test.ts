@@ -15,17 +15,21 @@ jest.mock('../src/utils/logger', () => ({
 }));
 
 // EdgeTracker 및 riskTier mock
-jest.mock('../src/reporting', () => ({
-  EdgeTracker: jest.fn().mockImplementation(() => ({
-    getPairStats: jest.fn().mockReturnValue({
-      winRate: 0.5,
-      rewardRisk: 2.0,
-      sharpeRatio: 1.0,
-      maxConsecutiveLosses: 1,
-    }),
-    isPairBlacklisted: jest.fn().mockReturnValue(false),
-  })),
-}));
+jest.mock('../src/reporting', () => {
+  const actual = jest.requireActual('../src/reporting');
+  return {
+    ...actual,
+    EdgeTracker: jest.fn().mockImplementation(() => ({
+      getPairStats: jest.fn().mockReturnValue({
+        winRate: 0.5,
+        rewardRisk: 2.0,
+        sharpeRatio: 1.0,
+        maxConsecutiveLosses: 1,
+      }),
+      isPairBlacklisted: jest.fn().mockReturnValue(false),
+    })),
+  };
+});
 
 jest.mock('../src/risk/riskTier', () => ({
   resolvePortfolioRiskTier: jest.fn().mockReturnValue({

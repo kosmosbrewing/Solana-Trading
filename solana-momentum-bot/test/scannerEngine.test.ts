@@ -58,6 +58,40 @@ describe('ScannerEngine social tracker wiring', () => {
     expect(discovered).toEqual(['mint-a', 'mint-b']);
   });
 
+  it('uses the injected trending provider before falling back to Gecko', async () => {
+    const geckoClient = {
+      getTrendingTokens: jest.fn().mockResolvedValue([]),
+    };
+    const trendingProvider = {
+      getTrendingTokens: jest.fn().mockResolvedValue([
+        makeToken('mint-internal', 'INT', 1, 500_000, 200_000, {
+          discovery_source: 'internal_activity',
+        }),
+      ]),
+    };
+    const scanner = new ScannerEngine({
+      geckoClient: geckoClient as never,
+      trendingProvider,
+      dexScreenerClient: null,
+      maxWatchlistSize: 10,
+      minWatchlistScore: 0,
+      trendingPollIntervalMs: 60_000,
+      geckoNewPoolIntervalMs: 60_000,
+      dexDiscoveryIntervalMs: 60_000,
+      dexEnrichIntervalMs: 60_000,
+      laneAMinAgeSec: 3600,
+      laneBMaxAgeSec: 1200,
+      minLiquidityUsd: 1000,
+    });
+
+    await scanner.start();
+    scanner.stop();
+
+    expect(scanner.getWatchlist().map(entry => entry.tokenMint)).toContain('mint-internal');
+    expect(trendingProvider.getTrendingTokens).toHaveBeenCalledTimes(1);
+    expect(geckoClient.getTrendingTokens).not.toHaveBeenCalled();
+  });
+
   it('blocks immediate re-entry for recently evicted candidates', async () => {
     const geckoClient = {
       getTrendingTokens: jest.fn()

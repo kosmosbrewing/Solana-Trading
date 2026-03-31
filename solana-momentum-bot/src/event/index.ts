@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { GeckoTerminalClient } from '../ingester/geckoTerminalClient';
+import type { TrendingTokenProvider } from '../discovery/trendingTokenProvider';
 import { createModuleLogger } from '../utils/logger';
 import { EventMonitorConfig, AttentionScore } from './types';
 import { AttentionScorer } from './eventScorer';
@@ -18,11 +18,11 @@ export class EventMonitor extends EventEmitter {
   private scoreStore?: EventScoreStore;
 
   constructor(
-    geckoClient: GeckoTerminalClient,
+    trendingProvider: TrendingTokenProvider,
     private readonly config: EventMonitorConfig
   ) {
     super();
-    this.fetcher = new TrendingFetcher(geckoClient, { limit: config.fetchLimit });
+    this.fetcher = new TrendingFetcher(trendingProvider, { limit: config.fetchLimit });
     this.scorer = new AttentionScorer({
       expiryMinutes: config.expiryMinutes,
       minLiquidityUsd: config.minLiquidityUsd,

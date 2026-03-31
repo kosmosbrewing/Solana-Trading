@@ -1,4 +1,4 @@
-import { GeckoTerminalClient } from '../ingester/geckoTerminalClient';
+import type { TrendingTokenProvider } from '../discovery/trendingTokenProvider';
 import { createModuleLogger } from '../utils/logger';
 import { TrendingEventCandidate, TrendingFetcherConfig } from './types';
 
@@ -6,13 +6,13 @@ const log = createModuleLogger('TrendingFetcher');
 
 export class TrendingFetcher {
   constructor(
-    private readonly geckoClient: GeckoTerminalClient,
+    private readonly trendingProvider: TrendingTokenProvider,
     private readonly config: TrendingFetcherConfig
   ) {}
 
   async fetchCandidates(): Promise<TrendingEventCandidate[]> {
     const detectedAt = new Date().toISOString();
-    const tokens = await this.geckoClient.getTrendingTokens(this.config.limit);
+    const tokens = await this.trendingProvider.getTrendingTokens(this.config.limit);
     const unique = new Map<string, TrendingEventCandidate>();
 
     for (const token of tokens) {

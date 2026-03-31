@@ -169,6 +169,8 @@ export const config = {
   realtimeEnabled: boolOptional('REALTIME_ENABLED', false),
   realtimePersistenceEnabled: boolOptional('REALTIME_PERSISTENCE_ENABLED', true),
   realtimeDataDir: optional('REALTIME_DATA_DIR', path.resolve(process.cwd(), 'data/realtime')),
+  realtimeReplayWarmSyncEnabled: boolOptional('REALTIME_REPLAY_WARM_SYNC_ENABLED', true),
+  realtimeReplayWarmSyncIntervalMs: numOptional('REALTIME_REPLAY_WARM_SYNC_INTERVAL_MS', 60_000),
   realtimeOutcomeHorizonsSec: numListOptional('REALTIME_OUTCOME_HORIZONS_SEC', [30, 60, 180, 300]),
   realtimePrimaryIntervalSec: numOptional('REALTIME_PRIMARY_INTERVAL_SEC', 15),
   realtimeConfirmIntervalSec: numOptional('REALTIME_CONFIRM_INTERVAL_SEC', 60),

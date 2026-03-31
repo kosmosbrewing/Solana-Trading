@@ -66,4 +66,15 @@ describe('AttentionScorer', () => {
     expect(score.components.historicalPattern).toBeLessThanOrEqual(15);
     expect(score.attentionScore).toBeLessThanOrEqual(100);
   });
+
+  it('uses discovery source labels in narrative and sources', () => {
+    const score = scorer.score(buildCandidate({
+      raw: {
+        discovery_source: 'internal_activity',
+      },
+    }));
+
+    expect(score.sources).toEqual(['internal_activity']);
+    expect(score.narrative).toContain('internal_activity rank');
+  });
 });

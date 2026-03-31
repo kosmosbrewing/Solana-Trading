@@ -76,8 +76,8 @@ async function main() {
   if (report) {
     printReport(report, { pairAddress, start, end, minTrades, minWinRate, minRewardRisk });
   }
-  if (realtimeSummary && realtimeDir) {
-    printRealtimeSummary(realtimeSummary, realtimeHorizon, realtimeDir);
+  if (realtimeSummary) {
+    printRealtimeSummary(realtimeSummary.summary, realtimeHorizon, realtimeSummary.datasetDir);
   }
 }
 
@@ -181,7 +181,10 @@ async function loadRealtimeSummary(realtimeDir: string, horizonSec: number) {
   const store = new RealtimeReplayStore(path.resolve(realtimeDir));
   const records = await store.loadSignals();
   if (records.length === 0) return null;
-  return summarizeRealtimeSignals(records, horizonSec);
+  return {
+    summary: summarizeRealtimeSignals(records, horizonSec),
+    datasetDir: store.datasetDir,
+  };
 }
 
 function printRealtimeSummary(

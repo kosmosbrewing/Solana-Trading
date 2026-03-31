@@ -128,13 +128,17 @@ Helius RPC historical tx fetch
 realtime 및 historical replay는 같은 데이터 계층을 공유한다.
 
 ```text
-<dataset-dir>/
-  raw-swaps.jsonl
-  micro-candles.jsonl
-  realtime-signals.jsonl
-  export/
-    manifest.json
-    shadow-summary.json
+<realtime-root>/
+  runtime-diagnostics.json
+  current-session.json
+  sessions/
+    <timestamp>-<mode>/
+      raw-swaps.jsonl
+      micro-candles.jsonl
+      realtime-signals.jsonl
+      export/
+        manifest.json
+        shadow-summary.json
 ```
 
 ### File Meaning
@@ -144,7 +148,8 @@ realtime 및 historical replay는 같은 데이터 계층을 공유한다.
 | `raw-swaps.jsonl` | 원본 swap 이벤트. replay의 최하위 원천 데이터 |
 | `micro-candles.jsonl` | swap으로부터 생성된 synthetic candles |
 | `realtime-signals.jsonl` | trigger 결과, processing status, gate reason, horizon outcome |
-| `runtime-diagnostics.json` | restart-safe runtime diagnostics snapshot. 24h data-plane summary 원천 |
+| `runtime-diagnostics.json` | realtime root에 남는 restart-safe runtime diagnostics snapshot |
+| `current-session.json` | 현재 active session dataset 위치 포인터 |
 | `manifest.json` | export metadata |
 | `shadow-summary.json` | runner가 만든 session 요약 |
 
@@ -153,7 +158,7 @@ realtime 및 historical replay는 같은 데이터 계층을 공유한다.
 - `raw-swaps`를 남겨야 trigger 로직이 바뀌어도 다시 재생 가능하다.
 - `micro-candles`를 남겨야 빠른 재분석이 가능하다.
 - `realtime-signals`를 남겨야 stored-gate replay와 trigger-only replay를 비교할 수 있다.
-- `runtime-diagnostics`를 남겨야 PM2 restart 이후에도 `429`, pre-watchlist reject, realtime skip, realtime-ready ratio를 같은 24h 창으로 해석할 수 있다.
+- `runtime-diagnostics`는 session별 파일이 아니라 root snapshot으로 유지해야 PM2 restart 이후에도 같은 24h 창으로 해석할 수 있다.
 
 ### Runtime Diagnostics Semantics
 
@@ -179,7 +184,8 @@ realtime shadow는 실제 paper runtime을 돌리되, 목적은 주문 성과보
 - 용도: 표본 축적
 - 입력: `.env`의 realtime 기본 파라미터
 - 출력: session dataset, export bundle, `shadow-summary.json`, optional Telegram digest
-- 기본 dataset root: `data/realtime-sessions/<timestamp>`
+- live/paper runtime root: `data/realtime`
+- session dataset: `data/realtime/sessions/<timestamp>-<mode>`
 - 기본 admission snapshot: `data/realtime-admission.json`
 - 권장 해석: default 결과끼리만 누적 비교
 

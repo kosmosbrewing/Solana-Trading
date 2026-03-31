@@ -61,6 +61,7 @@ import { SOL_MINT } from './utils/constants';
 import { BotContext } from './orchestration/types';
 import { buildRuntimeDriftSnapshot, evaluateRuntimeDriftWarnings } from './ops/runtimeDrift';
 import path from 'path';
+import { prepareRealtimePersistenceLayout } from './realtime/persistenceLayout';
 
 const log = createModuleLogger('Main');
 const SCANNER_INGESTER_QUEUE_GAP_MS = 10_000;
@@ -148,23 +149,8 @@ async function main() {
   const realtimeAdmissionStore = realtimeModeEnabled
     ? new RealtimeAdmissionStore(path.resolve(process.cwd(), 'data/realtime-admission.json'))
     : null;
-  const runtimeDiagnosticsStore = realtimeModeEnabled
-    ? new RuntimeDiagnosticsStore(path.resolve(config.realtimeDataDir, 'runtime-diagnostics.json'))
-    : null;
   let heliusIngester: HeliusWSIngester | null = null;
   let realtimeCandleBuilder: MicroCandleBuilder | null = null;
-  const realtimeReplayStore = realtimeModeEnabled && config.realtimePersistenceEnabled
-    ? new RealtimeReplayStore(path.resolve(config.realtimeDataDir))
-    : null;
-  const realtimeSignalLogger = realtimeReplayStore
-    ? new RealtimeSignalLogger(realtimeReplayStore)
-    : null;
-  const realtimeOutcomeTracker = realtimeSignalLogger
-    ? new RealtimeOutcomeTracker({
-      horizonsSec: config.realtimeOutcomeHorizonsSec,
-      observationIntervalSec: 5,
-    }, realtimeSignalLogger)
-    : null;
 
   const setRealtimePoolTarget = (logicalPair: string, subscriptionPair: string) => {
     realtimePoolTargets.set(logicalPair, subscriptionPair);
@@ -235,6 +221,30 @@ async function main() {
       await new Notifier(config.telegramBotToken, config.telegramChatId)
         .sendWarning('PreFlight', `DB query failed — forced paper mode`);
     }
+  }
+
+  const realtimePersistenceLayout = realtimeModeEnabled
+    ? await prepareRealtimePersistenceLayout(config.realtimeDataDir, {
+      tradingMode: effectiveMode,
+    })
+    : null;
+  const runtimeDiagnosticsStore = realtimePersistenceLayout
+    ? new RuntimeDiagnosticsStore(realtimePersistenceLayout.runtimeDiagnosticsPath)
+    : null;
+  const realtimeReplayStore = realtimePersistenceLayout && config.realtimePersistenceEnabled
+    ? new RealtimeReplayStore(realtimePersistenceLayout.datasetDir)
+    : null;
+  const realtimeSignalLogger = realtimeReplayStore
+    ? new RealtimeSignalLogger(realtimeReplayStore)
+    : null;
+  const realtimeOutcomeTracker = realtimeSignalLogger
+    ? new RealtimeOutcomeTracker({
+      horizonsSec: config.realtimeOutcomeHorizonsSec,
+      observationIntervalSec: 5,
+    }, realtimeSignalLogger)
+    : null;
+  if (realtimePersistenceLayout) {
+    log.info(`Realtime persistence dataset: ${realtimePersistenceLayout.datasetDir}`);
   }
 
   // ─── Initialize modules ─────────────────────────────

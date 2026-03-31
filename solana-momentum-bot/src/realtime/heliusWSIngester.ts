@@ -3,6 +3,7 @@ import { Connection, Logs, PublicKey } from '@solana/web3.js';
 import { SOL_MINT } from '../utils/constants';
 import { createModuleLogger } from '../utils/logger';
 import { fetchRecentSwapsForPool } from './recentSwapBackfill';
+import { RealtimeSwapSanitizer } from './swapSanitizer';
 import { HeliusWSConfig, ParsedSwap, RealtimePoolMetadata } from './types';
 import {
   isLikelyPumpSwapFallbackLog,
@@ -27,6 +28,7 @@ export class HeliusWSIngester extends EventEmitter {
   private readonly subscriptions = new Map<string, number>();
   private readonly poolMetadata = new Map<string, RealtimePoolMetadata>();
   private readonly mintDecimals = new Map<string, number>();
+  private readonly swapSanitizer = new RealtimeSwapSanitizer();
   private readonly fallbackQueue: Array<{ pool: string; signature: string; slot: number; retries: number }> = [];
   private readonly pendingFallbacks = new Set<string>();
   private readonly fallbackStartsAt: number[] = [];
@@ -68,7 +70,8 @@ export class HeliusWSIngester extends EventEmitter {
     options: { lookbackSec: number; maxSignatures?: number; allowSingleFetchFallback?: boolean }
   ): Promise<ParsedSwap[]> {
     const poolMetadata = await this.resolvePoolMetadata(pool);
-    return fetchRecentSwapsForPool(this.connection, pool, poolMetadata, options);
+    const swaps = await fetchRecentSwapsForPool(this.connection, pool, poolMetadata, options);
+    return this.swapSanitizer.seed(swaps).swaps;
   }
 
   async subscribePools(pools: string[]): Promise<void> {
@@ -441,6 +444,10 @@ export class HeliusWSIngester extends EventEmitter {
   private emitSwap(swap: ParsedSwap): void {
     if (!Number.isFinite(swap.priceNative) || swap.priceNative <= 0) return;
     if (!Number.isFinite(swap.amountBase) || !Number.isFinite(swap.amountQuote)) return;
+    if (!this.swapSanitizer.accept(swap)) {
+      this.emit('swapRejected', { pool: swap.pool, signature: swap.signature, reason: 'price_outlier' });
+      return;
+    }
     this.emit('swap', swap);
   }
 

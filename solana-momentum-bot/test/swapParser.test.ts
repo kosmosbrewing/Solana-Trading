@@ -168,6 +168,29 @@ describe('swapParser', () => {
     expect(parsed?.priceNative).toBeCloseTo(0.2, 12);
   });
 
+  it('skips PumpSwap log parsing to force transaction fallback', () => {
+    const parsed = tryParseSwapFromLogs([
+      'Program log: buy',
+      'Program log: base_amount_out=21.108798',
+      'Program log: quote_amount_in=498.64046463',
+    ], {
+      poolAddress: 'pool-pump',
+      signature: 'sig-pump-log',
+      slot: 1_001,
+      timestamp: 1_700_000_201,
+      poolMetadata: {
+        dexId: 'pumpswap',
+        baseMint: 'mint-base',
+        quoteMint: 'So11111111111111111111111111111111111111112',
+        baseDecimals: 6,
+        quoteDecimals: 9,
+        poolProgram: PUMP_SWAP_PROGRAM,
+      },
+    });
+
+    expect(parsed).toBeNull();
+  });
+
   it('forces fallback for PumpSwap pools even when logs are opaque', () => {
     expect(shouldForceFallbackToTransaction({
       dexId: 'pumpswap',
@@ -324,6 +347,122 @@ describe('swapParser', () => {
         baseMint: 'mint-base',
         quoteMint: 'So11111111111111111111111111111111111111112',
         baseDecimals: 6,
+        quoteDecimals: 9,
+        poolProgram: '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8',
+      },
+    });
+
+    expect(parsed).toBeNull();
+  });
+
+  it('uses raw token amounts to avoid float dust false positives with pool metadata', () => {
+    const parsed = parseSwapFromTransaction({
+      blockTime: 1_700_000_500,
+      meta: {
+        err: null,
+        fee: 5_000,
+        innerInstructions: [],
+        loadedAddresses: { readonly: [], writable: [] },
+        logMessages: ['Program log: swap'],
+        postBalances: [],
+        postTokenBalances: [
+          {
+            accountIndex: 1,
+            mint: 'mint-base',
+            owner: 'owner-1',
+            programId: 'token-program',
+            uiTokenAmount: {
+              amount: '10000000000000000',
+              decimals: 9,
+              uiAmount: 10000000,
+              uiAmountString: '10000000',
+            },
+          },
+          {
+            accountIndex: 2,
+            mint: 'mint-base',
+            owner: 'owner-2',
+            programId: 'token-program',
+            uiTokenAmount: {
+              amount: '2',
+              decimals: 9,
+              uiAmount: 0.000000002,
+              uiAmountString: '0.000000002',
+            },
+          },
+          {
+            accountIndex: 3,
+            mint: 'mint-quote',
+            owner: 'owner-3',
+            programId: 'token-program',
+            uiTokenAmount: {
+              amount: '750000000',
+              decimals: 9,
+              uiAmount: 0.75,
+              uiAmountString: '0.75',
+            },
+          },
+        ],
+        preBalances: [],
+        preTokenBalances: [
+          {
+            accountIndex: 1,
+            mint: 'mint-base',
+            owner: 'owner-1',
+            programId: 'token-program',
+            uiTokenAmount: {
+              amount: '10000000000000001',
+              decimals: 9,
+              uiAmount: 10000000.000000002,
+              uiAmountString: '10000000.000000001',
+            },
+          },
+          {
+            accountIndex: 2,
+            mint: 'mint-base',
+            owner: 'owner-2',
+            programId: 'token-program',
+            uiTokenAmount: {
+              amount: '1',
+              decimals: 9,
+              uiAmount: 0.000000001,
+              uiAmountString: '0.000000001',
+            },
+          },
+          {
+            accountIndex: 3,
+            mint: 'mint-quote',
+            owner: 'owner-3',
+            programId: 'token-program',
+            uiTokenAmount: {
+              amount: '1000000000',
+              decimals: 9,
+              uiAmount: 1,
+              uiAmountString: '1',
+            },
+          },
+        ],
+        rewards: [],
+        status: { Ok: null },
+      },
+      slot: 3,
+      transaction: {
+        message: {
+          accountKeys: [],
+          instructions: [],
+          recentBlockhash: 'hash',
+        },
+        signatures: ['sig-raw-delta'],
+      },
+    } as any, {
+      poolAddress: 'pool-1',
+      signature: 'sig-raw-delta',
+      slot: 1_000,
+      poolMetadata: {
+        dexId: 'raydium',
+        baseMint: 'mint-base',
+        quoteMint: 'mint-quote',
+        baseDecimals: 9,
         quoteDecimals: 9,
         poolProgram: '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8',
       },

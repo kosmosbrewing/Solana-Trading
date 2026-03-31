@@ -9,7 +9,6 @@ import {
 } from './raydiumSwapLogParser';
 import {
   isPumpSwapPool,
-  parsePumpSwapFromLogs,
   parsePumpSwapFromTransaction,
   PUMP_SWAP_PROGRAM,
 } from './pumpSwapParser';
@@ -71,9 +70,17 @@ interface BalanceDelta {
   amount: number;
 }
 
+interface MintDelta {
+  amountRaw: bigint;
+  decimals: number;
+}
+
 export function tryParseSwapFromLogs(logs: string[], context: SwapParseContext): ParsedSwap | null {
-  const parsedPump = parsePumpSwapFromLogs(logs, context);
-  if (parsedPump) return parsedPump;
+  // Why: PumpSwap log amount fields are raw integer-ish values without reliable decimal context.
+  //   runtime에서는 tx instruction decode를 강제해 price/volume 오염을 막는다.
+  if (isPumpSwapPool(context.poolMetadata)) {
+    return null;
+  }
 
   const parsedRaydium = parseRaydiumSwapFromLogs(logs, context);
   if (parsedRaydium) return parsedRaydium;
@@ -259,20 +266,21 @@ function parseFromPoolMetadata(
   const quoteDelta = sumMintDelta(tx, metadata.quoteMint);
   if (baseDelta == null || quoteDelta == null) return null;
 
-  const epsilon = 1e-12;
-  if (Math.abs(baseDelta) <= epsilon || Math.abs(quoteDelta) <= epsilon) return null;
+  if (baseDelta.amountRaw === 0n || quoteDelta.amountRaw === 0n) return null;
 
   let side: SwapSide | null = null;
-  if (baseDelta > epsilon && quoteDelta < -epsilon) {
+  if (baseDelta.amountRaw > 0n && quoteDelta.amountRaw < 0n) {
     side = 'buy';
-  } else if (baseDelta < -epsilon && quoteDelta > epsilon) {
+  } else if (baseDelta.amountRaw < 0n && quoteDelta.amountRaw > 0n) {
     side = 'sell';
   } else {
     return null;
   }
 
-  const amountBase = Math.abs(baseDelta);
-  const amountQuote = Math.abs(quoteDelta);
+  const baseDecimals = metadata.baseDecimals ?? baseDelta.decimals;
+  const quoteDecimals = metadata.quoteDecimals ?? quoteDelta.decimals;
+  const amountBase = toUiAmount(absBigInt(baseDelta.amountRaw), baseDecimals);
+  const amountQuote = toUiAmount(absBigInt(quoteDelta.amountRaw), quoteDecimals);
   if (amountBase <= 0 || amountQuote <= 0) return null;
 
   return {
@@ -289,24 +297,36 @@ function parseFromPoolMetadata(
   };
 }
 
-function sumMintDelta(tx: ParsedTransactionWithMeta, mint: string): number | null {
+function sumMintDelta(tx: ParsedTransactionWithMeta, mint: string): MintDelta | null {
   const pre = tx.meta?.preTokenBalances ?? [];
   const post = tx.meta?.postTokenBalances ?? [];
-  let total = 0;
+  let total = 0n;
   let found = false;
+  let decimals: number | null = null;
 
   for (const balance of pre) {
     if (balance.mint !== mint) continue;
-    total -= Number(balance.uiTokenAmount.uiAmountString ?? balance.uiTokenAmount.uiAmount ?? 0);
+    const amountRaw = parseRawAmount(balance.uiTokenAmount.amount);
+    if (amountRaw == null) continue;
+    total -= amountRaw;
+    if (decimals == null && Number.isInteger(balance.uiTokenAmount.decimals)) {
+      decimals = balance.uiTokenAmount.decimals;
+    }
     found = true;
   }
   for (const balance of post) {
     if (balance.mint !== mint) continue;
-    total += Number(balance.uiTokenAmount.uiAmountString ?? balance.uiTokenAmount.uiAmount ?? 0);
+    const amountRaw = parseRawAmount(balance.uiTokenAmount.amount);
+    if (amountRaw == null) continue;
+    total += amountRaw;
+    if (decimals == null && Number.isInteger(balance.uiTokenAmount.decimals)) {
+      decimals = balance.uiTokenAmount.decimals;
+    }
     found = true;
   }
 
-  return found ? total : null;
+  if (!found || decimals == null) return null;
+  return { amountRaw: total, decimals };
 }
 
 function pickLargestLamportDelta(tx: ParsedTransactionWithMeta): BalanceDelta | null {
@@ -323,4 +343,21 @@ function pickLargestLamportDelta(tx: ParsedTransactionWithMeta): BalanceDelta | 
   }
 
   return best;
+}
+
+function parseRawAmount(value: string | undefined): bigint | null {
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) return null;
+  try {
+    return BigInt(value);
+  } catch {
+    return null;
+  }
+}
+
+function absBigInt(value: bigint): bigint {
+  return value < 0n ? -value : value;
+}
+
+function toUiAmount(value: bigint, decimals: number): number {
+  return Number(value) / (10 ** decimals);
 }

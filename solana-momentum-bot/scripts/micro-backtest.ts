@@ -39,8 +39,9 @@ async function main() {
     cooldownSec: numArg(args, '--cooldown-sec', 300),
   };
 
-  const resolvedDatasetDir = path.resolve(datasetDir);
-  const store = new RealtimeReplayStore(resolvedDatasetDir);
+  const resolvedDatasetRoot = path.resolve(datasetDir);
+  const store = new RealtimeReplayStore(resolvedDatasetRoot);
+  const resolvedDatasetDir = store.datasetDir;
   const storedSignals = await store.loadSignals(path.join(resolvedDatasetDir, 'realtime-signals.jsonl'));
   const resolvedInputMode = await resolveInputMode(store, inputMode, resolvedDatasetDir);
   const result = resolvedInputMode === 'candles'
@@ -62,7 +63,8 @@ async function main() {
   const summary = summarizeRealtimeSignals(result.records, horizonSec);
   const rs = result.rejectStats;
   const output = {
-    datasetDir: path.resolve(datasetDir),
+    datasetRoot: resolvedDatasetRoot,
+    datasetDir: resolvedDatasetDir,
     dataset: result.dataset,
     config: {
       inputMode: resolvedInputMode,

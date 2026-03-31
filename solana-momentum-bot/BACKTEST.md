@@ -325,11 +325,13 @@ VPS (상시 실행)
 ┌─────────────────────────────────────────────────┐
 │  Helius WS Ingester (24/7)                      │
 │    → 온체인 swap 실시간 수신                      │
-│    → data/realtime-sessions/<date>/              │
-│        raw-swaps.jsonl        (원본 swap)        │
-│        micro-candles.jsonl    (1s/5s/15s/60s)    │
-│        realtime-signals.jsonl (trigger 발화)      │
-│        manifest.json          (세션 메타)         │
+│    → data/realtime/                            │
+│        runtime-diagnostics.json                │
+│        current-session.json                    │
+│        sessions/<timestamp>-<mode>/            │
+│          raw-swaps.jsonl      (원본 swap)      │
+│          micro-candles.jsonl  (1s/5s/15s/60s)  │
+│          realtime-signals.jsonl (trigger 발화)  │
 └─────────────────────────────────────────────────┘
           │
           │  파일 시스템 공유 (같은 VPS)
@@ -364,12 +366,15 @@ pm2 start scripts/realtime-shadow-runner.ts \
 
 출력:
 ```
-data/realtime-sessions/
-  2026-03-23T00-00-00-000Z/
-    raw-swaps.jsonl           ← 원본 swap 데이터 (계속 append)
-    micro-candles.jsonl       ← 빌드된 마이크로캔들
-    realtime-signals.jsonl    ← trigger 발화 기록
-    manifest.json             ← 세션 메타 (풀 목록, 기간, swap 수)
+data/realtime/
+  runtime-diagnostics.json
+  current-session.json
+  sessions/
+    2026-03-23T00-00-00-000Z-live/
+      raw-swaps.jsonl         ← 원본 swap 데이터 (계속 append)
+      micro-candles.jsonl     ← 빌드된 마이크로캔들
+      realtime-signals.jsonl  ← trigger 발화 기록
+      manifest.json           ← export 시점 세션 메타
 ```
 
 ### 크론 백테스트 (매 6시간)

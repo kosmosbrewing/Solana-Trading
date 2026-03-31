@@ -19,6 +19,7 @@ async function main() {
   const store = new RealtimeReplayStore(path.resolve(sourceDir));
   const manifest = await store.exportRange(path.resolve(outputDir), { start, end });
   console.log(JSON.stringify({
+    sourceDatasetDir: store.datasetDir,
     outputDir: path.resolve(outputDir),
     ...manifest,
   }, null, 2));

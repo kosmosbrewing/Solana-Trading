@@ -5,6 +5,7 @@ import readline from 'readline';
 import { Candle } from '../utils/types';
 import { ParsedSwap } from './types';
 import { RealtimeSignalRecord } from '../reporting/realtimeMeasurement';
+import { resolveRealtimeDatasetDir } from './persistenceLayout';
 
 export interface StoredRealtimeSwap extends ParsedSwap {
   pairAddress: string;
@@ -32,18 +33,22 @@ export interface RealtimeReplayManifest {
 }
 
 export class RealtimeReplayStore {
-  constructor(private readonly baseDir: string) {}
+  readonly datasetDir: string;
+
+  constructor(baseDir: string) {
+    this.datasetDir = resolveRealtimeDatasetDir(baseDir);
+  }
 
   get swapsPath(): string {
-    return path.join(this.baseDir, 'raw-swaps.jsonl');
+    return path.join(this.datasetDir, 'raw-swaps.jsonl');
   }
 
   get candlesPath(): string {
-    return path.join(this.baseDir, 'micro-candles.jsonl');
+    return path.join(this.datasetDir, 'micro-candles.jsonl');
   }
 
   get signalsPath(): string {
-    return path.join(this.baseDir, 'realtime-signals.jsonl');
+    return path.join(this.datasetDir, 'realtime-signals.jsonl');
   }
 
   async appendSwap(record: StoredRealtimeSwap): Promise<void> {

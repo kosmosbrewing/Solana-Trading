@@ -1,7 +1,5 @@
 import { AttentionScore, AttentionScoreComponents, AttentionScorerConfig, TrendingEventCandidate } from './types';
 
-const BIRDEYE_TRENDING_URL = 'https://docs.birdeye.so/reference/get-defi-token_trending';
-
 export class AttentionScorer {
   constructor(private readonly config: AttentionScorerConfig) {}
 
@@ -24,7 +22,7 @@ export class AttentionScorer {
       attentionScore,
       components,
       narrative: this.buildNarrative(candidate, components),
-      sources: [BIRDEYE_TRENDING_URL],
+      sources: [resolveSourceLabel(candidate)],
       detectedAt,
       expiresAt: new Date(Date.parse(detectedAt) + this.config.expiryMinutes * 60_000).toISOString(),
       confidence: this.resolveConfidence(attentionScore, candidate),
@@ -109,8 +107,9 @@ export class AttentionScorer {
   }
 
   private buildNarrative(candidate: TrendingEventCandidate, components: AttentionScoreComponents): string {
+    const sourceLabel = resolveSourceLabel(candidate);
     const fragments = [
-      `Birdeye Trending rank ${candidate.rank}`,
+      `${sourceLabel} rank ${candidate.rank}`,
       typeof candidate.priceChange24hPct === 'number' ? `24h change ${candidate.priceChange24hPct.toFixed(1)}%` : null,
       typeof candidate.volume24hUsd === 'number' ? `24h volume $${Math.round(candidate.volume24hUsd).toLocaleString('en-US')}` : null,
       `timing ${components.timing}/20`,
@@ -144,4 +143,12 @@ function normalizeIso(value: string): string {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function resolveSourceLabel(candidate: TrendingEventCandidate): string {
+  const discoverySource = candidate.raw?.discovery_source;
+  if (typeof discoverySource === 'string' && discoverySource.length > 0) {
+    return discoverySource;
+  }
+  return candidate.source;
 }

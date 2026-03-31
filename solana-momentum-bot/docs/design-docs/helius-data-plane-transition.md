@@ -125,6 +125,7 @@
 
 - 최근 `unique swappers`, `swap acceleration`, `buy/sell imbalance`, `new holder growth`, `SOL quote quality`
 - scanner candidate source로 `helius_trending` 추가
+- `EventMonitor` / `Scanner` 모두 internal-first trending provider를 통해 후보를 받도록 전환
 
 ## 이번 패치에서 실제 반영한 것
 
@@ -139,3 +140,5 @@
 - realtime position monitoring은 internal aggregated 5m candles 우선 사용
 - realtime 모드에서는 Gecko ingester를 시작하지 않음
 - paper/legacy ingester는 startup 시 기존 internal candles로 lastFetchTime을 복구하고 recent backfill을 생략
+- `ReplayWarmSync`로 paper 모드가 `data/realtime/micro-candles.jsonl`를 지속 반영
+- `Scanner` / `EventMonitor` trending은 `internal_activity -> Gecko fallback` 경계로 전환

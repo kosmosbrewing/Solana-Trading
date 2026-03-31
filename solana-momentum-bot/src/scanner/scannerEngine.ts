@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events';
+import type { TrendingTokenProvider } from '../discovery/trendingTokenProvider';
 import { createModuleLogger } from '../utils/logger';
 import { BirdeyeTrendingToken } from '../ingester/birdeyeClient';
 import { GeckoTerminalClient } from '../ingester/geckoTerminalClient';
@@ -35,6 +36,8 @@ export interface WatchlistEntry {
 export interface ScannerEngineConfig {
   /** GeckoTerminal client (Birdeye 대체) */
   geckoClient: GeckoTerminalClient;
+  /** Internal-first trending candidate provider */
+  trendingProvider?: TrendingTokenProvider;
   /** DexScreener client (optional) */
   dexScreenerClient: DexScreenerClient | null;
   /** Maximum watchlist size */
@@ -196,7 +199,7 @@ export class ScannerEngine extends EventEmitter {
       }
       this.cleanupCooldowns();
       const previousMints = new Set(this.watchlist.keys());
-      const tokens = await this.config.geckoClient.getTrendingTokens(20);
+      const tokens = await (this.config.trendingProvider ?? this.config.geckoClient).getTrendingTokens(20);
       log.info(`Trending discovery: ${tokens.length} candidates`);
 
       for (const token of tokens) {

@@ -14,6 +14,10 @@ import {
 } from './ingester';
 import { BirdeyeWSClient } from './ingester/birdeyeWSClient';
 import { EventMonitor, EventScoreStore } from './event';
+import {
+  CompositeTrendingTokenProvider,
+} from './discovery/trendingTokenProvider';
+import { InternalTrendingTokenProvider } from './discovery/internalTrendingTokenProvider';
 import { CandleStore, InternalCandleSource, TradeStore } from './candle';
 import { RiskManager, RiskConfig, RegimeFilter } from './risk';
 import {
@@ -30,10 +34,12 @@ import {
   HeliusPoolDiscovery,
   HeliusWSIngester,
   MicroCandleBuilder,
+  ReplayWarmSync,
   RealtimeAdmissionTracker,
   RealtimeAdmissionStore,
   RealtimePoolOwnerResolver,
   RealtimeReplayStore,
+  warmReplayCandlesIntoStore,
   detectRealtimeDiscoveryMismatch,
   detectRealtimePoolProgramMismatch,
   selectRealtimeEligiblePair,
@@ -155,6 +161,7 @@ async function main() {
     : null;
   let heliusIngester: HeliusWSIngester | null = null;
   let heliusPoolDiscovery: HeliusPoolDiscovery | null = null;
+  let replayWarmSync: ReplayWarmSync | null = null;
   let realtimeCandleBuilder: MicroCandleBuilder | null = null;
 
   const setRealtimePoolTarget = (logicalPair: string, subscriptionPair: string) => {
@@ -209,6 +216,19 @@ async function main() {
     positionStore.initialize(),
     auditLogger.initialize(),
   ]);
+  if (!realtimeModeEnabled && config.realtimePersistenceEnabled) {
+    const replayImportStore = new RealtimeReplayStore(config.realtimeDataDir);
+    if (await replayImportStore.hasCandles()) {
+      await warmReplayCandlesIntoStore(replayImportStore, candleStore);
+      if (config.realtimeReplayWarmSyncEnabled) {
+        replayWarmSync = new ReplayWarmSync(
+          replayImportStore,
+          candleStore,
+          config.realtimeReplayWarmSyncIntervalMs
+        );
+      }
+    }
+  }
   // Phase 2: EventScore persistence (C-1)
   const eventScoreStore = new EventScoreStore(dbPool);
   await eventScoreStore.initialize();
@@ -290,15 +310,6 @@ async function main() {
   // Why: Birdeye optional — overview/legacy REST + Strategy D WS 보조용
   const birdeyeClient = config.birdeyeApiKey ? new BirdeyeClient(config.birdeyeApiKey) : null;
   const onchainSecurityClient = new OnchainSecurityClient(config.solanaRpcUrl);
-  const eventMonitor = new EventMonitor(geckoClient, {
-    pollingIntervalMs: config.eventPollingIntervalMs,
-    minAttentionScore: config.eventMinScore,
-    fetchLimit: config.eventTrendingFetchLimit,
-    expiryMinutes: config.eventExpiryMinutes,
-    minLiquidityUsd: config.eventMinLiquidityUsd,
-  });
-  // Phase 2: Attach persistent store for historical replay (C-1)
-  eventMonitor.setScoreStore(eventScoreStore);
 
   // Phase 2: Social mention tracker (C-2)
   const socialMentionTracker = new SocialMentionTracker({
@@ -474,6 +485,22 @@ async function main() {
     (source) => { runtimeDiagnosticsTracker.recordRateLimit(source); }
   );
   const tokenPairResolver = new CompositeTokenPairResolver(heliusPoolRegistry, dexScreenerClient);
+  const internalTrendingProvider = new InternalTrendingTokenProvider(
+    heliusPoolRegistry,
+    internalCandleSource
+  );
+  const trendingProvider = new CompositeTrendingTokenProvider(
+    internalTrendingProvider,
+    geckoClient
+  );
+  const eventMonitor = new EventMonitor(trendingProvider, {
+    pollingIntervalMs: config.eventPollingIntervalMs,
+    minAttentionScore: config.eventMinScore,
+    fetchLimit: config.eventTrendingFetchLimit,
+    expiryMinutes: config.eventExpiryMinutes,
+    minLiquidityUsd: config.eventMinLiquidityUsd,
+  });
+  eventMonitor.setScoreStore(eventScoreStore);
   log.info('DexScreener client initialized');
 
   // ─── Phase 1A: Scanner Engine ─────────────────────
@@ -481,6 +508,7 @@ async function main() {
   if (config.scannerEnabled) {
     const scannerConfig: ScannerEngineConfig = {
       geckoClient,
+      trendingProvider,
       dexScreenerClient,
       maxWatchlistSize: config.maxWatchlistSize,
       minWatchlistScore: config.scannerMinWatchlistScore,
@@ -1184,6 +1212,9 @@ async function main() {
   // ─── Start ingester ─────────────────────────────────
   // Scanner 모드: 동적 addPair()를 위해 항상 start()
   if (!realtimeModeEnabled) {
+    if (replayWarmSync) {
+      await replayWarmSync.start();
+    }
     await ingester.start();
   } else {
     log.info('Gecko ingester skipped in realtime mode (internal candles active)');
@@ -1214,6 +1245,7 @@ async function main() {
     universeEngine.stop();
     if (scanner) scanner.stop();
     if (birdeyeWS) birdeyeWS.stop();
+    replayWarmSync?.stop();
     if (realtimeCandleBuilder) realtimeCandleBuilder.stop();
     if (heliusPoolDiscovery) await heliusPoolDiscovery.stop();
     if (heliusIngester) await heliusIngester.stop();

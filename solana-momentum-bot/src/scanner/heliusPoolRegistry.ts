@@ -85,6 +85,22 @@ export class HeliusPoolRegistry implements TokenPairResolver {
     this.pairsByToken.delete(tokenAddress);
   }
 
+  listPairs(): DexScreenerPair[] {
+    const deduped = new Map<string, DexScreenerPair>();
+    for (const pairs of this.pairsByToken.values()) {
+      for (const pair of pairs.values()) {
+        if (!deduped.has(pair.pairAddress)) {
+          deduped.set(pair.pairAddress, pair);
+        }
+      }
+    }
+    return [...deduped.values()].sort((left, right) =>
+      (right.liquidity?.usd || 0) - (left.liquidity?.usd || 0)
+      || (right.volume?.h24 || 0) - (left.volume?.h24 || 0)
+      || left.pairAddress.localeCompare(right.pairAddress)
+    );
+  }
+
   private upsertTokenPair(tokenAddress: string, pair: DexScreenerPair): void {
     if (!tokenAddress) return;
 

@@ -1,5 +1,6 @@
 export { HeliusWSIngester } from './heliusWSIngester';
 export { RealtimeReplayStore } from './replayStore';
+export { ReplayWarmSync, warmReplayCandlesIntoStore } from './replayWarmImport';
 export { RealtimeAdmissionTracker } from './realtimeAdmissionTracker';
 export { RealtimeAdmissionStore } from './realtimeAdmissionStore';
 export {

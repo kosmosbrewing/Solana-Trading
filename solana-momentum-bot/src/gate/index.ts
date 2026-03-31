@@ -15,6 +15,7 @@ import {
   GateThresholds,
   isGradeRejected,
 } from './scoreGate';
+import type { MomentumOrderParams } from '../strategy';
 
 const log = createModuleLogger('Gate');
 
@@ -31,6 +32,14 @@ export interface EvaluateGatesInput {
   requireAttentionScore?: boolean;
   /** Early probe용 예상 포지션 사이즈(SOL). 미지정 시 1 SOL probe 사용. */
   estimatedPositionSol?: number;
+  /** effectiveRR hard reject 기준. 미지정 시 executionViability 기본값 사용. */
+  executionRrReject?: number;
+  /** effectiveRR full pass 기준. 미지정 시 executionViability 기본값 사용. */
+  executionRrPass?: number;
+  /** effectiveRR 계산 기준 (tp1 | tp2). 미지정 시 tp2 (기존 동작). */
+  executionRrBasis?: 'tp1' | 'tp2';
+  /** realtime signal probe가 실제 주문식과 같은 파라미터를 쓰도록 전달한다. */
+  realtimeOrderParams?: Partial<MomentumOrderParams>;
 
   // ─── Phase 1A: Security + Quote Gate ───
   /** Token security data from current security source (onchain RPC in runtime) */
@@ -230,7 +239,16 @@ function evaluateGatesSync(input: EvaluateGatesInput): GateEvaluationResult {
     };
   }
   const executionViability = evaluateExecutionViability(
-    input.signal, input.candles, input.poolInfo, input.estimatedPositionSol
+    input.signal,
+    input.candles,
+    input.poolInfo,
+    input.estimatedPositionSol,
+    {
+      rrReject: input.executionRrReject,
+      rrPass: input.executionRrPass,
+      rrBasis: input.executionRrBasis,
+      realtimeOrderParams: input.realtimeOrderParams,
+    }
   );
   const filterReason = executionViability.rejected
     ? executionViability.filterReason

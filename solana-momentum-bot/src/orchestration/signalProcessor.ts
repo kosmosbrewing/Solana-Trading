@@ -214,14 +214,19 @@ export async function processSignal(
       order = signal.meta.realtimeSignal === 1
         ? buildMomentumTriggerOrder(signal, candles, quantity, {
           slMode: (config.realtimeSlMode as 'atr' | 'swing_low' | 'candle_low'),
-          slAtrMultiplier: config.realtimeSlAtrMultiplier,
+          slAtrMultiplier: config.slAtrMultiplier,
           slSwingLookback: config.realtimeSlSwingLookback,
-          timeStopMinutes: config.realtimeTimeStopMinutes,
+          timeStopMinutes: config.timeStopMinutes,
           atrPeriod: 14,
-          tp1Multiplier: 1.5,
-          tp2Multiplier: 3.5,
+          tp1Multiplier: config.tp1Multiplier,
+          tp2Multiplier: config.tp2Multiplier,
         })
-        : buildVolumeSpikeOrder(signal, candles, quantity);
+        : buildVolumeSpikeOrder(signal, candles, quantity, {
+          tp1Multiplier: config.tp1Multiplier,
+          tp2Multiplier: config.tp2Multiplier,
+          slAtrMultiplier: config.slAtrMultiplier,
+          timeStopMinutes: config.timeStopMinutes,
+        });
     } else if (signal.strategy === 'fib_pullback') {
       order = buildFibPullbackOrder(signal, candles, quantity, {
         timeStopMinutes: config.fibTimeStopMinutes,
@@ -235,13 +240,15 @@ export async function processSignal(
     order.sizeConstraint = riskResult.sizeConstraint;
     order.tokenSymbol = signal.tokenSymbol;
 
+    const rrThresholds = {
+      rrReject: config.executionRrReject,
+      rrPass: config.executionRrPass,
+      rrBasis: config.executionRrBasis as 'tp1' | 'tp2',
+    };
     const sizeAwareExecution = evaluateExecutionViabilityForOrder(order, signal.poolTvl || 0, {
       ammFeePct: signal.meta.ammFeePct,
       mevMarginPct: signal.meta.mevMarginPct,
-    }, {
-      rrReject: config.executionRrReject,
-      rrPass: config.executionRrPass,
-    });
+    }, rrThresholds);
     let postSizeExecution = sizeAwareExecution;
     if (sizeAwareExecution.sizeMultiplier < 1 && !sizeAwareExecution.rejected) {
       order.quantity *= sizeAwareExecution.sizeMultiplier;
@@ -249,10 +256,7 @@ export async function processSignal(
       postSizeExecution = evaluateExecutionViabilityForOrder(order, signal.poolTvl || 0, {
         ammFeePct: signal.meta.ammFeePct,
         mevMarginPct: signal.meta.mevMarginPct,
-      }, {
-        rrReject: config.executionRrReject,
-        rrPass: config.executionRrPass,
-      });
+      }, rrThresholds);
     }
     logExecutionViabilityComparison(gateResult.executionViability, postSizeExecution);
       if (postSizeExecution.rejected) {

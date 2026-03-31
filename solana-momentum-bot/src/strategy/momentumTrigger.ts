@@ -25,12 +25,12 @@ export interface MomentumOrderParams {
 
 const DEFAULT_ORDER_PARAMS: MomentumOrderParams = {
   slMode: 'atr',
-  slAtrMultiplier: 1.5,
+  slAtrMultiplier: 1.0,     // v5: 1.5→1.0 (일정한 risk 단위)
   slSwingLookback: 5,
-  timeStopMinutes: 15,
+  timeStopMinutes: 20,      // v5: 15→20 (volume spike와 통일)
   atrPeriod: 14,
-  tp1Multiplier: 1.5,
-  tp2Multiplier: 3.5,
+  tp1Multiplier: 1.0,       // v5: 1.5→1.0
+  tp2Multiplier: 10.0,      // v5: 3.5→10.0
 };
 
 export interface TriggerRejectStats {

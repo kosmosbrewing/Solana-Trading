@@ -146,17 +146,33 @@ Runner:  잔여 70%가 trailing로 2x~10x 구간까지 보유
 
 **핵심: 승률이 40%가 아니어도 1건의 runner가 전체를 양수로 만드는 구조**
 
-### 구현 범위
+### 구현 범위 — 완료
 
 ```
-변경 파일 (예상):
-src/strategy/volumeSpikeBreakout.ts   <- TP1/TP2/SL 배수 변경
-src/gate/executionViability.ts         <- TP1 기준 RR 전환 + 기준값 하향
-src/execution/tradeExecution.ts        <- trailing 활성화 조건 (TP1 이후만)
-src/execution/positionMonitor.ts       <- runner trailing width 변경
-src/risk/riskManager.ts               <- break-even SL 로직
+변경 파일 (실제):
+src/utils/config.ts                    <- v5 파라미터 추가 (tp1/tp2Multiplier, slAtrMultiplier, etc.)
+src/strategy/volumeSpikeBreakout.ts    <- TP1=ATR×1.0, TP2=ATR×10, SL=ATR×1.0, TimeStop=20
+src/strategy/momentumTrigger.ts        <- 동일한 v5 기본값 적용
+src/gate/executionViability.ts         <- TP1 기준 RR 전환 (rrBasis='tp1'), 기준값 0.8/1.0
+src/gate/index.ts                      <- executionRrBasis passthrough
+src/orchestration/signalProcessor.ts   <- rrBasis config 전달 + strategy 파라미터 config 연동
+src/orchestration/tradeExecution.ts    <- TP1 30% 청산 (tp1PartialPct) + trailing TP1 이후만
 tests/                                 <- 회귀 테스트 업데이트
 ```
+
+### 새 config 키 (환경변수)
+
+| 키 | 기본값 | 설명 |
+|---|---|---|
+| `TP1_MULTIPLIER` | 1.0 | TP1 = ATR × N |
+| `TP2_MULTIPLIER` | 10.0 | TP2 = ATR × N (실질 cap 제거) |
+| `SL_ATR_MULTIPLIER` | 1.0 | SL = entry - ATR × N |
+| `TIME_STOP_MINUTES` | 20 | 시간 기반 청산 |
+| `TP1_PARTIAL_PCT` | 0.3 | TP1 부분 청산 비율 (30%) |
+| `TRAILING_AFTER_TP1_ONLY` | true | trailing TP1 이후만 활성화 |
+| `EXECUTION_RR_BASIS` | tp1 | effectiveRR 계산 기준 |
+| `EXECUTION_RR_REJECT` | 0.8 | TP1 기준 하향 |
+| `EXECUTION_RR_PASS` | 1.0 | TP1 기준 하향 |
 
 ### 검증 순서
 
@@ -174,3 +190,4 @@ tests/                                 <- 회귀 테스트 업데이트
 | 2026-03-31 | "수익 길게, 손실 짧게" 원칙 적용 결정 | 현재 구조가 원칙의 정반대 (수익 cap, 손실 조기 실현) |
 | 2026-03-31 | effectiveRR gate를 TP1 기준으로 전환 검토 | TP2 제거 시 기존 gate 무의미화 방지 |
 | 2026-03-31 | Strategy D (LP sniper)를 장기적으로 live 후보로 평가 | fat-tail 포착에 가장 적합한 기존 전략 |
+| 2026-03-31 | v5 "수익 길게, 손실 짧게" 구현 완료 | Part 2 전 항목 config-driven 구현, backtest/paper 검증 필요 |

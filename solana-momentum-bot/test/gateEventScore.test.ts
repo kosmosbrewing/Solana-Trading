@@ -210,16 +210,15 @@ describe('AttentionScore gate integration', () => {
     });
     const poor = evaluateGates({
       ...baseInput,
-      poolInfo: { ...poolInfo, tvl: 30 },
+      poolInfo: { ...poolInfo, tvl: 5 },  // v5: TP2=ATR×10 → TVL 대폭 축소 필요
     });
 
     expect(healthy.executionViability.effectiveRR).toBeGreaterThanOrEqual(1.5);
     expect(healthy.gradeSizeMultiplier).toBeCloseTo(1.2, 6);
 
-    // Why: v4 sweep으로 tp2 3.5 적용 후 middling 구간 TVL 조정
-    expect(middling.executionViability.effectiveRR).toBeGreaterThanOrEqual(1.2);
-    expect(middling.executionViability.effectiveRR).toBeLessThan(1.5);
-    expect(middling.gradeSizeMultiplier).toBeCloseTo(0.6, 6);
+    // v5: TP2=ATR×10으로 변경되어 middling TVL 65에서 RR 상승 → full pass
+    expect(middling.executionViability.effectiveRR).toBeGreaterThanOrEqual(1.5);
+    expect(middling.gradeSizeMultiplier).toBeCloseTo(1.2, 6);
 
     expect(poor.rejected).toBe(true);
     expect(poor.filterReason).toContain('poor_execution_viability');
@@ -250,12 +249,50 @@ describe('AttentionScore gate integration', () => {
       price: 1,
       quantity: 10,
       stopLoss: 0.97,
+      takeProfit1: 1.075,
       takeProfit2: 1.15,
     }, 100);
 
     expect(tinyProbe.rejected).toBe(false);
     expect(actualSize.rejected).toBe(true);
     expect(actualSize.filterReason).toContain('poor_execution_viability');
+  });
+
+  it('applies configured execution viability thresholds and rr basis in gate evaluation', () => {
+    const gateParams = {
+      signal: {
+        ...signal,
+        meta: { atr: 0.06, volumeRatio: 3 },
+      },
+      candles: [{
+        ...candles[0],
+        low: 0.97,
+      }],
+      previousTvl: poolInfo.tvl,
+      attentionScore: highConfidenceEvent,
+      fibConfig: {
+        impulseMinPct: 0.15,
+        volumeClimaxMultiplier: 2.5,
+        minWickRatio: 0.4,
+      },
+      poolInfo: { ...poolInfo, tvl: 1_000 },
+      executionRrReject: 1.0,
+      executionRrPass: 1.2,
+    };
+
+    const tp1Basis = evaluateGates(buildLiveGateInput({
+      ...gateParams,
+      executionRrBasis: 'tp1',
+    }));
+    const tp2Basis = evaluateGates(buildLiveGateInput({
+      ...gateParams,
+      executionRrBasis: 'tp2',
+    }));
+
+    expect(tp1Basis.rejected).toBe(true);
+    expect(tp1Basis.filterReason).toContain('poor_execution_viability');
+    expect(tp2Basis.rejected).toBe(false);
+    expect(tp2Basis.executionViability.effectiveRR).toBeGreaterThan(tp1Basis.executionViability.effectiveRR);
   });
 
   it('converts SOL probe notionals into token quantity for pre-gate execution viability', () => {
@@ -283,6 +320,46 @@ describe('AttentionScore gate integration', () => {
     expect(result.quantity).toBeCloseTo(0.25, 6);
     expect(result.entryPriceImpactPct).toBeGreaterThanOrEqual(0);
     expect(result.exitPriceImpactPct).toBeGreaterThanOrEqual(0);
+  });
+
+  it('uses momentum trigger order params for realtime execution probes', () => {
+    const realtimeSignal: Signal = {
+      ...signal,
+      meta: { ...signal.meta, realtimeSignal: 1 },
+    };
+    const realtimeCandles: Candle[] = [
+      {
+        ...candles[0],
+        low: 0.8,
+      },
+      {
+        ...candles[0],
+        timestamp: new Date('2026-03-15T00:05:00Z'),
+        low: 0.85,
+        close: 1.0,
+      },
+    ];
+
+    const result = evaluateExecutionViability(
+      realtimeSignal,
+      realtimeCandles,
+      { ...poolInfo, tvl: 1_000 },
+      1,
+      {
+        realtimeOrderParams: {
+          slMode: 'candle_low',
+          slAtrMultiplier: 1.0,
+          slSwingLookback: 2,
+          timeStopMinutes: 20,
+          atrPeriod: 14,
+          tp1Multiplier: 1.0,
+          tp2Multiplier: 10.0,
+        },
+      }
+    );
+
+    expect(result.riskPct).toBeCloseTo(0.15, 6);
+    expect(result.rewardPct).toBeCloseTo(0.6, 6);
   });
 });
 

@@ -88,6 +88,26 @@ describe('BacktestEngine parity', () => {
     expect(result.attentionScore).toEqual(attentionScore);
   });
 
+  it('passes configured execution viability thresholds into backtest gate evaluation', () => {
+    const engine = new BacktestEngine({
+      gatePoolInfo: {
+        tvl: 1_000,
+        tokenAgeHours: 24,
+        top10HolderPct: 0.8,
+        lpBurned: null,
+        ownershipRenounced: null,
+      },
+      executionRrReject: 1.0,
+      executionRrPass: 1.2,
+      executionRrBasis: 'tp1',
+    });
+
+    const result = engine["evaluateSignalGates"](makeSignal(), [makeCandle()], 'pair-1');
+
+    expect(result.rejected).toBe(true);
+    expect(result.filterReason).toContain('poor_execution_viability');
+  });
+
   it('replays timeline AttentionScore entries by candle timestamp', () => {
     const timelineEvent = {
       tokenMint: 'pair-1',

@@ -393,14 +393,17 @@ export async function checkOpenPositions(ctx: BotContext): Promise<void> {
     }
 
     if (trade.trailingStop && recentCandles.length >= 8) {
+      // v5: trailingAfterTp1Only=true이면 TP1 이후에만 trailing 활성화
+      // TP1 후 잔여 trade는 SL이 entryPrice 이상으로 올라감 → tp1Hit 근사 판별
+      const tp1Hit = trade.stopLoss >= trade.entryPrice;
+      if (config.trailingAfterTp1Only && !tp1Hit) continue;
+
       // Why: backtest와 동일하게 최소 2봉 보유 후 trailing 활성화
       const minTrailingHoldMs = config.defaultTimeframe * 1000 * 2;
       const trailingHoldDuration = Date.now() - trade.createdAt.getTime();
       if (trailingHoldDuration < minTrailingHoldMs) continue;
 
       const atr = calcATR(recentCandles, 7);
-      // Why: TP1 후 잔여 trade는 SL이 entryPrice로 올라감 → tp1Hit 근사 판별
-      const tp1Hit = trade.stopLoss >= trade.entryPrice;
       const adaptiveStop = calcAdaptiveTrailingStop(
         recentCandles,
         atr,
@@ -641,7 +644,9 @@ async function handleTakeProfit1Partial(
   ctx: BotContext
 ): Promise<void> {
   try {
-    const soldQuantity = trade.quantity * 0.5;
+    // v5: TP1 부분 청산 비율 — config.tp1PartialPct (기존 0.5 → 0.3)
+    const tp1PartialPct = config.tp1PartialPct;
+    const soldQuantity = trade.quantity * tp1PartialPct;
     const remainingQuantity = trade.quantity - soldQuantity;
 
     if (remainingQuantity <= 0 || soldQuantity <= 0) {
@@ -655,7 +660,7 @@ async function handleTakeProfit1Partial(
 
     if (ctx.tradingMode === 'live') {
       const tokenBalance = await ctx.executor.getTokenBalance(trade.pairAddress);
-      const partialTokenAmount = tokenBalance / 2n;
+      const partialTokenAmount = BigInt(Math.floor(Number(tokenBalance) * tp1PartialPct));
 
       if (partialTokenAmount <= 0n || trade.quantity <= 0) {
         log.warn(`Partial TP1 unavailable for trade ${trade.id}; closing full position instead`);

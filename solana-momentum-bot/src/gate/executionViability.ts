@@ -1,4 +1,9 @@
-import { buildFibPullbackOrder, buildVolumeSpikeOrder } from '../strategy';
+import {
+  buildFibPullbackOrder,
+  buildMomentumTriggerOrder,
+  buildVolumeSpikeOrder,
+} from '../strategy';
+import type { MomentumOrderParams } from '../strategy';
 import { estimateSlippage } from '../risk';
 import type { Candle, Order, PoolInfo, Signal } from '../utils/types';
 
@@ -23,30 +28,43 @@ export interface ExecutionViabilityResult {
   notionalSol?: number;
 }
 
+export interface ExecutionViabilityThresholds {
+  rrReject?: number;
+  rrPass?: number;
+  rrBasis?: 'tp1' | 'tp2';
+}
+
+export interface ExecutionViabilityProbeConfig extends ExecutionViabilityThresholds {
+  realtimeOrderParams?: Partial<MomentumOrderParams>;
+}
+
 export function evaluateExecutionViability(
   signal: Signal,
   candles: Candle[],
   poolInfo: PoolInfo,
-  estimatedPositionSol?: number
+  estimatedPositionSol?: number,
+  probeConfig: ExecutionViabilityProbeConfig = {}
 ): ExecutionViabilityResult {
   const probeNotionalSol = estimatedPositionSol ?? 1;
   const probeQty = signal.price > 0 ? probeNotionalSol / signal.price : 0;
   const order = signal.strategy === 'fib_pullback'
     ? buildFibPullbackOrder(signal, candles, probeQty)
-    : buildVolumeSpikeOrder(signal, candles, probeQty);
+    : signal.meta.realtimeSignal === 1
+      ? buildMomentumTriggerOrder(signal, candles, probeQty, probeConfig.realtimeOrderParams)
+      : buildVolumeSpikeOrder(signal, candles, probeQty);
   // H-03: SpreadMeasurer 실측값이 있으면 ammFeePct 대신 사용
   const measuredSpread = signal.spreadPct;
   return evaluateExecutionViabilityForOrder(order, poolInfo.tvl, {
     ammFeePct: measuredSpread != null ? measuredSpread : poolInfo.ammFeePct,
     mevMarginPct: poolInfo.mevMarginPct,
-  });
+  }, probeConfig);
 }
 
 export function evaluateExecutionViabilityForOrder(
-  order: Pick<Order, 'price' | 'quantity' | 'stopLoss' | 'takeProfit2'>,
+  order: Pick<Order, 'price' | 'quantity' | 'stopLoss' | 'takeProfit1' | 'takeProfit2'>,
   poolTvl: number,
   costs: { ammFeePct?: number; mevMarginPct?: number } = {},
-  thresholds: { rrReject?: number; rrPass?: number } = {}
+  thresholds: ExecutionViabilityThresholds = {}
 ): ExecutionViabilityResult {
   if (order.quantity <= 0) {
     return {
@@ -66,13 +84,15 @@ export function evaluateExecutionViabilityForOrder(
 
   const ammFeePct = costs.ammFeePct ?? DEFAULT_AMM_FEE_PCT;
   const mevMarginPct = costs.mevMarginPct ?? DEFAULT_MEV_MARGIN_PCT;
+  const rrBasis = thresholds.rrBasis ?? 'tp2';
+  const rewardTarget = rrBasis === 'tp1' ? order.takeProfit1 : order.takeProfit2;
   const riskPct = order.price > 0 ? Math.max((order.price - order.stopLoss) / order.price, 0) : 0;
-  const rewardPct = order.price > 0 ? Math.max((order.takeProfit2 - order.price) / order.price, 0) : 0;
+  const rewardPct = order.price > 0 ? Math.max((rewardTarget - order.price) / order.price, 0) : 0;
   const notionalSol = order.price * order.quantity;
-  // Why fee=0, mev=0: estimateSlippage()에 순수 price impact만 추출, AMM fee/MEV는 별도 가산(L59).
+  // Why fee=0, mev=0: estimateSlippage()에 순수 price impact만 추출, AMM fee/MEV는 별도 가산.
   // ⚠️ live 전환 시 Jupiter quote 기반으로 교체하면 fee가 이미 포함되므로 이중계산 주의.
   const entryPriceImpact = estimateSlippage(notionalSol, poolTvl, 0, 0);
-  const exitPriceImpact = estimateSlippage(order.takeProfit2 * order.quantity, poolTvl, 0, 0);
+  const exitPriceImpact = estimateSlippage(rewardTarget * order.quantity, poolTvl, 0, 0);
   const roundTripCost = entryPriceImpact + exitPriceImpact + ammFeePct + mevMarginPct;
   const effectiveRR = riskPct > 0
     ? Math.max(rewardPct - roundTripCost, 0) / (riskPct + roundTripCost)

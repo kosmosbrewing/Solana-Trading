@@ -109,6 +109,18 @@ export async function handleRealtimeSignal(
     previousTvl: ctx.previousTvl.get(signal.pairAddress) || poolTvl,
     attentionScore,
     estimatedPositionSol,
+    executionRrReject: config.executionRrReject,
+    executionRrPass: config.executionRrPass,
+    executionRrBasis: config.executionRrBasis as 'tp1' | 'tp2',
+    realtimeOrderParams: {
+      slMode: config.realtimeSlMode as 'atr' | 'swing_low' | 'candle_low',
+      slAtrMultiplier: config.slAtrMultiplier,
+      slSwingLookback: config.realtimeSlSwingLookback,
+      timeStopMinutes: config.timeStopMinutes,
+      atrPeriod: 14,
+      tp1Multiplier: config.tp1Multiplier,
+      tp2Multiplier: config.tp2Multiplier,
+    },
     fibConfig: {
       impulseMinPct: config.fibImpulseMinPct,
       volumeClimaxMultiplier: config.fibVolumeClimaxMultiplier,
@@ -152,12 +164,12 @@ export async function handleRealtimeSignal(
 
   const previewOrder = buildMomentumTriggerOrder(signal, candles, 1, {
     slMode: (config.realtimeSlMode as 'atr' | 'swing_low' | 'candle_low'),
-    slAtrMultiplier: config.realtimeSlAtrMultiplier,
+    slAtrMultiplier: config.slAtrMultiplier,
     slSwingLookback: config.realtimeSlSwingLookback,
-    timeStopMinutes: config.realtimeTimeStopMinutes,
+    timeStopMinutes: config.timeStopMinutes,
     atrPeriod: 14,
-    tp1Multiplier: 1.5,
-    tp2Multiplier: 3.5,
+    tp1Multiplier: config.tp1Multiplier,
+    tp2Multiplier: config.tp2Multiplier,
   });
   const processingStartedAt = new Date();
   const processResult = await processSignal(signal, candles, ctx, gateResult);

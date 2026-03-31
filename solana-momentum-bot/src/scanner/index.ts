@@ -8,3 +8,4 @@ export { calcWatchlistScore } from './watchlistScore';
 export type { WatchlistScoreInput, WatchlistScoreResult } from './watchlistScore';
 export { SocialMentionTracker } from './socialMentionTracker';
 export type { SocialMention, SocialMentionConfig } from './socialMentionTracker';
+export { createScannerBlacklistCheck } from './scannerBlacklist';

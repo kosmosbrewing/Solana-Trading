@@ -6,9 +6,11 @@ export interface VolumeSpikeParams {
   volumeMultiplier: number; // M배 (default: 3.0)
   spreadFilterK: number;    // 스프레드 필터 배수 (default: 2.0)
   atrPeriod: number;        // ATR 기간 (default: 20)
-  tp1Multiplier: number;    // TP1 = ATR × 1.5
-  tp2Multiplier: number;    // TP2 = ATR × 2.5
-  timeStopMinutes: number;  // 30분
+  tp1Multiplier: number;    // TP1 = ATR × N
+  tp2Multiplier: number;    // TP2 = ATR × N
+  timeStopMinutes: number;
+  /** SL = entry - ATR × N. undefined이면 candle.low (기존 동작) */
+  slAtrMultiplier?: number;
 }
 
 export function calcVolumeMcapRatio(volume24hUsd?: number, marketCap?: number): number {
@@ -23,9 +25,10 @@ const DEFAULT_PARAMS: VolumeSpikeParams = {
   volumeMultiplier: 2.5,   // v4 sweep: 3.0→2.5 (시그널 수 ~30% 증가)
   spreadFilterK: 2.0,
   atrPeriod: 20,
-  tp1Multiplier: 1.5,
-  tp2Multiplier: 3.5,      // v4 sweep: 2.5→3.5 (fat tail 포착 강화)
-  timeStopMinutes: 30,
+  tp1Multiplier: 1.0,      // v5: 1.5→1.0 (더 자주 TP1 도달, runner 비중 확대)
+  tp2Multiplier: 10.0,     // v5: 3.5→10.0 (실질적 cap 제거, fat-tail 탑승)
+  timeStopMinutes: 20,     // v5: 30→20 (빠른 판정)
+  slAtrMultiplier: 1.0,    // v5: candle.low→ATR×1.0 (일정한 risk 단위)
 };
 
 /**
@@ -107,16 +110,21 @@ export function buildVolumeSpikeOrder(
   const currentCandle = candles[candles.length - 1];
   const atr = signal.meta.atr || calcATR(candles, p.atrPeriod);
 
+  // v5: ATR 기반 SL (일정한 risk 단위). 미설정 시 candle.low (기존 동작)
+  const stopLoss = p.slAtrMultiplier != null
+    ? signal.price - atr * p.slAtrMultiplier
+    : currentCandle.low;
+
   return {
     pairAddress: signal.pairAddress,
     strategy: 'volume_spike',
     side: 'BUY',
     price: signal.price,
     quantity,
-    stopLoss: currentCandle.low,           // 브레이크아웃 봉 저점
+    stopLoss,
     takeProfit1: signal.price + atr * p.tp1Multiplier,
     takeProfit2: signal.price + atr * p.tp2Multiplier,
-    trailingStop: atr,                     // 최고가 대비 -ATR
+    trailingStop: atr,
     timeStopMinutes: p.timeStopMinutes,
   };
 }

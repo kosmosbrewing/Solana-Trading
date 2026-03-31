@@ -1,0 +1,43 @@
+# Manual backtest pool list
+# Curated on 2026-03-22 from current GeckoTerminal Solana trending pools.
+# First-pass inclusion rule used here:
+# - age >= ~24h
+# - TVL >= $50k
+# - 24h volume >= $100k
+# Notes:
+# - `scripts/auto-backtest.ts --pool-file ...` ignores lines after `#`
+# - This is a seed list, not a final production universe
+
+# rank 2 | CHIBI | TVL ~$249k | Vol24h ~$7.54m | created 2026-03-19T09:42:39Z
+HJAqvquMLHxcx7BYwDixukJM4zYBaTDG69uDWbo18zv
+
+# rank 3 | NOTHING | TVL ~$142k | Vol24h ~$3.61m | created 2026-03-20T20:04:06Z
+CuC5aRrjDx8RArTDTASDkszQ3Dy8Po6k2PXy2DfCRVYy
+
+# rank 4 | pippin | TVL ~$6.99m | Vol24h ~$12.49m | created 2024-11-09T20:27:41Z
+8WwcNqdZjCY5Pt7AkhupAFknV2txca9sq6YBkGzLbvdt
+
+# rank 5 | PISS | TVL ~$59k | Vol24h ~$2.46m | created 2026-03-21T01:26:58Z
+ABPreqFYhZ4R2tbd4si7mj4Z9D3DcLEyMdarnJQC1QRJ
+
+# rank 6 | Punch | TVL ~$654k | Vol24h ~$1.16m | created 2026-02-05T09:01:05Z
+A6KHMiFzn9AM7VKBtVP4fZNY9bCo2jP63R9dphaW1vrq
+
+# rank 7 | fine999.9 | TVL ~$71k | Vol24h ~$7.70m | created 2026-03-20T03:52:48Z
+FKishUG6nKtZCHRgDt6svg7uAAtCfkvGcdki8HCuU8ey
+
+# rank 14 | Lobstar | TVL ~$432k | Vol24h ~$682k | created 2026-02-20T04:23:13Z
+AADJrfmWoHVXZhF1UkbHvNC5tqrBpkGdSaxtMYteDm2x
+
+# rank 19 | 67 | TVL ~$239k | Vol24h ~$133k | created 2025-09-19T09:31:39Z
+DMAFL613XTipuA3jFNYczavWT7XsiYf9cR3qmRMZQhB6
+
+# rank 20 | Optimistic | TVL ~$71k | Vol24h ~$1.28m | created 2026-03-19T05:08:49Z
+CSRJSQ5daTA9sehZAboPQYAJqbptJgzQ2e7aGduWzQ8U
+
+# Watchlist only: excluded for now
+# F7Mo9iKj5rhKv9aXRHjkDXeUpiDc1JTV1S6gCg7gwqny  # DABURYU | TVL too low
+# D6zEDhBHhuyatUNTTZDETJpo93SZCdBvzDAScUEeJgpE  # Tsuki | too new + TVL low
+# Gb9Sw43E8e8mAXieP8NciWMBh2188AzcPZY7kmw8migK  # SOMETHING | too new
+# Dd4hsmWhwEfkoRh2NxGXmbfYPh474K4yUXuoNmmPYALY  # NOTGAY | TVL below threshold
+# 2HGrSaaKDGBvAThy6FopiT3GiMq46XmDZuZAXFGRGBDU  # MTS | TVL below threshold

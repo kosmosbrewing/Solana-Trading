@@ -1,6 +1,6 @@
 # PLAN4.md
 
-> Updated: 2026-03-30
+> Updated: 2026-03-31
 > Purpose: live canary의 현재 해석과 다음 운영 우선순위를 정리한다.
 > Relationship: [`PLAN3.md`](./PLAN3.md)는 historical runtime blocker, [`20260331.md`](./20260331.md)는 이번 post-patch canary와 telemetry patch의 세부 기록이다.
 
@@ -11,6 +11,8 @@
 - `2026-03-30 09:46:50 UTC` 시작 canary 12.2시간에서는 진입 0건이었다.
 - 그 구간의 직접 blocker는 주로 `poor_execution_viability`와 pair blacklist였다.
 - 이후 execution viability telemetry patch를 넣고 `2026-03-30 22:22:46 UTC`에 재시작했지만, 최신 21분 구간은 아직 BUY 시그널이 0건이라 새 telemetry 해석은 보류 상태다.
+- `2026-03-31` 기준으로 v5 구조 변경과 follow-up fix 3건이 코드/테스트에 반영됐다.
+- 따라서 다음 검증 순서는 `live-first`가 아니라 `backtest -> paper -> live`다.
 
 한 줄로 요약하면:
 
@@ -45,7 +47,13 @@
   - `Trade opened`: 0
 - 따라서 새 telemetry가 잘 찍히는지 아직 live 표본으로 확인하지 못했다.
 
-### F6. 운영 노이즈는 지속
+### F6. v5 follow-up fix는 완료
+- realtime signal의 pre-gate execution probe가 실제 `momentumTrigger` 주문식과 정렬됐다.
+- backtest gate / post-size execution viability도 live와 같은 RR 기준을 쓰도록 정렬됐다.
+- scanner blacklist는 startup preload로 cold-start 우회 구간을 줄였다.
+- targeted test `46`개가 통과했다.
+
+### F7. 운영 노이즈는 지속
 - Gecko `429`는 계속 발생한다.
 - unsupported venue / pool program skip도 반복된다.
 - 다만 최신 21분 구간의 직접적인 0-entry 원인은 RR gate가 아니라 "시그널 자체가 아직 안 나온 것"이다.
@@ -58,35 +66,32 @@
 
 ### 현재 해석
 - cadence 확보는 아직 잠정적이다.
-- 먼저 새 telemetry가 실제 BUY 시그널에서 찍혀야 한다.
-- 그 뒤에야 `cost`, `TP2/SL`, `blacklist`, `watchlist quality` 중 어느 쪽이 직접 blocker인지 다시 분리할 수 있다.
+- 하지만 오늘부터는 v5 구현 경로가 backtest / paper / live에 걸쳐 일관되게 연결된 상태다.
+- 따라서 다음 단계는 live에서 무작정 표본을 기다리는 것이 아니라, backtest와 paper에서 먼저 구조 검증을 다시 하는 것이다.
 
 ## Required Actions
 
-### R1. 첫 BUY 시그널 확보
-- 재시작 후 live canary를 더 돌린다.
-- 최소 목표:
-  - `Signal: BUY`
-  - `execution.preGate`
-  - 필요 시 `execution.postSize`
+### R1. backtest 재검증
+- v5 구조에서 trade count, rejection mix, expectancy가 어떻게 바뀌는지 먼저 확인한다.
+- execution viability rejection이 여전히 지배적인지, 아니면 signal density가 더 큰 문제인지 분리한다.
 
-### R2. execution viability compare 판독
-- 첫 BUY 시그널에서 아래를 바로 본다.
-  - `preGate effectiveRR`
-  - `postSize effectiveRR`
-  - `probe notional`
-  - `post-size notional`
-  - `sizeMultiplier`
+### R2. paper canary
+- `20~50`건 표본을 모아 `execution.preGate` / `execution.postSize`가 기대대로 남는지 확인한다.
+- live 전에는 여기서 runner/TP1/stop 구조가 실제로 동작하는지 먼저 본다.
 
-### R3. blacklist pair 재유입 점검
-- 동일 loser pair가 blacklist 상태로 watchlist/signal 슬롯을 반복 점유하는지 확인한다.
+### R3. live canary는 후순위
+- live는 paper 확인 뒤에 전환한다.
+- 먼저 돌리더라도 목적은 runtime sanity / telemetry shape 확인까지로 제한한다.
+
+### R4. blacklist pair 재유입 점검
+- startup preload 이후에도 동일 loser pair가 watchlist/signal 슬롯을 반복 점유하는지 확인한다.
 - 필요하면 scanner cooldown 보강을 별도 작업으로 승격한다.
 
-### R4. data-plane noise 분리
+### R5. data-plane noise 분리
 - Gecko `429`, unsupported venue skip은 계속 기록하되,
 - BUY 시그널이 나온 뒤의 rejection 원인과 섞어서 해석하지 않는다.
 
-### R5. 파라미터 조정은 후순위
+### R6. 파라미터 조정은 후순위
 - 아래는 telemetry 확보 전에는 건드리지 않는다.
   - `rrReject`
   - `TP2`
@@ -102,15 +107,17 @@
 | Risk guard / daily halt | PASS |
 | Stable cadence proof | NOT YET |
 | Positive expectancy proof | FAIL |
-| Post-patch telemetry validation | NOT YET |
+| Post-patch telemetry validation | PARTIAL |
+| Backtest/Paper validation of v5 | NOT YET |
 
 ## Current Priorities
 
-1. live canary를 더 돌려 첫 BUY 시그널을 기다린다.
-2. 첫 BUY 시그널에서 `execution.preGate` / `execution.postSize`를 확인한다.
-3. 동일 pair 재유입이 보이면 cooldown 패치를 검토한다.
-4. 충분한 표본이 생긴 뒤에만 RR / TP / cost 파라미터를 조정한다.
+1. backtest로 v5 구조를 재검증한다.
+2. paper canary에서 `execution.preGate` / `execution.postSize`를 확인한다.
+3. live canary는 paper 확인 뒤에 runtime sanity와 실거래 검증용으로 올린다.
+4. 동일 pair 재유입이 보이면 cooldown 패치를 검토한다.
+5. 충분한 표본이 생긴 뒤에만 RR / TP / cost 파라미터를 조정한다.
 
 ## One-Line Summary
 
-> PLAN4의 현재 우선순위는 수익성 튜닝이 아니라, post-patch live canary에서 첫 BUY 표본을 확보해 새 execution telemetry로 실제 blocker를 재식별하는 것이다.
+> PLAN4의 현재 우선순위는 v5 구조를 곧바로 live에 재투입하는 것이 아니라, backtest와 paper에서 먼저 검증한 뒤 live canary로 넘어가는 것이다.

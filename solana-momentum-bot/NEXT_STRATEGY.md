@@ -174,11 +174,19 @@ tests/                                 <- 회귀 테스트 업데이트
 | `EXECUTION_RR_REJECT` | 0.8 | TP1 기준 하향 |
 | `EXECUTION_RR_PASS` | 1.0 | TP1 기준 하향 |
 
+### 2026-03-31 follow-up fix
+
+- realtime pre-gate execution probe가 실제 `momentumTrigger` order params와 정렬됐다.
+- backtest gate / post-size execution viability도 v5 RR 기준을 사용하도록 정렬됐다.
+- scanner blacklist는 startup preload로 cold-start 우회 구간을 줄였다.
+- targeted test `46`개 통과, commit `0697d07`
+
 ### 검증 순서
 
 1. **backtest 먼저** — 변경 파라미터로 기존 데이터 재검증
-2. **paper 카나리아** — live 전 paper 모드로 50건
+2. **paper 카나리아** — live 전 paper 모드로 `20~50`건
 3. **live 카나리아** — paper 통과 후 live 전환
+4. **예외** — live를 먼저 돌리더라도 runtime sanity / telemetry shape 확인 용도로만 사용
 
 ---
 
@@ -191,3 +199,4 @@ tests/                                 <- 회귀 테스트 업데이트
 | 2026-03-31 | effectiveRR gate를 TP1 기준으로 전환 검토 | TP2 제거 시 기존 gate 무의미화 방지 |
 | 2026-03-31 | Strategy D (LP sniper)를 장기적으로 live 후보로 평가 | fat-tail 포착에 가장 적합한 기존 전략 |
 | 2026-03-31 | v5 "수익 길게, 손실 짧게" 구현 완료 | Part 2 전 항목 config-driven 구현, backtest/paper 검증 필요 |
+| 2026-03-31 | live 이전에 backtest/paper 재검증 우선 | v5와 follow-up fix가 gate/backtest/scanner까지 바뀌어 live-first 해석이 부정확해짐 |

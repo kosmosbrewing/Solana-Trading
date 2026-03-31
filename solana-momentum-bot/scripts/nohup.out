@@ -1,0 +1,43 @@
+bash: scripts/cron-backtest.sh: No such file or directory
+[cron-backtest] === Start: 2026-03-22T13:57:21Z ===
+[cron-backtest] Grid: vm=4 × cb=3 × bl=3 × ccp=3 = 108 sets (parallel=2)
+[cron-backtest] Merging swap data from /root/Solana/Solana-Trading/solana-momentum-bot/data/realtime-swaps...
+[cron-backtest] Merged 11292 swap lines from 20 pools
+[cron-backtest] === Start: 2026-03-23T03:38:29Z ===
+[cron-backtest] Grid: vm=4 × cb=3 × bl=3 × ccp=3 = 108 sets (parallel=2)
+[cron-backtest] Merging swap data from /root/Solana/Solana-Trading/solana-momentum-bot/data/realtime-swaps...
+[cron-backtest] Merged 178189 swap lines from 28 pools
+[cron-backtest] vm2.0_cb1_bl5_ccp0.010  signals=445 ★
+[cron-backtest] vm2.0_cb1_bl5_ccp0.005  signals=482 ★
+[cron-backtest] vm2.0_cb1_bl5_ccp0.020  signals=390 ★
+[cron-backtest] vm2.0_cb1_bl10_ccp0.005  signals=396 ★
+[cron-backtest] vm2.0_cb1_bl10_ccp0.010  signals=368 ★
+[cron-backtest] vm2.0_cb1_bl10_ccp0.020  signals=325 ★
+[cron-backtest] vm2.0_cb1_bl20_ccp0.005  signals=299 ★
+[cron-backtest] vm2.0_cb1_bl20_ccp0.010  signals=277 ★
+[cron-backtest] vm2.0_cb1_bl20_ccp0.020  signals=248 ★
+[cron-backtest] vm2.0_cb2_bl5_ccp0.005  signals=217 ★
+[cron-backtest] vm2.0_cb2_bl5_ccp0.020  signals=196 ★
+[cron-backtest] vm2.0_cb2_bl5_ccp0.010  signals=202 ★
+[cron-backtest] vm2.0_cb2_bl10_ccp0.005  signals=176 ★
+[cron-backtest] vm2.0_cb2_bl10_ccp0.010  signals=164 ★
+[cron-backtest] vm2.0_cb2_bl10_ccp0.020  signals=159 ★
+[cron-backtest] vm2.0_cb2_bl20_ccp0.005  signals=127 ★
+[cron-backtest] vm2.0_cb2_bl20_ccp0.020  signals=113 ★
+[cron-backtest] vm2.0_cb2_bl20_ccp0.010  signals=115 ★
+[cron-backtest] vm2.0_cb3_bl5_ccp0.010  signals=82 ★
+[cron-backtest] vm2.0_cb3_bl5_ccp0.005  signals=85 ★
+[cron-backtest] vm2.0_cb3_bl5_ccp0.020  signals=76 ★
+[cron-backtest] vm2.0_cb3_bl10_ccp0.005  signals=72 ★
+[cron-backtest] vm2.0_cb3_bl10_ccp0.010  signals=69 ★
+[cron-backtest] vm2.0_cb3_bl10_ccp0.020  signals=65 ★
+[cron-backtest] vm2.0_cb3_bl20_ccp0.010  signals=56 ★
+[cron-backtest] vm2.0_cb3_bl20_ccp0.005  signals=59 ★
+[cron-backtest] vm2.0_cb3_bl20_ccp0.020  signals=52 ★
+[cron-backtest] vm2.5_cb1_bl5_ccp0.005  signals=457 ★
+[cron-backtest] vm2.5_cb1_bl5_ccp0.010  signals=424 ★
+[cron-backtest] vm2.5_cb1_bl5_ccp0.020  signals=376 ★
+[cron-backtest] vm2.5_cb1_bl10_ccp0.010  signals=355 ★
+[cron-backtest] vm2.5_cb1_bl10_ccp0.005  signals=381 ★
+[cron-backtest] vm2.5_cb1_bl20_ccp0.005  signals=291 ★
+[cron-backtest] vm2.5_cb1_bl10_ccp0.020  signals=315 ★

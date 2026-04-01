@@ -49,6 +49,7 @@ export interface DailyRejectionMixSummary {
   gateFilterReasonCounts: Array<{ reason: string; count: number }>;
   admissionSkipCounts: Array<{ reason: string; count: number }>;
   admissionSkipDetailCounts: Array<{ label: string; count: number }>;
+  capacityCounts: Array<{ label: string; count: number }>;
   preWatchlistRejectCounts: Array<{ reason: string; count: number }>;
   preWatchlistRejectDetailCounts: Array<{ label: string; count: number }>;
   rateLimitCounts: Array<{ source: string; count: number }>;
@@ -174,6 +175,7 @@ export function buildDailySummaryMessage(report: DailySummaryReport, dateLabel: 
     appendLabelCountSection(lines, 'pre-watchlist reject', report.rejectionMix.preWatchlistRejectDetailCounts);
     appendCountSection(lines, 'realtime skip', report.rejectionMix.admissionSkipCounts, 'reason');
     appendLabelCountSection(lines, 'realtime skip detail', report.rejectionMix.admissionSkipDetailCounts);
+    appendLabelCountSection(lines, 'capacity', report.rejectionMix.capacityCounts);
     appendCountSection(lines, '429', report.rejectionMix.rateLimitCounts, 'source');
     appendCountSection(lines, 'poll failure', report.rejectionMix.pollFailureCounts, 'source');
 

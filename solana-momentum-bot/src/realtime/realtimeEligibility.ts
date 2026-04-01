@@ -38,6 +38,14 @@ export interface RealtimePoolProgramCandidateMeta {
   poolOwner?: string | null;
 }
 
+export type RealtimeAdmissionSkipDetail =
+  | 'resolver_miss'
+  | 'empty_pairs'
+  | 'all_pairs_blocked'
+  | 'unsupported_dex_after_lookup'
+  | 'non_sol_quote_after_lookup'
+  | 'unsupported_pool_program_after_lookup';
+
 export const SUPPORTED_REALTIME_DEX_IDS = new Set([
   'raydium',
   'orca',
@@ -130,6 +138,22 @@ export function selectRealtimeEligiblePair<T extends RealtimePairCandidate>(
     pair: ranked[0],
     reason: 'eligible',
   };
+}
+
+export function classifyRealtimeAdmissionSkip<T extends RealtimePairCandidate>(input: {
+  resolvedPairs: T[];
+  admissionPairs: T[];
+  result: RealtimeEligibilityResult<T>;
+}): RealtimeAdmissionSkipDetail | undefined {
+  if (input.result.eligible) return undefined;
+  if (input.result.reason === 'no_pairs') {
+    if (input.resolvedPairs.length === 0) return 'resolver_miss';
+    return input.admissionPairs.length === 0 ? 'all_pairs_blocked' : 'empty_pairs';
+  }
+  if (input.result.reason === 'unsupported_dex') return 'unsupported_dex_after_lookup';
+  if (input.result.reason === 'non_sol_quote') return 'non_sol_quote_after_lookup';
+  if (input.result.reason === 'unsupported_pool_program') return 'unsupported_pool_program_after_lookup';
+  return undefined;
 }
 
 function normalizeDexId(dexId: string): string {

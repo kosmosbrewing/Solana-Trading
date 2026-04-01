@@ -249,6 +249,9 @@ describe('messageFormatter', () => {
         admissionSkipDetailCounts: [
           { label: 'unsupported_pool_program source=gecko_new_pool dex=raydium', count: 5 },
         ],
+        capacityCounts: [
+          { label: 'helius_pool_discovery reason=queue_overflow detail=limit=250 inFlight=2 queued=250', count: 3 },
+        ],
         rateLimitCounts: [
           { source: 'gecko_terminal', count: 4 },
           { source: 'helius_seed_backfill', count: 2 },

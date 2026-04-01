@@ -15,6 +15,7 @@ export { RealtimePoolOwnerResolver } from './poolOwnerResolver';
 export {
   detectRealtimeDiscoveryMismatch,
   detectRealtimePoolProgramMismatch,
+  classifyRealtimeAdmissionSkip,
   SUPPORTED_REALTIME_DEX_IDS,
   SUPPORTED_REALTIME_POOL_PROGRAMS,
   selectRealtimeEligiblePair,
@@ -45,6 +46,7 @@ export type { StoredRealtimeSwap, StoredMicroCandle, RealtimeReplayManifest } fr
 export type {
   RealtimeDiscoveryCandidateMeta,
   RealtimePoolProgramCandidateMeta,
+  RealtimeAdmissionSkipDetail,
   RealtimeEligibilityResult,
   RealtimePairCandidate,
 } from './realtimeEligibility';

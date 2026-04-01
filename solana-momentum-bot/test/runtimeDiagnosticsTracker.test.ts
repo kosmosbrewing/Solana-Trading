@@ -21,11 +21,17 @@ describe('RuntimeDiagnosticsTracker', () => {
     tracker.recordRealtimeCandidateSeen({ tokenMint: 'token-b', source: 'gecko_trending' });
     tracker.recordAdmissionSkip({
       tokenMint: 'token-b',
-      reason: 'unsupported_pool_program',
+      reason: 'no_pairs',
+      detail: 'all_pairs_blocked',
       source: 'gecko_trending',
       dexId: 'raydium',
     });
     tracker.recordRealtimeCandidateSeen({ tokenMint: 'token-c', source: 'dex_boost' });
+    tracker.recordCapacity({
+      source: 'helius_pool_discovery',
+      reason: 'queue_overflow',
+      detail: 'limit=250 inFlight=2 queued=250',
+    });
 
     const summary = tracker.buildSummary(24);
 
@@ -37,7 +43,13 @@ describe('RuntimeDiagnosticsTracker', () => {
       readinessRate: 1 / 3,
     });
     expect(summary.preWatchlistRejectCounts).toEqual([{ reason: 'unsupported_dex', count: 1 }]);
-    expect(summary.admissionSkipCounts).toEqual([{ reason: 'unsupported_pool_program', count: 1 }]);
+    expect(summary.admissionSkipCounts).toEqual([{ reason: 'no_pairs', count: 1 }]);
+    expect(summary.admissionSkipDetailCounts).toEqual([
+      { label: 'no_pairs detail=all_pairs_blocked source=gecko_trending dex=raydium', count: 1 },
+    ]);
+    expect(summary.capacityCounts).toEqual([
+      { label: 'helius_pool_discovery reason=queue_overflow detail=limit=250 inFlight=2 queued=250', count: 1 },
+    ]);
   });
 
   it('persists events across restarts', async () => {
@@ -49,11 +61,17 @@ describe('RuntimeDiagnosticsTracker', () => {
       tracker.recordRealtimeCandidateSeen({ tokenMint: 'token-live', source: 'dex_boost' });
       tracker.recordAdmissionSkip({
         tokenMint: 'token-live',
-        reason: 'unsupported_pool_program',
+        reason: 'no_pairs',
+        detail: 'resolver_miss',
         source: 'dex_boost',
         dexId: 'raydium',
       });
       tracker.recordRateLimit('gecko_ingester');
+      tracker.recordCapacity({
+        source: 'helius_pool_discovery',
+        reason: 'queue_overflow',
+        detail: 'limit=250 inFlight=1 queued=249',
+      });
       await tracker.flush();
 
       const restored = new RuntimeDiagnosticsTracker(store, await store.load());
@@ -62,6 +80,9 @@ describe('RuntimeDiagnosticsTracker', () => {
       expect(summary.realtimeCandidateReadiness.totalCandidates).toBe(1);
       expect(summary.realtimeCandidateReadiness.admissionSkipped).toBe(1);
       expect(summary.rateLimitCounts).toEqual([{ source: 'gecko_ingester', count: 1 }]);
+      expect(summary.capacityCounts).toEqual([
+        { label: 'helius_pool_discovery reason=queue_overflow detail=limit=250 inFlight=1 queued=249', count: 1 },
+      ]);
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }

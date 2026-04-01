@@ -259,10 +259,10 @@ export const config = {
   concurrentTier2Sol: numOptional('CONCURRENT_TIER_2_SOL', 20),  // 이 equity 이상이면 3 concurrent
 
   // ─── v4: Execution R:R 임계값 (Step 1C) ───
-  executionRrReject: numOptional('EXECUTION_RR_REJECT', 0.8),  // TP1 기준 하향 (기존 1.2)
-  executionRrPass: numOptional('EXECUTION_RR_PASS', 1.0),      // TP1 기준 하향 (기존 1.5)
-  /** effectiveRR 계산 기준: 'tp1' = TP1 reward, 'tp2' = TP2 reward (기존 동작) */
-  executionRrBasis: optional('EXECUTION_RR_BASIS', 'tp1') as 'tp1' | 'tp2',
+  executionRrReject: numOptional('EXECUTION_RR_REJECT', 1.2),  // TP2 기준 복원 (v5 runner-centric)
+  executionRrPass: numOptional('EXECUTION_RR_PASS', 1.5),      // TP2 기준 복원
+  /** effectiveRR 계산 기준: 'tp1' = TP1 reward, 'tp2' = TP2 reward. v5는 runner-centric이므로 tp2 기본 */
+  executionRrBasis: optional('EXECUTION_RR_BASIS', 'tp2') as 'tp1' | 'tp2',
 
   // ─── v4: Position Cap 설정 가능화 (Step 1B) ───
   maxPositionPct: numOptional('MAX_POSITION_PCT', 0.20), // 포트폴리오 대비 최대 포지션 비율

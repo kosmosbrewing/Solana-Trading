@@ -115,14 +115,14 @@ Exit     Sell-side Impact
 ### Current Execution Viability Basis
 
 ```text
-RR basis = TP1
-Reject   < 0.8
-Reduced  < 1.0
-Full     >= 1.0
+RR basis = TP2
+Reject   < 1.2
+Reduced  < 1.5
+Full     >= 1.5
 ```
 
-즉 현재는 old `1.2 / 1.5 / tp2` 기준이 아니라
-v5 `tp1 / 0.8 / 1.0` 기준으로 읽는다.
+v5는 runner-centric (TP2=10x ATR) 전략이므로, RR 평가도 TP2 기준으로 해야
+구조적 rejection을 피할 수 있다. TP1 기준은 SL과 대칭(1x ATR)이라 roundTripCost만큼 항상 불리하다.
 
 ## Risk And Exit
 
@@ -179,9 +179,9 @@ v5 `tp1 / 0.8 / 1.0` 기준으로 읽는다.
 | `TIME_STOP_MINUTES` | `20` |
 | `TP1_PARTIAL_PCT` | `0.3` |
 | `TRAILING_AFTER_TP1_ONLY` | `true` |
-| `EXECUTION_RR_BASIS` | `tp1` |
-| `EXECUTION_RR_REJECT` | `0.8` |
-| `EXECUTION_RR_PASS` | `1.0` |
+| `EXECUTION_RR_BASIS` | `tp2` |
+| `EXECUTION_RR_REJECT` | `1.2` |
+| `EXECUTION_RR_PASS` | `1.5` |
 | `MAX_POSITION_PCT` | `0.20` |
 | `MAX_SELL_IMPACT` | `0.03` |
 | `SELL_IMPACT_SIZING_THRESHOLD` | `0.015` |

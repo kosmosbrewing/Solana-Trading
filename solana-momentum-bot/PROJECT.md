@@ -58,32 +58,37 @@ Stage 2: Trigger
 - live 파이프라인은 `signal -> gate -> risk -> execute -> manage exit`까지 end-to-end로 동작한다.
 - Quote 401, executor 401, BUY sizing 단위 버그는 해소됐다.
 - live trailing / wick-aware exit / execution viability telemetry 보강 패치가 반영됐다.
+- internal trending key fallback 버그 수정 완료 (Codex, 2026-03-31).
 
 ### 아직 미증명인 것
 - 양의 기대값
 - 안정적인 cadence
 - TP1/TP2 도달 구조
-- `effectiveRR` gate가 실제 거래 가능성을 과도하게 막고 있는지 여부
+
+### 2026-04-01 해결한 것
+- **Crash loop 해소**: RuntimeDiagnosticsTracker write storm → 30초 throttle + capacity 이벤트 상한
+- **RR gate 구조적 rejection 해소**: rrBasis를 tp1→tp2로 변경 (v5 runner-centric 전략 정렬)
+- **Pool discovery 용량 4배 증가**: queueLimit 50→200, concurrency 2→4, capacity emit throttle
 
 ### 현재 해석
-- 2026-03-25~26 baseline에서는 12건 거래가 체결됐지만 성과는 음수였다.
-- 2026-03-30 post-patch canary 12.2시간에서는 진입 0건이었고, 주 원인은 `poor_execution_viability`와 pair blacklist였다.
-- 이후 telemetry patch를 넣고 `2026-03-30 22:22:46 UTC`에 재시작했지만, 최신 21분 구간에서는 아직 BUY 시그널이 0건이라 새 telemetry를 평가할 표본이 없다.
+- legacy canary (113 signals): 13 executed, 45 exec viability rejected (39.8%), 21 quote 401 rejected (18.6%)
+- 3/31 canary (1 signal): NoKings Grade A, effectiveRR=0.71로 reject → 실제 5분 후 +17.56% 수익
+- 4/1: crash loop 발생 (830 sessions/7h) — RuntimeDiagnosticsTracker persist 폭풍이 원인
+- 위 3가지 수정으로 다음 canary에서 signal cadence와 execution rate 복구를 기대
 
 ## 로드맵
 
 | Phase | 목표 | 현재 상태 |
 |-------|------|----------|
 | Phase 0 | 기존 봇 안정화 | 완료 |
-| Phase 1 | Live Bootstrap 해석 가능 상태 확보 | 진행 중 |
+| Phase 1 | Live Bootstrap 해석 가능 상태 확보 | **진행 중 — blocker 3건 해소** |
 | Phase 2 | 첫 공식 Mission / Execution / Edge 판정 | 미도달 |
 | Phase 3 | 양의 기대값 반복 확인 후 소규모 복리화 | 미시작 |
 
 ### Phase 1의 현재 우선순위
-1. 첫 post-patch BUY 시그널에서 `execution.preGate` / `execution.postSize` 비교 확보
-2. `poor_execution_viability`가 실제 blocker인지 검증
-3. blacklist pair 재유입과 scanner churn 분리
-4. Gecko `429`와 unsupported venue 노이즈를 운영 해석과 분리
+1. 수정 배포 후 24시간 canary에서 signal cadence 확인 (목표: 10+ signals/day)
+2. TP2-basis RR gate 통과율 확인 및 execution 표본 축적
+3. paper 50 trades 확보 → Gate-Proven Sample 도달
 
 ## 인프라
 

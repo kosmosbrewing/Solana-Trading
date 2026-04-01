@@ -91,6 +91,7 @@ export class HeliusPoolDiscovery extends EventEmitter {
   private lastRequestAt = 0;
   private queueOverflowWarnedAt = 0;
   private overflowDroppedCount = 0;
+  private lastCapacityEmitAt = 0;
   private permitChain: Promise<void> = Promise.resolve();
 
   constructor(config: PoolDiscoveryConfig) {
@@ -100,9 +101,9 @@ export class HeliusPoolDiscovery extends EventEmitter {
       wsEndpoint: config.rpcWsUrl,
     });
     this.programIds = config.programIds ?? [...SUPPORTED_POOL_DISCOVERY_PROGRAMS];
-    this.concurrency = Math.max(1, config.concurrency ?? 2);
-    this.requestSpacingMs = config.requestSpacingMs ?? 1_000;
-    this.queueLimit = config.queueLimit ?? 50;
+    this.concurrency = Math.max(1, config.concurrency ?? 4);
+    this.requestSpacingMs = config.requestSpacingMs ?? 500;
+    this.queueLimit = config.queueLimit ?? 200;
     this.rateLimitCooldownMs = config.rateLimitCooldownMs ?? 30_000;
     this.transientFailureCooldownMs = config.transientFailureCooldownMs ?? 5_000;
   }
@@ -140,13 +141,17 @@ export class HeliusPoolDiscovery extends EventEmitter {
       if (dropped) {
         this.pendingSignatures.delete(dropped.seenKey);
         this.overflowDroppedCount += 1;
+      }
+      const now = Date.now();
+      // capacity emit과 warn 모두 60초 throttle — write storm 방지
+      if (now - this.lastCapacityEmitAt >= 60_000) {
+        this.lastCapacityEmitAt = now;
         this.emit('capacity', {
           source: 'helius_pool_discovery',
           reason: 'queue_overflow',
-          detail: `limit=${this.queueLimit} inFlight=${this.inFlight} queued=${this.queue.length}`,
+          detail: `limit=${this.queueLimit} inFlight=${this.inFlight} queued=${this.queue.length} dropped=${this.overflowDroppedCount}`,
         });
       }
-      const now = Date.now();
       if (now - this.queueOverflowWarnedAt >= 60_000) {
         this.queueOverflowWarnedAt = now;
         const droppedCount = this.overflowDroppedCount;

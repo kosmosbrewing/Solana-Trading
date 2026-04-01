@@ -857,6 +857,9 @@ async function main() {
       heliusPoolDiscovery = new HeliusPoolDiscovery({
         rpcWsUrl: buildHeliusWsUrl(),
         rpcHttpUrl: config.solanaRpcUrl,
+        concurrency: config.realtimePoolDiscoveryConcurrency,
+        queueLimit: config.realtimePoolDiscoveryQueueLimit,
+        requestSpacingMs: config.realtimePoolDiscoveryRequestSpacingMs,
       });
       heliusPoolDiscovery.on('poolDiscovered', (candidate) => {
         heliusPoolRegistry.upsertObservedPair(candidate);

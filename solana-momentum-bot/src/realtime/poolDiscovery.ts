@@ -54,6 +54,7 @@ interface PoolDiscoveryConfig {
   rpcHttpUrl: string;
   rpcWsUrl: string;
   programIds?: string[];
+  concurrency?: number;
   requestSpacingMs?: number;
   queueLimit?: number;
   rateLimitCooldownMs?: number;
@@ -76,6 +77,7 @@ interface QueuedPoolDiscoveryLog {
 export class HeliusPoolDiscovery extends EventEmitter {
   private readonly connection: Connection;
   private readonly programIds: string[];
+  private readonly concurrency: number;
   private readonly requestSpacingMs: number;
   private readonly queueLimit: number;
   private readonly rateLimitCooldownMs: number;
@@ -84,10 +86,12 @@ export class HeliusPoolDiscovery extends EventEmitter {
   private readonly seenSignatures = new Set<string>();
   private readonly pendingSignatures = new Set<string>();
   private readonly queue: QueuedPoolDiscoveryLog[] = [];
-  private processing = false;
+  private inFlight = 0;
   private cooldownUntil = 0;
   private lastRequestAt = 0;
   private queueOverflowWarnedAt = 0;
+  private overflowDroppedCount = 0;
+  private permitChain: Promise<void> = Promise.resolve();
 
   constructor(config: PoolDiscoveryConfig) {
     super();
@@ -96,6 +100,7 @@ export class HeliusPoolDiscovery extends EventEmitter {
       wsEndpoint: config.rpcWsUrl,
     });
     this.programIds = config.programIds ?? [...SUPPORTED_POOL_DISCOVERY_PROGRAMS];
+    this.concurrency = Math.max(1, config.concurrency ?? 2);
     this.requestSpacingMs = config.requestSpacingMs ?? 1_000;
     this.queueLimit = config.queueLimit ?? 50;
     this.rateLimitCooldownMs = config.rateLimitCooldownMs ?? 30_000;
@@ -123,6 +128,7 @@ export class HeliusPoolDiscovery extends EventEmitter {
     }
     this.queue.length = 0;
     this.pendingSignatures.clear();
+    this.inFlight = 0;
   }
 
   private enqueueProgramLogs(programId: string, logs: Logs, slot: number): void {
@@ -130,12 +136,21 @@ export class HeliusPoolDiscovery extends EventEmitter {
     const seenKey = `${programId}:${logs.signature}`;
     if (this.seenSignatures.has(seenKey) || this.pendingSignatures.has(seenKey)) return;
     if (this.queue.length >= this.queueLimit) {
+      const dropped = this.queue.shift();
+      if (dropped) {
+        this.pendingSignatures.delete(dropped.seenKey);
+        this.overflowDroppedCount += 1;
+      }
       const now = Date.now();
       if (now - this.queueOverflowWarnedAt >= 60_000) {
         this.queueOverflowWarnedAt = now;
-        log.warn(`Pool discovery queue overflow: limit=${this.queueLimit}. New discovery logs will be dropped until drained.`);
+        const droppedCount = this.overflowDroppedCount;
+        this.overflowDroppedCount = 0;
+        log.warn(
+          `Pool discovery queue overflow: limit=${this.queueLimit} inFlight=${this.inFlight} ` +
+          `queued=${this.queue.length} dropped=${droppedCount}. Oldest discovery logs were evicted to keep recent ones.`
+        );
       }
-      return;
     }
 
     this.pendingSignatures.add(seenKey);
@@ -144,37 +159,51 @@ export class HeliusPoolDiscovery extends EventEmitter {
   }
 
   private async processQueue(): Promise<void> {
-    if (this.processing) return;
-    this.processing = true;
+    while (this.inFlight < this.concurrency && this.queue.length > 0) {
+      const entry = this.queue.shift();
+      if (!entry) return;
 
+      this.inFlight += 1;
+      void this.processQueueEntry(entry).finally(() => {
+        this.inFlight -= 1;
+        if (this.queue.length > 0) {
+          void this.processQueue();
+        }
+      });
+    }
+  }
+
+  private async processQueueEntry(entry: QueuedPoolDiscoveryLog): Promise<void> {
     try {
-      while (this.queue.length > 0) {
-        const remainingCooldownMs = this.cooldownUntil - Date.now();
-        if (remainingCooldownMs > 0) {
-          await sleep(remainingCooldownMs);
-        }
-
-        const spacingMs = this.lastRequestAt + this.requestSpacingMs - Date.now();
-        if (spacingMs > 0) {
-          await sleep(spacingMs);
-        }
-
-        const entry = this.queue.shift();
-        if (!entry) continue;
-
-        try {
-          await this.handleProgramLogs(entry.programId, entry.logs, entry.slot);
-        } finally {
-          this.pendingSignatures.delete(entry.seenKey);
-          this.seenSignatures.add(entry.seenKey);
-          this.lastRequestAt = Date.now();
-        }
-      }
+      await this.acquirePermit();
+      await this.handleProgramLogs(entry.programId, entry.logs, entry.slot);
     } finally {
-      this.processing = false;
-      if (this.queue.length > 0) {
-        void this.processQueue();
+      this.pendingSignatures.delete(entry.seenKey);
+      this.seenSignatures.add(entry.seenKey);
+    }
+  }
+
+  private async acquirePermit(): Promise<void> {
+    const previous = this.permitChain;
+    let release!: () => void;
+    this.permitChain = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    await previous;
+    try {
+      const remainingCooldownMs = this.cooldownUntil - Date.now();
+      if (remainingCooldownMs > 0) {
+        await sleep(remainingCooldownMs);
       }
+
+      const spacingMs = this.lastRequestAt + this.requestSpacingMs - Date.now();
+      if (spacingMs > 0) {
+        await sleep(spacingMs);
+      }
+      this.lastRequestAt = Date.now();
+    } finally {
+      release();
     }
   }
 

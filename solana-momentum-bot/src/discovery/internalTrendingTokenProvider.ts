@@ -46,11 +46,7 @@ export class InternalTrendingTokenProvider {
       const tokenMint = token.address;
       if (!tokenMint || tokenMint === SOL_MINT) return null;
 
-      const candles = await this.candleSource.getRecentCandles(
-        pair.pairAddress,
-        this.intervalSec,
-        this.lookbackBars
-      );
+      const candles = await this.loadRecentCandles(pair);
       if (candles.length < 3) return null;
 
       const latest = candles[candles.length - 1];
@@ -124,6 +120,31 @@ export class InternalTrendingTokenProvider {
     }
 
     return tokens;
+  }
+
+  private async loadRecentCandles(pair: {
+    pairAddress: string;
+    baseToken: { address: string };
+    quoteToken: { address: string };
+  }): Promise<import('../utils/types').Candle[]> {
+    const candidateKeys = [
+      pair.pairAddress,
+      pair.baseToken.address,
+      pair.quoteToken.address,
+    ].filter((value, index, array) => value && value !== SOL_MINT && array.indexOf(value) === index);
+
+    for (const key of candidateKeys) {
+      const candles = await this.candleSource.getRecentCandles(
+        key,
+        this.intervalSec,
+        this.lookbackBars
+      );
+      if (candles.length > 0) {
+        return candles;
+      }
+    }
+
+    return [];
   }
 }
 

@@ -77,9 +77,9 @@ export const DEFAULT_BACKTEST_CONFIG: BacktestConfig = {
     lpBurned: null,
     ownershipRenounced: null,
   },
-  executionRrReject: 0.8,
-  executionRrPass: 1.0,
-  executionRrBasis: 'tp1',
+  executionRrReject: 1.2,
+  executionRrPass: 1.5,
+  executionRrBasis: 'tp2',
   volumeSpikeParams: {},
   fibPullbackParams: {},
 };

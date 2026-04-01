@@ -1,7 +1,7 @@
 # 대량 백테스트 실행 계획
 
 > Created: 2026-03-22
-> Updated: 2026-03-22 (realtime micro replay 경로 반영)
+> Updated: 2026-04-01 (v5 스윕 결과 + realtime micro replay 검증 반영)
 > Goal: 5분봉 대량 백테스트와 realtime micro replay를 분리해 각각의 역할로 edge를 검증한다
 > Document type: working guide
 > Authority: 백테스트 워크플로 기준 문서. 아키텍처/전략 정의는 `ARCHITECTURE.md`, `docs/product-specs/strategy-catalog.md`, `MEASUREMENT.md`를 우선한다.
@@ -193,17 +193,17 @@ npx ts-node scripts/multi-token-sweep.ts \
 
 ### 파라미터 범위
 
+v5 스윕에서는 gate/risk 파라미터(`maxRiskPerTrade`, `minBreakoutScore`)를 고정하고 전략 파라미터만 스윕한다.
+
 | 파라미터 | 범위 | 단계 | 비고 |
 |---------|------|------|------|
-| `maxRiskPerTrade` | 0.005 ~ 0.025 | 0.005 | 현재 CLI 기본 범위와 일치 |
-| `minBreakoutScore` | 40 ~ 70 | 10 | 현재 CLI 기본 범위와 일치 |
-| `volumeMultiplier` | 2.0 ~ 4.0 | 0.5 | volume spike |
-| `tp1MultiplierA` | 1.0 ~ 2.0 | 0.25 | volume spike |
-| `tp2MultiplierA` | 2.0 ~ 3.5 | 0.5 | volume spike |
+| `volumeMultiplier` | 2.0 ~ 3.5 | 0.5 | volume spike entry |
+| `tp1MultiplierA` | 0.5 ~ 1.5 | 0.5 | volume spike TP1 |
+| `tp2MultiplierA` | 5.0 ~ 15.0 | 2.5 | volume spike TP2 (v5 runner) |
+| `slAtrMultiplierA` | 0.75 ~ 1.5 | 0.25 | volume spike SL |
+| `timeStopMinutesA` | 15 ~ 30 | 5 | volume spike time stop |
 | `impulseMinPct` | 0.10 ~ 0.20 | 0.025 | fib pullback |
 | `tp1MultiplierC` | 0.80 ~ 0.95 | 0.05 | fib pullback |
-
-문서상 목표 범위를 더 넓히고 싶다면, 먼저 `scripts/multi-token-sweep.ts` 기본 범위를 수정해야 한다.
 
 ---
 
@@ -254,13 +254,23 @@ realtime 쪽은 아래처럼 본다.
 | sample 충분 | `signals >= 50` | 파라미터 비교 시작 가능 |
 | sample 충분(강) | `signals >= 100` | edge 해석 신뢰도 상승 |
 
-현재 live 검증 기준:
+### v5 Micro Replay 검증 결과 (2026-04-01)
 
-- tuned realtime dataset 1회에서 `signals=2`
-- `gate_rejected` 1건, `execution_viability_rejected` 1건
-- 30초 기준 평균 조정 수익률 `+0.27%`
+아카이브 데이터(8 pairs, 4.3M candles)에서 `vm=3.0, cb=2, cp=0.01` 기준:
 
-즉 구현은 끝났고, 남은 건 `표본 축적`이다.
+| Horizon | Signals | Return | MFE | MAE | MFE/MAE |
+|---------|---------|--------|-----|-----|---------|
+| 30s | 16 | +0.14% | 6.40% | -0.34% | 18.8x |
+| 60s | 16 | -0.01% | 6.44% | -0.36% | 17.9x |
+| 180s | 16 | +0.19% | 75.46% | -6.40% | 11.8x |
+
+핵심 발견:
+
+- MFE/MAE 18.8x → 시그널이 진짜 모멘텀을 포착하고 있음
+- 30s가 최적 캡처 포인트, 60s에서 되돌림 시작
+- confirm_bars=1은 모든 경우 대규모 손실 (-16~-47%), confirm_bars≥2 필수
+- 현재 데이터는 15s primary로 수집됨 → v5(10s) 기준 재수집 후 재검증 필요
+- 표본 16건으로 방향성만 참고, 최종 확정에는 50건 이상 필요
 
 ---
 
@@ -450,8 +460,8 @@ done
 
 | 셋 | volumeMultiplier | confirmBars | confirmChangePct | 의도 |
 |----|-----------------|-------------|-----------------|------|
-| A | 3.0 | 3 | 0.02 | 코드 기본값 |
-| B | 2.5 | 3 | 0.02 | 5분봉 스윕 최적 |
+| A | 3.0 | 3 | 0.02 | 코드 기본값 (운영 .env) |
+| B | 2.5 | 2 | 0.01 | micro replay 최적 (signal 밀도 높음) |
 | C | 2.0 | 2 | 0.01 | 공격적 (signal 많이) |
 | D | 3.5 | 3 | 0.03 | 보수적 (signal 적지만 정밀) |
 
@@ -459,7 +469,7 @@ done
 
 | CLI 플래그 | 기본값 | 역할 |
 |-----------|--------|------|
-| `--primary-interval` | 10 | 주봉 주기(초) |
+| `--primary-interval` | 10 | 주봉 주기(초). 15s 수집 데이터 사용 시 15로 변경 |
 | `--confirm-interval` | 60 | 확인봉 주기(초) |
 | `--volume-lookback` | 20 | 볼륨 평균 윈도우 |
 | `--breakout-lookback` | 20 | 가격 돌파 윈도우 |
@@ -509,14 +519,46 @@ Session: 2026-03-23, Swaps: 12,847
 
 ---
 
+## 최신 스윕 결과 요약 (2026-04-01)
+
+### CSV 5분봉 스윕 (19 tokens × 960 combos)
+
+| Rank | volume | tp1 | tp2 | sl | timeStop | AvgSharpe | Trades | +Tokens |
+|------|--------|-----|-----|-----|---------|-----------|--------|---------|
+| 1 | 3.0 | 1.5 | 5.0 | 1.5 | 25 | 2.22 | 313 | 12/17 |
+| 2 | 3.5 | 0.5 | 5.0 | 1.25 | 20 | 2.19 | 281 | 11/17 |
+| 3 | 3.0 | 1.5 | 5.0 | 1.25 | 25 | 2.14 | 315 | 12/17 |
+
+파라미터 안정도 (상위 15개):
+
+| 파라미터 | 범위 | 수렴도 |
+|----------|------|--------|
+| tp2MultiplierA | 5.0 | **100% 일치** (가장 강한 시그널) |
+| slAtrMultiplierA | 1.25~1.50 | mode 1.25 |
+| volumeMultiplier | 3.0~3.5 | mode 3.5 |
+| tp1MultiplierA | 0.5~1.5 | mode 1.5 |
+| timeStopMinutesA | 15~30 | mode 20 |
+
+### 적용된 운영 파라미터
+
+| 파라미터 | 이전 | 스윕 후 | 근거 |
+|----------|------|---------|------|
+| TP2_MULTIPLIER | 10.0 | **5.0** | 상위 15개 조합 전부 5.0 |
+| SL_ATR_MULTIPLIER | 1.0 | **1.25** | 스윕 안정 영역 |
+| VOLUME_SPIKE_MULTIPLIER | 2.5 | **3.0** | 스윕 + STRATEGY.md 합의 |
+
+---
+
 ## 예상 일정
 
 ```text
 Completed: auto-backtest.ts 복구 + pool-file 지원
 Completed: realtime shadow -> export -> replay -> report 경로 검증
 Completed: VPS 운영 구조 설계 (수집 + 크론 백테스트)
-In Progress: PumpSwap parser 추가 (PLAN3)
-Next: VPS 셋업 → Helius WS 상시 수집 시작
+Completed: v5 CSV 19-token 파라미터 스윕 (2026-04-01)
+Completed: v5 realtime micro replay 검증 (2026-04-01)
+In Progress: VPS live canary 운영 + 10s primary 데이터 수집
+Next: 10s primary 데이터 50+ signals 누적 → micro replay 재검증
 Next: 크론 백테스트 배포 → 파라미터 비교 자동화
 Next: signals ≥ 50 도달 → 최적 파라미터 확정 → Paper 50 trades
 ```

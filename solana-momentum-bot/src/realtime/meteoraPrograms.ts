@@ -8,6 +8,7 @@ export const METEORA_DEX_IDS = [
   'meteora-damm',
   'meteora-damm-v1',
   'meteora-damm-v2',
+  'meteoradbc',
   'dlmm',
   'damm-v1',
   'damm-v2',

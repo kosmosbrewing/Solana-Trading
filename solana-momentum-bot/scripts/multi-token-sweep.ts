@@ -80,6 +80,8 @@ function applyParams(
       case 'volumeMultiplier': config.volumeSpikeParams.volumeMultiplier = value; break;
       case 'tp1MultiplierA': config.volumeSpikeParams.tp1Multiplier = value; break;
       case 'tp2MultiplierA': config.volumeSpikeParams.tp2Multiplier = value; break;
+      case 'slAtrMultiplierA': config.volumeSpikeParams.slAtrMultiplier = value; break;
+      case 'timeStopMinutesA': config.volumeSpikeParams.timeStopMinutes = value; break;
       case 'impulseMinPct': config.fibPullbackParams.impulseMinPct = value; break;
       case 'tp1MultiplierC': config.fibPullbackParams.tp1Multiplier = value; break;
       default:
@@ -104,29 +106,25 @@ function extractMetrics(result: any): SweepMetrics {
 // ─── Default Param Ranges ───
 
 function getDefaultParams(strategy: StrategyName | 'combined'): Record<string, ParamRange> {
-  const common: Record<string, ParamRange> = {
-    maxRiskPerTrade: { min: 0.005, max: 0.025, step: 0.005 },
-    minBreakoutScore: { min: 40, max: 70, step: 10 },
-  };
-
+  // gate/risk 파라미터는 고정, 전략 파라미터만 스윕
   if (strategy === 'volume_spike' || strategy === 'combined') {
     return {
-      ...common,
-      volumeMultiplier: { min: 2.0, max: 4.0, step: 0.5 },
-      tp1MultiplierA: { min: 1.0, max: 2.0, step: 0.25 },
-      tp2MultiplierA: { min: 2.0, max: 3.5, step: 0.5 },
+      volumeMultiplier: { min: 2.0, max: 3.5, step: 0.5 },
+      tp1MultiplierA: { min: 0.5, max: 1.5, step: 0.5 },
+      tp2MultiplierA: { min: 5.0, max: 15.0, step: 2.5 },
+      slAtrMultiplierA: { min: 0.75, max: 1.5, step: 0.25 },
+      timeStopMinutesA: { min: 15, max: 30, step: 5 },
     };
   }
 
   if (strategy === 'fib_pullback') {
     return {
-      ...common,
       impulseMinPct: { min: 0.10, max: 0.20, step: 0.025 },
       tp1MultiplierC: { min: 0.80, max: 0.95, step: 0.05 },
     };
   }
 
-  return common;
+  return {};
 }
 
 // ─── Multi-Token Sweep Result ───

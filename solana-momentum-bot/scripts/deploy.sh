@@ -9,7 +9,21 @@ cd "$APP_DIR"
 echo "=== Solana Momentum Bot — Deploy ==="
 echo "Directory: $APP_DIR"
 
-# ─── 1. Prerequisites check ───
+# ─── 1. Git pull (최신 코드 반영) ───
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "Pulling latest changes..."
+  git fetch origin main
+  LOCAL=$(git rev-parse HEAD)
+  REMOTE=$(git rev-parse origin/main)
+  if [ "$LOCAL" != "$REMOTE" ]; then
+    git pull origin main --ff-only || { echo "ERROR: git pull failed (non-fast-forward). 수동 확인 필요."; exit 1; }
+    echo "Updated: $(git log --oneline -1)"
+  else
+    echo "Already up to date: $(git log --oneline -1)"
+  fi
+fi
+
+# ─── 2. Prerequisites check ───
 command -v node >/dev/null 2>&1 || { echo "ERROR: node not found. Install Node.js >= 20."; exit 1; }
 command -v npm >/dev/null 2>&1 || { echo "ERROR: npm not found."; exit 1; }
 command -v pm2 >/dev/null 2>&1 || { echo "pm2 not found. Installing globally..."; npm install -g pm2; }
@@ -20,7 +34,7 @@ if [ "$NODE_VER" -lt 20 ]; then
   exit 1
 fi
 
-# ─── 2. .env check ───
+# ─── 3. .env check ───
 if [ ! -f .env ]; then
   echo "ERROR: .env file not found. Copy .env.example and fill in values."
   echo "  cp .env.example .env"
@@ -61,22 +75,22 @@ done
 TRADING_MODE=$(grep "^TRADING_MODE=" .env | cut -d= -f2- | tr -d ' ')
 echo "Trading mode: ${TRADING_MODE:-paper}"
 
-# ─── 3. Install dependencies ───
+# ─── 4. Install dependencies ───
 echo "Installing dependencies..."
 npm ci --production=false 2>&1 | tail -3
 
-# ─── 4. Build ───
+# ─── 5. Build ───
 echo "Building TypeScript..."
 npm run build
 
-# ─── 5. DB Migration ───
+# ─── 6. DB Migration ───
 echo "Running database migration..."
 npx ts-node scripts/migrate.ts
 
-# ─── 6. Create logs directory ───
+# ─── 7. Create logs directory ───
 mkdir -p logs
 
-# ─── 7. pm2 deploy ───
+# ─── 8. pm2 deploy ───
 echo "Starting with pm2..."
 pm2 stop momentum-bot 2>/dev/null || true
 pm2 delete momentum-bot 2>/dev/null || true

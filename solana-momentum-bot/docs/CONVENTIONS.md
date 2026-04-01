@@ -16,6 +16,9 @@
 | gate/ | `{gateName}Gate.ts` 또는 `{concern}.ts` | `safetyGate.ts`, `spreadMeasurer.ts` |
 | risk/ | `{concern}.ts` | `drawdownGuard.ts`, `riskTier.ts` |
 | ingester/ | `{source}Client.ts` | `birdeyeClient.ts` |
+| realtime/ | `{concern}.ts` | `microCandleBuilder.ts`, `outcomeTracker.ts` |
+| discovery/ | `{source}PoolDiscovery.ts` | `heliusPoolDiscovery.ts` |
+| ops/ | `{concern}.ts` | `sessionManager.ts`, `healthMonitor.ts` |
 | test/ | `{module}.test.ts` | `riskManager.test.ts` |
 
 ## 파일 크기

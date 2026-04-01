@@ -48,9 +48,9 @@
 
 반영된 내용:
 
-- `EXECUTION_RR_BASIS=tp1`
-- `EXECUTION_RR_REJECT=0.8`
-- `EXECUTION_RR_PASS=1.0`
+- `EXECUTION_RR_BASIS=tp2`
+- `EXECUTION_RR_REJECT=1.2`
+- `EXECUTION_RR_PASS=1.5`
 - live / realtime / backtest 경로의 RR 기준 정렬
 
 ### C. v5 exit management

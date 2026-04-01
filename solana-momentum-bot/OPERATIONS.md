@@ -37,7 +37,6 @@ git clone <repo> && cd solana-momentum-bot
 # 2. .env 설정
 cp .env.example .env
 # 필수 값 입력: SOLANA_RPC_URL, WALLET_PRIVATE_KEY, DATABASE_URL
-# VPS_APP_PROFILE=shadow
 # TRADING_MODE=paper
 # REALTIME_ENABLED=true
 
@@ -48,7 +47,6 @@ npm run deploy:vps
 ### Paper Mode .env 핵심 설정
 
 ```env
-VPS_APP_PROFILE=shadow
 TRADING_MODE=paper
 REALTIME_ENABLED=true
 REALTIME_PERSISTENCE_ENABLED=true
@@ -80,9 +78,9 @@ SHADOW_HORIZON_SEC=30
 
 ### 가동 확인 체크리스트
 
-- [ ] `pm2 status` — `momentum-shadow` online
+- [ ] `pm2 status` — `momentum-bot` online
 - [ ] `pm2 list` — legacy `momentum` 프로세스가 남아 있지 않은지 확인
-- [ ] `pm2 logs momentum-shadow` — shadow session start / export summary 확인
+- [ ] `pm2 logs momentum-bot` — shadow session start / export summary 확인
 - [ ] child runtime log에서 `Bot started ... mode: paper` 확인
 - [ ] child runtime log에서 `Scanner started. Watchlist: 8 entries.` 확인
 - [ ] `candidateDiscovered`가 실제 retained watchlist 후보에만 발생하는지 확인
@@ -107,11 +105,11 @@ SHADOW_HORIZON_SEC=30
 
 ```bash
 pm2 status              # 프로세스 상태
-pm2 logs momentum-shadow # shadow runner 로그
+pm2 logs momentum-bot # shadow runner 로그
 pm2 logs momentum-bot   # bot 단독 프로필일 때
 pm2 monit               # CPU/memory 모니터
-pm2 restart momentum-shadow # shadow 재시작
-pm2 stop momentum-shadow   # shadow 중지
+pm2 restart momentum-bot # shadow 재시작
+pm2 stop momentum-bot   # shadow 중지
 ```
 
 ### Telegram Alert 연결
@@ -244,7 +242,7 @@ TELEGRAM_CHAT_ID=<봇에게 메시지 보낸 후 getUpdates API로 확인>
 
 ```bash
 cd /root/Solana/Solana-Trading/solana-momentum-bot
-pm2 start ecosystem.config.cjs --only momentum-shadow
+pm2 start ecosystem.config.cjs --only momentum-bot
 ```
 
 용도:

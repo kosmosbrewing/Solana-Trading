@@ -10,11 +10,21 @@ candle/, state/                    ← 데이터 레이어
 ingester/                          ← 외부 API 클라이언트 (완전 독립)
 event/ → ingester/                 ← 수집 레이어
 scanner/ → ingester/               ← 탐색 레이어
+realtime/ → utils/                 ← 마이크로캔들 빌더, 결과 추적
+discovery/ → utils/                ← Helius 풀 탐지
 strategy/ → utils/, ingester/      ← 시그널 생성
 gate/ → event/, ingester/, strategy/ ← 필터링
 risk/ → gate/, reporting/          ← 리스크 관리
 executor/ → utils/                 ← 실행 (완전 독립)
+reporting/ → risk/                 ← 성과 집계, 엣지 추적 (⚠️ risk ↔ reporting 순환)
+ops/ → utils/                      ← 세션 관리, 헬스 모니터
 orchestration/ → 모든 모듈          ← 최상위 조율
+
+독립 모듈 (orchestration에서만 호출):
+  notifier/  → utils/
+  audit/     → utils/
+  universe/  → utils/
+  backtest/  → strategy, gate, risk (런타임과 격리)
 ```
 
 ## 금지 규칙

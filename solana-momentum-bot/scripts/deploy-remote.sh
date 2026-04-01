@@ -37,11 +37,11 @@ if [ "$CLEAN" = true ]; then
   ssh "$VPS_HOST" "cd $VPS_PATH && rm -f data/realtime/*.tmp && rm -f data/realtime/runtime-diagnostics.json && echo 'Cleaned .tmp + diagnostics'"
 fi
 
-# ─── 3. VPS에서 deploy.sh 실행 (git pull 포함) ───
+# ─── 3. VPS에서 deploy.sh 실행 (git pull + build + pm2 restart) ───
 echo ""
 echo "Running deploy on VPS..."
 ssh -t "$VPS_HOST" "cd $VPS_PATH && bash scripts/deploy.sh"
 
 echo ""
 echo "=== Remote Deploy complete ==="
-echo "Verify: ssh $VPS_HOST 'pm2 status && pm2 logs --lines 20'"
+echo "Verify: ssh $VPS_HOST 'pm2 status && pm2 logs momentum-bot --lines 20'"

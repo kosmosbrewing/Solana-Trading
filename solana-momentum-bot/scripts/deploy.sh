@@ -41,28 +41,6 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
-# Runtime profile
-VPS_APP_PROFILE=$(grep "^VPS_APP_PROFILE=" .env | cut -d= -f2- | tr -d ' ' || true)
-REALTIME_ENABLED=$(grep "^REALTIME_ENABLED=" .env | cut -d= -f2- | tr -d ' ' || true)
-
-if [ -z "${VPS_APP_PROFILE:-}" ]; then
-  if [ "${REALTIME_ENABLED:-false}" = "true" ]; then
-    VPS_APP_PROFILE="shadow"
-  else
-    VPS_APP_PROFILE="bot"
-  fi
-fi
-
-case "$VPS_APP_PROFILE" in
-  bot|shadow|both) ;;
-  *)
-    echo "ERROR: VPS_APP_PROFILE must be one of: bot, shadow, both"
-    exit 1
-    ;;
-esac
-
-echo "VPS app profile: $VPS_APP_PROFILE"
-
 # 필수 키 확인
 for KEY in SOLANA_RPC_URL WALLET_PRIVATE_KEY DATABASE_URL; do
   VAL=$(grep "^${KEY}=" .env | cut -d= -f2-)
@@ -90,24 +68,15 @@ npx ts-node scripts/migrate.ts
 # ─── 7. Create logs directory ───
 mkdir -p logs
 
-# ─── 8. pm2 deploy ───
-echo "Starting with pm2..."
-pm2 stop momentum-bot 2>/dev/null || true
-pm2 delete momentum-bot 2>/dev/null || true
+# ─── 8. Clean up legacy shadow process ───
 pm2 stop momentum-shadow 2>/dev/null || true
 pm2 delete momentum-shadow 2>/dev/null || true
 
-case "$VPS_APP_PROFILE" in
-  bot)
-    pm2 start ecosystem.config.cjs --only momentum-bot
-    ;;
-  shadow)
-    pm2 start ecosystem.config.cjs --only momentum-shadow
-    ;;
-  both)
-    pm2 start ecosystem.config.cjs --only momentum-bot,momentum-shadow
-    ;;
-esac
+# ─── 9. pm2 deploy ───
+echo "Starting with pm2..."
+pm2 stop momentum-bot 2>/dev/null || true
+pm2 delete momentum-bot 2>/dev/null || true
+pm2 start ecosystem.config.cjs --only momentum-bot
 
 # pm2 startup (persist across reboots)
 echo ""
@@ -120,9 +89,6 @@ echo "=== Deploy complete ==="
 echo "Commands:"
 echo "  pm2 status              # process status"
 echo "  pm2 logs momentum-bot   # bot logs"
-echo "  pm2 logs momentum-shadow # shadow logs"
 echo "  pm2 monit               # real-time monitor"
 echo "  pm2 restart momentum-bot # restart"
-echo "  pm2 restart momentum-shadow # restart shadow"
 echo "  pm2 stop momentum-bot   # stop"
-echo "  pm2 stop momentum-shadow # stop shadow"

@@ -99,7 +99,9 @@ describe('HeliusPoolDiscovery', () => {
     });
 
     mockGetParsedTransaction.mockResolvedValue(null);
+    const capacityEvents: Array<{ source?: string; reason?: string; detail?: string }> = [];
 
+    discovery.on('capacity', (event) => capacityEvents.push(event));
     await discovery.start();
     const onLogsHandler = mockOnLogs.mock.calls[0][1];
 
@@ -135,5 +137,11 @@ describe('HeliusPoolDiscovery', () => {
     await jest.advanceTimersByTimeAsync(1_000);
     expect(mockGetParsedTransaction).toHaveBeenCalledTimes(3);
     expect(mockGetParsedTransaction).toHaveBeenNthCalledWith(3, 'sig-4', expect.any(Object));
+    expect(capacityEvents).toEqual([
+      expect.objectContaining({
+        source: 'helius_pool_discovery',
+        reason: 'queue_overflow',
+      }),
+    ]);
   });
 });

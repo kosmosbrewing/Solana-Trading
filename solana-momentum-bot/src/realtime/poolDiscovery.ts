@@ -140,6 +140,11 @@ export class HeliusPoolDiscovery extends EventEmitter {
       if (dropped) {
         this.pendingSignatures.delete(dropped.seenKey);
         this.overflowDroppedCount += 1;
+        this.emit('capacity', {
+          source: 'helius_pool_discovery',
+          reason: 'queue_overflow',
+          detail: `limit=${this.queueLimit} inFlight=${this.inFlight} queued=${this.queue.length}`,
+        });
       }
       const now = Date.now();
       if (now - this.queueOverflowWarnedAt >= 60_000) {

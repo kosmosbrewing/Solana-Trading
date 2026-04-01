@@ -40,6 +40,7 @@ import {
   RealtimePoolOwnerResolver,
   RealtimeReplayStore,
   warmReplayCandlesIntoStore,
+  classifyRealtimeAdmissionSkip,
   detectRealtimeDiscoveryMismatch,
   detectRealtimePoolProgramMismatch,
   selectRealtimeEligiblePair,
@@ -606,6 +607,15 @@ async function main() {
           const bestPair = pairs[0];
           const poolAddress = bestPair?.pairAddress;
           if (!poolAddress) {
+            if (realtimeModeEnabled) {
+              runtimeDiagnosticsTracker.recordAdmissionSkip({
+                tokenMint: entry.tokenMint,
+                reason: 'no_pairs',
+                detail: pairs.length === 0 ? 'resolver_miss' : 'empty_pairs',
+                source: entry.discoverySource,
+                dexId: bestPair?.dexId,
+              });
+            }
             log.warn(`No pool found for ${entry.symbol} (${entry.tokenMint}), skipping ingester`);
             continue;
           }
@@ -689,11 +699,17 @@ async function main() {
           } else {
             removeRealtimePoolTarget(entry.tokenMint);
             if (realtimeModeEnabled) {
+              const admissionSkipDetail = classifyRealtimeAdmissionSkip({
+                resolvedPairs: pairs,
+                admissionPairs,
+                result: realtimeEligibility,
+              });
               runtimeDiagnosticsTracker.recordAdmissionSkip({
                 tokenMint: entry.tokenMint,
                 reason: realtimeEligibility.reason,
+                detail: admissionSkipDetail,
                 source: entry.discoverySource,
-                dexId: admissionPairs[0]?.dexId,
+                dexId: admissionPairs[0]?.dexId ?? pairs[0]?.dexId,
               });
               log.info(
                 `Realtime skipped for ${entry.symbol} (${entry.tokenMint}) — ${realtimeEligibility.reason} ` +
@@ -878,6 +894,13 @@ async function main() {
       }) => {
         const cooldownSuffix = cooldownMs ? ` (cooldown ${cooldownMs}ms)` : '';
         log.debug(`Helius pool discovery handled error for ${programId} ${signature}: ${error}${cooldownSuffix}`);
+      });
+      heliusPoolDiscovery.on('capacity', ({ source, reason, detail }: {
+        source: string;
+        reason: string;
+        detail?: string;
+      }) => {
+        runtimeDiagnosticsTracker.recordCapacity({ source, reason, detail });
       });
     }
     for (const [pool, metadata] of realtimePoolMetadata.entries()) {

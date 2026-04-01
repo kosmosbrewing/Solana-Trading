@@ -4,6 +4,7 @@ export interface RuntimeDiagnosticsSummary {
   hours: number;
   admissionSkipCounts: Array<{ reason: string; count: number }>;
   admissionSkipDetailCounts: Array<{ label: string; count: number }>;
+  capacityCounts: Array<{ label: string; count: number }>;
   preWatchlistRejectCounts: Array<{ reason: string; count: number }>;
   preWatchlistRejectDetailCounts: Array<{ label: string; count: number }>;
   rateLimitCounts: Array<{ source: string; count: number }>;
@@ -18,12 +19,13 @@ export interface RuntimeDiagnosticsSummary {
 }
 
 export interface RuntimeDiagnosticEvent {
-  type: 'admission_skip' | 'pre_watchlist_reject' | 'realtime_candidate_seen' | 'rate_limit' | 'poll_failure';
+  type: 'admission_skip' | 'pre_watchlist_reject' | 'realtime_candidate_seen' | 'rate_limit' | 'poll_failure' | 'capacity';
   timestampMs: number;
   tokenMint?: string;
   reason?: string;
   source?: string;
   dexId?: string;
+  detail?: string;
 }
 
 type RuntimeDecisionType = 'admission_skip' | 'pre_watchlist_reject';
@@ -40,23 +42,25 @@ export class RuntimeDiagnosticsTracker {
     this.prune();
   }
 
-  recordAdmissionSkip(input: { tokenMint: string; reason: string; source?: string; dexId?: string }): void {
+  recordAdmissionSkip(input: { tokenMint: string; reason: string; detail?: string; source?: string; dexId?: string }): void {
     this.pushEvent({
       type: 'admission_skip',
       timestampMs: Date.now(),
       tokenMint: input.tokenMint,
       reason: input.reason,
+      detail: input.detail,
       source: input.source,
       dexId: input.dexId,
     });
   }
 
-  recordPreWatchlistReject(input: { tokenMint: string; reason: string; source?: string; dexId?: string }): void {
+  recordPreWatchlistReject(input: { tokenMint: string; reason: string; detail?: string; source?: string; dexId?: string }): void {
     this.pushEvent({
       type: 'pre_watchlist_reject',
       timestampMs: Date.now(),
       tokenMint: input.tokenMint,
       reason: input.reason,
+      detail: input.detail,
       source: input.source,
       dexId: input.dexId,
     });
@@ -87,6 +91,16 @@ export class RuntimeDiagnosticsTracker {
     });
   }
 
+  recordCapacity(input: { source: string; reason: string; detail?: string }): void {
+    this.pushEvent({
+      type: 'capacity',
+      timestampMs: Date.now(),
+      source: input.source,
+      reason: input.reason,
+      detail: input.detail,
+    });
+  }
+
   buildSummary(hours: number): RuntimeDiagnosticsSummary {
     const cutoffMs = Date.now() - hours * 3_600_000;
     const candidateTokens = distinctTokenSet(this.events, cutoffMs, 'realtime_candidate_seen');
@@ -106,6 +120,7 @@ export class RuntimeDiagnosticsTracker {
       hours,
       admissionSkipCounts: summarizeDecisionReasons(this.events, cutoffMs, 'admission_skip'),
       admissionSkipDetailCounts: summarizeDecisionDetails(this.events, cutoffMs, 'admission_skip'),
+      capacityCounts: summarizeCapacityLabels(this.events, cutoffMs),
       preWatchlistRejectCounts: summarizeDecisionReasons(this.events, cutoffMs, 'pre_watchlist_reject'),
       preWatchlistRejectDetailCounts: summarizeDecisionDetails(this.events, cutoffMs, 'pre_watchlist_reject'),
       rateLimitCounts: summarizeEventSources(this.events, cutoffMs, 'rate_limit'),
@@ -214,7 +229,30 @@ function summarizeDecisionDetails(
 
 function formatDecisionLabel(event: RuntimeDiagnosticEvent): string {
   const parts = [event.reason ?? 'unknown'];
+  if (event.detail) parts.push(`detail=${event.detail}`);
   if (event.source) parts.push(`source=${event.source}`);
   if (event.dexId) parts.push(`dex=${event.dexId}`);
+  return parts.join(' ');
+}
+
+function summarizeCapacityLabels(
+  events: RuntimeDiagnosticEvent[],
+  cutoffMs: number
+): Array<{ label: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const event of events) {
+    if (event.type !== 'capacity' || event.timestampMs < cutoffMs) continue;
+    const label = formatCapacityLabel(event);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([label, count]) => ({ label, count }))
+    .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label));
+}
+
+function formatCapacityLabel(event: RuntimeDiagnosticEvent): string {
+  const parts = [event.source ?? 'unknown'];
+  if (event.reason) parts.push(`reason=${event.reason}`);
+  if (event.detail) parts.push(`detail=${event.detail}`);
   return parts.join(' ');
 }

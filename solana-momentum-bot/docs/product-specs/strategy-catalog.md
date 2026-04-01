@@ -50,21 +50,21 @@ Stage 2: 지금 들어가도 되는가?  → Gate System (Security → Score →
 | 볼륨 스파이크 | `currentVolume ≥ avgVolume[20] × multiplier` | 2.5x |
 | 가격 돌파 | `close > highestHigh[20]` | 20봉 최고가 |
 
-### 주문 구조
+### 주문 구조 (v5)
 
 ```
-SL  = 현재 봉 저가 (candle.low)
-TP1 = entry + ATR(20) × 1.5
-TP2 = entry + ATR(20) × 3.5
-Time Stop = 30분
+SL  = entry - ATR(14) × 1.0
+TP1 = entry + ATR(14) × 1.0
+TP2 = entry + ATR(14) × 10.0
+Time Stop = 20분
 ```
 
 ### TP1 부분 익절
 
-TP1 도달 시 50% 청산, 잔여 50%는:
+TP1 도달 시 30% 청산, 잔여 70%는:
 - SL → 진입가(손익분기)로 이동
-- TP1 → 기존 TP2로 교체
-- Adaptive trailing stop 적용
+- Trailing stop은 TP1 이후에만 활성화
+- Runner 포지션으로 TP2까지 보유
 
 ### 스코어 산출 (0–100점)
 
@@ -788,13 +788,13 @@ listing source: optional Birdeye WS adapter or scanner lane-B fallback
 
 | 파라미터 | 값 | 소스 |
 |---------|-----|------|
-| `volumeSpikeMultiplier` | 3.0 | config.ts |
+| `volumeSpikeMultiplier` | 2.5 | config.ts (v4 sweep: 3.0→2.5) |
 | `volumeSpikeLookback` | 20 | config.ts |
 | `minBreakoutScore` | 50 | config.ts |
 | `minBuyRatio` | 0.65 | config.ts |
 | `exhaustionThreshold` | 2 | config.ts |
 | `fibImpulseWindowBars` | 18 | config.ts |
-| `fibImpulseMinPct` | 0.15 | config.ts |
+| `fibImpulseMinPct` | 0.175 | config.ts (v4 sweep: 0.15→0.175) |
 | `fibEntryLow` | 0.5 | config.ts |
 | `fibEntryHigh` | 0.618 | config.ts |
 | `fibInvalidation` | 0.786 | config.ts |

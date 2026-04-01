@@ -1,21 +1,22 @@
 {
+  "_DEPRECATED": "이 파일은 사용되지 않습니다. 모든 설정은 src/utils/config.ts (env vars)를 통해 관리됩니다. v5 기준 파라미터는 STRATEGY.md를 참고하세요.",
   "strategies": {
     "volume_spike": {
       "enabled": true,
       "timeframeSec": 300,
       "lookback": 20,
-      "volumeMultiplier": 3.0,
-      "spreadFilterK": 2.0,
-      "atrPeriod": 20,
-      "tp1Multiplier": 1.5,
-      "tp2Multiplier": 2.5,
-      "timeStopMinutes": 30
+      "volumeMultiplier": 2.5,
+      "atrPeriod": 14,
+      "tp1Multiplier": 1.0,
+      "tp2Multiplier": 10.0,
+      "slAtrMultiplier": 1.0,
+      "timeStopMinutes": 20
     },
     "fib_pullback": {
       "enabled": true,
       "timeframeSec": 300,
       "impulseWindowBars": 18,
-      "impulseMinPct": 0.15,
+      "impulseMinPct": 0.175,
       "fibEntryLow": 0.5,
       "fibEntryHigh": 0.618,
       "fibInvalidation": 0.786,
@@ -23,24 +24,5 @@
       "minWickRatio": 0.4,
       "timeStopMinutes": 60
     }
-  },
-  "risk": {
-    "maxRiskPerTrade": 0.01,
-    "maxDailyLoss": 0.05,
-    "maxConsecutiveLosses": 3,
-    "cooldownMinutes": 30,
-    "maxSlippage": 0.01
-  },
-  "safety": {
-    "minPoolLiquidity": 50000,
-    "minTokenAgeHours": 24,
-    "maxHolderConcentration": 0.80
-  },
-  "event": {
-    "pollingIntervalMs": 1800000,
-    "trendingFetchLimit": 20,
-    "minScore": 35,
-    "expiryMinutes": 180,
-    "minLiquidityUsd": 25000
   }
 }

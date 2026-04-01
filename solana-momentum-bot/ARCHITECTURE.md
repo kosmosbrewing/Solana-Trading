@@ -16,7 +16,7 @@ Stage 2: Trigger — 지금 들어가도 되는가?
   → Strategy (breakout/pullback 시그널) → Gate (5+1단계 필터) → Risk (사이징) → Executor (체결)
 ```
 
-## 2. 모듈 맵 (16개)
+## 2. 모듈 맵 (19개)
 
 | 모듈 | 책임 | 핵심 export |
 |---|---|---|
@@ -27,11 +27,14 @@ Stage 2: Trigger — 지금 들어가도 되는가?
 | **event/** | AttentionScore 계산/캐시 | `EventMonitor`, `EventScoreStore` |
 | **scanner/** | 후보 탐색/감시 목록 관리 | `ScannerEngine`, `SocialMentionTracker` |
 | **universe/** | 풀 필터링/랭킹 | `UniverseEngine` |
+| **realtime/** | 마이크로캔들 빌더, 결과 추적 | `MicroCandleBuilder`, `RealtimeOutcomeTracker` |
+| **discovery/** | Helius WebSocket 풀 탐지, 큐 관리 | `HeliusPoolDiscovery` |
 | **strategy/** | 시그널 생성 (A/C/D/E) | `evaluateVolumeSpikeBreakout`, `evaluateFibPullback`, ... |
 | **gate/** | 5+1단계 시그널 필터링 | `evaluateGates`, `evaluateGatesAsync`, `SpreadMeasurer` |
 | **risk/** | 포지션 사이징, 드로다운 관리 | `RiskManager`, `DrawdownGuard`, `RiskTier` |
 | **executor/** | Jupiter 스왑/Jito 번들 실행 | `Executor`, `WalletManager` |
-| **reporting/** | 성과 집계, 엣지 추적 | `EdgeTracker`, `PaperValidation` |
+| **reporting/** | 성과 집계, 엣지 추적, 런타임 진단 | `EdgeTracker`, `PaperValidation`, `RuntimeDiagnosticsTracker` |
+| **ops/** | 세션 관리, 헬스 모니터 | `SessionManager`, `HealthMonitor` |
 | **notifier/** | Telegram 4-Level 알림 | `Notifier` |
 | **audit/** | 시그널 감사 로그 | `SignalAuditLogger` |
 | **backtest/** | 백테스트 엔진/리포터/스윕 | `BacktestEngine`, `BacktestReporter`, `ParamSweep` |
@@ -91,6 +94,9 @@ Stage 2: Trigger — 지금 들어가도 되는가?
   audit/       ← utils/만 참조
   universe/    ← utils/만 참조
   backtest/    ← strategy, gate, risk 참조 (런타임과 격리)
+  realtime/    ← utils/만 참조 (MicroCandleBuilder, RealtimeOutcomeTracker)
+  discovery/   ← utils/ 참조 (HeliusPoolDiscovery — Helius WebSocket 풀 탐지)
+  ops/         ← utils/ 참조 (SessionManager, HealthMonitor)
 ```
 
 ### ⚠️ 알려진 순환 의존성
@@ -152,7 +158,7 @@ reporting/paperValidation.ts → risk/drawdownGuard (replayDrawdownGuardState)
 
 | 전략 | 파일 | 진입 조건 | 상태 |
 |---|---|---|---|
-| A: Volume Spike | `strategy/volumeSpikeBreakout.ts` | volume ≥3x + 20-candle high 돌파 | 활성 |
+| A: Volume Spike | `strategy/volumeSpikeBreakout.ts` | volume ≥2.5x + 20-candle high 돌파 | 활성 |
 | C: Fib Pullback | `strategy/fibPullback.ts` | 15%+ 임펄스 → fib 0.5–0.618 되돌림 | 활성 |
 | D: New LP Sniper | `strategy/newLpSniper.ts` | 신규 LP 탐지 (샌드박스) | 샌드박스 |
 | E: Momentum Cascade | `strategy/momentumCascade.ts` | Strategy A 멀티레그 추가 진입 | 활성 |

@@ -519,6 +519,8 @@ async function main() {
       laneAMinAgeSec: config.scannerLaneAMinAgeSec,
       laneBMaxAgeSec: config.scannerLaneBMaxAgeSec,
       reentryCooldownMs: config.scannerReentryCooldownMs,
+      minimumResidencyMs: config.scannerMinimumResidencyMs,
+      replacementScoreMargin: config.scannerReplacementScoreMargin,
       // Why: Scanner minLiquidity는 SafetyGate minPoolLiquidity 이상이어야 함 (config gap 방지)
       minLiquidityUsd: Math.max(config.eventMinLiquidityUsd, config.minPoolLiquidity),
       socialMentionTracker, // H-02: social score → WatchlistScore 연동

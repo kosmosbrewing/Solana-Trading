@@ -33,6 +33,11 @@ type RuntimeDecisionType = 'admission_skip' | 'pre_watchlist_reject';
 export class RuntimeDiagnosticsTracker {
   private readonly events: RuntimeDiagnosticEvent[];
   private saveChain: Promise<void> = Promise.resolve();
+  private lastPersistMs = 0;
+  private persistTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly PERSIST_THROTTLE_MS = 30_000;
+  private static readonly MAX_CAPACITY_EVENTS = 500;
+  private static readonly MAX_EVENTS = 10_000;
 
   constructor(
     private readonly store?: RuntimeDiagnosticsStore,
@@ -142,7 +147,27 @@ export class RuntimeDiagnosticsTracker {
   private pushEvent(event: RuntimeDiagnosticEvent): void {
     this.events.push(event);
     this.prune();
-    void this.persist();
+    this.schedulePersist();
+  }
+
+  private schedulePersist(): void {
+    if (!this.store) return;
+    const now = Date.now();
+    const elapsed = now - this.lastPersistMs;
+    if (elapsed >= RuntimeDiagnosticsTracker.PERSIST_THROTTLE_MS) {
+      this.lastPersistMs = now;
+      if (this.persistTimer) {
+        clearTimeout(this.persistTimer);
+        this.persistTimer = null;
+      }
+      void this.persist();
+    } else if (!this.persistTimer) {
+      this.persistTimer = setTimeout(() => {
+        this.persistTimer = null;
+        this.lastPersistMs = Date.now();
+        void this.persist();
+      }, RuntimeDiagnosticsTracker.PERSIST_THROTTLE_MS - elapsed);
+    }
   }
 
   private async persist(): Promise<void> {
@@ -158,8 +183,27 @@ export class RuntimeDiagnosticsTracker {
 
   private prune(): void {
     const cutoffMs = Date.now() - 48 * 3_600_000;
-    while (this.events.length > 0 && this.events[0].timestampMs < cutoffMs) {
-      this.events.shift();
+    // O(n) splice 대신 O(n²) shift 루프 제거
+    let cutoffIndex = 0;
+    while (cutoffIndex < this.events.length && this.events[cutoffIndex].timestampMs < cutoffMs) {
+      cutoffIndex++;
+    }
+    if (cutoffIndex > 0) {
+      this.events.splice(0, cutoffIndex);
+    }
+    // capacity 이벤트 과다 축적 방지
+    let capacityCount = 0;
+    for (let i = this.events.length - 1; i >= 0; i--) {
+      if (this.events[i].type === 'capacity') {
+        capacityCount++;
+        if (capacityCount > RuntimeDiagnosticsTracker.MAX_CAPACITY_EVENTS) {
+          this.events.splice(i, 1);
+        }
+      }
+    }
+    // 전체 이벤트 수 상한
+    if (this.events.length > RuntimeDiagnosticsTracker.MAX_EVENTS) {
+      this.events.splice(0, this.events.length - RuntimeDiagnosticsTracker.MAX_EVENTS);
     }
   }
 }

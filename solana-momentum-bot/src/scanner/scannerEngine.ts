@@ -15,6 +15,8 @@ import { SocialMentionTracker } from './socialMentionTracker';
 import { PoolInfo } from '../utils/types';
 
 const log = createModuleLogger('Scanner');
+const HOT_SOURCE_REENTRY_MULTIPLIER = 1.5;
+const STABLE_SOURCE_REENTRY_MULTIPLIER = 0.5;
 
 export interface WatchlistEntry {
   tokenMint: string;
@@ -58,6 +60,10 @@ export interface ScannerEngineConfig {
   laneBMaxAgeSec: number;
   /** Recently evicted token re-entry cooldown (ms) */
   reentryCooldownMs?: number;
+  /** Minimum residency before an auto-discovered entry can be displaced (ms) */
+  minimumResidencyMs?: number;
+  /** Minimum score edge required to replace an existing watchlist entry */
+  replacementScoreMargin?: number;
   /** Minimum liquidity USD to consider */
   minLiquidityUsd: number;
   /** H-02: Social mention tracker for WatchlistScore enrichment */
@@ -281,8 +287,13 @@ export class ScannerEngine extends EventEmitter {
       return undefined;
     }
 
-    if (!this.shouldAddCandidate(scoreResult.totalScore)) {
-      log.debug(`Candidate ${token.symbol} skipped: score=${scoreResult.totalScore} below watchlist cutoff`);
+    const admissionDecision = this.getAdmissionDecision(scoreResult.totalScore);
+    if (!admissionDecision.allowed) {
+      const cutoffSuffix = admissionDecision.cutoff != null ? ` cutoff=${admissionDecision.cutoff}` : '';
+      log.debug(
+        `Candidate ${token.symbol} skipped: score=${scoreResult.totalScore} ` +
+        `reason=${admissionDecision.reason ?? 'capacity'}${cutoffSuffix}`
+      );
       return undefined;
     }
 
@@ -513,12 +524,13 @@ export class ScannerEngine extends EventEmitter {
     const maxSize = this.config.maxWatchlistSize;
     if (this.watchlist.size <= maxSize) return;
 
-    const sorted = this.getWatchlist();
-    const toRemove = sorted.slice(maxSize);
+    const overflowCount = this.watchlist.size - maxSize;
+    const evictableEntries = this.getWatchlist().filter((entry) => !this.isResidencyProtected(entry));
+    const toRemove = evictableEntries.slice(-overflowCount);
 
     for (const entry of toRemove) {
       this.watchlist.delete(entry.tokenMint);
-      this.markEvicted(entry.tokenMint);
+      this.markEvicted(entry);
       this.config.socialMentionTracker?.unregisterTrackedToken(entry.tokenMint);
       log.info(`- Watchlist evicted: ${entry.symbol} score=${entry.watchlistScore.totalScore}`);
       this.emit('candidateEvicted', entry.tokenMint);
@@ -600,10 +612,22 @@ export class ScannerEngine extends EventEmitter {
     this.emit('candidateDiscovered', entry);
   }
 
-  private shouldAddCandidate(score: number): boolean {
-    if (this.watchlist.size < this.config.maxWatchlistSize) return true;
-    const weakest = this.getWatchlist().at(-1);
-    return weakest ? score > weakest.watchlistScore.totalScore : true;
+  private getAdmissionDecision(score: number): { allowed: boolean; reason?: string; cutoff?: number } {
+    if (this.watchlist.size < this.config.maxWatchlistSize) {
+      return { allowed: true };
+    }
+
+    const weakest = this.getWeakestEvictableEntry();
+    if (!weakest) {
+      return { allowed: false, reason: 'minimum_residency' };
+    }
+
+    const cutoff = weakest.watchlistScore.totalScore + (this.config.replacementScoreMargin ?? 0);
+    if (score < cutoff) {
+      return { allowed: false, reason: 'replacement_margin', cutoff };
+    }
+
+    return { allowed: true, cutoff };
   }
 
   private isCoolingDown(tokenMint: string): boolean {
@@ -616,10 +640,10 @@ export class ScannerEngine extends EventEmitter {
     return true;
   }
 
-  private markEvicted(tokenMint: string): void {
-    const cooldownMs = this.config.reentryCooldownMs ?? 0;
+  private markEvicted(entry: WatchlistEntry): void {
+    const cooldownMs = this.getReentryCooldownMs(entry.discoverySource);
     if (cooldownMs <= 0) return;
-    this.evictedCooldowns.set(tokenMint, Date.now() + cooldownMs);
+    this.evictedCooldowns.set(entry.tokenMint, Date.now() + cooldownMs);
   }
 
   private cleanupCooldowns(): void {
@@ -629,6 +653,41 @@ export class ScannerEngine extends EventEmitter {
         this.evictedCooldowns.delete(tokenMint);
       }
     }
+  }
+
+  private getWeakestEvictableEntry(): WatchlistEntry | undefined {
+    return this.getWatchlist()
+      .filter((entry) => !this.isResidencyProtected(entry))
+      .at(-1);
+  }
+
+  private isResidencyProtected(entry: WatchlistEntry): boolean {
+    const minimumResidencyMs = this.config.minimumResidencyMs ?? 0;
+    if (minimumResidencyMs <= 0 || entry.discoverySource === 'manual') {
+      return false;
+    }
+    return Date.now() - entry.addedAt.getTime() < minimumResidencyMs;
+  }
+
+  private getReentryCooldownMs(discoverySource: string): number {
+    const baseCooldownMs = this.config.reentryCooldownMs ?? 0;
+    if (baseCooldownMs <= 0 || discoverySource === 'manual') {
+      return 0;
+    }
+
+    if (discoverySource === 'internal_activity') {
+      return Math.round(baseCooldownMs * STABLE_SOURCE_REENTRY_MULTIPLIER);
+    }
+    if (
+      discoverySource === 'gecko_new_pool' ||
+      discoverySource === 'dex_boost' ||
+      discoverySource === 'dex_ad' ||
+      discoverySource === 'dex_community_takeover'
+    ) {
+      return Math.round(baseCooldownMs * HOT_SOURCE_REENTRY_MULTIPLIER);
+    }
+
+    return baseCooldownMs;
   }
 
   /**

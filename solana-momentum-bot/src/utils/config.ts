@@ -159,6 +159,8 @@ export const config = {
   scannerLaneAMinAgeSec: numOptional('SCANNER_LANE_A_MIN_AGE_SEC', 3_600),
   scannerLaneBMaxAgeSec: numOptional('SCANNER_LANE_B_MAX_AGE_SEC', 1_200),
   scannerReentryCooldownMs: numOptional('SCANNER_REENTRY_COOLDOWN_MS', 1_800_000),
+  scannerMinimumResidencyMs: numOptional('SCANNER_MINIMUM_RESIDENCY_MS', 180_000),
+  scannerReplacementScoreMargin: numOptional('SCANNER_REPLACEMENT_SCORE_MARGIN', 5),
 
   // ─── Birdeye WebSocket ───
   birdeyeWSEnabled: process.env.BIRDEYE_WS_ENABLED === 'true',

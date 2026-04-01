@@ -129,6 +129,170 @@ describe('ScannerEngine social tracker wiring', () => {
     expect(discovered).toEqual(['mint-b']);
   });
 
+  it('keeps fresh watchlist entries resident before allowing replacement', async () => {
+    jest.useFakeTimers();
+    try {
+      const geckoClient = {
+        getTrendingTokens: jest.fn()
+          .mockResolvedValueOnce([
+            makeToken('mint-a', 'AAA', 2, 1_000_000, 500_000),
+          ])
+          .mockResolvedValueOnce([
+            makeToken('mint-b', 'BBB', 1, 1_000_000, 500_000, {
+              boost_total_amount: 100,
+            }),
+          ])
+          .mockResolvedValueOnce([
+            makeToken('mint-b', 'BBB', 1, 1_000_000, 500_000, {
+              boost_total_amount: 500,
+              has_paid_orders: true,
+            }),
+          ]),
+      };
+      const scanner = new ScannerEngine({
+        geckoClient: geckoClient as never,
+        dexScreenerClient: null,
+        maxWatchlistSize: 1,
+        minWatchlistScore: 0,
+        trendingPollIntervalMs: 3_600_000,
+        geckoNewPoolIntervalMs: 3_600_000,
+        dexDiscoveryIntervalMs: 3_600_000,
+        dexEnrichIntervalMs: 3_600_000,
+        laneAMinAgeSec: 3600,
+        laneBMaxAgeSec: 1200,
+        reentryCooldownMs: 0,
+        minimumResidencyMs: 60_000,
+        replacementScoreMargin: 0,
+        minLiquidityUsd: 1000,
+      });
+
+      await scanner.start();
+      const scannerInternal = scanner as unknown as { discoverFromTrending(): Promise<void> };
+
+      await scannerInternal.discoverFromTrending();
+      expect(scanner.getWatchlist().map(entry => entry.tokenMint)).toEqual(['mint-a']);
+
+      await jest.advanceTimersByTimeAsync(60_001);
+      await scannerInternal.discoverFromTrending();
+      expect(scanner.getWatchlist().map(entry => entry.tokenMint)).toEqual(['mint-b']);
+      scanner.stop();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('requires a score margin before replacing an existing watchlist entry', async () => {
+    const geckoClient = {
+      getTrendingTokens: jest.fn()
+        .mockResolvedValueOnce([
+          makeToken('mint-a', 'AAA', 2, 1_000_000, 500_000),
+        ])
+        .mockResolvedValueOnce([
+          makeToken('mint-b', 'BBB', 2, 1_000_000, 500_000, {
+            boost_total_amount: 100,
+          }),
+        ])
+        .mockResolvedValueOnce([
+          makeToken('mint-c', 'CCC', 1, 1_000_000, 500_000, {
+            boost_total_amount: 500,
+            has_paid_orders: true,
+          }),
+        ]),
+    };
+    const scanner = new ScannerEngine({
+      geckoClient: geckoClient as never,
+      dexScreenerClient: null,
+      maxWatchlistSize: 1,
+      minWatchlistScore: 0,
+      trendingPollIntervalMs: 60_000,
+      geckoNewPoolIntervalMs: 60_000,
+      dexDiscoveryIntervalMs: 60_000,
+      dexEnrichIntervalMs: 60_000,
+      laneAMinAgeSec: 3600,
+      laneBMaxAgeSec: 1200,
+      reentryCooldownMs: 0,
+      minimumResidencyMs: 0,
+      replacementScoreMargin: 10,
+      minLiquidityUsd: 1000,
+    });
+
+    await scanner.start();
+    const scannerInternal = scanner as unknown as { discoverFromTrending(): Promise<void> };
+
+    await scannerInternal.discoverFromTrending();
+    expect(scanner.getWatchlist().map(entry => entry.tokenMint)).toEqual(['mint-a']);
+
+    await scannerInternal.discoverFromTrending();
+    expect(scanner.getWatchlist().map(entry => entry.tokenMint)).toEqual(['mint-c']);
+    scanner.stop();
+  });
+
+  it('applies a longer re-entry cooldown to hot discovery sources', async () => {
+    jest.useFakeTimers();
+    try {
+      const geckoClient = {
+        getTrendingTokens: jest.fn()
+          .mockResolvedValueOnce([
+            makeToken('mint-a', 'AAA', 2, 1_000_000, 500_000, {
+              discovery_source: 'gecko_new_pool',
+            }),
+          ])
+          .mockResolvedValueOnce([
+            makeToken('mint-b', 'BBB', 1, 1_000_000, 500_000, {
+              boost_total_amount: 100,
+            }),
+          ])
+          .mockResolvedValueOnce([
+            makeToken('mint-a', 'AAA', 1, 1_000_000, 500_000, {
+              discovery_source: 'gecko_new_pool',
+              boost_total_amount: 500,
+              has_paid_orders: true,
+            }),
+          ])
+          .mockResolvedValueOnce([
+            makeToken('mint-a', 'AAA', 1, 1_000_000, 500_000, {
+              discovery_source: 'gecko_new_pool',
+              boost_total_amount: 500,
+              has_paid_orders: true,
+            }),
+          ]),
+      };
+      const scanner = new ScannerEngine({
+        geckoClient: geckoClient as never,
+        dexScreenerClient: null,
+        maxWatchlistSize: 1,
+        minWatchlistScore: 0,
+        trendingPollIntervalMs: 3_600_000,
+        geckoNewPoolIntervalMs: 3_600_000,
+        dexDiscoveryIntervalMs: 3_600_000,
+        dexEnrichIntervalMs: 3_600_000,
+        laneAMinAgeSec: 3600,
+        laneBMaxAgeSec: 1200,
+        reentryCooldownMs: 1_000,
+        minimumResidencyMs: 0,
+        replacementScoreMargin: 0,
+        minLiquidityUsd: 1000,
+      });
+
+      await scanner.start();
+      const scannerInternal = scanner as unknown as { discoverFromTrending(): Promise<void> };
+
+      await scannerInternal.discoverFromTrending();
+      expect(scanner.getWatchlist().map(entry => entry.tokenMint)).toEqual(['mint-b']);
+
+      await jest.advanceTimersByTimeAsync(1_001);
+      await scannerInternal.discoverFromTrending();
+      expect(scanner.getWatchlist().map(entry => entry.tokenMint)).toEqual(['mint-b']);
+
+      await jest.advanceTimersByTimeAsync(500);
+      await scannerInternal.discoverFromTrending();
+      expect(scanner.getWatchlist().map(entry => entry.tokenMint)).toEqual(['mint-a']);
+      scanner.stop();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('discovers candidates from Dex boosts even when trending is empty', async () => {
     const geckoClient = {
       getTrendingTokens: jest.fn().mockResolvedValue([]),

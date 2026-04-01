@@ -54,6 +54,10 @@ interface PoolDiscoveryConfig {
   rpcHttpUrl: string;
   rpcWsUrl: string;
   programIds?: string[];
+  requestSpacingMs?: number;
+  queueLimit?: number;
+  rateLimitCooldownMs?: number;
+  transientFailureCooldownMs?: number;
 }
 
 interface AccountKeyMeta {
@@ -62,11 +66,28 @@ interface AccountKeyMeta {
   writable: boolean;
 }
 
+interface QueuedPoolDiscoveryLog {
+  programId: string;
+  logs: Logs;
+  slot: number;
+  seenKey: string;
+}
+
 export class HeliusPoolDiscovery extends EventEmitter {
   private readonly connection: Connection;
   private readonly programIds: string[];
+  private readonly requestSpacingMs: number;
+  private readonly queueLimit: number;
+  private readonly rateLimitCooldownMs: number;
+  private readonly transientFailureCooldownMs: number;
   private readonly subscriptions = new Map<string, number>();
   private readonly seenSignatures = new Set<string>();
+  private readonly pendingSignatures = new Set<string>();
+  private readonly queue: QueuedPoolDiscoveryLog[] = [];
+  private processing = false;
+  private cooldownUntil = 0;
+  private lastRequestAt = 0;
+  private queueOverflowWarnedAt = 0;
 
   constructor(config: PoolDiscoveryConfig) {
     super();
@@ -75,6 +96,10 @@ export class HeliusPoolDiscovery extends EventEmitter {
       wsEndpoint: config.rpcWsUrl,
     });
     this.programIds = config.programIds ?? [...SUPPORTED_POOL_DISCOVERY_PROGRAMS];
+    this.requestSpacingMs = config.requestSpacingMs ?? 1_000;
+    this.queueLimit = config.queueLimit ?? 50;
+    this.rateLimitCooldownMs = config.rateLimitCooldownMs ?? 30_000;
+    this.transientFailureCooldownMs = config.transientFailureCooldownMs ?? 5_000;
   }
 
   async start(): Promise<void> {
@@ -83,7 +108,7 @@ export class HeliusPoolDiscovery extends EventEmitter {
       const subscriptionId = this.connection.onLogs(
         new PublicKey(programId),
         (logs, ctx) => {
-          void this.handleProgramLogs(programId, logs, ctx.slot);
+          this.enqueueProgramLogs(programId, logs, ctx.slot);
         },
         'confirmed'
       );
@@ -96,14 +121,64 @@ export class HeliusPoolDiscovery extends EventEmitter {
       await this.connection.removeOnLogsListener(subscriptionId);
       this.subscriptions.delete(programId);
     }
+    this.queue.length = 0;
+    this.pendingSignatures.clear();
+  }
+
+  private enqueueProgramLogs(programId: string, logs: Logs, slot: number): void {
+    if (logs.err || !looksLikePoolInitLogs(logs.logs)) return;
+    const seenKey = `${programId}:${logs.signature}`;
+    if (this.seenSignatures.has(seenKey) || this.pendingSignatures.has(seenKey)) return;
+    if (this.queue.length >= this.queueLimit) {
+      const now = Date.now();
+      if (now - this.queueOverflowWarnedAt >= 60_000) {
+        this.queueOverflowWarnedAt = now;
+        log.warn(`Pool discovery queue overflow: limit=${this.queueLimit}. New discovery logs will be dropped until drained.`);
+      }
+      return;
+    }
+
+    this.pendingSignatures.add(seenKey);
+    this.queue.push({ programId, logs, slot, seenKey });
+    void this.processQueue();
+  }
+
+  private async processQueue(): Promise<void> {
+    if (this.processing) return;
+    this.processing = true;
+
+    try {
+      while (this.queue.length > 0) {
+        const remainingCooldownMs = this.cooldownUntil - Date.now();
+        if (remainingCooldownMs > 0) {
+          await sleep(remainingCooldownMs);
+        }
+
+        const spacingMs = this.lastRequestAt + this.requestSpacingMs - Date.now();
+        if (spacingMs > 0) {
+          await sleep(spacingMs);
+        }
+
+        const entry = this.queue.shift();
+        if (!entry) continue;
+
+        try {
+          await this.handleProgramLogs(entry.programId, entry.logs, entry.slot);
+        } finally {
+          this.pendingSignatures.delete(entry.seenKey);
+          this.seenSignatures.add(entry.seenKey);
+          this.lastRequestAt = Date.now();
+        }
+      }
+    } finally {
+      this.processing = false;
+      if (this.queue.length > 0) {
+        void this.processQueue();
+      }
+    }
   }
 
   private async handleProgramLogs(programId: string, logs: Logs, slot: number): Promise<void> {
-    if (logs.err || !looksLikePoolInitLogs(logs.logs)) return;
-    const seenKey = `${programId}:${logs.signature}`;
-    if (this.seenSignatures.has(seenKey)) return;
-    this.seenSignatures.add(seenKey);
-
     try {
       const tx = await this.connection.getParsedTransaction(logs.signature, {
         commitment: 'confirmed',
@@ -117,8 +192,28 @@ export class HeliusPoolDiscovery extends EventEmitter {
 
       this.emit('poolDiscovered', candidate);
     } catch (error) {
-      log.warn(`Pool discovery parse failed for ${programId} ${logs.signature}: ${error}`);
-      this.emit('error', { programId, signature: logs.signature, slot, error });
+      const rateLimited = isRateLimitError(error);
+      const transientFailure = !rateLimited && isTransientPoolDiscoveryError(error);
+      const cooldownMs = rateLimited
+        ? this.rateLimitCooldownMs
+        : transientFailure
+          ? this.transientFailureCooldownMs
+          : 0;
+
+      if (cooldownMs > 0) {
+        this.cooldownUntil = Math.max(this.cooldownUntil, Date.now() + cooldownMs);
+      }
+
+      const cooldownSuffix = cooldownMs > 0 ? ` (cooldown ${cooldownMs}ms)` : '';
+      log.warn(`Pool discovery parse failed for ${programId} ${logs.signature}: ${formatError(error)}${cooldownSuffix}`);
+      this.emit('error', {
+        programId,
+        signature: logs.signature,
+        slot,
+        error,
+        rateLimited,
+        cooldownMs,
+      });
     }
   }
 
@@ -207,6 +302,33 @@ function extractAccountKeys(tx: ParsedTransactionWithMeta): AccountKeyMeta[] {
       };
     }
     return { pubkey: String(account), signer: false, writable: false };
+  });
+}
+
+function isRateLimitError(error: unknown): boolean {
+  const message = formatError(error).toLowerCase();
+  return message.includes('429')
+    || message.includes('too many requests')
+    || message.includes('rate limited');
+}
+
+function isTransientPoolDiscoveryError(error: unknown): boolean {
+  const message = formatError(error).toLowerCase();
+  return message.includes('fetch failed')
+    || message.includes('timeout')
+    || message.includes('connection terminated')
+    || message.includes('socket hang up')
+    || message.includes('econnreset');
+}
+
+function formatError(error: unknown): string {
+  if (error instanceof Error) return error.toString();
+  return String(error);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
   });
 }
 

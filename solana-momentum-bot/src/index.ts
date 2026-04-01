@@ -865,12 +865,14 @@ async function main() {
           `${candidate.baseTokenAddress}/${candidate.quoteTokenAddress}`
         );
       });
-      heliusPoolDiscovery.on('error', ({ programId, signature, error }: {
+      heliusPoolDiscovery.on('error', ({ programId, signature, error, cooldownMs }: {
         programId: string;
         signature: string;
         error: unknown;
+        cooldownMs?: number;
       }) => {
-        log.warn(`Helius pool discovery error for ${programId} ${signature}: ${error}`);
+        const cooldownSuffix = cooldownMs ? ` (cooldown ${cooldownMs}ms)` : '';
+        log.debug(`Helius pool discovery handled error for ${programId} ${signature}: ${error}${cooldownSuffix}`);
       });
     }
     for (const [pool, metadata] of realtimePoolMetadata.entries()) {

@@ -95,7 +95,6 @@ DATABASE_URL=postgresql://momentum:momentum_secret@localhost:5432/momentum_bot
 SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=<helius-key>
 WALLET_PRIVATE_KEY=<base58-private-key>
 DATABASE_URL=postgresql://momentum:momentum_secret@localhost:5432/momentum_bot
-VPS_APP_PROFILE=shadow
 TRADING_MODE=paper
 REALTIME_ENABLED=true
 REALTIME_PERSISTENCE_ENABLED=true
@@ -150,16 +149,16 @@ EMERGENCY_HAIRCUT=0.50
 #  Strategy Parameters
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 DEFAULT_TIMEFRAME=300
-VOLUME_SPIKE_MULTIPLIER=3.0
+VOLUME_SPIKE_MULTIPLIER=2.5
 VOLUME_SPIKE_LOOKBACK=20
 MIN_BUY_RATIO=0.65
 MIN_BREAKOUT_SCORE=50
-TAKE_PROFIT_ATR_MULTIPLIER=2.0
-TRAILING_STOP_ATR_MULTIPLIER=1.5
-TIME_STOP_MINUTES=30
+TP1_MULTIPLIER=1.0
+TP2_MULTIPLIER=10.0
+SL_ATR_MULTIPLIER=1.0
+TIME_STOP_MINUTES=20
+TP1_PARTIAL_PCT=0.3
 EXHAUSTION_THRESHOLD=2
-PUMP_CONSECUTIVE_CANDLES=3
-PUMP_MIN_PRICE_MOVE=0.05
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Universe Parameters
@@ -237,7 +236,7 @@ npm run deploy:vps
 
 # 상태 확인
 pm2 status
-pm2 logs momentum-shadow
+pm2 logs momentum-bot
 ```
 
 ### 생성되는 테이블

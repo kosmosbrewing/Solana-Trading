@@ -81,7 +81,7 @@ export const config = {
   telegramBotToken: optional('TELEGRAM_BOT_TOKEN', ''),
   telegramChatId: optional('TELEGRAM_CHAT_ID', ''),
   telegramAdminUserId: optional('TELEGRAM_ADMIN_USER_ID', ''),
-  pm2AllowedProcesses: listOptional('PM2_ALLOWED_PROCESSES', ['momentum-bot', 'momentum-shadow']),
+  pm2AllowedProcesses: listOptional('PM2_ALLOWED_PROCESSES', ['momentum-bot', 'momentum-ops-bot']),
 
   // Trading Mode
   tradingMode: parseTradingMode(),

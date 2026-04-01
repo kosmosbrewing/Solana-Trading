@@ -459,7 +459,7 @@ done
 
 | CLI 플래그 | 기본값 | 역할 |
 |-----------|--------|------|
-| `--primary-interval` | 15 | 주봉 주기(초) |
+| `--primary-interval` | 10 | 주봉 주기(초) |
 | `--confirm-interval` | 60 | 확인봉 주기(초) |
 | `--volume-lookback` | 20 | 볼륨 평균 윈도우 |
 | `--breakout-lookback` | 20 | 가격 돌파 윈도우 |

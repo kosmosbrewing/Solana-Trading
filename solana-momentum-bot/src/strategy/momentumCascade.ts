@@ -110,8 +110,8 @@ export function buildMomentumCascadeOrder(
     price: signal.price,
     quantity,
     stopLoss: currentCandle.low,
-    takeProfit1: signal.price + atr * (params.tp1Multiplier ?? 1.5),
-    takeProfit2: signal.price + atr * (params.tp2Multiplier ?? 2.5),
+    takeProfit1: signal.price + atr * (params.tp1Multiplier ?? 1.0),
+    takeProfit2: signal.price + atr * (params.tp2Multiplier ?? 10.0),
     trailingStop: atr,
     timeStopMinutes: 120, // 캐스케이드는 add-on 감지를 위해 2시간 확보
   };

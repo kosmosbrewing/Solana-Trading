@@ -84,6 +84,7 @@ export class HeliusPoolDiscovery extends EventEmitter {
   private readonly transientFailureCooldownMs: number;
   private readonly subscriptions = new Map<string, number>();
   private readonly seenSignatures = new Set<string>();
+  private static readonly MAX_SEEN_SIGNATURES = 10_000;
   private readonly pendingSignatures = new Set<string>();
   private readonly queue: QueuedPoolDiscoveryLog[] = [];
   private inFlight = 0;
@@ -190,6 +191,13 @@ export class HeliusPoolDiscovery extends EventEmitter {
     } finally {
       this.pendingSignatures.delete(entry.seenKey);
       this.seenSignatures.add(entry.seenKey);
+      if (this.seenSignatures.size > HeliusPoolDiscovery.MAX_SEEN_SIGNATURES) {
+        const toDelete = this.seenSignatures.size - HeliusPoolDiscovery.MAX_SEEN_SIGNATURES;
+        const iterator = this.seenSignatures.values();
+        for (let i = 0; i < toDelete; i++) {
+          this.seenSignatures.delete(iterator.next().value!);
+        }
+      }
     }
   }
 

@@ -80,7 +80,7 @@ Time Stop = 60m
 ### Current Trigger
 
 ```text
-Primary interval: 15s
+Primary interval: 10s
 Confirm interval: 60s
 Volume lookback: 20
 Volume multiplier: 3.0
@@ -94,10 +94,10 @@ Cooldown: 300s
 
 ```text
 SL mode = atr
-SL ATR multiplier = 1.0
+SL ATR multiplier = 1.5
 TP1 = ATR x 1.0
 TP2 = ATR x 10.0
-Time Stop = 20m
+Time Stop = 15m
 ```
 
 ## Gate Chain

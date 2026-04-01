@@ -174,7 +174,7 @@ export const config = {
   realtimeReplayWarmSyncEnabled: boolOptional('REALTIME_REPLAY_WARM_SYNC_ENABLED', true),
   realtimeReplayWarmSyncIntervalMs: numOptional('REALTIME_REPLAY_WARM_SYNC_INTERVAL_MS', 60_000),
   realtimeOutcomeHorizonsSec: numListOptional('REALTIME_OUTCOME_HORIZONS_SEC', [30, 60, 180, 300]),
-  realtimePrimaryIntervalSec: numOptional('REALTIME_PRIMARY_INTERVAL_SEC', 15),
+  realtimePrimaryIntervalSec: numOptional('REALTIME_PRIMARY_INTERVAL_SEC', 10),
   realtimeConfirmIntervalSec: numOptional('REALTIME_CONFIRM_INTERVAL_SEC', 60),
   realtimeVolumeSurgeLookback: numOptional('REALTIME_VOLUME_SURGE_LOOKBACK', 20),
   realtimeVolumeSurgeMultiplier: numOptional('REALTIME_VOLUME_SURGE_MULTIPLIER', 3.0),

@@ -129,13 +129,37 @@ export async function processSignal(
         };
       }
 
+    // Why: ATR-based SL로 리스크 사이징 — candle.low 사용 시 실제 주문 SL과 불일치
+    const probeSL = (() => {
+      if (signal.strategy === 'fib_pullback') {
+        return buildFibPullbackOrder(signal, candles, 1, { timeStopMinutes: config.fibTimeStopMinutes }).stopLoss;
+      }
+      if (signal.meta.realtimeSignal === 1) {
+        return buildMomentumTriggerOrder(signal, candles, 1, {
+          slMode: config.realtimeSlMode as 'atr' | 'swing_low' | 'candle_low',
+          slAtrMultiplier: config.realtimeSlAtrMultiplier,
+          slSwingLookback: config.realtimeSlSwingLookback,
+          timeStopMinutes: config.realtimeTimeStopMinutes,
+          atrPeriod: 14,
+          tp1Multiplier: config.tp1Multiplier,
+          tp2Multiplier: config.tp2Multiplier,
+        }).stopLoss;
+      }
+      return buildVolumeSpikeOrder(signal, candles, 1, {
+        tp1Multiplier: config.tp1Multiplier,
+        tp2Multiplier: config.tp2Multiplier,
+        slAtrMultiplier: config.slAtrMultiplier,
+        timeStopMinutes: config.timeStopMinutes,
+      }).stopLoss;
+    })();
+
     const riskResult = await ctx.riskManager.checkOrder(
       {
         pairAddress: signal.pairAddress,
         strategy: signal.strategy,
         side: 'BUY',
         price: signal.price,
-        stopLoss: candles[candles.length - 1].low,
+        stopLoss: probeSL,
         breakoutGrade: grade,
         poolTvl: signal.poolTvl,
       },
@@ -214,9 +238,9 @@ export async function processSignal(
       order = signal.meta.realtimeSignal === 1
         ? buildMomentumTriggerOrder(signal, candles, quantity, {
           slMode: (config.realtimeSlMode as 'atr' | 'swing_low' | 'candle_low'),
-          slAtrMultiplier: config.slAtrMultiplier,
+          slAtrMultiplier: config.realtimeSlAtrMultiplier,
           slSwingLookback: config.realtimeSlSwingLookback,
-          timeStopMinutes: config.timeStopMinutes,
+          timeStopMinutes: config.realtimeTimeStopMinutes,
           atrPeriod: 14,
           tp1Multiplier: config.tp1Multiplier,
           tp2Multiplier: config.tp2Multiplier,

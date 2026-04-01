@@ -847,7 +847,7 @@ export class BacktestEngine {
       poolInfo,
       previousTvl: poolInfo.tvl,
       fibConfig: {
-        impulseMinPct: this.config.fibPullbackParams.impulseMinPct ?? 0.15,
+        impulseMinPct: this.config.fibPullbackParams.impulseMinPct ?? 0.175,
         volumeClimaxMultiplier: this.config.fibPullbackParams.volumeClimaxMultiplier ?? 2.5,
         minWickRatio: this.config.fibPullbackParams.minWickRatio ?? 0.4,
       },

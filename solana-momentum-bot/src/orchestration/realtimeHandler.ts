@@ -114,9 +114,9 @@ export async function handleRealtimeSignal(
     executionRrBasis: config.executionRrBasis as 'tp1' | 'tp2',
     realtimeOrderParams: {
       slMode: config.realtimeSlMode as 'atr' | 'swing_low' | 'candle_low',
-      slAtrMultiplier: config.slAtrMultiplier,
+      slAtrMultiplier: config.realtimeSlAtrMultiplier,
       slSwingLookback: config.realtimeSlSwingLookback,
-      timeStopMinutes: config.timeStopMinutes,
+      timeStopMinutes: config.realtimeTimeStopMinutes,
       atrPeriod: 14,
       tp1Multiplier: config.tp1Multiplier,
       tp2Multiplier: config.tp2Multiplier,
@@ -164,9 +164,9 @@ export async function handleRealtimeSignal(
 
   const previewOrder = buildMomentumTriggerOrder(signal, candles, 1, {
     slMode: (config.realtimeSlMode as 'atr' | 'swing_low' | 'candle_low'),
-    slAtrMultiplier: config.slAtrMultiplier,
+    slAtrMultiplier: config.realtimeSlAtrMultiplier,
     slSwingLookback: config.realtimeSlSwingLookback,
-    timeStopMinutes: config.timeStopMinutes,
+    timeStopMinutes: config.realtimeTimeStopMinutes,
     atrPeriod: 14,
     tp1Multiplier: config.tp1Multiplier,
     tp2Multiplier: config.tp2Multiplier,

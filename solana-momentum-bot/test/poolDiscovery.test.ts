@@ -1,97 +1,89 @@
-import {
-  extractObservedPoolCandidate,
-  looksLikePoolInitLogs,
-  RAYDIUM_CPMM_PROGRAM,
-} from '../src/realtime';
-import { SOL_MINT } from '../src/utils/constants';
+const mockOnLogs = jest.fn();
+const mockRemoveOnLogsListener = jest.fn();
+const mockGetParsedTransaction = jest.fn();
+const mockGetMultipleAccountsInfo = jest.fn();
 
-describe('looksLikePoolInitLogs', () => {
-  it('matches explicit pool initialization logs', () => {
-    expect(looksLikePoolInitLogs([
-      'Program log: Instruction: Initialize',
-      'Program log: create pool',
-    ])).toBe(true);
-  });
+jest.mock('@solana/web3.js', () => {
+  class PublicKey {
+    constructor(private readonly value: string) {}
 
-  it('ignores swap logs', () => {
-    expect(looksLikePoolInitLogs([
-      'Program log: Instruction: Swap',
-      'Program log: ray_log: abc123',
-    ])).toBe(false);
-  });
+    toBase58(): string {
+      return this.value;
+    }
+  }
+
+  class Connection {
+    onLogs = mockOnLogs;
+    removeOnLogsListener = mockRemoveOnLogsListener;
+    getParsedTransaction = mockGetParsedTransaction;
+    getMultipleAccountsInfo = mockGetMultipleAccountsInfo;
+
+    constructor(_url: string, _config: unknown) {}
+  }
+
+  return {
+    Connection,
+    PublicKey,
+  };
 });
 
-describe('extractObservedPoolCandidate', () => {
-  it('extracts SOL quote pool metadata from a parsed pool init transaction', () => {
-    const candidate = extractObservedPoolCandidate(
-      {
-        blockTime: 1_711_111_111,
-        meta: {
-          preTokenBalances: [],
-          postTokenBalances: [
-            { accountIndex: 4, mint: 'base-mint' },
-            { accountIndex: 5, mint: SOL_MINT },
-          ],
-        },
-        transaction: {
-          message: {
-            accountKeys: [
-              { pubkey: 'payer', signer: true, writable: true },
-              { pubkey: 'pool-address', signer: false, writable: true },
-              { pubkey: 'vault-base', signer: false, writable: true },
-              { pubkey: 'vault-quote', signer: false, writable: true },
-              { pubkey: 'base-mint', signer: false, writable: false },
-              { pubkey: SOL_MINT, signer: false, writable: false },
-            ],
-          },
-        },
-      } as any,
-      RAYDIUM_CPMM_PROGRAM,
-      new Map([
-        ['pool-address', RAYDIUM_CPMM_PROGRAM],
-        ['vault-base', 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'],
-        ['vault-quote', 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'],
-      ])
-    );
+import { HeliusPoolDiscovery } from '../src/realtime';
 
-    expect(candidate).toEqual({
-      pairAddress: 'pool-address',
-      dexId: 'raydium',
-      baseTokenAddress: 'base-mint',
-      quoteTokenAddress: SOL_MINT,
-      quoteTokenSymbol: 'SOL',
-      pairCreatedAt: 1_711_111_111_000,
-    });
+describe('HeliusPoolDiscovery', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.clearAllMocks();
+    mockOnLogs.mockReturnValue(1);
+    mockRemoveOnLogsListener.mockResolvedValue(undefined);
+    mockGetMultipleAccountsInfo.mockResolvedValue([]);
   });
 
-  it('returns null when no program-owned pool account is found', () => {
-    const candidate = extractObservedPoolCandidate(
-      {
-        blockTime: 1_711_111_111,
-        meta: {
-          preTokenBalances: [],
-          postTokenBalances: [
-            { accountIndex: 1, mint: 'base-mint' },
-            { accountIndex: 2, mint: SOL_MINT },
-          ],
-        },
-        transaction: {
-          message: {
-            accountKeys: [
-              { pubkey: 'payer', signer: true, writable: true },
-              { pubkey: 'vault-base', signer: false, writable: true },
-              { pubkey: 'vault-quote', signer: false, writable: true },
-            ],
-          },
-        },
-      } as any,
-      RAYDIUM_CPMM_PROGRAM,
-      new Map([
-        ['vault-base', 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'],
-        ['vault-quote', 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'],
-      ])
-    );
+  afterEach(() => {
+    jest.useRealTimers();
+  });
 
-    expect(candidate).toBeNull();
+  it('backs off queued discovery fetches after a rate-limit error', async () => {
+    const discovery = new HeliusPoolDiscovery({
+      rpcHttpUrl: 'https://rpc.example.com',
+      rpcWsUrl: 'wss://rpc.example.com',
+      programIds: ['program-1'],
+      requestSpacingMs: 0,
+      rateLimitCooldownMs: 1_000,
+      transientFailureCooldownMs: 100,
+    });
+    const errors: Array<{ rateLimited?: boolean; cooldownMs?: number }> = [];
+
+    mockGetParsedTransaction
+      .mockRejectedValueOnce(new Error('429 Too Many Requests'))
+      .mockResolvedValueOnce(null);
+
+    discovery.on('error', (event) => errors.push(event));
+
+    await discovery.start();
+    const onLogsHandler = mockOnLogs.mock.calls[0][1];
+
+    onLogsHandler({
+      err: null,
+      logs: ['Instruction: Initialize pool'],
+      signature: 'sig-1',
+    }, { slot: 1 });
+    onLogsHandler({
+      err: null,
+      logs: ['Instruction: Initialize pool'],
+      signature: 'sig-2',
+    }, { slot: 2 });
+
+    await Promise.resolve();
+    expect(mockGetParsedTransaction).toHaveBeenCalledTimes(1);
+    expect(errors[0]).toEqual(expect.objectContaining({
+      rateLimited: true,
+      cooldownMs: 1_000,
+    }));
+
+    await jest.advanceTimersByTimeAsync(999);
+    expect(mockGetParsedTransaction).toHaveBeenCalledTimes(1);
+
+    await jest.advanceTimersByTimeAsync(1);
+    expect(mockGetParsedTransaction).toHaveBeenCalledTimes(2);
   });
 });

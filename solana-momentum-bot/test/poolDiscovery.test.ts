@@ -47,6 +47,7 @@ describe('HeliusPoolDiscovery', () => {
       rpcHttpUrl: 'https://rpc.example.com',
       rpcWsUrl: 'wss://rpc.example.com',
       programIds: ['program-1'],
+      concurrency: 1,
       requestSpacingMs: 0,
       rateLimitCooldownMs: 1_000,
       transientFailureCooldownMs: 100,
@@ -73,7 +74,7 @@ describe('HeliusPoolDiscovery', () => {
       signature: 'sig-2',
     }, { slot: 2 });
 
-    await Promise.resolve();
+    await jest.advanceTimersByTimeAsync(0);
     expect(mockGetParsedTransaction).toHaveBeenCalledTimes(1);
     expect(errors[0]).toEqual(expect.objectContaining({
       rateLimited: true,
@@ -85,5 +86,54 @@ describe('HeliusPoolDiscovery', () => {
 
     await jest.advanceTimersByTimeAsync(1);
     expect(mockGetParsedTransaction).toHaveBeenCalledTimes(2);
+  });
+
+  it('evicts the oldest queued discovery when the queue is saturated', async () => {
+    const discovery = new HeliusPoolDiscovery({
+      rpcHttpUrl: 'https://rpc.example.com',
+      rpcWsUrl: 'wss://rpc.example.com',
+      programIds: ['program-1'],
+      concurrency: 1,
+      requestSpacingMs: 1_000,
+      queueLimit: 2,
+    });
+
+    mockGetParsedTransaction.mockResolvedValue(null);
+
+    await discovery.start();
+    const onLogsHandler = mockOnLogs.mock.calls[0][1];
+
+    onLogsHandler({
+      err: null,
+      logs: ['Instruction: Initialize pool'],
+      signature: 'sig-1',
+    }, { slot: 1 });
+    onLogsHandler({
+      err: null,
+      logs: ['Instruction: Initialize pool'],
+      signature: 'sig-2',
+    }, { slot: 2 });
+    onLogsHandler({
+      err: null,
+      logs: ['Instruction: Initialize pool'],
+      signature: 'sig-3',
+    }, { slot: 3 });
+    onLogsHandler({
+      err: null,
+      logs: ['Instruction: Initialize pool'],
+      signature: 'sig-4',
+    }, { slot: 4 });
+
+    await jest.advanceTimersByTimeAsync(0);
+    expect(mockGetParsedTransaction).toHaveBeenCalledTimes(1);
+    expect(mockGetParsedTransaction).toHaveBeenNthCalledWith(1, 'sig-1', expect.any(Object));
+
+    await jest.advanceTimersByTimeAsync(1_000);
+    expect(mockGetParsedTransaction).toHaveBeenCalledTimes(2);
+    expect(mockGetParsedTransaction).toHaveBeenNthCalledWith(2, 'sig-3', expect.any(Object));
+
+    await jest.advanceTimersByTimeAsync(1_000);
+    expect(mockGetParsedTransaction).toHaveBeenCalledTimes(3);
+    expect(mockGetParsedTransaction).toHaveBeenNthCalledWith(3, 'sig-4', expect.any(Object));
   });
 });

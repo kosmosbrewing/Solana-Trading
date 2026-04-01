@@ -67,6 +67,46 @@ describe('InternalTrendingTokenProvider', () => {
       }),
     });
   });
+
+  it('falls back to tokenMint candle keys when realtime candles are stored by logical pair', async () => {
+    const registry = new HeliusPoolRegistry();
+    registry.upsertObservedPair({
+      pairAddress: 'actual-pool-address',
+      dexId: 'raydium',
+      baseTokenAddress: 'mint-logical',
+      baseTokenSymbol: 'LOG',
+      quoteTokenAddress: 'So11111111111111111111111111111111111111112',
+      quoteTokenSymbol: 'SOL',
+      liquidityUsd: 75_000,
+      volume24hUsd: 150_000,
+    });
+
+    const candleStore = {
+      getRecentCandles: jest.fn(async (pairAddress: string) => {
+        if (pairAddress !== 'mint-logical') return [];
+        return buildCandles(pairAddress, [
+          [1.0, 1.1, 1_000, 10],
+          [1.1, 1.15, 1_200, 12],
+          [1.15, 1.25, 1_500, 15],
+        ]);
+      }),
+      getCandlesInRange: jest.fn(),
+    };
+
+    const source = new InternalCandleSource(candleStore as never);
+    const provider = new InternalTrendingTokenProvider(registry, source, {
+      intervalSec: 300,
+      lookbackBars: 3,
+      maxCandidateAgeMs: 10 * 60_000,
+    });
+
+    const tokens = await provider.getTrendingTokens(5);
+
+    expect(tokens).toHaveLength(1);
+    expect(tokens[0]?.address).toBe('mint-logical');
+    expect(candleStore.getRecentCandles).toHaveBeenCalledWith('actual-pool-address', 300, 3);
+    expect(candleStore.getRecentCandles).toHaveBeenCalledWith('mint-logical', 300, 3);
+  });
 });
 
 function buildCandles(

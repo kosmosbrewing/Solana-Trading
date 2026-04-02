@@ -13,6 +13,7 @@ import {
 import { calcWatchlistScore, WatchlistScoreInput, WatchlistScoreResult } from './watchlistScore';
 import { SocialMentionTracker } from './socialMentionTracker';
 import { PoolInfo } from '../utils/types';
+import { resolveAmmFeePct } from '../utils/dexFeeMap';
 
 const log = createModuleLogger('Scanner');
 const HOT_SOURCE_REENTRY_MULTIPLIER = 1.5;
@@ -324,6 +325,7 @@ export class ScannerEngine extends EventEmitter {
         dailyVolume: token.volume24hUsd ?? 0,
         tradeCount24h: (token.raw?.buys_24h as number ?? 0) + (token.raw?.sells_24h as number ?? 0),
         spreadPct: 0,
+        ammFeePct: resolveAmmFeePct(typeof token.raw?.dex_id === 'string' ? token.raw.dex_id : undefined),
         tokenAgeHours: this.calcTokenAgeHours(token.raw?.pool_created_at as string | undefined),
         top10HolderPct: 0,
         lpBurned: null,

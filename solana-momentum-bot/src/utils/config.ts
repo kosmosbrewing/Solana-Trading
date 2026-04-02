@@ -120,7 +120,7 @@ export const config = {
   maxSlippage: numOptional('MAX_SLIPPAGE', 0.01),
   maxPoolImpact: numOptional('MAX_POOL_IMPACT', 0.02),
   emergencyHaircut: numOptional('EMERGENCY_HAIRCUT', 0.50),
-  defaultAmmFeePct: numOptional('DEFAULT_AMM_FEE_PCT', 0.005),
+  defaultAmmFeePct: numOptional('DEFAULT_AMM_FEE_PCT', 0.003),
   defaultMevMarginPct: numOptional('DEFAULT_MEV_MARGIN_PCT', 0.0015),
 
   // Risk
@@ -290,9 +290,9 @@ export const config = {
   // ─── v5: "수익은 길게, 손실은 짧게" 파라미터 ───
   /** TP1 배수 (ATR × N). 기존 1.5 → 1.0 */
   tp1Multiplier: numOptional('TP1_MULTIPLIER', 1.0),
-  /** TP2 배수 (ATR × N). v5 스윕 최적: 5.0 (19-token 크로스밸리데이션 100% 수렴) */
+  /** TP2 배수 (ATR × N). v5 runner-centric 10.0 (sweep 최적 5.0에서 확장). live path는 REALTIME 참조. */
   tp2Multiplier: numOptional('TP2_MULTIPLIER', 10.0),
-  /** SL ATR 배수 (entry - ATR × N). v5 스윕 안정 영역: 1.25 */
+  /** SL ATR 배수 (entry - ATR × N). v5 default 1.0. live path는 REALTIME_SL_ATR_MULTIPLIER(1.5) 사용. */
   slAtrMultiplier: numOptional('SL_ATR_MULTIPLIER', 1.0),
   /** TimeStop (분). 기존 30 → 20 */
   timeStopMinutes: numOptional('TIME_STOP_MINUTES', 20),

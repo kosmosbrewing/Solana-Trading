@@ -11,7 +11,7 @@ const DEFAULT_MIN_EFFECTIVE_RR_REJECT = 1.2;
 const DEFAULT_MIN_EFFECTIVE_RR_PASS = 1.5;
 // Why: config.ts import 시 required env vars 체크가 테스트를 깨뜨리므로 로컬 파싱 유지
 // 값 기본값은 config.ts의 defaultAmmFeePct / defaultMevMarginPct와 동일하게 유지
-const DEFAULT_AMM_FEE_PCT = parseOptionalNumber(process.env.DEFAULT_AMM_FEE_PCT, 0.005);
+const DEFAULT_AMM_FEE_PCT = parseOptionalNumber(process.env.DEFAULT_AMM_FEE_PCT, 0.003);
 const DEFAULT_MEV_MARGIN_PCT = parseOptionalNumber(process.env.DEFAULT_MEV_MARGIN_PCT, 0.0015);
 
 export interface ExecutionViabilityResult {

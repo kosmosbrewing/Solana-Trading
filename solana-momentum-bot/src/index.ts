@@ -69,6 +69,7 @@ import { runPreflightCheck } from './orchestration/preflightCheck';
 import { SpreadMeasurer } from './gate/spreadMeasurer';
 import { SOL_MINT } from './utils/constants';
 import { BotContext } from './orchestration/types';
+import { resolveAmmFeePct } from './utils/dexFeeMap';
 import { buildRuntimeDriftSnapshot, evaluateRuntimeDriftWarnings } from './ops/runtimeDrift';
 import path from 'path';
 import { prepareRealtimePersistenceLayout } from './realtime/persistenceLayout';
@@ -757,7 +758,7 @@ async function main() {
         dailyVolume: entry.poolInfo?.dailyVolume ?? 0,
         tradeCount24h: entry.poolInfo?.tradeCount24h ?? 0,
         spreadPct: entry.poolInfo?.spreadPct ?? 0,
-        ammFeePct: entry.poolInfo?.ammFeePct,
+        ammFeePct: entry.poolInfo?.ammFeePct ?? resolveAmmFeePct(entry.dexId),
         tokenAgeHours: entry.poolInfo?.tokenAgeHours ?? 0,
         top10HolderPct: entry.poolInfo?.top10HolderPct ?? 0,
         lpBurned: entry.poolInfo?.lpBurned ?? null,

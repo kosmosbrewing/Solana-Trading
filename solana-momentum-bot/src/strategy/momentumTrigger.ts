@@ -1,6 +1,7 @@
 import { Candle, Order, Signal } from '../utils/types';
 import { calcATR, calcAvgVolume, calcHighestHigh, calcLowestLow, calcPriceChangeRate } from './indicators';
 import { MicroCandleBuilder } from '../realtime';
+import { createModuleLogger } from '../utils/logger';
 
 export interface MomentumTriggerConfig {
   primaryIntervalSec: number;
@@ -50,6 +51,11 @@ export interface TriggerRejectStats {
   cooldown: number;
 }
 
+const log = createModuleLogger('MomentumTrigger');
+
+/** Interval between periodic stats logs (ms). */
+const STATS_LOG_INTERVAL_MS = 5 * 60 * 1000; // 5 min
+
 export class MomentumTrigger {
   private readonly config: MomentumTriggerConfig;
   private readonly lastSignalAt = new Map<string, number>();
@@ -62,6 +68,7 @@ export class MomentumTrigger {
     confirmFail: 0,
     cooldown: 0,
   };
+  private lastStatsLogAt = 0;
 
   constructor(config: MomentumTriggerConfig) {
     this.config = config;
@@ -80,6 +87,7 @@ export class MomentumTrigger {
     const candles = candleBuilder.getRecentCandles(candle.pairAddress, candle.intervalSec, lookback + 1);
     if (candles.length < lookback + 1) {
       this.rejectStats.insufficientCandles++;
+      this.maybeLogStats();
       return null;
     }
 
@@ -106,6 +114,17 @@ export class MomentumTrigger {
       !confirmation.passed ||
       !cooldownReady
     ) {
+      // 근접 통과 시 debug 로그 (volume or breakout 하나만 통과 = 주목할 만한 움직임)
+      if (volumeRatio >= this.config.volumeSurgeMultiplier || breakout) {
+        log.debug(
+          `Near-miss ${candle.pairAddress.slice(0, 8)}… ` +
+          `vr=${volumeRatio.toFixed(1)}/${this.config.volumeSurgeMultiplier} ` +
+          `bo=${breakout ? 'Y' : 'N'} ` +
+          `cf=${confirmation.passed ? 'Y' : 'N'}(${confirmation.bullishBars}/${this.config.confirmMinBars},${(confirmation.priceChangePct * 100).toFixed(1)}%) ` +
+          `cd=${cooldownReady ? 'Y' : 'N'}`
+        );
+      }
+      this.maybeLogStats();
       return null;
     }
 
@@ -162,6 +181,19 @@ export class MomentumTrigger {
     const previousSignalAt = this.lastSignalAt.get(pairAddress);
     if (!previousSignalAt) return true;
     return timestampSec - previousSignalAt >= this.config.cooldownSec;
+  }
+
+  /** 5분마다 reject stats를 INFO 로그로 출력 */
+  private maybeLogStats(): void {
+    const now = Date.now();
+    if (now - this.lastStatsLogAt < STATS_LOG_INTERVAL_MS) return;
+    this.lastStatsLogAt = now;
+    const s = this.rejectStats;
+    log.info(
+      `[RejectStats] evals=${s.evaluations} signals=${s.signals} | ` +
+      `insuffCandles=${s.insufficientCandles} volInsuf=${s.volumeInsufficient} ` +
+      `noBreakout=${s.noBreakout} confirmFail=${s.confirmFail} cooldown=${s.cooldown}`
+    );
   }
 }
 

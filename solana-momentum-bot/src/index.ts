@@ -1011,6 +1011,7 @@ async function main() {
         }
         const signal = trigger.onCandle(candle, realtimeCandleBuilder!);
         if (signal) {
+          log.info(`🎯 Signal fired: ${signal.strategy} ${signal.pairAddress.slice(0, 12)}… price=${signal.price} vr=${signal.meta.volumeRatio?.toFixed(1)}`);
           await handleRealtimeSignal(signal, realtimeCandleBuilder!, ctx);
         }
       } catch (error) {

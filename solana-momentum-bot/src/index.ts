@@ -190,6 +190,8 @@ async function main() {
       realtimePoolAliases.delete(existing);
       realtimePoolMetadata.delete(existing);
       heliusIngester?.clearPoolMetadata(existing);
+      // Why: alias 삭제 후 구독 잔존 방지 — swap이 계속 들어오면 alias miss 발생
+      void heliusIngester?.unsubscribePools([existing]);
     }
   };
   const resolveRealtimePools = (logicalPairs: string[]) =>
@@ -930,7 +932,8 @@ async function main() {
         (s) => {
           runtimeDiagnosticsTracker.recordTriggerStats(
             `evals=${s.evaluations} signals=${s.signals} insuffCandles=${s.insufficientCandles} ` +
-            `volInsuf=${s.volumeInsufficient} lowBuyRatio=${s.lowBuyRatio} cooldown=${s.cooldown}`
+            `volInsuf=${s.volumeInsufficient} lowBuyRatio=${s.lowBuyRatio} cooldown=${s.cooldown}`,
+            'bootstrap_trigger'
           );
         },
       );
@@ -975,7 +978,14 @@ async function main() {
       healthMonitor.setWsConnected(false);
     });
     heliusIngester.on('swap', (swap) => {
-      const logicalPair = realtimePoolAliases.get(swap.pool) ?? swap.pool;
+      const logicalPair = realtimePoolAliases.get(swap.pool);
+      if (!logicalPair) {
+        // Why: alias 없는 pool의 swap → candle key에 pool address가 들어가서 watchlist lookup 100% 실패
+        // stale 구독을 즉시 해제하여 반복 alias miss 방지
+        runtimeDiagnosticsTracker.recordAliasMiss(swap.pool);
+        void heliusIngester!.unsubscribePools([swap.pool]);
+        return;
+      }
       const metadata = realtimePoolMetadata.get(swap.pool);
       if (metadata) {
         heliusPoolRegistry.upsertObservedPair({

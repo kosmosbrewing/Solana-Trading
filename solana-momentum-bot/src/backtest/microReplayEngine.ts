@@ -1,18 +1,49 @@
 import { MomentumOrderParams, MomentumTrigger, MomentumTriggerConfig, TriggerRejectStats } from '../strategy';
+import { VolumeMcapSpikeTrigger, VolumeMcapSpikeTriggerConfig, BootstrapRejectStats } from '../strategy';
 import { MicroCandleBuilder } from '../realtime';
 import { StoredRealtimeSwap } from '../realtime/replayStore';
 import { RealtimeOutcomeTracker, RealtimeSignalRecord, summarizeRealtimeSignals } from '../reporting';
-import { Candle } from '../utils/types';
+import { Candle, Signal } from '../utils/types';
 import { trackReplaySignal } from './replaySignalTracker';
 import { sanitizeReplaySwaps } from './replaySwapSanitizer';
 
+export type ReplayTriggerType = 'momentum' | 'bootstrap';
+
 export interface MicroReplayOptions {
+  triggerType?: ReplayTriggerType;
   triggerConfig: MomentumTriggerConfig;
+  bootstrapTriggerConfig?: VolumeMcapSpikeTriggerConfig;
   orderParams?: Partial<MomentumOrderParams>;
   horizonsSec?: number[];
   gateMode?: 'off' | 'stored';
   storedSignals?: RealtimeSignalRecord[];
   estimatedCostPct?: number;
+}
+
+interface ReplayTrigger {
+  onCandle(candle: Candle, builder: MicroCandleBuilder): Signal | null;
+  getRejectStats(): TriggerRejectStats | BootstrapRejectStats;
+}
+
+function createTrigger(options: MicroReplayOptions): ReplayTrigger {
+  if (options.triggerType === 'bootstrap' && options.bootstrapTriggerConfig) {
+    return new VolumeMcapSpikeTrigger(options.bootstrapTriggerConfig);
+  }
+  return new MomentumTrigger(options.triggerConfig);
+}
+
+function getPrimaryIntervalSec(options: MicroReplayOptions): number {
+  if (options.triggerType === 'bootstrap' && options.bootstrapTriggerConfig) {
+    return options.bootstrapTriggerConfig.primaryIntervalSec;
+  }
+  return options.triggerConfig.primaryIntervalSec;
+}
+
+function getBuilderIntervals(options: MicroReplayOptions): number[] {
+  if (options.triggerType === 'bootstrap' && options.bootstrapTriggerConfig) {
+    return [5, options.bootstrapTriggerConfig.primaryIntervalSec];
+  }
+  return [5, options.triggerConfig.primaryIntervalSec, options.triggerConfig.confirmIntervalSec];
 }
 
 export interface MicroReplayResult {
@@ -29,7 +60,8 @@ export interface MicroReplayResult {
     replayedSignalCount: number;
     gateMode: 'off' | 'stored';
   };
-  rejectStats: TriggerRejectStats;
+  rejectStats: TriggerRejectStats | BootstrapRejectStats;
+  triggerType: ReplayTriggerType;
 }
 
 interface ReplayCandleSanitizer {
@@ -55,10 +87,10 @@ export async function replayRealtimeDataset(
   const orderedSwaps = sanitized.swaps;
   const horizonsSec = options.horizonsSec ?? [30, 60, 180, 300];
   const builder = new MicroCandleBuilder({
-    intervals: [5, options.triggerConfig.primaryIntervalSec, options.triggerConfig.confirmIntervalSec],
+    intervals: getBuilderIntervals(options),
     maxHistory: 512,
   });
-  const trigger = new MomentumTrigger(options.triggerConfig);
+  const trigger = createTrigger(options);
   const collectedRecords: RealtimeSignalRecord[] = [];
   const pendingTasks: Promise<void>[] = [];
   const outcomeTracker = new RealtimeOutcomeTracker(
@@ -96,7 +128,8 @@ export async function replayRealtimeDataset(
   }
 
   const lastTimestamp = orderedSwaps[orderedSwaps.length - 1]?.timestamp ?? Math.floor(Date.now() / 1000);
-  builder.flush(lastTimestamp + (horizonsSec[horizonsSec.length - 1] ?? 300) + options.triggerConfig.confirmIntervalSec + 5);
+  const confirmSec = options.triggerType === 'bootstrap' ? 0 : options.triggerConfig.confirmIntervalSec;
+  builder.flush(lastTimestamp + (horizonsSec[horizonsSec.length - 1] ?? 300) + confirmSec + 5);
   await drainTasks(pendingTasks);
 
   return {
@@ -114,6 +147,7 @@ export async function replayRealtimeDataset(
       gateMode,
     },
     rejectStats: trigger.getRejectStats(),
+    triggerType: options.triggerType ?? 'momentum',
   };
 }
 
@@ -137,7 +171,8 @@ export async function replayRealtimeCandlesStream(
   const runtime = createCandleReplayRuntime(options);
   let totalCandleCount = 0;
   const bufferedCandles = new Map<number, Candle[]>();
-  const maxOrderingDelayMs = Math.max(5, options.triggerConfig.primaryIntervalSec, options.triggerConfig.confirmIntervalSec) * 1000;
+  const confirmSec = options.triggerType === 'bootstrap' ? 0 : options.triggerConfig.confirmIntervalSec;
+  const maxOrderingDelayMs = Math.max(5, getPrimaryIntervalSec(options), confirmSec) * 1000;
   let maxSeenTimestampMs = Number.NEGATIVE_INFINITY;
   const sanitizer = createReplayCandleSanitizer();
 
@@ -167,13 +202,14 @@ export async function replayRealtimeCandlesStream(
     totalCandleCount,
     keptCandleCount,
     droppedCandleCount: sanitizer.droppedCount,
+    triggerType: options.triggerType,
   });
 }
 
 async function handleReplayCandle(input: {
   candle: Candle;
   builder: MicroCandleBuilder;
-  trigger: MomentumTrigger;
+  trigger: ReplayTrigger;
   outcomeTracker: RealtimeOutcomeTracker;
   options: MicroReplayOptions;
   gateMode: 'off' | 'stored';
@@ -244,7 +280,7 @@ async function replayOrderedCandles(
 function createCandleReplayRuntime(options: MicroReplayOptions): {
   horizonsSec: number[];
   builder: MicroCandleBuilder;
-  trigger: MomentumTrigger;
+  trigger: ReplayTrigger;
   collectedRecords: RealtimeSignalRecord[];
   outcomeTracker: RealtimeOutcomeTracker;
   storedSignals: RealtimeSignalRecord[];
@@ -255,10 +291,10 @@ function createCandleReplayRuntime(options: MicroReplayOptions): {
   return {
     horizonsSec,
     builder: new MicroCandleBuilder({
-      intervals: [5, options.triggerConfig.primaryIntervalSec, options.triggerConfig.confirmIntervalSec],
+      intervals: getBuilderIntervals(options),
       maxHistory: 512,
     }),
-    trigger: new MomentumTrigger(options.triggerConfig),
+    trigger: createTrigger(options),
     collectedRecords,
     outcomeTracker: new RealtimeOutcomeTracker(
       {
@@ -284,7 +320,7 @@ async function processReplayCandle(
   runtime.builder.ingestClosedCandle(candle, false);
   await runtime.outcomeTracker.onCandle(candle);
 
-  if (candle.intervalSec !== options.triggerConfig.primaryIntervalSec) {
+  if (candle.intervalSec !== getPrimaryIntervalSec(options)) {
     return;
   }
 
@@ -307,6 +343,7 @@ function buildCandleReplayResult(
     totalCandleCount: number;
     keptCandleCount: number;
     droppedCandleCount: number;
+    triggerType?: ReplayTriggerType;
   }
 ): MicroReplayResult {
   return {
@@ -324,6 +361,7 @@ function buildCandleReplayResult(
       gateMode: runtime.gateMode,
     },
     rejectStats: runtime.trigger.getRejectStats(),
+    triggerType: options.triggerType ?? 'momentum' as ReplayTriggerType,
   };
 }
 

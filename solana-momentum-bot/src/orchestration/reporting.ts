@@ -167,8 +167,10 @@ function buildDailyRejectionMixSummary(params: {
     runtimeDiagnostics?: {
       admissionSkipCounts: Array<{ reason: string; count: number }>;
       admissionSkipDetailCounts: Array<{ label: string; count: number }>;
+      aliasMissCounts: Array<{ pool: string; count: number }>;
       capacityCounts: Array<{ label: string; count: number }>;
       triggerStatsCounts: Array<{ label: string; count: number }>;
+      latestTriggerStats?: { source: string; detail: string };
       preWatchlistRejectCounts: Array<{ reason: string; count: number }>;
       preWatchlistRejectDetailCounts: Array<{ label: string; count: number }>;
       rateLimitCounts: Array<{ source: string; count: number }>;
@@ -193,8 +195,10 @@ function buildDailyRejectionMixSummary(params: {
     gateFilterReasonCounts: params.filterReasonCounts,
     admissionSkipCounts: params.runtimeDiagnostics?.admissionSkipCounts ?? [],
     admissionSkipDetailCounts: params.runtimeDiagnostics?.admissionSkipDetailCounts ?? [],
+    aliasMissCounts: params.runtimeDiagnostics?.aliasMissCounts ?? [],
     capacityCounts: params.runtimeDiagnostics?.capacityCounts ?? [],
     triggerStatsCounts: params.runtimeDiagnostics?.triggerStatsCounts ?? [],
+    latestTriggerStats: params.runtimeDiagnostics?.latestTriggerStats,
     preWatchlistRejectCounts: params.runtimeDiagnostics?.preWatchlistRejectCounts ?? [],
     preWatchlistRejectDetailCounts: params.runtimeDiagnostics?.preWatchlistRejectDetailCounts ?? [],
     rateLimitCounts: params.runtimeDiagnostics?.rateLimitCounts ?? [],

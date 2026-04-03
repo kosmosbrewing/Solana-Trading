@@ -48,6 +48,8 @@ export interface RealtimeSignalRecord {
     confirmPriceChangePct?: number;
     confirmBullishBars?: number;
     atr?: number;
+    triggerMode?: number;
+    buyRatio?: number;
     breakoutScore?: number;
     breakoutGrade?: string;
   };

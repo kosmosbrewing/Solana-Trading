@@ -252,6 +252,7 @@ describe('messageFormatter', () => {
         capacityCounts: [
           { label: 'helius_pool_discovery reason=queue_overflow detail=limit=250 inFlight=2 queued=250', count: 3 },
         ],
+        triggerStatsCounts: [],
         rateLimitCounts: [
           { source: 'gecko_terminal', count: 4 },
           { source: 'helius_seed_backfill', count: 2 },

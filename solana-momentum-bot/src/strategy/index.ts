@@ -6,6 +6,8 @@ export {
 export type { VolumeSpikeParams } from './volumeSpikeBreakout';
 export { MomentumTrigger, buildMomentumTriggerOrder } from './momentumTrigger';
 export type { MomentumTriggerConfig, MomentumOrderParams, TriggerRejectStats } from './momentumTrigger';
+export { VolumeMcapSpikeTrigger } from './volumeMcapSpikeTrigger';
+export type { VolumeMcapSpikeTriggerConfig, BootstrapRejectStats } from './volumeMcapSpikeTrigger';
 
 export {
   calcATR,

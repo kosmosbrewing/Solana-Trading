@@ -4,8 +4,10 @@ export interface RuntimeDiagnosticsSummary {
   hours: number;
   admissionSkipCounts: Array<{ reason: string; count: number }>;
   admissionSkipDetailCounts: Array<{ label: string; count: number }>;
+  aliasMissCounts: Array<{ pool: string; count: number }>;
   capacityCounts: Array<{ label: string; count: number }>;
   triggerStatsCounts: Array<{ label: string; count: number }>;
+  latestTriggerStats?: { source: string; detail: string };
   preWatchlistRejectCounts: Array<{ reason: string; count: number }>;
   preWatchlistRejectDetailCounts: Array<{ label: string; count: number }>;
   rateLimitCounts: Array<{ source: string; count: number }>;
@@ -20,7 +22,7 @@ export interface RuntimeDiagnosticsSummary {
 }
 
 export interface RuntimeDiagnosticEvent {
-  type: 'admission_skip' | 'pre_watchlist_reject' | 'realtime_candidate_seen' | 'rate_limit' | 'poll_failure' | 'capacity' | 'trigger_stats';
+  type: 'admission_skip' | 'pre_watchlist_reject' | 'realtime_candidate_seen' | 'rate_limit' | 'poll_failure' | 'capacity' | 'trigger_stats' | 'alias_miss';
   timestampMs: number;
   tokenMint?: string;
   reason?: string;
@@ -107,11 +109,20 @@ export class RuntimeDiagnosticsTracker {
     });
   }
 
-  recordTriggerStats(detail: string): void {
+  recordAliasMiss(pool: string): void {
+    this.pushEvent({
+      type: 'alias_miss',
+      timestampMs: Date.now(),
+      source: 'swap_handler',
+      detail: `pool=${pool}`,
+    });
+  }
+
+  recordTriggerStats(detail: string, source = 'momentum_trigger'): void {
     this.pushEvent({
       type: 'trigger_stats',
       timestampMs: Date.now(),
-      source: 'momentum_trigger',
+      source,
       detail,
     });
   }
@@ -135,8 +146,10 @@ export class RuntimeDiagnosticsTracker {
       hours,
       admissionSkipCounts: summarizeDecisionReasons(this.events, cutoffMs, 'admission_skip'),
       admissionSkipDetailCounts: summarizeDecisionDetails(this.events, cutoffMs, 'admission_skip'),
+      aliasMissCounts: summarizeAliasMissCounts(this.events, cutoffMs),
       capacityCounts: summarizeHighFreqLabels(this.events, cutoffMs, 'capacity'),
       triggerStatsCounts: summarizeHighFreqLabels(this.events, cutoffMs, 'trigger_stats'),
+      latestTriggerStats: findLatestTriggerStats(this.events, cutoffMs),
       preWatchlistRejectCounts: summarizeDecisionReasons(this.events, cutoffMs, 'pre_watchlist_reject'),
       preWatchlistRejectDetailCounts: summarizeDecisionDetails(this.events, cutoffMs, 'pre_watchlist_reject'),
       rateLimitCounts: summarizeEventSources(this.events, cutoffMs, 'rate_limit'),
@@ -202,8 +215,8 @@ export class RuntimeDiagnosticsTracker {
     if (cutoffIndex > 0) {
       this.events.splice(0, cutoffIndex);
     }
-    // high-frequency 이벤트(capacity, trigger_stats) 과다 축적 방지
-    const highFreqTypes: RuntimeDiagnosticEvent['type'][] = ['capacity', 'trigger_stats'];
+    // high-frequency 이벤트(capacity, trigger_stats, alias_miss) 과다 축적 방지
+    const highFreqTypes: RuntimeDiagnosticEvent['type'][] = ['capacity', 'trigger_stats', 'alias_miss'];
     for (const hfType of highFreqTypes) {
       let count = 0;
       for (let i = this.events.length - 1; i >= 0; i--) {
@@ -314,4 +327,33 @@ function formatCapacityLabel(event: RuntimeDiagnosticEvent): string {
   if (event.reason) parts.push(`reason=${event.reason}`);
   if (event.detail) parts.push(`detail=${event.detail}`);
   return parts.join(' ');
+}
+
+function findLatestTriggerStats(
+  events: RuntimeDiagnosticEvent[],
+  cutoffMs: number
+): { source: string; detail: string } | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (event.type === 'trigger_stats' && event.timestampMs >= cutoffMs) {
+      return { source: event.source ?? 'unknown', detail: event.detail ?? '' };
+    }
+  }
+  return undefined;
+}
+
+function summarizeAliasMissCounts(
+  events: RuntimeDiagnosticEvent[],
+  cutoffMs: number
+): Array<{ pool: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const event of events) {
+    if (event.type !== 'alias_miss' || event.timestampMs < cutoffMs) continue;
+    // detail format: "pool=<address>"
+    const pool = event.detail?.replace(/^pool=/, '') ?? 'unknown';
+    counts.set(pool, (counts.get(pool) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([pool, count]) => ({ pool, count }))
+    .sort((left, right) => right.count - left.count);
 }

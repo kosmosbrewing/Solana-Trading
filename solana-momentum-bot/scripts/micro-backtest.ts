@@ -2,9 +2,9 @@
 
 import path from 'path';
 import dotenv from 'dotenv';
-import { replayRealtimeCandlesStream, replayRealtimeDataset } from '../src/backtest/microReplayEngine';
+import { replayRealtimeCandlesStream, replayRealtimeDataset, ReplayTriggerType } from '../src/backtest/microReplayEngine';
 import { RealtimeReplayStore } from '../src/realtime';
-import { MomentumTriggerConfig } from '../src/strategy';
+import { MomentumTriggerConfig, VolumeMcapSpikeTriggerConfig } from '../src/strategy';
 import { summarizeRealtimeSignals } from '../src/reporting';
 
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
@@ -28,6 +28,11 @@ async function main() {
 
   const horizonsSec = parseNumList(getArg(args, '--horizons')) || [30, 60, 180, 300];
   const horizonSec = numArg(args, '--horizon', horizonsSec.includes(180) ? 180 : horizonsSec[0]);
+  const triggerType = (getArg(args, '--trigger-type') || 'momentum') as ReplayTriggerType;
+  if (!['momentum', 'bootstrap'].includes(triggerType)) {
+    throw new Error(`Invalid --trigger-type: ${triggerType}. Use 'momentum' or 'bootstrap'.`);
+  }
+
   const triggerConfig: MomentumTriggerConfig = {
     primaryIntervalSec: numArg(args, '--primary-interval', 15),
     confirmIntervalSec: numArg(args, '--confirm-interval', 60),
@@ -39,26 +44,32 @@ async function main() {
     cooldownSec: numArg(args, '--cooldown-sec', 300),
   };
 
+  const bootstrapTriggerConfig: VolumeMcapSpikeTriggerConfig | undefined = triggerType === 'bootstrap' ? {
+    primaryIntervalSec: numArg(args, '--primary-interval', 10),
+    volumeSurgeLookback: numArg(args, '--volume-lookback', 20),
+    volumeSurgeMultiplier: numArg(args, '--volume-multiplier', 2.5),
+    cooldownSec: numArg(args, '--cooldown-sec', 300),
+    minBuyRatio: numArg(args, '--min-buy-ratio', 0.55),
+    atrPeriod: numArg(args, '--atr-period', 14),
+  } : undefined;
+
   const resolvedDatasetRoot = path.resolve(datasetDir);
   const store = new RealtimeReplayStore(resolvedDatasetRoot);
   const resolvedDatasetDir = store.datasetDir;
   const storedSignals = await store.loadSignals(path.join(resolvedDatasetDir, 'realtime-signals.jsonl'));
   const resolvedInputMode = await resolveInputMode(store, inputMode, resolvedDatasetDir);
+  const replayOptions = {
+    triggerType,
+    triggerConfig,
+    bootstrapTriggerConfig,
+    horizonsSec,
+    gateMode,
+    storedSignals,
+    estimatedCostPct: numArg(args, '--estimated-cost-pct', 0),
+  };
   const result = resolvedInputMode === 'candles'
-    ? await replayRealtimeCandlesStream(store.streamCandles(path.join(resolvedDatasetDir, 'micro-candles.jsonl')), {
-      triggerConfig,
-      horizonsSec,
-      gateMode,
-      storedSignals,
-      estimatedCostPct: numArg(args, '--estimated-cost-pct', 0),
-    })
-    : await replayRealtimeDataset(await store.loadSwaps(path.join(resolvedDatasetDir, 'raw-swaps.jsonl')), {
-      triggerConfig,
-      horizonsSec,
-      gateMode,
-      storedSignals,
-      estimatedCostPct: numArg(args, '--estimated-cost-pct', 0),
-    });
+    ? await replayRealtimeCandlesStream(store.streamCandles(path.join(resolvedDatasetDir, 'micro-candles.jsonl')), replayOptions)
+    : await replayRealtimeDataset(await store.loadSwaps(path.join(resolvedDatasetDir, 'raw-swaps.jsonl')), replayOptions);
 
   const summary = summarizeRealtimeSignals(result.records, horizonSec);
   const rs = result.rejectStats;
@@ -68,7 +79,8 @@ async function main() {
     dataset: result.dataset,
     config: {
       inputMode: resolvedInputMode,
-      triggerConfig,
+      triggerType,
+      triggerConfig: triggerType === 'bootstrap' ? bootstrapTriggerConfig : triggerConfig,
       gateMode,
       horizonsSec,
       selectedHorizonSec: horizonSec,
@@ -117,25 +129,34 @@ async function main() {
 
   // Trigger reject reason breakdown
   console.log('─'.repeat(72));
-  console.log(`Trigger evaluations: ${rs.evaluations} (+${rs.insufficientCandles} skipped — candle history too short)`);
+  console.log(`Trigger: ${triggerType} | evaluations: ${rs.evaluations} (+${rs.insufficientCandles} skipped — candle history too short)`);
   if (rs.evaluations > 0) {
     const pct = (n: number) => `${n} (${((n / rs.evaluations) * 100).toFixed(1)}%)`;
-    const volumeOk = rs.evaluations - rs.volumeInsufficient;
-    console.log(`  volume_ok       : ${pct(volumeOk)}  [vm=${triggerConfig.volumeSurgeMultiplier}x threshold]`);
-    console.log(`  no_breakout     : ${pct(rs.noBreakout)}  [close <= ${triggerConfig.priceBreakoutLookback}-bar high]`);
-    console.log(`  confirm_fail    : ${pct(rs.confirmFail)}  [<${triggerConfig.confirmMinBars} bullish ${triggerConfig.confirmIntervalSec}s bars or <${(triggerConfig.confirmMinPriceChangePct * 100).toFixed(1)}% chg]`);
-    console.log(`  cooldown        : ${pct(rs.cooldown)}  [${triggerConfig.cooldownSec}s cooldown not elapsed]`);
-    console.log(`  signals_fired   : ${rs.signals}`);
 
-    // Bottleneck diagnosis
-    const bottleneck = ([
-      ['volume_insufficient', rs.volumeInsufficient],
-      ['no_breakout', rs.noBreakout],
-      ['confirm_fail', rs.confirmFail],
-      ['cooldown', rs.cooldown],
-    ] as [string, number][]).sort((a, b) => b[1] - a[1])[0];
-    if (rs.signals === 0 && rs.evaluations > 0) {
-      console.log(`  >> 0 signals: top bottleneck = ${bottleneck[0]} (${bottleneck[1]}/${rs.evaluations} evals blocked)`);
+    if (triggerType === 'bootstrap') {
+      const brs = rs as import('../src/strategy').BootstrapRejectStats;
+      const cfg = bootstrapTriggerConfig!;
+      console.log(`  volume_insufficient : ${pct(brs.volumeInsufficient)}  [vm=${cfg.volumeSurgeMultiplier}x threshold]`);
+      console.log(`  low_buy_ratio       : ${pct(brs.lowBuyRatio)}  [min=${cfg.minBuyRatio}]`);
+      console.log(`  cooldown            : ${pct(brs.cooldown)}  [${cfg.cooldownSec}s]`);
+      console.log(`  signals_fired       : ${brs.signals}`);
+    } else {
+      const volumeOk = rs.evaluations - rs.volumeInsufficient;
+      console.log(`  volume_ok       : ${pct(volumeOk)}  [vm=${triggerConfig.volumeSurgeMultiplier}x threshold]`);
+      console.log(`  no_breakout     : ${pct((rs as any).noBreakout)}  [close <= ${triggerConfig.priceBreakoutLookback}-bar high]`);
+      console.log(`  confirm_fail    : ${pct((rs as any).confirmFail)}  [<${triggerConfig.confirmMinBars} bullish ${triggerConfig.confirmIntervalSec}s bars or <${(triggerConfig.confirmMinPriceChangePct * 100).toFixed(1)}% chg]`);
+      console.log(`  cooldown        : ${pct(rs.cooldown)}  [${triggerConfig.cooldownSec}s cooldown not elapsed]`);
+      console.log(`  signals_fired   : ${rs.signals}`);
+
+      const bottleneck = ([
+        ['volume_insufficient', rs.volumeInsufficient],
+        ['no_breakout', (rs as any).noBreakout],
+        ['confirm_fail', (rs as any).confirmFail],
+        ['cooldown', rs.cooldown],
+      ] as [string, number][]).sort((a, b) => b[1] - a[1])[0];
+      if (rs.signals === 0 && rs.evaluations > 0) {
+        console.log(`  >> 0 signals: top bottleneck = ${bottleneck[0]} (${bottleneck[1]}/${rs.evaluations} evals blocked)`);
+      }
     }
   } else {
     console.log('  (no primary-interval candles evaluated — check dataset or --primary-interval setting)');
@@ -185,10 +206,13 @@ Usage:
 
 Options:
   --dataset <path>            Realtime dataset directory
+  --trigger-type <type>       momentum | bootstrap (default: momentum)
   --input-mode <mode>         auto | swaps | candles (default: auto, prefers candles)
   --gate-mode <off|stored>    Use trigger-only replay or stored gate outcomes (default: off)
   --horizons <csv>            Horizon list in seconds (default: 30,60,180,300)
   --horizon <sec>             Primary horizon for printed summary (default: 180)
+
+  Momentum trigger options:
   --primary-interval <sec>    Trigger primary interval (default: 15)
   --confirm-interval <sec>    Trigger confirm interval (default: 60)
   --volume-lookback <n>       Volume surge lookback (default: 20)
@@ -197,6 +221,15 @@ Options:
   --confirm-bars <n>          Confirmation bullish bars (default: 3)
   --confirm-change-pct <n>    Confirmation change pct (default: 0.02)
   --cooldown-sec <n>          Cooldown seconds (default: 300)
+
+  Bootstrap trigger options:
+  --primary-interval <sec>    Trigger primary interval (default: 10)
+  --volume-lookback <n>       Volume surge lookback (default: 20)
+  --volume-multiplier <n>     Volume surge multiplier (default: 2.5)
+  --min-buy-ratio <n>         Min buy ratio soft gate (default: 0.55)
+  --atr-period <n>            ATR period (default: 14)
+  --cooldown-sec <n>          Cooldown seconds (default: 300)
+
   --estimated-cost-pct <n>    Fallback cost pct if stored signal cost is absent
   --json                      Print JSON output
 `);

@@ -70,7 +70,10 @@ export class MomentumTrigger {
   };
   private lastStatsLogAt = 0;
 
-  constructor(config: MomentumTriggerConfig) {
+  constructor(
+    config: MomentumTriggerConfig,
+    private readonly onStatsFlush?: (stats: TriggerRejectStats) => void,
+  ) {
     this.config = config;
   }
 
@@ -194,6 +197,9 @@ export class MomentumTrigger {
       `insuffCandles=${s.insufficientCandles} volInsuf=${s.volumeInsufficient} ` +
       `noBreakout=${s.noBreakout} confirmFail=${s.confirmFail} cooldown=${s.cooldown}`
     );
+    if (this.onStatsFlush) {
+      this.onStatsFlush({ ...this.rejectStats });
+    }
   }
 }
 

@@ -50,6 +50,7 @@ export interface DailyRejectionMixSummary {
   admissionSkipCounts: Array<{ reason: string; count: number }>;
   admissionSkipDetailCounts: Array<{ label: string; count: number }>;
   capacityCounts: Array<{ label: string; count: number }>;
+  triggerStatsCounts: Array<{ label: string; count: number }>;
   preWatchlistRejectCounts: Array<{ reason: string; count: number }>;
   preWatchlistRejectDetailCounts: Array<{ label: string; count: number }>;
   rateLimitCounts: Array<{ source: string; count: number }>;
@@ -176,6 +177,7 @@ export function buildDailySummaryMessage(report: DailySummaryReport, dateLabel: 
     appendCountSection(lines, 'realtime skip', report.rejectionMix.admissionSkipCounts, 'reason');
     appendLabelCountSection(lines, 'realtime skip detail', report.rejectionMix.admissionSkipDetailCounts);
     appendLabelCountSection(lines, 'capacity', report.rejectionMix.capacityCounts);
+    appendTriggerStatsSection(lines, report.rejectionMix.triggerStatsCounts);
     appendCountSection(lines, '429', report.rejectionMix.rateLimitCounts, 'source');
     appendCountSection(lines, 'poll failure', report.rejectionMix.pollFailureCounts, 'source');
 
@@ -291,4 +293,19 @@ function appendLabelCountSection(
     .map((item) => `${item.label}=${item.count}`)
     .join(', ');
   lines.push(`- ${label}: ${escapeHtml(top)}`);
+}
+
+// Why: trigger_stats는 최신 1건의 detail만 보여주면 충분 (누적 카운터 스냅샷)
+function appendTriggerStatsSection(
+  lines: string[],
+  items: Array<{ label: string; count: number }>
+): void {
+  if (items.length === 0) {
+    lines.push('- trigger stats: none');
+    return;
+  }
+  // 가장 최근(마지막) 스냅샷의 detail 부분만 추출
+  const latest = items[items.length - 1];
+  const detail = latest.label.replace(/^momentum_trigger\s*/, '').replace(/^detail=/, '');
+  lines.push(`- trigger stats: ${escapeHtml(detail)}`);
 }

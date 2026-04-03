@@ -1,6 +1,6 @@
 # 2026-04-02 개선 계획 #2: Bootstrap Trigger 구현
 
-> Status: active
+> Status: completed (archived 2026-04-03)
 > Created: 2026-04-02
 > Context: MomentumTrigger 3조건 AND → 0 signal. Codex 분석 + CEO 승인으로 trigger 단순화 결정.
 > Principle: 봇을 더 똑똑하게 만드는 것보다, 더 많이 보게 만드는 게 먼저다.

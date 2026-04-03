@@ -1,6 +1,6 @@
 # 2026-04-02 개선 계획: Signal 밀도 확보
 
-> Status: active
+> Status: completed (archived 2026-04-03)
 > Updated: 2026-04-02 (4차 점검 — RejectStats 첫 관측 + vm 2.5 적용)
 > Context: live 모드 전환 성공, Meteora 배포 확인, 진단 로그 배포 완료, vm 2.5 적용 후 관찰 중
 > Principle: 봇을 더 똑똑하게 만드는 것보다, 더 많이 보게 만드는 게 먼저다.

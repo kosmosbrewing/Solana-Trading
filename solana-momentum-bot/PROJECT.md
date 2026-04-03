@@ -65,6 +65,11 @@ Stage 2: Trigger
 - 안정적인 cadence
 - TP1/TP2 도달 구조
 
+### 2026-04-03 해결한 것
+- **Bootstrap trigger 구현**: `VolumeMcapSpikeTrigger` — breakout/confirm 제거, volume+buyRatio 2-gate로 signal 밀도 개선
+- **Trigger 모드 전환**: `REALTIME_TRIGGER_MODE=bootstrap|core` env var 기반 즉시 전환/롤백
+- **mcap context 연동**: watchlist marketCap → trigger meta.volumeMcapPct 자동 주입
+
 ### 2026-04-01 해결한 것
 - **Crash loop 해소**: RuntimeDiagnosticsTracker write storm → 30초 throttle + capacity 이벤트 상한
 - **RR gate 구조적 rejection 해소**: rrBasis를 tp1→tp2로 변경 (v5 runner-centric 전략 정렬)
@@ -86,7 +91,7 @@ Stage 2: Trigger
 | Phase 3 | 양의 기대값 반복 확인 후 소규모 복리화 | 미시작 |
 
 ### Phase 1의 현재 우선순위
-1. 수정 배포 후 24시간 canary에서 signal cadence 확인 (목표: 10+ signals/day)
+1. Bootstrap trigger 배포 후 signal cadence 확인 (목표: 10+ signals/day)
 2. TP2-basis RR gate 통과율 확인 및 execution 표본 축적
 3. paper 50 trades 확보 → Gate-Proven Sample 도달
 

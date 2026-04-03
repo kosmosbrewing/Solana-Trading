@@ -1,7 +1,7 @@
 # STRATEGY.md
 
 > Status: current quick reference
-> Updated: 2026-04-02
+> Updated: 2026-04-03
 > Purpose: 현재 runtime에서 읽어야 할 전략/게이트/리스크/핵심 파라미터를 짧게 정리한다.
 > Full spec: [`docs/product-specs/strategy-catalog.md`](./docs/product-specs/strategy-catalog.md)
 > Forward memo: [`STRATEGY_NOTES.md`](./STRATEGY_NOTES.md)

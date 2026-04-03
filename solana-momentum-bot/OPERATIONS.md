@@ -1,6 +1,6 @@
 # Operations Guide
 
-> Last updated: 2026-03-30
+> Last updated: 2026-04-03
 > Scope: VPS 배포 + paper 운영 점검 + risk tier demotion + live 운영 판단
 
 ---
@@ -61,6 +61,8 @@ EVENT_POLLING_INTERVAL_MS=1800000
 SHADOW_RUN_MINUTES=1440
 SHADOW_SIGNAL_TARGET=100
 SHADOW_HORIZON_SEC=30
+REALTIME_TRIGGER_MODE=bootstrap
+# REALTIME_BOOTSTRAP_MIN_BUY_RATIO=0.55 (기본값, 변경 필요 시만 설정)
 # WS/Strategy D는 기본 false — 설정 불필요
 # BIRDEYE_WS_ENABLED=false (기본값)
 # STRATEGY_D_ENABLED=false (기본값)
@@ -99,6 +101,7 @@ SHADOW_HORIZON_SEC=30
 - `explained entry ratio`
 - `gate reject (unique token)` 상위 이유
 - `pre-watchlist reject` / `realtime skip` 상위 이유
+- `RejectStats` (bootstrap trigger rejection 분포)
 - `realtime-ready ratio`
 
 ### 모니터링 명령어
@@ -134,6 +137,8 @@ TELEGRAM_CHAT_ID=<봇에게 메시지 보낸 후 getUpdates API로 확인>
 | `GeckoTerminal 429 rate limited` 반복 | burst/concurrency 또는 watchlist churn | `MAX_WATCHLIST_SIZE=8` 유지, `SCANNER_REENTRY_COOLDOWN_MS` 확인, startup/backfill churn 로그 확인 |
 | `Realtime seed backfill failed ... 429` 반복 | Helius startup burst | `REALTIME_SEED_BACKFILL_ENABLED=false` 유지, `REALTIME_MAX_SUBSCRIPTIONS=5` 확인 |
 | `No candle received for ... minutes` | 특정 pair poll 누락 또는 Gecko 지연 | pair별 backfill/poll 로그 확인, regime/event 주기 과도 여부 점검 |
+| Bootstrap trigger 0 signals | volume/buyRatio 필터 과도 | `REALTIME_BOOTSTRAP_MIN_BUY_RATIO` 조정, `RejectStats` 로그 확인 |
+| Trigger 롤백 필요 | bootstrap→core 전환 | `.env`에서 `REALTIME_TRIGGER_MODE=core` → `pm2 restart momentum-bot` |
 
 ### Daily Summary 해석 원칙
 

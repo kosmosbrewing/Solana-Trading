@@ -1,8 +1,9 @@
 # Strategy Reference
 
-> Last updated: 2026-03-30
+> Last updated: 2026-04-03
 > Mission: 1 SOL → 100 SOL
 > Documented strategies: Volume Spike (A), Fib Pullback (C), New LP Sniper (D), Momentum Cascade (E)
+> Realtime triggers: Bootstrap (volumeMcapSpikeTrigger, active default), Core (momentumTrigger, standby)
 > Runtime focus: A/C core, D sandbox, E conditional add-on
 > Runtime note: 현재 paper/runtime 핵심 경로는 GeckoTerminal + DexScreener + Helius RPC 중심이며, Birdeye는 Strategy D optional event provider / legacy tooling에만 남아 있다.
 
@@ -282,6 +283,53 @@ WatchlistScore = f(
 ```
 
 > WatchlistScore는 **watchlist 진입 우선순위**를 결정할 뿐, 매수 결정은 전략 시그널이 한다.
+
+---
+
+## Realtime Trigger
+
+Helius WebSocket 기반 실시간 micro candle에서 시그널을 발화하는 trigger 모듈.
+`REALTIME_TRIGGER_MODE` env var로 bootstrap/core 모드 전환.
+
+### Bootstrap Mode (`volumeMcapSpikeTrigger`) — active default
+
+breakout/confirm 조건을 제거하고 volume acceleration + buy ratio 2-gate만으로 발화.
+Core 모드 대비 signal 밀도 대폭 개선 (MomentumTrigger의 noBreakout=100%, confirmFail=100% 해소).
+
+```
+Primary interval: 10s
+Volume lookback: 20
+Volume multiplier: 2.5
+Min buy ratio: 0.55 (REALTIME_BOOTSTRAP_MIN_BUY_RATIO)
+Cooldown: 300s
+ATR period: 14
+```
+
+Signal 출력: `strategy: 'volume_spike'`, `meta.triggerMode: 1`, `meta.buyRatio` 포함.
+mcap context 주입: watchlist에서 marketCap을 받아 `meta.volumeMcapPct` 계산.
+
+### Core Mode (`momentumTrigger`) — standby
+
+3개 AND 조건 (volume surge + 20봉 breakout + 3봉 confirm). 검증된 후 사용.
+
+```
+Primary interval: 10s
+Confirm interval: 60s
+Volume lookback: 20
+Volume multiplier: 2.5
+Breakout lookback: 20
+Confirm min bars: 3
+Confirm min change pct: 0.02
+Cooldown: 300s
+```
+
+### 롤백
+
+```bash
+# bootstrap → core 즉시 전환
+REALTIME_TRIGGER_MODE=core
+pm2 restart momentum-bot
+```
 
 ---
 
@@ -761,6 +809,7 @@ listing source: optional Birdeye WS adapter or scanner lane-B fallback
 | 영역 | 상태 |
 |------|------|
 | Event-driven Scanner Core | 완료 — GeckoTerminal 기반 동적 watchlist, DexScreener enrichment, churn 억제, optional WS 보강 |
+| Realtime Bootstrap Trigger | 완료 — VolumeMcapSpikeTrigger (volume+buyRatio 2-gate), env var 모드 전환, mcap context 연동 |
 | Regime + Paper Trading | 완료 — regime filter, MAE/MFE/impact/quote decay 측정, validation 리포트 |
 | Core Live Wiring | 완료 — pre-flight, spread/fee 실측, risk tier/demotion, wallet limits |
 | Strategy D Sandbox | 완료 — Jito, 별도 지갑, 별도 일일 손실 한도 |
@@ -841,6 +890,17 @@ listing source: optional Birdeye WS adapter or scanner lane-B fallback
 | `eventMinScore` | 35 | 유지 |
 | `eventExpiryMinutes` | 180 (3시간) | 유지 |
 | `eventMinLiquidityUsd` | 25,000 | 유지 |
+
+### Realtime Trigger 파라미터
+
+| 파라미터 | 값 | 소스 |
+|---------|-----|------|
+| `REALTIME_TRIGGER_MODE` | `bootstrap` | config.ts (bootstrap / core) |
+| `REALTIME_BOOTSTRAP_MIN_BUY_RATIO` | 0.55 | config.ts (bootstrap 전용 soft filter) |
+| `realtimeVolumeSurgeLookback` | 20 | config.ts (공통) |
+| `realtimeVolumeSurgeMultiplier` | 2.5 | config.ts (공통) |
+| `realtimeCooldownSec` | 300 | config.ts (공통) |
+| `realtimePrimaryIntervalSec` | 10 | config.ts (공통) |
 
 ### Scanner 운영 파라미터
 

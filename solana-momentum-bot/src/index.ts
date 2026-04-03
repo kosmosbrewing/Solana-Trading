@@ -2,7 +2,7 @@ import { Pool } from 'pg';
 import { config } from './utils/config';
 import { createModuleLogger } from './utils/logger';
 import { HealthMonitor } from './utils/healthMonitor';
-import { Candle } from './utils/types';
+import { Candle, Signal } from './utils/types';
 
 import {
   GeckoTerminalClient,
@@ -63,7 +63,7 @@ import { scheduleDailySummary } from './orchestration/reporting';
 import { handleNewCandle } from './orchestration/candleHandler';
 import { handleRealtimeSignal } from './orchestration/realtimeHandler';
 import { evaluateNewLpSniper, buildNewLpOrder, prepareNewLpCandidate } from './strategy/newLpSniper';
-import { MomentumTrigger } from './strategy';
+import { MomentumTrigger, VolumeMcapSpikeTrigger } from './strategy';
 import { checkOpenPositions, closeTrade } from './orchestration/tradeExecution';
 import { runPreflightCheck } from './orchestration/preflightCheck';
 import { SpreadMeasurer } from './gate/spreadMeasurer';
@@ -165,6 +165,7 @@ async function main() {
   let heliusPoolDiscovery: HeliusPoolDiscovery | null = null;
   let replayWarmSync: ReplayWarmSync | null = null;
   let realtimeCandleBuilder: MicroCandleBuilder | null = null;
+  let bootstrapTriggerRef: VolumeMcapSpikeTrigger | null = null;
 
   const setRealtimePoolTarget = (logicalPair: string, subscriptionPair: string) => {
     realtimePoolTargets.set(logicalPair, subscriptionPair);
@@ -775,6 +776,7 @@ async function main() {
       removeRealtimePoolTarget(tokenMint);
       ingester.removePair(tokenMint);
       universeEngine.removePool(tokenMint);
+      bootstrapTriggerRef?.clearPoolContext(tokenMint);
     });
     log.info('Scanner engine initialized');
   }
@@ -911,16 +913,57 @@ async function main() {
       intervals: realtimeIntervals,
       maxHistory: 200,
     });
-    const trigger = new MomentumTrigger({
-      primaryIntervalSec: config.realtimePrimaryIntervalSec,
-      confirmIntervalSec: config.realtimeConfirmIntervalSec,
-      volumeSurgeLookback: config.realtimeVolumeSurgeLookback,
-      volumeSurgeMultiplier: config.realtimeVolumeSurgeMultiplier,
-      priceBreakoutLookback: config.realtimePriceBreakoutLookback,
-      confirmMinBars: config.realtimeConfirmMinBars,
-      confirmMinPriceChangePct: config.realtimeConfirmMinChangePct,
-      cooldownSec: config.realtimeCooldownSec,
-    });
+    // Why: bootstrap 모드는 breakout/confirm 제거, volume+buyRatio만으로 발화 (signal 밀도 개선)
+    let trigger: MomentumTrigger | VolumeMcapSpikeTrigger;
+
+    if (config.realtimeTriggerMode === 'bootstrap') {
+      const bootstrapTrigger = new VolumeMcapSpikeTrigger(
+        {
+          primaryIntervalSec: config.realtimePrimaryIntervalSec,
+          volumeSurgeLookback: config.realtimeVolumeSurgeLookback,
+          volumeSurgeMultiplier: config.realtimeVolumeSurgeMultiplier,
+          cooldownSec: config.realtimeCooldownSec,
+          minBuyRatio: config.realtimeBootstrapMinBuyRatio,
+          atrPeriod: 14,
+        },
+        // Why: RejectStats → runtime-diagnostics.json (원격 디버깅)
+        (s) => {
+          runtimeDiagnosticsTracker.recordTriggerStats(
+            `evals=${s.evaluations} signals=${s.signals} insuffCandles=${s.insufficientCandles} ` +
+            `volInsuf=${s.volumeInsufficient} lowBuyRatio=${s.lowBuyRatio} cooldown=${s.cooldown}`
+          );
+        },
+      );
+      for (const pool of universeEngine.getWatchlist()) {
+        if (pool.marketCap !== undefined) {
+          bootstrapTrigger.setPoolContext(pool.pairAddress, { marketCap: pool.marketCap });
+        }
+      }
+      trigger = bootstrapTrigger;
+      bootstrapTriggerRef = bootstrapTrigger;
+      log.info(`Trigger: bootstrap (vm=${config.realtimeVolumeSurgeMultiplier}, br=${config.realtimeBootstrapMinBuyRatio})`);
+    } else {
+      trigger = new MomentumTrigger(
+        {
+          primaryIntervalSec: config.realtimePrimaryIntervalSec,
+          confirmIntervalSec: config.realtimeConfirmIntervalSec,
+          volumeSurgeLookback: config.realtimeVolumeSurgeLookback,
+          volumeSurgeMultiplier: config.realtimeVolumeSurgeMultiplier,
+          priceBreakoutLookback: config.realtimePriceBreakoutLookback,
+          confirmMinBars: config.realtimeConfirmMinBars,
+          confirmMinPriceChangePct: config.realtimeConfirmMinChangePct,
+          cooldownSec: config.realtimeCooldownSec,
+        },
+        // Why: RejectStats → runtime-diagnostics.json (원격 디버깅)
+        (s) => {
+          runtimeDiagnosticsTracker.recordTriggerStats(
+            `evals=${s.evaluations} signals=${s.signals} insuffCandles=${s.insufficientCandles} ` +
+            `volInsuf=${s.volumeInsufficient} noBreakout=${s.noBreakout} confirmFail=${s.confirmFail} cooldown=${s.cooldown}`
+          );
+        },
+      );
+      log.info(`Trigger: core (vm=${config.realtimeVolumeSurgeMultiplier})`);
+    }
 
     ctx.realtimeCandleBuilder = realtimeCandleBuilder;
 
@@ -1219,10 +1262,18 @@ async function main() {
     await heliusIngester.subscribePools(resolveRealtimePools(
       universeEngine.getWatchlist().map((pool) => pool.pairAddress)
     ));
-    universeEngine.on('watchlistUpdated', (pools: { pairAddress: string }[]) => {
+    universeEngine.on('watchlistUpdated', (pools: { pairAddress: string; marketCap?: number }[]) => {
       void heliusIngester!.subscribePools(
         resolveRealtimePools(pools.map((pool) => pool.pairAddress))
       );
+      // Bootstrap trigger mcap context 갱신
+      if (bootstrapTriggerRef) {
+        for (const pool of pools) {
+          if (pool.marketCap !== undefined) {
+            bootstrapTriggerRef.setPoolContext(pool.pairAddress, { marketCap: pool.marketCap });
+          }
+        }
+      }
     });
     log.info('Real-time Helius pipeline started');
   }

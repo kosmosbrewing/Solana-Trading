@@ -87,4 +87,28 @@ describe('RuntimeDiagnosticsTracker', () => {
       await rm(tempDir, { recursive: true, force: true });
     }
   });
+
+  it('records trigger_stats and includes them in summary', () => {
+    const tracker = new RuntimeDiagnosticsTracker();
+    tracker.recordTriggerStats('evals=100 signals=2 insuffCandles=30 volInsuf=50 noBreakout=10 confirmFail=5 cooldown=3');
+    tracker.recordTriggerStats('evals=200 signals=5 insuffCandles=60 volInsuf=100 noBreakout=20 confirmFail=10 cooldown=5');
+
+    const summary = tracker.buildSummary(24);
+
+    expect(summary.triggerStatsCounts).toHaveLength(2);
+    expect(summary.triggerStatsCounts[0].count).toBe(1);
+    expect(summary.triggerStatsCounts[0].label).toContain('momentum_trigger');
+    expect(summary.triggerStatsCounts[0].label).toContain('evals=');
+  });
+
+  it('prunes trigger_stats events beyond 500 limit', () => {
+    const tracker = new RuntimeDiagnosticsTracker();
+    for (let i = 0; i < 600; i++) {
+      tracker.recordTriggerStats(`evals=${i}`);
+    }
+
+    const summary = tracker.buildSummary(24);
+    const totalTriggerEvents = summary.triggerStatsCounts.reduce((sum, item) => sum + item.count, 0);
+    expect(totalTriggerEvents).toBeLessThanOrEqual(500);
+  });
 });

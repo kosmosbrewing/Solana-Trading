@@ -5,6 +5,7 @@ export interface RuntimeDiagnosticsSummary {
   admissionSkipCounts: Array<{ reason: string; count: number }>;
   admissionSkipDetailCounts: Array<{ label: string; count: number }>;
   capacityCounts: Array<{ label: string; count: number }>;
+  triggerStatsCounts: Array<{ label: string; count: number }>;
   preWatchlistRejectCounts: Array<{ reason: string; count: number }>;
   preWatchlistRejectDetailCounts: Array<{ label: string; count: number }>;
   rateLimitCounts: Array<{ source: string; count: number }>;
@@ -19,7 +20,7 @@ export interface RuntimeDiagnosticsSummary {
 }
 
 export interface RuntimeDiagnosticEvent {
-  type: 'admission_skip' | 'pre_watchlist_reject' | 'realtime_candidate_seen' | 'rate_limit' | 'poll_failure' | 'capacity';
+  type: 'admission_skip' | 'pre_watchlist_reject' | 'realtime_candidate_seen' | 'rate_limit' | 'poll_failure' | 'capacity' | 'trigger_stats';
   timestampMs: number;
   tokenMint?: string;
   reason?: string;
@@ -106,6 +107,15 @@ export class RuntimeDiagnosticsTracker {
     });
   }
 
+  recordTriggerStats(detail: string): void {
+    this.pushEvent({
+      type: 'trigger_stats',
+      timestampMs: Date.now(),
+      source: 'momentum_trigger',
+      detail,
+    });
+  }
+
   buildSummary(hours: number): RuntimeDiagnosticsSummary {
     const cutoffMs = Date.now() - hours * 3_600_000;
     const candidateTokens = distinctTokenSet(this.events, cutoffMs, 'realtime_candidate_seen');
@@ -125,7 +135,8 @@ export class RuntimeDiagnosticsTracker {
       hours,
       admissionSkipCounts: summarizeDecisionReasons(this.events, cutoffMs, 'admission_skip'),
       admissionSkipDetailCounts: summarizeDecisionDetails(this.events, cutoffMs, 'admission_skip'),
-      capacityCounts: summarizeCapacityLabels(this.events, cutoffMs),
+      capacityCounts: summarizeHighFreqLabels(this.events, cutoffMs, 'capacity'),
+      triggerStatsCounts: summarizeHighFreqLabels(this.events, cutoffMs, 'trigger_stats'),
       preWatchlistRejectCounts: summarizeDecisionReasons(this.events, cutoffMs, 'pre_watchlist_reject'),
       preWatchlistRejectDetailCounts: summarizeDecisionDetails(this.events, cutoffMs, 'pre_watchlist_reject'),
       rateLimitCounts: summarizeEventSources(this.events, cutoffMs, 'rate_limit'),
@@ -191,13 +202,16 @@ export class RuntimeDiagnosticsTracker {
     if (cutoffIndex > 0) {
       this.events.splice(0, cutoffIndex);
     }
-    // capacity 이벤트 과다 축적 방지
-    let capacityCount = 0;
-    for (let i = this.events.length - 1; i >= 0; i--) {
-      if (this.events[i].type === 'capacity') {
-        capacityCount++;
-        if (capacityCount > RuntimeDiagnosticsTracker.MAX_CAPACITY_EVENTS) {
-          this.events.splice(i, 1);
+    // high-frequency 이벤트(capacity, trigger_stats) 과다 축적 방지
+    const highFreqTypes: RuntimeDiagnosticEvent['type'][] = ['capacity', 'trigger_stats'];
+    for (const hfType of highFreqTypes) {
+      let count = 0;
+      for (let i = this.events.length - 1; i >= 0; i--) {
+        if (this.events[i].type === hfType) {
+          count++;
+          if (count > RuntimeDiagnosticsTracker.MAX_CAPACITY_EVENTS) {
+            this.events.splice(i, 1);
+          }
         }
       }
     }
@@ -279,13 +293,14 @@ function formatDecisionLabel(event: RuntimeDiagnosticEvent): string {
   return parts.join(' ');
 }
 
-function summarizeCapacityLabels(
+function summarizeHighFreqLabels(
   events: RuntimeDiagnosticEvent[],
-  cutoffMs: number
+  cutoffMs: number,
+  type: 'capacity' | 'trigger_stats'
 ): Array<{ label: string; count: number }> {
   const counts = new Map<string, number>();
   for (const event of events) {
-    if (event.type !== 'capacity' || event.timestampMs < cutoffMs) continue;
+    if (event.type !== type || event.timestampMs < cutoffMs) continue;
     const label = formatCapacityLabel(event);
     counts.set(label, (counts.get(label) ?? 0) + 1);
   }

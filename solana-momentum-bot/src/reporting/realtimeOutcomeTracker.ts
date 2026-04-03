@@ -5,11 +5,16 @@ import {
   RealtimeSignalRecord,
 } from './realtimeMeasurement';
 
+// Why: 밈코인이라도 5분 관찰 구간에서 +900% / -99% 이상은 비현실적.
+// close 기반 전환 후에도 마지막 swap이 이상치일 수 있으므로 안전장치.
+const MAX_MFE_PCT = 9.0;    // +900%
+const MAX_MAE_PCT = -0.99;  // -99%
+
 interface PendingSignal {
   record: Omit<RealtimeSignalRecord, 'horizons' | 'summary'>;
   signalTimeSec: number;
-  maxHigh: number;
-  minLow: number;
+  maxClose: number;
+  minClose: number;
   horizons: Map<number, RealtimeSignalHorizonOutcome>;
 }
 
@@ -44,8 +49,8 @@ export class RealtimeOutcomeTracker {
     const pending: PendingSignal = {
       record,
       signalTimeSec,
-      maxHigh: record.referencePrice,
-      minLow: record.referencePrice,
+      maxClose: record.referencePrice,
+      minClose: record.referencePrice,
       horizons: new Map(),
     };
     this.pending.set(record.id, pending);
@@ -68,8 +73,9 @@ export class RealtimeOutcomeTracker {
     const candleCloseSec = Math.floor(candle.timestamp.getTime() / 1000) + candle.intervalSec;
     if (candleCloseSec < pending.signalTimeSec) return;
 
-    pending.maxHigh = Math.max(pending.maxHigh, candle.high);
-    pending.minLow = Math.min(pending.minLow, candle.low);
+    // Why: candle.high/low는 단일 이상치 swap에 오염됨. close는 봉의 마지막 체결가로 안정적.
+    pending.maxClose = Math.max(pending.maxClose, candle.close);
+    pending.minClose = Math.min(pending.minClose, candle.close);
 
     for (const horizonSec of this.horizonsSec) {
       if (pending.horizons.has(horizonSec)) continue;
@@ -79,18 +85,21 @@ export class RealtimeOutcomeTracker {
         ? (candle.close - pending.record.referencePrice) / pending.record.referencePrice
         : 0;
       const adjustedReturnPct = returnPct - pending.record.estimatedCostPct;
+      const rawMfePct = pending.record.referencePrice > 0
+        ? (pending.maxClose - pending.record.referencePrice) / pending.record.referencePrice
+        : 0;
+      const rawMaePct = pending.record.referencePrice > 0
+        ? (pending.minClose - pending.record.referencePrice) / pending.record.referencePrice
+        : 0;
+
       pending.horizons.set(horizonSec, {
         horizonSec,
         observedAt: new Date(candleCloseSec * 1000).toISOString(),
         price: candle.close,
         returnPct,
         adjustedReturnPct,
-        mfePct: pending.record.referencePrice > 0
-          ? (pending.maxHigh - pending.record.referencePrice) / pending.record.referencePrice
-          : 0,
-        maePct: pending.record.referencePrice > 0
-          ? (pending.minLow - pending.record.referencePrice) / pending.record.referencePrice
-          : 0,
+        mfePct: Math.min(rawMfePct, MAX_MFE_PCT),
+        maePct: Math.max(rawMaePct, MAX_MAE_PCT),
       });
     }
 

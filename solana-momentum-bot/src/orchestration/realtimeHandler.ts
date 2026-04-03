@@ -209,6 +209,8 @@ export async function handleRealtimeSignal(
         confirmPriceChangePct: signal.meta.confirmPriceChangePct,
         confirmBullishBars: signal.meta.confirmBullishBars,
         atr: signal.meta.atr,
+        triggerMode: signal.meta.triggerMode,
+        buyRatio: signal.meta.buyRatio,
         breakoutScore: gateResult.breakoutScore.totalScore,
         breakoutGrade: gateResult.breakoutScore.grade,
       },
@@ -321,6 +323,8 @@ async function trackRealtimeShadowSignal({
       confirmPriceChangePct: signal.meta.confirmPriceChangePct,
       confirmBullishBars: signal.meta.confirmBullishBars,
       atr: signal.meta.atr,
+      triggerMode: signal.meta.triggerMode,
+      buyRatio: signal.meta.buyRatio,
     },
     gate: {
       startedAt: gateStartedAt.toISOString(),

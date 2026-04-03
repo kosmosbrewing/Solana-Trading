@@ -189,25 +189,32 @@ export class PaperMetricsTracker {
   /** Format summary for Telegram/log output */
   formatSummaryText(windowHours = 48): string {
     const s = this.getSummary(windowHours);
+
+    // 거래 없으면 간결하게
+    if (s.totalTrades === 0) {
+      return `📊 Paper · ${windowHours}h — 거래 없음`;
+    }
+
     const lines = [
-      `📊 Paper Metrics (last ${windowHours}h)`,
-      `Trades: ${s.totalTrades} | Win: ${s.wins} | Loss: ${s.losses} | WR: ${(s.winRate * 100).toFixed(0)}%`,
-      `MAE: ${s.avgMaePct.toFixed(2)}% | MFE: ${s.avgMfePct.toFixed(2)}%`,
-      `FP Rate: ${(s.falsePositiveRate * 100).toFixed(0)}% | TP1 Hit: ${(s.tp1HitRate * 100).toFixed(0)}%`,
-      `Avg Impact: ${s.avgPriceImpactPct.toFixed(3)}% | Quote Decay: ${s.avgQuoteDecayPct.toFixed(3)}%`,
+      `📊 Paper · ${windowHours}h`,
+      `전적  ${s.wins}W ${s.losses}L (${(s.winRate * 100).toFixed(0)}%)`,
+      `▼ 역행 ${s.avgMaePct.toFixed(2)}%  ▲ 순행 ${s.avgMfePct.toFixed(2)}%`,
+      `오진 ${(s.falsePositiveRate * 100).toFixed(0)}% | TP1 ${(s.tp1HitRate * 100).toFixed(0)}%`,
+      `충격 ${s.avgPriceImpactPct.toFixed(3)}% | 잔차 ${s.avgQuoteDecayPct.toFixed(3)}%`,
     ];
 
     if (Object.keys(s.tradesByRegime).length > 0) {
-      lines.push('Regime:');
+      lines.push('');
       for (const [regime, data] of Object.entries(s.tradesByRegime)) {
-        lines.push(`  ${regime}: ${data.count} trades, WR ${(data.winRate * 100).toFixed(0)}%`);
+        const icon = regime === 'risk_on' ? '🟢' : regime === 'risk_off' ? '🔴' : '🟡';
+        lines.push(`${icon} ${regime}  ${data.count}건 WR ${(data.winRate * 100).toFixed(0)}%`);
       }
     }
 
     if (Object.keys(s.tradesBySource).length > 0) {
-      lines.push('Source:');
+      lines.push('');
       for (const [source, data] of Object.entries(s.tradesBySource)) {
-        lines.push(`  ${source}: ${data.count} trades, WR ${(data.winRate * 100).toFixed(0)}%`);
+        lines.push(`· ${source}  ${data.count}건 WR ${(data.winRate * 100).toFixed(0)}%`);
       }
     }
 

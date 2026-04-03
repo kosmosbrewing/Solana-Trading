@@ -29,7 +29,7 @@ Stage 2: Trigger — 지금 들어가도 되는가?
 | **universe/** | 풀 필터링/랭킹 | `UniverseEngine` |
 | **realtime/** | 마이크로캔들 빌더, 결과 추적 | `MicroCandleBuilder`, `RealtimeOutcomeTracker` |
 | **discovery/** | Helius WebSocket 풀 탐지, 큐 관리 | `HeliusPoolDiscovery` |
-| **strategy/** | 시그널 생성 (A/C/D/E) | `evaluateVolumeSpikeBreakout`, `evaluateFibPullback`, ... |
+| **strategy/** | 시그널 생성 (A/C/D/E) + Realtime Trigger | `evaluateVolumeSpikeBreakout`, `evaluateFibPullback`, `VolumeMcapSpikeTrigger`, `MomentumTrigger` |
 | **gate/** | 5+1단계 시그널 필터링 | `evaluateGates`, `evaluateGatesAsync`, `SpreadMeasurer` |
 | **risk/** | 포지션 사이징, 드로다운 관리 | `RiskManager`, `DrawdownGuard`, `RiskTier` |
 | **executor/** | Jupiter 스왑/Jito 번들 실행 | `Executor`, `WalletManager` |
@@ -71,6 +71,7 @@ Stage 2: Trigger — 지금 들어가도 되는가?
    ┌──────▼──────┐      │
    │ strategy/   │◄─────┘                              ← 시그널 생성 레이어
    │ (A/C/D/E)   │ (ingester: newLpSniper만)
+   │ + Trigger   │ (VolumeMcapSpikeTrigger / MomentumTrigger)
    └──────┬──────┘
           │
    ┌──────▼──────┐
@@ -162,3 +163,5 @@ reporting/paperValidation.ts → risk/drawdownGuard (replayDrawdownGuardState)
 | C: Fib Pullback | `strategy/fibPullback.ts` | 15%+ 임펄스 → fib 0.5–0.618 되돌림 | 활성 |
 | D: New LP Sniper | `strategy/newLpSniper.ts` | 신규 LP 탐지 (샌드박스) | 샌드박스 |
 | E: Momentum Cascade | `strategy/momentumCascade.ts` | Strategy A 멀티레그 추가 진입 | 활성 |
+| Realtime Bootstrap | `strategy/volumeMcapSpikeTrigger.ts` | volume acceleration + buy ratio 2-gate trigger | **active default** |
+| Realtime Core | `strategy/momentumTrigger.ts` | 3-AND (volume + breakout + confirm) trigger | standby |

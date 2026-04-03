@@ -1,7 +1,7 @@
 # Execution Plan: 1 SOL → 100 SOL
 
 > Status: current active execution plan
-> Updated: 2026-03-31
+> Updated: 2026-04-03
 > Scope: 구현 완료 이후의 운영 검증, 배포, 표본 축적, live enablement gate
 > Archive: 완료된 root plan과 dated canary history는 [`PLAN_CMPL.md`](../../../PLAN_CMPL.md)에 보관한다.
 
@@ -24,6 +24,8 @@
 - pre-gate / post-size execution telemetry
 - v5 RR basis 및 exit 구조 정렬
 - scanner blacklist preload / reentry control 보강
+- bootstrap trigger (VolumeMcapSpikeTrigger) — breakout/confirm 제거, volume+buyRatio 2-gate
+- trigger mode 전환 (REALTIME_TRIGGER_MODE env var)
 
 구현 완료 이력과 canary history는 [`PLAN_CMPL.md`](../../../PLAN_CMPL.md)를 본다.
 

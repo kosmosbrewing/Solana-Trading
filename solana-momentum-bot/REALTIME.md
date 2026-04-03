@@ -1,7 +1,7 @@
 # Realtime Edge Validation Guide
 
 > Created: 2026-03-22
-> Updated: 2026-03-30
+> Updated: 2026-04-03
 > Goal: Helius realtime shadow, historical swap backfill, micro replay를 하나의 실행 경로로 정리해 초봉 momentum edge를 검증한다
 > Document type: working guide
 > Authority: realtime validation 워크플로 기준 문서. 운영 절차는 `OPERATIONS.md`, 점수 해석은 `MEASUREMENT.md`를 우선한다.
@@ -91,7 +91,8 @@
 | Realtime ingest | `src/realtime/heliusWSIngester.ts` | Helius websocket 이벤트 수신 |
 | Swap parsing | `src/realtime/swapParser.ts` | transaction/log -> parsed swap |
 | Micro candle | `src/realtime/microCandleBuilder.ts` | `1s/5s/15s/1m` synthetic candle 생성 |
-| Trigger | `src/strategy/momentumTrigger.ts` | breakout + volume surge signal 산출 |
+| Trigger (bootstrap) | `src/strategy/volumeMcapSpikeTrigger.ts` | volume acceleration + buy ratio 2-gate trigger (**active default**) |
+| Trigger (core) | `src/strategy/momentumTrigger.ts` | 3-AND (volume + breakout + confirm) trigger (standby) |
 | Runtime gating | `src/orchestration/realtimeHandler.ts` | execution viability, rejection reason, shadow logging |
 | Persistence | `src/realtime/replayStore.ts` | realtime dataset 저장/로드/export |
 | Measurement | `src/reporting/realtimeMeasurement.ts` | signal outcome 요약, score, gate 판정 |
@@ -105,7 +106,7 @@
 Helius WS
   -> parsed swap
   -> micro candles
-  -> momentum trigger
+  -> trigger (bootstrap: volumeMcapSpike / core: momentum)
   -> shadow signal log
   -> outcome horizons (30/60/180/300s)
   -> Realtime Edge Score

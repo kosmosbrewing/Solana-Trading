@@ -1,7 +1,7 @@
 # 2026-04-01 Live Canary Note
 
 > Date: 2026-04-01
-> Type: historical operating note
+> Type: historical operating note (archived 2026-04-03)
 > Scope: recent 7h live canary interpretation
 > Current source of truth remains [`PLAN.md`](./PLAN.md), [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md), [`STRATEGY.md`](./STRATEGY.md), [`OPERATIONS.md`](./OPERATIONS.md), [`MEASUREMENT.md`](./MEASUREMENT.md)
 

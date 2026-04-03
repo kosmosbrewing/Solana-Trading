@@ -7,20 +7,54 @@ import { BotContext } from './types';
 
 const log = createModuleLogger('Reporting');
 
+/** KST 08~24시 사이 짝수 시각에 heartbeat, 09시에 daily full report */
+const HEARTBEAT_KST_HOURS = [8, 10, 12, 14, 16, 18, 20, 22, 24];
+const DAILY_KST_HOUR = 9;
+
 export function scheduleDailySummary(ctx: BotContext): void {
   setInterval(async () => {
     const now = new Date();
     const kstHour = (now.getUTCHours() + 9) % 24;
     const minute = now.getMinutes();
 
-    if (kstHour === 9 && minute === 0) {
+    if (kstHour === DAILY_KST_HOUR && minute === 0) {
       try {
         await sendDailySummaryReport(ctx);
       } catch (error) {
         log.error(`Daily summary failed: ${error}`);
       }
+    } else if (HEARTBEAT_KST_HOURS.includes(kstHour) && minute === 0) {
+      try {
+        await sendHeartbeatReport(ctx);
+      } catch (error) {
+        log.error(`Heartbeat report failed: ${error}`);
+      }
     }
   }, 60_000);
+}
+
+/** 2시간 간격 간략 리포트: Paper 전적 + 시장 체제 */
+async function sendHeartbeatReport(ctx: BotContext): Promise<void> {
+  const lines: string[] = [];
+
+  if (ctx.paperMetrics) {
+    lines.push(ctx.paperMetrics.formatSummaryText(24));
+  }
+
+  if (ctx.regimeFilter) {
+    const regime = ctx.regimeFilter.getState();
+    const regimeIcon = regime.regime === 'risk_on' ? '🟢' : regime.regime === 'risk_off' ? '🔴' : '🟡';
+    const solIcon = regime.solTrendBullish ? '🟢' : '🔴';
+    const solLabel = regime.solTrendBullish ? '강세' : '약세';
+    lines.push(
+      `🔍 시장: ${regimeIcon} ${regime.regime} (${regime.sizeMultiplier}x)\n` +
+      `SOL ${solIcon}${solLabel} | 확산 ${(regime.breadthPct * 100).toFixed(0)}% | 후속 ${(regime.followThroughPct * 100).toFixed(0)}%`
+    );
+  }
+
+  if (lines.length > 0) {
+    await ctx.notifier.sendInfo(lines.join('\n\n'));
+  }
 }
 
 async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
@@ -117,10 +151,12 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
   }
   if (ctx.regimeFilter) {
     const regime = ctx.regimeFilter.getState();
+    const regimeIcon = regime.regime === 'risk_on' ? '🟢' : regime.regime === 'risk_off' ? '🔴' : '🟡';
+    const solIcon = regime.solTrendBullish ? '🟢' : '🔴';
+    const solLabel = regime.solTrendBullish ? '강세' : '약세';
     await ctx.notifier.sendInfo(
-      `🔍 Regime: ${regime.regime} (size=${regime.sizeMultiplier}x) ` +
-      `SOL=${regime.solTrendBullish ? 'bull' : 'bear'} ` +
-      `breadth=${(regime.breadthPct * 100).toFixed(0)}% follow=${(regime.followThroughPct * 100).toFixed(0)}%`
+      `🔍 시장: ${regimeIcon} ${regime.regime} (${regime.sizeMultiplier}x)\n` +
+      `SOL ${solIcon}${solLabel} | 확산 ${(regime.breadthPct * 100).toFixed(0)}% | 후속 ${(regime.followThroughPct * 100).toFixed(0)}%`
     );
   }
 }

@@ -549,11 +549,11 @@ export async function recordOpenedTrade(
   executionSummary: EntryExecutionSummary,
   postSizeExecution?: GateEvaluationResult['executionViability']
 ): Promise<void> {
-  const openedOrder: Order = {
+  const openedOrder = alignOrderToExecutedEntry({
     ...order,
     price: executionSummary.entryPrice,
     quantity: executionSummary.quantity,
-  };
+  }, executionSummary);
   await ctx.positionStore.updateState(positionId, 'ENTRY_CONFIRMED', {
     signalData: {
       execution: {
@@ -618,6 +618,38 @@ export async function recordOpenedTrade(
     effectiveRR: executionSummary.effectiveRR,
     roundTripCost: executionSummary.roundTripCost,
   });
+}
+
+function alignOrderToExecutedEntry(order: Order, executionSummary: EntryExecutionSummary): Order {
+  const plannedEntryPrice = executionSummary.plannedEntryPrice;
+  const actualEntryPrice = executionSummary.entryPrice;
+
+  if (
+    !Number.isFinite(plannedEntryPrice) || plannedEntryPrice <= 0 ||
+    !Number.isFinite(actualEntryPrice) || actualEntryPrice <= 0
+  ) {
+    return order;
+  }
+
+  return {
+    ...order,
+    stopLoss: scaleExecutionLevel(order.stopLoss, plannedEntryPrice, actualEntryPrice),
+    takeProfit1: scaleExecutionLevel(order.takeProfit1, plannedEntryPrice, actualEntryPrice),
+    takeProfit2: scaleExecutionLevel(order.takeProfit2, plannedEntryPrice, actualEntryPrice),
+    trailingStop: order.trailingStop != null && Number.isFinite(order.trailingStop)
+      ? order.trailingStop * (actualEntryPrice / plannedEntryPrice)
+      : order.trailingStop,
+  };
+}
+
+function scaleExecutionLevel(
+  plannedLevel: number,
+  plannedEntryPrice: number,
+  actualEntryPrice: number
+): number {
+  if (!Number.isFinite(plannedLevel) || plannedLevel <= 0) return plannedLevel;
+  const levelOffsetPct = (plannedLevel - plannedEntryPrice) / plannedEntryPrice;
+  return actualEntryPrice * (1 + levelOffsetPct);
 }
 
 export function buildSignalAuditBase(

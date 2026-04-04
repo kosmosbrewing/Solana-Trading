@@ -558,6 +558,7 @@ describe('tradeExecution paper balance', () => {
         quantity: 9.5,
         plannedEntryPrice: 1.0,
         plannedQuantity: 10,
+        actualEntryNotionalSol: 9.975,
         entrySlippageBps: 50,
         entrySlippagePct: 0.05,
         expectedOutAmount: '1000000',
@@ -586,15 +587,26 @@ describe('tradeExecution paper balance', () => {
         },
       })
     );
-    expect(tradeStore.insertTrade).toHaveBeenCalledWith(expect.objectContaining({
-      entryPrice: 1.05,
-      quantity: 9.5,
-      highWaterMark: 1.05,
-    }));
-    expect(notifier.sendTradeOpen).toHaveBeenCalledWith(expect.objectContaining({
-      price: 1.05,
-      quantity: 9.5,
-    }), 'TX123');
+    const entryConfirmedPayload = (positionStore.updateState as jest.Mock).mock.calls[0][2];
+    expect(entryConfirmedPayload.stopLoss).toBeCloseTo(0.9975, 10);
+    expect(entryConfirmedPayload.takeProfit1).toBeCloseTo(1.155, 10);
+    expect(entryConfirmedPayload.takeProfit2).toBeCloseTo(1.26, 10);
+
+    const insertedTrade = (tradeStore.insertTrade as jest.Mock).mock.calls[0][0];
+    expect(insertedTrade.entryPrice).toBe(1.05);
+    expect(insertedTrade.quantity).toBe(9.5);
+    expect(insertedTrade.stopLoss).toBeCloseTo(0.9975, 10);
+    expect(insertedTrade.takeProfit1).toBeCloseTo(1.155, 10);
+    expect(insertedTrade.takeProfit2).toBeCloseTo(1.26, 10);
+    expect(insertedTrade.highWaterMark).toBe(1.05);
+
+    const openAlertOrder = (notifier.sendTradeOpen as jest.Mock).mock.calls[0][0];
+    expect(openAlertOrder.price).toBe(1.05);
+    expect(openAlertOrder.quantity).toBe(9.5);
+    expect(openAlertOrder.stopLoss).toBeCloseTo(0.9975, 10);
+    expect(openAlertOrder.takeProfit1).toBeCloseTo(1.155, 10);
+    expect(openAlertOrder.takeProfit2).toBeCloseTo(1.26, 10);
+    expect((notifier.sendTradeOpen as jest.Mock).mock.calls[0][1]).toBe('TX123');
     expect(auditLogger.logSignal).toHaveBeenCalledWith(expect.objectContaining({
       action: 'EXECUTED',
       positionSize: 9.5,

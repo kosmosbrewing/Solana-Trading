@@ -138,6 +138,10 @@ export const config = {
   txTimeoutMs: numOptional('TX_TIMEOUT_MS', 30000),
   cooldownMinutes: numOptional('COOLDOWN_MINUTES', 30),
   maxConsecutiveLosses: numOptional('MAX_CONSECUTIVE_LOSSES', 3),
+  samePairOpenPositionBlock: boolOptional('SAME_PAIR_OPEN_POSITION_BLOCK', true),
+  perTokenLossCooldownLosses: numOptional('PER_TOKEN_LOSS_COOLDOWN_LOSSES', 2),
+  perTokenLossCooldownMinutes: numOptional('PER_TOKEN_LOSS_COOLDOWN_MINUTES', 240),
+  perTokenDailyTradeCap: numOptional('PER_TOKEN_DAILY_TRADE_CAP', 15),
 
   // Universe refresh
   universeRefreshIntervalMs: numOptional('UNIVERSE_REFRESH_INTERVAL_MS', 300_000),

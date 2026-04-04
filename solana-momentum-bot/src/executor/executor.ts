@@ -390,7 +390,7 @@ export class Executor {
   private async resolveInputMetrics(
     inputMint: string,
     actualInputAmount?: bigint
-  ): Promise<Pick<SwapResult, 'actualInputUiAmount' | 'inputDecimals'> | {}> {
+  ): Promise<Partial<Pick<SwapResult, 'actualInputUiAmount' | 'inputDecimals'>>> {
     if (actualInputAmount == null) return {};
     const inputDecimals = inputMint === SOL_MINT ? 9 : await this.getMintDecimals(inputMint);
     if (inputDecimals == null) return {};
@@ -403,7 +403,7 @@ export class Executor {
   private async resolveOutputMetrics(
     outputMint: string,
     actualOutAmount?: bigint
-  ): Promise<Pick<SwapResult, 'actualOutUiAmount' | 'outputDecimals'> | {}> {
+  ): Promise<Partial<Pick<SwapResult, 'actualOutUiAmount' | 'outputDecimals'>>> {
     if (actualOutAmount == null) return {};
     const outputDecimals = outputMint === SOL_MINT ? 9 : await this.getMintDecimals(outputMint);
     if (outputDecimals == null) return {};

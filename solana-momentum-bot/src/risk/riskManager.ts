@@ -1,6 +1,7 @@
 import { createModuleLogger } from '../utils/logger';
 import {
   RiskCheckResult, TokenSafety, PortfolioState, SizeConstraint, BreakoutGrade, DrawdownGuardState, StrategyName,
+  Trade,
 } from '../utils/types';
 import { TradeStore } from '../candle/tradeStore';
 import { EdgeTracker, EdgeTrackerTrade, sanitizeEdgeLikeTrades } from '../reporting';
@@ -25,6 +26,10 @@ export interface RiskConfig {
   recoveryPct: number;
   maxConsecutiveLosses: number;
   cooldownMinutes: number;
+  samePairOpenPositionBlock?: boolean;
+  perTokenLossCooldownLosses?: number;
+  perTokenLossCooldownMinutes?: number;
+  perTokenDailyTradeCap?: number;
   maxSlippage: number;
   minPoolLiquidity: number;
   minTokenAgeHours: number;
@@ -90,7 +95,13 @@ export class RiskManager {
     tokenSafety?: TokenSafety
   ): Promise<RiskCheckResult> {
     let safetyMultiplier = 1.0;
-    const closedEdgeTrades = await this.getClosedEdgeTrades();
+    const [closedTrades, todayTrades] = await Promise.all([
+      this.tradeStore.getClosedTradesChronological(),
+      this.needsTodayTrades()
+        ? this.tradeStore.getTodayTrades()
+        : Promise.resolve([] as Trade[]),
+    ]);
+    const closedEdgeTrades = sanitizeEdgeLikeTrades(closedTrades.map(toEdgeTrackerTrade)).trades;
     const strategyRisk = resolveStrategyRiskTier(
       closedEdgeTrades,
       order.strategy,
@@ -138,6 +149,39 @@ export class RiskManager {
         approved: false,
         reason: `Cooldown active: ${portfolio.consecutiveLosses} consecutive losses`,
       };
+    }
+
+    if (this.hasOpenTradeForPair(order.pairAddress, portfolio)) {
+      return {
+        approved: false,
+        reason: `Same-pair position already open: ${order.pairAddress}`,
+      };
+    }
+
+    const pairLossCooldown = this.getPerTokenLossCooldown(order.pairAddress, closedTrades);
+    if (pairLossCooldown.active) {
+      const cooldownUntil = pairLossCooldown.until?.toISOString() ?? 'unknown';
+      return {
+        approved: false,
+        reason:
+          `Per-token cooldown active: ${pairLossCooldown.losses} recent losses ` +
+          `until ${cooldownUntil}`,
+      };
+    }
+
+    const perTokenDailyTradeCap = this.riskConfig.perTokenDailyTradeCap ?? 0;
+    if (perTokenDailyTradeCap > 0) {
+      const pairTradesToday = todayTrades.filter(
+        (trade) => trade.pairAddress === order.pairAddress && trade.status !== 'FAILED'
+      ).length;
+      if (pairTradesToday >= perTokenDailyTradeCap) {
+        return {
+          approved: false,
+          reason:
+            `Per-token daily trade cap reached: ${pairTradesToday}/${perTokenDailyTradeCap} ` +
+            `for ${order.pairAddress}`,
+        };
+      }
     }
 
     const ABSOLUTE_MAX = this.riskConfig.maxConcurrentAbsolute ?? 3;
@@ -377,6 +421,55 @@ export class RiskManager {
     return new Date() < cooldownEnd;
   }
 
+  private hasOpenTradeForPair(pairAddress: string, portfolio: PortfolioState): boolean {
+    if (!(this.riskConfig.samePairOpenPositionBlock ?? true)) {
+      return false;
+    }
+
+    return portfolio.openTrades.some((trade) => trade.pairAddress === pairAddress);
+  }
+
+  private getPerTokenLossCooldown(
+    pairAddress: string,
+    closedTrades: Trade[]
+  ): { active: boolean; losses: number; until?: Date } {
+    const requiredLosses = this.riskConfig.perTokenLossCooldownLosses ?? 0;
+    const cooldownMinutes = this.riskConfig.perTokenLossCooldownMinutes ?? 0;
+    if (requiredLosses <= 0 || cooldownMinutes <= 0) {
+      return { active: false, losses: 0 };
+    }
+
+    let consecutiveLosses = 0;
+    let latestLossTime: Date | undefined;
+
+    for (let index = closedTrades.length - 1; index >= 0; index--) {
+      const trade = closedTrades[index];
+      if (trade.pairAddress !== pairAddress) continue;
+      if ((trade.pnl ?? 0) >= 0) break;
+
+      consecutiveLosses += 1;
+      latestLossTime = latestLossTime ?? trade.closedAt;
+      if (consecutiveLosses >= requiredLosses) {
+        break;
+      }
+    }
+
+    if (consecutiveLosses < requiredLosses || !latestLossTime) {
+      return { active: false, losses: consecutiveLosses };
+    }
+
+    const cooldownEnd = new Date(latestLossTime.getTime() + cooldownMinutes * 60 * 1000);
+    return {
+      active: new Date() < cooldownEnd,
+      losses: consecutiveLosses,
+      until: cooldownEnd,
+    };
+  }
+
+  private needsTodayTrades(): boolean {
+    return (this.riskConfig.perTokenDailyTradeCap ?? 0) > 0;
+  }
+
   checkTokenSafety(safety: TokenSafety, equitySol?: number): SafetyGateResult {
     const result = evaluateTokenSafety(safety, {
       minPoolLiquidity: this.riskConfig.minPoolLiquidity,
@@ -445,11 +538,6 @@ export class RiskManager {
       `Drawdown guard active: ${(drawdownGuard.drawdownPct * 100).toFixed(2)}% below HWM ` +
       `${drawdownGuard.peakBalanceSol.toFixed(4)} SOL; resume at ${drawdownGuard.recoveryBalanceSol.toFixed(4)} SOL`
     );
-  }
-
-  private async getClosedEdgeTrades(): Promise<EdgeTrackerTrade[]> {
-    const closedTrades = await this.tradeStore.getClosedTradesChronological();
-    return sanitizeEdgeLikeTrades(closedTrades.map(toEdgeTrackerTrade)).trades;
   }
 }
 

@@ -102,6 +102,7 @@ async function main() {
       edgeGateReasons: summary.assessment.gateReasons,
     },
     rejectStats: rs,
+    records: args.includes('--include-records') ? result.records : undefined,
   };
 
   if (args.includes('--json')) {
@@ -232,6 +233,7 @@ Options:
 
   --estimated-cost-pct <n>    Fallback cost pct if stored signal cost is absent
   --json                      Print JSON output
+  --include-records           Include per-signal replay records in JSON output
 `);
 }
 

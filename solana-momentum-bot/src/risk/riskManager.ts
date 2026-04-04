@@ -80,10 +80,33 @@ export class RiskManager {
   private tradeStore: TradeStore;
   private liquidityParams: LiquidityParams;
 
+  // Why: cap reject 후에도 trigger eval이 계속 소모되는 문제 해소
+  // cap hit pair를 등록하면 index.ts에서 trigger.onCandle() 전에 skip
+  private suppressedPairs = new Map<string, number>(); // pairAddress → suppressedAtMs
+
   constructor(riskConfig: RiskConfig, tradeStore: TradeStore) {
     this.riskConfig = riskConfig;
     this.tradeStore = tradeStore;
     this.liquidityParams = { ...DEFAULT_LIQUIDITY_PARAMS, ...riskConfig.liquidityParams };
+  }
+
+  /** cap-suppressed pair인지 확인 (trigger eval 전에 호출) */
+  isCapSuppressed(pairAddress: string): boolean {
+    const suppressedAt = this.suppressedPairs.get(pairAddress);
+    if (suppressedAt == null) return false;
+    // Why: DB CURRENT_DATE는 UTC 기준 — suppress 해제도 UTC 자정으로 맞춤
+    const now = new Date();
+    const todayStartUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    if (suppressedAt < todayStartUtc) {
+      this.suppressedPairs.delete(pairAddress);
+      return false;
+    }
+    return true;
+  }
+
+  /** 모든 suppress 상태 초기화 (일괄 해제용) */
+  clearSuppressedPairs(): void {
+    this.suppressedPairs.clear();
   }
 
   /**
@@ -175,6 +198,8 @@ export class RiskManager {
         (trade) => trade.pairAddress === order.pairAddress && trade.status !== 'FAILED'
       ).length;
       if (pairTradesToday >= perTokenDailyTradeCap) {
+        this.suppressedPairs.set(order.pairAddress, Date.now());
+        log.info(`Cap-suppress activated: ${order.pairAddress} (${pairTradesToday}/${perTokenDailyTradeCap})`);
         return {
           approved: false,
           reason:

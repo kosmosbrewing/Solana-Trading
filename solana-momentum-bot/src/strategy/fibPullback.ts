@@ -151,6 +151,7 @@ export function evaluateFibPullback(
     pairAddress,
     price: currentCandle.close,
     timestamp: new Date(),
+    sourceLabel: 'strategy_fib_pullback',
     meta: {
       ...buildMeta(impulse, fibs, pullback),
       wickRatio,

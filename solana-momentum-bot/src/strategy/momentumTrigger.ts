@@ -143,6 +143,7 @@ export class MomentumTrigger {
       pairAddress: candle.pairAddress,
       price: current.close,
       timestamp: new Date(closeTimestampSec * 1000),
+      sourceLabel: 'trigger_momentum',
       meta: {
         realtimeSignal: 1,
         primaryIntervalSec: this.config.primaryIntervalSec,

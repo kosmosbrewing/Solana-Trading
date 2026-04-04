@@ -10,3 +10,4 @@ export * from './realtimeSignalLogger';
 export * from './realtimeOutcomeTracker';
 export * from './runtimeDiagnosticsTracker';
 export * from './runtimeDiagnosticsStore';
+export * from './missionScore';

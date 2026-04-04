@@ -139,6 +139,7 @@ export class VolumeMcapSpikeTrigger {
       pairAddress: candle.pairAddress,
       price: current.close,
       timestamp: new Date(closeTimestampSec * 1000),
+      sourceLabel: 'trigger_volume_mcap_spike',
       meta: {
         realtimeSignal: 1,
         triggerMode: 1,

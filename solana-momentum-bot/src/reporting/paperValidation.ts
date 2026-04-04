@@ -8,6 +8,8 @@ import {
   EdgeGateStatus,
   EdgeScoreBreakdown,
 } from './measurement';
+import { computeExplainedEntryRatio, ExplainedEntryRatioResult } from './sourceOutcome';
+import { computeMissionScore, MissionScoreResult } from './missionScore';
 
 export interface PaperValidationTrade {
   strategy: StrategyName;
@@ -18,6 +20,7 @@ export interface PaperValidationTrade {
   pnl: number;
   exitReason?: CloseReason;
   closedAt: Date;
+  sourceLabel?: string;
 }
 
 export interface PaperValidationSignal {
@@ -76,6 +79,8 @@ export interface PaperValidationReport {
   edgeGateStatus: EdgeGateStatus;
   edgeGateReasons: string[];
   edgeScoreBreakdown: EdgeScoreBreakdown;
+  explainedEntryRatio: ExplainedEntryRatioResult;
+  missionScore?: MissionScoreResult;
   criteria: {
     minTradesMet: boolean;
     winRateMet: boolean;
@@ -138,6 +143,20 @@ export function buildPaperValidationReport(
     totalTrades: overall.totalTrades,
   });
 
+  const explainedEntry = computeExplainedEntryRatio(trades);
+
+  // Mission Score: contextClarity from explainedEntryRatio.
+  // 나머지 컴포넌트는 추후 데이터 축적 후 연결 — 현재는 N/A (0)
+  const missionScore = trades.length > 0
+    ? computeMissionScore({
+        explainedEntryRatio: explainedEntry.ratio,
+        eventEntryPct: 0,
+        unexplainedSuppressionRate: 0,
+        safetyDiscipline: 0,
+        traceability: 0,
+      })
+    : undefined;
+
   return {
     totalTrades: overall.totalTrades,
     wins: overall.wins,
@@ -164,6 +183,8 @@ export function buildPaperValidationReport(
     edgeGateStatus: edgeAssessment.gateStatus,
     edgeGateReasons: edgeAssessment.gateReasons,
     edgeScoreBreakdown: edgeAssessment.breakdown,
+    explainedEntryRatio: explainedEntry,
+    missionScore,
     criteria: {
       minTradesMet,
       winRateMet,

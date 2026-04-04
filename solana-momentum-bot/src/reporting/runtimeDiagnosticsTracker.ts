@@ -1,4 +1,4 @@
-import { RuntimeDiagnosticsStore } from './runtimeDiagnosticsStore';
+import { RuntimeDiagnosticsStore, CapSuppressSnapshot } from './runtimeDiagnosticsStore';
 
 export interface RuntimeDiagnosticsSummary {
   hours: number;
@@ -34,6 +34,11 @@ export interface RuntimeDiagnosticsSummary {
   };
 }
 
+export interface TodayUtcOperationalSummary {
+  capSuppressedPairs: number;
+  capSuppressedCandles: number;
+}
+
 export interface RuntimeDiagnosticEvent {
   type:
     | 'admission_skip'
@@ -66,12 +71,27 @@ export class RuntimeDiagnosticsTracker {
   private static readonly MAX_CAPACITY_EVENTS = 500;
   private static readonly MAX_EVENTS = 10_000;
 
+  // Why: cap suppress는 이벤트 시스템과 분리 — UTC day scoped, store persist 포함
+  private capSuppressStats = new Map<string, number>(); // pair → candle count
+  private capSuppressUtcDay = -1;
+
   constructor(
     private readonly store?: RuntimeDiagnosticsStore,
-    initialEvents: RuntimeDiagnosticEvent[] = []
+    initialEvents: RuntimeDiagnosticEvent[] = [],
+    initialCapSuppress?: CapSuppressSnapshot
   ) {
     this.events = [...initialEvents].sort((left, right) => left.timestampMs - right.timestampMs);
     this.prune();
+    // restore: same UTC day면 복원, 아니면 무시 (day rollover)
+    if (initialCapSuppress) {
+      const todayUtcDay = Math.floor(Date.now() / 86_400_000);
+      if (initialCapSuppress.utcDay === todayUtcDay) {
+        this.capSuppressUtcDay = initialCapSuppress.utcDay;
+        for (const [pair, count] of Object.entries(initialCapSuppress.stats)) {
+          this.capSuppressStats.set(pair, count);
+        }
+      }
+    }
   }
 
   recordAdmissionSkip(input: { tokenMint: string; reason: string; detail?: string; source?: string; dexId?: string }): void {
@@ -177,6 +197,12 @@ export class RuntimeDiagnosticsTracker {
     });
   }
 
+  recordCapSuppressed(pairAddress: string): void {
+    this.syncCapSuppressDay();
+    this.capSuppressStats.set(pairAddress, (this.capSuppressStats.get(pairAddress) ?? 0) + 1);
+    this.schedulePersist();
+  }
+
   buildSummary(hours: number): RuntimeDiagnosticsSummary {
     const cutoffMs = Date.now() - hours * 3_600_000;
     const candidateTokens = distinctTokenSet(this.events, cutoffMs, 'realtime_candidate_seen');
@@ -230,7 +256,21 @@ export class RuntimeDiagnosticsTracker {
     };
   }
 
+  buildTodayUtcOperationalSummary(): TodayUtcOperationalSummary {
+    this.syncCapSuppressDay();
+    return {
+      capSuppressedPairs: this.capSuppressStats.size,
+      capSuppressedCandles: [...this.capSuppressStats.values()].reduce((sum, n) => sum + n, 0),
+    };
+  }
+
   async flush(): Promise<void> {
+    this.syncCapSuppressDay();
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
+    this.lastPersistMs = Date.now();
     await this.persist();
   }
 
@@ -260,13 +300,25 @@ export class RuntimeDiagnosticsTracker {
     }
   }
 
+  private syncCapSuppressDay(nowMs = Date.now()): void {
+    const utcDay = Math.floor(nowMs / 86_400_000);
+    if (utcDay !== this.capSuppressUtcDay) {
+      this.capSuppressStats.clear();
+      this.capSuppressUtcDay = utcDay;
+    }
+  }
+
   private async persist(): Promise<void> {
     if (!this.store) return;
     const snapshot = [...this.events];
+    const capSnapshot: CapSuppressSnapshot | undefined =
+      this.capSuppressStats.size > 0
+        ? { utcDay: this.capSuppressUtcDay, stats: Object.fromEntries(this.capSuppressStats) }
+        : undefined;
     this.saveChain = this.saveChain
       .catch(() => undefined)
       .then(async () => {
-        await this.store?.save(snapshot);
+        await this.store?.save(snapshot, capSnapshot);
       });
     await this.saveChain;
   }

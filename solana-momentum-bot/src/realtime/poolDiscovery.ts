@@ -326,11 +326,8 @@ function selectMintPair(mints: string[]): Pick<ObservedPairCandidate, 'baseToken
       quoteTokenAddress: SOL_MINT,
     };
   }
-  const sorted = [...mints].sort((left, right) => left.localeCompare(right));
-  return {
-    baseTokenAddress: sorted[0],
-    quoteTokenAddress: sorted[1],
-  };
+  // Why: SOL이 없는 pair는 downstream에서 non_sol_quote reject — candidate emit 방지
+  return null;
 }
 
 function extractAccountKeys(tx: ParsedTransactionWithMeta): AccountKeyMeta[] {

@@ -14,6 +14,9 @@ export interface TokenSecurityData {
   creatorPct: number;
   ownerAddress?: string;
   creatorAddress?: string;
+  // P2-3: Token-2022 classification
+  tokenProgram?: string;   // 'spl-token' | 'spl-token-2022'
+  extensions?: string[];   // Token-2022 extension 이름 목록
 }
 
 export interface ExitLiquidityData {
@@ -56,7 +59,8 @@ export class OnchainSecurityClient {
         this.connection.getParsedAccountInfo(mint, this.commitment),
         this.connection.getTokenLargestAccounts(mint, this.commitment),
       ]);
-      const mintInfo = extractMintInfo(parsedAccount.value?.data);
+      const accountData = parsedAccount.value?.data as ParsedAccountData | undefined;
+      const mintInfo = extractMintInfo(accountData);
       if (!mintInfo) {
         log.warn(`Mint account parsing unavailable for ${tokenMint}`);
         return null;
@@ -64,6 +68,10 @@ export class OnchainSecurityClient {
 
       const freezeAuthorityPresent = mintInfo.freezeAuthority != null;
       const mintAuthorityPresent = mintInfo.mintAuthority != null;
+
+      // P2-3: Token-2022 classification
+      const tokenProgram = typeof accountData?.program === 'string' ? accountData.program : undefined;
+      const extensions = parseExtensionNames(mintInfo.extensions);
 
       return {
         isHoneypot: false,
@@ -73,6 +81,8 @@ export class OnchainSecurityClient {
         freezeAuthorityPresent,
         top10HolderPct: computeTop10HolderPct(mintInfo.supply, largestAccounts.value),
         creatorPct: 0,
+        tokenProgram,
+        extensions: extensions.length > 0 ? extensions : undefined,
       };
     } catch (error) {
       log.warn(`Onchain security fetch failed for ${tokenMint}: ${error}`);
@@ -97,6 +107,15 @@ function hasTransferFeeExtension(extensions?: unknown[]): boolean {
   return extensions.some((extension) =>
     JSON.stringify(extension).toLowerCase().includes('transferfee')
   );
+}
+
+// P2-3: Token-2022 extension 이름 추출
+export function parseExtensionNames(extensions?: unknown[]): string[] {
+  if (!Array.isArray(extensions)) return [];
+  return extensions
+    .map(ext => typeof ext === 'object' && ext !== null && 'extension' in ext
+      ? String((ext as { extension: string }).extension) : undefined)
+    .filter((name): name is string => name !== undefined);
 }
 
 function computeTop10HolderPct(

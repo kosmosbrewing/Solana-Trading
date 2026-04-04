@@ -196,6 +196,114 @@ TELEGRAM_CHAT_ID=<봇에게 메시지 보낸 후 getUpdates API로 확인>
 
 ---
 
+## Canary Runbook
+
+카나리아(paper/초기 live) 운영 시 반드시 지키는 규칙을 정리한다.
+
+### Max Live Notional
+
+| 항목 | 값 | 근거 |
+|------|---|------|
+| max risk per trade (Bootstrap/Calibration) | 1% of equity | `tradingParams.risk.maxRiskPerTrade` |
+| max position pct | 20% of equity | `tradingParams.position.maxPositionPct` |
+| max concurrent absolute | 3 | `tradingParams.position.maxConcurrentAbsolute` |
+| max concurrent positions | 2 | runtime_canary (code_default: 1) |
+
+최대 동시 노출 = `equity × maxPositionPct × maxConcurrent` = equity의 40% (2포지션 × 20%).
+
+규칙:
+- 카나리아 단계에서 equity의 50% 이상을 동시에 노출하지 않는다.
+- `MAX_CONCURRENT_POSITIONS=2`, `MAX_POSITION_PCT=0.20`을 env에 명시한다.
+
+### Daily Halt 조건
+
+| 조건 | 임계값 | 동작 |
+|------|--------|------|
+| 일일 실현 손실 | equity의 5% | `maxDailyLoss: 0.05` → 자동 신규 진입 차단 |
+| drawdown guard | peak 대비 30% 하락 | `maxDrawdownPct: 0.30` → halted |
+| 연속 손실 | 3회 | `maxConsecutiveLosses: 3` → cooldown 활성화 |
+
+halt 후 체크리스트:
+1. `pm2 logs momentum-bot`에서 halt/cooldown 사유 확인
+2. 최근 거래 5건의 `exit_reason`, `slippage`, `pair` 확인
+3. 시장 레짐(risk_on/off) 확인
+4. 원인이 전략 문제가 아닌 시장 환경이면 다음 날 자동 리셋 대기
+5. 원인이 전략/execution 문제면 파라미터 점검 후 수동 restart
+
+### Wallet Kill-Switch
+
+긴급 정지가 필요한 경우:
+
+```bash
+# 1. 즉시 정지
+pm2 stop momentum-bot
+
+# 2. 오픈 포지션 확인
+npx ts-node scripts/trade-report.ts --status open
+
+# 3. 필요 시 수동 청산 (Jupiter CLI 또는 수동 swap)
+```
+
+kill-switch를 당기는 조건:
+- wallet balance가 예상보다 급격히 감소 (unexplained loss)
+- RPC 장애로 trade monitoring 불가
+- Solana network congestion으로 transaction 지연 > 60s
+- 보안 이슈 의심 (unauthorized transaction)
+
+kill-switch 후 하지 말 것:
+- 원인 미파악 상태에서 즉시 재시작
+- 오픈 포지션을 확인하지 않고 방치
+
+### Flat 확인 절차
+
+flat = 모든 오픈 포지션이 닫힌 상태.
+
+확인 방법:
+
+```bash
+# DB에서 오픈 포지션 확인
+npx ts-node scripts/trade-report.ts --status open
+
+# pm2 logs에서 OPEN trade 0건 확인
+pm2 logs momentum-bot --lines 50 | grep "openPositions"
+```
+
+flat 확인이 필요한 시점:
+- 정기 점검 전
+- 파라미터 변경 전
+- 배포/업데이트 전
+- 긴급 정지 후
+
+### Restart 전후 확인 절차
+
+**restart 전:**
+
+1. flat 확인 (오픈 포지션 0건)
+2. 변경사항 확인 (`git diff`, `.env` 변경 여부)
+3. 현재 잔고 기록
+
+**restart:**
+
+```bash
+pm2 restart momentum-bot
+```
+
+**restart 후 (5분 이내):**
+
+1. `pm2 status` — online 확인
+2. `pm2 logs momentum-bot --lines 20` — `Bot started ... mode: paper` 확인
+3. `Scanner started. Watchlist: N entries.` 확인
+4. Telegram `Bot started` alert 수신 확인
+5. 잔고가 restart 전과 일치하는지 확인
+
+**restart 후 (30분):**
+
+1. `pm2 monit` — memory < 300MB
+2. gate 평가 로그가 정상 출력되는지 확인
+3. `GeckoTerminal 429` 반복 여부 확인
+
+---
+
 ## Demotion Runbook
 
 자동 강등은 최근 성과 악화를 감지했을 때 위험 노출을 한 단계 내리는 안전장치다. 승급 이력을 지우는 기능이 아니라, 최근 구간이 망가졌을 때 **현재 사이징만 즉시 보수화**하는 장치로 본다.

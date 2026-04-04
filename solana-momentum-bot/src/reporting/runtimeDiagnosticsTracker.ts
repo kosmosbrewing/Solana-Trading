@@ -25,6 +25,7 @@ export interface RuntimeDiagnosticsSummary {
   preWatchlistRejectDetailCounts: Array<{ label: string; count: number }>;
   rateLimitCounts: Array<{ source: string; count: number }>;
   pollFailureCounts: Array<{ source: string; count: number }>;
+  riskRejectionCounts: Array<{ reason: string; count: number }>;
   realtimeCandidateReadiness: {
     totalCandidates: number;
     prefiltered: number;
@@ -51,7 +52,8 @@ export interface RuntimeDiagnosticEvent {
     | 'alias_miss'
     | 'candidate_evicted'
     | 'candidate_readded'
-    | 'signal_not_in_watchlist';
+    | 'signal_not_in_watchlist'
+    | 'risk_rejection';
   timestampMs: number;
   tokenMint?: string;
   reason?: string;
@@ -197,6 +199,15 @@ export class RuntimeDiagnosticsTracker {
     });
   }
 
+  recordRiskRejection(reason: string, detail?: string): void {
+    this.pushEvent({
+      type: 'risk_rejection',
+      timestampMs: Date.now(),
+      reason,
+      detail,
+    });
+  }
+
   recordCapSuppressed(pairAddress: string): void {
     this.syncCapSuppressDay();
     this.capSuppressStats.set(pairAddress, (this.capSuppressStats.get(pairAddress) ?? 0) + 1);
@@ -246,6 +257,7 @@ export class RuntimeDiagnosticsTracker {
       preWatchlistRejectDetailCounts: summarizeDecisionDetails(this.events, cutoffMs, 'pre_watchlist_reject'),
       rateLimitCounts: summarizeEventSources(this.events, cutoffMs, 'rate_limit'),
       pollFailureCounts: summarizeEventSources(this.events, cutoffMs, 'poll_failure'),
+      riskRejectionCounts: summarizeRiskRejectionCounts(this.events, cutoffMs),
       realtimeCandidateReadiness: {
         totalCandidates: totalCandidateTokens.size,
         prefiltered: prefilteredTokens.size,
@@ -582,4 +594,18 @@ function parseBoostedSignalCount(detail?: string): number {
   if (!detail) return 0;
   const match = detail.match(/boosted=(\d+)/);
   return match ? Number.parseInt(match[1], 10) : 0;
+}
+
+function summarizeRiskRejectionCounts(
+  events: RuntimeDiagnosticEvent[],
+  cutoffMs: number
+): Array<{ reason: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const event of events) {
+    if (event.type !== 'risk_rejection' || event.timestampMs < cutoffMs || !event.reason) continue;
+    counts.set(event.reason, (counts.get(event.reason) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([reason, count]) => ({ reason, count }))
+    .sort((left, right) => right.count - left.count || left.reason.localeCompare(right.reason));
 }

@@ -135,7 +135,7 @@ export class VolumeMcapSpikeTrigger {
 
     return {
       action: 'BUY',
-      strategy: 'volume_spike',
+      strategy: 'bootstrap_10s',
       pairAddress: candle.pairAddress,
       price: current.close,
       timestamp: new Date(closeTimestampSec * 1000),

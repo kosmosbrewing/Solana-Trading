@@ -1,4 +1,4 @@
-import { StrategyName } from '../utils/types';
+import { StrategyName, isSandboxStrategy } from '../utils/types';
 import {
   average,
   isFiniteNumber,
@@ -52,7 +52,10 @@ export interface PairBlacklistConfig {
   decayWindowTrades: number;
 }
 
-const STRATEGIES: StrategyName[] = ['volume_spike', 'fib_pullback', 'new_lp_sniper', 'momentum_cascade'];
+const STRATEGIES: StrategyName[] = [
+  'volume_spike', 'bootstrap_10s', 'core_momentum',
+  'fib_pullback', 'new_lp_sniper', 'momentum_cascade',
+];
 const DEFAULT_PAIR_BLACKLIST_CONFIG: PairBlacklistConfig = {
   minTrades: 5,
   minWinRate: 0.35,
@@ -195,6 +198,12 @@ export class EdgeTracker {
     return summarizeTrades(this.trades);
   }
 
+  // Why: sandbox(new_lp_sniper)는 별도 지갑/위험 예산이므로
+  // risk tier, Kelly, drawdown guard 등 포트폴리오 수준 판단에서 제외한다.
+  getMainPortfolioStats(): EdgePerformanceStats {
+    return summarizeTrades(this.trades.filter(t => !isSandboxStrategy(t.strategy)));
+  }
+
   /**
    * Phase 4: Get stats for recent N trades only.
    * Used for demotion checks and recent-window Kelly recalculation.
@@ -203,6 +212,15 @@ export class EdgeTracker {
     const recentTrades = windowSize > 0 && this.trades.length > windowSize
       ? this.trades.slice(-windowSize)
       : this.trades;
+    return summarizeTrades(recentTrades);
+  }
+
+  /** Recent N main-lane trades only (sandbox 제외). Demotion check에서 사용. */
+  getRecentMainStats(windowSize: number): EdgePerformanceStats {
+    const mainTrades = this.trades.filter(t => !isSandboxStrategy(t.strategy));
+    const recentTrades = windowSize > 0 && mainTrades.length > windowSize
+      ? mainTrades.slice(-windowSize)
+      : mainTrades;
     return summarizeTrades(recentTrades);
   }
 
@@ -223,13 +241,14 @@ export class EdgeTracker {
    * H-08: strategy mode 지원 — strategy 지정 시 해당 전략 트레이드만으로 평가
    */
   checkDemotion(strategy?: StrategyName): { shouldDemote: boolean; reason?: string } {
+    // Why: portfolio mode에서는 sandbox 제외하여 main lane만 평가
     const fullStats = strategy
       ? this.getStrategyStats(strategy)
-      : this.getPortfolioStats();
+      : this.getMainPortfolioStats();
 
     const getRecent = (windowSize: number) => strategy
       ? this.getRecentStrategyStats(strategy, windowSize)
-      : this.getRecentStats(windowSize);
+      : this.getRecentMainStats(windowSize);
 
     if (fullStats.edgeState === 'Proven') {
       const gate = DEMOTION_GATES.Proven;

@@ -55,6 +55,29 @@ export class TradeStore {
       `);
 
       await client.query(`
+        ALTER TABLE trades
+        ADD COLUMN IF NOT EXISTS discovery_source TEXT;
+      `);
+
+      // P0-2: cost decomposition 컬럼
+      await client.query(`
+        ALTER TABLE trades
+        ADD COLUMN IF NOT EXISTS entry_slippage_bps INTEGER,
+        ADD COLUMN IF NOT EXISTS exit_slippage_bps INTEGER,
+        ADD COLUMN IF NOT EXISTS entry_price_impact_pct NUMERIC,
+        ADD COLUMN IF NOT EXISTS round_trip_cost_pct NUMERIC,
+        ADD COLUMN IF NOT EXISTS effective_rr NUMERIC;
+      `);
+
+      // P1-4: degraded exit telemetry 컬럼
+      await client.query(`
+        ALTER TABLE trades
+        ADD COLUMN IF NOT EXISTS degraded_trigger_reason TEXT,
+        ADD COLUMN IF NOT EXISTS degraded_quote_fail_count INTEGER,
+        ADD COLUMN IF NOT EXISTS parent_trade_id UUID;
+      `);
+
+      await client.query(`
         CREATE INDEX IF NOT EXISTS idx_trades_status ON trades (status);
         CREATE INDEX IF NOT EXISTS idx_trades_created ON trades (created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_trades_pair ON trades (pair_address, created_at DESC);
@@ -68,19 +91,26 @@ export class TradeStore {
 
   async insertTrade(trade: Omit<Trade, 'id'>): Promise<string> {
     const result = await this.pool.query(
-      `INSERT INTO trades (pair_address, strategy, side, token_symbol, entry_price, source_label, quantity,
+      `INSERT INTO trades (pair_address, strategy, side, token_symbol, entry_price, source_label, discovery_source, quantity,
         stop_loss, take_profit1, take_profit2, trailing_stop, high_water_mark, time_stop_at,
-        status, tx_signature, breakout_score, breakout_grade, size_constraint)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+        status, tx_signature, breakout_score, breakout_grade, size_constraint,
+        entry_slippage_bps, entry_price_impact_pct, round_trip_cost_pct, effective_rr,
+        degraded_trigger_reason, degraded_quote_fail_count, parent_trade_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
+               $20, $21, $22, $23, $24, $25, $26)
        RETURNING id`,
       [
         trade.pairAddress, trade.strategy, trade.side, trade.tokenSymbol ?? null, trade.entryPrice,
-        trade.sourceLabel ?? null,
+        trade.sourceLabel ?? null, trade.discoverySource ?? null,
         trade.quantity, trade.stopLoss, trade.takeProfit1, trade.takeProfit2,
         trade.trailingStop || null, trade.highWaterMark ?? trade.entryPrice, trade.timeStopAt, trade.status,
         trade.txSignature || null,
         trade.breakoutScore ?? null, trade.breakoutGrade ?? null,
         trade.sizeConstraint ?? null,
+        trade.entrySlippageBps ?? null, trade.entryPriceImpactPct ?? null,
+        trade.roundTripCostPct ?? null, trade.effectiveRR ?? null,
+        trade.degradedTriggerReason ?? null, trade.degradedQuoteFailCount ?? null,
+        trade.parentTradeId ?? null,
       ]
     );
     if (result.rows.length === 0) {
@@ -95,7 +125,10 @@ export class TradeStore {
     pnl: number,
     slippage: number,
     exitReason?: string,
-    quantity?: number
+    quantity?: number,
+    exitSlippageBps?: number,
+    degradedTriggerReason?: string,
+    degradedQuoteFailCount?: number
   ): Promise<void> {
     const setClauses = [
       'exit_price = $2',
@@ -110,6 +143,21 @@ export class TradeStore {
     if (quantity !== undefined) {
       setClauses.push(`quantity = $${params.length + 1}`);
       params.push(quantity);
+    }
+
+    if (exitSlippageBps !== undefined) {
+      setClauses.push(`exit_slippage_bps = $${params.length + 1}`);
+      params.push(exitSlippageBps);
+    }
+
+    if (degradedTriggerReason !== undefined) {
+      setClauses.push(`degraded_trigger_reason = $${params.length + 1}`);
+      params.push(degradedTriggerReason);
+    }
+
+    if (degradedQuoteFailCount !== undefined) {
+      setClauses.push(`degraded_quote_fail_count = $${params.length + 1}`);
+      params.push(degradedQuoteFailCount);
     }
 
     await this.pool.query(
@@ -199,6 +247,21 @@ export class TradeStore {
     return result.rows.map(rowToTrade);
   }
 
+  // Why: MEASUREMENT.md "최근 50 executed trades" — 실제 신규 진입만 (open/closed 무관, created_at 기준)
+  // parent_trade_id IS NULL: partial exit child trade 제외 (TP1 잔여, degraded 잔여, Grade B 잔여)
+  // status != FAILED: 주문 실패/복구 실패 row는 executed entry 표본에서 제외
+  async getRecentExecutedEntries(limit: number): Promise<Trade[]> {
+    const result = await this.pool.query(
+      `SELECT * FROM trades
+       WHERE parent_trade_id IS NULL
+         AND status != 'FAILED'
+       ORDER BY created_at DESC
+       LIMIT $1`,
+      [limit]
+    );
+    return result.rows.map(rowToTrade);
+  }
+
   async getRecentClosedTrades(limit: number): Promise<Trade[]> {
     const result = await this.pool.query(
       `SELECT * FROM trades
@@ -217,6 +280,33 @@ export class TradeStore {
        ORDER BY closed_at ASC, created_at ASC`
     );
     return result.rows.map(rowToTrade);
+  }
+
+  async getExitReasonBreakdown(hours: number): Promise<Array<{
+    strategy: string;
+    exitReason: string;
+    count: number;
+    avgPnl: number;
+  }>> {
+    const result = await this.pool.query(`
+      SELECT
+        strategy,
+        COALESCE(exit_reason, 'unknown') AS exit_reason,
+        COUNT(*)::INTEGER AS count,
+        ROUND(AVG(COALESCE(pnl, 0))::NUMERIC, 6) AS avg_pnl
+      FROM trades
+      WHERE status = 'CLOSED'
+        AND closed_at >= now() - ($1::text || ' hours')::interval
+      GROUP BY strategy, COALESCE(exit_reason, 'unknown')
+      ORDER BY strategy, count DESC
+    `, [String(hours)]);
+
+    return result.rows.map((row) => ({
+      strategy: String(row.strategy),
+      exitReason: String(row.exit_reason),
+      count: Number(row.count),
+      avgPnl: Number(row.avg_pnl),
+    }));
   }
 
   async getCadenceTradeSummary(hours: number[]): Promise<{
@@ -269,6 +359,7 @@ function rowToTrade(row: Record<string, unknown>): Trade {
     tokenSymbol: row.token_symbol as string | undefined,
     entryPrice: Number(row.entry_price),
     sourceLabel: row.source_label as string | undefined,
+    discoverySource: row.discovery_source as string | undefined,
     exitPrice: row.exit_price != null ? Number(row.exit_price) : undefined,
     quantity: Number(row.quantity),
     pnl: row.pnl != null ? Number(row.pnl) : undefined,
@@ -287,5 +378,13 @@ function rowToTrade(row: Record<string, unknown>): Trade {
     breakoutGrade: row.breakout_grade as Trade['breakoutGrade'],
     sizeConstraint: row.size_constraint as Trade['sizeConstraint'],
     exitReason: row.exit_reason as Trade['exitReason'],
+    entrySlippageBps: row.entry_slippage_bps != null ? Number(row.entry_slippage_bps) : undefined,
+    exitSlippageBps: row.exit_slippage_bps != null ? Number(row.exit_slippage_bps) : undefined,
+    entryPriceImpactPct: row.entry_price_impact_pct != null ? Number(row.entry_price_impact_pct) : undefined,
+    roundTripCostPct: row.round_trip_cost_pct != null ? Number(row.round_trip_cost_pct) : undefined,
+    effectiveRR: row.effective_rr != null ? Number(row.effective_rr) : undefined,
+    degradedTriggerReason: row.degraded_trigger_reason as Trade['degradedTriggerReason'],
+    degradedQuoteFailCount: row.degraded_quote_fail_count != null ? Number(row.degraded_quote_fail_count) : undefined,
+    parentTradeId: row.parent_trade_id as string | undefined,
   };
 }

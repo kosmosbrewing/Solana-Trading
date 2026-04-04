@@ -1,6 +1,11 @@
 // 거래 파라미터 코드 관리 — git 추적, 타입 안전, 코드 리뷰
 // 변경 시 반드시 PR 통해 리뷰 후 배포
 // Why: .env 관리 → 오타/누락/리뷰 없는 변경 리스크 제거
+//
+// Label convention (REFACTORING.md P0-4):
+//   code_default   — strategy 코드 또는 STRATEGY.md 기본값
+//   runtime_canary — VPS 운영에서 의도적으로 변경한 canary 값 (이 파일의 현재 값)
+//   operator_cap   — OPERATIONS.md에서 보수적으로 제한한 cap 값 (env override)
 
 export const tradingParams = {
   // ─── Universe ───
@@ -18,7 +23,7 @@ export const tradingParams = {
   // ─── Strategy A (Volume Spike) ───
   strategyA: {
     defaultTimeframe: 300,
-    volumeSpikeMultiplier: 3.0,           // VPS canary (code default was 2.5)
+    volumeSpikeMultiplier: 3.0,           // runtime_canary: 3.0 (code_default: 2.5)
     volumeSpikeLookback: 20,
     minBuyRatio: 0.65,
     minBreakoutScore: 50,
@@ -51,7 +56,7 @@ export const tradingParams = {
   orderShape: {
     tp1Multiplier: 1.0,
     tp2Multiplier: 10.0,
-    slAtrMultiplier: 1.25,                // VPS canary (code default was 1.0)
+    slAtrMultiplier: 1.25,                // runtime_canary: 1.25 (code_default: 1.0, live_path: 1.5)
     timeStopMinutes: 20,
     tp1PartialPct: 0.3,
     trailingAfterTp1Only: true,
@@ -96,7 +101,7 @@ export const tradingParams = {
   // ─── Concurrent / Position ───
   position: {
     maxConcurrentAbsolute: 3,
-    maxConcurrentPositions: 2,            // VPS canary (code default was 1)
+    maxConcurrentPositions: 2,            // runtime_canary: 2 (code_default: 1)
     maxPositionPct: 0.20,
     concurrentTier1Sol: 5,
     concurrentTier2Sol: 20,
@@ -104,7 +109,7 @@ export const tradingParams = {
 
   // ─── Age Bucket ───
   ageBucket: {
-    ageBucketHardFloorMin: 5,             // VPS canary (code default was 15)
+    ageBucketHardFloorMin: 5,             // runtime_canary: 5 (code_default: 15)
     ageBucketTiers: [
       { upperHours: 1, multiplier: 0.25 },
       { upperHours: 4, multiplier: 0.50 },
@@ -135,7 +140,7 @@ export const tradingParams = {
   // ─── Scanner ───
   scanner: {
     scannerMinWatchlistScore: 30,
-    scannerTrendingPollMs: 900_000,       // VPS canary (code default was 600K)
+    scannerTrendingPollMs: 900_000,       // runtime_canary: 900K (code_default: 600K)
     scannerGeckoNewPoolMs: 60_000,
     scannerDexDiscoveryMs: 60_000,
     scannerDexEnrichMs: 300_000,
@@ -152,22 +157,22 @@ export const tradingParams = {
     realtimePrimaryIntervalSec: 10,
     realtimeConfirmIntervalSec: 60,
     realtimeVolumeSurgeLookback: 20,
-    realtimeVolumeSurgeMultiplier: 1.8,   // VPS canary (code default was 3.0)
+    realtimeVolumeSurgeMultiplier: 1.8,   // runtime_canary: 1.8 (code_default: 3.0)
     realtimePriceBreakoutLookback: 20,
     realtimeConfirmMinBars: 3,
     realtimeConfirmMinChangePct: 0.02,
     realtimeCooldownSec: 300,
     realtimeOutcomeHorizonsSec: [30, 60, 180, 300],
     realtimeMaxSubscriptions: 30,
-    realtimeBootstrapMinBuyRatio: 0.60,   // VPS canary (code default was 0.55)
-    realtimeVolumeMcapBoostThreshold: 0.01,
+    realtimeBootstrapMinBuyRatio: 0.60,   // runtime_canary: 0.60 (code_default: 0.55)
+    realtimeVolumeMcapBoostThreshold: 0.005, // low-cap/high-turnover 포착 완화 (runtime zero-boost 빈도 완화)
     realtimeVolumeMcapBoostMultiplier: 1.5,
     realtimePoolDiscoveryConcurrency: 4,
     realtimePoolDiscoveryRequestSpacingMs: 150,
     realtimePoolDiscoveryQueueLimit: 500,
-    realtimeFallbackConcurrency: 3,       // VPS canary (code default was 2)
-    realtimeFallbackRequestsPerSecond: 1, // VPS canary (code default was 4)
-    realtimeFallbackBatchSize: 1,         // VPS canary (code default was 5)
+    realtimeFallbackConcurrency: 3,       // runtime_canary: 3 (code_default: 2)
+    realtimeFallbackRequestsPerSecond: 1, // runtime_canary: 1 (code_default: 4)
+    realtimeFallbackBatchSize: 1,         // runtime_canary: 1 (code_default: 5)
     realtimeMaxFallbackQueue: 1000,
     realtimeDisableSingleTxFallbackOnBatchUnsupported: true,
     realtimeSeedAllowSingleTxFallback: false,

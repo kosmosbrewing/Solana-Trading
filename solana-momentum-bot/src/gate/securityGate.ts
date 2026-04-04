@@ -58,21 +58,34 @@ export function evaluateSecurityGate(
     };
   }
 
+  // ─── P2-3: Token-2022 classification flags (로깅 전용, hard reject 아님) ───
+  if (security.tokenProgram === 'spl-token-2022') {
+    flags.push('TOKEN_2022');
+    if (security.extensions) {
+      for (const ext of security.extensions) {
+        flags.push(`EXT_${ext}`);
+      }
+    }
+  }
+
   // ─── Hard rejects ───
 
   if (security.isHoneypot) {
     log.warn('REJECTED: honeypot detected');
-    return { approved: false, reason: 'Honeypot detected', sizeMultiplier: 0, flags: ['HONEYPOT'] };
+    flags.push('HONEYPOT');
+    return { approved: false, reason: 'Honeypot detected', sizeMultiplier: 0, flags };
   }
 
   if (security.isFreezable || security.freezeAuthorityPresent) {
     log.warn('REJECTED: freeze authority present');
-    return { approved: false, reason: 'Token is freezable', sizeMultiplier: 0, flags: ['FREEZABLE'] };
+    flags.push('FREEZABLE');
+    return { approved: false, reason: 'Token is freezable', sizeMultiplier: 0, flags };
   }
 
   if (security.hasTransferFee) {
     log.warn('REJECTED: Token-2022 transfer fee detected');
-    return { approved: false, reason: 'Transfer fee token (Token-2022)', sizeMultiplier: 0, flags: ['TRANSFER_FEE'] };
+    flags.push('TRANSFER_FEE');
+    return { approved: false, reason: 'Transfer fee token (Token-2022)', sizeMultiplier: 0, flags };
   }
 
   // ─── Soft checks ───
@@ -84,17 +97,19 @@ export function evaluateSecurityGate(
       log.info('Mintable token — sizing reduced 50%');
     } else {
       log.warn('REJECTED: mintable token');
-      return { approved: false, reason: 'Token is mintable', sizeMultiplier: 0, flags: ['MINTABLE'] };
+      flags.push('MINTABLE');
+      return { approved: false, reason: 'Token is mintable', sizeMultiplier: 0, flags };
     }
   }
 
   if (security.top10HolderPct > 0.80) {
     log.warn(`REJECTED: holder concentration ${(security.top10HolderPct * 100).toFixed(1)}%`);
+    flags.push('HIGH_CONCENTRATION');
     return {
       approved: false,
       reason: `Top 10 holders own ${(security.top10HolderPct * 100).toFixed(1)}%`,
       sizeMultiplier: 0,
-      flags: ['HIGH_CONCENTRATION'],
+      flags,
     };
   }
 
@@ -108,11 +123,12 @@ export function evaluateSecurityGate(
   } else {
     if (exitLiquidity.exitLiquidityUsd != null && exitLiquidity.exitLiquidityUsd < cfg.minExitLiquidityUsd) {
       log.warn(`REJECTED: exit-liquidity too low ($${exitLiquidity.exitLiquidityUsd.toFixed(0)})`);
+      flags.push('LOW_EXIT_LIQUIDITY');
       return {
         approved: false,
         reason: `Exit liquidity too low: $${exitLiquidity.exitLiquidityUsd.toFixed(0)}`,
         sizeMultiplier: 0,
-        flags: ['LOW_EXIT_LIQUIDITY'],
+        flags,
       };
     }
 

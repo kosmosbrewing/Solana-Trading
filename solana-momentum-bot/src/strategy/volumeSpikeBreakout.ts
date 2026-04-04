@@ -122,6 +122,7 @@ export function buildVolumeSpikeOrder(
     side: 'BUY',
     price: signal.price,
     quantity,
+    discoverySource: signal.discoverySource,
     stopLoss,
     takeProfit1: signal.price + atr * p.tp1Multiplier,
     takeProfit2: signal.price + atr * p.tp2Multiplier,

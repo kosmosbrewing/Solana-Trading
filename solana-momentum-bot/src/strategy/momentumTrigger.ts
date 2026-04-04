@@ -139,7 +139,7 @@ export class MomentumTrigger {
 
     return {
       action: 'BUY',
-      strategy: 'volume_spike',
+      strategy: 'core_momentum',
       pairAddress: candle.pairAddress,
       price: current.close,
       timestamp: new Date(closeTimestampSec * 1000),
@@ -222,6 +222,7 @@ export function buildMomentumTriggerOrder(
     side: 'BUY',
     price: signal.price,
     quantity,
+    discoverySource: signal.discoverySource,
     stopLoss,
     takeProfit1: signal.price + trailingStop * config.tp1Multiplier,
     takeProfit2: signal.price + trailingStop * config.tp2Multiplier,

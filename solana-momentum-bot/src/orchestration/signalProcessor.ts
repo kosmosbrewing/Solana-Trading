@@ -4,7 +4,7 @@ import { buildFibPullbackOrder, buildMomentumTriggerOrder, buildVolumeSpikeOrder
 import { checkStaleSignal } from '../state';
 import { config } from '../utils/config';
 import { createModuleLogger } from '../utils/logger';
-import { Candle, Order, Signal } from '../utils/types';
+import { Candle, Order, Signal, isVolumeSpikeFamilyStrategy } from '../utils/types';
 import {
   buildSignalAuditBase,
   EntryExecutionSummary,
@@ -234,7 +234,7 @@ export async function processSignal(
     }
 
     let order: Order;
-    if (signal.strategy === 'volume_spike') {
+    if (isVolumeSpikeFamilyStrategy(signal.strategy)) {
       order = signal.meta.realtimeSignal === 1
         ? buildMomentumTriggerOrder(signal, candles, quantity, {
           slMode: (config.realtimeSlMode as 'atr' | 'swing_low' | 'candle_low'),

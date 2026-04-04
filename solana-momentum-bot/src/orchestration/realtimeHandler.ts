@@ -96,6 +96,10 @@ export async function handleRealtimeSignal(
       ]);
       tokenSecurityData = secData;
       exitLiquidityData = exitData;
+      // P2-3: Token-2022 감지 시 로그
+      if (secData?.tokenProgram === 'spl-token-2022') {
+        log.info(`Token-2022 detected: ${poolInfo.tokenMint} extensions=[${secData.extensions?.join(',') ?? ''}]`);
+      }
     } catch (error) {
       log.warn(`Realtime security data fetch failed for ${poolInfo.tokenMint}: ${error}`);
       tokenSecurityData = null;
@@ -119,6 +123,7 @@ export async function handleRealtimeSignal(
 
   signal.meta.currentVolume24hUsd = poolInfo.dailyVolume;
   signal.tokenSymbol = poolInfo.symbol;
+  signal.discoverySource = poolInfo.discoverySource;
   if (poolInfo.marketCap !== undefined) signal.meta.marketCapUsd = poolInfo.marketCap;
   if (poolInfo.marketCap && poolInfo.marketCap > 0 && poolInfo.dailyVolume > 0) {
     signal.meta.volumeMcapRatio = poolInfo.dailyVolume / poolInfo.marketCap;

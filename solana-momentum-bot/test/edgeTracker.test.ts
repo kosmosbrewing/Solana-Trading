@@ -29,7 +29,8 @@ describe('EdgeTracker', () => {
       })),
     ]);
 
-    const [volumeSpike, fibPullback] = tracker.getAllStrategyStats();
+    const volumeSpike = tracker.getStrategyStats('volume_spike');
+    const fibPullback = tracker.getStrategyStats('fib_pullback');
 
     expect(volumeSpike.totalTrades).toBe(50);
     expect(volumeSpike.edgeState).toBe('Confirmed');
@@ -149,6 +150,43 @@ describe('EdgeTracker', () => {
     // getBlacklistedPairs도 동일하게 decay 반영
     expect(tracker.getBlacklistedPairs().map(s => s.pairAddress)).not.toContain('pair-recoverable');
     expect(tracker.getBlacklistedPairs({ decayWindowTrades: 0 }).map(s => s.pairAddress)).toContain('pair-recoverable');
+  });
+
+  it('getMainPortfolioStats excludes sandbox strategies', () => {
+    const tracker = new EdgeTracker([
+      // 30 main lane trades (volume_spike): 60% WR
+      ...Array.from({ length: 30 }, (_, i) => ({
+        pairAddress: 'pair-main',
+        strategy: 'volume_spike' as const,
+        entryPrice: 10,
+        stopLoss: 9,
+        quantity: 1,
+        pnl: i % 5 < 3 ? 2 : -1,
+      })),
+      // 10 sandbox trades (new_lp_sniper): 100% loss
+      ...Array.from({ length: 10 }, () => ({
+        pairAddress: 'pair-sandbox',
+        strategy: 'new_lp_sniper' as const,
+        entryPrice: 10,
+        stopLoss: 9,
+        quantity: 1,
+        pnl: -1,
+      })),
+    ]);
+
+    // getPortfolioStats includes all 40 trades
+    const allStats = tracker.getPortfolioStats();
+    expect(allStats.totalTrades).toBe(40);
+
+    // getMainPortfolioStats excludes sandbox → only 30 trades
+    const mainStats = tracker.getMainPortfolioStats();
+    expect(mainStats.totalTrades).toBe(30);
+    expect(mainStats.winRate).toBeCloseTo(0.6, 6);
+
+    // sandbox strategy stats still accessible individually
+    const sandboxStats = tracker.getStrategyStats('new_lp_sniper');
+    expect(sandboxStats.totalTrades).toBe(10);
+    expect(sandboxStats.winRate).toBe(0);
   });
 
   it('stays blacklisted when recent window is still bad', () => {

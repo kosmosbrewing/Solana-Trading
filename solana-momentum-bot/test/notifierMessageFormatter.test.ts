@@ -312,6 +312,7 @@ describe('messageFormatter', () => {
         pollFailureCounts: [
           { source: 'gecko_ingester', count: 1 },
         ],
+        riskRejectionCounts: [],
         realtimeCandidateReadiness: {
           totalCandidates: 10,
           prefiltered: 4,
@@ -385,7 +386,7 @@ describe('messageFormatter', () => {
     expect(message).not.toContain('HIDDEN12...DEFG');
     expect(message).toContain('bootstrap boost: boosted signals=2 (cumulative)');
     expect(message).toContain('Today UTC Ops');
-    expect(message).toContain('cap suppress: 2 pairs / 1177 candles skipped');
+    expect(message).toContain('eval suppress: 2 pairs / 1177 candles skipped');
     expect(message).toContain('429: gecko_terminal=4, helius_seed_backfill=2');
     expect(message).toContain('poll failure: gecko_ingester=1');
     expect(message).toContain('data-plane 경고: no candle >= 10m, 429 observed, low realtime-ready ratio, operator blacklist hit, 2 recently evicted signals, all_pairs_blocked observed');
@@ -435,6 +436,7 @@ describe('messageFormatter', () => {
         preWatchlistRejectDetailCounts: [],
         rateLimitCounts: [],
         pollFailureCounts: [],
+        riskRejectionCounts: [],
         realtimeCandidateReadiness: {
           totalCandidates: 0,
           prefiltered: 0,

@@ -66,6 +66,10 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
       ]);
       tokenSecurityData = secData;
       exitLiquidityData = exitData;
+      // P2-3: Token-2022 감지 시 로그
+      if (secData?.tokenProgram === 'spl-token-2022') {
+        log.info(`Token-2022 detected: ${poolInfo.tokenMint} extensions=[${secData.extensions?.join(',') ?? ''}]`);
+      }
     } catch (error) {
       log.warn(`Security data fetch failed for ${poolInfo.tokenMint}: ${error}`);
       tokenSecurityData = null;
@@ -105,6 +109,7 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
 
     if (signal.action === 'BUY') {
       signal.tokenSymbol = poolInfo.symbol;
+      signal.discoverySource = poolInfo.discoverySource;
       signal.meta.currentVolume24hUsd = poolInfo.dailyVolume;
       if (poolInfo.marketCap !== undefined) signal.meta.marketCapUsd = poolInfo.marketCap;
       if (poolInfo.marketCap && poolInfo.marketCap > 0 && poolInfo.dailyVolume > 0) {
@@ -194,6 +199,7 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
 
       if (fibSignal.action === 'BUY') {
         fibSignal.tokenSymbol = poolInfo.symbol;
+        fibSignal.discoverySource = poolInfo.discoverySource;
         fibSignal.meta.currentVolume24hUsd = poolInfo.dailyVolume;
         if (poolInfo.marketCap !== undefined) fibSignal.meta.marketCapUsd = poolInfo.marketCap;
         const prevTvl = ctx.previousTvl.get(candle.pairAddress) || poolTvl;

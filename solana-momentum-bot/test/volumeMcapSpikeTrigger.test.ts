@@ -62,7 +62,7 @@ describe('VolumeMcapSpikeTrigger', () => {
 
     expect(signal).not.toBeNull();
     expect(signal!.action).toBe('BUY');
-    expect(signal!.strategy).toBe('volume_spike');
+    expect(signal!.strategy).toBe('bootstrap_10s');
     expect(signal!.meta.realtimeSignal).toBe(1);
     expect(signal!.meta.triggerMode).toBe(1);
     expect(signal!.meta.volumeRatio).toBeCloseTo(3.0, 1);

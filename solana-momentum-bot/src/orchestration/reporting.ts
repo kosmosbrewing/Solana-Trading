@@ -1,4 +1,4 @@
-import { DailySummaryReport, RealtimeAdmissionSummary } from '../notifier/dailySummaryFormatter';
+import { CostSummary, DailySummaryReport, RealtimeAdmissionSummary } from '../notifier/dailySummaryFormatter';
 import {
   buildHeartbeatPerformanceSummary,
   buildHeartbeatRegimeSummary,
@@ -90,10 +90,12 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
   );
   const dailyPnl = await ctx.tradeStore.getTodayPnl();
   const signalCounts = await ctx.auditLogger.getTodaySignalCounts();
-  const [signalCadence, tradeCadence, filterReasonCounts] = await Promise.all([
+  const [signalCadence, tradeCadence, filterReasonCounts, strategyTelemetry, exitReasonBreakdown] = await Promise.all([
     ctx.auditLogger.getCadenceSignalSummary(cadenceHours),
     ctx.tradeStore.getCadenceTradeSummary(cadenceHours),
     ctx.auditLogger.getRecentGateFilterReasonCounts(rejectionMixHours),
+    ctx.auditLogger.getRecentStrategyFilterBreakdown(rejectionMixHours),
+    ctx.tradeStore.getExitReasonBreakdown(rejectionMixHours),
   ]);
   const balance = ctx.tradingMode === 'paper' && ctx.paperBalance != null
     ? ctx.paperBalance
@@ -113,9 +115,9 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
   const wins = closedTodayTrades.filter(t => (t.pnl || 0) > 0);
   const losses = closedTodayTrades.filter(t => (t.pnl || 0) <= 0);
   const sourceOutcomes = summarizeTradesBySource(closedTodayTrades);
-  // Why: MEASUREMENT.md 기준은 "최근 50 executed trades", closedToday가 아님
-  const recentClosedTrades = await ctx.tradeStore.getRecentClosedTrades(50);
-  const explainedEntry = computeExplainedEntryRatio(recentClosedTrades);
+  // Why: MEASUREMENT.md "최근 50 executed trades" — 진입 기준 (open/closed 무관)
+  const recentExecutedEntries = await ctx.tradeStore.getRecentExecutedEntries(50);
+  const explainedEntry = computeExplainedEntryRatio(recentExecutedEntries);
   const portfolio = await ctx.riskManager.getPortfolioState(balance);
   const runtimeDiagnostics = ctx.runtimeDiagnosticsTracker?.buildSummary(rejectionMixHours);
   const todayUtcOps = ctx.runtimeDiagnosticsTracker?.buildTodayUtcOperationalSummary();
@@ -144,6 +146,8 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
     }
   }
 
+  const costSummary = buildCostSummary(closedTodayTrades);
+
   await ctx.notifier.sendDailySummary({
     totalTrades: closedTodayTrades.length,
     wins: wins.length,
@@ -167,8 +171,11 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
       explained: explainedEntry.explained,
       ratio: explainedEntry.ratio,
     },
+    costSummary,
     todayUtcOps,
     realtimeAdmission: buildRealtimeAdmissionSummary(ctx),
+    strategyTelemetry,
+    exitReasonBreakdown,
     cadence: buildDailyCadenceSummary(signalCadence, tradeCadence),
     rejectionMix: buildDailyRejectionMixSummary({
       hours: rejectionMixHours,
@@ -193,6 +200,22 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
       `SOL ${solIcon}${solLabel} | 확산 ${(regime.breadthPct * 100).toFixed(0)}% | 후속 ${(regime.followThroughPct * 100).toFixed(0)}%`
     );
   }
+}
+
+function buildCostSummary(trades: import('../utils/types').Trade[]): CostSummary | undefined {
+  // Why: 비용 필드가 있는 거래만 집계 (legacy trade는 null)
+  const withCost = trades.filter(t => t.entrySlippageBps != null || t.exitSlippageBps != null);
+  if (withCost.length === 0) return undefined;
+
+  const avg = (values: number[]) => values.length > 0 ? values.reduce((s, v) => s + v, 0) / values.length : 0;
+
+  return {
+    tradeCount: withCost.length,
+    avgEntrySlippageBps: avg(withCost.map(t => t.entrySlippageBps ?? 0)),
+    avgExitSlippageBps: avg(withCost.map(t => t.exitSlippageBps ?? 0)),
+    avgRoundTripCostPct: avg(withCost.filter(t => t.roundTripCostPct != null).map(t => t.roundTripCostPct!)),
+    avgEffectiveRR: avg(withCost.filter(t => t.effectiveRR != null).map(t => t.effectiveRR!)),
+  };
 }
 
 function buildDailyRejectionMixSummary(params: {
@@ -226,6 +249,7 @@ function buildDailyRejectionMixSummary(params: {
     preWatchlistRejectDetailCounts: params.runtimeDiagnostics?.preWatchlistRejectDetailCounts ?? [],
     rateLimitCounts: params.runtimeDiagnostics?.rateLimitCounts ?? [],
     pollFailureCounts: params.runtimeDiagnostics?.pollFailureCounts ?? [],
+    riskRejectionCounts: params.runtimeDiagnostics?.riskRejectionCounts ?? [],
     realtimeCandidateReadiness: params.runtimeDiagnostics?.realtimeCandidateReadiness ?? {
       totalCandidates: 0,
       prefiltered: 0,

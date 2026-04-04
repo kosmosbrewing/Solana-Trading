@@ -191,6 +191,7 @@ describe('RiskManager token protections', () => {
 
     expect(result.approved).toBe(false);
     expect(result.reason).toContain('Per-token cooldown active');
+    expect(manager.isCapSuppressed('PAIR-1')).toBe(true);
   });
 
   it('resets the pair loss cooldown after a winning close', async () => {
@@ -221,5 +222,29 @@ describe('RiskManager token protections', () => {
 
     expect(result.approved).toBe(false);
     expect(result.reason).toContain('Per-token daily trade cap reached');
+    expect(manager.isCapSuppressed('PAIR-1')).toBe(true);
+  });
+
+  it('clears cooldown suppress after the cooldown end passes', async () => {
+    jest.useFakeTimers();
+    try {
+      const now = new Date('2026-04-04T00:00:00.000Z');
+      jest.setSystemTime(now);
+      const manager = makeRiskManager({
+        closedTrades: [
+          makeTrade({ id: 'loss-1', pnl: -0.2, closedAt: new Date(now.getTime() - 30 * 60 * 1000) }),
+          makeTrade({ id: 'loss-2', pnl: -0.1, closedAt: new Date(now.getTime() - 10 * 60 * 1000) }),
+        ],
+      });
+
+      const result = await manager.checkOrder(makeOrder(), makePortfolio());
+      expect(result.approved).toBe(false);
+      expect(manager.isCapSuppressed('PAIR-1')).toBe(true);
+
+      jest.setSystemTime(new Date('2026-04-04T04:01:00.000Z'));
+      expect(manager.isCapSuppressed('PAIR-1')).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

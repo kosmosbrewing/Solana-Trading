@@ -116,8 +116,9 @@ export function resolveRiskTierWithDemotion(
   recoveryPct: number,
   mode: 'portfolio' | StrategyName = 'portfolio'
 ): { profile: RiskTierProfile; demoted: boolean; demotionReason?: string } {
+  // Why: portfolio mode에서는 sandbox trade를 제외하여 main lane만 평가
   const stats = mode === 'portfolio'
-    ? edgeTracker.getPortfolioStats()
+    ? edgeTracker.getMainPortfolioStats()
     : edgeTracker.getStrategyStats(mode as StrategyName);
 
   let profile = resolveRiskTierProfile(stats, recoveryPct);
@@ -166,7 +167,8 @@ export function resolvePortfolioRiskTier(
   trades: EdgeTrackerTrade[],
   recoveryPct: number
 ): RiskTierProfile {
-  const stats = new EdgeTracker(trades).getPortfolioStats();
+  // Why: sandbox trade 제외 — main lane만 risk tier 산출에 사용
+  const stats = new EdgeTracker(trades).getMainPortfolioStats();
   return resolveRiskTierProfile(stats, recoveryPct);
 }
 
@@ -186,8 +188,9 @@ export function replayPortfolioDrawdownGuard(
   trades: EdgeTrackerTrade[],
   recoveryPct: number
 ): DrawdownGuardState {
+  // Why: sandbox trade 제외 — main lane만 drawdown guard 평가에 사용
   return replayTieredDrawdownGuard(currentBalanceSol, trades, tracker =>
-    resolveRiskTierProfile(tracker.getPortfolioStats(), recoveryPct)
+    resolveRiskTierProfile(tracker.getMainPortfolioStats(), recoveryPct)
   );
 }
 

@@ -168,11 +168,11 @@ describe('AttentionScore gate integration', () => {
       },
     });
 
-    expect(result.breakoutScore.mcapVolumeScore).toBe(10);
-    expect(result.breakoutScore.totalScore).toBe(65);
+    expect(result.breakoutScore.mcapVolumeScore).toBe(9);
+    expect(result.breakoutScore.totalScore).toBe(64);
     expect(result.breakoutScore.components?.find(component => component.key === 'volume_mcap_ratio')).toMatchObject({
-      score: 10,
-      maxScore: 10,
+      score: 9,
+      maxScore: 15,
       value: 0.4,
     });
   });

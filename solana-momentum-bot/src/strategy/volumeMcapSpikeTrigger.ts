@@ -11,6 +11,8 @@ export interface VolumeMcapSpikeTriggerConfig {
   cooldownSec: number;
   minBuyRatio: number;
   atrPeriod: number;
+  volumeMcapBoostThreshold?: number;  // default 0.01 (1%)
+  volumeMcapBoostMultiplier?: number; // default 1.5
 }
 
 export interface BootstrapRejectStats {
@@ -20,6 +22,7 @@ export interface BootstrapRejectStats {
   volumeInsufficient: number;
   lowBuyRatio: number;
   cooldown: number;
+  volumeMcapBoosted: number;
 }
 
 const log = createModuleLogger('VolumeMcapSpike');
@@ -36,6 +39,7 @@ export class VolumeMcapSpikeTrigger {
     volumeInsufficient: 0,
     lowBuyRatio: 0,
     cooldown: 0,
+    volumeMcapBoosted: 0,
   };
   private lastStatsLogAt = 0;
 
@@ -76,13 +80,31 @@ export class VolumeMcapSpikeTrigger {
     const current = candles[candles.length - 1];
     const previous = candles.slice(0, -1);
 
-    // HARD gate: volume acceleration
+    // HARD gate: volume acceleration (동적 threshold — 저시총 고회전 밈코인 포착)
     const avgVolume = calcAvgVolume(previous, lookback);
     const volumeRatio = avgVolume > 0 ? current.volume / avgVolume : 0;
-    if (volumeRatio < this.config.volumeSurgeMultiplier) {
+
+    let effectiveMultiplier = this.config.volumeSurgeMultiplier;
+    const ctx = this.poolContext.get(candle.pairAddress);
+    const boostThreshold = this.config.volumeMcapBoostThreshold ?? 0.01;
+    const boostMultiplier = this.config.volumeMcapBoostMultiplier ?? 1.5;
+
+    if (ctx?.marketCap && ctx.marketCap > 0) {
+      const volumeMcapRatio = current.volume / ctx.marketCap;
+      if (volumeMcapRatio >= boostThreshold) {
+        effectiveMultiplier = boostMultiplier;
+      }
+    }
+
+    if (volumeRatio < effectiveMultiplier) {
       this.rejectStats.volumeInsufficient++;
       this.maybeLogStats();
       return null;
+    }
+
+    const boosted = effectiveMultiplier < this.config.volumeSurgeMultiplier;
+    if (boosted) {
+      this.rejectStats.volumeMcapBoosted++;
     }
 
     // SOFT gate: buy ratio
@@ -107,7 +129,6 @@ export class VolumeMcapSpikeTrigger {
     this.rejectStats.signals++;
 
     // mcap enrichment
-    const ctx = this.poolContext.get(candle.pairAddress);
     const volumeMcapPct = ctx?.marketCap && ctx.marketCap > 0
       ? current.volume / ctx.marketCap
       : undefined;
@@ -130,6 +151,7 @@ export class VolumeMcapSpikeTrigger {
         buyRatio,
         atr,
         ...(volumeMcapPct !== undefined ? { volumeMcapPct } : {}),
+        ...(boosted ? { volumeMcapBoosted: 1, effectiveMultiplier } : {}),
       },
     };
   }
@@ -146,7 +168,7 @@ export class VolumeMcapSpikeTrigger {
     this.lastStatsLogAt = now;
     const s = this.rejectStats;
     log.info(
-      `[RejectStats] evals=${s.evaluations} signals=${s.signals} | ` +
+      `[RejectStats] evals=${s.evaluations} signals=${s.signals}(boosted=${s.volumeMcapBoosted}) | ` +
       `insuffCandles=${s.insufficientCandles} volInsuf=${s.volumeInsufficient} ` +
       `lowBuyRatio=${s.lowBuyRatio} cooldown=${s.cooldown}`
     );

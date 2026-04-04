@@ -173,7 +173,17 @@ async function main() {
   let realtimeCandleBuilder: MicroCandleBuilder | null = null;
   let bootstrapTriggerRef: VolumeMcapSpikeTrigger | null = null;
 
+  const ALIAS_GRACE_PERIOD_MS = 5 * 60 * 1000;
+  const pendingAliasCleanups = new Map<string, { timer: NodeJS.Timeout; poolAddress: string }>();
+
   const setRealtimePoolTarget = (logicalPair: string, subscriptionPair: string) => {
+    // Why: grace period 중이면 취소 — 재진입 성공
+    const pending = pendingAliasCleanups.get(logicalPair);
+    if (pending) {
+      clearTimeout(pending.timer);
+      pendingAliasCleanups.delete(logicalPair);
+      runtimeDiagnosticsTracker.recordCandidateReadded(logicalPair, 'within_grace');
+    }
     realtimePoolTargets.set(logicalPair, subscriptionPair);
     realtimePoolAliases.set(subscriptionPair, logicalPair);
   };
@@ -193,17 +203,31 @@ async function main() {
     const existing = realtimePoolTargets.get(logicalPair);
     realtimePoolTargets.delete(logicalPair);
     if (existing) {
-      realtimePoolAliases.delete(existing);
       realtimePoolMetadata.delete(existing);
       heliusIngester?.clearPoolMetadata(existing);
-      // Why: alias 삭제 후 구독 잔존 방지 — swap이 계속 들어오면 alias miss 발생
-      void heliusIngester?.unsubscribePools([existing]);
+      // Why: alias를 즉시 삭제하지 않고 grace period 후 정리 — 재진입 시 swap 즉시 처리
+      const timer = setTimeout(() => {
+        if (!realtimePoolTargets.has(logicalPair)) {
+          realtimePoolAliases.delete(existing);
+          void heliusIngester?.unsubscribePools([existing]);
+        }
+        pendingAliasCleanups.delete(logicalPair);
+      }, ALIAS_GRACE_PERIOD_MS);
+      pendingAliasCleanups.set(logicalPair, { timer, poolAddress: existing });
     }
   };
-  const resolveRealtimePools = (logicalPairs: string[]) =>
-    logicalPairs
+  const resolveRealtimePools = (logicalPairs: string[]) => {
+    const resolved = logicalPairs
       .map((pair) => realtimePoolTargets.get(pair))
       .filter((pair): pair is string => Boolean(pair));
+    // Why: grace period 중인 pool은 subscribePools의 unsubscribe 대상에서 보호
+    for (const { poolAddress } of pendingAliasCleanups.values()) {
+      if (!resolved.includes(poolAddress)) {
+        resolved.push(poolAddress);
+      }
+    }
+    return [...new Set(resolved)];
+  };
 
   // ─── 공유 DB Pool ─────────────────────────────────
   // M-20: pool exhaustion 방지 — max connections 제한 + idle timeout
@@ -800,6 +824,7 @@ async function main() {
     });
     scanner.on('candidateEvicted', (tokenMint: string) => {
       log.info(`Scanner: evicted ${tokenMint}`);
+      runtimeDiagnosticsTracker.recordCandidateEvicted(tokenMint);
       removeRealtimePoolTarget(tokenMint);
       ingester.removePair(tokenMint);
       universeEngine.removePool(tokenMint);
@@ -884,6 +909,7 @@ async function main() {
     realtimeSignalLogger: realtimeSignalLogger ?? undefined,
     realtimeReplayStore: realtimeReplayStore ?? undefined,
     runtimeDiagnosticsTracker,
+    isInGracePeriod: (tokenMint) => pendingAliasCleanups.has(tokenMint),
     // Why: Paper 모드에서 온체인 잔고 대신 시뮬레이션 잔고 (기본 1 SOL)
     paperBalance: effectiveMode === 'paper' ? config.paperInitialBalance : undefined,
   };
@@ -952,11 +978,13 @@ async function main() {
           cooldownSec: config.realtimeCooldownSec,
           minBuyRatio: config.realtimeBootstrapMinBuyRatio,
           atrPeriod: 14,
+          volumeMcapBoostThreshold: config.realtimeVolumeMcapBoostThreshold,
+          volumeMcapBoostMultiplier: config.realtimeVolumeMcapBoostMultiplier,
         },
         // Why: RejectStats → runtime-diagnostics.json (원격 디버깅)
         (s) => {
           runtimeDiagnosticsTracker.recordTriggerStats(
-            `evals=${s.evaluations} signals=${s.signals} insuffCandles=${s.insufficientCandles} ` +
+            `evals=${s.evaluations} signals=${s.signals}(boosted=${s.volumeMcapBoosted}) insuffCandles=${s.insufficientCandles} ` +
             `volInsuf=${s.volumeInsufficient} lowBuyRatio=${s.lowBuyRatio} cooldown=${s.cooldown}`,
             'bootstrap_trigger'
           );
@@ -1005,10 +1033,8 @@ async function main() {
     heliusIngester.on('swap', (swap) => {
       const logicalPair = realtimePoolAliases.get(swap.pool);
       if (!logicalPair) {
-        // Why: alias 없는 pool의 swap → candle key에 pool address가 들어가서 watchlist lookup 100% 실패
-        // stale 구독을 즉시 해제하여 반복 alias miss 방지
+        // Why: unsubscribe 하지 않음 — grace period 중 또는 재진입 시 alias 복구 후 즉시 swap 처리 가능
         runtimeDiagnosticsTracker.recordAliasMiss(swap.pool);
-        void heliusIngester!.unsubscribePools([swap.pool]);
         return;
       }
       const metadata = realtimePoolMetadata.get(swap.pool);
@@ -1350,6 +1376,11 @@ async function main() {
     clearInterval(positionCheckInterval);
     clearInterval(regimeInterval);
     clearInterval(pruneInterval);
+    // Why: grace period timer가 shutdown 후 발동하면 stopped ingester 호출 → 에러 방지
+    for (const { timer } of pendingAliasCleanups.values()) {
+      clearTimeout(timer);
+    }
+    pendingAliasCleanups.clear();
     if (realtimeAdmissionTracker && realtimeAdmissionStore) {
       await realtimeAdmissionStore.save(realtimeAdmissionTracker.exportSnapshot()).catch((error) => {
         log.warn(`Failed to persist realtime admission snapshot: ${error}`);

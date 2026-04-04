@@ -51,6 +51,8 @@ async function main() {
     cooldownSec: numArg(args, '--cooldown-sec', 300),
     minBuyRatio: numArg(args, '--min-buy-ratio', 0.55),
     atrPeriod: numArg(args, '--atr-period', 14),
+    volumeMcapBoostThreshold: numArg(args, '--volume-mcap-boost-threshold', 0.01),
+    volumeMcapBoostMultiplier: numArg(args, '--volume-mcap-boost-multiplier', 1.5),
   } : undefined;
 
   const resolvedDatasetRoot = path.resolve(datasetDir);
@@ -137,10 +139,10 @@ async function main() {
     if (triggerType === 'bootstrap') {
       const brs = rs as import('../src/strategy').BootstrapRejectStats;
       const cfg = bootstrapTriggerConfig!;
-      console.log(`  volume_insufficient : ${pct(brs.volumeInsufficient)}  [vm=${cfg.volumeSurgeMultiplier}x threshold]`);
+      console.log(`  volume_insufficient : ${pct(brs.volumeInsufficient)}  [vm=${cfg.volumeSurgeMultiplier}x, boost=${cfg.volumeMcapBoostMultiplier ?? 1.5}x @${((cfg.volumeMcapBoostThreshold ?? 0.01) * 100).toFixed(0)}% vol/mcap]`);
       console.log(`  low_buy_ratio       : ${pct(brs.lowBuyRatio)}  [min=${cfg.minBuyRatio}]`);
       console.log(`  cooldown            : ${pct(brs.cooldown)}  [${cfg.cooldownSec}s]`);
-      console.log(`  signals_fired       : ${brs.signals}`);
+      console.log(`  signals_fired       : ${brs.signals} (boosted=${brs.volumeMcapBoosted})`);
     } else {
       const volumeOk = rs.evaluations - rs.volumeInsufficient;
       console.log(`  volume_ok       : ${pct(volumeOk)}  [vm=${triggerConfig.volumeSurgeMultiplier}x threshold]`);
@@ -230,6 +232,8 @@ Options:
   --min-buy-ratio <n>         Min buy ratio soft gate (default: 0.55)
   --atr-period <n>            ATR period (default: 14)
   --cooldown-sec <n>          Cooldown seconds (default: 300)
+  --volume-mcap-boost-threshold <n>  Volume/mcap ratio to activate boost (default: 0.01)
+  --volume-mcap-boost-multiplier <n> Boosted volume multiplier (default: 1.5)
 
   --estimated-cost-pct <n>    Fallback cost pct if stored signal cost is absent
   --json                      Print JSON output

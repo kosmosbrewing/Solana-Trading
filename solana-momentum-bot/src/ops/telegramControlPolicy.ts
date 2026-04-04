@@ -5,6 +5,7 @@ export type ControlCommand =
   | { type: 'status' }
   | { type: 'list' }
   | { type: 'health' }
+  | { type: 'report' }
   | { type: 'restart'; processName: string }
   | { type: 'stop'; processName: string }
   | { type: 'logs'; processName: string };
@@ -41,6 +42,9 @@ export function parseControlCommand(text: string | undefined, allowedProcesses: 
       return { kind: 'command', command: { type: 'list' } };
     case '/health':
       return { kind: 'command', command: { type: 'health' } };
+    case '/report':
+    case '/heartbeat':
+      return { kind: 'command', command: { type: 'report' } };
     case '/restart':
       return parseProcessCommand('restart', processToken, allowedProcesses, allowedList);
     case '/stop':

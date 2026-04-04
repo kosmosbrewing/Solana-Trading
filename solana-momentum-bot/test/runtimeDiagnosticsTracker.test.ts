@@ -90,15 +90,19 @@ describe('RuntimeDiagnosticsTracker', () => {
 
   it('records trigger_stats and includes them in summary', () => {
     const tracker = new RuntimeDiagnosticsTracker();
-    tracker.recordTriggerStats('evals=100 signals=2 insuffCandles=30 volInsuf=50 noBreakout=10 confirmFail=5 cooldown=3');
+    tracker.recordTriggerStats(
+      'evals=100 signals=2(boosted=1) insuffCandles=30 volInsuf=50 noBreakout=10 confirmFail=5 cooldown=3',
+      'bootstrap_trigger'
+    );
     tracker.recordTriggerStats('evals=200 signals=5 insuffCandles=60 volInsuf=100 noBreakout=20 confirmFail=10 cooldown=5');
 
     const summary = tracker.buildSummary(24);
 
     expect(summary.triggerStatsCounts).toHaveLength(2);
     expect(summary.triggerStatsCounts[0].count).toBe(1);
-    expect(summary.triggerStatsCounts[0].label).toContain('momentum_trigger');
+    expect(summary.triggerStatsCounts[0].label).toContain('bootstrap_trigger');
     expect(summary.triggerStatsCounts[0].label).toContain('evals=');
+    expect(summary.bootstrapBoostedSignalCount).toBe(1);
   });
 
   it('prunes trigger_stats events beyond 500 limit', () => {
@@ -110,5 +114,80 @@ describe('RuntimeDiagnosticsTracker', () => {
     const summary = tracker.buildSummary(24);
     const totalTriggerEvents = summary.triggerStatsCounts.reduce((sum, item) => sum + item.count, 0);
     expect(totalTriggerEvents).toBeLessThanOrEqual(500);
+  });
+
+  it('summarizes watchlist lifecycle and missed tokens', () => {
+    const tracker = new RuntimeDiagnosticsTracker();
+
+    tracker.recordCandidateEvicted('token-a');
+    tracker.recordCandidateReadded('token-a', 'within_grace');
+    tracker.recordSignalNotInWatchlist('token-a', 'recently_evicted');
+    tracker.recordSignalNotInWatchlist('token-a');
+
+    tracker.recordCandidateEvicted('token-b');
+    tracker.recordSignalNotInWatchlist('token-b');
+    tracker.recordSignalNotInWatchlist('token-b');
+
+    tracker.recordSignalNotInWatchlist('token-c');
+
+    for (let i = 0; i < 3; i++) {
+      tracker.recordSignalNotInWatchlist(`token-extra-${i}`);
+    }
+
+    const summary = tracker.buildSummary(24);
+
+    expect(summary.candidateEvictedCount).toBe(2);
+    expect(summary.candidateReaddedWithinGraceCount).toBe(1);
+    expect(summary.signalNotInWatchlistCount).toBe(8);
+    expect(summary.signalNotInWatchlistRecentlyEvictedCount).toBe(1);
+    expect(summary.missedTokens).toEqual([
+      { tokenMint: 'token-a', evicted: 1, readded: 1, notInWatchlist: 2, recentlyEvicted: 1, admissionBlocked: 0 },
+      { tokenMint: 'token-b', evicted: 1, readded: 0, notInWatchlist: 2, recentlyEvicted: 0, admissionBlocked: 0 },
+      { tokenMint: 'token-c', evicted: 0, readded: 0, notInWatchlist: 1, recentlyEvicted: 0, admissionBlocked: 0 },
+      { tokenMint: 'token-extra-0', evicted: 0, readded: 0, notInWatchlist: 1, recentlyEvicted: 0, admissionBlocked: 0 },
+      { tokenMint: 'token-extra-1', evicted: 0, readded: 0, notInWatchlist: 1, recentlyEvicted: 0, admissionBlocked: 0 },
+    ]);
+  });
+
+  it('includes admission_skip:all_pairs_blocked tokens in missedTokens', () => {
+    const tracker = new RuntimeDiagnosticsTracker();
+
+    // Why: admission_skip으로만 차단된 토큰도 missedTokens에 포함되어야 함
+    tracker.recordAdmissionSkip({
+      tokenMint: 'token-blocked',
+      reason: 'no_pairs',
+      detail: 'all_pairs_blocked',
+      source: 'gecko_trending',
+    });
+    tracker.recordAdmissionSkip({
+      tokenMint: 'token-blocked',
+      reason: 'no_pairs',
+      detail: 'all_pairs_blocked',
+      source: 'gecko_trending',
+    });
+
+    // 일반 admission_skip (all_pairs_blocked 아님) — missedTokens에 미포함
+    tracker.recordAdmissionSkip({
+      tokenMint: 'token-normal-skip',
+      reason: 'no_pairs',
+      detail: 'resolver_miss',
+      source: 'gecko_trending',
+    });
+
+    // signal_not_in_watchlist + admission_skip 혼합 토큰
+    tracker.recordSignalNotInWatchlist('token-mixed');
+    tracker.recordAdmissionSkip({
+      tokenMint: 'token-mixed',
+      reason: 'no_pairs',
+      detail: 'all_pairs_blocked',
+      source: 'gecko_trending',
+    });
+
+    const summary = tracker.buildSummary(24);
+
+    expect(summary.missedTokens).toEqual([
+      { tokenMint: 'token-blocked', evicted: 0, readded: 0, notInWatchlist: 0, recentlyEvicted: 0, admissionBlocked: 2 },
+      { tokenMint: 'token-mixed', evicted: 0, readded: 0, notInWatchlist: 1, recentlyEvicted: 0, admissionBlocked: 1 },
+    ]);
   });
 });

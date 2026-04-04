@@ -33,6 +33,17 @@ describe('telegramControlPolicy', () => {
     expect(parsed).toEqual({ kind: 'command', command: { type: 'health' } });
   });
 
+  test('parses report command and heartbeat alias', () => {
+    expect(parseControlCommand('/report', ALLOWED_PROCESSES)).toEqual({
+      kind: 'command',
+      command: { type: 'report' },
+    });
+    expect(parseControlCommand('/heartbeat', ALLOWED_PROCESSES)).toEqual({
+      kind: 'command',
+      command: { type: 'report' },
+    });
+  });
+
   test('parses process commands for allowed processes', () => {
     const parsed = parseControlCommand('/restart momentum-shadow', ALLOWED_PROCESSES);
     expect(parsed).toEqual({

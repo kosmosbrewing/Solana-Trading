@@ -50,9 +50,22 @@ export interface DailyRejectionMixSummary {
   admissionSkipCounts: Array<{ reason: string; count: number }>;
   admissionSkipDetailCounts: Array<{ label: string; count: number }>;
   aliasMissCounts: Array<{ pool: string; count: number }>;
+  candidateEvictedCount: number;
+  candidateReaddedWithinGraceCount: number;
+  signalNotInWatchlistCount: number;
+  signalNotInWatchlistRecentlyEvictedCount: number;
+  missedTokens: Array<{
+    tokenMint: string;
+    evicted: number;
+    readded: number;
+    notInWatchlist: number;
+    recentlyEvicted: number;
+    admissionBlocked: number;
+  }>;
   capacityCounts: Array<{ label: string; count: number }>;
   triggerStatsCounts: Array<{ label: string; count: number }>;
   latestTriggerStats?: { source: string; detail: string };
+  bootstrapBoostedSignalCount: number;
   preWatchlistRejectCounts: Array<{ reason: string; count: number }>;
   preWatchlistRejectDetailCounts: Array<{ label: string; count: number }>;
   rateLimitCounts: Array<{ source: string; count: number }>;
@@ -181,6 +194,9 @@ export function buildDailySummaryMessage(report: DailySummaryReport, dateLabel: 
     appendLabelCountSection(lines, 'realtime skip detail', report.rejectionMix.admissionSkipDetailCounts);
     appendLabelCountSection(lines, 'capacity', report.rejectionMix.capacityCounts);
     appendTriggerStatsSection(lines, report.rejectionMix.latestTriggerStats);
+    appendWatchlistLifecycleSection(lines, report.rejectionMix);
+    appendMissedTokensSection(lines, report.rejectionMix.missedTokens);
+    appendBootstrapBoostSection(lines, report.rejectionMix.bootstrapBoostedSignalCount);
     appendCountSection(lines, '429', report.rejectionMix.rateLimitCounts, 'source');
     appendCountSection(lines, 'poll failure', report.rejectionMix.pollFailureCounts, 'source');
 
@@ -282,6 +298,12 @@ function buildRejectionWarnings(summary: DailyRejectionMixSummary): string[] {
   if (summary.preWatchlistRejectCounts.some((item) => item.reason === 'operator_blacklist' && item.count > 0)) {
     warnings.push('operator blacklist hit');
   }
+  if (summary.signalNotInWatchlistRecentlyEvictedCount > 0) {
+    warnings.push(`${summary.signalNotInWatchlistRecentlyEvictedCount} recently evicted signals`);
+  }
+  if (summary.admissionSkipDetailCounts.some((item) => item.label.includes('all_pairs_blocked'))) {
+    warnings.push('all_pairs_blocked observed');
+  }
   return warnings;
 }
 
@@ -327,4 +349,40 @@ function appendTriggerStatsSection(
     return;
   }
   lines.push(`- trigger stats (${escapeHtml(latest.source)}): ${escapeHtml(latest.detail)}`);
+}
+
+function appendWatchlistLifecycleSection(
+  lines: string[],
+  summary: DailyRejectionMixSummary
+): void {
+  lines.push(
+    '- watchlist lifecycle: ' +
+    `evicted=${summary.candidateEvictedCount} ` +
+    `readded=${summary.candidateReaddedWithinGraceCount} ` +
+    `not_in_watchlist=${summary.signalNotInWatchlistCount}` +
+    `(recently_evicted=${summary.signalNotInWatchlistRecentlyEvictedCount})`
+  );
+}
+
+function appendMissedTokensSection(
+  lines: string[],
+  missedTokens: DailyRejectionMixSummary['missedTokens']
+): void {
+  if (missedTokens.length === 0) {
+    return;
+  }
+
+  lines.push('- missed tokens (top 3):');
+  for (const token of missedTokens.slice(0, 3)) {
+    lines.push(
+      `- <code>${escapeHtml(shortenAddress(token.tokenMint))}</code> ` +
+      `evicted=${token.evicted} readded=${token.readded} ` +
+      `not_in_wl=${token.notInWatchlist} recent_evict=${token.recentlyEvicted}` +
+      (token.admissionBlocked > 0 ? ` adm_blocked=${token.admissionBlocked}` : '')
+    );
+  }
+}
+
+function appendBootstrapBoostSection(lines: string[], boostedSignalCount: number): void {
+  lines.push(`- bootstrap boost: boosted signals=${boostedSignalCount} (cumulative)`);
 }

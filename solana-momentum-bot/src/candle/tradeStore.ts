@@ -168,6 +168,37 @@ export class TradeStore {
     return result.rows.map(rowToTrade);
   }
 
+  async getTradesCreatedWithinHours(hours: number): Promise<Trade[]> {
+    const result = await this.pool.query(
+      `SELECT * FROM trades
+       WHERE created_at >= now() - ($1::text || ' hours')::interval
+       ORDER BY created_at ASC`,
+      [String(hours)]
+    );
+    return result.rows.map(rowToTrade);
+  }
+
+  async getClosedPnlWithinHours(hours: number): Promise<number> {
+    const result = await this.pool.query(
+      `SELECT COALESCE(SUM(pnl), 0) as total_pnl FROM trades
+       WHERE status = 'CLOSED'
+         AND closed_at >= now() - ($1::text || ' hours')::interval`,
+      [String(hours)]
+    );
+    return Number(result.rows[0].total_pnl);
+  }
+
+  async getClosedTradesWithinHours(hours: number): Promise<Trade[]> {
+    const result = await this.pool.query(
+      `SELECT * FROM trades
+       WHERE status = 'CLOSED'
+         AND closed_at >= now() - ($1::text || ' hours')::interval
+       ORDER BY closed_at ASC, created_at ASC`,
+      [String(hours)]
+    );
+    return result.rows.map(rowToTrade);
+  }
+
   async getRecentClosedTrades(limit: number): Promise<Trade[]> {
     const result = await this.pool.query(
       `SELECT * FROM trades

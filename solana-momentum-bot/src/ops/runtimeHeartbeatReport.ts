@@ -1,13 +1,15 @@
 import fs from 'fs/promises';
 import path from 'path';
+import bs58 from 'bs58';
 import { Pool } from 'pg';
+import { Connection, Keypair, LAMPORTS_PER_SOL } from '@solana/web3.js';
 import { TradeStore } from '../candle';
-import { Executor } from '../executor';
 import {
+  HEARTBEAT_WINDOW_HOURS,
   buildHeartbeatPerformanceSummary,
   buildHeartbeatRegimeSummary,
   buildHeartbeatTradingSummary,
-} from '../orchestration/reporting';
+} from '../reporting/heartbeatSummary';
 import { PaperMetricsSummary } from '../reporting/paperMetrics';
 import { RegimeState } from '../risk/regimeFilter';
 import { config, TradingMode } from '../utils/config';
@@ -22,7 +24,8 @@ interface RuntimeHeartbeatDeps {
   pool: Pool;
   pm2Service: Pm2Service;
   tradeStore: TradeStore;
-  executor: Executor;
+  connection: Connection;
+  wallet: Keypair;
 }
 
 const SESSION_POINTER_PATH = path.join(config.realtimeDataDir, 'current-session.json');
@@ -31,26 +34,13 @@ const REGIME_LOG_PATTERN = /Regime: (\w+) \(size=([0-9.]+)x\) SOL=(bull|bear) br
 export function createRuntimeHeartbeatDeps(): RuntimeHeartbeatDeps {
   const pool = new Pool({ connectionString: config.databaseUrl });
   const tradeStore = new TradeStore(pool);
-  const executor = new Executor({
-    solanaRpcUrl: config.solanaRpcUrl,
-    walletPrivateKey: config.walletPrivateKey,
-    jupiterApiUrl: config.jupiterApiUrl,
-    maxSlippage: config.maxSlippage,
-    maxRetries: config.maxRetries,
-    txTimeoutMs: config.txTimeoutMs,
-    useJitoBundles: config.useJitoBundles,
-    jitoRpcUrl: config.jitoRpcUrl,
-    jitoTipSol: config.jitoTipSol,
-    useJupiterUltra: config.useJupiterUltra,
-    jupiterUltraApiUrl: config.jupiterUltraApiUrl,
-    jupiterApiKey: config.jupiterApiKey,
-  });
 
   return {
     pool,
     pm2Service: new Pm2Service(),
     tradeStore,
-    executor,
+    connection: new Connection(config.solanaRpcUrl, 'confirmed'),
+    wallet: Keypair.fromSecretKey(bs58.decode(config.walletPrivateKey)),
   };
 }
 
@@ -60,34 +50,32 @@ export async function closeRuntimeHeartbeatDeps(deps: RuntimeHeartbeatDeps): Pro
 
 export async function buildRuntimeHeartbeatReport(deps: RuntimeHeartbeatDeps): Promise<string> {
   const tradingMode = await resolveRuntimeTradingMode();
-  const [openTrades, todayTrades, allClosedTrades, dailyPnl, regimeSummary] = await Promise.all([
+  const [openTrades, recentTrades, recentClosedTrades, allClosedTrades, pnl, regimeSummary] = await Promise.all([
     deps.tradeStore.getOpenTrades(),
-    deps.tradeStore.getTodayTrades(),
+    deps.tradeStore.getTradesCreatedWithinHours(HEARTBEAT_WINDOW_HOURS),
+    deps.tradeStore.getClosedTradesWithinHours(HEARTBEAT_WINDOW_HOURS),
     deps.tradeStore.getClosedTradesChronological(),
-    deps.tradeStore.getTodayPnl(),
+    deps.tradeStore.getClosedPnlWithinHours(HEARTBEAT_WINDOW_HOURS),
     loadLatestRegimeSummary(deps.pm2Service),
   ]);
-  const closedTodayTrades = todayTrades.filter(
-    (trade) => trade.status === 'CLOSED' && trade.pnl !== undefined
-  );
-  const closedTradesLast24h = filterClosedTradesWithinHours(allClosedTrades, 24);
   const balanceSol = tradingMode === 'paper'
     ? computePaperCashBalance(config.paperInitialBalance, openTrades, allClosedTrades)
-    : await deps.executor.getBalance();
+    : await getLiveBalance(deps);
 
   const lines = [
     buildHeartbeatTradingSummary({
       tradingMode,
+      windowHours: HEARTBEAT_WINDOW_HOURS,
       balanceSol,
-      dailyPnl,
-      totalTrades: todayTrades.length,
-      closedTrades: closedTodayTrades.length,
+      pnl,
+      enteredTrades: recentTrades.length,
+      closedTrades: recentClosedTrades.length,
       openTrades: openTrades.length,
     }),
   ];
 
   const performanceSummary = buildHeartbeatPerformanceSummary(
-    summarizeClosedTrades(closedTradesLast24h)
+    summarizeClosedTrades(recentClosedTrades)
   );
   if (performanceSummary) {
     lines.push(performanceSummary);
@@ -163,6 +151,11 @@ export function parseLatestRegimeState(logText: string): RegimeState | undefined
   return undefined;
 }
 
+async function getLiveBalance(deps: RuntimeHeartbeatDeps): Promise<number> {
+  const lamports = await deps.connection.getBalance(deps.wallet.publicKey);
+  return lamports / LAMPORTS_PER_SOL;
+}
+
 async function resolveRuntimeTradingMode(): Promise<TradingMode> {
   try {
     const raw = await fs.readFile(SESSION_POINTER_PATH, 'utf8');
@@ -185,14 +178,4 @@ async function loadLatestRegimeSummary(pm2Service: Pm2Service): Promise<string |
   } catch {
     return undefined;
   }
-}
-
-function filterClosedTradesWithinHours(trades: Trade[], hours: number): Trade[] {
-  const cutoffMs = Date.now() - hours * 3600_000;
-  return trades.filter((trade) => (
-    trade.status === 'CLOSED' &&
-    trade.closedAt != null &&
-    trade.pnl !== undefined &&
-    trade.closedAt.getTime() >= cutoffMs
-  ));
 }

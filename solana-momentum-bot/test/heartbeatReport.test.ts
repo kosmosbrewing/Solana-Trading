@@ -2,23 +2,24 @@ import {
   buildHeartbeatPerformanceSummary,
   buildHeartbeatRegimeSummary,
   buildHeartbeatTradingSummary,
-} from '../src/orchestration/reporting';
+} from '../src/reporting/heartbeatSummary';
 import { PaperMetricsSummary } from '../src/reporting/paperMetrics';
 
 describe('heartbeat reporting helpers', () => {
   it('includes balance, pnl, and trade counts in trading summary', () => {
     const text = buildHeartbeatTradingSummary({
       tradingMode: 'paper',
+      windowHours: 4,
       balanceSol: 1.0321,
-      dailyPnl: 0.0214,
-      totalTrades: 7,
+      pnl: 0.0214,
+      enteredTrades: 7,
       closedTrades: 5,
       openTrades: 2,
     });
 
-    expect(text).toContain('📊 Paper · 24h');
+    expect(text).toContain('📊 Paper · 4h');
     expect(text).toContain('잔액 1.0321 SOL | 손익 +0.0214 SOL');
-    expect(text).toContain('오늘 거래 7건 | 종료 5건 | 오픈 2건');
+    expect(text).toContain('최근 4h 진입 7건 | 종료 5건 | 오픈 2건');
   });
 
   it('omits performance block when there are no closed trades', () => {

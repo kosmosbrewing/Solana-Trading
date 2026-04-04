@@ -37,8 +37,8 @@ describe('PaperMetricsTracker', () => {
     });
 
     const text = tracker.formatSummaryText();
-    expect(text).toContain('Source:');
-    expect(text).toContain('scanner_dex_boost: 1 trades, WR 100%');
-    expect(text).toContain('scanner_dex_token_profile: 1 trades, WR 0%');
+    expect(text).toContain('📊 Paper · 48h');
+    expect(text).toContain('· scanner_dex_boost  1건 WR 100%');
+    expect(text).toContain('· scanner_dex_token_profile  1건 WR 0%');
   });
 });

@@ -224,6 +224,34 @@ describe('Executor Ultra V3', () => {
     }));
   });
 
+  it('executeBuy returns actual SOL input metrics from wallet balance delta', async () => {
+    mockGetBalance
+      .mockResolvedValueOnce(1_000_000_000)
+      .mockResolvedValueOnce(749_990_000);
+
+    const executor = new Executor({
+      ...BASE_CONFIG,
+      useJupiterUltra: false,
+    });
+
+    const result = await executor.executeBuy({
+      pairAddress: 'TokenMint1111111111111111111111111111111111',
+      strategy: 'volume_spike',
+      side: 'BUY',
+      price: 0.125,
+      quantity: 2,
+      stopLoss: 0.1,
+      takeProfit1: 0.15,
+      takeProfit2: 0.2,
+      timeStopMinutes: 15,
+    });
+
+    expect(result.expectedInAmount).toBe(1000000000n);
+    expect(result.actualInputAmount).toBe(250010000n);
+    expect(result.actualInputUiAmount).toBeCloseTo(0.25001, 8);
+    expect(result.inputDecimals).toBe(9);
+  });
+
   it('Ultra 응답 파싱 — SwapResult 정상 구조', () => {
     // Ultra 응답 구조 검증 (타입 레벨)
     const mockUltraResult = {

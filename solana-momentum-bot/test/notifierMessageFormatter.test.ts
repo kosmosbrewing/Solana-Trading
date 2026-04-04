@@ -229,6 +229,10 @@ describe('messageFormatter', () => {
           },
         ],
       },
+      todayUtcOps: {
+        capSuppressedPairs: 2,
+        capSuppressedCandles: 1177,
+      },
       rejectionMix: {
         hours: 24,
         lastCandleAt: '2026-03-22T08:45:00.000Z',
@@ -380,6 +384,8 @@ describe('messageFormatter', () => {
     expect(message).toContain('PIPPIN12...DEFG');
     expect(message).not.toContain('HIDDEN12...DEFG');
     expect(message).toContain('bootstrap boost: boosted signals=2 (cumulative)');
+    expect(message).toContain('Today UTC Ops');
+    expect(message).toContain('cap suppress: 2 pairs / 1177 candles skipped');
     expect(message).toContain('429: gecko_terminal=4, helius_seed_backfill=2');
     expect(message).toContain('poll failure: gecko_ingester=1');
     expect(message).toContain('data-plane 경고: no candle >= 10m, 429 observed, low realtime-ready ratio, operator blacklist hit, 2 recently evicted signals, all_pairs_blocked observed');
@@ -406,6 +412,10 @@ describe('messageFormatter', () => {
       consecutiveLosses: 0,
       uptime: 60_000,
       restarts: 0,
+      todayUtcOps: {
+        capSuppressedPairs: 0,
+        capSuppressedCandles: 0,
+      },
       rejectionMix: {
         hours: 24,
         gateFilterReasonCounts: [],

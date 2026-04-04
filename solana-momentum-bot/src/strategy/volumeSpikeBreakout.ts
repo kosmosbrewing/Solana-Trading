@@ -90,6 +90,7 @@ export function evaluateVolumeSpikeBreakout(
       pairAddress,
       price: currentCandle.close,
       timestamp: new Date(),
+      sourceLabel: 'strategy_volume_spike',
       meta,
     };
   }

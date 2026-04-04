@@ -97,6 +97,15 @@ export interface DailySummaryReport {
   restarts: number;
   edgeStats?: StrategyEdgeStats[];
   sourceOutcomes?: SourceOutcomeStats[];
+  explainedEntryRatio?: {
+    total: number;
+    explained: number;
+    ratio: number;
+  };
+  todayUtcOps?: {
+    capSuppressedPairs: number;
+    capSuppressedCandles: number;
+  };
   realtimeAdmission?: RealtimeAdmissionSummary;
   cadence?: DailyCadenceSummary;
   rejectionMix?: DailyRejectionMixSummary;
@@ -206,6 +215,14 @@ export function buildDailySummaryMessage(report: DailySummaryReport, dateLabel: 
     }
   }
 
+  if (report.todayUtcOps && report.todayUtcOps.capSuppressedCandles > 0) {
+    lines.push(
+      '',
+      'Today UTC Ops',
+      `- cap suppress: ${report.todayUtcOps.capSuppressedPairs} pairs / ${report.todayUtcOps.capSuppressedCandles} candles skipped`
+    );
+  }
+
   if (visibleEdgeStats.length > 0) {
     lines.push('', '전략 상태');
     for (const stat of visibleEdgeStats) {
@@ -227,6 +244,13 @@ export function buildDailySummaryMessage(report: DailySummaryReport, dateLabel: 
         `승률 ${formatPercent(stat.winRate)} | 손익 ${formatSignedSol(stat.pnl)}`
       );
     }
+  }
+
+  if (report.explainedEntryRatio && report.explainedEntryRatio.total > 0) {
+    const er = report.explainedEntryRatio;
+    const pct = formatPercent(er.ratio);
+    const icon = er.ratio >= 0.9 ? '✅' : '⚠';
+    lines.push(`- explained entry (last ${er.total}): ${er.explained}/${er.total} (${pct}) ${icon} target ≥90%`);
   }
 
   return lines.join('\n');

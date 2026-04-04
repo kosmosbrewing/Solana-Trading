@@ -1,4 +1,5 @@
 import type { BirdeyeTrendingToken } from '../ingester/birdeyeClient';
+import { SOL_MINT } from '../utils/constants';
 import type {
   DexScreenerAd,
   DexScreenerBoost,
@@ -127,6 +128,8 @@ export async function buildDexTokenDiscoveryCandidate(
   const pairs = await client.getTokenPairs(seed.tokenAddress);
   const bestPair = pickBestDiscoveryPair(pairs, seed.tokenAddress);
   if (!bestPair) return null;
+  // Why: non-SOL quote pair는 downstream에서 어차피 reject — API 호출 절약
+  if (bestPair.quoteToken.address && bestPair.quoteToken.address !== SOL_MINT) return null;
 
   const orders = await client.getTokenOrders(seed.tokenAddress);
   const matchedToken = resolveMatchedToken(bestPair, seed.tokenAddress);

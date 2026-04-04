@@ -7,7 +7,7 @@ import {
 } from '../reporting/heartbeatSummary';
 import { RuntimeDiagnosticsSummary } from '../reporting/runtimeDiagnosticsTracker';
 import { RealtimeAdmissionSnapshotEntry } from '../realtime';
-import { EdgeTracker, sanitizeEdgeLikeTrades, summarizeTradesBySource } from '../reporting';
+import { EdgeTracker, sanitizeEdgeLikeTrades, summarizeTradesBySource, computeExplainedEntryRatio } from '../reporting';
 import { config } from '../utils/config';
 import { createModuleLogger } from '../utils/logger';
 import { BotContext } from './types';
@@ -113,8 +113,12 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
   const wins = closedTodayTrades.filter(t => (t.pnl || 0) > 0);
   const losses = closedTodayTrades.filter(t => (t.pnl || 0) <= 0);
   const sourceOutcomes = summarizeTradesBySource(closedTodayTrades);
+  // Why: MEASUREMENT.md 기준은 "최근 50 executed trades", closedToday가 아님
+  const recentClosedTrades = await ctx.tradeStore.getRecentClosedTrades(50);
+  const explainedEntry = computeExplainedEntryRatio(recentClosedTrades);
   const portfolio = await ctx.riskManager.getPortfolioState(balance);
   const runtimeDiagnostics = ctx.runtimeDiagnosticsTracker?.buildSummary(rejectionMixHours);
+  const todayUtcOps = ctx.runtimeDiagnosticsTracker?.buildTodayUtcOperationalSummary();
 
   let bestTrade: { pair: string; pnl: number; score: number; grade: string } | undefined;
   let worstTrade: { pair: string; pnl: number; score: number; grade: string } | undefined;
@@ -158,6 +162,12 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
     restarts: 0,
     edgeStats: edgeTracker.getAllStrategyStats(),
     sourceOutcomes,
+    explainedEntryRatio: {
+      total: explainedEntry.total,
+      explained: explainedEntry.explained,
+      ratio: explainedEntry.ratio,
+    },
+    todayUtcOps,
     realtimeAdmission: buildRealtimeAdmissionSummary(ctx),
     cadence: buildDailyCadenceSummary(signalCadence, tradeCadence),
     rejectionMix: buildDailyRejectionMixSummary({

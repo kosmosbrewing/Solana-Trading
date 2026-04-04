@@ -74,7 +74,8 @@ describe('RuntimeDiagnosticsTracker', () => {
       });
       await tracker.flush();
 
-      const restored = new RuntimeDiagnosticsTracker(store, await store.load());
+      const loaded = await store.load();
+      const restored = new RuntimeDiagnosticsTracker(store, loaded.events, loaded.capSuppress);
       const summary = restored.buildSummary(24);
 
       expect(summary.realtimeCandidateReadiness.totalCandidates).toBe(1);
@@ -147,6 +148,73 @@ describe('RuntimeDiagnosticsTracker', () => {
       { tokenMint: 'token-extra-0', evicted: 0, readded: 0, notInWatchlist: 1, recentlyEvicted: 0, admissionBlocked: 0 },
       { tokenMint: 'token-extra-1', evicted: 0, readded: 0, notInWatchlist: 1, recentlyEvicted: 0, admissionBlocked: 0 },
     ]);
+  });
+
+  it('records cap_suppressed with accurate pair and candle counts', () => {
+    const tracker = new RuntimeDiagnosticsTracker();
+    tracker.recordCapSuppressed('pair-a');
+    tracker.recordCapSuppressed('pair-a');
+    tracker.recordCapSuppressed('pair-b');
+    tracker.recordCapSuppressed('pair-a');
+    tracker.recordCapSuppressed('pair-b');
+
+    const todayUtcOps = tracker.buildTodayUtcOperationalSummary();
+    expect(todayUtcOps.capSuppressedPairs).toBe(2);
+    expect(todayUtcOps.capSuppressedCandles).toBe(5);
+  });
+
+  it('cap_suppressed is not affected by event prune', () => {
+    const tracker = new RuntimeDiagnosticsTracker();
+    for (let i = 0; i < 10_000; i++) {
+      tracker.recordCapSuppressed('pair-heavy');
+    }
+
+    const todayUtcOps = tracker.buildTodayUtcOperationalSummary();
+    expect(todayUtcOps.capSuppressedCandles).toBe(10_000);
+    expect(todayUtcOps.capSuppressedPairs).toBe(1);
+  });
+
+  it('cap_suppressed persists across restart within same UTC day', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'cap-suppress-'));
+    const store = new RuntimeDiagnosticsStore(path.join(tempDir, 'diag.json'));
+
+    try {
+      const tracker1 = new RuntimeDiagnosticsTracker(store);
+      tracker1.recordCapSuppressed('pair-a');
+      tracker1.recordCapSuppressed('pair-a');
+      tracker1.recordCapSuppressed('pair-b');
+      await tracker1.flush();
+
+      // simulate restart: load from store
+      const loaded = await store.load();
+      const tracker2 = new RuntimeDiagnosticsTracker(store, loaded.events, loaded.capSuppress);
+      tracker2.recordCapSuppressed('pair-a'); // 1 more for pair-a
+
+      const todayUtcOps = tracker2.buildTodayUtcOperationalSummary();
+      expect(todayUtcOps.capSuppressedPairs).toBe(2);
+      expect(todayUtcOps.capSuppressedCandles).toBe(4); // 2+1+1
+      await tracker2.flush();
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('clears stale cap_suppressed counts when UTC day rolls over before next record', () => {
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(new Date('2026-04-03T23:59:50.000Z'));
+      const tracker = new RuntimeDiagnosticsTracker();
+      tracker.recordCapSuppressed('pair-a');
+      tracker.recordCapSuppressed('pair-b');
+
+      jest.setSystemTime(new Date('2026-04-04T00:00:05.000Z'));
+
+      const todayUtcOps = tracker.buildTodayUtcOperationalSummary();
+      expect(todayUtcOps.capSuppressedPairs).toBe(0);
+      expect(todayUtcOps.capSuppressedCandles).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('includes admission_skip:all_pairs_blocked tokens in missedTokens', () => {

@@ -64,7 +64,7 @@ import { handleNewCandle } from './orchestration/candleHandler';
 import { handleRealtimeSignal } from './orchestration/realtimeHandler';
 import { evaluateNewLpSniper, buildNewLpOrder, prepareNewLpCandidate } from './strategy/newLpSniper';
 import { MomentumTrigger, VolumeMcapSpikeTrigger } from './strategy';
-import { checkOpenPositions, closeTrade } from './orchestration/tradeExecution';
+import { closeTrade } from './orchestration/tradeExecution';
 import { runPreflightCheck } from './orchestration/preflightCheck';
 import { SpreadMeasurer } from './gate/spreadMeasurer';
 import { SOL_MINT } from './utils/constants';
@@ -73,6 +73,8 @@ import { resolveAmmFeePct } from './utils/dexFeeMap';
 import { buildRuntimeDriftSnapshot, evaluateRuntimeDriftWarnings } from './ops/runtimeDrift';
 import path from 'path';
 import { prepareRealtimePersistenceLayout } from './realtime/persistenceLayout';
+import { initStores } from './init/initStores';
+import { startMonitoringLoops, type MonitoringHandles } from './init/monitoringLoops';
 
 const log = createModuleLogger('Main');
 const SCANNER_INGESTER_QUEUE_GAP_MS = 10_000;
@@ -229,28 +231,9 @@ async function main() {
     return [...new Set(resolved)];
   };
 
-  // ─── 공유 DB Pool ─────────────────────────────────
-  // M-20: pool exhaustion 방지 — max connections 제한 + idle timeout
-  const dbPool = new Pool({
-    connectionString: config.databaseUrl,
-    max: 10,
-    idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 5_000,
-  });
-  dbPool.on('error', (err) => {
-    log.error(`DB pool error: ${err.message}`);
-  });
-
-  const candleStore = new CandleStore(dbPool);
-  const tradeStore = new TradeStore(dbPool);
-  const positionStore = new PositionStore(dbPool);
-  const auditLogger = new SignalAuditLogger(dbPool);
-  await Promise.all([
-    candleStore.initialize(),
-    tradeStore.initialize(),
-    positionStore.initialize(),
-    auditLogger.initialize(),
-  ]);
+  // ─── 공유 DB Pool + 스토어 초기화 ─────────────────
+  const { dbPool, candleStore, tradeStore, positionStore, auditLogger, eventScoreStore } =
+    await initStores({ databaseUrl: config.databaseUrl });
   if (!realtimeModeEnabled && config.realtimePersistenceEnabled) {
     const replayImportStore = new RealtimeReplayStore(config.realtimeDataDir);
     if (await replayImportStore.hasCandles()) {
@@ -264,10 +247,6 @@ async function main() {
       }
     }
   }
-  // Phase 2: EventScore persistence (C-1)
-  const eventScoreStore = new EventScoreStore(dbPool);
-  await eventScoreStore.initialize();
-  log.info('Database initialized');
 
   const notifier = new Notifier(config.telegramBotToken, config.telegramChatId);
   const walletManager = new WalletManager({
@@ -329,15 +308,16 @@ async function main() {
   }
 
   // ─── Initialize modules ─────────────────────────────
-  const runtimeDiagnosticsInitialEvents = runtimeDiagnosticsStore
+  const runtimeDiagnosticsSnapshot = runtimeDiagnosticsStore
     ? await runtimeDiagnosticsStore.load()
-    : [];
+    : { events: [] };
   const runtimeDiagnosticsTracker = new RuntimeDiagnosticsTracker(
     runtimeDiagnosticsStore ?? undefined,
-    runtimeDiagnosticsInitialEvents
+    runtimeDiagnosticsSnapshot.events,
+    runtimeDiagnosticsSnapshot.capSuppress
   );
-  if (runtimeDiagnosticsInitialEvents.length > 0) {
-    log.info(`Loaded runtime diagnostics snapshot: ${runtimeDiagnosticsInitialEvents.length} events`);
+  if (runtimeDiagnosticsSnapshot.events.length > 0) {
+    log.info(`Loaded runtime diagnostics snapshot: ${runtimeDiagnosticsSnapshot.events.length} events`);
   }
   const geckoClient = new GeckoTerminalClient((source) => {
     runtimeDiagnosticsTracker.recordRateLimit(source);
@@ -1114,6 +1094,11 @@ async function main() {
         if (candle.intervalSec >= 60) {
           await candleStore.insertCandles([candle]);
         }
+        // Why: cap hit pair의 trigger eval 낭비 방지 — candle은 쌓되 eval은 skip
+        if (ctx.riskManager.isCapSuppressed(candle.pairAddress)) {
+          runtimeDiagnosticsTracker.recordCapSuppressed(candle.pairAddress);
+          return;
+        }
         const signal = trigger.onCandle(candle, realtimeCandleBuilder!);
         if (signal) {
           log.info(`🎯 Signal fired: ${signal.strategy} ${signal.pairAddress.slice(0, 12)}… price=${signal.price} vr=${signal.meta.volumeRatio?.toFixed(1)}`);
@@ -1215,101 +1200,19 @@ async function main() {
     await notifier.sendError('ingester', error).catch(() => {});
   });
 
-  // ─── Position monitor (SL/TP/Time Stop/Exhaustion) ──
-  const positionCheckInterval = setInterval(async () => {
-    try {
-      await checkOpenPositions(ctx);
-    } catch (error) {
-      log.error(`Position check error: ${error}`);
-      await notifier.sendError('position_check', error).catch(() => {});
-    }
-  }, 5000);
+  // ─── Monitoring loops (position check, regime, pruning) ──
+  const monitoringHandles = await startMonitoringLoops({
+    ctx,
+    notifier,
+    regimeFilter,
+    eventScoreStore,
+    tokenPairResolver,
+    internalCandleSource,
+    geckoClient,
+    paperMetrics,
+    regimeSolCacheTtlMs: REGIME_SOL_CACHE_TTL_MS,
+  });
 
-  // ─── Phase 1B: Regime Filter periodic update ───────
-  // Why: SOL mint 주소로 /defi/ohlcv 엔드포인트 사용 (getOHLCV는 pair address 전용)
-  const REGIME_UPDATE_INTERVAL_MS = 15 * 60 * 1000; // 15 min
-
-  // Why: SOL pool address for RegimeFilter — DexScreener 조회 후 캐시
-  let solPoolAddress: string | null = null;
-  let cachedSol4hCandles: { bucketStartMs: number; fetchedAtMs: number; closes: { close: number; timestamp: number }[] } | null = null;
-
-  const updateRegime = async () => {
-    try {
-      // Factor 1: SOL 4H trend from GeckoTerminal (60 candles × 4h = 10 days)
-      const now = Math.floor(Date.now() / 1000);
-      const tenDaysAgo = now - 60 * 4 * 3600;
-
-      // SOL pool address 조회 (최초 1회만)
-      if (!solPoolAddress) {
-        solPoolAddress = await tokenPairResolver.getBestPoolAddress(SOL_MINT);
-      }
-
-      if (solPoolAddress) {
-        const nowMs = Date.now();
-        const currentBucketStartMs = Math.floor(nowMs / (4 * 3600_000)) * (4 * 3600_000);
-        const useCachedCandles = cachedSol4hCandles
-          && cachedSol4hCandles.bucketStartMs === currentBucketStartMs
-          && (nowMs - cachedSol4hCandles.fetchedAtMs) < REGIME_SOL_CACHE_TTL_MS;
-
-        if (!useCachedCandles) {
-          const internalSol4hCandles = await internalCandleSource.getCandlesInRange(
-            solPoolAddress,
-            4 * 3600,
-            new Date(tenDaysAgo * 1000),
-            new Date(now * 1000)
-          );
-          const sol4hCandles = internalSol4hCandles.length > 0
-            ? internalSol4hCandles
-            : await geckoClient.getOHLCV(solPoolAddress, '4H', tenDaysAgo, now);
-          cachedSol4hCandles = {
-            bucketStartMs: currentBucketStartMs,
-            fetchedAtMs: nowMs,
-            closes: sol4hCandles.map(c => ({
-              close: c.close,
-              timestamp: Math.floor(c.timestamp.getTime() / 1000),
-            })),
-          };
-        }
-
-        if ((cachedSol4hCandles?.closes.length ?? 0) >= 50) {
-          regimeFilter.updateSolTrend(cachedSol4hCandles!.closes);
-        }
-      }
-
-      // Factor 2+3: breadth & follow-through from paper metrics
-      const summary = paperMetrics.getSummary(48);
-      if (summary.totalTrades > 0) {
-        // Breadth: win rate as proxy for watchlist health
-        regimeFilter.updateBreadth(summary.wins, summary.totalTrades);
-        // Follow-through: TP1 hit rate
-        const tp1Hits = Math.round(summary.tp1HitRate * summary.totalTrades);
-        regimeFilter.updateFollowThrough(tp1Hits, summary.totalTrades);
-      }
-
-      const state = regimeFilter.getState();
-      log.info(
-        `Regime: ${state.regime} (size=${state.sizeMultiplier}x) ` +
-        `SOL=${state.solTrendBullish ? 'bull' : 'bear'} ` +
-        `breadth=${(state.breadthPct * 100).toFixed(0)}% ` +
-        `follow=${(state.followThroughPct * 100).toFixed(0)}%`
-      );
-    } catch (error) {
-      log.warn(`Regime update failed: ${error}`);
-    }
-  };
-
-  // Initial update + schedule
-  await updateRegime();
-  const regimeInterval = setInterval(updateRegime, REGIME_UPDATE_INTERVAL_MS);
-
-  // ─── Phase 2: Daily EventScore pruning ─────────────
-  const pruneInterval = setInterval(async () => {
-    try {
-      await eventScoreStore.pruneOlderThan(config.eventScoreRetentionDays);
-    } catch (error) {
-      log.warn(`EventScore pruning failed: ${error}`);
-    }
-  }, 24 * 3600_000); // daily
 
   // ─── Start services ───────────────────────────────
   await eventMonitor.start();
@@ -1373,9 +1276,9 @@ async function main() {
   // ─── Graceful shutdown ──────────────────────────────
   const shutdown = async () => {
     log.info('Shutting down...');
-    clearInterval(positionCheckInterval);
-    clearInterval(regimeInterval);
-    clearInterval(pruneInterval);
+    clearInterval(monitoringHandles.positionCheckInterval);
+    clearInterval(monitoringHandles.regimeInterval);
+    clearInterval(monitoringHandles.pruneInterval);
     // Why: grace period timer가 shutdown 후 발동하면 stopped ingester 호출 → 에러 방지
     for (const { timer } of pendingAliasCleanups.values()) {
       clearTimeout(timer);

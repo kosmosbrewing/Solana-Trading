@@ -387,7 +387,8 @@ describe('tradeExecution paper balance', () => {
       expect.any(Number),
       0,
       'TAKE_PROFIT_1',
-      0.3
+      0.3,
+      undefined
     );
     expect(tradeStore.insertTrade).toHaveBeenCalledTimes(1);
   });

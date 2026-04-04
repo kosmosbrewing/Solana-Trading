@@ -5,6 +5,7 @@ import {
 } from '../utils/types';
 import { TradeStore } from '../candle/tradeStore';
 import { EdgeTracker, EdgeTrackerTrade, sanitizeEdgeLikeTrades } from '../reporting';
+import type { RuntimeDiagnosticsTracker } from '../reporting/runtimeDiagnosticsTracker';
 import { checkTokenSafety as evaluateTokenSafety, SafetyGateResult } from '../gate/safetyGate';
 import { getGradeSizeMultiplier } from '../gate/sizingGate';
 import { calculateLiquiditySize, LiquidityParams, DEFAULT_LIQUIDITY_PARAMS } from './liquiditySizer';
@@ -79,10 +80,11 @@ export class RiskManager {
   private riskConfig: RiskConfig;
   private tradeStore: TradeStore;
   private liquidityParams: LiquidityParams;
+  private diagnosticsTracker?: RuntimeDiagnosticsTracker;
 
-  // Why: cap reject 후에도 trigger eval이 계속 소모되는 문제 해소
-  // cap hit pair를 등록하면 index.ts에서 trigger.onCandle() 전에 skip
-  private suppressedPairs = new Map<string, number>(); // pairAddress → suppressedAtMs
+  // Why: cooldown/cap reject 후에도 trigger eval이 계속 소모되는 문제 해소
+  // suppress된 pair를 등록하면 index.ts에서 trigger.onCandle() 전에 skip
+  private suppressedPairs = new Map<string, number>(); // pairAddress → suppressUntilMs
 
   constructor(riskConfig: RiskConfig, tradeStore: TradeStore) {
     this.riskConfig = riskConfig;
@@ -90,14 +92,15 @@ export class RiskManager {
     this.liquidityParams = { ...DEFAULT_LIQUIDITY_PARAMS, ...riskConfig.liquidityParams };
   }
 
-  /** cap-suppressed pair인지 확인 (trigger eval 전에 호출) */
+  setDiagnosticsTracker(tracker: RuntimeDiagnosticsTracker): void {
+    this.diagnosticsTracker = tracker;
+  }
+
+  /** cooldown/cap-suppressed pair인지 확인 (trigger eval 전에 호출) */
   isCapSuppressed(pairAddress: string): boolean {
-    const suppressedAt = this.suppressedPairs.get(pairAddress);
-    if (suppressedAt == null) return false;
-    // Why: DB CURRENT_DATE는 UTC 기준 — suppress 해제도 UTC 자정으로 맞춤
-    const now = new Date();
-    const todayStartUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-    if (suppressedAt < todayStartUtc) {
+    const suppressUntilMs = this.suppressedPairs.get(pairAddress);
+    if (suppressUntilMs == null) return false;
+    if (Date.now() >= suppressUntilMs) {
       this.suppressedPairs.delete(pairAddress);
       return false;
     }
@@ -161,6 +164,7 @@ export class RiskManager {
       riskTier: portfolioRisk,
     });
     if (activeHalt) {
+      this.diagnosticsTracker?.recordRiskRejection('active_halt', order.pairAddress);
       return {
         approved: false,
         reason: activeHalt.reason,
@@ -168,6 +172,7 @@ export class RiskManager {
     }
 
     if (this.isInCooldown(portfolio)) {
+      this.diagnosticsTracker?.recordRiskRejection('portfolio_cooldown', order.pairAddress);
       return {
         approved: false,
         reason: `Cooldown active: ${portfolio.consecutiveLosses} consecutive losses`,
@@ -175,6 +180,7 @@ export class RiskManager {
     }
 
     if (this.hasOpenTradeForPair(order.pairAddress, portfolio)) {
+      this.diagnosticsTracker?.recordRiskRejection('same_pair_block', order.pairAddress);
       return {
         approved: false,
         reason: `Same-pair position already open: ${order.pairAddress}`,
@@ -184,6 +190,14 @@ export class RiskManager {
     const pairLossCooldown = this.getPerTokenLossCooldown(order.pairAddress, closedTrades);
     if (pairLossCooldown.active) {
       const cooldownUntil = pairLossCooldown.until?.toISOString() ?? 'unknown';
+      if (pairLossCooldown.until) {
+        this.suppressedPairs.set(order.pairAddress, pairLossCooldown.until.getTime());
+        log.info(
+          `Cooldown-suppress activated: ${order.pairAddress} ` +
+          `until ${pairLossCooldown.until.toISOString()}`
+        );
+      }
+      this.diagnosticsTracker?.recordRiskRejection('per_token_cooldown', order.pairAddress);
       return {
         approved: false,
         reason:
@@ -198,8 +212,9 @@ export class RiskManager {
         (trade) => trade.pairAddress === order.pairAddress && trade.status !== 'FAILED'
       ).length;
       if (pairTradesToday >= perTokenDailyTradeCap) {
-        this.suppressedPairs.set(order.pairAddress, Date.now());
+        this.suppressedPairs.set(order.pairAddress, getNextUtcDayStartMs());
         log.info(`Cap-suppress activated: ${order.pairAddress} (${pairTradesToday}/${perTokenDailyTradeCap})`);
+        this.diagnosticsTracker?.recordRiskRejection('daily_trade_cap', order.pairAddress);
         return {
           approved: false,
           reason:
@@ -222,6 +237,7 @@ export class RiskManager {
         portfolio.openTrades.some(t => portfolio.runnerTradeIds!.has(t.id));
 
       if (!canBypassForRunner) {
+        this.diagnosticsTracker?.recordRiskRejection('max_concurrent', order.pairAddress);
         return {
           approved: false,
           reason: `Max concurrent position limit reached (${maxConcurrent})`,
@@ -233,6 +249,7 @@ export class RiskManager {
 
     const pairStats = edgeTracker.getPairStats(order.pairAddress);
     if (edgeTracker.isPairBlacklisted(order.pairAddress)) {
+      this.diagnosticsTracker?.recordRiskRejection('edge_blacklist', order.pairAddress);
       return {
         approved: false,
         reason:
@@ -245,6 +262,7 @@ export class RiskManager {
     if (tokenSafety) {
       const safetyResult = this.checkTokenSafety(tokenSafety, portfolio.equitySol);
       if (!safetyResult.approved) {
+        this.diagnosticsTracker?.recordRiskRejection('token_safety', order.pairAddress);
         return safetyResult;
       }
       safetyMultiplier = safetyResult.sizeMultiplier ?? 1.0;
@@ -257,6 +275,7 @@ export class RiskManager {
       strategyRisk
     );
     if (adjustedQuantity <= 0) {
+      this.diagnosticsTracker?.recordRiskRejection('zero_position_size', order.pairAddress);
       return {
         approved: false,
         reason: 'Calculated position size is zero or negative',
@@ -582,4 +601,8 @@ function toEdgeTrackerTrade(
 function formatMetric(value: number): string {
   if (!Number.isFinite(value)) return 'inf';
   return value.toFixed(2);
+}
+
+function getNextUtcDayStartMs(now = new Date()): number {
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
 }

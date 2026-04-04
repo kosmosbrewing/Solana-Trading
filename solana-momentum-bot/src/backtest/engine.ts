@@ -1108,7 +1108,7 @@ export class BacktestEngine {
     });
     riskState.riskTier = resolveRiskTierProfile(
       riskMode === 'portfolio'
-        ? riskState.edgeTracker.getPortfolioStats()
+        ? riskState.edgeTracker.getMainPortfolioStats()
         : riskState.edgeTracker.getStrategyStats(trade.strategy),
       this.config.recoveryPct
     );

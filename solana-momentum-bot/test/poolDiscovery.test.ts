@@ -27,7 +27,7 @@ jest.mock('@solana/web3.js', () => {
   };
 });
 
-import { HeliusPoolDiscovery } from '../src/realtime';
+import { HeliusPoolDiscovery, looksLikePoolInitLogs } from '../src/realtime';
 
 describe('HeliusPoolDiscovery', () => {
   beforeEach(() => {
@@ -143,5 +143,24 @@ describe('HeliusPoolDiscovery', () => {
         reason: 'queue_overflow',
       }),
     ]);
+  });
+
+  it('accepts explicit init logs and rejects obvious swap noise', () => {
+    expect(looksLikePoolInitLogs([
+      'Program log: Instruction: Initialize pool',
+      'Program log: create lb pair',
+    ])).toBe(true);
+
+    expect(looksLikePoolInitLogs([
+      'Program log: swap exact in',
+      'Program log: route trade',
+    ])).toBe(false);
+  });
+
+  it('keeps explicit init logs even when swap-like words are present', () => {
+    expect(looksLikePoolInitLogs([
+      'Program log: Instruction: Initialize pool',
+      'Program log: swap router attached',
+    ])).toBe(true);
   });
 });

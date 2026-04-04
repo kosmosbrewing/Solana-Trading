@@ -1,5 +1,5 @@
 import { AttentionScore } from '../event/types';
-import { Candle, BreakoutScoreDetail, Signal } from '../utils/types';
+import { Candle, BreakoutScoreDetail, Signal, isVolumeSpikeFamilyStrategy } from '../utils/types';
 import {
   assessLpStability,
   calcBreakoutScore,
@@ -31,26 +31,26 @@ export interface EvaluateStrategyScoreInput {
 }
 
 export function evaluateStrategyScore(input: EvaluateStrategyScoreInput): BreakoutScoreDetail {
-  switch (input.signal.strategy) {
-    case 'volume_spike':
-      return evaluateVolumeSpikeScore(
-        input.signal,
-        input.candles,
-        input.poolTvl,
-        input.marketCap,
-        input.previousTvl,
-        input.thresholds
-      );
-    case 'fib_pullback':
-      return evaluateFibPullbackScore(
-        input.signal,
-        input.poolTvl,
-        input.previousTvl,
-        input.fibConfig
-      );
-    default:
-      throw new Error(`Unsupported gate scoring strategy: ${input.signal.strategy}`);
+  const strategy = input.signal.strategy;
+  if (isVolumeSpikeFamilyStrategy(strategy)) {
+    return evaluateVolumeSpikeScore(
+      input.signal,
+      input.candles,
+      input.poolTvl,
+      input.marketCap,
+      input.previousTvl,
+      input.thresholds
+    );
   }
+  if (strategy === 'fib_pullback') {
+    return evaluateFibPullbackScore(
+      input.signal,
+      input.poolTvl,
+      input.previousTvl,
+      input.fibConfig
+    );
+  }
+  throw new Error(`Unsupported gate scoring strategy: ${strategy}`);
 }
 
 export function isGradeRejected(score: BreakoutScoreDetail, thresholds?: GateThresholds): boolean {
@@ -93,6 +93,9 @@ export function applyAttentionScoreComponent(
 /** @deprecated use applyAttentionScoreComponent */
 export const applyEventScoreComponent = applyAttentionScoreComponent;
 
+// Why: volume_spike (5min)만 대상. bootstrap_10s는 trigger 내부에 자체 buyRatio gate가 있고 (volumeMcapSpikeTrigger),
+// 10s candle과 5min candle의 buyRatio는 통계적 성질이 달라서 같은 threshold를 공유하지 않는다.
+// core_momentum은 현재 standby. 활성화 시 자체 buyRatio gate 추가 필요.
 export function buildStrategyHardRejectReason(
   signal: Signal,
   candles: Candle[],

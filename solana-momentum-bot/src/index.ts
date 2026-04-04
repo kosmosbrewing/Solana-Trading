@@ -177,6 +177,56 @@ async function main() {
 
   const ALIAS_GRACE_PERIOD_MS = 5 * 60 * 1000;
   const pendingAliasCleanups = new Map<string, { timer: NodeJS.Timeout; poolAddress: string }>();
+  const ALIAS_MISS_CLEANUP_WINDOW_MS = 60_000;
+  const ALIAS_MISS_CLEANUP_THRESHOLD = 3;
+  const ALIAS_MISS_CLEANUP_TTL_MS = ALIAS_GRACE_PERIOD_MS * 2;
+  const aliasMissCleanupState = new Map<string, { count: number; windowStartedMs: number; lastCleanupMs: number }>();
+
+  const isPendingAliasCleanupPool = (poolAddress: string) => {
+    for (const pending of pendingAliasCleanups.values()) {
+      if (pending.poolAddress === poolAddress) return true;
+    }
+    return false;
+  };
+
+  const isActiveRealtimeTargetPool = (poolAddress: string) => {
+    for (const activePool of realtimePoolTargets.values()) {
+      if (activePool === poolAddress) return true;
+    }
+    return false;
+  };
+
+  const shouldCleanupAliasMissPool = (poolAddress: string) => {
+    const now = Date.now();
+    for (const [trackedPool, state] of aliasMissCleanupState.entries()) {
+      const lastTouchedMs = Math.max(state.windowStartedMs, state.lastCleanupMs);
+      if (now - lastTouchedMs > ALIAS_MISS_CLEANUP_TTL_MS) {
+        aliasMissCleanupState.delete(trackedPool);
+      }
+    }
+    const current = aliasMissCleanupState.get(poolAddress);
+    if (!current || now - current.windowStartedMs > ALIAS_MISS_CLEANUP_WINDOW_MS) {
+      aliasMissCleanupState.set(poolAddress, {
+        count: 1,
+        windowStartedMs: now,
+        lastCleanupMs: current?.lastCleanupMs ?? 0,
+      });
+      return false;
+    }
+
+    current.count += 1;
+    if (current.count < ALIAS_MISS_CLEANUP_THRESHOLD) {
+      return false;
+    }
+    if (now - current.lastCleanupMs < ALIAS_GRACE_PERIOD_MS) {
+      return false;
+    }
+
+    current.count = 0;
+    current.windowStartedMs = now;
+    current.lastCleanupMs = now;
+    return true;
+  };
 
   const setRealtimePoolTarget = (logicalPair: string, subscriptionPair: string) => {
     // Why: grace period 중이면 취소 — 재진입 성공
@@ -188,6 +238,7 @@ async function main() {
     }
     realtimePoolTargets.set(logicalPair, subscriptionPair);
     realtimePoolAliases.set(subscriptionPair, logicalPair);
+    aliasMissCleanupState.delete(subscriptionPair);
   };
   const setRealtimePoolMetadata = (subscriptionPair: string, metadata: RealtimePoolMetadata) => {
     realtimePoolMetadata.set(subscriptionPair, metadata);
@@ -378,6 +429,7 @@ async function main() {
     impactTier2MaxImpact: config.impactTier2MaxImpact,
   };
   const riskManager = new RiskManager(riskConfig, tradeStore);
+  riskManager.setDiagnosticsTracker(runtimeDiagnosticsTracker);
 
   const executorConfig: ExecutorConfig = {
     solanaRpcUrl: config.solanaRpcUrl,
@@ -785,6 +837,7 @@ async function main() {
         pairAddress: entry.tokenMint,
         tokenMint: entry.tokenMint,
         symbol: entry.symbol,
+        discoverySource: entry.discoverySource,
         tvl: entry.poolInfo?.tvl ?? 0,
         marketCap: entry.poolInfo?.marketCap,
         dailyVolume: entry.poolInfo?.dailyVolume ?? 0,
@@ -1015,6 +1068,16 @@ async function main() {
       if (!logicalPair) {
         // Why: unsubscribe 하지 않음 — grace period 중 또는 재진입 시 alias 복구 후 즉시 swap 처리 가능
         runtimeDiagnosticsTracker.recordAliasMiss(swap.pool);
+        if (
+          !isPendingAliasCleanupPool(swap.pool) &&
+          !isActiveRealtimeTargetPool(swap.pool) &&
+          shouldCleanupAliasMissPool(swap.pool)
+        ) {
+          realtimePoolMetadata.delete(swap.pool);
+          heliusIngester?.clearPoolMetadata(swap.pool);
+          log.info(`Alias-miss cleanup: unsubscribing stale pool ${swap.pool}`);
+          void heliusIngester?.unsubscribePools([swap.pool]);
+        }
         return;
       }
       const metadata = realtimePoolMetadata.get(swap.pool);
@@ -1096,7 +1159,9 @@ async function main() {
         }
         // Why: cap hit pair의 trigger eval 낭비 방지 — candle은 쌓되 eval은 skip
         if (ctx.riskManager.isCapSuppressed(candle.pairAddress)) {
-          runtimeDiagnosticsTracker.recordCapSuppressed(candle.pairAddress);
+          if (candle.intervalSec === config.realtimePrimaryIntervalSec) {
+            runtimeDiagnosticsTracker.recordCapSuppressed(candle.pairAddress);
+          }
           return;
         }
         const signal = trigger.onCandle(candle, realtimeCandleBuilder!);

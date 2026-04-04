@@ -189,6 +189,7 @@ export function buildFibPullbackOrder(
     side: 'BUY',
     price: signal.price,
     quantity,
+    discoverySource: signal.discoverySource,
     stopLoss,
     takeProfit1: tp1,
     takeProfit2: tp2,

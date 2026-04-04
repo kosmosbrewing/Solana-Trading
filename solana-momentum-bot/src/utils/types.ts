@@ -112,6 +112,10 @@ export interface Signal {
   timestamp: Date;
   meta: Record<string, number>;
   sourceLabel?: string;
+  // Why: sourceLabel은 signal path (어떤 trigger가 발화했는���),
+  //      discoverySource는 discovery provenance (어떻게 이 토큰을 발견했는가).
+  //      두 질문의 답이 다르므로 분리한다.
+  discoverySource?: string;
   breakoutScore?: BreakoutScoreDetail;
   poolTvl?: number;
   spreadPct?: number;
@@ -119,7 +123,35 @@ export interface Signal {
 
 // ─── Strategy ───
 
-export type StrategyName = 'volume_spike' | 'fib_pullback' | 'new_lp_sniper' | 'momentum_cascade';
+export type StrategyName =
+  | 'volume_spike'       // Strategy A: 5min breakout
+  | 'bootstrap_10s'      // Realtime bootstrap trigger (10s volume+buyRatio)
+  | 'core_momentum'      // Realtime core trigger (10s 3-AND, standby)
+  | 'fib_pullback'       // Strategy C: confirmed pullback
+  | 'new_lp_sniper'      // Strategy D: sandbox LP sniper
+  | 'momentum_cascade';  // Strategy E: conditional add-on
+
+// Why: volume_spike order building logic을 bootstrap_10s, core_momentum도 공유한다.
+// 라우팅(order shape, scoring, gate)은 같지만 expectancy/reporting은 분리 집계.
+export const VOLUME_SPIKE_FAMILY: ReadonlySet<StrategyName> = new Set([
+  'volume_spike',
+  'bootstrap_10s',
+  'core_momentum',
+]);
+
+export function isVolumeSpikeFamilyStrategy(s: StrategyName): boolean {
+  return VOLUME_SPIKE_FAMILY.has(s);
+}
+
+// Why: sandbox lane은 별도 지갑, 별도 위험 예산을 사용하므로
+// 포트폴리오 수준 quality metrics(risk tier, Kelly, drawdown guard)에 섞지 않는다.
+export const SANDBOX_STRATEGIES: ReadonlySet<StrategyName> = new Set([
+  'new_lp_sniper',
+]);
+
+export function isSandboxStrategy(s: StrategyName): boolean {
+  return SANDBOX_STRATEGIES.has(s);
+}
 
 export interface StrategyConfig {
   name: StrategyName;
@@ -152,6 +184,7 @@ export interface Order {
   price: number;
   quantity: number; // token units, not SOL notional
   sourceLabel?: string;
+  discoverySource?: string;
   stopLoss: number;
   takeProfit1: number;
   takeProfit2: number;
@@ -172,6 +205,7 @@ export interface Trade {
   tokenSymbol?: string;
   entryPrice: number;
   sourceLabel?: string;
+  discoverySource?: string;
   exitPrice?: number;
   quantity: number; // token units, not SOL notional
   pnl?: number;
@@ -190,6 +224,16 @@ export interface Trade {
   breakoutGrade?: BreakoutGrade;
   sizeConstraint?: SizeConstraint;
   exitReason?: CloseReason;
+  // Why: P0-2 cost decomposition — 거래별 비용 원인 분해
+  entrySlippageBps?: number;
+  exitSlippageBps?: number;
+  entryPriceImpactPct?: number;
+  roundTripCostPct?: number;
+  effectiveRR?: number;
+  // Why: P1-4 degraded exit telemetry — exit 악화 원인 DB 기록
+  degradedTriggerReason?: 'sell_impact' | 'quote_fail';
+  degradedQuoteFailCount?: number;
+  parentTradeId?: string;
 }
 
 // ─── Position State Machine (v0.3) ───
@@ -296,6 +340,7 @@ export interface PoolInfo {
   pairAddress: string;
   tokenMint: string;
   symbol?: string;
+  discoverySource?: string;
   tvl: number;
   marketCap?: number;
   dailyVolume: number;
@@ -321,6 +366,7 @@ export interface SignalAuditEntry {
   pairAddress: string;
   strategy: StrategyName;
   sourceLabel?: string;
+  discoverySource?: string;
   attentionScore?: number;
   attentionConfidence?: 'low' | 'medium' | 'high';
   volumeScore?: number;

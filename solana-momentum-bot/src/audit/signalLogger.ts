@@ -62,7 +62,8 @@ export class SignalAuditLogger {
       ADD COLUMN IF NOT EXISTS source_label TEXT,
       ADD COLUMN IF NOT EXISTS attention_score NUMERIC,
       ADD COLUMN IF NOT EXISTS attention_confidence TEXT,
-      ADD COLUMN IF NOT EXISTS gate_trace JSONB
+      ADD COLUMN IF NOT EXISTS gate_trace JSONB,
+      ADD COLUMN IF NOT EXISTS discovery_source TEXT
     `);
     log.info('SignalAuditLogger initialized');
   }
@@ -70,17 +71,18 @@ export class SignalAuditLogger {
   async logSignal(entry: SignalAuditEntry): Promise<string> {
     const result = await this.pool.query(
       `INSERT INTO signal_audit_log (
-        pair_address, strategy, source_label, attention_score, attention_confidence,
+        pair_address, strategy, source_label, discovery_source, attention_score, attention_confidence,
         volume_score, buy_ratio_score, multi_tf_score, whale_score, lp_score,
         total_score, grade,
         candle_close, volume, buy_volume, sell_volume,
         pool_tvl, spread_pct,
         action, filter_reason, position_size, size_constraint,
         effective_rr, round_trip_cost, gate_trace
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
       RETURNING id`,
       [
         entry.pairAddress, entry.strategy, entry.sourceLabel ?? null,
+        entry.discoverySource ?? null,
         entry.attentionScore ?? null, entry.attentionConfidence ?? null,
         entry.volumeScore ?? null, entry.buyRatioScore ?? null,
         entry.multiTfScore ?? null, entry.whaleScore ?? null, entry.lpScore ?? null,
@@ -162,6 +164,50 @@ export class SignalAuditLogger {
       lastSignalAt: lastSignalAtRaw ? new Date(lastSignalAtRaw as string) : undefined,
       windows,
     };
+  }
+
+  async getRecentStrategyFilterBreakdown(hours: number): Promise<Array<{
+    strategy: string;
+    action: string;
+    count: number;
+    topReasons: Array<{ reason: string; count: number }>;
+  }>> {
+    const result = await this.pool.query(`
+      WITH strategy_action AS (
+        SELECT strategy, action, COUNT(*)::INTEGER AS count
+        FROM signal_audit_log
+        WHERE timestamp >= now() - ($1::text || ' hours')::interval
+        GROUP BY strategy, action
+      ),
+      strategy_reason AS (
+        SELECT strategy, COALESCE(filter_reason, 'unknown') AS reason, COUNT(*)::INTEGER AS count
+        FROM signal_audit_log
+        WHERE timestamp >= now() - ($1::text || ' hours')::interval
+          AND action = 'FILTERED'
+        GROUP BY strategy, COALESCE(filter_reason, 'unknown')
+      )
+      SELECT
+        sa.strategy, sa.action, sa.count,
+        COALESCE(
+          json_agg(json_build_object('reason', sr.reason, 'count', sr.count)
+            ORDER BY sr.count DESC)
+          FILTER (WHERE sr.reason IS NOT NULL),
+          '[]'
+        ) AS top_reasons
+      FROM strategy_action sa
+      LEFT JOIN strategy_reason sr ON sa.strategy = sr.strategy AND sa.action = 'FILTERED'
+      GROUP BY sa.strategy, sa.action, sa.count
+      ORDER BY sa.strategy, sa.count DESC
+    `, [String(hours)]);
+
+    return result.rows.map((row) => ({
+      strategy: String(row.strategy),
+      action: String(row.action),
+      count: Number(row.count),
+      topReasons: (Array.isArray(row.top_reasons) ? row.top_reasons : []).map(
+        (r: { reason: string; count: number }) => ({ reason: String(r.reason), count: Number(r.count) })
+      ),
+    }));
   }
 
   async getRecentGateFilterReasonCounts(hours: number): Promise<Array<{ reason: string; count: number }>> {

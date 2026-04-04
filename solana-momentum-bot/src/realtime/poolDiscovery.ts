@@ -19,8 +19,9 @@ const TOKEN_PROGRAMS = new Set([
   'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
   'TokenzQdmsQZpLSA9THh2o1hZ9M6wE7wz3D42Zct7mG',
 ]);
-const INIT_ACTION_PATTERN = /\b(initialize|initialize2|create|open)\b/i;
+const INIT_ACTION_PATTERN = /\b(initialize|initialize2|create)\b/i;
 const INIT_OBJECT_PATTERN = /\b(pool|pair|whirlpool|amm|lb)\b/i;
+const NOISE_ACTIVITY_PATTERN = /\b(swap|buy|sell|position|route|trade)\b/i;
 const EXPLICIT_INIT_PATTERNS = [
   /instruction:\s*initialize/i,
   /instruction:\s*create/i,
@@ -277,8 +278,13 @@ export class HeliusPoolDiscovery extends EventEmitter {
 
 export function looksLikePoolInitLogs(logs: string[]): boolean {
   const joined = logs.join('\n');
-  return EXPLICIT_INIT_PATTERNS.some((pattern) => pattern.test(joined))
-    || (INIT_ACTION_PATTERN.test(joined) && INIT_OBJECT_PATTERN.test(joined));
+  if (EXPLICIT_INIT_PATTERNS.some((pattern) => pattern.test(joined))) {
+    return true;
+  }
+  if (NOISE_ACTIVITY_PATTERN.test(joined)) {
+    return false;
+  }
+  return INIT_ACTION_PATTERN.test(joined) && INIT_OBJECT_PATTERN.test(joined);
 }
 
 export function extractObservedPoolCandidate(

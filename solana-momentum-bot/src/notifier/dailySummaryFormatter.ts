@@ -70,6 +70,7 @@ export interface DailyRejectionMixSummary {
   preWatchlistRejectDetailCounts: Array<{ label: string; count: number }>;
   rateLimitCounts: Array<{ source: string; count: number }>;
   pollFailureCounts: Array<{ source: string; count: number }>;
+  riskRejectionCounts: Array<{ reason: string; count: number }>;
   realtimeCandidateReadiness: {
     totalCandidates: number;
     prefiltered: number;
@@ -77,6 +78,14 @@ export interface DailyRejectionMixSummary {
     ready: number;
     readinessRate: number;
   };
+}
+
+export interface CostSummary {
+  tradeCount: number;
+  avgEntrySlippageBps: number;
+  avgExitSlippageBps: number;
+  avgRoundTripCostPct: number;
+  avgEffectiveRR: number;
 }
 
 export interface DailySummaryReport {
@@ -102,6 +111,7 @@ export interface DailySummaryReport {
     explained: number;
     ratio: number;
   };
+  costSummary?: CostSummary;
   todayUtcOps?: {
     capSuppressedPairs: number;
     capSuppressedCandles: number;
@@ -109,6 +119,18 @@ export interface DailySummaryReport {
   realtimeAdmission?: RealtimeAdmissionSummary;
   cadence?: DailyCadenceSummary;
   rejectionMix?: DailyRejectionMixSummary;
+  strategyTelemetry?: Array<{
+    strategy: string;
+    action: string;
+    count: number;
+    topReasons: Array<{ reason: string; count: number }>;
+  }>;
+  exitReasonBreakdown?: Array<{
+    strategy: string;
+    exitReason: string;
+    count: number;
+    avgPnl: number;
+  }>;
 }
 
 export function buildDailySummaryMessage(report: DailySummaryReport, dateLabel: string): string {
@@ -146,6 +168,17 @@ export function buildDailySummaryMessage(report: DailySummaryReport, dateLabel: 
     `- 연속 손실: ${report.consecutiveLosses}회`,
     `- 가동 시간: ${formatDuration(report.uptime)} | 재시작 ${report.restarts}회`,
   );
+
+  if (report.costSummary && report.costSummary.tradeCount > 0) {
+    const cs = report.costSummary;
+    lines.push(
+      '',
+      '비용 분해',
+      `- 대상: ${cs.tradeCount}건`,
+      `- 평균 entry slip: ${cs.avgEntrySlippageBps.toFixed(0)}bps / exit slip: ${cs.avgExitSlippageBps.toFixed(0)}bps`,
+      `- 평균 왕복 비용: ${formatPercent(cs.avgRoundTripCostPct)} / 실효 R:R: ${cs.avgEffectiveRR.toFixed(2)}`,
+    );
+  }
 
   if (report.realtimeAdmission) {
     lines.push(
@@ -206,6 +239,7 @@ export function buildDailySummaryMessage(report: DailySummaryReport, dateLabel: 
     appendWatchlistLifecycleSection(lines, report.rejectionMix);
     appendMissedTokensSection(lines, report.rejectionMix.missedTokens);
     appendBootstrapBoostSection(lines, report.rejectionMix.bootstrapBoostedSignalCount);
+    appendCountSection(lines, 'risk reject', report.rejectionMix.riskRejectionCounts, 'reason');
     appendCountSection(lines, '429', report.rejectionMix.rateLimitCounts, 'source');
     appendCountSection(lines, 'poll failure', report.rejectionMix.pollFailureCounts, 'source');
 
@@ -219,8 +253,16 @@ export function buildDailySummaryMessage(report: DailySummaryReport, dateLabel: 
     lines.push(
       '',
       'Today UTC Ops',
-      `- cap suppress: ${report.todayUtcOps.capSuppressedPairs} pairs / ${report.todayUtcOps.capSuppressedCandles} candles skipped`
+      `- eval suppress: ${report.todayUtcOps.capSuppressedPairs} pairs / ${report.todayUtcOps.capSuppressedCandles} candles skipped`
     );
+  }
+
+  if (report.strategyTelemetry && report.strategyTelemetry.length > 0) {
+    appendStrategyTelemetrySection(lines, report.strategyTelemetry);
+  }
+
+  if (report.exitReasonBreakdown && report.exitReasonBreakdown.length > 0) {
+    appendExitReasonSection(lines, report.exitReasonBreakdown);
   }
 
   if (visibleEdgeStats.length > 0) {
@@ -250,7 +292,7 @@ export function buildDailySummaryMessage(report: DailySummaryReport, dateLabel: 
     const er = report.explainedEntryRatio;
     const pct = formatPercent(er.ratio);
     const icon = er.ratio >= 0.9 ? '✅' : '⚠';
-    lines.push(`- explained entry (last ${er.total}): ${er.explained}/${er.total} (${pct}) ${icon} target ≥90%`);
+    lines.push(`- explained entry (last ${er.total} executed): ${er.explained}/${er.total} (${pct}) ${icon} target ≥90%`);
   }
 
   return lines.join('\n');
@@ -404,6 +446,58 @@ function appendMissedTokensSection(
       `not_in_wl=${token.notInWatchlist} recent_evict=${token.recentlyEvicted}` +
       (token.admissionBlocked > 0 ? ` adm_blocked=${token.admissionBlocked}` : '')
     );
+  }
+}
+
+function appendStrategyTelemetrySection(
+  lines: string[],
+  items: NonNullable<DailySummaryReport['strategyTelemetry']>
+): void {
+  // Group by strategy
+  const byStrategy = new Map<string, Array<{ action: string; count: number; topReasons: Array<{ reason: string; count: number }> }>>();
+  for (const item of items) {
+    let arr = byStrategy.get(item.strategy);
+    if (!arr) { arr = []; byStrategy.set(item.strategy, arr); }
+    arr.push(item);
+  }
+
+  lines.push('', '전략별 Telemetry (24h)');
+  for (const [strategy, entries] of byStrategy) {
+    const executed = entries.find(e => e.action === 'EXECUTED')?.count ?? 0;
+    const filtered = entries.find(e => e.action === 'FILTERED')?.count ?? 0;
+    const total = entries.reduce((s, e) => s + e.count, 0);
+    lines.push(`- ${escapeHtml(strategy)}: total=${total} exec=${executed} filtered=${filtered}`);
+
+    // Show top 3 filter reasons for this strategy
+    const filteredEntry = entries.find(e => e.action === 'FILTERED');
+    if (filteredEntry && filteredEntry.topReasons.length > 0) {
+      const top = filteredEntry.topReasons.slice(0, 3)
+        .map(r => `${r.reason}=${r.count}`)
+        .join(', ');
+      lines.push(`  reject: ${escapeHtml(top)}`);
+    }
+  }
+}
+
+function appendExitReasonSection(
+  lines: string[],
+  items: NonNullable<DailySummaryReport['exitReasonBreakdown']>
+): void {
+  // Group by strategy
+  const byStrategy = new Map<string, Array<{ exitReason: string; count: number; avgPnl: number }>>();
+  for (const item of items) {
+    let arr = byStrategy.get(item.strategy);
+    if (!arr) { arr = []; byStrategy.set(item.strategy, arr); }
+    arr.push(item);
+  }
+
+  lines.push('', 'Exit Reason (24h)');
+  for (const [strategy, reasons] of byStrategy) {
+    const total = reasons.reduce((s, r) => s + r.count, 0);
+    const detail = reasons.slice(0, 4)
+      .map(r => `${r.exitReason}=${r.count}(${formatSignedSol(r.avgPnl)})`)
+      .join(', ');
+    lines.push(`- ${escapeHtml(strategy)} (${total}): ${escapeHtml(detail)}`);
   }
 }
 

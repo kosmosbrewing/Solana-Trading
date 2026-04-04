@@ -395,8 +395,11 @@ function buildEntryExecutionSummary(
   const actualQuantity = buyResult?.actualOutUiAmount && buyResult.actualOutUiAmount > 0
     ? buyResult.actualOutUiAmount
     : order.quantity;
-  const entryNotionalSol = order.quantity * order.price;
-  const entryPrice = actualQuantity > 0 ? entryNotionalSol / actualQuantity : order.price;
+  const plannedEntryNotionalSol = order.quantity * order.price;
+  const actualEntryNotionalSol = buyResult?.actualInputUiAmount && buyResult.actualInputUiAmount > 0
+    ? buyResult.actualInputUiAmount
+    : plannedEntryNotionalSol;
+  const entryPrice = actualQuantity > 0 ? actualEntryNotionalSol / actualQuantity : order.price;
   const entrySlippagePct = order.price > 0 ? (entryPrice - order.price) / order.price : 0;
 
   return {
@@ -404,8 +407,13 @@ function buildEntryExecutionSummary(
     quantity: actualQuantity,
     plannedEntryPrice: order.price,
     plannedQuantity: order.quantity,
+    actualEntryNotionalSol,
     entrySlippageBps: buyResult?.slippageBps ?? 0,
     entrySlippagePct,
+    expectedInAmount: buyResult?.expectedInAmount?.toString(),
+    actualInputAmount: buyResult?.actualInputAmount?.toString(),
+    actualInputUiAmount: buyResult?.actualInputUiAmount,
+    inputDecimals: buyResult?.inputDecimals,
     expectedOutAmount: buyResult?.expectedOutAmount?.toString(),
     actualOutAmount: buyResult?.actualOutAmount?.toString(),
     outputDecimals: buyResult?.outputDecimals,

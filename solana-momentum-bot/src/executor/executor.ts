@@ -36,6 +36,10 @@ export interface ExecutorConfig {
 }
 
 export interface SwapResult {
+  expectedInAmount?: bigint;   // Jupiter quote 예상 입력량
+  actualInputAmount?: bigint;  // 온체인 실제 입력량 (확인 가능 시)
+  actualInputUiAmount?: number;// 실제 입력량 (UI amount)
+  inputDecimals?: number;      // input mint decimals
   txSignature: string;
   expectedOutAmount: bigint;   // Jupiter quote 예상 수신량
   actualOutAmount?: bigint;    // 온체인 실제 수신량 (확인 가능 시)
@@ -188,6 +192,7 @@ export class Executor {
     });
 
     const order = orderResponse.data;
+    const expectedIn = BigInt(order.inAmount);
     const expectedOut = BigInt(order.outAmount);
 
     log.info(
@@ -215,8 +220,12 @@ export class Executor {
 
     // 실제 수신량 계산 — Ultra 응답에 결과가 있으면 사용, 없으면 잔액 비교
     let actualOutAmount: bigint | undefined;
+    let actualInputAmount: bigint | undefined;
     let actualSlippageBps = 0;
 
+    if (result.inputAmountResult) {
+      actualInputAmount = BigInt(result.inputAmountResult);
+    }
     if (result.outputAmountResult) {
       actualOutAmount = BigInt(result.outputAmountResult);
       actualSlippageBps = expectedOut > 0n
@@ -224,6 +233,7 @@ export class Executor {
         : 0;
     }
     // outputAmountResult 없으면 actualOutAmount=undefined 유지 (before 없이 비교 불가)
+    const inputMetrics = await this.resolveInputMetrics(inputMint, actualInputAmount);
     const outputMetrics = await this.resolveOutputMetrics(outputMint, actualOutAmount);
 
     log.info(
@@ -232,9 +242,12 @@ export class Executor {
     );
 
     return {
+      expectedInAmount: expectedIn,
+      actualInputAmount,
       txSignature: result.signature,
       expectedOutAmount: expectedOut,
       actualOutAmount,
+      ...inputMetrics,
       ...outputMetrics,
       slippageBps: actualSlippageBps,
     };
@@ -257,8 +270,12 @@ export class Executor {
           `Quote (attempt ${attempt}): ${quote.inAmount} → ${quote.outAmount} (slippage: ${quote.slippageBps}bps)`
         );
 
+        const expectedIn = BigInt(quote.inAmount);
         const expectedOut = BigInt(quote.outAmount);
 
+        const inputBalanceBefore = inputMint === SOL_MINT
+          ? BigInt(Math.round(await this.getBalance() * 1e9))
+          : await this.getTokenBalance(inputMint);
         const balanceBefore = outputMint === SOL_MINT
           ? BigInt(Math.round(await this.getBalance() * 1e9))
           : await this.getTokenBalance(outputMint);
@@ -266,14 +283,24 @@ export class Executor {
         const swapTx = await this.getSwapTransaction(quote);
         const txSignature = await this.sendTransaction(swapTx);
 
+        const inputBalanceAfter = inputMint === SOL_MINT
+          ? BigInt(Math.round(await this.getBalance() * 1e9))
+          : await this.getTokenBalance(inputMint);
         const balanceAfter = outputMint === SOL_MINT
           ? BigInt(Math.round(await this.getBalance() * 1e9))
           : await this.getTokenBalance(outputMint);
 
+        const actualInputAmount = inputBalanceBefore > inputBalanceAfter
+          ? inputBalanceBefore - inputBalanceAfter
+          : 0n;
         const actualOutAmount = balanceAfter - balanceBefore;
         const actualSlippageBps = expectedOut > 0n
           ? Number((expectedOut - actualOutAmount) * 10000n / expectedOut)
           : 0;
+        const inputMetrics = await this.resolveInputMetrics(
+          inputMint,
+          actualInputAmount > 0n ? actualInputAmount : undefined
+        );
         const outputMetrics = await this.resolveOutputMetrics(
           outputMint,
           actualOutAmount > 0n ? actualOutAmount : undefined
@@ -284,9 +311,12 @@ export class Executor {
         );
 
         return {
+          expectedInAmount: expectedIn,
+          actualInputAmount: actualInputAmount > 0n ? actualInputAmount : undefined,
           txSignature,
           expectedOutAmount: expectedOut,
           actualOutAmount: actualOutAmount > 0n ? actualOutAmount : undefined,
+          ...inputMetrics,
           ...outputMetrics,
           slippageBps: actualSlippageBps,
         };
@@ -357,10 +387,23 @@ export class Executor {
     return BigInt(info.value.amount);
   }
 
+  private async resolveInputMetrics(
+    inputMint: string,
+    actualInputAmount?: bigint
+  ): Promise<Pick<SwapResult, 'actualInputUiAmount' | 'inputDecimals'> | {}> {
+    if (actualInputAmount == null) return {};
+    const inputDecimals = inputMint === SOL_MINT ? 9 : await this.getMintDecimals(inputMint);
+    if (inputDecimals == null) return {};
+    return {
+      actualInputUiAmount: toUiAmount(actualInputAmount, inputDecimals),
+      inputDecimals,
+    };
+  }
+
   private async resolveOutputMetrics(
     outputMint: string,
     actualOutAmount?: bigint
-  ): Promise<Pick<SwapResult, 'actualOutUiAmount' | 'outputDecimals'>> {
+  ): Promise<Pick<SwapResult, 'actualOutUiAmount' | 'outputDecimals'> | {}> {
     if (actualOutAmount == null) return {};
     const outputDecimals = outputMint === SOL_MINT ? 9 : await this.getMintDecimals(outputMint);
     if (outputDecimals == null) return {};

@@ -25,8 +25,13 @@ export interface EntryExecutionSummary {
   quantity: number;
   plannedEntryPrice: number;
   plannedQuantity: number;
+  actualEntryNotionalSol: number;
   entrySlippageBps: number;
   entrySlippagePct: number;
+  expectedInAmount?: string;
+  actualInputAmount?: string;
+  actualInputUiAmount?: number;
+  inputDecimals?: number;
   expectedOutAmount?: string;
   actualOutAmount?: string;
   outputDecimals?: number;
@@ -554,10 +559,15 @@ export async function recordOpenedTrade(
       execution: {
         plannedEntryPrice: executionSummary.plannedEntryPrice,
         plannedQuantity: executionSummary.plannedQuantity,
+        actualEntryNotionalSol: executionSummary.actualEntryNotionalSol,
         entryPrice: executionSummary.entryPrice,
         quantity: executionSummary.quantity,
         entrySlippageBps: executionSummary.entrySlippageBps,
         entrySlippagePct: executionSummary.entrySlippagePct,
+        expectedInAmount: executionSummary.expectedInAmount,
+        actualInputAmount: executionSummary.actualInputAmount,
+        actualInputUiAmount: executionSummary.actualInputUiAmount,
+        inputDecimals: executionSummary.inputDecimals,
         expectedOutAmount: executionSummary.expectedOutAmount,
         actualOutAmount: executionSummary.actualOutAmount,
         outputDecimals: executionSummary.outputDecimals,

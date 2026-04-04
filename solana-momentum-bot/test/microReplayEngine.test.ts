@@ -260,6 +260,10 @@ describe('microReplayEngine', () => {
     });
 
     expect(result.records).toHaveLength(0);
+    expect(result.triggerType).toBe('momentum');
+    if (!('confirmFail' in result.rejectStats)) {
+      throw new Error('Expected momentum reject stats');
+    }
     expect(result.rejectStats.confirmFail).toBeGreaterThan(0);
   });
 });

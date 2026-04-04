@@ -1,7 +1,7 @@
 # Execution Plan: 1 SOL → 100 SOL
 
 > Status: current active execution plan
-> Updated: 2026-04-03
+> Updated: 2026-04-04
 > Scope: 구현 완료 이후의 운영 검증, 배포, 표본 축적, live enablement gate
 > Archive: 완료된 root plan과 dated canary history는 [`PLAN_CMPL.md`](../../../PLAN_CMPL.md)에 보관한다.
 
@@ -63,6 +63,8 @@
 - gate rejection mix
 - hold time / exit reason distribution
 - explained entry ratio
+- bootstrap replay sweep 결과와 live canary가 같은 방향을 가리키는지
+- actual-cost accounting 이후 DB PnL과 wallet PnL 차이
 
 완료 기준:
 - [ ] `paper-report`로 해석 가능한 표본 확보
@@ -76,6 +78,9 @@
 
 전환 전 확인:
 - [ ] paper 기대값 재확인
+- [ ] bootstrap stable baseline (`1.8 / 0.60 / 20`)의 live cadence 확인
+- [ ] operator blacklist runtime hit / false block 여부 확인
+- [ ] live buy actual-cost accounting이 wallet delta와 크게 어긋나지 않음
 - [ ] risk guard / halt / wallet limit 정상
 - [ ] quote / sell impact / execution telemetry 해석 가능
 - [ ] 운영 개입 없이 일정 시간 유지 가능
@@ -101,6 +106,7 @@
 - active 판단은 이 문서와 [`OPERATIONS.md`](../../../OPERATIONS.md)를 기준으로 본다
 - historical 근거가 필요하면 [`PLAN_CMPL.md`](../../../PLAN_CMPL.md)를 참고한다
 - 파라미터 튜닝보다 운영 관측성과 표본 품질을 먼저 본다
+- replay sweep 결과는 live canary 후보 압축용으로 쓰고, 실운영 증거와 혼동하지 않는다
 
 ### Do Not
 
@@ -118,4 +124,4 @@
 
 ## One-Line Summary
 
-> 구현은 대부분 끝났고, 지금 active work는 새 기능 추가가 아니라 운영 검증과 live enablement 기준을 정리하는 것이다.
+> 구현은 대부분 끝났고, 지금 active work는 bootstrap stable baseline과 operator blacklist를 포함한 운영 검증, 그리고 live enablement 기준을 정리하는 것이다.

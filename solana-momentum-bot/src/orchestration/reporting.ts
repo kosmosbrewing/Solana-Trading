@@ -1,6 +1,8 @@
 import { DailySummaryReport, RealtimeAdmissionSummary } from '../notifier/dailySummaryFormatter';
+import { PaperMetricsSummary } from '../reporting/paperMetrics';
 import { RealtimeAdmissionSnapshotEntry } from '../realtime';
 import { EdgeTracker, sanitizeEdgeLikeTrades, summarizeTradesBySource } from '../reporting';
+import { RegimeState } from '../risk/regimeFilter';
 import { config } from '../utils/config';
 import { createModuleLogger } from '../utils/logger';
 import { BotContext } from './types';
@@ -33,28 +35,85 @@ export function scheduleDailySummary(ctx: BotContext): void {
   }, 60_000);
 }
 
-/** 2시간 간격 간략 리포트: Paper 전적 + 시장 체제 */
+export function buildHeartbeatTradingSummary(params: {
+  tradingMode: BotContext['tradingMode'];
+  balanceSol: number;
+  dailyPnl: number;
+  totalTrades: number;
+  closedTrades: number;
+  openTrades: number;
+}): string {
+  const modeLabel = params.tradingMode === 'live' ? 'Live' : 'Paper';
+  return [
+    `📊 ${modeLabel} · 24h`,
+    `잔액 ${params.balanceSol.toFixed(4)} SOL | 손익 ${formatSignedSol(params.dailyPnl)}`,
+    `오늘 거래 ${params.totalTrades}건 | 종료 ${params.closedTrades}건 | 오픈 ${params.openTrades}건`,
+  ].join('\n');
+}
+
+export function buildHeartbeatPerformanceSummary(summary: PaperMetricsSummary): string | undefined {
+  if (summary.totalTrades === 0) {
+    return undefined;
+  }
+
+  return [
+    `전적 ${summary.wins}W ${summary.losses}L (${(summary.winRate * 100).toFixed(0)}%)`,
+    `▼ 역행 ${summary.avgMaePct.toFixed(2)}% | ▲ 순행 ${summary.avgMfePct.toFixed(2)}%`,
+    `오진 ${(summary.falsePositiveRate * 100).toFixed(0)}% | TP1 ${(summary.tp1HitRate * 100).toFixed(0)}%`,
+  ].join('\n');
+}
+
+export function buildHeartbeatRegimeSummary(regime: RegimeState): string {
+  const regimeIcon = regime.regime === 'risk_on' ? '🟢' : regime.regime === 'risk_off' ? '🔴' : '🟡';
+  const solIcon = regime.solTrendBullish ? '🟢' : '🔴';
+  const solLabel = regime.solTrendBullish ? '강세' : '약세';
+  return (
+    `🔍 시장: ${regimeIcon} ${regime.regime} (${regime.sizeMultiplier}x)\n` +
+    `SOL ${solIcon}${solLabel} | 확산 ${(regime.breadthPct * 100).toFixed(0)}% | 후속 ${(regime.followThroughPct * 100).toFixed(0)}%`
+  );
+}
+
+/** 2시간 간격 간략 리포트: 운영 스냅샷 + Paper 전적 + 시장 체제 */
 async function sendHeartbeatReport(ctx: BotContext): Promise<void> {
-  const lines: string[] = [];
+  const todayTrades = await ctx.tradeStore.getTodayTrades();
+  const closedTodayTrades = todayTrades.filter(
+    trade => trade.status === 'CLOSED' && trade.pnl !== undefined
+  );
+  const dailyPnl = await ctx.tradeStore.getTodayPnl();
+  const balance = ctx.tradingMode === 'paper' && ctx.paperBalance != null
+    ? ctx.paperBalance
+    : await ctx.executor.getBalance();
+  const portfolio = await ctx.riskManager.getPortfolioState(balance);
+  const lines: string[] = [
+    buildHeartbeatTradingSummary({
+      tradingMode: ctx.tradingMode,
+      balanceSol: balance,
+      dailyPnl,
+      totalTrades: todayTrades.length,
+      closedTrades: closedTodayTrades.length,
+      openTrades: portfolio.openTrades.length,
+    }),
+  ];
 
   if (ctx.paperMetrics) {
-    lines.push(ctx.paperMetrics.formatSummaryText(24));
+    const performanceSummary = buildHeartbeatPerformanceSummary(ctx.paperMetrics.getSummary(24));
+    if (performanceSummary) {
+      lines.push(performanceSummary);
+    }
   }
 
   if (ctx.regimeFilter) {
-    const regime = ctx.regimeFilter.getState();
-    const regimeIcon = regime.regime === 'risk_on' ? '🟢' : regime.regime === 'risk_off' ? '🔴' : '🟡';
-    const solIcon = regime.solTrendBullish ? '🟢' : '🔴';
-    const solLabel = regime.solTrendBullish ? '강세' : '약세';
-    lines.push(
-      `🔍 시장: ${regimeIcon} ${regime.regime} (${regime.sizeMultiplier}x)\n` +
-      `SOL ${solIcon}${solLabel} | 확산 ${(regime.breadthPct * 100).toFixed(0)}% | 후속 ${(regime.followThroughPct * 100).toFixed(0)}%`
-    );
+    lines.push(buildHeartbeatRegimeSummary(ctx.regimeFilter.getState()));
   }
 
   if (lines.length > 0) {
     await ctx.notifier.sendInfo(lines.join('\n\n'));
   }
+}
+
+function formatSignedSol(value: number): string {
+  const sign = value > 0 ? '+' : '';
+  return `${sign}${value.toFixed(4)} SOL`;
 }
 
 async function sendDailySummaryReport(ctx: BotContext): Promise<void> {

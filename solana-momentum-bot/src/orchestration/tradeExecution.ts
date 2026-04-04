@@ -554,6 +554,7 @@ export async function recordOpenedTrade(
     price: executionSummary.entryPrice,
     quantity: executionSummary.quantity,
   }, executionSummary);
+  logOpenedOrderAlignment(signal, order, openedOrder, executionSummary);
   await ctx.positionStore.updateState(positionId, 'ENTRY_CONFIRMED', {
     signalData: {
       execution: {
@@ -650,6 +651,34 @@ function scaleExecutionLevel(
   if (!Number.isFinite(plannedLevel) || plannedLevel <= 0) return plannedLevel;
   const levelOffsetPct = (plannedLevel - plannedEntryPrice) / plannedEntryPrice;
   return actualEntryPrice * (1 + levelOffsetPct);
+}
+
+function logOpenedOrderAlignment(
+  signal: Signal,
+  plannedOrder: Order,
+  openedOrder: Order,
+  executionSummary: EntryExecutionSummary
+): void {
+  const stopOffsetPct = executionSummary.entryPrice > 0
+    ? ((openedOrder.stopLoss - executionSummary.entryPrice) / executionSummary.entryPrice) * 100
+    : 0;
+  const tp1OffsetPct = executionSummary.entryPrice > 0
+    ? ((openedOrder.takeProfit1 - executionSummary.entryPrice) / executionSummary.entryPrice) * 100
+    : 0;
+  const tp2OffsetPct = executionSummary.entryPrice > 0
+    ? ((openedOrder.takeProfit2 - executionSummary.entryPrice) / executionSummary.entryPrice) * 100
+    : 0;
+  const message =
+    `Opened order aligned to fill: pair=${signal.pairAddress} source=${signal.sourceLabel ?? 'unknown'} ` +
+    `plannedEntry=${plannedOrder.price.toFixed(8)} actualEntry=${openedOrder.price.toFixed(8)} ` +
+    `stop=${openedOrder.stopLoss.toFixed(8)} (${stopOffsetPct.toFixed(2)}%) ` +
+    `tp1=${openedOrder.takeProfit1.toFixed(8)} (+${tp1OffsetPct.toFixed(2)}%) ` +
+    `tp2=${openedOrder.takeProfit2.toFixed(8)} (+${tp2OffsetPct.toFixed(2)}%)`;
+  if (Math.abs(executionSummary.entrySlippagePct) >= 0.2) {
+    log.warn(message);
+    return;
+  }
+  log.info(message);
 }
 
 export function buildSignalAuditBase(

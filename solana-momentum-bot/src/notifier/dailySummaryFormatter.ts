@@ -279,6 +279,9 @@ function buildRejectionWarnings(summary: DailyRejectionMixSummary): string[] {
   ) {
     warnings.push('low realtime-ready ratio');
   }
+  if (summary.preWatchlistRejectCounts.some((item) => item.reason === 'operator_blacklist' && item.count > 0)) {
+    warnings.push('operator blacklist hit');
+  }
   return warnings;
 }
 

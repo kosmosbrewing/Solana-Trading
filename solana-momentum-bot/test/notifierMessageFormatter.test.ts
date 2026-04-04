@@ -239,9 +239,11 @@ describe('messageFormatter', () => {
         ],
         preWatchlistRejectCounts: [
           { reason: 'unsupported_dex', count: 4 },
+          { reason: 'operator_blacklist', count: 2 },
         ],
         preWatchlistRejectDetailCounts: [
           { label: 'unsupported_dex source=dex_boost dex=meteora', count: 4 },
+          { label: 'operator_blacklist detail=token_mint source=gecko_trending', count: 2 },
         ],
         admissionSkipCounts: [
           { reason: 'unsupported_pool_program', count: 5 },
@@ -318,6 +320,8 @@ describe('messageFormatter', () => {
     expect(message).toContain('- 최근 6h: signal 4 / 실행 1 / 제외 3 / 진입 0 / 종료 0');
     expect(message).toContain('cadence 경고: 12h no entry, 24h no closed trade');
     expect(message).toContain('Data Plane (24h)');
+    expect(message).toContain('operator_blacklist detail=token_mint source=gecko_trending=2');
+    expect(message).toContain('operator blacklist hit');
     expect(message).toContain('- 최근 캔들: 0h 15m 전 (2026-03-22T08:45:00.000Z)');
     expect(message).toContain('- realtime-ready ratio: 6/10 (60.0%)');
     expect(message).toContain('gate reject (unique token): quote_rejected: Quote error=7, security_rejected: Token is freezable=3');

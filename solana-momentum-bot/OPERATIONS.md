@@ -1,6 +1,6 @@
 # Operations Guide
 
-> Last updated: 2026-04-03
+> Last updated: 2026-04-04
 > Scope: VPS 배포 + paper 운영 점검 + risk tier demotion + live 운영 판단
 
 ---
@@ -13,6 +13,8 @@
   - paper/live runtime sanity를 재기동 후에도 설명할 수 있는지
   - `execution.preGate` / `execution.postSize` telemetry가 계속 일관되게 남는지
   - data-plane noise와 전략 문제를 섞지 않고 기록하는지
+- 2026-04-04 기준 bootstrap 운영 baseline은 `vm=1.8 / buyRatio=0.60 / lookback=20`이다.
+- replay 기반 operator blacklist 후보는 `OPERATOR_TOKEN_BLACKLIST`로 runtime에 직접 반영할 수 있다.
 
 ---
 
@@ -62,6 +64,10 @@ SHADOW_RUN_MINUTES=1440
 SHADOW_SIGNAL_TARGET=100
 SHADOW_HORIZON_SEC=30
 REALTIME_TRIGGER_MODE=bootstrap
+SAME_PAIR_OPEN_POSITION_BLOCK=true
+PER_TOKEN_LOSS_COOLDOWN_LOSSES=2
+PER_TOKEN_LOSS_COOLDOWN_MINUTES=240
+PER_TOKEN_DAILY_TRADE_CAP=15
 # REALTIME_BOOTSTRAP_MIN_BUY_RATIO=0.55 (기본값, 변경 필요 시만 설정)
 # WS/Strategy D는 기본 false — 설정 불필요
 # BIRDEYE_WS_ENABLED=false (기본값)
@@ -77,6 +83,40 @@ REALTIME_TRIGGER_MODE=bootstrap
 - startup burst가 남아 있으면 `REALTIME_SEED_BACKFILL_ENABLED=false`를 유지한다.
 - `REALTIME_DISABLE_SINGLE_TX_FALLBACK_ON_BATCH_UNSUPPORTED=true`,
   `REALTIME_SEED_ALLOW_SINGLE_TX_FALLBACK=false`는 Helius 플랜과 무관하게 유지한다.
+- token concentration 방지를 위해
+  `SAME_PAIR_OPEN_POSITION_BLOCK=true`,
+  `PER_TOKEN_LOSS_COOLDOWN_LOSSES=2`,
+  `PER_TOKEN_LOSS_COOLDOWN_MINUTES=240`,
+  `PER_TOKEN_DAILY_TRADE_CAP=15`
+  를 운영 `.env`에 명시한다.
+- bootstrap canary 기본값은
+  `REALTIME_VOLUME_SURGE_MULTIPLIER=1.8`,
+  `REALTIME_VOLUME_SURGE_LOOKBACK=20`,
+  `REALTIME_BOOTSTRAP_MIN_BUY_RATIO=0.60`
+  으로 둔다.
+- replay에서 반복 음수였던 토큰은 `OPERATOR_TOKEN_BLACKLIST`로 즉시 차단 가능하다.
+
+### Heartbeat 해석
+
+- heartbeat는 2시간마다 운영 스냅샷을 먼저 보낸다.
+- 첫 블록은 항상 현재 잔액, 오늘 거래 수, 종료 거래 수, 오픈 포지션 수를 보여준다.
+- `전적 / 역행 / 순행 / TP1` 블록은 최근 24시간에 **종료된 trade가 있을 때만** 붙는다.
+- 따라서 `거래 없음`만 보고 봇이 아무 일도 안 했다고 해석하지 않는다. 오늘 진입은 있었지만 아직 청산이 없을 수 있다.
+
+예시:
+
+```text
+📊 Paper · 24h
+잔액 1.0321 SOL | 손익 +0.0214 SOL
+오늘 거래 7건 | 종료 5건 | 오픈 2건
+
+전적 3W 2L (60%)
+▼ 역행 -1.20% | ▲ 순행 2.40%
+오진 20% | TP1 60%
+
+🔍 시장: 🟢 risk_on (1x)
+SOL 🔴약세 | 확산 50% | 후속 50%
+```
 
 ### 가동 확인 체크리스트
 
@@ -275,6 +315,41 @@ npm run realtime-shadow -- \
   --horizon 30 \
   --json
 ```
+
+### Bootstrap Replay Command
+
+수집된 realtime session을 fixed-notional 기준으로 비교할 때 사용한다.
+
+```bash
+scripts/bootstrap-replay-report.sh \
+  --vm-list 1.8,2.2 \
+  --buy-ratio-list 0.55,0.60 \
+  --lookback-list 20,30 \
+  --estimated-cost-pct 0.003 \
+  --gate-mode stored \
+  --notional-sol 0.1 \
+  --save bootstrap-sweep-cost003-stored-notional01
+```
+
+용도:
+
+- bootstrap stable / aggressive 파라미터 비교
+- 세션별 `Signals / adjReturn / Edge / Decision` 확인
+- token leaderboard / blacklist 후보 도출
+
+### Trade Ledger Command
+
+DB 원장과 실현 손익을 분리해서 볼 때 사용한다.
+
+```bash
+npx ts-node scripts/trade-report.ts --hours 24
+```
+
+해석:
+
+- `opened_at 기준 row`: ledger activity
+- `closed_at 기준 실현 row`: realized PnL
+- row 수는 partial close 때문에 독립 진입 횟수와 다를 수 있음
 
 ### 운영 해석 규칙
 

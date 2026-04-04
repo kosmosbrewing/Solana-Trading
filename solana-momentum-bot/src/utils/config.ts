@@ -142,6 +142,7 @@ export const config = {
   perTokenLossCooldownLosses: numOptional('PER_TOKEN_LOSS_COOLDOWN_LOSSES', 2),
   perTokenLossCooldownMinutes: numOptional('PER_TOKEN_LOSS_COOLDOWN_MINUTES', 240),
   perTokenDailyTradeCap: numOptional('PER_TOKEN_DAILY_TRADE_CAP', 15),
+  operatorTokenBlacklist: listOptional('OPERATOR_TOKEN_BLACKLIST', []),
 
   // Universe refresh
   universeRefreshIntervalMs: numOptional('UNIVERSE_REFRESH_INTERVAL_MS', 300_000),

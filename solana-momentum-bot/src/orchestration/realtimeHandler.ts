@@ -49,6 +49,22 @@ export async function handleRealtimeSignal(
     return;
   }
 
+  if (
+    config.operatorTokenBlacklist.includes(poolInfo.tokenMint) ||
+    config.operatorTokenBlacklist.includes(signal.pairAddress)
+  ) {
+    log.info(`Skipping realtime signal for ${signal.pairAddress}: operator blacklist`);
+    await trackRealtimeShadowSignal({
+      signal,
+      candleBuilder,
+      ctx,
+      gateStartedAt,
+      poolInfo,
+      filterReason: 'operator_blacklist',
+    });
+    return;
+  }
+
   const scoresByMint = ctx.eventMonitor.getScoresByMint();
   const attentionScore = scoresByMint.get(poolInfo.tokenMint);
   const discoveryTelemetry = resolveRealtimeDiscoveryTelemetry(

@@ -327,6 +327,7 @@ export async function processSignal(
           }
         }
         const executionSummary = buildEntryExecutionSummary(order, postSizeExecution, buyResult);
+        logEntryExecutionSummary(signal, order, executionSummary);
 
         await recordOpenedTrade(
           ctx,
@@ -420,6 +421,32 @@ function buildEntryExecutionSummary(
     effectiveRR: actualExecution.effectiveRR,
     roundTripCost: actualExecution.roundTripCost,
   };
+}
+
+function logEntryExecutionSummary(
+  signal: Signal,
+  order: Order,
+  executionSummary: EntryExecutionSummary
+): void {
+  const entryDriftPct = executionSummary.entrySlippagePct * 100;
+  const quantityDriftPct = executionSummary.plannedQuantity > 0
+    ? ((executionSummary.quantity - executionSummary.plannedQuantity) / executionSummary.plannedQuantity) * 100
+    : 0;
+  const entryNotionalSol = executionSummary.entryPrice * executionSummary.quantity;
+  const driftLabel = Math.abs(entryDriftPct) >= 20 ? 'warn' : 'info';
+  const message =
+    `Entry execution summary: pair=${signal.pairAddress} source=${signal.sourceLabel ?? 'unknown'} ` +
+    `signal=${signal.price.toFixed(8)} planned=${executionSummary.plannedEntryPrice.toFixed(8)} ` +
+    `actual=${executionSummary.entryPrice.toFixed(8)} drift=${entryDriftPct.toFixed(2)}% ` +
+    `qty=${executionSummary.quantity.toFixed(6)} plannedQty=${executionSummary.plannedQuantity.toFixed(6)} ` +
+    `qtyDrift=${quantityDriftPct.toFixed(2)}% notional=${entryNotionalSol.toFixed(6)}SOL ` +
+    `effectiveRR=${executionSummary.effectiveRR.toFixed(2)} ` +
+    `roundTrip=${(executionSummary.roundTripCost * 100).toFixed(2)}%`;
+  if (driftLabel === 'warn') {
+    log.warn(message);
+    return;
+  }
+  log.info(message);
 }
 
 function logExecutionViabilityTelemetry(

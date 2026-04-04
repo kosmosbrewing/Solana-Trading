@@ -32,6 +32,13 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
     log.info(`Skipping ${candle.pairAddress} — pair is not in active watchlist`);
     return;
   }
+  if (
+    config.operatorTokenBlacklist.includes(poolInfo.tokenMint) ||
+    config.operatorTokenBlacklist.includes(candle.pairAddress)
+  ) {
+    log.info(`Skipping ${candle.pairAddress} — operator blacklist`);
+    return;
+  }
   const poolTvl = poolInfo.tvl;
 
   // Gate 0: AttentionScore 조회 (트렌딩 화이트리스트 필터)

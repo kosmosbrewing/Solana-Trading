@@ -148,6 +148,12 @@ async function main() {
   const realtimePoolAliases = new Map<string, string>();
   const realtimePoolMetadata = new Map<string, RealtimePoolMetadata>();
   const realtimeModeEnabled = config.realtimeEnabled;
+  const operatorTokenBlacklist = new Set(config.operatorTokenBlacklist);
+  const isOperatorBlacklisted = (value?: string): boolean =>
+    Boolean(value && operatorTokenBlacklist.has(value));
+  if (operatorTokenBlacklist.size > 0) {
+    log.info(`Operator blacklist loaded: ${operatorTokenBlacklist.size} entries`);
+  }
   const realtimePoolOwnerResolver = realtimeModeEnabled
     ? new RealtimePoolOwnerResolver(config.solanaRpcUrl)
     : null;
@@ -515,6 +521,7 @@ async function main() {
   // ─── Phase 1A: Scanner Engine ─────────────────────
   let scanner: ScannerEngine | null = null;
   if (config.scannerEnabled) {
+    const scannerBlacklistCheck = await createScannerBlacklistCheck(tradeStore);
     const scannerConfig: ScannerEngineConfig = {
       geckoClient,
       trendingProvider,
@@ -534,13 +541,27 @@ async function main() {
       minLiquidityUsd: Math.max(config.eventMinLiquidityUsd, config.minPoolLiquidity),
       socialMentionTracker, // H-02: social score → WatchlistScore 연동
       // R3: 블랙리스트 pair 재진입 차단
-      blacklistCheck: await createScannerBlacklistCheck(tradeStore),
-      candidateFilter: realtimeModeEnabled ? async (token) => {
+      blacklistCheck: (pairAddress) =>
+        scannerBlacklistCheck(pairAddress) || isOperatorBlacklisted(pairAddress),
+      candidateFilter: async (token) => {
         const discoverySource =
           typeof token.raw?.discovery_source === 'string' ? token.raw.discovery_source : undefined;
         const dexId = typeof token.raw?.dex_id === 'string' ? token.raw.dex_id : undefined;
         const pairAddress = typeof token.raw?.pair_address === 'string' ? token.raw.pair_address : undefined;
-          const mismatch = detectRealtimeDiscoveryMismatch({
+        if (isOperatorBlacklisted(token.address) || isOperatorBlacklisted(pairAddress)) {
+          runtimeDiagnosticsTracker.recordPreWatchlistReject({
+            tokenMint: token.address,
+            reason: 'operator_blacklist',
+            detail: pairAddress && isOperatorBlacklisted(pairAddress) ? 'pair_address' : 'token_mint',
+            source: discoverySource,
+            dexId,
+          });
+          return { allowed: false, reason: 'operator_blacklist' };
+        }
+        if (!realtimeModeEnabled) {
+          return { allowed: true };
+        }
+        const mismatch = detectRealtimeDiscoveryMismatch({
             dexId,
             quoteTokenAddress:
               typeof token.raw?.quote_token_address === 'string' ? token.raw.quote_token_address : undefined,
@@ -575,7 +596,7 @@ async function main() {
           }
         }
         return { allowed: true };
-      } : undefined,
+      },
     };
     scanner = new ScannerEngine(scannerConfig);
     attachScannerFreshListingSource(scanner, (listingCandidate) => {

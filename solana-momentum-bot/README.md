@@ -12,6 +12,10 @@ backtest / realtime shadow / paper / live를 같은 measurement 프레임으로 
 
 - core runtime과 telemetry 경로는 구현 완료 상태다.
 - 현재 active work는 기능 추가보다 배포, paper validation, live enablement gate 정리에 가깝다.
+- 2026-04-04 기준 bootstrap replay sweep / token leaderboard / fixed-notional 비교 도구가 추가됐다.
+- 현재 bootstrap canary 기준값은 `vm=1.8 / buyRatio=0.60 / lookback=20`이고, operator blacklist를 runtime에 직접 반영할 수 있다.
+- live buy entry cost는 planned notional이 아니라 actual input amount 기준으로 기록되도록 보정됐다.
+- `trade-report.ts`는 `opened_at ledger`와 `closed_at realized PnL`을 분리해 운영 리포트로 사용한다.
 - historical canary와 follow-up fix 요약은 [`PLAN_CMPL.md`](./PLAN_CMPL.md)에 모아뒀다.
 
 현재 active execution plan은 [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md)이고,
@@ -92,6 +96,8 @@ npm run dev
 npm run backtest
 npm run realtime-shadow
 npm run paper-report
+npx ts-node scripts/trade-report.ts
+scripts/bootstrap-replay-report.sh --save
 ```
 
 ## Notes

@@ -10,7 +10,7 @@ import {
   buildDexCommunityTakeoverDiscoveryCandidates,
   buildDexProfileDiscoveryCandidates,
 } from './dexBoostDiscovery';
-import { calcWatchlistScore, WatchlistScoreInput, WatchlistScoreResult } from './watchlistScore';
+import { calcWatchlistScore, mergeWatchlistScore, WatchlistScoreInput, WatchlistScoreResult } from './watchlistScore';
 import { SocialMentionTracker } from './socialMentionTracker';
 import { PoolInfo } from '../utils/types';
 import { resolveAmmFeePct } from '../utils/dexFeeMap';
@@ -279,6 +279,7 @@ export class ScannerEngine extends EventEmitter {
       boostAmount: token.raw?.boost_total_amount as number | undefined,
       hasPaidOrders: token.raw?.has_paid_orders as boolean | undefined,
       socialScore,
+      marketCap: token.marketCap,
     };
 
     const scoreResult = calcWatchlistScore(scoreInput);
@@ -386,16 +387,15 @@ export class ScannerEngine extends EventEmitter {
       for (const [mint, entry] of this.watchlist) {
         const boostAmount = boostMap.get(mint);
         if (boostAmount != null && boostAmount > 0) {
-          // Re-score with DexScreener data
+          // Merge enrichment — 기존 trending/momentum/social 점수 보존
           const orders = await this.config.dexScreenerClient!.getTokenOrders(mint);
-          const updatedInput: WatchlistScoreInput = {
-            trendingRank: entry.watchlistScore.components.trendingScore > 0 ? undefined : undefined,
+          entry.watchlistScore = mergeWatchlistScore(entry.watchlistScore, {
             volume24hUsd: entry.poolInfo?.dailyVolume,
             liquidityUsd: entry.poolInfo?.tvl,
             boostAmount,
             hasPaidOrders: orders.length > 0,
-          };
-          entry.watchlistScore = calcWatchlistScore(updatedInput);
+            marketCap: entry.poolInfo?.marketCap,
+          });
           entry.lastUpdatedAt = new Date();
           enriched++;
         }
@@ -552,7 +552,7 @@ export class ScannerEngine extends EventEmitter {
       watchlistScore: {
         totalScore: 100,
         grade: 'A',
-        components: { trendingScore: 30, marketingScore: 0, volumeScore: 25, liquidityScore: 15, momentumScore: 15 },
+        components: { trendingScore: 30, marketingScore: 0, volumeScore: 25, liquidityScore: 15, momentumScore: 15, volMcapScore: 0 },
       },
       addedAt: new Date(),
       lastUpdatedAt: new Date(),

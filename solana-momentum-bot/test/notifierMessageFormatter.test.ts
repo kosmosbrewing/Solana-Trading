@@ -250,12 +250,57 @@ describe('messageFormatter', () => {
         ],
         admissionSkipDetailCounts: [
           { label: 'unsupported_pool_program source=gecko_new_pool dex=raydium', count: 5 },
+          { label: 'no_pairs detail=all_pairs_blocked source=gecko_trending dex=raydium', count: 1 },
         ],
         aliasMissCounts: [],
+        candidateEvictedCount: 3,
+
+        candidateReaddedWithinGraceCount: 1,
+        signalNotInWatchlistCount: 8,
+        signalNotInWatchlistRecentlyEvictedCount: 2,
+        missedTokens: [
+          {
+            tokenMint: 'CGEDT9QZDvvH5GmVkWJH2BXiMJqMJySC9ihWyr7Spump',
+            evicted: 1,
+            readded: 0,
+            notInWatchlist: 13,
+            recentlyEvicted: 1,
+            admissionBlocked: 0,
+          },
+          {
+            tokenMint: 'BURNIE1234567890ABCDEFG',
+            evicted: 1,
+            readded: 1,
+            notInWatchlist: 5,
+            recentlyEvicted: 2,
+            admissionBlocked: 0,
+          },
+          {
+            tokenMint: 'PIPPIN1234567890ABCDEFG',
+            evicted: 0,
+            readded: 0,
+            notInWatchlist: 3,
+            recentlyEvicted: 0,
+            admissionBlocked: 0,
+          },
+          {
+            tokenMint: 'HIDDEN1234567890ABCDEFG',
+            evicted: 0,
+            readded: 0,
+            notInWatchlist: 1,
+            recentlyEvicted: 0,
+            admissionBlocked: 0,
+          },
+        ],
         capacityCounts: [
           { label: 'helius_pool_discovery reason=queue_overflow detail=limit=250 inFlight=2 queued=250', count: 3 },
         ],
         triggerStatsCounts: [],
+        latestTriggerStats: {
+          source: 'bootstrap_trigger',
+          detail: 'evals=200 signals=5(boosted=2) insuffCandles=60 volInsuf=100 lowBuyRatio=10 cooldown=5',
+        },
+        bootstrapBoostedSignalCount: 2,
         rateLimitCounts: [
           { source: 'gecko_terminal', count: 4 },
           { source: 'helius_seed_backfill', count: 2 },
@@ -328,14 +373,69 @@ describe('messageFormatter', () => {
     expect(message).toContain('pre-watchlist reject: unsupported_dex source=dex_boost dex=meteora=4');
     expect(message).toContain('realtime skip: unsupported_pool_program=5');
     expect(message).toContain('realtime skip detail: unsupported_pool_program source=gecko_new_pool dex=raydium=5');
+    expect(message).toContain('watchlist lifecycle: evicted=3 readded=1 not_in_watchlist=8(recently_evicted=2)');
+    expect(message).toContain('missed tokens (top 3):');
+    expect(message).toContain('CGEDT9QZ...pump');
+    expect(message).toContain('BURNIE12...DEFG');
+    expect(message).toContain('PIPPIN12...DEFG');
+    expect(message).not.toContain('HIDDEN12...DEFG');
+    expect(message).toContain('bootstrap boost: boosted signals=2 (cumulative)');
     expect(message).toContain('429: gecko_terminal=4, helius_seed_backfill=2');
     expect(message).toContain('poll failure: gecko_ingester=1');
-    expect(message).toContain('data-plane 경고: no candle >= 10m, 429 observed, low realtime-ready ratio');
+    expect(message).toContain('data-plane 경고: no candle >= 10m, 429 observed, low realtime-ready ratio, operator blacklist hit, 2 recently evicted signals, all_pairs_blocked observed');
     expect(message).toContain('전략 상태');
     expect(message).toContain('Momentum Cascade: 검증 통과');
     expect(message).toContain('Kelly 8.0%');
     expect(message).toContain('소스 성과');
     expect(message).toContain('scanner_dex_boost: 3건 | 승률 66.7% | 손익 +0.0800 SOL');
     expect(message).toContain('unknown: 2건 | 승률 50.0% | 손익 +0.0400 SOL');
+  });
+
+  it('omits missed token section when there are no missed tokens', () => {
+    const message = buildDailySummaryMessage({
+      totalTrades: 0,
+      wins: 0,
+      losses: 0,
+      pnl: 0,
+      portfolioValue: 1,
+      signalsDetected: 0,
+      signalsExecuted: 0,
+      signalsFiltered: 0,
+      dailyLossUsed: 0,
+      dailyLossLimit: 0.05,
+      consecutiveLosses: 0,
+      uptime: 60_000,
+      restarts: 0,
+      rejectionMix: {
+        hours: 24,
+        gateFilterReasonCounts: [],
+        admissionSkipCounts: [],
+        admissionSkipDetailCounts: [],
+        aliasMissCounts: [],
+        candidateEvictedCount: 0,
+
+        candidateReaddedWithinGraceCount: 0,
+        signalNotInWatchlistCount: 0,
+        signalNotInWatchlistRecentlyEvictedCount: 0,
+        missedTokens: [],
+        capacityCounts: [],
+        triggerStatsCounts: [],
+        bootstrapBoostedSignalCount: 0,
+        preWatchlistRejectCounts: [],
+        preWatchlistRejectDetailCounts: [],
+        rateLimitCounts: [],
+        pollFailureCounts: [],
+        realtimeCandidateReadiness: {
+          totalCandidates: 0,
+          prefiltered: 0,
+          admissionSkipped: 0,
+          ready: 0,
+          readinessRate: 0,
+        },
+      },
+    }, '2026-03-23');
+
+    expect(message).not.toContain('missed tokens (top 3):');
+    expect(message).toContain('bootstrap boost: boosted signals=0 (cumulative)');
   });
 });

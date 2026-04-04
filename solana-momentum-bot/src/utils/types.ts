@@ -35,7 +35,7 @@ export interface BreakoutScoreDetail {
   multiTfScore: number;    // 0~20
   whaleScore: number;      // 0~15
   lpScore: number;         // -10~15
-  mcapVolumeScore: number; // 0~10
+  mcapVolumeScore: number; // 0~15
   totalScore: number;      // 0~100
   grade: BreakoutGrade;
   components?: BreakoutScoreComponent[];

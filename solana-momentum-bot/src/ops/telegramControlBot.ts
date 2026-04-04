@@ -5,6 +5,11 @@ import { Pm2AlertMonitor } from './pm2AlertMonitor';
 import { buildPm2HealthSummary } from './pm2Health';
 import { Pm2Service } from './pm2Service';
 import {
+  buildRuntimeHeartbeatReport,
+  closeRuntimeHeartbeatDeps,
+  createRuntimeHeartbeatDeps,
+} from './runtimeHeartbeatReport';
+import {
   formatActionMessage,
   formatErrorMessage,
   formatHealthMessage,
@@ -28,6 +33,7 @@ async function main() {
   const notifier = new Notifier(config.telegramBotToken, config.telegramChatId);
   const updateClient = new TelegramUpdateClient(config.telegramBotToken);
   const pm2Service = new Pm2Service();
+  const heartbeatDeps = createRuntimeHeartbeatDeps();
   const alertMonitor = new Pm2AlertMonitor(pm2Service, notifier, config.pm2AllowedProcesses);
   let offset = await getInitialOffset(updateClient);
 
@@ -40,7 +46,7 @@ async function main() {
       const updates = await updateClient.getUpdates(offset, POLL_TIMEOUT_SEC);
       for (const update of updates) {
         offset = update.update_id + 1;
-        await handleUpdate(update, notifier, pm2Service, alertMonitor);
+        await handleUpdate(update, notifier, pm2Service, alertMonitor, heartbeatDeps);
       }
       await alertMonitor.tick();
     } catch (error) {
@@ -51,13 +57,15 @@ async function main() {
   }
 
   log.info('Ops bot stopped');
+  await closeRuntimeHeartbeatDeps(heartbeatDeps);
 }
 
 async function handleUpdate(
   update: TelegramUpdate,
   notifier: Notifier,
   pm2Service: Pm2Service,
-  alertMonitor: Pm2AlertMonitor
+  alertMonitor: Pm2AlertMonitor,
+  heartbeatDeps: ReturnType<typeof createRuntimeHeartbeatDeps>
 ): Promise<void> {
   const message = extractMessage(update);
   if (!message?.text) return;
@@ -89,6 +97,9 @@ async function handleUpdate(
         await notifier.sendMessage(formatHealthMessage(
           buildPm2HealthSummary(await listAllowedProcesses(pm2Service))
         ));
+        return;
+      case 'report':
+        await notifier.sendMessage(await buildRuntimeHeartbeatReport(heartbeatDeps));
         return;
       case 'restart':
         alertMonitor.markManualAction(parsed.command.processName);

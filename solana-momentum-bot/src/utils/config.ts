@@ -189,6 +189,8 @@ export const config = {
   realtimeCooldownSec: numOptional('REALTIME_COOLDOWN_SEC', 300),
   realtimeTriggerMode: optional('REALTIME_TRIGGER_MODE', 'bootstrap') as 'bootstrap' | 'core',
   realtimeBootstrapMinBuyRatio: numOptional('REALTIME_BOOTSTRAP_MIN_BUY_RATIO', 0.55),
+  realtimeVolumeMcapBoostThreshold: numOptional('REALTIME_VOLUME_MCAP_BOOST_THRESHOLD', 0.01),
+  realtimeVolumeMcapBoostMultiplier: numOptional('REALTIME_VOLUME_MCAP_BOOST_MULTIPLIER', 1.5),
   realtimeMaxSubscriptions: numOptional('REALTIME_MAX_SUBSCRIPTIONS', 30),
   realtimePoolDiscoveryEnabled: boolOptional('REALTIME_POOL_DISCOVERY_ENABLED', true),
   realtimePoolDiscoveryConcurrency: numOptional('REALTIME_POOL_DISCOVERY_CONCURRENCY', 4),

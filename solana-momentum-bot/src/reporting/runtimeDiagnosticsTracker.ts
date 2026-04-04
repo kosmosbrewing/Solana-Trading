@@ -5,9 +5,22 @@ export interface RuntimeDiagnosticsSummary {
   admissionSkipCounts: Array<{ reason: string; count: number }>;
   admissionSkipDetailCounts: Array<{ label: string; count: number }>;
   aliasMissCounts: Array<{ pool: string; count: number }>;
+  candidateEvictedCount: number;
+  candidateReaddedWithinGraceCount: number;
+  signalNotInWatchlistCount: number;
+  signalNotInWatchlistRecentlyEvictedCount: number;
+  missedTokens: Array<{
+    tokenMint: string;
+    evicted: number;
+    readded: number;
+    notInWatchlist: number;
+    recentlyEvicted: number;
+    admissionBlocked: number;
+  }>;
   capacityCounts: Array<{ label: string; count: number }>;
   triggerStatsCounts: Array<{ label: string; count: number }>;
   latestTriggerStats?: { source: string; detail: string };
+  bootstrapBoostedSignalCount: number;
   preWatchlistRejectCounts: Array<{ reason: string; count: number }>;
   preWatchlistRejectDetailCounts: Array<{ label: string; count: number }>;
   rateLimitCounts: Array<{ source: string; count: number }>;
@@ -22,7 +35,18 @@ export interface RuntimeDiagnosticsSummary {
 }
 
 export interface RuntimeDiagnosticEvent {
-  type: 'admission_skip' | 'pre_watchlist_reject' | 'realtime_candidate_seen' | 'rate_limit' | 'poll_failure' | 'capacity' | 'trigger_stats' | 'alias_miss';
+  type:
+    | 'admission_skip'
+    | 'pre_watchlist_reject'
+    | 'realtime_candidate_seen'
+    | 'rate_limit'
+    | 'poll_failure'
+    | 'capacity'
+    | 'trigger_stats'
+    | 'alias_miss'
+    | 'candidate_evicted'
+    | 'candidate_readded'
+    | 'signal_not_in_watchlist';
   timestampMs: number;
   tokenMint?: string;
   reason?: string;
@@ -118,6 +142,32 @@ export class RuntimeDiagnosticsTracker {
     });
   }
 
+  recordCandidateEvicted(tokenMint: string): void {
+    this.pushEvent({
+      type: 'candidate_evicted',
+      timestampMs: Date.now(),
+      tokenMint,
+    });
+  }
+
+  recordCandidateReadded(tokenMint: string, detail?: string): void {
+    this.pushEvent({
+      type: 'candidate_readded',
+      timestampMs: Date.now(),
+      tokenMint,
+      detail,
+    });
+  }
+
+  recordSignalNotInWatchlist(tokenMint: string, detail?: string): void {
+    this.pushEvent({
+      type: 'signal_not_in_watchlist',
+      timestampMs: Date.now(),
+      tokenMint,
+      detail,
+    });
+  }
+
   recordTriggerStats(detail: string, source = 'momentum_trigger'): void {
     this.pushEvent({
       type: 'trigger_stats',
@@ -147,9 +197,25 @@ export class RuntimeDiagnosticsTracker {
       admissionSkipCounts: summarizeDecisionReasons(this.events, cutoffMs, 'admission_skip'),
       admissionSkipDetailCounts: summarizeDecisionDetails(this.events, cutoffMs, 'admission_skip'),
       aliasMissCounts: summarizeAliasMissCounts(this.events, cutoffMs),
+      candidateEvictedCount: summarizeTokenEventCount(this.events, cutoffMs, 'candidate_evicted'),
+      candidateReaddedWithinGraceCount: summarizeDetailEventCount(
+        this.events,
+        cutoffMs,
+        'candidate_readded',
+        'within_grace'
+      ),
+      signalNotInWatchlistCount: summarizeTokenEventCount(this.events, cutoffMs, 'signal_not_in_watchlist'),
+      signalNotInWatchlistRecentlyEvictedCount: summarizeDetailEventCount(
+        this.events,
+        cutoffMs,
+        'signal_not_in_watchlist',
+        'recently_evicted'
+      ),
+      missedTokens: summarizeMissedTokens(this.events, cutoffMs),
       capacityCounts: summarizeHighFreqLabels(this.events, cutoffMs, 'capacity'),
       triggerStatsCounts: summarizeHighFreqLabels(this.events, cutoffMs, 'trigger_stats'),
       latestTriggerStats: findLatestTriggerStats(this.events, cutoffMs),
+      bootstrapBoostedSignalCount: findLatestBootstrapBoostedSignalCount(this.events, cutoffMs),
       preWatchlistRejectCounts: summarizeDecisionReasons(this.events, cutoffMs, 'pre_watchlist_reject'),
       preWatchlistRejectDetailCounts: summarizeDecisionDetails(this.events, cutoffMs, 'pre_watchlist_reject'),
       rateLimitCounts: summarizeEventSources(this.events, cutoffMs, 'rate_limit'),
@@ -342,6 +408,23 @@ function findLatestTriggerStats(
   return undefined;
 }
 
+function findLatestBootstrapBoostedSignalCount(
+  events: RuntimeDiagnosticEvent[],
+  cutoffMs: number
+): number {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (
+      event.type === 'trigger_stats' &&
+      event.timestampMs >= cutoffMs &&
+      event.source === 'bootstrap_trigger'
+    ) {
+      return parseBoostedSignalCount(event.detail);
+    }
+  }
+  return 0;
+}
+
 function summarizeAliasMissCounts(
   events: RuntimeDiagnosticEvent[],
   cutoffMs: number
@@ -356,4 +439,95 @@ function summarizeAliasMissCounts(
   return [...counts.entries()]
     .map(([pool, count]) => ({ pool, count }))
     .sort((left, right) => right.count - left.count);
+}
+
+function summarizeTokenEventCount(
+  events: RuntimeDiagnosticEvent[],
+  cutoffMs: number,
+  type: 'candidate_evicted' | 'candidate_readded' | 'signal_not_in_watchlist'
+): number {
+  let count = 0;
+  for (const event of events) {
+    if (event.type !== type || event.timestampMs < cutoffMs || !event.tokenMint) continue;
+    count++;
+  }
+  return count;
+}
+
+function summarizeDetailEventCount(
+  events: RuntimeDiagnosticEvent[],
+  cutoffMs: number,
+  type: 'candidate_readded' | 'signal_not_in_watchlist',
+  detail: string
+): number {
+  let count = 0;
+  for (const event of events) {
+    if (event.type !== type || event.timestampMs < cutoffMs || event.detail !== detail) continue;
+    count++;
+  }
+  return count;
+}
+
+function summarizeMissedTokens(
+  events: RuntimeDiagnosticEvent[],
+  cutoffMs: number
+): Array<{
+  tokenMint: string;
+  evicted: number;
+  readded: number;
+  notInWatchlist: number;
+  recentlyEvicted: number;
+  admissionBlocked: number;
+}> {
+  const counts = new Map<string, {
+    tokenMint: string;
+    evicted: number;
+    readded: number;
+    notInWatchlist: number;
+    recentlyEvicted: number;
+    admissionBlocked: number;
+  }>();
+
+  for (const event of events) {
+    if (event.timestampMs < cutoffMs || !event.tokenMint) continue;
+    const bucket = counts.get(event.tokenMint) ?? {
+      tokenMint: event.tokenMint,
+      evicted: 0,
+      readded: 0,
+      notInWatchlist: 0,
+      recentlyEvicted: 0,
+      admissionBlocked: 0,
+    };
+    if (event.type === 'candidate_evicted') {
+      bucket.evicted++;
+    } else if (event.type === 'candidate_readded') {
+      bucket.readded++;
+    } else if (event.type === 'signal_not_in_watchlist') {
+      bucket.notInWatchlist++;
+      if (event.detail === 'recently_evicted') {
+        bucket.recentlyEvicted++;
+      }
+    } else if (event.type === 'admission_skip' && event.detail?.includes('all_pairs_blocked')) {
+      bucket.admissionBlocked++;
+    } else {
+      continue;
+    }
+    counts.set(event.tokenMint, bucket);
+  }
+
+  return [...counts.values()]
+    .filter((item) => item.notInWatchlist > 0 || item.admissionBlocked > 0)
+    .sort((left, right) =>
+      (right.notInWatchlist + right.admissionBlocked) - (left.notInWatchlist + left.admissionBlocked) ||
+      right.recentlyEvicted - left.recentlyEvicted ||
+      right.evicted - left.evicted ||
+      left.tokenMint.localeCompare(right.tokenMint)
+    )
+    .slice(0, 5);
+}
+
+function parseBoostedSignalCount(detail?: string): number {
+  if (!detail) return 0;
+  const match = detail.match(/boosted=(\d+)/);
+  return match ? Number.parseInt(match[1], 10) : 0;
 }

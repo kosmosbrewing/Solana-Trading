@@ -18,6 +18,7 @@ describe('scanner listing source adapter', () => {
           volumeScore: 15,
           liquidityScore: 12,
           momentumScore: 15,
+          volMcapScore: 0,
         },
       },
       poolInfo: {
@@ -64,7 +65,7 @@ describe('scanner listing source adapter', () => {
       symbol: 'A',
       discoverySource: 'gecko_trending',
       lane: 'A',
-      watchlistScore: { totalScore: 10, grade: 'C', components: { trendingScore: 0, marketingScore: 0, volumeScore: 0, liquidityScore: 0, momentumScore: 10 } },
+      watchlistScore: { totalScore: 10, grade: 'C', components: { trendingScore: 0, marketingScore: 0, volumeScore: 0, liquidityScore: 0, momentumScore: 10, volMcapScore: 0 } },
       addedAt: new Date(),
       lastUpdatedAt: new Date(),
     });
@@ -74,7 +75,7 @@ describe('scanner listing source adapter', () => {
       symbol: 'B',
       discoverySource: 'dex_token_profile',
       lane: 'B',
-      watchlistScore: { totalScore: 20, grade: 'C', components: { trendingScore: 0, marketingScore: 0, volumeScore: 5, liquidityScore: 5, momentumScore: 10 } },
+      watchlistScore: { totalScore: 20, grade: 'C', components: { trendingScore: 0, marketingScore: 0, volumeScore: 5, liquidityScore: 5, momentumScore: 10, volMcapScore: 0 } },
       addedAt: new Date(),
       lastUpdatedAt: new Date(),
     });

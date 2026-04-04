@@ -57,10 +57,12 @@ export function calcBreakoutScore(input: BreakoutScoreInput): BreakoutScoreDetai
   if (input.lpStability === 'stable') lpScore = 15;
   else if (input.lpStability === 'dropping') lpScore = -10;
 
-  // Factor 6: 시가총액 대비 24h 거래량 (0~10)
+  // Factor 6: 시가총액 대비 24h 거래량 (0~15, 밈코인 현실 반영)
   let mcapVolumeScore = 0;
-  if ((input.volumeMcapRatio ?? 0) >= 0.30) mcapVolumeScore = 10;
-  else if ((input.volumeMcapRatio ?? 0) >= 0.15) mcapVolumeScore = 6;
+  if ((input.volumeMcapRatio ?? 0) >= 1.0) mcapVolumeScore = 15;
+  else if ((input.volumeMcapRatio ?? 0) >= 0.5) mcapVolumeScore = 12;
+  else if ((input.volumeMcapRatio ?? 0) >= 0.2) mcapVolumeScore = 9;
+  else if ((input.volumeMcapRatio ?? 0) >= 0.1) mcapVolumeScore = 6;
   else if ((input.volumeMcapRatio ?? 0) >= 0.05) mcapVolumeScore = 3;
 
   return buildBreakoutScoreDetail({
@@ -76,7 +78,7 @@ export function calcBreakoutScore(input: BreakoutScoreInput): BreakoutScoreDetai
       { key: 'multi_tf_alignment', label: 'Multi TF Alignment', score: multiTfScore, maxScore: 20, value: input.multiTfAlignment },
       { key: 'whale_detected', label: 'Whale Activity', score: whaleScore, maxScore: 15, value: input.whaleDetected ? 1 : 0 },
       { key: 'lp_stability', label: 'LP Stability', score: lpScore, maxScore: 15, value: input.lpStability === 'stable' ? 1 : input.lpStability === 'dropping' ? -1 : 0 },
-      { key: 'volume_mcap_ratio', label: 'Volume / Market Cap', score: mcapVolumeScore, maxScore: 10, value: input.volumeMcapRatio ?? 0 },
+      { key: 'volume_mcap_ratio', label: 'Volume / Market Cap', score: mcapVolumeScore, maxScore: 15, value: input.volumeMcapRatio ?? 0 },
     ],
   });
 }

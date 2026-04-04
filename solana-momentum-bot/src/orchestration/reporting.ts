@@ -1,5 +1,6 @@
 import { DailySummaryReport, RealtimeAdmissionSummary } from '../notifier/dailySummaryFormatter';
 import { PaperMetricsSummary } from '../reporting/paperMetrics';
+import { RuntimeDiagnosticsSummary } from '../reporting/runtimeDiagnosticsTracker';
 import { RealtimeAdmissionSnapshotEntry } from '../realtime';
 import { EdgeTracker, sanitizeEdgeLikeTrades, summarizeTradesBySource } from '../reporting';
 import { RegimeState } from '../risk/regimeFilter';
@@ -222,26 +223,8 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
 
 function buildDailyRejectionMixSummary(params: {
   hours: number;
-    filterReasonCounts: Array<{ reason: string; count: number }>;
-    runtimeDiagnostics?: {
-      admissionSkipCounts: Array<{ reason: string; count: number }>;
-      admissionSkipDetailCounts: Array<{ label: string; count: number }>;
-      aliasMissCounts: Array<{ pool: string; count: number }>;
-      capacityCounts: Array<{ label: string; count: number }>;
-      triggerStatsCounts: Array<{ label: string; count: number }>;
-      latestTriggerStats?: { source: string; detail: string };
-      preWatchlistRejectCounts: Array<{ reason: string; count: number }>;
-      preWatchlistRejectDetailCounts: Array<{ label: string; count: number }>;
-      rateLimitCounts: Array<{ source: string; count: number }>;
-      pollFailureCounts: Array<{ source: string; count: number }>;
-      realtimeCandidateReadiness: {
-        totalCandidates: number;
-        prefiltered: number;
-        admissionSkipped: number;
-        ready: number;
-        readinessRate: number;
-      };
-    };
+  filterReasonCounts: Array<{ reason: string; count: number }>;
+  runtimeDiagnostics?: RuntimeDiagnosticsSummary;
   lastCandleAt?: Date;
 }): DailySummaryReport['rejectionMix'] {
   const nowMs = Date.now();
@@ -255,9 +238,16 @@ function buildDailyRejectionMixSummary(params: {
     admissionSkipCounts: params.runtimeDiagnostics?.admissionSkipCounts ?? [],
     admissionSkipDetailCounts: params.runtimeDiagnostics?.admissionSkipDetailCounts ?? [],
     aliasMissCounts: params.runtimeDiagnostics?.aliasMissCounts ?? [],
+    candidateEvictedCount: params.runtimeDiagnostics?.candidateEvictedCount ?? 0,
+    candidateReaddedWithinGraceCount: params.runtimeDiagnostics?.candidateReaddedWithinGraceCount ?? 0,
+    signalNotInWatchlistCount: params.runtimeDiagnostics?.signalNotInWatchlistCount ?? 0,
+    signalNotInWatchlistRecentlyEvictedCount:
+      params.runtimeDiagnostics?.signalNotInWatchlistRecentlyEvictedCount ?? 0,
+    missedTokens: params.runtimeDiagnostics?.missedTokens ?? [],
     capacityCounts: params.runtimeDiagnostics?.capacityCounts ?? [],
     triggerStatsCounts: params.runtimeDiagnostics?.triggerStatsCounts ?? [],
     latestTriggerStats: params.runtimeDiagnostics?.latestTriggerStats,
+    bootstrapBoostedSignalCount: params.runtimeDiagnostics?.bootstrapBoostedSignalCount ?? 0,
     preWatchlistRejectCounts: params.runtimeDiagnostics?.preWatchlistRejectCounts ?? [],
     preWatchlistRejectDetailCounts: params.runtimeDiagnostics?.preWatchlistRejectDetailCounts ?? [],
     rateLimitCounts: params.runtimeDiagnostics?.rateLimitCounts ?? [],

@@ -13,6 +13,8 @@ export function formatHelpMessage(allowedProcesses: string[]): string {
     '<code>/status</code> 상태 요약',
     '<code>/list</code> 상태 요약',
     '<code>/health</code> 가용성 상태 점검',
+    '<code>/report</code> 실시간 trading heartbeat 조회',
+    '<code>/heartbeat</code> 실시간 trading heartbeat 조회',
     '<code>/restart &lt;name|alias&gt;</code> 프로세스 재시작',
     '<code>/stop &lt;name|alias&gt;</code> 프로세스 중지',
     '<code>/logs &lt;name|alias&gt;</code> 최근 로그 30줄',

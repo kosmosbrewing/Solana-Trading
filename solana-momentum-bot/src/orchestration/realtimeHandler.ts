@@ -39,12 +39,17 @@ export async function handleRealtimeSignal(
 
   if (!poolInfo) {
     log.info(`Skipping realtime signal for ${signal.pairAddress}: not in watchlist`);
+    const recentlyEvicted = ctx.isInGracePeriod?.(signal.pairAddress) ?? false;
+    ctx.runtimeDiagnosticsTracker?.recordSignalNotInWatchlist(
+      signal.pairAddress,
+      recentlyEvicted ? 'recently_evicted' : undefined
+    );
     await trackRealtimeShadowSignal({
       signal,
       candleBuilder,
       ctx,
       gateStartedAt,
-      filterReason: 'not_in_watchlist',
+      filterReason: recentlyEvicted ? 'not_in_watchlist_recently_evicted' : 'not_in_watchlist',
     });
     return;
   }

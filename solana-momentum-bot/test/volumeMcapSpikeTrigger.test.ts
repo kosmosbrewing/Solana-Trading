@@ -233,4 +233,152 @@ describe('VolumeMcapSpikeTrigger', () => {
     expect(signal).toBeNull();
     expect(trigger.getRejectStats().evaluations).toBe(0);
   });
+
+  describe('volumeMcapBoost', () => {
+    it('lowers multiplier when volume/mcap >= boostThreshold', () => {
+      // volume=200 → ratio=2.0 < default 2.5 → normally rejected
+      // But with mcap=10000, volume/mcap=0.02 >= 0.01 → boost to 1.5 → 2.0 >= 1.5 → pass
+      const boostedTrigger = new VolumeMcapSpikeTrigger({
+        ...DEFAULT_CONFIG,
+        volumeMcapBoostThreshold: 0.01,
+        volumeMcapBoostMultiplier: 1.5,
+      });
+      const pair = 'TOKEN_BOOST_A';
+      boostedTrigger.setPoolContext(pair, { marketCap: 10000 });
+
+      const previous = Array.from({ length: 5 }, (_, i) =>
+        makeCandle({ pairAddress: pair, volume: 100, timestamp: new Date(1000 * i) })
+      );
+      const current = makeCandle({
+        pairAddress: pair,
+        volume: 200,
+        buyVolume: 70,
+        sellVolume: 30,
+        timestamp: new Date(6000),
+      });
+      const builder = buildCandleBuilder([...previous, current]);
+
+      const signal = boostedTrigger.onCandle(
+        makeCandle({ pairAddress: pair, intervalSec: 10, timestamp: new Date(6000) }),
+        builder
+      );
+
+      expect(signal).not.toBeNull();
+      expect(signal!.meta.volumeMcapBoosted).toBe(1);
+      expect(signal!.meta.effectiveMultiplier).toBe(1.5);
+      expect(boostedTrigger.getRejectStats().volumeMcapBoosted).toBe(1);
+    });
+
+    it('uses default multiplier when no mcap context', () => {
+      const pair = 'TOKEN_BOOST_B';
+      // No setPoolContext → no boost
+      const previous = Array.from({ length: 5 }, (_, i) =>
+        makeCandle({ pairAddress: pair, volume: 100, timestamp: new Date(1000 * i) })
+      );
+      const current = makeCandle({
+        pairAddress: pair,
+        volume: 200,
+        buyVolume: 70,
+        sellVolume: 30,
+        timestamp: new Date(6000),
+      });
+      const builder = buildCandleBuilder([...previous, current]);
+
+      const signal = trigger.onCandle(
+        makeCandle({ pairAddress: pair, intervalSec: 10, timestamp: new Date(6000) }),
+        builder
+      );
+
+      // ratio=2.0 < 2.5 → rejected
+      expect(signal).toBeNull();
+      expect(trigger.getRejectStats().volumeInsufficient).toBeGreaterThanOrEqual(1);
+    });
+
+    it('uses default multiplier when volume/mcap < boostThreshold', () => {
+      const boostedTrigger = new VolumeMcapSpikeTrigger({
+        ...DEFAULT_CONFIG,
+        volumeMcapBoostThreshold: 0.01,
+        volumeMcapBoostMultiplier: 1.5,
+      });
+      const pair = 'TOKEN_BOOST_C';
+      // mcap=100000, volume=200 → volume/mcap=0.002 < 0.01 → no boost
+      boostedTrigger.setPoolContext(pair, { marketCap: 100000 });
+
+      const previous = Array.from({ length: 5 }, (_, i) =>
+        makeCandle({ pairAddress: pair, volume: 100, timestamp: new Date(1000 * i) })
+      );
+      const current = makeCandle({
+        pairAddress: pair,
+        volume: 200,
+        buyVolume: 70,
+        sellVolume: 30,
+        timestamp: new Date(6000),
+      });
+      const builder = buildCandleBuilder([...previous, current]);
+
+      const signal = boostedTrigger.onCandle(
+        makeCandle({ pairAddress: pair, intervalSec: 10, timestamp: new Date(6000) }),
+        builder
+      );
+
+      // ratio=2.0 < 2.5 → rejected (no boost applied)
+      expect(signal).toBeNull();
+      expect(boostedTrigger.getRejectStats().volumeInsufficient).toBe(1);
+    });
+
+    it('non-boosted signal has no volumeMcapBoosted in meta', () => {
+      const pair = 'TOKEN_BOOST_D';
+      const previous = Array.from({ length: 5 }, (_, i) =>
+        makeCandle({ pairAddress: pair, volume: 100, timestamp: new Date(1000 * i) })
+      );
+      const current = makeCandle({
+        pairAddress: pair,
+        volume: 300,
+        buyVolume: 70,
+        sellVolume: 30,
+        timestamp: new Date(6000),
+      });
+      const builder = buildCandleBuilder([...previous, current]);
+
+      const signal = trigger.onCandle(
+        makeCandle({ pairAddress: pair, intervalSec: 10, timestamp: new Date(6000) }),
+        builder
+      );
+
+      expect(signal).not.toBeNull();
+      expect(signal!.meta.volumeMcapBoosted).toBeUndefined();
+      expect(trigger.getRejectStats().volumeMcapBoosted).toBe(0);
+    });
+
+    it('tracks volumeMcapBoosted count in rejectStats', () => {
+      const boostedTrigger = new VolumeMcapSpikeTrigger({
+        ...DEFAULT_CONFIG,
+        volumeMcapBoostThreshold: 0.01,
+        volumeMcapBoostMultiplier: 1.5,
+      });
+      const pair = 'TOKEN_BOOST_E';
+      boostedTrigger.setPoolContext(pair, { marketCap: 5000 });
+
+      const previous = Array.from({ length: 5 }, (_, i) =>
+        makeCandle({ pairAddress: pair, volume: 100, timestamp: new Date(1000 * i) })
+      );
+      // volume=200 → ratio=2.0, volume/mcap=0.04 → boosted
+      const current = makeCandle({
+        pairAddress: pair,
+        volume: 200,
+        buyVolume: 70,
+        sellVolume: 30,
+        timestamp: new Date(6000),
+      });
+      const builder = buildCandleBuilder([...previous, current]);
+
+      boostedTrigger.onCandle(
+        makeCandle({ pairAddress: pair, intervalSec: 10, timestamp: new Date(6000) }),
+        builder
+      );
+
+      expect(boostedTrigger.getRejectStats().volumeMcapBoosted).toBe(1);
+      expect(boostedTrigger.getRejectStats().signals).toBe(1);
+    });
+  });
 });

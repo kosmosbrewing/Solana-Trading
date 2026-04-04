@@ -63,6 +63,8 @@ export interface BotContext {
   realtimeReplayStore?: RealtimeReplayStore;
   /** Runtime diagnostics tracker (optional — cadence/data-plane summary) */
   runtimeDiagnosticsTracker?: RuntimeDiagnosticsTracker;
+  /** Grace period 여부 확인 (optional — realtime watchlist lifecycle diagnostics) */
+  isInGracePeriod?: (tokenMint: string) => boolean;
   /** Paper 모드 시뮬레이션 잔고 (SOL). PnL에 따라 동적 업데이트 */
   paperBalance?: number;
 }

@@ -16,9 +16,9 @@
 이 문서는 전략 철학 문서가 아니다.
 현재 전략/게이트 기준은 [`STRATEGY.md`](../../STRATEGY.md), active 운영 우선순위는 [`docs/exec-plans/active/1sol-to-100sol.md`](../exec-plans/active/1sol-to-100sol.md)를 따른다.
 
-`bootstrap_10s` replay를 반복 분석할 때는 [`bootstrap-replay-loop.md`](./bootstrap-replay-loop.md)를 같이 본다.
-`volume_spike` / `fib_pullback` 5분 replay를 반복 분석할 때는 [`core-5m-replay-loop.md`](./core-5m-replay-loop.md)를 같이 본다.
-historical fetch -> replay를 반복 분석할 때는 [`historical-replay-loop.md`](./historical-replay-loop.md)를 같이 본다.
+`bootstrap_10s` replay를 반복 분석할 때는 [`backtest-bootstrap-replay-loop.md`](./backtest-bootstrap-replay-loop.md)를 같이 본다.
+`volume_spike` / `fib_pullback` 5분 replay를 반복 분석할 때는 [`backtest-core-5m-replay-loop.md`](./backtest-core-5m-replay-loop.md)를 같이 본다.
+historical fetch -> replay를 반복 분석할 때는 [`backtest-historical-replay-loop.md`](./backtest-historical-replay-loop.md)를 같이 본다.
 heartbeat / daily summary / paper validation / score 해석은 [`measurement-review-loop.md`](./measurement-review-loop.md)를 같이 본다.
 
 ---

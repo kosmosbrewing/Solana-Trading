@@ -18,7 +18,7 @@
 현재 구현 기준으로 [fetch-historical-swaps.ts](../../scripts/fetch-historical-swaps.ts)는 `MomentumTriggerConfig` 기반 replay를 사용한다.
 즉 이 문서는 `bootstrap_10s` 범용 historical replay 문서가 아니라, 현재 historical screening 경로 문서로 읽는다.
 
-실시간 session replay는 [`bootstrap-replay-loop.md`](./bootstrap-replay-loop.md), `core 5m` replay는 [`core-5m-replay-loop.md`](./core-5m-replay-loop.md)를 따른다.
+실시간 session replay는 [`backtest-bootstrap-replay-loop.md`](./backtest-bootstrap-replay-loop.md), `core 5m` replay는 [`backtest-core-5m-replay-loop.md`](./backtest-core-5m-replay-loop.md)를 따른다.
 
 ---
 
@@ -233,7 +233,7 @@ npx ts-node scripts/fetch-historical-swaps.ts \
 후속:
 
 - 같은 token/pool을 live session에서 다시 본다
-- `bootstrap-replay-loop.md`로 이어서 검증한다
+- [`backtest-bootstrap-replay-loop.md`](./backtest-bootstrap-replay-loop.md)로 이어서 검증한다
 
 ### B. Pool-specific hypothesis
 

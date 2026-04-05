@@ -42,10 +42,16 @@ async function main() {
     volumeSpikeParams: {
       volumeMultiplier: optionalNumArg(args, '--vol-mult'),
       lookback: optionalNumArg(args, '--vol-lookback'),
+      tp1Multiplier: optionalNumArg(args, '--vol-tp1'),
+      tp2Multiplier: optionalNumArg(args, '--vol-tp2'),
+      slAtrMultiplier: optionalNumArg(args, '--vol-sl-atr'),
+      timeStopMinutes: optionalNumArg(args, '--vol-time-stop'),
     },
     fibPullbackParams: {
       impulseWindowBars: optionalNumArg(args, '--fib-impulse-bars'),
       impulseMinPct: optionalNumArg(args, '--fib-impulse-min-pct'),
+      tp1Multiplier: optionalNumArg(args, '--fib-tp1'),
+      tp2Multiplier: optionalNumArg(args, '--fib-tp2'),
       timeStopMinutes: optionalNumArg(args, '--fib-time-stop'),
     },
   };
@@ -232,8 +238,14 @@ Risk/backtest overrides:
   --min-score <n>               Gate min breakout score
   --vol-mult <n>                Volume Spike multiplier override
   --vol-lookback <n>            Volume Spike lookback override
+  --vol-tp1 <n>                 Volume Spike TP1 ATR multiplier override
+  --vol-tp2 <n>                 Volume Spike TP2 ATR multiplier override
+  --vol-sl-atr <n>              Volume Spike SL ATR multiplier override
+  --vol-time-stop <min>         Volume Spike time stop override
   --fib-impulse-bars <n>        Fib impulse window bars override
   --fib-impulse-min-pct <n>     Fib minimum impulse pct override
+  --fib-tp1 <n>                 Fib TP1 multiplier override
+  --fib-tp2 <n>                 Fib TP2 multiplier override
   --fib-time-stop <min>         Fib time stop override
 
 Examples:

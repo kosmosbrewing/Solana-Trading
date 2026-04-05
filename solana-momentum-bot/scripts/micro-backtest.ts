@@ -4,7 +4,7 @@ import path from 'path';
 import dotenv from 'dotenv';
 import { replayRealtimeCandlesStream, replayRealtimeDataset, ReplayTriggerType } from '../src/backtest/microReplayEngine';
 import { RealtimeReplayStore } from '../src/realtime';
-import { MomentumTriggerConfig, VolumeMcapSpikeTriggerConfig } from '../src/strategy';
+import { MomentumTriggerConfig, VolumeMcapSpikeTriggerConfig, BootstrapRejectStats } from '../src/strategy';
 import { summarizeRealtimeSignals } from '../src/reporting';
 
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
@@ -75,6 +75,11 @@ async function main() {
 
   const summary = summarizeRealtimeSignals(result.records, horizonSec);
   const rs = result.rejectStats;
+  const showPerPair = args.includes('--per-pair-summary');
+  const perPairStats = showPerPair && triggerType === 'bootstrap'
+    ? buildPerPairStats(rs as BootstrapRejectStats)
+    : undefined;
+
   const output = {
     datasetRoot: resolvedDatasetRoot,
     datasetDir: resolvedDatasetDir,
@@ -103,7 +108,9 @@ async function main() {
       edgeGateStatus: summary.assessment.gateStatus,
       edgeGateReasons: summary.assessment.gateReasons,
     },
-    rejectStats: rs,
+    // Why: rejectStats의 perPair* Map은 JSON.stringify가 {} 로 직렬화하므로 제거
+    rejectStats: stripMapsFromStats(rs),
+    perPairStats,
     records: args.includes('--include-records') ? result.records : undefined,
   };
 
@@ -132,7 +139,12 @@ async function main() {
 
   // Trigger reject reason breakdown
   console.log('─'.repeat(72));
-  console.log(`Trigger: ${triggerType} | evaluations: ${rs.evaluations} (+${rs.insufficientCandles} skipped — candle history too short)`);
+  const idleSkipped = (rs as BootstrapRejectStats).idlePairSkipped ?? 0;
+  const skipDetail = [
+    `${rs.insufficientCandles} candle history`,
+    idleSkipped > 0 ? `${idleSkipped} idle pair` : '',
+  ].filter(Boolean).join(', ');
+  console.log(`Trigger: ${triggerType} | evaluations: ${rs.evaluations} (+${skipDetail} skipped)`);
   if (rs.evaluations > 0) {
     const pct = (n: number) => `${n} (${((n / rs.evaluations) * 100).toFixed(1)}%)`;
 
@@ -164,6 +176,45 @@ async function main() {
   } else {
     console.log('  (no primary-interval candles evaluated — check dataset or --primary-interval setting)');
   }
+
+  if (perPairStats && perPairStats.length > 0) {
+    console.log('─'.repeat(72));
+    console.log('Per-Pair Breakdown:');
+    for (const p of perPairStats) {
+      console.log(`  ${p.pair.slice(0, 8)}... : evals=${p.evals} signals=${p.signals} sparseInsuf=${p.sparseInsuf}`);
+    }
+  }
+}
+
+function stripMapsFromStats(rs: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(rs)) {
+    if (!(v instanceof Map)) out[k] = v;
+  }
+  return out;
+}
+
+interface PerPairStatEntry {
+  pair: string;
+  evals: number;
+  signals: number;
+  sparseInsuf: number;
+}
+
+function buildPerPairStats(rs: BootstrapRejectStats): PerPairStatEntry[] {
+  const allPairs = new Set<string>();
+  if (rs.perPairEvaluations) for (const k of rs.perPairEvaluations.keys()) allPairs.add(k);
+  if (rs.perPairSparseInsuf) for (const k of rs.perPairSparseInsuf.keys()) allPairs.add(k);
+  if (rs.perPairSignals) for (const k of rs.perPairSignals.keys()) allPairs.add(k);
+
+  return [...allPairs]
+    .map((pair) => ({
+      pair,
+      evals: rs.perPairEvaluations?.get(pair) ?? 0,
+      signals: rs.perPairSignals?.get(pair) ?? 0,
+      sparseInsuf: rs.perPairSparseInsuf?.get(pair) ?? 0,
+    }))
+    .sort((a, b) => b.evals - a.evals);
 }
 
 function getArg(args: string[], flag: string): string | undefined {
@@ -236,6 +287,7 @@ Options:
   --volume-mcap-boost-multiplier <n> Boosted volume multiplier (default: 1.5)
 
   --estimated-cost-pct <n>    Fallback cost pct if stored signal cost is absent
+  --per-pair-summary          Show per-pair evaluation/signal breakdown (bootstrap only)
   --json                      Print JSON output
   --include-records           Include per-signal replay records in JSON output
 `);

@@ -5,6 +5,7 @@ import {
   buildHeartbeatTradingSummary,
   HEARTBEAT_WINDOW_HOURS,
 } from '../reporting/heartbeatSummary';
+import { buildSparseOpsSummaryMessage, loadSparseOpsSummary } from '../reporting/sparseOpsSummary';
 import { RuntimeDiagnosticsSummary } from '../reporting/runtimeDiagnosticsTracker';
 import { RealtimeAdmissionSnapshotEntry } from '../realtime';
 import { EdgeTracker, sanitizeEdgeLikeTrades, summarizeTradesBySource, computeExplainedEntryRatio } from '../reporting';
@@ -72,12 +73,19 @@ async function sendHeartbeatReport(ctx: BotContext): Promise<void> {
     }
   }
 
+  const sparseSummary = buildSparseOpsSummaryMessage(
+    loadSparseOpsSummary(config.realtimeDataDir, HEARTBEAT_WINDOW_HOURS, 3)
+  );
+  if (sparseSummary) {
+    lines.push(sparseSummary);
+  }
+
   if (ctx.regimeFilter) {
     lines.push(buildHeartbeatRegimeSummary(ctx.regimeFilter.getState()));
   }
 
   if (lines.length > 0) {
-    await ctx.notifier.sendInfo(lines.join('\n\n'));
+    await ctx.notifier.sendInfo(lines.join('\n\n'), 'heartbeat');
   }
 }
 
@@ -188,7 +196,7 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
   // Phase 1B: Paper metrics + regime status
   if (ctx.paperMetrics) {
     const paperText = ctx.paperMetrics.formatSummaryText(24);
-    await ctx.notifier.sendInfo(paperText);
+    await ctx.notifier.sendInfo(paperText, 'paper_metrics');
   }
   if (ctx.regimeFilter) {
     const regime = ctx.regimeFilter.getState();
@@ -197,7 +205,8 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
     const solLabel = regime.solTrendBullish ? '강세' : '약세';
     await ctx.notifier.sendInfo(
       `🔍 시장: ${regimeIcon} ${regime.regime} (${regime.sizeMultiplier}x)\n` +
-      `SOL ${solIcon}${solLabel} | 확산 ${(regime.breadthPct * 100).toFixed(0)}% | 후속 ${(regime.followThroughPct * 100).toFixed(0)}%`
+      `SOL ${solIcon}${solLabel} | 확산 ${(regime.breadthPct * 100).toFixed(0)}% | 후속 ${(regime.followThroughPct * 100).toFixed(0)}%`,
+      'regime'
     );
   }
 }

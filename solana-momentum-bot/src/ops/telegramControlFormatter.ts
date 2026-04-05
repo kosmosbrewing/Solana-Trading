@@ -9,22 +9,22 @@ export function formatHelpMessage(allowedProcesses: string[]): string {
     .map((name) => `<code>${escapeHtml(listProcessAliases(name).join('/'))}</code>`)
     .join(', ');
   return [
-    '<b>PM2 Control Commands</b>',
+    '<b>Ops 명령어</b>',
     '<code>/status</code> 상태 요약',
     '<code>/list</code> 상태 요약',
     '<code>/health</code> 가용성 상태 점검',
-    '<code>/report</code> 실시간 trading heartbeat 조회',
-    '<code>/heartbeat</code> 실시간 trading heartbeat 조회',
+    '<code>/report</code> 최근 운영 heartbeat 조회',
+    '<code>/heartbeat</code> 최근 운영 heartbeat 조회',
     '<code>/restart &lt;name|alias&gt;</code> 프로세스 재시작',
     '<code>/stop &lt;name|alias&gt;</code> 프로세스 중지',
     '<code>/logs &lt;name|alias&gt;</code> 최근 로그 30줄',
-    `Allowed: ${processes}`,
+    `대상 프로세스: ${processes}`,
   ].join('\n');
 }
 
 export function formatStatusMessage(processes: Pm2ProcessStatus[]): string {
   if (processes.length === 0) {
-    return '<b>PM2 Status</b>\n등록된 프로세스가 없다.';
+    return '<b>PM2 상태</b>\n등록된 프로세스가 없다.';
   }
 
   const lines = processes
@@ -33,33 +33,30 @@ export function formatStatusMessage(processes: Pm2ProcessStatus[]): string {
       const uptime = process.uptimeMs == null ? 'n/a' : formatDuration(process.uptimeMs);
       const pid = process.pid == null ? 'n/a' : String(process.pid);
       const aliases = listProcessAliases(process.name).slice(1);
+      const icon = iconForStatus(process.status);
+      const statusLabel = formatProcessStatus(process.status);
       const title = aliases.length > 0
         ? `<b>${escapeHtml(process.name)}</b> <code>(${escapeHtml(aliases.join(', '))})</code>`
         : `<b>${escapeHtml(process.name)}</b>`;
       return [
-        title,
-        `status=${escapeHtml(process.status)}`,
-        `pid=${pid}`,
-        `restarts=${process.restarts}`,
-        `cpu=${process.cpuPct}%`,
-        `mem=${process.memoryMb}MB`,
-        `uptime=${uptime}`,
+        `${icon} ${title}`,
+        `상태 ${escapeHtml(statusLabel)} | pid ${pid} | 재시작 ${process.restarts}회 | CPU ${process.cpuPct}% | 메모리 ${process.memoryMb}MB | 가동 ${uptime}`,
       ].join(' ');
     });
 
-  return ['<b>PM2 Status</b>', ...lines].join('\n');
+  return ['<b>PM2 상태</b>', ...lines].join('\n');
 }
 
 export function formatActionMessage(action: string, processName: string, output: string): string {
   return [
-    `<b>${escapeHtml(action.toUpperCase())}</b> <code>${escapeHtml(processName)}</code>`,
+    `<b>${escapeHtml(action.toUpperCase())} 완료</b> <code>${escapeHtml(processName)}</code>`,
     `<pre>${escapeHtml(truncateText(output || 'No output', 3400))}</pre>`,
   ].join('\n');
 }
 
 export function formatLogsMessage(processName: string, output: string): string {
   return [
-    `<b>LOGS</b> <code>${escapeHtml(processName)}</code>`,
+    `<b>최근 로그</b> <code>${escapeHtml(processName)}</code>`,
     `<pre>${escapeHtml(truncateText(output || 'No logs', 3400))}</pre>`,
   ].join('\n');
 }
@@ -77,11 +74,11 @@ export function formatHealthMessage(summary: Pm2HealthSummary): string {
         ? `${entry.process.name} (${aliases.join(', ')})`
         : entry.process.name;
       const reasons = entry.reasons.length > 0 ? ` | ${entry.reasons.join(', ')}` : '';
-      return `${iconForLevel(entry.level)} <code>${escapeHtml(label)}</code> ${escapeHtml(entry.level)}${escapeHtml(reasons)}`;
+      return `${iconForLevel(entry.level)} <code>${escapeHtml(label)}</code> ${escapeHtml(formatHealthLevel(entry.level))}${escapeHtml(reasons)}`;
     });
 
   return trimTelegramMessage([
-    `<b>PM2 Health</b> ${iconForLevel(summary.overall)} <b>${escapeHtml(summary.overall.toUpperCase())}</b>`,
+    `<b>PM2 헬스</b> ${iconForLevel(summary.overall)} <b>${escapeHtml(formatHealthLevel(summary.overall))}</b>`,
     ...lines,
   ].join('\n'));
 }
@@ -112,6 +109,34 @@ function iconForLevel(level: 'healthy' | 'degraded' | 'down'): string {
       return '🟡';
     case 'down':
       return '🔴';
+  }
+}
+
+function iconForStatus(status: string): string {
+  return status === 'online' ? '🟢' : status === 'stopped' ? '🟡' : '🔴';
+}
+
+function formatProcessStatus(status: string): string {
+  switch (status) {
+    case 'online':
+      return '정상';
+    case 'stopped':
+      return '중지';
+    case 'errored':
+      return '오류';
+    default:
+      return status;
+  }
+}
+
+function formatHealthLevel(level: 'healthy' | 'degraded' | 'down'): string {
+  switch (level) {
+    case 'healthy':
+      return '정상';
+    case 'degraded':
+      return '주의';
+    case 'down':
+      return '다운';
   }
 }
 

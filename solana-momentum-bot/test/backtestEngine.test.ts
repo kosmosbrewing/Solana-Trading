@@ -108,6 +108,26 @@ describe('BacktestEngine parity', () => {
     expect(result.filterReason).toContain('poor_execution_viability');
   });
 
+  it('does not leak buy-ratio fallback across pairs', () => {
+    const engine = new BacktestEngine({ minBuyRatio: 0.65 });
+
+    engine["evaluateSignalGates"](
+      makeSignal(),
+      [makeCandle({ buyVolume: 0, sellVolume: 0 }), makeCandle({ buyVolume: 0, sellVolume: 0, timestamp: new Date('2026-03-15T00:05:00Z') })],
+      'pair-no-volume'
+    );
+    expect(engine["config"].minBuyRatio).toBe(0.65);
+
+    const withBuySellVolume = engine["evaluateSignalGates"](
+      makeSignal(),
+      [makeCandle({ buyVolume: 0.4, sellVolume: 0.6 }), makeCandle({ buyVolume: 0.3, sellVolume: 0.7, timestamp: new Date('2026-03-15T00:05:00Z') })],
+      'pair-with-volume'
+    );
+
+    expect(withBuySellVolume.rejected).toBe(true);
+    expect(withBuySellVolume.filterReason).toContain('buy_ratio');
+  });
+
   it('replays timeline AttentionScore entries by candle timestamp', () => {
     const timelineEvent = {
       tokenMint: 'pair-1',

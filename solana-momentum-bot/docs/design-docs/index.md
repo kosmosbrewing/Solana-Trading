@@ -7,6 +7,7 @@
 | 2-Stage Entry 모델 | `2-stage-entry.md` | ✅ 확정 | 2026-03-18 |
 | Risk Tier 시스템 | `risk-tier-system.md` | ✅ 확정 | 2026-03-18 |
 | Helius Data Plane Transition | `helius-data-plane-transition.md` | 🟡 제안 | 2026-03-31 |
+| Buy/Entry 전체 흐름 상세 | `buy-entry-flow.md` | ✅ 확정 | 2026-04-05 |
 
 ## Gate 체인 개요
 

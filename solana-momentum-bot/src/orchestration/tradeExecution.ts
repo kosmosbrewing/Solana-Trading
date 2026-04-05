@@ -444,7 +444,7 @@ export async function syncTradingHalts(
 
   if (!activeHalt && ctx.tradingHaltedReason) {
     log.info(`Trading resumed: ${ctx.tradingHaltedReason}`);
-    await ctx.notifier.sendInfo('Trading resumed — risk halt cleared');
+    await ctx.notifier.sendInfo('Trading resumed — risk halt cleared', 'risk');
     ctx.tradingHaltedReason = undefined;
     return;
   }

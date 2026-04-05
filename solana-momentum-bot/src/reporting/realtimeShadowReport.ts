@@ -2,7 +2,7 @@ import path from 'path';
 import { readFile } from 'fs/promises';
 import { RealtimeReplayStore } from '../realtime';
 import { RealtimeAdmissionSnapshotEntry } from '../realtime/realtimeAdmissionTracker';
-import { RealtimeMeasurementSummary, RealtimeSignalRecord, summarizeRealtimeSignals } from './realtimeMeasurement';
+import { RealtimeMeasurementSummary, RealtimeSignalRecord, summarizeRealtimeSignalsByStrategy } from './realtimeMeasurement';
 
 export interface RealtimeShadowStatusCount {
   status: string;
@@ -46,6 +46,7 @@ export interface RealtimeShadowReport {
     signals: number;
   };
   summary: RealtimeMeasurementSummary;
+  byStrategy?: Record<string, RealtimeMeasurementSummary>;
   statusCounts: RealtimeShadowStatusCount[];
   reasonCounts: RealtimeShadowReasonCount[];
   latestSignal?: RealtimeShadowLatestSignal;
@@ -68,6 +69,11 @@ export async function buildRealtimeShadowReport(options: {
     loadAdmissionSummary(options.admissionSnapshotPath),
   ]);
 
+  const breakdown = summarizeRealtimeSignalsByStrategy(signals, horizonSec);
+  // Why: 단일 strategy면 byStrategy 중복 — 2+ strategies일 때만 포함
+  const strategyKeys = Object.keys(breakdown.byStrategy);
+  const byStrategy = strategyKeys.length >= 2 ? breakdown.byStrategy : undefined;
+
   return {
     generatedAt: new Date().toISOString(),
     datasetDir,
@@ -77,7 +83,8 @@ export async function buildRealtimeShadowReport(options: {
       candles: candles.length,
       signals: signals.length,
     },
-    summary: summarizeRealtimeSignals(signals, horizonSec),
+    summary: breakdown.overall,
+    byStrategy,
     statusCounts: buildStatusCounts(signals),
     reasonCounts: buildReasonCounts(signals),
     latestSignal: buildLatestSignal(signals, horizonSec),

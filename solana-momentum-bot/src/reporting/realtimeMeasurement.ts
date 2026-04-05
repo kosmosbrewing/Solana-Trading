@@ -87,6 +87,8 @@ export interface RealtimeSignalRecord {
     currentVolume24hUsd?: number;
     discoveryTimestamp?: string;
     triggerWarmupLatencyMs?: number;
+    marketCapUsd?: number;
+    volumeMcapRatio?: number;
   };
   horizons: RealtimeSignalHorizonOutcome[];
   summary: {
@@ -197,6 +199,32 @@ export function summarizeRealtimeSignals(
       totalTrades: horizonRecords.length,
     }),
   };
+}
+
+export interface RealtimeStrategyBreakdown {
+  overall: RealtimeMeasurementSummary;
+  byStrategy: Record<string, RealtimeMeasurementSummary>;
+}
+
+export function summarizeRealtimeSignalsByStrategy(
+  records: RealtimeSignalRecord[],
+  horizonSec = 180
+): RealtimeStrategyBreakdown {
+  const overall = summarizeRealtimeSignals(records, horizonSec);
+
+  const groups = new Map<string, RealtimeSignalRecord[]>();
+  for (const record of records) {
+    const group = groups.get(record.strategy) ?? [];
+    group.push(record);
+    groups.set(record.strategy, group);
+  }
+
+  const byStrategy: Record<string, RealtimeMeasurementSummary> = {};
+  for (const [strategy, group] of groups) {
+    byStrategy[strategy] = summarizeRealtimeSignals(group, horizonSec);
+  }
+
+  return { overall, byStrategy };
 }
 
 function estimateDrawdownPct(returns: number[]): number {

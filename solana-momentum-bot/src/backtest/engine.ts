@@ -98,11 +98,6 @@ export class BacktestEngine {
       return this.emptyResult(strategy, pairAddress);
     }
 
-    // buy/sell volume 데이터 없으면 buyRatio 게이트 자동 비활성화
-    if (this.config.minBuyRatio > 0 && !this.hasBuySellVolumeData(filtered)) {
-      this.config = { ...this.config, minBuyRatio: 0 };
-    }
-
     const lookback = strategy === 'fib_pullback' ? 28 : 21;
     const timeStopMinutes = strategy === 'fib_pullback'
       ? (this.config.fibPullbackParams.timeStopMinutes ?? 60)
@@ -836,6 +831,7 @@ export class BacktestEngine {
   private evaluateSignalGates(signal: Signal, candles: Candle[], pairAddress: string) {
     const poolInfo = this.buildGatePoolInfo(pairAddress);
     signal.meta.currentVolume24hUsd = poolInfo.dailyVolume;
+    const effectiveMinBuyRatio = this.getEffectiveMinBuyRatio(candles);
     const timelineScore = this.resolveTimelineAttentionScore(
       pairAddress,
       poolInfo.tokenMint,
@@ -852,7 +848,7 @@ export class BacktestEngine {
         minWickRatio: this.config.fibPullbackParams.minWickRatio ?? 0.4,
       },
       thresholds: {
-        minBuyRatio: this.config.minBuyRatio,
+        minBuyRatio: effectiveMinBuyRatio,
         minBreakoutScore: this.config.minBreakoutScore,
       },
       executionRrReject: this.config.executionRrReject,
@@ -861,6 +857,15 @@ export class BacktestEngine {
       attentionScore: timelineScore ?? this.config.gateAttentionScore ?? this.config.gateEventScore,
       requireAttentionScore: this.config.requireAttentionScore ?? this.config.requireEventScore,
     });
+  }
+
+  private getEffectiveMinBuyRatio(candles: Candle[]): number {
+    // Why: buy/sell volume 없는 데이터셋에서는 pair-local로만 buyRatio 게이트를 비활성화한다.
+    //      엔진 전역 config를 mutate하면 이후 pair들까지 설정이 전파된다.
+    if (this.config.minBuyRatio > 0 && !this.hasBuySellVolumeData(candles)) {
+      return 0;
+    }
+    return this.config.minBuyRatio;
   }
 
   private buildGatePoolInfo(pairAddress: string): PoolInfo {

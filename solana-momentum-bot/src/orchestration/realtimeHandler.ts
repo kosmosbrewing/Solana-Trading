@@ -276,6 +276,8 @@ export async function handleRealtimeSignal(
         currentVolume24hUsd: signal.meta.currentVolume24hUsd,
         discoveryTimestamp: discoveryTelemetry?.discoveryTimestamp,
         triggerWarmupLatencyMs: discoveryTelemetry?.triggerWarmupLatencyMs,
+        marketCapUsd: signal.meta.marketCapUsd,
+        volumeMcapRatio: signal.meta.volumeMcapRatio,
       },
     }, recentObservationCandles);
   }
@@ -305,6 +307,7 @@ async function trackRealtimeShadowSignal({
     ammFeePct?: number;
     mevMarginPct?: number;
     symbol?: string;
+    marketCap?: number;
   };
 }): Promise<void> {
   if (!ctx.realtimeOutcomeTracker) return;
@@ -374,6 +377,9 @@ async function trackRealtimeShadowSignal({
       currentVolume24hUsd: poolInfo.dailyVolume,
       discoveryTimestamp: discoveryTelemetry?.discoveryTimestamp,
       triggerWarmupLatencyMs: discoveryTelemetry?.triggerWarmupLatencyMs,
+      marketCapUsd: poolInfo.marketCap,
+      volumeMcapRatio: poolInfo.marketCap && poolInfo.marketCap > 0 && poolInfo.dailyVolume > 0
+        ? poolInfo.dailyVolume / poolInfo.marketCap : undefined,
     } : undefined,
   }, recentObservationCandles);
 }

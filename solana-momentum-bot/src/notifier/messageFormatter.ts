@@ -73,17 +73,18 @@ export function buildSignalMessage(signal: Signal): string {
     buildInstrumentLine(signal.tokenSymbol, signal.pairAddress),
     `- 전략: ${escapeHtml(formatStrategy(signal.strategy))}`,
     `- 컨트랙트: <code>${escapeHtml(signal.pairAddress)}</code>`,
-    `- 현재 가격: ${signal.price.toFixed(8)}`,
-    `- 품질 점수: ${score}점 (${escapeHtml(formatGrade(grade))})`,
+    `- 감지 가격: ${signal.price.toFixed(8)}`,
+    `- 시그널 품질: ${score}점 (${escapeHtml(formatGrade(grade))})`,
     ...summaryLines,
     detailLines.length > 0 ? '' : '',
-    detailLines.length > 0 ? '세부 지표' : '',
+    detailLines.length > 0 ? '진입 근거' : '',
     ...detailLines,
   ].filter(Boolean).join('\n');
 }
 
 export function buildTradeOpenMessage(order: Order, txSignature?: string): string {
   const entryNotionalSol = order.price * order.quantity;
+  const planSummary = buildPlanSummaryLine(order.price, order.stopLoss, order.takeProfit1, order.takeProfit2, order.quantity);
   return [
     `🟢 <b>포지션 진입 완료</b>`,
     buildInstrumentLine(order.tokenSymbol, order.pairAddress),
@@ -92,6 +93,7 @@ export function buildTradeOpenMessage(order: Order, txSignature?: string): strin
     `- 진입 가격: ${order.price.toFixed(8)}`,
     `- 진입 금액: ${entryNotionalSol.toFixed(6)} SOL`,
     `- 수량: ${order.quantity.toFixed(6)}${order.tokenSymbol ? ` ${escapeHtml(order.tokenSymbol)}` : ''}`,
+    planSummary,
     buildExitLevelLine('손절', order.price, order.stopLoss, order.quantity, 'stop'),
     buildExitLevelLine('1차 익절', order.price, order.takeProfit1, order.quantity, 'take_profit'),
     buildExitLevelLine('2차 익절', order.price, order.takeProfit2, order.quantity, 'take_profit'),
@@ -108,6 +110,7 @@ export function buildTradeCloseMessage(trade: Trade): string {
   const pnlPct = calculatePnlPct(trade);
   const duration = trade.closedAt ? formatDuration(trade.closedAt.getTime() - trade.createdAt.getTime()) : '';
   const resultLabel = pnl == null ? '결과 미정' : pnl >= 0 ? '이익 실현' : '손실 확정';
+  const closeSummary = buildCloseSummaryLine(trade, duration);
 
   return [
     `${pnl != null && pnl >= 0 ? '✅' : '❌'} <b>포지션 종료</b>`,
@@ -116,6 +119,7 @@ export function buildTradeCloseMessage(trade: Trade): string {
     `- 컨트랙트: <code>${escapeHtml(trade.pairAddress)}</code>`,
     `- 종료 사유: ${escapeHtml(formatCloseReason(trade.exitReason))}`,
     `- 결과: ${resultLabel}`,
+    closeSummary,
     `- 가격: ${trade.entryPrice.toFixed(8)} → ${trade.exitPrice?.toFixed(8) ?? 'N/A'}`,
     `- 실현 손익: ${formatSignedSol(pnl)}${pnlPct != null ? ` (${formatSignedPercent(pnlPct)})` : ''}`,
     trade.slippage != null ? `- 슬리피지: ${formatPercent(trade.slippage)}` : '',
@@ -199,4 +203,58 @@ function buildExitLevelLine(
 
 function formatSignedSolDetailed(value: number): string {
   return `${value >= 0 ? '+' : ''}${value.toFixed(6)} SOL`;
+}
+
+function buildPlanSummaryLine(
+  entryPrice: number,
+  stopLoss: number,
+  takeProfit1: number,
+  takeProfit2: number,
+  quantity: number
+): string {
+  const stop = formatTargetPnl(entryPrice, stopLoss, quantity, 'stop');
+  const tp1 = formatTargetPnl(entryPrice, takeProfit1, quantity, 'take_profit');
+  const tp2 = formatTargetPnl(entryPrice, takeProfit2, quantity, 'take_profit');
+  const parts = [
+    stop ? `최대 손실 ${stop}` : '',
+    tp1 ? `TP1 ${tp1}` : '',
+    tp2 ? `TP2 ${tp2}` : '',
+  ].filter(Boolean);
+  const needsReview = !stop || !tp1 || !tp2;
+  if (parts.length === 0) {
+    return '- 한눈에 보기: 손절/익절 기준 재검토 필요';
+  }
+  return `- 한눈에 보기: ${parts.join(' | ')}${needsReview ? ' | 손절/익절 재검토 필요' : ''}`;
+}
+
+function buildCloseSummaryLine(trade: Trade, duration: string): string {
+  const pnl = trade.pnl != null ? formatSignedSol(trade.pnl) : 'N/A';
+  const parts = [
+    trade.exitReason ? `${formatCloseReason(trade.exitReason)}로 종료` : '',
+    trade.pnl != null ? pnl : '',
+    duration ? `보유 ${duration}` : '',
+  ].filter(Boolean);
+  return parts.length > 0 ? `- 한눈에 보기: ${parts.join(' | ')}` : '';
+}
+
+function formatTargetPnl(
+  entryPrice: number,
+  targetPrice: number,
+  quantity: number,
+  kind: 'stop' | 'take_profit'
+): string | null {
+  if (
+    !Number.isFinite(entryPrice) || entryPrice <= 0 ||
+    !Number.isFinite(targetPrice) || targetPrice <= 0 ||
+    !Number.isFinite(quantity) || quantity <= 0
+  ) {
+    return null;
+  }
+  if (kind === 'stop' && targetPrice >= entryPrice) {
+    return null;
+  }
+  if (kind === 'take_profit' && targetPrice <= entryPrice) {
+    return null;
+  }
+  return formatSignedSolDetailed((targetPrice - entryPrice) * quantity);
 }

@@ -32,6 +32,47 @@ export function formatDuration(ms: number): string {
   return `${hours}h ${minutes}m`;
 }
 
+export function formatKstDate(value: Date | string): string {
+  const date = typeof value === 'string' ? new Date(value) : value;
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const lookup = new Map(parts.map((part) => [part.type, part.value]));
+
+  return `${lookup.get('year')}-${lookup.get('month')}-${lookup.get('day')}`;
+}
+
+export function formatKstDateTimeLabel(value: Date | string): string {
+  const date = typeof value === 'string' ? new Date(value) : value;
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(date);
+  const lookup = new Map(parts.map((part) => [part.type, part.value]));
+
+  return [
+    `${lookup.get('year')}-${lookup.get('month')}-${lookup.get('day')}`,
+    `${lookup.get('hour')}:${lookup.get('minute')}:${lookup.get('second')} KST`,
+  ].join(' ');
+}
+
 export function formatCompactUsd(value: number): string {
   const abs = Math.abs(value);
   if (abs >= 1_000_000_000) return formatCompactNumber(value / 1_000_000_000, 'B');

@@ -51,6 +51,10 @@ export class RealtimeReplayStore {
     return path.join(this.datasetDir, 'realtime-signals.jsonl');
   }
 
+  get signalIntentsPath(): string {
+    return path.join(this.datasetDir, 'signal-intents.jsonl');
+  }
+
   async appendSwap(record: StoredRealtimeSwap): Promise<void> {
     await this.appendJsonLine(this.swapsPath, record);
   }
@@ -61,6 +65,14 @@ export class RealtimeReplayStore {
 
   async appendSignal(record: RealtimeSignalRecord): Promise<void> {
     await this.appendJsonLine(this.signalsPath, record);
+  }
+
+  async appendSignalIntent(record: Omit<RealtimeSignalRecord, 'horizons' | 'summary'>): Promise<void> {
+    await this.appendJsonLine(this.signalIntentsPath, record);
+  }
+
+  async loadSignalIntents(): Promise<Array<Omit<RealtimeSignalRecord, 'horizons' | 'summary'>>> {
+    return loadJsonLines(this.signalIntentsPath, isSignalIntent);
   }
 
   async loadSwaps(filePath = this.swapsPath): Promise<StoredRealtimeSwap[]> {
@@ -232,6 +244,17 @@ function isRealtimeSignalRecord(value: unknown): value is RealtimeSignalRecord {
     && typeof row.signalTimestamp === 'string'
     && typeof row.referencePrice === 'number'
     && Array.isArray(row.horizons);
+}
+
+function isSignalIntent(value: unknown): value is Omit<RealtimeSignalRecord, 'horizons' | 'summary'> {
+  if (!value || typeof value !== 'object') return false;
+  const row = value as Record<string, unknown>;
+  return row.version === 1
+    && typeof row.id === 'string'
+    && typeof row.strategy === 'string'
+    && typeof row.pairAddress === 'string'
+    && typeof row.signalTimestamp === 'string'
+    && typeof row.referencePrice === 'number';
 }
 
 function inRange(valueMs: number, start?: Date, end?: Date): boolean {

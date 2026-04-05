@@ -164,7 +164,39 @@ breadth는 중요한 가설이지만, 현재 active 문서가 직접 열어 둔 
 
 즉, breadth는 P2에서 확장하되 P0/P1의 계측 정합성을 밀어내지 않는다.
 
-### 3. Watchlist / Subscription 숫자는 문서 기준과 코드 기본값을 분리해 해석한다
+### 3. Measurement Closure는 대부분 구현됐고, 남은 것은 live validation이다
+
+현재 사명 점검에서 가장 중요한 보정은 아래다.
+
+- `strategy identity 분리`는 더 이상 새 구현 과제가 아니다. 현재는 완료된 기준선이다.
+- `wallet PnL vs DB PnL closure`도 구현/계측 관점에서는 대부분 닫혔다.
+- 현재 남은 우선순위는 구현 자체보다 `live 표본으로 이 기준선이 실제로 유지되는지` 검증하는 일이다.
+
+즉, 아래 두 문장을 구분해서 쓴다.
+
+- `measurement closure largely done`
+- `mission engine live validation still pending`
+
+### 4. Runner는 현재 엔진이 아니라 runner-centric thesis under validation이다
+
+현재 구조는 분명 runner 중심 thesis로 정렬돼 있다.
+
+- TP2는 10 ATR runner-centric 확장값이다.
+- execution RR도 TP2 기준으로 해석한다.
+- fat-tail winner가 다수 손실을 덮는 구조를 목표로 한다.
+
+하지만 아래 이유로 아직 `현재 엔진 = runner`라고 단정하지 않는다.
+
+- `runnerEnabled`는 config default상 optional이다.
+- product spec에서도 runner / degraded exit를 optional extension으로 취급한다.
+- active open question도 `runner hold가 실제 손실 묶음을 덮는가`를 아직 검증 대상으로 둔다.
+
+따라서 현재 표현은 아래로 고정한다.
+
+- `runtime thesis = bootstrap + runner-centric order shape`
+- `mission engine = bootstrap + runner hypothesis under validation`
+
+### 5. Watchlist / Subscription 숫자는 문서 기준과 코드 기본값을 분리해 해석한다
 
 숫자 하나만 따로 복사해 리포트에 적지 않는다.
 
@@ -174,7 +206,7 @@ breadth는 중요한 가설이지만, 현재 active 문서가 직접 열어 둔 
 
 을 각각 분리해 기록한다.
 
-### 4. Mission Metric은 Executed Entry와 Closed Trade를 분리해 읽는다
+### 6. Mission Metric은 Executed Entry와 Closed Trade를 분리해 읽는다
 
 현재 리포트/요약에서 가장 쉽게 섞이는 부분은 표본 기준이다.
 
@@ -312,7 +344,7 @@ breadth는 중요한 가설이지만, 현재 active 문서가 직접 열어 둔 
 | Runtime diagnostics tracker | ✓ 완료 | `src/reporting/runtimeDiagnosticsTracker.ts` | admission skip, pre-watchlist reject, alias miss, capacity, trigger stats 등 전체 계측 |
 | Daily Summary에 explainedEntryRatio 표시 | ✓ 완료 | `src/notifier/dailySummaryFormatter.ts` | `explained entry (last N)` 라인 추가 |
 
-### 미완료 항목 (P0 작업 대상)
+### P0 기준선 커버리지 (구현 완료 항목 중심)
 
 | 항목 | 상태 | P0 연결 | 비고 |
 |------|------|---------|------|
@@ -330,6 +362,19 @@ breadth는 중요한 가설이지만, 현재 active 문서가 직접 열어 둔 
 ### P0. Measurement Closure Before New Strategy Work
 
 새 전략/새 데이터 소스보다 먼저 닫아야 하는 항목이다.
+
+상태 보정:
+
+- P0는 현재 구현 기준으로 대부분 완료됐다.
+- 아래 항목은 더 이상 `greenfield implementation backlog`가 아니라
+  `완료 기준선 확인용 reference`로 읽는다.
+- 지금 active work의 무게중심은 P0 신규 구현보다
+  `live validation / telemetry interpretation / blacklist 효과 검증` 쪽이다.
+
+따라서 이 섹션은 아래처럼 해석한다.
+
+- `무엇을 만들 것인가`보다 `무엇이 이미 닫혔고, 운영에서 무엇을 검증할 것인가`
+- P0 항목 자체를 다시 구현하는 것이 아니라, live 표본에서 기준선이 유지되는지 확인하는 단계
 
 #### P0-1. Strategy identity 분리
 
@@ -539,7 +584,7 @@ breadth는 중요한 가설이지만, 현재 active 문서가 직접 열어 둔 
 
 ## Current One-Line Conclusion
 
-P0는 measurement 기준선 관점에서 대부분 완료됐다. P1은 핵심 telemetry/reporting은 반영됐지만, P1-4의 degraded phase-1 trigger는 아직 dormant다. P2-3 Token-2022 분류/로깅 완료. P2-4a core re-challenge 기준 정의 완료.
+P0는 measurement 기준선 관점에서 대부분 완료됐다. 현재 남은 핵심은 새 전략 추가보다 `live validation`이다. runtime은 `bootstrap_10s + runner-centric thesis`에 정렬돼 있지만, runner가 실제 mission convexity engine인지와 blacklist / wallet-vs-DB 정합성이 live 표본에서 유지되는지는 아직 검증 중이다. P1은 핵심 telemetry/reporting은 반영됐지만, P1-4의 degraded phase-1 trigger는 아직 dormant다. P2-3 Token-2022 분류/로깅 완료. P2-4a core re-challenge 기준 정의 완료.
 
 현재 남은 우선순위:
 

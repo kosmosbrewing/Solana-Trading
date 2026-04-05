@@ -41,6 +41,7 @@ import {
   RealtimeReplayStore,
   warmReplayCandlesIntoStore,
   classifyRealtimeAdmissionSkip,
+  buildRealtimeAdmissionSkipDetail,
   detectRealtimeDiscoveryMismatch,
   detectRealtimePoolProgramMismatch,
   selectRealtimeEligiblePair,
@@ -791,7 +792,7 @@ async function main() {
           } else {
             removeRealtimePoolTarget(entry.tokenMint);
             if (realtimeModeEnabled) {
-              const admissionSkipDetail = classifyRealtimeAdmissionSkip({
+              const admissionSkipDetail = buildRealtimeAdmissionSkipDetail({
                 resolvedPairs: pairs,
                 admissionPairs,
                 result: realtimeEligibility,

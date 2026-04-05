@@ -1,6 +1,6 @@
 # Operations Guide
 
-> Last updated: 2026-04-04
+> Last updated: 2026-04-05
 > Scope: VPS 배포 + paper 운영 점검 + risk tier demotion + live 운영 판단
 
 ---
@@ -8,6 +8,11 @@
 ## Current Operations Note
 
 - 현재 active execution 기준 문서는 [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md)다.
+- VPS 데이터 동기화 -> 로컬 점검 -> Codex 분석 요청 루프는 [`docs/runbooks/live-ops-loop.md`](./docs/runbooks/live-ops-loop.md) 를 따른다.
+- `bootstrap_10s` replay / outlier / runner-vs-noise 반복 검증은 [`docs/runbooks/bootstrap-replay-loop.md`](./docs/runbooks/bootstrap-replay-loop.md) 를 따른다.
+- `volume_spike` / `fib_pullback` 5분 replay 반복 검증은 [`docs/runbooks/core-5m-replay-loop.md`](./docs/runbooks/core-5m-replay-loop.md) 를 따른다.
+- historical fetch -> replay 반복 검증은 [`docs/runbooks/historical-replay-loop.md`](./docs/runbooks/historical-replay-loop.md) 를 따른다.
+- heartbeat / daily summary / paper validation / mission-execution-edge 해석은 [`docs/runbooks/measurement-review-loop.md`](./docs/runbooks/measurement-review-loop.md) 를 따른다.
 - 완료된 root plan / canary history는 [`PLAN_CMPL.md`](./PLAN_CMPL.md)에 archive했다.
 - 운영에서 계속 중요한 체크포인트는 아래 3개다.
   - paper/live runtime sanity를 재기동 후에도 설명할 수 있는지

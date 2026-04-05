@@ -1,6 +1,6 @@
 import { Candle } from '../src/utils/types';
 import { RealtimeSignalRecord } from '../src/reporting/realtimeMeasurement';
-import { RealtimeSignalSink } from '../src/reporting/realtimeSignalLogger';
+import { RealtimeSignalSink, RealtimeSignalIntent, RealtimeSignalIntentSink } from '../src/reporting/realtimeSignalLogger';
 import { RealtimeOutcomeTracker } from '../src/reporting/realtimeOutcomeTracker';
 
 // ─── Helpers ───
@@ -187,5 +187,46 @@ describe('RealtimeOutcomeTracker', () => {
     expect(sink.records).toHaveLength(1);
     // wrongInterval candle의 close=2.0이 반영되지 않아야 함
     expect(sink.records[0].horizons[0].mfePct).toBeCloseTo(0.01, 4);
+  });
+
+  it('logs intent immediately on track() before any horizon completes', async () => {
+    const sink = new MockSink();
+    const intents: RealtimeSignalIntent[] = [];
+    const intentSink: RealtimeSignalIntentSink = {
+      async logIntent(record) {
+        intents.push(record);
+      },
+    };
+    const tracker = new RealtimeOutcomeTracker(
+      { horizonsSec: [30], observationIntervalSec: 15 },
+      sink,
+      intentSink
+    );
+
+    tracker.track(makeRecord());
+
+    // Intent should be logged immediately — no candles needed
+    // Wait a tick for the async logIntent to resolve
+    await new Promise((r) => setTimeout(r, 10));
+    expect(intents).toHaveLength(1);
+    expect(intents[0].id).toBe('sig-1');
+    expect(intents[0].strategy).toBe('volume_spike');
+
+    // Full record should NOT be logged yet (no horizons completed)
+    expect(sink.records).toHaveLength(0);
+  });
+
+  it('works without intentSink (optional parameter)', async () => {
+    const sink = new MockSink();
+    // No intentSink passed — should not throw
+    const tracker = new RealtimeOutcomeTracker(
+      { horizonsSec: [15], observationIntervalSec: 15 },
+      sink
+    );
+
+    tracker.track(makeRecord());
+    await tracker.onCandle(makeCandle(0, { open: 1.0, high: 1.02, low: 0.99, close: 1.01 }));
+
+    expect(sink.records).toHaveLength(1);
   });
 });

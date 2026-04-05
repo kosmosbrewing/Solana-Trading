@@ -14,6 +14,7 @@
     "paper-report": "ts-node scripts/paper-report.ts",
     "realtime-shadow": "ts-node scripts/realtime-shadow-runner.ts",
     "ops:check": "ts-node scripts/ops-realtime-check.ts",
+    "ops:check:sparse": "ts-node scripts/ops-sparse-check.ts",
     "vps:shadow": "bash scripts/vps-realtime-shadow.sh",
     "deploy:vps": "bash scripts/deploy.sh",
     "restart:bot-ops": "bash scripts/restart-bot-and-ops.sh",

@@ -1,4 +1,4 @@
-import { replayRealtimeCandles, replayRealtimeCandlesStream, replayRealtimeDataset } from '../src/backtest/microReplayEngine';
+import { replayRealtimeCandles, replayRealtimeCandlesStream, replayRealtimeDataset, fillCandleGaps } from '../src/backtest/microReplayEngine';
 import { StoredRealtimeSwap } from '../src/realtime/replayStore';
 import { Candle } from '../src/utils/types';
 
@@ -265,5 +265,62 @@ describe('microReplayEngine', () => {
       throw new Error('Expected momentum reject stats');
     }
     expect(result.rejectStats.confirmFail).toBeGreaterThan(0);
+  });
+});
+
+describe('fillCandleGaps', () => {
+  it('inserts synthetic zero-volume candles for gaps', () => {
+    // 5sec candles at t=0, t=5, t=15 (gap at t=10)
+    const candles: Candle[] = [
+      makeCandle(5, 0, 1.0, 1.02, 10),
+      makeCandle(5, 5, 1.02, 1.05, 8),
+      makeCandle(5, 15, 1.05, 1.08, 12),
+    ];
+
+    const filled = fillCandleGaps(candles);
+
+    expect(filled).toHaveLength(4);
+    // Gap candle at t=10 should have previous close (1.05)
+    const gapCandle = filled.find((c) => c.timestamp.getTime() === 10000);
+    expect(gapCandle).toBeDefined();
+    expect(gapCandle!.open).toBe(1.05);
+    expect(gapCandle!.close).toBe(1.05);
+    expect(gapCandle!.volume).toBe(0);
+    expect(gapCandle!.tradeCount).toBe(0);
+  });
+
+  it('does not cross-contaminate between pools', () => {
+    const candles: Candle[] = [
+      { ...makeCandle(5, 0, 1.0, 1.02, 10), pairAddress: 'pool-A' },
+      { ...makeCandle(5, 0, 2.0, 2.01, 5), pairAddress: 'pool-B' },
+      { ...makeCandle(5, 15, 1.02, 1.05, 8), pairAddress: 'pool-A' },
+      { ...makeCandle(5, 10, 2.01, 2.03, 6), pairAddress: 'pool-B' },
+    ];
+
+    const filled = fillCandleGaps(candles);
+
+    // pool-A: t=0, gap t=5, gap t=10, t=15 → 4 candles
+    const poolA = filled.filter((c) => c.pairAddress === 'pool-A');
+    expect(poolA).toHaveLength(4);
+    // Gap candles for pool-A should use pool-A's close (1.02), not pool-B's
+    const gapA = poolA.find((c) => c.timestamp.getTime() === 5000);
+    expect(gapA!.close).toBe(1.02);
+
+    // pool-B: t=0, gap t=5, t=10 → 3 candles
+    const poolB = filled.filter((c) => c.pairAddress === 'pool-B');
+    expect(poolB).toHaveLength(3);
+    const gapB = poolB.find((c) => c.timestamp.getTime() === 5000);
+    expect(gapB!.close).toBe(2.01);
+  });
+
+  it('returns input unchanged when no gaps exist', () => {
+    const candles: Candle[] = [
+      makeCandle(5, 0, 1.0, 1.02, 10),
+      makeCandle(5, 5, 1.02, 1.05, 8),
+      makeCandle(5, 10, 1.05, 1.08, 12),
+    ];
+
+    const filled = fillCandleGaps(candles);
+    expect(filled).toHaveLength(3);
   });
 });

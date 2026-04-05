@@ -25,11 +25,16 @@ export function buildHeartbeatPerformanceSummary(summary: PaperMetricsSummary): 
     return undefined;
   }
 
-  return [
+  const lines = [
     `전적 ${summary.wins}W ${summary.losses}L (${(summary.winRate * 100).toFixed(0)}%)`,
-    `▼ 역행 ${summary.avgMaePct.toFixed(2)}% | ▲ 순행 ${summary.avgMfePct.toFixed(2)}%`,
     `오진 ${(summary.falsePositiveRate * 100).toFixed(0)}% | TP1 ${(summary.tp1HitRate * 100).toFixed(0)}%`,
-  ].join('\n');
+  ];
+
+  if (Number.isFinite(summary.avgMaePct) && Number.isFinite(summary.avgMfePct)) {
+    lines.splice(1, 0, `▼ 역행 ${summary.avgMaePct.toFixed(2)}% | ▲ 순행 ${summary.avgMfePct.toFixed(2)}%`);
+  }
+
+  return lines.join('\n');
 }
 
 export function buildHeartbeatRegimeSummary(regime: RegimeState): string {

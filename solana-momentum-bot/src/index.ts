@@ -359,7 +359,7 @@ async function main() {
     ? new RealtimeOutcomeTracker({
       horizonsSec: config.realtimeOutcomeHorizonsSec,
       observationIntervalSec: 5,
-    }, realtimeSignalLogger)
+    }, realtimeSignalLogger, realtimeSignalLogger)
     : null;
   if (realtimePersistenceLayout) {
     log.info(`Realtime persistence dataset: ${realtimePersistenceLayout.datasetDir}`);
@@ -1166,7 +1166,8 @@ async function main() {
     });
     realtimeCandleBuilder.on('candle', async (candle: Candle) => {
       try {
-        if (realtimeReplayStore) {
+        // Why: 99% zero-volume synthetic candle → disk 비대화 방지. in-memory 처리는 유지.
+        if (realtimeReplayStore && candle.tradeCount > 0) {
           await realtimeReplayStore.appendCandle({
             ...candle,
             tokenMint: candle.pairAddress,
@@ -1352,7 +1353,7 @@ async function main() {
   }
   log.info('Bot is running. Press Ctrl+C to stop.');
 
-  await notifier.sendInfo(`Bot started (v0.5 — Phase 2 Core Live, mode: ${effectiveMode})`);
+  await notifier.sendInfo(`Bot started (v0.5 — Phase 2 Core Live, mode: ${effectiveMode})`, 'lifecycle');
 
   // ─── Daily summary scheduler ────────────────────────
   scheduleDailySummary(ctx);

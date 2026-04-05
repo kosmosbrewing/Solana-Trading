@@ -42,6 +42,30 @@ describe('heartbeat reporting helpers', () => {
     expect(buildHeartbeatPerformanceSummary(summary)).toBeUndefined();
   });
 
+  it('omits mae and mfe line when the source summary cannot compute excursion metrics', () => {
+    const summary: PaperMetricsSummary = {
+      totalTrades: 2,
+      wins: 1,
+      losses: 1,
+      winRate: 0.5,
+      avgMaePct: Number.NaN,
+      avgMfePct: Number.NaN,
+      falsePositiveRate: 0.5,
+      avgPriceImpactPct: 0,
+      avgQuoteDecayPct: 0,
+      avgTimeToFillMs: 0,
+      tradesByRegime: {},
+      tradesBySource: {},
+      tp1HitRate: 0.5,
+    };
+
+    const text = buildHeartbeatPerformanceSummary(summary);
+    expect(text).toContain('전적 1W 1L (50%)');
+    expect(text).toContain('오진 50% | TP1 50%');
+    expect(text).not.toContain('역행');
+    expect(text).not.toContain('순행');
+  });
+
   it('formats regime summary in the existing compact style', () => {
     const text = buildHeartbeatRegimeSummary({
       regime: 'risk_on',

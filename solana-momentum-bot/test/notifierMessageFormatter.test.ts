@@ -58,11 +58,11 @@ describe('messageFormatter', () => {
     expect(message).toContain('- 종목: <b>PAIR</b>');
     expect(message).toContain('- 전략: Volume Spike');
     expect(message).toContain('- 컨트랙트: <code>PAIR1234567890</code>');
-    expect(message).toContain('- 품질 점수: 74점 (A등급)');
+    expect(message).toContain('- 시그널 품질: 74점 (A등급)');
     expect(message).toContain('- MC / TVL: $2.35M / $120K');
     expect(message).toContain('- 24H 거래대금 / 시총: $12.3M / 42.0%');
     expect(message).toContain('- 스프레드 / AMM 수수료: 1.2% / 0.3%');
-    expect(message).toContain('세부 지표');
+    expect(message).toContain('진입 근거');
     expect(message).toContain('- 메인 봉 / 확인 봉: 1m / 15s');
     expect(message).toContain('- 캔들: 2026-03-22 09:00:05.00 → 2026-03-22 09:01:05.00');
     expect(message).toContain('- 평균 / 현재 거래량: $123K / $9.88M');
@@ -95,6 +95,7 @@ describe('messageFormatter', () => {
     expect(openMessage).toContain('- 전략: Fib Pullback');
     expect(openMessage).toContain('- 진입 금액: 0.002469 SOL');
     expect(openMessage).toContain('- 수량: 2.000000 PAIR');
+    expect(openMessage).toContain('- 한눈에 보기: 최대 손실 -0.000269 SOL | TP1 +0.000331 SOL | TP2 +0.000731 SOL');
     expect(openMessage).toContain('- 손절: 0.00110000 (-0.000269 SOL / -10.9%)');
     expect(openMessage).toContain('- 1차 익절: 0.00140000 (+0.000331 SOL / +13.4%)');
     expect(openMessage).toContain('- 2차 익절: 0.00160000 (+0.000731 SOL / +29.6%)');
@@ -127,6 +128,7 @@ describe('messageFormatter', () => {
     expect(closeMessage).toContain('✅ <b>포지션 종료</b>');
     expect(closeMessage).toContain('- 종료 사유: 1차 익절');
     expect(closeMessage).toContain('- 결과: 이익 실현');
+    expect(closeMessage).toContain('- 한눈에 보기: 1차 익절로 종료 | +0.0003 SOL | 보유 2h 30m');
     expect(closeMessage).toContain('- 보유 시간: 2h 30m');
     expect(closeMessage).toContain('+0.0003 SOL');
   });
@@ -146,6 +148,7 @@ describe('messageFormatter', () => {
 
     const openMessage = buildTradeOpenMessage(order);
     expect(openMessage).toContain('- 종목: <b>PAIR1234...DEFG</b> (ticker 미확인)');
+    expect(openMessage).toContain('- 한눈에 보기: TP1 +0.000553 SOL | TP2 +0.001153 SOL | 손절/익절 재검토 필요');
     expect(openMessage).toContain('- 손절: 미설정 (유효한 손절가 없음 / 재검토 필요)');
     expect(openMessage).not.toContain('-100.0%');
 
@@ -358,38 +361,41 @@ describe('messageFormatter', () => {
       ],
     }, '2026-03-22');
 
-    expect(message).toContain('📊 <b>Daily Report — 2026-03-22</b>');
+    expect(message).toContain('📊 <b>일간 요약 — 2026-03-22 KST</b>');
     expect(message).toContain('- 체결 거래: 5건 (승 3 / 패 2)');
     expect(message).toContain('- 실현 손익: +0.1200 SOL (+6.0%)');
     expect(message).toContain('- 일일 손실 사용률: 2.0% / 5.0% (여유 있음)');
-    expect(message).toContain('실시간 Admission');
+    expect(message).toContain('실시간 수집 상태');
     expect(message).toContain('- 추적 풀: 4개 | 허용 3개 | 차단 1개');
-    expect(message).toContain('parse 0.0% / skip 96.6% / obs 88');
-    expect(message).toContain('Cadence');
-    expect(message).toContain('- 최근 시그널: 1h 0m 전 (2026-03-22T08:00:00.000Z)');
-    expect(message).toContain('- 최근 6h: signal 4 / 실행 1 / 제외 3 / 진입 0 / 종료 0');
-    expect(message).toContain('cadence 경고: 12h no entry, 24h no closed trade');
-    expect(message).toContain('Data Plane (24h)');
-    expect(message).toContain('operator_blacklist detail=token_mint source=gecko_trending=2');
-    expect(message).toContain('operator blacklist hit');
-    expect(message).toContain('- 최근 캔들: 0h 15m 전 (2026-03-22T08:45:00.000Z)');
-    expect(message).toContain('- realtime-ready ratio: 6/10 (60.0%)');
-    expect(message).toContain('gate reject (unique token): quote_rejected: Quote error=7, security_rejected: Token is freezable=3');
-    expect(message).toContain('pre-watchlist reject: unsupported_dex source=dex_boost dex=meteora=4');
-    expect(message).toContain('realtime skip: unsupported_pool_program=5');
-    expect(message).toContain('realtime skip detail: unsupported_pool_program source=gecko_new_pool dex=raydium=5');
-    expect(message).toContain('watchlist lifecycle: evicted=3 readded=1 not_in_watchlist=8(recently_evicted=2)');
-    expect(message).toContain('missed tokens (top 3):');
+    expect(message).toContain('파싱 0.0% / skip 96.6% / 알림 88');
+    expect(message).toContain('최근 흐름');
+    expect(message).toContain('- 최근 시그널: 1h 0m 전 (2026-03-22 17:00:00 KST)');
+    expect(message).toContain('- 최근 6h: 신호 4 / 실행 1 / 제외 3 / 진입 0 / 종료 0');
+    expect(message).toContain('흐름 경고: 12h 진입 없음, 24h 종료 없음');
+    expect(message).toContain('데이터 상태 (24h)');
+    expect(message).toContain('워치리스트 전 제외: 미지원 DEX 4건, 운영자 블랙리스트 2건');
+    expect(message).toContain('운영자 블랙리스트 적중');
+    expect(message).toContain('- 최근 캔들: 0h 15m 전 (2026-03-22 17:45:00 KST)');
+    expect(message).toContain('- 실시간 준비율: 6/10 (60.0%)');
+    expect(message).toContain('게이트 제외(토큰 기준): 호가 품질 부족 7건, 보안 게이트 차단 3건');
+    expect(message).toContain('실시간 스킵: 미지원 풀 프로그램 5건');
+    expect(message).toContain('워치리스트 변동: 축출 3건 | 재편입 1건 | 목록 밖 신호 8건 (최근 축출 2건)');
+    expect(message).toContain('놓친 토큰 (상위 3개):');
     expect(message).toContain('CGEDT9QZ...pump');
     expect(message).toContain('BURNIE12...DEFG');
     expect(message).toContain('PIPPIN12...DEFG');
     expect(message).not.toContain('HIDDEN12...DEFG');
-    expect(message).toContain('bootstrap boost: boosted signals=2 (cumulative)');
-    expect(message).toContain('Today UTC Ops');
-    expect(message).toContain('eval suppress: 2 pairs / 1177 candles skipped');
-    expect(message).toContain('429: gecko_terminal=4, helius_seed_backfill=2');
-    expect(message).toContain('poll failure: gecko_ingester=1');
-    expect(message).toContain('data-plane 경고: no candle >= 10m, 429 observed, low realtime-ready ratio, operator blacklist hit, 2 recently evicted signals, all_pairs_blocked observed');
+    expect(message).toContain('부스트 신호: 2건 (누적)');
+    expect(message).toContain('운영 보정(UTC)');
+    expect(message).toContain('eval 억제: 2 pairs / 1177 candles skipped');
+    expect(message).toContain('429 제한: gecko_terminal=4, helius_seed_backfill=2');
+    expect(message).toContain('폴링 실패: gecko_ingester=1');
+    expect(message).toContain('데이터 경고: 캔들 업데이트 10분 이상 없음, 429 발생, 실시간 준비율 낮음, 운영자 블랙리스트 적중, 최근 축출 신호 2건, all_pairs_blocked 발생');
+    expect(message).toContain('엔지니어링 상세');
+    expect(message).toContain('워치리스트 전 제외(raw): unsupported_dex source=dex_boost dex=meteora=4');
+    expect(message).toContain('실시간 스킵 상세(raw): unsupported_pool_program source=gecko_new_pool dex=raydium=5');
+    expect(message).toContain('용량 제한(raw): helius_pool_discovery reason=queue_overflow detail=limit=250 inFlight=2 queued=250=3');
+    expect(message).toContain('트리거 통계 (bootstrap_trigger): evals=200 signals=5(boosted=2) insuffCandles=60 volInsuf=100 lowBuyRatio=10 cooldown=5');
     expect(message).toContain('전략 상태');
     expect(message).toContain('Momentum Cascade: 검증 통과');
     expect(message).toContain('Kelly 8.0%');
@@ -447,7 +453,7 @@ describe('messageFormatter', () => {
       },
     }, '2026-03-23');
 
-    expect(message).not.toContain('missed tokens (top 3):');
-    expect(message).toContain('bootstrap boost: boosted signals=0 (cumulative)');
+    expect(message).not.toContain('놓친 토큰 (상위 3개):');
+    expect(message).toContain('부스트 신호: 0건 (누적)');
   });
 });

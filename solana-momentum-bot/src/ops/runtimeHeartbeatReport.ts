@@ -11,6 +11,7 @@ import {
   buildHeartbeatTradingSummary,
 } from '../reporting/heartbeatSummary';
 import { PaperMetricsSummary } from '../reporting/paperMetrics';
+import { buildSparseOpsSummaryMessage, loadSparseOpsSummary } from '../reporting/sparseOpsSummary';
 import { RegimeState } from '../risk/regimeFilter';
 import { config, TradingMode } from '../utils/config';
 import { Trade } from '../utils/types';
@@ -81,6 +82,13 @@ export async function buildRuntimeHeartbeatReport(deps: RuntimeHeartbeatDeps): P
     lines.push(performanceSummary);
   }
 
+  const sparseSummary = buildSparseOpsSummaryMessage(
+    loadSparseOpsSummary(config.realtimeDataDir, HEARTBEAT_WINDOW_HOURS, 3)
+  );
+  if (sparseSummary) {
+    lines.push(sparseSummary);
+  }
+
   if (regimeSummary) {
     lines.push(regimeSummary);
   }
@@ -96,8 +104,8 @@ export function summarizeClosedTrades(trades: Trade[]): PaperMetricsSummary {
     wins,
     losses,
     winRate: trades.length > 0 ? wins / trades.length : 0,
-    avgMaePct: 0,
-    avgMfePct: 0,
+    avgMaePct: Number.NaN,
+    avgMfePct: Number.NaN,
     falsePositiveRate: trades.length > 0
       ? trades.filter((trade) => trade.exitReason === 'STOP_LOSS').length / trades.length
       : 0,

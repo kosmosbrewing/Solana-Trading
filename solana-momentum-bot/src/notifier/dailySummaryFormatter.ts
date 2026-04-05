@@ -5,6 +5,7 @@ import {
 import {
   escapeHtml,
   formatDuration,
+  formatKstDateTimeLabel,
   formatPercent,
   formatRewardRisk,
   formatSignedPercent,
@@ -138,7 +139,7 @@ export function buildDailySummaryMessage(report: DailySummaryReport, dateLabel: 
   const pnlPct = report.portfolioValue > 0 ? (report.pnl / report.portfolioValue) : 0;
   const visibleEdgeStats = (report.edgeStats ?? []).filter(stat => stat.totalTrades > 0);
   const lines = [
-    `📊 <b>Daily Report — ${dateLabel}</b>`,
+    `📊 <b>일간 요약 — ${dateLabel} KST</b>`,
     `- 체결 거래: ${report.totalTrades}건 (승 ${report.wins} / 패 ${report.losses})`,
     `- 실현 손익: ${formatSignedSol(report.pnl)} (${formatSignedPercent(pnlPct)})`,
     `- 승률: ${formatPercent(winRate)}`,
@@ -160,10 +161,10 @@ export function buildDailySummaryMessage(report: DailySummaryReport, dateLabel: 
 
   lines.push(
     '',
-    '시그널 처리',
-    `- 감지 ${report.signalsDetected}건 -> 실행 ${report.signalsExecuted}건 / 제외 ${report.signalsFiltered}건`,
+    '신호 흐름',
+    `- 감지 ${report.signalsDetected}건 | 실행 ${report.signalsExecuted}건 | 제외 ${report.signalsFiltered}건`,
     '',
-    '리스크 상태',
+    '운영 상태',
     `- 일일 손실 사용률: ${formatPercent(report.dailyLossUsed)} / ${formatPercent(report.dailyLossLimit)} (${describeDailyLoss(report.dailyLossUsed, report.dailyLossLimit)})`,
     `- 연속 손실: ${report.consecutiveLosses}회`,
     `- 가동 시간: ${formatDuration(report.uptime)} | 재시작 ${report.restarts}회`,
@@ -173,9 +174,9 @@ export function buildDailySummaryMessage(report: DailySummaryReport, dateLabel: 
     const cs = report.costSummary;
     lines.push(
       '',
-      '비용 분해',
+      '체결 비용',
       `- 대상: ${cs.tradeCount}건`,
-      `- 평균 entry slip: ${cs.avgEntrySlippageBps.toFixed(0)}bps / exit slip: ${cs.avgExitSlippageBps.toFixed(0)}bps`,
+      `- 평균 진입 슬리피지: ${cs.avgEntrySlippageBps.toFixed(0)}bps / 청산 슬리피지: ${cs.avgExitSlippageBps.toFixed(0)}bps`,
       `- 평균 왕복 비용: ${formatPercent(cs.avgRoundTripCostPct)} / 실효 R:R: ${cs.avgEffectiveRR.toFixed(2)}`,
     );
   }
@@ -183,17 +184,17 @@ export function buildDailySummaryMessage(report: DailySummaryReport, dateLabel: 
   if (report.realtimeAdmission) {
     lines.push(
       '',
-      '실시간 Admission',
+      '실시간 수집 상태',
       `- 추적 풀: ${report.realtimeAdmission.trackedPools}개 | 허용 ${report.realtimeAdmission.allowedPools}개 | 차단 ${report.realtimeAdmission.blockedPools}개`,
-      '- 차단 기준: obs 50+ / parse < 1.0% / skipped >= 90.0%',
+      '- 차단 기준: 알림 50+ / 파싱률 < 1.0% / skip >= 90.0%',
     );
 
     for (const blocked of report.realtimeAdmission.blockedDetails) {
       lines.push(
         `- <code>${escapeHtml(shortenAddress(blocked.pool))}</code> ` +
-        `parse ${formatPercent(blocked.parseRatePct / 100)} / ` +
+        `파싱 ${formatPercent(blocked.parseRatePct / 100)} / ` +
         `skip ${formatPercent(blocked.skippedRatePct / 100)} / ` +
-        `obs ${blocked.observedNotifications}`
+        `알림 ${blocked.observedNotifications}`
       );
     }
   }
@@ -201,7 +202,7 @@ export function buildDailySummaryMessage(report: DailySummaryReport, dateLabel: 
   if (report.cadence) {
     lines.push(
       '',
-      'Cadence',
+      '최근 흐름',
       `- 최근 시그널: ${formatCadenceAge(report.cadence.timeSinceLastSignalMs, report.cadence.lastSignalAt)}`,
       `- 최근 진입: ${formatCadenceAge(report.cadence.timeSinceLastTradeMs, report.cadence.lastTradeAt)}`,
       `- 최근 종료: ${formatCadenceAge(report.cadence.timeSinceLastClosedTradeMs, report.cadence.lastClosedTradeAt)}`,
@@ -209,51 +210,50 @@ export function buildDailySummaryMessage(report: DailySummaryReport, dateLabel: 
 
     for (const window of report.cadence.windows) {
       lines.push(
-        `- 최근 ${window.hours}h: signal ${window.detectedSignals} / 실행 ${window.executedSignals} / 제외 ${window.filteredSignals} / 진입 ${window.trades} / 종료 ${window.closedTrades}`
+        `- 최근 ${window.hours}h: 신호 ${window.detectedSignals} / 실행 ${window.executedSignals} / 제외 ${window.filteredSignals} / 진입 ${window.trades} / 종료 ${window.closedTrades}`
       );
     }
 
     const cadenceWarnings = buildCadenceWarnings(report.cadence);
     if (cadenceWarnings.length > 0) {
-      lines.push('- cadence 경고: ' + cadenceWarnings.join(', '));
+      lines.push('- 흐름 경고: ' + cadenceWarnings.join(', '));
     }
   }
 
   if (report.rejectionMix) {
     lines.push(
       '',
-      `Data Plane (${report.rejectionMix.hours}h)`,
+      `데이터 상태 (${report.rejectionMix.hours}h)`,
       `- 최근 캔들: ${formatCadenceAge(report.rejectionMix.timeSinceLastCandleMs, report.rejectionMix.lastCandleAt)}`,
-      `- realtime-ready ratio: ${report.rejectionMix.realtimeCandidateReadiness.ready}/` +
+      `- 실시간 준비율: ${report.rejectionMix.realtimeCandidateReadiness.ready}/` +
       `${report.rejectionMix.realtimeCandidateReadiness.totalCandidates} ` +
       `(${formatPercent(report.rejectionMix.realtimeCandidateReadiness.readinessRate)})`,
     );
 
-    appendCountSection(lines, 'gate reject (unique token)', report.rejectionMix.gateFilterReasonCounts, 'reason');
+    appendReadableReasonSection(lines, '게이트 제외(토큰 기준)', report.rejectionMix.gateFilterReasonCounts);
+    appendReadableReasonSection(lines, '워치리스트 전 제외', report.rejectionMix.preWatchlistRejectCounts);
+    appendReadableReasonSection(lines, '실시간 스킵', report.rejectionMix.admissionSkipCounts);
+    appendReadableReasonSection(lines, '리스크 제외', report.rejectionMix.riskRejectionCounts);
     appendAliasMissSection(lines, report.rejectionMix.aliasMissCounts);
-    appendLabelCountSection(lines, 'pre-watchlist reject', report.rejectionMix.preWatchlistRejectDetailCounts);
-    appendCountSection(lines, 'realtime skip', report.rejectionMix.admissionSkipCounts, 'reason');
-    appendLabelCountSection(lines, 'realtime skip detail', report.rejectionMix.admissionSkipDetailCounts);
-    appendLabelCountSection(lines, 'capacity', report.rejectionMix.capacityCounts);
-    appendTriggerStatsSection(lines, report.rejectionMix.latestTriggerStats);
     appendWatchlistLifecycleSection(lines, report.rejectionMix);
     appendMissedTokensSection(lines, report.rejectionMix.missedTokens);
     appendBootstrapBoostSection(lines, report.rejectionMix.bootstrapBoostedSignalCount);
-    appendCountSection(lines, 'risk reject', report.rejectionMix.riskRejectionCounts, 'reason');
-    appendCountSection(lines, '429', report.rejectionMix.rateLimitCounts, 'source');
-    appendCountSection(lines, 'poll failure', report.rejectionMix.pollFailureCounts, 'source');
+    appendCountSection(lines, '429 제한', report.rejectionMix.rateLimitCounts, 'source');
+    appendCountSection(lines, '폴링 실패', report.rejectionMix.pollFailureCounts, 'source');
 
     const rejectionWarnings = buildRejectionWarnings(report.rejectionMix);
     if (rejectionWarnings.length > 0) {
-      lines.push('- data-plane 경고: ' + rejectionWarnings.join(', '));
+      lines.push('- 데이터 경고: ' + rejectionWarnings.join(', '));
     }
+
+    appendEngineeringDetailSection(lines, report.rejectionMix);
   }
 
   if (report.todayUtcOps && report.todayUtcOps.capSuppressedCandles > 0) {
     lines.push(
       '',
-      'Today UTC Ops',
-      `- eval suppress: ${report.todayUtcOps.capSuppressedPairs} pairs / ${report.todayUtcOps.capSuppressedCandles} candles skipped`
+      '운영 보정(UTC)',
+      `- eval 억제: ${report.todayUtcOps.capSuppressedPairs} pairs / ${report.todayUtcOps.capSuppressedCandles} candles skipped`
     );
   }
 
@@ -292,7 +292,7 @@ export function buildDailySummaryMessage(report: DailySummaryReport, dateLabel: 
     const er = report.explainedEntryRatio;
     const pct = formatPercent(er.ratio);
     const icon = er.ratio >= 0.9 ? '✅' : '⚠';
-    lines.push(`- explained entry (last ${er.total} executed): ${er.explained}/${er.total} (${pct}) ${icon} target ≥90%`);
+    lines.push(`- 진입 근거 기록률: ${er.explained}/${er.total} (${pct}) ${icon} 목표 ≥90%`);
   }
 
   return lines.join('\n');
@@ -310,19 +310,19 @@ function formatCadenceAge(ageMs?: number, iso?: string): string {
   if (typeof ageMs !== 'number' || !Number.isFinite(ageMs) || !iso) {
     return 'never';
   }
-  return `${formatDuration(ageMs)} 전 (${iso})`;
+  return `${formatDuration(ageMs)} 전 (${formatKstDateTimeLabel(iso)})`;
 }
 
 function buildCadenceWarnings(cadence: DailyCadenceSummary): string[] {
   const warnings: string[] = [];
   if (typeof cadence.timeSinceLastTradeMs === 'number' && cadence.timeSinceLastTradeMs >= 12 * 3_600_000) {
-    warnings.push('12h no entry');
+    warnings.push('12h 진입 없음');
   }
   if (
     typeof cadence.timeSinceLastClosedTradeMs !== 'number' ||
     cadence.timeSinceLastClosedTradeMs >= 24 * 3_600_000
   ) {
-    warnings.push('24h no closed trade');
+    warnings.push('24h 종료 없음');
   }
   return warnings;
 }
@@ -334,7 +334,7 @@ function appendCountSection<TKey extends 'reason' | 'source'>(
   key: TKey
 ): void {
   if (items.length === 0) {
-    lines.push(`- ${label}: none`);
+    lines.push(`- ${label}: 없음`);
     return;
   }
   const top = items
@@ -350,25 +350,25 @@ function buildRejectionWarnings(summary: DailyRejectionMixSummary): string[] {
     typeof summary.timeSinceLastCandleMs !== 'number' ||
     summary.timeSinceLastCandleMs >= 10 * 60 * 1000
   ) {
-    warnings.push('no candle >= 10m');
+    warnings.push('캔들 업데이트 10분 이상 없음');
   }
   if (summary.rateLimitCounts.reduce((sum, item) => sum + item.count, 0) > 0) {
-    warnings.push('429 observed');
+    warnings.push('429 발생');
   }
   if (
     summary.realtimeCandidateReadiness.totalCandidates > 0 &&
     summary.realtimeCandidateReadiness.readinessRate < 0.7
   ) {
-    warnings.push('low realtime-ready ratio');
+    warnings.push('실시간 준비율 낮음');
   }
   if (summary.preWatchlistRejectCounts.some((item) => item.reason === 'operator_blacklist' && item.count > 0)) {
-    warnings.push('operator blacklist hit');
+    warnings.push('운영자 블랙리스트 적중');
   }
   if (summary.signalNotInWatchlistRecentlyEvictedCount > 0) {
-    warnings.push(`${summary.signalNotInWatchlistRecentlyEvictedCount} recently evicted signals`);
+    warnings.push(`최근 축출 신호 ${summary.signalNotInWatchlistRecentlyEvictedCount}건`);
   }
   if (summary.admissionSkipDetailCounts.some((item) => item.label.includes('all_pairs_blocked'))) {
-    warnings.push('all_pairs_blocked observed');
+    warnings.push('all_pairs_blocked 발생');
   }
   return warnings;
 }
@@ -379,7 +379,7 @@ function appendLabelCountSection(
   items: Array<{ label: string; count: number }>
 ): void {
   if (items.length === 0) {
-    lines.push(`- ${label}: none`);
+    lines.push(`- ${label}: 없음`);
     return;
   }
   const top = items
@@ -395,14 +395,14 @@ function appendAliasMissSection(
 ): void {
   const total = items.reduce((sum, item) => sum + item.count, 0);
   if (total === 0) {
-    lines.push('- alias miss: 0');
+    lines.push('- alias miss: 0건');
     return;
   }
   const top = items
     .slice(0, 3)
-    .map((item) => `${shortenAddress(item.pool)}=${item.count}`)
+    .map((item) => `${shortenAddress(item.pool)} ${item.count}건`)
     .join(', ');
-  lines.push(`- alias miss: ${total}건 (${escapeHtml(top)})`);
+  lines.push(`- alias miss: 총 ${total}건 (${escapeHtml(top)})`);
 }
 
 // Why: trigger_stats는 최신 1건의 detail만 보여주면 충분 (누적 카운터 스냅샷)
@@ -411,10 +411,10 @@ function appendTriggerStatsSection(
   latest?: { source: string; detail: string }
 ): void {
   if (!latest) {
-    lines.push('- trigger stats: none');
+    lines.push('- 트리거 통계: 없음');
     return;
   }
-  lines.push(`- trigger stats (${escapeHtml(latest.source)}): ${escapeHtml(latest.detail)}`);
+  lines.push(`- 트리거 통계 (${escapeHtml(latest.source)}): ${escapeHtml(latest.detail)}`);
 }
 
 function appendWatchlistLifecycleSection(
@@ -422,11 +422,11 @@ function appendWatchlistLifecycleSection(
   summary: DailyRejectionMixSummary
 ): void {
   lines.push(
-    '- watchlist lifecycle: ' +
-    `evicted=${summary.candidateEvictedCount} ` +
-    `readded=${summary.candidateReaddedWithinGraceCount} ` +
-    `not_in_watchlist=${summary.signalNotInWatchlistCount}` +
-    `(recently_evicted=${summary.signalNotInWatchlistRecentlyEvictedCount})`
+    '- 워치리스트 변동: ' +
+    `축출 ${summary.candidateEvictedCount}건 | ` +
+    `재편입 ${summary.candidateReaddedWithinGraceCount}건 | ` +
+    `목록 밖 신호 ${summary.signalNotInWatchlistCount}건` +
+    ` (최근 축출 ${summary.signalNotInWatchlistRecentlyEvictedCount}건)`
   );
 }
 
@@ -438,13 +438,13 @@ function appendMissedTokensSection(
     return;
   }
 
-  lines.push('- missed tokens (top 3):');
+  lines.push('- 놓친 토큰 (상위 3개):');
   for (const token of missedTokens.slice(0, 3)) {
     lines.push(
       `- <code>${escapeHtml(shortenAddress(token.tokenMint))}</code> ` +
-      `evicted=${token.evicted} readded=${token.readded} ` +
-      `not_in_wl=${token.notInWatchlist} recent_evict=${token.recentlyEvicted}` +
-      (token.admissionBlocked > 0 ? ` adm_blocked=${token.admissionBlocked}` : '')
+      `축출 ${token.evicted} / 재편입 ${token.readded} / 목록 밖 ${token.notInWatchlist}` +
+      (token.recentlyEvicted > 0 ? ` / 최근 축출 ${token.recentlyEvicted}` : '') +
+      (token.admissionBlocked > 0 ? ` / 수집 차단 ${token.admissionBlocked}` : '')
     );
   }
 }
@@ -461,7 +461,7 @@ function appendStrategyTelemetrySection(
     arr.push(item);
   }
 
-  lines.push('', '전략별 Telemetry (24h)');
+  lines.push('', '전략별 흐름 (24h)');
   for (const [strategy, entries] of byStrategy) {
     const executed = entries.find(e => e.action === 'EXECUTED')?.count ?? 0;
     const filtered = entries.find(e => e.action === 'FILTERED')?.count ?? 0;
@@ -474,7 +474,7 @@ function appendStrategyTelemetrySection(
       const top = filteredEntry.topReasons.slice(0, 3)
         .map(r => `${r.reason}=${r.count}`)
         .join(', ');
-      lines.push(`  reject: ${escapeHtml(top)}`);
+      lines.push(`- 주요 제외 사유: ${escapeHtml(top)}`);
     }
   }
 }
@@ -491,7 +491,7 @@ function appendExitReasonSection(
     arr.push(item);
   }
 
-  lines.push('', 'Exit Reason (24h)');
+  lines.push('', '종료 사유 분포 (24h)');
   for (const [strategy, reasons] of byStrategy) {
     const total = reasons.reduce((s, r) => s + r.count, 0);
     const detail = reasons.slice(0, 4)
@@ -502,5 +502,48 @@ function appendExitReasonSection(
 }
 
 function appendBootstrapBoostSection(lines: string[], boostedSignalCount: number): void {
-  lines.push(`- bootstrap boost: boosted signals=${boostedSignalCount} (cumulative)`);
+  lines.push(`- 부스트 신호: ${boostedSignalCount}건 (누적)`);
+}
+
+function appendReadableReasonSection(
+  lines: string[],
+  label: string,
+  items: Array<{ reason: string; count: number }>
+): void {
+  if (items.length === 0) {
+    lines.push(`- ${label}: 없음`);
+    return;
+  }
+  const top = items
+    .slice(0, 5)
+    .map((item) => `${translateDiagnosticReason(item.reason)} ${item.count}건`)
+    .join(', ');
+  lines.push(`- ${label}: ${escapeHtml(top)}`);
+}
+
+function appendEngineeringDetailSection(
+  lines: string[],
+  summary: DailyRejectionMixSummary
+): void {
+  const detailLines: string[] = [];
+  appendLabelCountSection(detailLines, '워치리스트 전 제외(raw)', summary.preWatchlistRejectDetailCounts);
+  appendLabelCountSection(detailLines, '실시간 스킵 상세(raw)', summary.admissionSkipDetailCounts);
+  appendLabelCountSection(detailLines, '용량 제한(raw)', summary.capacityCounts);
+  appendTriggerStatsSection(detailLines, summary.latestTriggerStats);
+  if (detailLines.length === 0) return;
+
+  lines.push('', '엔지니어링 상세');
+  lines.push(...detailLines);
+}
+
+function translateDiagnosticReason(reason: string): string {
+  if (reason.startsWith('quote_rejected')) return '호가 품질 부족';
+  if (reason.startsWith('security_rejected')) return '보안 게이트 차단';
+  if (reason === 'unsupported_pool_program') return '미지원 풀 프로그램';
+  if (reason === 'unsupported_dex') return '미지원 DEX';
+  if (reason === 'operator_blacklist') return '운영자 블랙리스트';
+  if (reason === 'same_pair_open_position_block') return '동일 종목 포지션 중복';
+  if (reason === 'max_concurrent_position_limit') return '동시 포지션 한도';
+  if (reason === 'daily_loss_limit') return '일일 손실 한도';
+  return reason;
 }

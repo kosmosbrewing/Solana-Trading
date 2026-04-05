@@ -156,7 +156,9 @@ export async function replayRealtimeCandles(
   options: MicroReplayOptions
 ): Promise<MicroReplayResult> {
   const sanitized = sanitizeReplayCandles(candles);
-  return replayOrderedCandles(sanitized.candles, {
+  // Why: zero-volume skip된 candle gap을 synthetic candle로 복원 (trigger lookback 연속성 보장)
+  const filled = fillCandleGaps(sanitized.candles);
+  return replayOrderedCandles(filled, {
     ...options,
     totalCandleCount: candles.length,
     keptCandleCount: sanitized.keptCount,
@@ -175,6 +177,7 @@ export async function replayRealtimeCandlesStream(
   const maxOrderingDelayMs = Math.max(5, getPrimaryIntervalSec(options), confirmSec) * 1000;
   let maxSeenTimestampMs = Number.NEGATIVE_INFINITY;
   const sanitizer = createReplayCandleSanitizer();
+  const gapFiller = new StreamCandleGapFiller();
 
   for await (const candle of candles) {
     totalCandleCount++;
@@ -187,7 +190,7 @@ export async function replayRealtimeCandlesStream(
     const bucket = bufferedCandles.get(timestampMs) ?? [];
     bucket.push(candle);
     bufferedCandles.set(timestampMs, bucket);
-    await flushBufferedCandles(bufferedCandles, maxSeenTimestampMs - maxOrderingDelayMs, runtime, options, sanitizer);
+    await flushBufferedCandles(bufferedCandles, maxSeenTimestampMs - maxOrderingDelayMs, runtime, options, sanitizer, gapFiller);
   }
 
   await flushBufferedCandles(
@@ -195,7 +198,8 @@ export async function replayRealtimeCandlesStream(
     Number.POSITIVE_INFINITY,
     runtime,
     options,
-    sanitizer
+    sanitizer,
+    gapFiller
   );
   const keptCandleCount = totalCandleCount - sanitizer.droppedCount;
   return buildCandleReplayResult(runtime, {
@@ -365,6 +369,104 @@ function buildCandleReplayResult(
   };
 }
 
+// Why: stream path에서 per-series 상태를 유지하면서 gap fill
+class StreamCandleGapFiller {
+  private readonly lastCandleBySeries = new Map<string, Candle>();
+
+  fill(candle: Candle): Candle[] {
+    const key = `${candle.pairAddress}:${candle.intervalSec}`;
+    const prev = this.lastCandleBySeries.get(key);
+    this.lastCandleBySeries.set(key, candle);
+
+    if (!prev) return [candle];
+
+    const expectedNextMs = prev.timestamp.getTime() + prev.intervalSec * 1000;
+    let gapMs = candle.timestamp.getTime() - expectedNextMs;
+    if (gapMs < candle.intervalSec * 1000) return [candle];
+
+    const result: Candle[] = [];
+    let fillTimestampMs = expectedNextMs;
+    const maxFillCount = 200;
+    let fillCount = 0;
+    while (gapMs >= candle.intervalSec * 1000 && fillCount < maxFillCount) {
+      result.push({
+        pairAddress: candle.pairAddress,
+        timestamp: new Date(fillTimestampMs),
+        intervalSec: candle.intervalSec,
+        open: prev.close,
+        high: prev.close,
+        low: prev.close,
+        close: prev.close,
+        volume: 0,
+        buyVolume: 0,
+        sellVolume: 0,
+        tradeCount: 0,
+      });
+      fillTimestampMs += candle.intervalSec * 1000;
+      gapMs -= candle.intervalSec * 1000;
+      fillCount++;
+    }
+    result.push(candle);
+    return result;
+  }
+}
+
+// Why: zero-volume skip 후 non-contiguous candle gap을 synthetic candle로 복원.
+// 각 pool+interval 시리즈별로 gap 구간에 previous close 기반 flat candle 삽입.
+export function fillCandleGaps(candles: Candle[]): Candle[] {
+  // Group by series (pairAddress + intervalSec)
+  const seriesMap = new Map<string, Candle[]>();
+  for (const candle of candles) {
+    const key = `${candle.pairAddress}:${candle.intervalSec}`;
+    const group = seriesMap.get(key) ?? [];
+    group.push(candle);
+    seriesMap.set(key, group);
+  }
+
+  const result: Candle[] = [];
+  for (const group of seriesMap.values()) {
+    group.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+    for (let i = 0; i < group.length; i++) {
+      const candle = group[i];
+      if (i > 0) {
+        const prev = group[i - 1];
+        const expectedNextMs = prev.timestamp.getTime() + prev.intervalSec * 1000;
+        let gapMs = candle.timestamp.getTime() - expectedNextMs;
+        let fillTimestampMs = expectedNextMs;
+        // Why: gap fill은 최대 200봉으로 제한 (이상치 방지)
+        const maxFillCount = 200;
+        let fillCount = 0;
+        while (gapMs >= candle.intervalSec * 1000 && fillCount < maxFillCount) {
+          result.push({
+            pairAddress: candle.pairAddress,
+            timestamp: new Date(fillTimestampMs),
+            intervalSec: candle.intervalSec,
+            open: prev.close,
+            high: prev.close,
+            low: prev.close,
+            close: prev.close,
+            volume: 0,
+            buyVolume: 0,
+            sellVolume: 0,
+            tradeCount: 0,
+          });
+          fillTimestampMs += candle.intervalSec * 1000;
+          gapMs -= candle.intervalSec * 1000;
+          fillCount++;
+        }
+      }
+      result.push(candle);
+    }
+  }
+
+  result.sort((a, b) =>
+    a.timestamp.getTime() - b.timestamp.getTime()
+    || a.intervalSec - b.intervalSec
+    || a.pairAddress.localeCompare(b.pairAddress)
+  );
+  return result;
+}
+
 function isReplayableCandle(candle: Candle): boolean {
   return Boolean(candle.pairAddress)
     && candle.timestamp instanceof Date
@@ -386,7 +488,8 @@ async function flushBufferedCandles(
   flushBeforeOrAtMs: number,
   runtime: ReturnType<typeof createCandleReplayRuntime>,
   options: MicroReplayOptions,
-  sanitizer: ReplayCandleSanitizer
+  sanitizer: ReplayCandleSanitizer,
+  gapFiller?: StreamCandleGapFiller
 ): Promise<ReplayCandleSanitizerStats> {
   const readyTimestamps = [...bufferedCandles.keys()]
     .filter((timestampMs) => timestampMs <= flushBeforeOrAtMs)
@@ -403,7 +506,11 @@ async function flushBufferedCandles(
       if (!acceptReplayCandle(candle, sanitizer)) {
         continue;
       }
-      await processReplayCandle(candle, runtime, options);
+      // Why: stream path에서 gap fill 적용 (zero-volume skip 복원)
+      const filled = gapFiller ? gapFiller.fill(candle) : [candle];
+      for (const c of filled) {
+        await processReplayCandle(c, runtime, options);
+      }
       keptCount++;
     }
     bufferedCandles.delete(timestampMs);

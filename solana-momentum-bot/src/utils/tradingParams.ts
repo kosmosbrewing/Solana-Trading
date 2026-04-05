@@ -159,7 +159,7 @@ export const tradingParams = {
     realtimeVolumeSurgeLookback: 20,
     realtimeVolumeSurgeMultiplier: 1.8,   // runtime_canary: 1.8 (code_default: 3.0)
     realtimeSparseVolumeLookback: 120,    // sparse DEX: wider window에서 non-zero candle 탐색 (120 × 10s = 20min)
-    realtimeMinActiveCandles: 3,          // sparse avg 계산에 필요한 최소 non-zero candle 수
+    realtimeMinActiveCandles: 2,          // sparse avg 계산에 필요한 최소 non-zero candle 수 (runtime 완화: 3→2)
     realtimePriceBreakoutLookback: 20,
     realtimeConfirmMinBars: 3,
     realtimeConfirmMinChangePct: 0.02,

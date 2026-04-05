@@ -10,9 +10,11 @@ import {
 } from './messageFormatter';
 import { buildDailySummaryMessage, DailySummaryReport } from './dailySummaryFormatter';
 import { RealtimeShadowReport } from '../reporting';
+import { formatKstDate } from './formatting';
 import { buildRealtimeShadowSummaryMessage } from './realtimeShadowFormatter';
 
 const log = createModuleLogger('Notifier');
+const TELEGRAM_MESSAGE_LIMIT = 4000;
 
 const ALERT_EMOJI: Record<AlertLevel, string> = {
   CRITICAL: '🔴',
@@ -66,8 +68,8 @@ export class Notifier {
     await this.send(msg);
   }
 
-  async sendInfo(message: string): Promise<void> {
-    const key = 'info';
+  async sendInfo(message: string, category = 'generic'): Promise<void> {
+    const key = `info:${category}`;
     if (this.isHourlyThrottled(key, 5)) return;
     this.updateThrottle(key);
 
@@ -116,7 +118,7 @@ export class Notifier {
   }
 
   async sendDailySummary(report: DailySummaryReport): Promise<void> {
-    await this.send(buildDailySummaryMessage(report, new Date().toISOString().slice(0, 10)));
+    await this.send(buildDailySummaryMessage(report, formatKstDate(new Date())));
   }
 
   async sendRealtimeShadowSummary(report: RealtimeShadowReport): Promise<void> {
@@ -161,15 +163,18 @@ export class Notifier {
       return;
     }
 
-    try {
-      await this.client.post('/sendMessage', {
-        chat_id: this.chatId,
-        text,
-        parse_mode: 'HTML',
-        disable_web_page_preview: true,
-      });
-    } catch (error) {
-      log.error(`Telegram send failed: ${error}`);
+    for (const chunk of splitTelegramMessage(text, TELEGRAM_MESSAGE_LIMIT)) {
+      try {
+        await this.client.post('/sendMessage', {
+          chat_id: this.chatId,
+          text: chunk,
+          parse_mode: 'HTML',
+          disable_web_page_preview: true,
+        });
+      } catch (error) {
+        log.error(`Telegram send failed: ${error}`);
+        return;
+      }
     }
   }
 }
@@ -197,4 +202,39 @@ function normalizeThrottleMessage(message: string): string {
     .replace(/\d+/g, '#')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function splitTelegramMessage(message: string, maxLength: number): string[] {
+  if (message.length <= maxLength) {
+    return [message];
+  }
+
+  const chunks: string[] = [];
+  let current = '';
+
+  for (const line of message.split('\n')) {
+    const normalizedLine = line.length <= maxLength
+      ? line
+      : `${line.slice(0, Math.max(0, maxLength - 13))}\n...truncated`;
+
+    if (!current) {
+      current = normalizedLine;
+      continue;
+    }
+
+    const candidate = `${current}\n${normalizedLine}`;
+    if (candidate.length <= maxLength) {
+      current = candidate;
+      continue;
+    }
+
+    chunks.push(current);
+    current = normalizedLine;
+  }
+
+  if (current) {
+    chunks.push(current);
+  }
+
+  return chunks.length > 0 ? chunks : [message.slice(0, maxLength)];
 }

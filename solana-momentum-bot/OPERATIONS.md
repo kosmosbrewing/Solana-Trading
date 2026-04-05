@@ -191,6 +191,23 @@ cron 예시:
 - `runtime-diagnostics.json`과 realtime root 파일은 지우지 않는다.
 - 세션 해석/리플레이 근거가 필요하므로 threshold 이하일 때는 아무것도 지우지 않는다.
 
+### Manual Ops Tools
+
+아래 스크립트는 평소 자동 경로에 묶이지 않은 `수동 운영툴`이다.
+정리 대상 고아 스크립트로 보지 않고, 장애 복구나 데이터 회수 때만 직접 실행한다.
+
+| 스크립트 | 용도 | 비고 |
+|---|---|---|
+| `scripts/restart-timescaledb.sh` | TimescaleDB 컨테이너 재기동 | DB 컨테이너 장애 시 수동 복구 |
+| `scripts/sync-vps-data.sh` | VPS `data/`를 로컬로 회수 | 세션/리포트 분석용 수동 동기화 |
+
+원칙:
+
+- `pm2` 운영 표준 경로에는 포함하지 않는다.
+- cron에 자동 등록하지 않는다.
+- 사용 전 대상 경로와 환경을 직접 확인한다.
+- 파일 정리 시 위 2개는 `유지 대상`으로 본다.
+
 ### Telegram Alert 연결
 
 `.env`에 설정:

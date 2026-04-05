@@ -1,5 +1,5 @@
 import { Candle } from '../utils/types';
-import { RealtimeSignalSink } from './realtimeSignalLogger';
+import { RealtimeSignalSink, RealtimeSignalIntentSink } from './realtimeSignalLogger';
 import {
   RealtimeSignalHorizonOutcome,
   RealtimeSignalRecord,
@@ -30,7 +30,8 @@ export class RealtimeOutcomeTracker {
 
   constructor(
     config: RealtimeOutcomeTrackerConfig,
-    private readonly logger: RealtimeSignalSink
+    private readonly logger: RealtimeSignalSink,
+    private readonly intentSink?: RealtimeSignalIntentSink
   ) {
     this.horizonsSec = [...new Set(config.horizonsSec)].filter((value) => value > 0).sort((a, b) => a - b);
     this.observationIntervalSec = config.observationIntervalSec;
@@ -45,6 +46,9 @@ export class RealtimeOutcomeTracker {
     record: Omit<RealtimeSignalRecord, 'horizons' | 'summary'>,
     recentCandles: Candle[] = []
   ): void {
+    // Why: crash resilience — horizon 완료 전에도 signal intent를 즉시 persist
+    this.intentSink?.logIntent(record).catch(() => {});
+
     const signalTimeSec = resolveSignalTimeSec(record);
     const pending: PendingSignal = {
       record,

@@ -32,6 +32,9 @@ interface ParsedTriggerStats {
   sparseSignals?: number;
   boostedSignals?: number;
   sparseInsufficient?: number;
+  idlePairSkipped?: number;
+  activePairCount?: number;
+  sparseDominantPairCount?: number;
 }
 
 export interface SparseOpsSummary {
@@ -96,9 +99,13 @@ export function buildSparseOpsSummaryMessage(summary: SparseOpsSummary | undefin
       typeof trigger.sparseInsufficient === 'number' ? `희박 데이터 부족 ${trigger.sparseInsufficient}회` : '',
       typeof trigger.sparseSignals === 'number' ? `sparse 신호 ${trigger.sparseSignals}건` : '',
       typeof trigger.boostedSignals === 'number' ? `부스트 ${trigger.boostedSignals}건` : '',
+      typeof trigger.idlePairSkipped === 'number' ? `idle skip ${trigger.idlePairSkipped}회` : '',
     ].filter(Boolean);
     if (parts.length > 0) {
       lines.push(`- 트리거: ${parts.join(' | ')}`);
+    }
+    if (typeof trigger.activePairCount === 'number' || typeof trigger.sparseDominantPairCount === 'number') {
+      lines.push(`- 활성 pair ${trigger.activePairCount ?? '?'}개 | sparse 지배 pair ${trigger.sparseDominantPairCount ?? '?'}개`);
     }
     const diagnosis = diagnoseSparseState(trigger);
     if (diagnosis) {
@@ -142,6 +149,9 @@ function parseTriggerStats(detail?: string): ParsedTriggerStats | undefined {
     sparseSignals: parseTriggerStat(detail, /sparse=(\d+)/),
     boostedSignals: parseTriggerStat(detail, /boosted=(\d+)/),
     sparseInsufficient: parseTriggerStat(detail, /sparseInsuf=(\d+)/),
+    idlePairSkipped: parseTriggerStat(detail, /idleSkip=(\d+)/),
+    activePairCount: parseTriggerStat(detail, /activePairs=(\d+)/),
+    sparseDominantPairCount: parseTriggerStat(detail, /sparsePairs=(\d+)/),
   };
 }
 

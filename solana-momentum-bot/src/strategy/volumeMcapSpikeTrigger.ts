@@ -28,6 +28,10 @@ export interface BootstrapRejectStats {
   volumeMcapBoosted: number;
   sparseDataInsufficient: number;
   sparseSignals: number;
+  idlePairSkipped?: number;
+  perPairEvaluations?: Map<string, number>;
+  perPairSparseInsuf?: Map<string, number>;
+  perPairSignals?: Map<string, number>;
 }
 
 const log = createModuleLogger('VolumeMcapSpike');
@@ -47,8 +51,13 @@ export class VolumeMcapSpikeTrigger {
     volumeMcapBoosted: 0,
     sparseDataInsufficient: 0,
     sparseSignals: 0,
+    idlePairSkipped: 0,
   };
   private lastStatsLogAt = 0;
+  // Why: per-pair density telemetry — pair별 evaluation/reject 분포 파악
+  private readonly perPairEvals = new Map<string, number>();
+  private readonly perPairSparseInsuf = new Map<string, number>();
+  private readonly perPairSignals = new Map<string, number>();
 
   constructor(
     config: VolumeMcapSpikeTriggerConfig,
@@ -66,7 +75,12 @@ export class VolumeMcapSpikeTrigger {
   }
 
   getRejectStats(): Readonly<BootstrapRejectStats> {
-    return { ...this.rejectStats };
+    return {
+      ...this.rejectStats,
+      perPairEvaluations: new Map(this.perPairEvals),
+      perPairSparseInsuf: new Map(this.perPairSparseInsuf),
+      perPairSignals: new Map(this.perPairSignals),
+    };
   }
 
   onCandle(candle: Candle, candleBuilder: MicroCandleBuilder): Signal | null {
@@ -86,9 +100,23 @@ export class VolumeMcapSpikeTrigger {
       return null;
     }
 
-    this.rejectStats.evaluations++;
-
     const current = candles[candles.length - 1];
+
+    // Why: idle pair skip — 최근 lookback개 candle + 현재 candle 모두 volume=0이면 평가 건너뜀
+    // current candle에 volume이 있으면 sparse path에서 처리 가능하므로 skip하지 않음
+    if (current.volume === 0) {
+      const recentCandles = candles.slice(-(lookback + 1), -1);
+      const hasNonZero = recentCandles.some(c => c.volume > 0);
+      if (!hasNonZero) {
+        this.rejectStats.idlePairSkipped = (this.rejectStats.idlePairSkipped ?? 0) + 1;
+        this.maybeLogStats();
+        return null;
+      }
+    }
+
+    this.rejectStats.evaluations++;
+    const pair = candle.pairAddress;
+    this.perPairEvals.set(pair, (this.perPairEvals.get(pair) ?? 0) + 1);
     // Why: dense mode는 최근 lookback개만, sparse mode는 전체 window 사용
     const densePrev = candles.slice(-(lookback + 1), -1);
 
@@ -107,6 +135,7 @@ export class VolumeMcapSpikeTrigger {
       sparseAvg = calcSparseAvgVolume(allPrev, minActive);
       if (sparseAvg <= 0) {
         this.rejectStats.sparseDataInsufficient++;
+        this.perPairSparseInsuf.set(pair, (this.perPairSparseInsuf.get(pair) ?? 0) + 1);
         this.maybeLogStats();
         return null;
       }
@@ -156,6 +185,7 @@ export class VolumeMcapSpikeTrigger {
     const closeTimestampSec = timestampSec + current.intervalSec;
     this.lastSignalAt.set(candle.pairAddress, timestampSec);
     this.rejectStats.signals++;
+    this.perPairSignals.set(pair, (this.perPairSignals.get(pair) ?? 0) + 1);
     if (sparse) this.rejectStats.sparseSignals++;
 
     // mcap enrichment
@@ -202,8 +232,18 @@ export class VolumeMcapSpikeTrigger {
     log.info(
       `[RejectStats] evals=${s.evaluations} signals=${s.signals}(sparse=${s.sparseSignals} boosted=${s.volumeMcapBoosted}) | ` +
       `insuffCandles=${s.insufficientCandles} volInsuf=${s.volumeInsufficient} ` +
-      `sparseInsuf=${s.sparseDataInsufficient} lowBuyRatio=${s.lowBuyRatio} cooldown=${s.cooldown}`
+      `sparseInsuf=${s.sparseDataInsufficient} lowBuyRatio=${s.lowBuyRatio} cooldown=${s.cooldown} ` +
+      `idleSkip=${s.idlePairSkipped ?? 0} activePairs=${this.perPairEvals.size} sparsePairs=${this.perPairSparseInsuf.size}`
     );
+    // Why: per-pair top-N — 어떤 pair가 sparse 노이즈를 가장 많이 생산하는지 파악
+    if (this.perPairSparseInsuf.size > 0) {
+      const topSparse = [...this.perPairSparseInsuf.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([p, count]) => `${p.slice(0, 8)}=${count}`)
+        .join(',');
+      log.info(`[PerPair] topSparseInsuf: ${topSparse}`);
+    }
     if (this.onStatsFlush) {
       this.onStatsFlush({ ...this.rejectStats });
     }

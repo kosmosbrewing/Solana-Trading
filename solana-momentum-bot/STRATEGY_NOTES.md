@@ -1,7 +1,7 @@
 # STRATEGY_NOTES.md
 
 > Status: forward strategy memo
-> Updated: 2026-04-04
+> Updated: 2026-04-05
 > Purpose: 현재 전략 구조의 한계 가설, v5 방향성, 다음 전략 질문을 분리 관리한다.
 > Runtime quick ref: [`STRATEGY.md`](./STRATEGY.md)
 
@@ -120,6 +120,35 @@ core 활성화 후 아래 중 하나라도 충족 시 즉시 bootstrap으로 롤
 - 연속 손실 ≥ 5
 - Sharpe < 0
 - daily halt 발동
+
+## Replay Mode 해석 가이드
+
+### 세 가지 replay 모드
+
+| 모드 | 명령 | 특성 | 해석 |
+|------|------|------|------|
+| candle (default) | `--input-mode candles` | .jsonl의 non-zero candle + fillCandleGaps | dense-path price replay. Runtime 기대값 아님. |
+| swap | `--input-mode swaps` | raw-swaps.jsonl → MicroCandleBuilder | Runtime에 가장 가까움. 단, inactive pair 미포함. |
+| stored-gate | `--gate-mode stored` | 기존 gate 결과 적용 | 실제 execution 시뮬레이션에 가장 가까움. |
+
+### Runtime과 Replay의 구조적 차이
+
+1. **구독 범위**: Runtime은 ~168개 pair (active + inactive) 전부 evaluate.
+   Replay는 data 파일에 있는 pair만 evaluate. → inactive pair의 sparseDataInsufficient는 replay에 없음.
+
+2. **Candle 생성**: Runtime MicroCandleBuilder는 timer sweep으로 zero-volume synthetic candle 생성.
+   Candle replay는 fillCandleGaps로 유사하게 복원하나, active pair가 100% non-zero이면 gap fill 없음.
+
+3. **결론**: Replay 결과는 "active pair의 dense-path 가격 반응"만 보여줌.
+   "Runtime에서 이만큼 벌 수 있다"가 아니라 "이 시장에서 price action이 trigger를 통과한 구간의 horizon outcome"으로 읽어야 함.
+
+### 올바른 사용법
+
+- trigger parameter 비교: replay 간 상대 비교에 사용 (absolute 기대값 아님)
+- blacklist 후보 선별: per-token PnL 분석으로 반복 손실 token 식별
+- gate 효과 검증: `--gate-mode off` vs `--gate-mode stored` 비교
+
+---
 
 ## Open Questions
 

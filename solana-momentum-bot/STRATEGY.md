@@ -1,7 +1,7 @@
 # STRATEGY.md
 
 > Status: current quick reference
-> Updated: 2026-04-04
+> Updated: 2026-04-05
 > Purpose: 현재 runtime에서 읽어야 할 전략/게이트/리스크/핵심 파라미터를 짧게 정리한다.
 > Full spec: [`docs/product-specs/strategy-catalog.md`](./docs/product-specs/strategy-catalog.md)
 > Forward memo: [`STRATEGY_NOTES.md`](./STRATEGY_NOTES.md)
@@ -22,14 +22,22 @@
 
 | 전략 | 상태 | 역할 |
 |---|---|---|
-| Strategy A `volume_spike` | active core | 5분봉 브레이크아웃 |
-| Strategy C `fib_pullback` | active core | 확인형 되돌림 진입 |
 | Realtime bootstrap `bootstrap_10s` | **active default** | 10초봉 volume+buyRatio 2-gate 트리거 |
+| Strategy A `volume_spike` | **dormant (5m meme)** | 5분봉 브레이크아웃 — 밈코인 모멘텀(10-30s)에 구조적 비적합 (04-05 확인) |
+| Strategy C `fib_pullback` | **dormant (5m meme)** | 확인형 되돌림 진입 — 5m 해상도에서 밈코인 비적합 (04-05 확인) |
 | Realtime core `core_momentum` | standby | 3-AND 조건 (breakout+confirm) 트리거 |
 | Strategy D `new_lp_sniper` | sandbox | 별도 지갑 실험 전략 (현재 live execution 미연결) |
 | Strategy E `momentum_cascade` | conditional | Strategy A add-on |
 
-## Strategy A: Volume Spike Breakout
+### Strategy A/C Dormancy 근거 (2026-04-05)
+
+4 sessions × 87 pairs × 3 strategies(A/C/combined) = 261 combination 중 **단 3건만 trade 발생**.
+300s candle 해상도에서 밈코인의 짧은 모멘텀(10-30초)을 포착하는 것이 구조적으로 불가능.
+향후 CEX/DEX 대형 토큰으로 전환 시에만 재활성화 고려. 상세: [`results/replay-loop-report-2026-04-05.md`](./results/replay-loop-report-2026-04-05.md)
+
+## Strategy A: Volume Spike Breakout (dormant for 5m meme)
+
+> Status: **dormant** — 5m 해상도에서 밈코인 모멘텀 포착 불가. bootstrap_10s가 이 역할을 대체한다.
 
 ### Entry
 
@@ -57,7 +65,9 @@ Trailing = TP1 이후에만 활성화
 - Effective RR = (rewardPct − roundTripCost) / (riskPct + roundTripCost). 실행 시 slippage/fee 차감 후 계산.
 - TP2 10.0 vs sweep 최적 5.0은 live 50-trade 데이터로 판단 예정 (STRATEGY_NOTES.md 참조).
 
-## Strategy C: Fib Pullback
+## Strategy C: Fib Pullback (dormant for 5m meme)
+
+> Status: **dormant** — Strategy A와 동일 사유. 5m 해상도에서 밈코인 비적합.
 
 ### Entry
 
@@ -77,7 +87,7 @@ Time Stop = 60m
 ### Notes
 
 - Strategy A보다 느리지만 확인 강도가 높다.
-- 현재 runtime의 active core 전략이다.
+- **현재 밈코인에서는 dormant**. CEX/DEX 대형 토큰 전환 시 재활성화 후보.
 
 ## Realtime Trigger
 
@@ -103,6 +113,13 @@ Cooldown: 300s
 - bootstrap signal은 `strategy=bootstrap_10s`로 기록되며, 5분봉 Strategy A(`volume_spike`)와 별도 집계된다.
 
 롤백: `REALTIME_TRIGGER_MODE=core` → pm2 restart.
+
+### Current Bootstrap Bottleneck (2026-04-05)
+
+- **Sparse Data Insufficient: 81% 평가 차단** — Feature 4(zero-volume skip)로 인해 persist된 candle이 불연속. Replay 시 fillCandleGaps()가 synthetic candle 삽입하지만, lookback window(20 bars × 10s) 내 active candle 부족 시 거부.
+- **Edge 재현성**: 4개 세션 중 04-04 세션만 edgeScore 78 통과, 나머지 3개 reject (8점). 단일 세션 결과이므로 outlier runner 가능성 존재.
+- **Critical Path**: Sparse 해소 → 평가 모수 확대 → edge 재현성 확인 → paper 50-trade → live enablement
+- 상세: [`results/replay-loop-report-2026-04-05.md`](./results/replay-loop-report-2026-04-05.md)
 
 ### Core Mode (`momentumTrigger`)
 

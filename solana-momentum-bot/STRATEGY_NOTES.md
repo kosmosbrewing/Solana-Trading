@@ -150,8 +150,36 @@ core 활성화 후 아래 중 하나라도 충족 시 즉시 bootstrap으로 롤
 
 ---
 
+## 2026-04-05 Replay-Loop 메모
+
+4 sessions × 2 modes = 8 parallel backtests. 상세: [`results/replay-loop-report-2026-04-05.md`](./results/replay-loop-report-2026-04-05.md)
+
+### Strategy A/C 5m Dormancy 확정
+
+87 pairs × 3 strategies(A/C/combined) = 261 combination 중 **3건만 trade**.
+300s candle 해상도에서 밈코인 모멘텀(10-30s)을 포착하는 것이 구조적으로 불가능.
+파라미터 튜닝으로 해결 불가. bootstrap_10s가 이 시간대에 적합한 유일한 trigger.
+
+**판단**: Strategy A/C → dormant. 향후 CEX/DEX 대형 토큰 전환 시에만 재활성화 고려.
+
+### Sparse Data Insufficient (최대 병목, 81%)
+
+Feature 4(zero-volume skip) 후유증. 전체 평가의 81%가 차단.
+lookback window(20 bars × 10s = 200s) 내 연속 active candle 부족 시 거부.
+
+### Edge 재현성 미검증
+
+04-04 세션만 edgeScore 78 통과 (avgReturn +6.89%, MFE +34.4%).
+나머지 3 세션은 edgeScore 8로 reject.
+단일 세션 결과이므로 outlier runner token에 의한 과적합 가능성 존재.
+per-token PnL 분해로 runner vs flat 비율 확인 필요.
+
+---
+
 ## Open Questions
 
+- **Sparse 81% 해소 후 edge가 다수 세션에서 재현되는가** (신규 최우선)
+- **04-04 edge가 runner outlier인가 구조적 edge인가** (per-token 분해 필요)
 - v5 구조만으로 Strategy A 기대값이 살아나는가
 - detection timing을 더 앞당겨야 하는가
 - Strategy D를 언제 main live 후보로 올릴 것인가

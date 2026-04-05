@@ -1,7 +1,7 @@
 # Realtime Edge Validation Guide
 
 > Created: 2026-03-22
-> Updated: 2026-04-03
+> Updated: 2026-04-05
 > Goal: Helius realtime shadow, historical swap backfill, micro replay를 하나의 실행 경로로 정리해 초봉 momentum edge를 검증한다
 > Document type: working guide
 > Authority: realtime validation 워크플로 기준 문서. 운영 절차는 `OPERATIONS.md`, 점수 해석은 `MEASUREMENT.md`를 우선한다.
@@ -53,34 +53,36 @@
 | Measurement integration | 구현됨 | realtime 결과는 `Realtime Edge Score`로 요약 가능 |
 | 표본 수 | 아직 부족 | 현재도 signal sample size 부족으로 전략 판정엔 약함 |
 
-### Latest Validation Snapshot
+### Latest Validation Snapshot (2026-04-05 replay-loop)
 
-실데이터 기준 최신 검증 스냅샷:
+4 sessions × 2 modes (bootstrap micro + 5m strategy) = 8 parallel backtests.
 
-- 이 snapshot은 historical validation 기준이다.
-- 현재 active execution plan은 [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md)이고,
-  완료된 plan/canary history는 [`PLAN_CMPL.md`](./PLAN_CMPL.md)를 본다.
+| Session | Bootstrap Signals | Edge Score | Decision |
+|---------|------------------|------------|----------|
+| 04-04T14:31 | 132 (110 exec) | **78** | **pass** |
+| 04-03T15:45 | 89 (74 exec) | 8 | reject |
+| 04-03T03:53 | 64 (64 exec) | 8 | reject |
+| legacy-03-31 | 0 | - | no data |
 
-- runtime log:
-  - `Helius real-time pipeline connected`
-  - `Helius WS subscriptions active`
-- persisted counts:
-  - `swaps=197`
-  - `candles=63`
-  - `signals=2`
-- 30초 shadow summary:
-  - `Avg Adjusted Return = +0.27%`
-  - `Realtime Edge Score = 60`
-  - `Decision = reject_gate`
-- stored-gate replay:
-  - `signals=2`
-  - `edgeScore=60`
-  - `decision=reject_gate`
+핵심 발견:
+- **Sparse data insufficient: 81%** 평가 차단 (Feature 4 zero-volume skip 후유증)
+- 5m Strategy A/C: 87 pairs × 3 strategies → **3건 trade** (dormant 전환)
+- Edge가 1/4 세션에만 집중 → 재현성 검증 필요
+
+상세: [`results/replay-loop-report-2026-04-05.md`](./results/replay-loop-report-2026-04-05.md)
+
+### Known Issue: Sparse Data Insufficient
+
+Feature 4(zero-volume candle skip)로 인해 persist된 candle이 불연속.
+Replay 시 `fillCandleGaps()`가 synthetic candle을 삽입하지만, trigger lookback window(20 bars × 10s = 200s) 내에
+연속 active candle이 부족하면 `sparseDataInsufficient`로 거부.
+
+이것이 해소되지 않으면 replay 기반 edge 검증 자체가 불가능.
 
 중요:
 
-- 현재 부족한 것은 구현이 아니라 `signal sample size`다.
-- 따라서 이 문서의 핵심은 `표본 확대`와 `replay 기반 재현성 확보`다.
+- 현재 부족한 것은 구현이 아니라 `sparse 해소`와 `signal sample size`다.
+- 따라서 이 문서의 핵심은 `sparse 병목 해소` → `표본 확대` → `replay 기반 재현성 확보`다.
 
 ---
 
@@ -98,7 +100,9 @@
 | Measurement | `src/reporting/realtimeMeasurement.ts` | signal outcome 요약, score, gate 판정 |
 | Runner | `scripts/realtime-shadow-runner.ts` | session orchestration |
 | Replay CLI | `scripts/micro-backtest.ts` | offline replay/backtest |
-| Historical fetch | `scripts/fetch-historical-swaps.ts` | 과거 swap 수집 + replay |
+| Session Backtest CLI | `scripts/session-backtest.ts` | micro candle → 5m 집계 → Strategy A/C 재생 |
+| Session Candle Aggregator | `src/backtest/sessionCandleAggregator.ts` | micro candle → target interval OHLC 집계 |
+| Historical fetch | `scripts/fetch-historical-swaps.ts` | 과거 swap ���집 + replay |
 
 ### Realtime Data Flow
 
@@ -148,8 +152,9 @@ realtime 및 historical replay는 같은 데이터 계층을 공유한다.
 | 파일 | 의미 |
 |---|---|
 | `raw-swaps.jsonl` | 원본 swap 이벤트. replay의 최하위 원천 데이터 |
-| `micro-candles.jsonl` | swap으로부터 생성된 synthetic candles |
+| `micro-candles.jsonl` | swap으로부터 생성된 synthetic candles. Feature 4 이후 tradeCount>0만 persist |
 | `realtime-signals.jsonl` | trigger 결과, processing status, gate reason, horizon outcome |
+| `signal-intents.jsonl` | Feature 2: track() 즉시 persist (crash-safe). horizon 완료 전 lightweight record |
 | `runtime-diagnostics.json` | realtime root에 남는 restart-safe runtime diagnostics snapshot |
 | `current-session.json` | 현재 active session dataset 위치 포인터 |
 | `manifest.json` | export metadata |

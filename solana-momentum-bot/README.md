@@ -11,11 +11,11 @@ backtest / realtime shadow / paper / live를 같은 measurement 프레임으로 
 ## Current Status
 
 - core runtime과 telemetry 경로는 구현 완료 상태다.
-- 현재 active work는 기능 추가보다 배포, paper validation, live enablement gate 정리에 가깝다.
-- 2026-04-04 기준 bootstrap replay sweep / token leaderboard / fixed-notional 비교 도구가 추가됐다.
-- 현재 bootstrap canary 기준값은 `vm=1.8 / buyRatio=0.60 / lookback=20`이고, operator blacklist를 runtime에 직접 반영할 수 있다.
-- live buy entry cost는 planned notional이 아니라 actual input amount 기준으로 기록되도록 보정됐다.
-- `trade-report.ts`는 `opened_at ledger`와 `closed_at realized PnL`을 분리해 운영 리포트로 사용한다.
+- **유일한 유효 trigger**: `bootstrap_10s` (10s candle, volume+buyRatio 2-gate). Baseline: `vm=1.8 / buyRatio=0.60 / lookback=20`.
+- **5m Strategy A/C: dormant** — 밈코인 모멘텀(10-30s)에 5m(300s) 해상도가 구조적 비적합 (04-05 확인).
+- **최대 병목**: Sparse data insufficient 81% → edge 측정 자체를 차단. Feature 4(zero-volume skip) 후유증.
+- 2026-04-05 기준 signal attribution 4-feature 구현 완료 (marketCap context, crash-safe intent, strategy 분리 집계, zero-volume skip).
+- replay-loop 병렬 백테스팅 완료: 4 sessions × 2 modes = 8 parallel backtests → 04-04만 edge pass (score 78).
 - historical canary와 follow-up fix 요약은 [`PLAN_CMPL.md`](./PLAN_CMPL.md)에 모아뒀다.
 
 현재 active execution plan은 [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md)이고,
@@ -60,7 +60,7 @@ Stage 1: Context
   scanner / event / watchlist / attention score
 
 Stage 2: Trigger
-  volume_spike / fib_pullback / realtime momentum trigger
+  bootstrap_10s (active) / volume_spike (dormant) / fib_pullback (dormant)
 
 Stage 3: Gate
   security -> attention -> execution viability -> quote -> safety -> exit impact
@@ -108,4 +108,4 @@ scripts/bootstrap-replay-report.sh --save
 
 ## One-Line Summary
 
-> 이 저장소의 현재 핵심은 새로운 전략 추가보다, explainable entry와 restart-safe telemetry를 유지한 채 backtest / paper / live 해석 경로를 정교하게 맞추는 것이다.
+> 이 저장소의 현재 핵심은 sparse data insufficient 81% 병목 해소, bootstrap edge 재현성 검증, 그리고 paper 50-trade 축적을 통한 live enablement gate 통과다.

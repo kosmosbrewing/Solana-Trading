@@ -1,7 +1,7 @@
 # 대량 백테스트 실행 계획
 
 > Created: 2026-03-22
-> Updated: 2026-04-01 (v5 스윕 결과 + realtime micro replay 검증 반영)
+> Updated: 2026-04-05 (replay-loop 병렬 백테스팅 + session-backtest + Strategy A/C dormancy)
 > Goal: 5분봉 대량 백테스트와 realtime micro replay를 분리해 각각의 역할로 edge를 검증한다
 > Document type: working guide
 > Authority: 백테스트 워크플로 기준 문서. 아키텍처/전략 정의는 `ARCHITECTURE.md`, `docs/product-specs/strategy-catalog.md`, `MEASUREMENT.md`를 우선한다.
@@ -151,15 +151,21 @@ rg --files data | wc -l
 | Param Sweep Core | `src/backtest/paramSweep.ts` | 사용 가능 | walk-forward / CV / stability filter 로직 포함 |
 | Multi-Token Sweep CLI | `scripts/multi-token-sweep.ts` | 사용 가능 | 다중 토큰 평균 성과 집계 |
 | Auto-Backtest | `scripts/auto-backtest.ts` | 사용 가능 | 5분봉 chunk 수집 + baseline 백테스트 가능 |
-| Micro Replay Engine | `src/backtest/microReplayEngine.ts` | 사용 가능 | realtime dataset 재생 |
+| Micro Replay Engine | `src/backtest/microReplayEngine.ts` | 사용 가능 | realtime dataset 재생, fillCandleGaps() 내장 |
 | Micro Replay CLI | `scripts/micro-backtest.ts` | 사용 가능 | `gate on/off`, horizon 비교, measurement score 출력 |
+| Session Candle Aggregator | `src/backtest/sessionCandleAggregator.ts` | 사용 가능 | micro candle → 5m OHLC 집계, fillCandleGaps() 적용 |
+| Session Backtest CLI | `scripts/session-backtest.ts` | 사용 가능 | 세션 데이터로 5m Strategy A/C 재생 |
 
 ### 실행 순서
 
 1. `auto-backtest.ts`로 데이터셋 수집 및 baseline 실행
-2. `volume_spike` 스윕 실행
-3. `fib_pullback` 스윕 실행
+2. ~~`volume_spike` 스윕 실행~~ — **Strategy A/C는 5m 밈코인에서 dormant** (2026-04-05 확정)
+3. ~~`fib_pullback` 스윕 실행~~ — dormant
 4. 결과 비교 후 상위 파라미터만 재검증
+
+> **Note (2026-04-05)**: 아래 5m Strategy A/C 스윕 명령은 밈코인 외 대형 토큰이나 CEX/DEX 전환 시에만 사용한다.
+> 현재 밈코인 runtime에서는 bootstrap_10s micro-replay만 유효하다.
+> bootstrap replay 명령은 [`OPERATIONS.md`](./OPERATIONS.md)의 Bootstrap Replay Command를 참조한다.
 
 기본 명령:
 
@@ -167,7 +173,7 @@ rg --files data | wc -l
 ./scripts/auto-backtest.sh
 ```
 
-전략별 스윕:
+전략별 스윕 (dormant — 밈코인 외 대형 토큰에서만 사용):
 
 ```bash
 npx ts-node scripts/multi-token-sweep.ts \
@@ -190,6 +196,7 @@ npx ts-node scripts/multi-token-sweep.ts \
 - `combined`는 아직 진짜 결합 전략 스윕이 아니다.
 - `multi-token-sweep.ts` 내부에서 `combined`를 주어도 실제 실행 전략은 `volume_spike`로 매핑된다.
 - 따라서 **현재 단계에서는 `combined` 결과를 의사결정 근거로 쓰지 않는다.**
+- **Strategy A/C 5m는 밈코인 모멘텀(10-30s)에서 구조적 비적합**. 87 pairs × 3 strategies = 261 combination 중 3건만 trade (04-05 확인).
 
 ### 파라미터 범위
 
@@ -402,7 +409,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # 최신 세션 디렉토리 감지
-SESSION=$(ls -td data/realtime-sessions/*/ 2>/dev/null | head -1)
+SESSION=$(ls -td data/realtime/sessions/*/ 2>/dev/null | head -1)
 if [ -z "$SESSION" ]; then
   echo "No session found"
   exit 0
@@ -543,9 +550,23 @@ Session: 2026-03-23, Swaps: 12,847
 
 | 파라미터 | 이전 | 스윕 후 | 근거 |
 |----------|------|---------|------|
-| TP2_MULTIPLIER | 10.0 | **5.0** | 상위 15개 조합 전부 5.0 |
-| SL_ATR_MULTIPLIER | 1.0 | **1.25** | 스윕 안정 영역 |
+| TP2_MULTIPLIER | 10.0 | 5.0 (스윕 최적) | v5 runner-centric으로 **10.0** 유지. live 50-trade로 재판단 |
+| SL_ATR_MULTIPLIER | 1.0 | **1.25** | 스윕 안정 영역. live env는 1.5 |
 | VOLUME_SPIKE_MULTIPLIER | 2.5 | **3.0** | 스윕 + STRATEGY.md 합의 |
+
+### Replay-Loop 결과 (2026-04-05)
+
+4 sessions × 2 modes (bootstrap micro + 5m strategy) = 8 parallel backtests.
+상세: [`results/replay-loop-report-2026-04-05.md`](./results/replay-loop-report-2026-04-05.md)
+
+| 모드 | 결과 |
+|------|------|
+| Bootstrap micro-replay | 1/4 pass (04-04 edgeScore 78, +6.89%), 3/4 reject |
+| 5m Strategy A/C | 87 pairs × 3 strategies → **3건 trade** (구조적 비적합) |
+
+핵심 병목: **sparse data insufficient 81%** — Feature 4(zero-volume skip) 후유증.
+
+> **결론**: 5m Strategy A/C는 밈코인에서 dormant. bootstrap_10s가 유일한 유효 trigger.
 
 ---
 

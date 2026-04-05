@@ -350,7 +350,7 @@ describe('VolumeMcapSpikeTrigger', () => {
       expect(trigger.getRejectStats().volumeMcapBoosted).toBe(0);
     });
 
-    it('tracks volumeMcapBoosted count in rejectStats', () => {
+    it('tracks volumeMcapBoosted count in rejectStats (explicit label)', () => {
       const boostedTrigger = new VolumeMcapSpikeTrigger({
         ...DEFAULT_CONFIG,
         volumeMcapBoostThreshold: 0.01,
@@ -379,6 +379,119 @@ describe('VolumeMcapSpikeTrigger', () => {
 
       expect(boostedTrigger.getRejectStats().volumeMcapBoosted).toBe(1);
       expect(boostedTrigger.getRejectStats().signals).toBe(1);
+    });
+  });
+
+  describe('sparse volume fallback', () => {
+    it('fires signal via sparse avg when dense avgVol is 0', () => {
+      const sparseTrigger = new VolumeMcapSpikeTrigger({
+        ...DEFAULT_CONFIG,
+        sparseVolumeLookback: 20,
+        minActiveCandles: 3,
+      });
+      const pair = 'TOKEN_SPARSE_A';
+
+      // 20 previous candles: indices 0, 5, 10 have volume=10, rest=0
+      const previous = Array.from({ length: 20 }, (_, i) =>
+        makeCandle({
+          pairAddress: pair,
+          volume: [0, 5, 10].includes(i) ? 10 : 0,
+          buyVolume: [0, 5, 10].includes(i) ? 7 : 0,
+          sellVolume: [0, 5, 10].includes(i) ? 3 : 0,
+          timestamp: new Date(1000 * i),
+        })
+      );
+      // Current candle: spike to 30 (3x sparse avg of 10)
+      const current = makeCandle({
+        pairAddress: pair,
+        volume: 30,
+        buyVolume: 20,
+        sellVolume: 10,
+        timestamp: new Date(21000),
+      });
+      const candles = [...previous, current];
+      const builder = buildCandleBuilder(candles);
+
+      const signal = sparseTrigger.onCandle(
+        makeCandle({ pairAddress: pair, intervalSec: 10, timestamp: new Date(21000) }),
+        builder
+      );
+
+      expect(signal).not.toBeNull();
+      expect(signal!.meta.sparseMode).toBe(1);
+      expect(signal!.meta.volumeRatio).toBeCloseTo(3.0, 1);
+      expect(sparseTrigger.getRejectStats().sparseSignals).toBe(1);
+    });
+
+    it('rejects when not enough active candles in sparse window', () => {
+      const sparseTrigger = new VolumeMcapSpikeTrigger({
+        ...DEFAULT_CONFIG,
+        sparseVolumeLookback: 20,
+        minActiveCandles: 3,
+      });
+      const pair = 'TOKEN_SPARSE_B';
+
+      // Only 2 non-zero candles (below minActive=3)
+      const previous = Array.from({ length: 20 }, (_, i) =>
+        makeCandle({
+          pairAddress: pair,
+          volume: [0, 10].includes(i) ? 10 : 0,
+          buyVolume: [0, 10].includes(i) ? 7 : 0,
+          sellVolume: [0, 10].includes(i) ? 3 : 0,
+          timestamp: new Date(1000 * i),
+        })
+      );
+      const current = makeCandle({
+        pairAddress: pair,
+        volume: 30,
+        buyVolume: 20,
+        sellVolume: 10,
+        timestamp: new Date(21000),
+      });
+      const builder = buildCandleBuilder([...previous, current]);
+
+      const signal = sparseTrigger.onCandle(
+        makeCandle({ pairAddress: pair, intervalSec: 10, timestamp: new Date(21000) }),
+        builder
+      );
+
+      expect(signal).toBeNull();
+      expect(sparseTrigger.getRejectStats().sparseDataInsufficient).toBe(1);
+    });
+
+    it('uses dense path when avgVol > 0 even if sparse config present', () => {
+      const sparseTrigger = new VolumeMcapSpikeTrigger({
+        ...DEFAULT_CONFIG,
+        sparseVolumeLookback: 20,
+        minActiveCandles: 3,
+      });
+      const pair = 'TOKEN_SPARSE_C';
+
+      // All 20 candles have volume — dense path should be used
+      const previous = Array.from({ length: 20 }, (_, i) =>
+        makeCandle({
+          pairAddress: pair,
+          volume: 100,
+          timestamp: new Date(1000 * i),
+        })
+      );
+      const current = makeCandle({
+        pairAddress: pair,
+        volume: 300,
+        buyVolume: 70,
+        sellVolume: 30,
+        timestamp: new Date(21000),
+      });
+      const builder = buildCandleBuilder([...previous, current]);
+
+      const signal = sparseTrigger.onCandle(
+        makeCandle({ pairAddress: pair, intervalSec: 10, timestamp: new Date(21000) }),
+        builder
+      );
+
+      expect(signal).not.toBeNull();
+      expect(signal!.meta.sparseMode).toBeUndefined();
+      expect(sparseTrigger.getRejectStats().sparseSignals).toBe(0);
     });
   });
 });

@@ -155,6 +155,42 @@ pm2 restart momentum-bot # shadow 재시작
 pm2 stop momentum-bot   # shadow 중지
 ```
 
+### Disk Prune
+
+`data/realtime/sessions/`가 커져서 VPS 디스크 사용률이 높아지면,
+오래된 세션만 정리하고 현재 세션과 최근 세션은 보호한다.
+
+기본값:
+
+- threshold: `85%`
+- target: `80%`
+- keep recent: `5`
+- keep window: `48h`
+- 기본 모드: `dry-run`
+
+예시:
+
+```bash
+# 실제 삭제 없이 후보만 확인
+bash scripts/prune-realtime-sessions.sh
+
+# 85% 이상일 때만 오래된 세션 정리
+bash scripts/prune-realtime-sessions.sh --apply
+```
+
+cron 예시:
+
+```cron
+17 * * * * cd /root/Solana/Solana-Trading/solana-momentum-bot && /usr/bin/bash scripts/prune-realtime-sessions.sh --apply >> logs/prune-realtime-sessions.log 2>&1
+```
+
+주의:
+
+- `current-session.json`이 가리키는 활성 세션은 항상 보호된다.
+- `current-session.json`을 못 읽거나 세션 경로가 어긋나면 fail-closed로 종료하고 아무것도 지우지 않는다.
+- `runtime-diagnostics.json`과 realtime root 파일은 지우지 않는다.
+- 세션 해석/리플레이 근거가 필요하므로 threshold 이하일 때는 아무것도 지우지 않는다.
+
 ### Telegram Alert 연결
 
 `.env`에 설정:

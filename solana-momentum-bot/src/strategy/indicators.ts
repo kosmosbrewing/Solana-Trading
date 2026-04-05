@@ -36,6 +36,18 @@ export function calcAvgVolume(candles: Candle[], period: number): number {
 }
 
 /**
+ * Sparse DEX용 평균 거래량 — volume > 0 인 candle만 평균.
+ * Why: 10s 봉에서 DEX swap 빈도가 낮으면 대부분 candle이 volume=0 →
+ *   단순 평균이 항상 0이 되어 spike 감지 불가.
+ *   non-zero candle만 평균하면 "이 pair의 평소 거래 강도" 추정 가능.
+ */
+export function calcSparseAvgVolume(candles: Candle[], minActive: number): number {
+  const nonZero = candles.filter(c => c.volume > 0);
+  if (nonZero.length < minActive) return 0;
+  return nonZero.reduce((sum, c) => sum + c.volume, 0) / nonZero.length;
+}
+
+/**
  * N봉 최고가
  */
 export function calcHighestHigh(candles: Candle[], period: number): number {

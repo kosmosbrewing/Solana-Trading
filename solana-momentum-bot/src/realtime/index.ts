@@ -16,6 +16,7 @@ export {
   detectRealtimeDiscoveryMismatch,
   detectRealtimePoolProgramMismatch,
   classifyRealtimeAdmissionSkip,
+  buildRealtimeAdmissionSkipDetail,
   SUPPORTED_REALTIME_DEX_IDS,
   SUPPORTED_REALTIME_POOL_PROGRAMS,
   selectRealtimeEligiblePair,

@@ -156,7 +156,45 @@ export function classifyRealtimeAdmissionSkip<T extends RealtimePairCandidate>(i
   return undefined;
 }
 
+export function buildRealtimeAdmissionSkipDetail<T extends RealtimePairCandidate>(input: {
+  resolvedPairs: T[];
+  admissionPairs: T[];
+  result: RealtimeEligibilityResult<T>;
+}): string | undefined {
+  const base = classifyRealtimeAdmissionSkip(input);
+  if (!base) return undefined;
+
+  if (base === 'unsupported_dex_after_lookup') {
+    const dexIds = dedupeNonEmpty(input.resolvedPairs.map((pair) => normalizeDexId(pair.dexId)));
+    const samplePair = input.resolvedPairs[0]?.pairAddress;
+    const fields = [
+      `resolved=${input.resolvedPairs.length}`,
+      `dex=${dexIds.slice(0, 3).join(',') || 'unknown'}`,
+      samplePair ? `samplePair=${samplePair}` : undefined,
+    ].filter(Boolean);
+    return [base, ...fields].join('|');
+  }
+
+  if (base === 'all_pairs_blocked') {
+    const dexIds = dedupeNonEmpty(input.resolvedPairs.map((pair) => normalizeDexId(pair.dexId)));
+    const samplePair = input.resolvedPairs[0]?.pairAddress;
+    const fields = [
+      `resolved=${input.resolvedPairs.length}`,
+      `admission=${input.admissionPairs.length}`,
+      `dex=${dexIds.slice(0, 3).join(',') || 'unknown'}`,
+      samplePair ? `samplePair=${samplePair}` : undefined,
+    ].filter(Boolean);
+    return [base, ...fields].join('|');
+  }
+
+  return base;
+}
+
 function normalizeDexId(dexId: string): string {
   if (isMeteoraDexId(dexId)) return 'meteora';
   return isPumpSwapDexId(dexId) ? 'pumpswap' : dexId;
+}
+
+function dedupeNonEmpty(values: Array<string | undefined>): string[] {
+  return [...new Set(values.filter((value): value is string => Boolean(value)))];
 }

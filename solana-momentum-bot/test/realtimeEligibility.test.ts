@@ -1,4 +1,5 @@
 import {
+  buildRealtimeAdmissionSkipDetail,
   detectRealtimeDiscoveryMismatch,
   detectRealtimePoolProgramMismatch,
   METEORA_DLMM_PROGRAM,
@@ -156,5 +157,77 @@ describe('selectRealtimeEligiblePair', () => {
 
     expect(result.eligible).toBe(true);
     expect(result.pair?.pairAddress).toBe('pair-meteora');
+  });
+});
+
+describe('buildRealtimeAdmissionSkipDetail', () => {
+  it('keeps unsupported_dex_after_lookup prefix and adds resolved dex context', () => {
+    const result = buildRealtimeAdmissionSkipDetail({
+      resolvedPairs: [
+        {
+          dexId: 'lifinity',
+          pairAddress: 'pair-unsupported',
+          quoteToken: { address: SOL_MINT },
+          liquidity: { usd: 100_000 },
+        },
+        {
+          dexId: 'meteora-dlmm',
+          pairAddress: 'pair-meteora',
+          quoteToken: { address: SOL_MINT },
+          liquidity: { usd: 90_000 },
+        },
+      ],
+      admissionPairs: [
+        {
+          dexId: 'lifinity',
+          pairAddress: 'pair-unsupported',
+          quoteToken: { address: SOL_MINT },
+          liquidity: { usd: 100_000 },
+        },
+      ],
+      result: {
+        eligible: false,
+        reason: 'unsupported_dex',
+      },
+    });
+
+    expect(result).toBe(
+      'unsupported_dex_after_lookup|resolved=2|dex=lifinity,meteora|samplePair=pair-unsupported'
+    );
+  });
+
+  it('keeps all_pairs_blocked prefix and adds resolved/admission context', () => {
+    const result = buildRealtimeAdmissionSkipDetail({
+      resolvedPairs: [
+        {
+          dexId: 'pumpfun',
+          pairAddress: 'pair-pump',
+          quoteToken: { address: SOL_MINT },
+          liquidity: { usd: 75_000 },
+        },
+      ],
+      admissionPairs: [],
+      result: {
+        eligible: false,
+        reason: 'no_pairs',
+      },
+    });
+
+    expect(result).toBe(
+      'all_pairs_blocked|resolved=1|admission=0|dex=pumpswap|samplePair=pair-pump'
+    );
+  });
+
+  it('falls back to base detail for other skip types', () => {
+    const result = buildRealtimeAdmissionSkipDetail({
+      resolvedPairs: [],
+      admissionPairs: [],
+      result: {
+        eligible: false,
+        reason: 'no_pairs',
+      },
+    });
+
+    expect(result).toBe('resolver_miss');
   });
 });

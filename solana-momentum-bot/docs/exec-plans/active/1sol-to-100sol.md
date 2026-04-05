@@ -1,7 +1,7 @@
 # Execution Plan: 1 SOL → 100 SOL
 
 > Status: current active execution plan
-> Updated: 2026-04-04
+> Updated: 2026-04-05
 > Scope: 구현 완료 이후의 운영 검증, 배포, 표본 축적, live enablement gate
 > Archive: 완료된 root plan과 dated canary history는 [`PLAN_CMPL.md`](../../../PLAN_CMPL.md)에 보관한다.
 
@@ -26,15 +26,19 @@
 - scanner blacklist preload / reentry control 보강
 - bootstrap trigger (VolumeMcapSpikeTrigger) — breakout/confirm 제거, volume+buyRatio 2-gate
 - trigger mode 전환 (REALTIME_TRIGGER_MODE env var)
+- **Signal attribution 4-feature** (04-05): marketCap context, crash-safe signal-intent, strategy별 분리 집계, zero-volume skip
+- **Replay-loop 병렬 백테스팅** (04-05): 4 sessions × 2 modes = 8 parallel backtests 완료
+- **Strategy A/C 5m dormancy 확인** (04-05): 261 combination 중 3건 trade → 밈코인 구조적 비적합
 
 구현 완료 이력과 canary history는 [`PLAN_CMPL.md`](../../../PLAN_CMPL.md)를 본다.
 
 ### 현재 남은 것
 
-- 배포 환경을 안정적으로 유지한다
+- **P0: Sparse data insufficient 81% 병목 해소** — edge 측정 자체를 가능하게 만들기
+- 04-04 edge (score 78)의 재현성 검증 — runner outlier vs 구조적 edge
+- Legacy 세션 재검증 (OOM 해결, 113 stored signals)
 - paper 표본을 운영 가능한 방식으로 쌓는다
 - live enablement 기준을 명확히 통과시킨다
-- optional 외부 작업은 운영 핵심과 분리한다
 
 ## Workstreams
 
@@ -51,6 +55,25 @@
 
 완료 기준:
 - paper runtime을 재기동해도 운영 경로를 다시 설명할 수 있다
+
+### W1.5. Sparse Bottleneck Resolution (신규, 04-05)
+
+목표:
+- replay backtest에서 **sparse data insufficient 차단율을 81% → <30%로** 낮춘다
+
+현상:
+- Feature 4(zero-volume skip)로 persist candle이 불연속 → lookback window 내 active candle 부족
+- 4 sessions 중 1개만 edge pass, 나머지 reject → edge 재현성 판단 불가
+
+액션:
+- [ ] `minActiveCandles` / `calcSparseAvgVolume` 로직 정량 분석
+- [ ] Active candle 기반 lookback 전환 검토 (시간 기반 200s → 최근 20 non-zero candle)
+- [ ] Persist 시 주기적 anchor candle 삽입 검토
+- [ ] 04-04 edge 재현성 검증 (per-token PnL 분해, runner vs flat 비율)
+- [ ] Legacy 세션 OOM 해결 (`NODE_OPTIONS='--max-old-space-size=8192'`)
+
+완료 기준:
+- sparse 차단율 <30%, 다수 세션에서 일관된 edge 또는 명확한 edge 없음 판정
 
 ### W2. Paper Validation Loop
 
@@ -124,4 +147,4 @@
 
 ## One-Line Summary
 
-> 구현은 대부분 끝났고, 지금 active work는 bootstrap stable baseline과 operator blacklist를 포함한 운영 검증, 그리고 live enablement 기준을 정리하는 것이다.
+> 구현은 대부분 끝났고, 지금 active work는 sparse data insufficient 81% 병목 해소, 04-04 edge 재현성 검증, 그리고 paper 표본 축적을 통한 live enablement 기준 통과다. Strategy A/C 5m은 dormant.

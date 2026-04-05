@@ -186,7 +186,7 @@ async function main() {
   }
 }
 
-function stripMapsFromStats(rs: Record<string, unknown>): Record<string, unknown> {
+function stripMapsFromStats(rs: object): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(rs)) {
     if (!(v instanceof Map)) out[k] = v;

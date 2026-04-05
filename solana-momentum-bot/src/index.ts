@@ -1028,7 +1028,8 @@ async function main() {
         (s) => {
           runtimeDiagnosticsTracker.recordTriggerStats(
             `evals=${s.evaluations} signals=${s.signals}(sparse=${s.sparseSignals} boosted=${s.volumeMcapBoosted}) insuffCandles=${s.insufficientCandles} ` +
-            `volInsuf=${s.volumeInsufficient} sparseInsuf=${s.sparseDataInsufficient} lowBuyRatio=${s.lowBuyRatio} cooldown=${s.cooldown}`,
+            `volInsuf=${s.volumeInsufficient} sparseInsuf=${s.sparseDataInsufficient} lowBuyRatio=${s.lowBuyRatio} cooldown=${s.cooldown} ` +
+            `idleSkip=${s.idlePairSkipped ?? 0}`,
             'bootstrap_trigger'
           );
         },

@@ -56,56 +56,44 @@ Stage 2: Trigger
 
 ### 확인된 것
 - live 파이프라인은 `signal -> gate -> risk -> execute -> manage exit`까지 end-to-end로 동작한다.
-- Quote 401, executor 401, BUY sizing 단위 버그는 해소됐다.
-- live trailing / wick-aware exit / execution viability telemetry 보강 패치가 반영됐다.
-- internal trending key fallback 버그 수정 완료 (Codex, 2026-03-31).
+- Bootstrap trigger `bootstrap_10s`가 유일한 유효 trigger (10s candle, volume+buyRatio 2-gate).
+- 5m Strategy A/C는 밈코인 모멘텀(10-30s)에 구조적 비적합 → **dormant** (04-05 확인).
+- Signal attribution 기록 체계 강화 완료: marketCap context, crash-safe signal-intent, strategy별 분리 집계, zero-volume skip.
+- 운영 baseline 안정: `vm=1.8 / buyRatio=0.60 / lookback=20`.
 
 ### 아직 미증명인 것
-- 양의 기대값
+- 양의 기대값 (4/4 세션 1건만 pass, 나머지 reject)
 - 안정적인 cadence
-- TP1/TP2 도달 구조
+- Sparse data insufficient 81% 해소 → edge 재현성
 
-### 2026-04-03 해결한 것
-- **Bootstrap trigger 구현**: `VolumeMcapSpikeTrigger` — breakout/confirm 제거, volume+buyRatio 2-gate로 signal 밀도 개선
-- **Trigger 모드 전환**: `REALTIME_TRIGGER_MODE=bootstrap|core` env var 기반 즉시 전환/롤백
-- **mcap context 연동**: watchlist marketCap → trigger meta.volumeMcapPct 자동 주입
-
-### 2026-04-04 해결한 것
-- **Bootstrap replay sweep 도구 추가**: 5개 live 세션에 대해 `vm / buyRatio / lookback / cost / stored gate` 비교 가능
-- **토큰 leaderboard 추가**: replay 결과에서 blacklist 후보 / reentry 후보 / profile spread를 추출 가능
-- **운영 baseline 정렬**: bootstrap 기본 canary는 `vm=1.8 / buyRatio=0.60 / lookback=20`
-- **Operator blacklist runtime 반영**: `OPERATOR_TOKEN_BLACKLIST`가 scanner / realtime / legacy candle path에 직접 적용
-- **Live buy cost accounting 보정**: entry 원가를 planned notional이 아니라 actual input amount 기준으로 기록
-- **Trade report 현실화**: `created_at ledger`와 `closed_at realized PnL`을 분리해 해석
-
-### 2026-04-01 해결한 것
-- **Crash loop 해소**: RuntimeDiagnosticsTracker write storm → 30초 throttle + capacity 이벤트 상한
-- **RR gate 구조적 rejection 해소**: rrBasis를 tp1→tp2로 변경 (v5 runner-centric 전략 정렬)
-- **Pool discovery 용량 4배 증가**: queueLimit 50→200, concurrency 2→4, capacity emit throttle
+### 2026-04-05 해결한 것
+- **Signal attribution 4-feature 구현** (commit 076e1f4):
+  1. MarketCap/FDV in signal context
+  2. Signal-intent 즉시 기록 (crash-safe persistence)
+  3. Strategy별 분리 집계 (summarizeRealtimeSignalsByStrategy)
+  4. Zero-volume candle skip (persist 90% 감소)
+- **Replay-loop 병렬 백테스팅**: 4 sessions × 2 modes = 8 parallel backtests → 리포트 생성
+- **핵심 발견**: sparse data insufficient 81% 차단 → 이것이 edge 측정 자체를 불가능하게 만드는 최대 병목
 
 ### 현재 해석
-- legacy canary (113 signals): 13 executed, 45 exec viability rejected (39.8%), 21 quote 401 rejected (18.6%)
-- 3/31 canary (1 signal): NoKings Grade A, effectiveRR=0.71로 reject → 실제 5분 후 +17.56% 수익
-- 4/1: crash loop 발생 (830 sessions/7h) — RuntimeDiagnosticsTracker persist 폭풍이 원인
-- 위 3가지 수정으로 다음 canary에서 signal cadence와 execution rate 복구를 기대
-- 4/4 replay sweep 기준 `vm=1.8 / buyRatio=0.60 / lookback=20`은 5/5 keep, fixed-notional 추정 기준 가장 안정적
-- `vm=2.2 / buyRatio=0.60 / lookback=20`은 더 공격적인 대안이지만 세션 변동성이 더 큼
-- replay blacklist 반영형은 추정 PnL이 더 좋았고, 이 결과를 바탕으로 operator blacklist runtime 반영을 추가함
-- DB PnL은 과거 row에 대해 낙관 편향 가능성이 확인됐고, entry actual-cost patch 이후 새 trade부터 다시 검증이 필요함
+- Bootstrap edge가 **1/4 세션에서만 확인** (04-04 edgeScore 78, +6.89%)
+- 나머지 3 세션은 edgeScore 8로 reject — sparse 81% 차단이 평가 모수를 제한
+- 5m Strategy A/C는 87 pairs × 3 strategies = 261 combination 중 **3건만 trade** → 사실상 사망
+- **Critical Path**: Sparse 해소 → 평가 모수 확대 → edge 재현성 확인 → paper 50-trade → live enablement
 
 ## 로드맵
 
 | Phase | 목표 | 현재 상태 |
 |-------|------|----------|
 | Phase 0 | 기존 봇 안정화 | 완료 |
-| Phase 1 | Live Bootstrap 해석 가능 상태 확보 | **진행 중 — blocker 3건 해소** |
+| Phase 1 | Live Bootstrap 해석 가능 상태 확보 | **진행 중 — sparse 병목 해소 필요** |
 | Phase 2 | 첫 공식 Mission / Execution / Edge 판정 | 미도달 |
 | Phase 3 | 양의 기대값 반복 확인 후 소규모 복리화 | 미시작 |
 
 ### Phase 1의 현재 우선순위
-1. patched live canary에서 `vm=1.8 / buyRatio=0.60 / lookback=20` cadence와 BUY path 확인
-2. operator blacklist hit / watchlist 품질 / actual-cost accounting 반영 여부 확인
-3. TP2-basis RR gate 통과율과 실제 wallet-vs-DB PnL 차이 재측정
+1. **P0: Sparse Insufficient 81% 병목 해소** — edge 측정 자체를 가능하게 만들기
+2. 04-04 세션 edge (score 78)의 재현성 검증 — runner outlier vs 구조적 edge 판별
+3. Legacy 세션 OOM 해결 후 재검증 (113 stored signals)
 4. bootstrap 50 trades 확보 → Gate-Proven Sample 도달
 
 ## 인프라

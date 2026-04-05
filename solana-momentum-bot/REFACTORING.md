@@ -1,6 +1,6 @@
 # REFACTORING.md
 
-> Updated: 2026-04-04 (rev.5 — P1-4 degraded telemetry DB + P2-3 Token-2022 classification + P2-4a re-challenge 기준)
+> Updated: 2026-04-05 (rev.6 — Feature 1-4 구현 완료 + replay-loop 결과 + Strategy A/C dormant + sparse P0 신설)
 > Purpose: 리포트/구현/운영 해석이 문서 기준과 어긋나지 않도록 현재 기준선과 리팩터링 우선순위를 고정한다.
 
 ## Scope
@@ -54,12 +54,12 @@
 
 ## Current Baseline
 
-2026-04-04 기준 baseline은 아래처럼 읽는다.
+2026-04-05 기준 baseline은 아래처럼 읽는다.
 
 ### Strategy Runtime Baseline
 
-- A/C는 active core 전략이다.
-- realtime bootstrap (`volumeMcapSpikeTrigger`)는 active default다.
+- realtime bootstrap (`volumeMcapSpikeTrigger`)는 **active default**다 — 유일한 유효 trigger.
+- **A/C는 5m 밈코인에서 dormant**다 (04-05 확인: 261 combination → 3 trades). 향후 CEX/DEX 대형 토큰 전환 시에만 재활성화 고려.
 - realtime core (`momentumTrigger`)는 standby다.
 - D는 sandbox 전용이며 main live execution 경로에 섞지 않는다.
 - E는 conditional add-on이며 Strategy A live expectancy 검증 전에는 공격적으로 켜지 않는다.
@@ -582,10 +582,43 @@ breadth는 중요한 가설이지만, 현재 active 문서가 직접 열어 둔 
 
 ---
 
+## P-New: Signal Attribution & Replay Quality (2026-04-05 구현 완료)
+
+### Feature 1-4 Implementation (commit 076e1f4)
+
+| Feature | 상태 | 수정 파일 | 비고 |
+|---------|------|----------|------|
+| MarketCap context in signal | ✓ 완료 | realtimeMeasurement.ts, realtimeHandler.ts | marketCapUsd, volumeMcapRatio 추가 |
+| Signal-intent 즉시 기록 | ✓ 완료 | realtimeSignalLogger.ts, replayStore.ts, realtimeOutcomeTracker.ts | crash-safe persistence via signal-intents.jsonl |
+| Strategy별 분리 집계 | ✓ 완료 | realtimeMeasurement.ts, realtimeShadowReport.ts | summarizeRealtimeSignalsByStrategy() |
+| Zero-volume candle skip | ✓ 완료 | index.ts, microReplayEngine.ts | persist ~90% 감소, fillCandleGaps() 복원 |
+
+### P-New-0: Sparse Data Insufficient 병목 (81%)
+
+Feature 4(zero-volume skip)의 후유증으로 **전체 평가의 81%가 차단**되어 edge 측정 자체가 불가능.
+
+현황:
+- lookback window(20 bars × 10s = 200s) 내 연속 active candle 부족 → `sparseDataInsufficient`
+- 4 sessions 중 1개만 edge pass (04-04, edgeScore 78), 나머지 reject
+- 이것이 해소되지 않으면 나머지 모든 작업은 의미 없음
+
+해결 방향:
+1. `minActiveCandles` / `calcSparseAvgVolume` 로직 정량 분석
+2. Lookback을 시간 기반(200s)에서 active candle 기반(최근 20 non-zero candle)으로 전환 검토
+3. Persist 시 30초마다 anchor candle 삽입 (zero-volume이어도 close carry-forward)
+
+### Strategy A/C 5m Dormancy (2026-04-05 확인)
+
+4 sessions × 87 pairs × 3 strategies = 261 combination 중 **단 3건만 trade 발생**.
+5m(300s) 해상도에서 밈코인 모멘텀(10-30s)을 포착하는 것이 구조적으로 불가능.
+Session-backtest는 진단 도구로만 유지, edge 판단에 사용하지 않음.
+
+---
+
 ## Current One-Line Conclusion
 
-P0는 measurement 기준선 관점에서 대부분 완료됐다. 현재 남은 핵심은 새 전략 추가보다 `live validation`이다. runtime은 `bootstrap_10s + runner-centric thesis`에 정렬돼 있지만, runner가 실제 mission convexity engine인지와 blacklist / wallet-vs-DB 정합성이 live 표본에서 유지되는지는 아직 검증 중이다. P1은 핵심 telemetry/reporting은 반영됐지만, P1-4의 degraded phase-1 trigger는 아직 dormant다. P2-3 Token-2022 분류/로깅 완료. P2-4a core re-challenge 기준 정의 완료.
+P0 measurement closure와 P-New Feature 1-4는 모두 완료됐다. 현재 **최대 병목은 sparse data insufficient 81%**로, edge 측정 자체를 가능하게 하는 것이 최우선. 5m Strategy A/C는 밈코인에 구조적 비적합으로 dormant 전환. bootstrap_10s가 유일한 유효 trigger이며, 04-04 세션의 edge 재현성 검증이 필요하다.
 
 현재 남은 우선순위:
 
-`live 데이터 축적 → blacklist 효과 검증 (P1-3) → breadth 확장 실험 (P2-1) → core re-challenge A/B test (P2-4b~d)`
+`Sparse 해소(P-New-0) → edge 재현성 확인 → paper 50-trade → live enablement`

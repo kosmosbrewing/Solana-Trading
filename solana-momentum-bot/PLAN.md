@@ -1,7 +1,7 @@
 # PLAN.md
 
 > Status: current mission charter
-> Updated: 2026-03-31
+> Updated: 2026-04-05
 > Purpose: 이 저장소의 장기 목표, 운영 원칙, 문서 계층을 고정한다.
 > Use with: [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md) for current active execution work, [`PLAN_CMPL.md`](./PLAN_CMPL.md) for archived plans.
 

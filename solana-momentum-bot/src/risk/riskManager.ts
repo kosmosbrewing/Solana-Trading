@@ -286,6 +286,7 @@ export class RiskManager {
     const finalQuantity = adjustedQuantity * gradeMultiplier * safetyMultiplier;
 
     if (finalQuantity <= 0) {
+      this.diagnosticsTracker?.recordRiskRejection('zero_position_size_after_adjustments', order.pairAddress);
       return {
         approved: false,
         reason: 'Calculated position size is zero or negative after safety adjustments',

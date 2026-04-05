@@ -72,7 +72,7 @@ export class WalletManager {
       keypair: mainKeypair,
       dailyLossLimitSol: Infinity, // Main wallet uses RiskManager limits
       maxPositionSol: Infinity,
-      allowedStrategies: ['volume_spike', 'fib_pullback'],
+      allowedStrategies: ['volume_spike', 'fib_pullback', 'bootstrap_10s', 'core_momentum'],
     });
     log.info(`Main wallet: ${mainKeypair.publicKey.toBase58().slice(0, 8)}...`);
 

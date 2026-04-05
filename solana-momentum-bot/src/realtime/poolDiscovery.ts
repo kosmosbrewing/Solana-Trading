@@ -22,12 +22,16 @@ const TOKEN_PROGRAMS = new Set([
 const INIT_ACTION_PATTERN = /\b(initialize|initialize2|create)\b/i;
 const INIT_OBJECT_PATTERN = /\b(pool|pair|whirlpool|amm|lb)\b/i;
 const NOISE_ACTIVITY_PATTERN = /\b(swap|buy|sell|position|route|trade)\b/i;
+// Why: "Instruction: Create" 단독은 ATA 생성(모든 swap에 흔함) — pool context 필요
 const EXPLICIT_INIT_PATTERNS = [
-  /instruction:\s*initialize/i,
-  /instruction:\s*create/i,
+  /instruction:\s*initialize\b/i,
+  /instruction:\s*initialize2\b/i,
+  /instruction:\s*create\s*(pool|pair|amm|lb|whirlpool)\b/i,
   /initialize.*whirlpool/i,
   /\blb\s+pair\b/i,
 ];
+// Why: swap tx 안의 ATA init/create는 pool init이 아님
+const SWAP_INSTRUCTION_PATTERN = /instruction:\s*(swap|route)\b/i;
 
 const SUPPORTED_POOL_DISCOVERY_PROGRAMS = [
   RAYDIUM_V4_PROGRAM,
@@ -278,6 +282,10 @@ export class HeliusPoolDiscovery extends EventEmitter {
 
 export function looksLikePoolInitLogs(logs: string[]): boolean {
   const joined = logs.join('\n');
+  // Why: "Instruction: Swap/Route" 가 있으면 swap tx — 안의 Initialize/Create는 ATA 관련이므로 skip
+  if (SWAP_INSTRUCTION_PATTERN.test(joined)) {
+    return false;
+  }
   if (EXPLICIT_INIT_PATTERNS.some((pattern) => pattern.test(joined))) {
     return true;
   }

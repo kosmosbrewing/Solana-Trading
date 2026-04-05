@@ -167,8 +167,8 @@ export const tradingParams = {
     realtimeBootstrapMinBuyRatio: 0.60,   // runtime_canary: 0.60 (code_default: 0.55)
     realtimeVolumeMcapBoostThreshold: 0.005, // low-cap/high-turnover 포착 완화 (runtime zero-boost 빈도 완화)
     realtimeVolumeMcapBoostMultiplier: 1.5,
-    realtimePoolDiscoveryConcurrency: 4,
-    realtimePoolDiscoveryRequestSpacingMs: 150,
+    realtimePoolDiscoveryConcurrency: 6,   // 4→6: filter 강화 후에도 burst 흡수 여유 확보
+    realtimePoolDiscoveryRequestSpacingMs: 100, // 150→100: Helius dedicated RPC는 rate limit 여유 있음
     realtimePoolDiscoveryQueueLimit: 500,
     realtimeFallbackConcurrency: 3,       // runtime_canary: 3 (code_default: 2)
     realtimeFallbackRequestsPerSecond: 1, // runtime_canary: 1 (code_default: 4)

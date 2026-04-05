@@ -1,5 +1,5 @@
 import { Candle, Signal } from '../utils/types';
-import { calcATR, calcAvgVolume } from './indicators';
+import { calcATR, calcAvgVolume, calcSparseAvgVolume } from './indicators';
 import { calcBuyRatio } from './breakoutScore';
 import { MicroCandleBuilder } from '../realtime';
 import { createModuleLogger } from '../utils/logger';
@@ -13,6 +13,9 @@ export interface VolumeMcapSpikeTriggerConfig {
   atrPeriod: number;
   volumeMcapBoostThreshold?: number;  // default 0.01 (1%)
   volumeMcapBoostMultiplier?: number; // default 1.5
+  /** Why: DEX sparse trading 대응 — avgVol=0일 때 wider window에서 non-zero candle 평균 사용 */
+  sparseVolumeLookback?: number;      // default 120 (120 × 10s = 20min)
+  minActiveCandles?: number;          // default 3
 }
 
 export interface BootstrapRejectStats {
@@ -23,6 +26,8 @@ export interface BootstrapRejectStats {
   lowBuyRatio: number;
   cooldown: number;
   volumeMcapBoosted: number;
+  sparseDataInsufficient: number;
+  sparseSignals: number;
 }
 
 const log = createModuleLogger('VolumeMcapSpike');
@@ -40,6 +45,8 @@ export class VolumeMcapSpikeTrigger {
     lowBuyRatio: 0,
     cooldown: 0,
     volumeMcapBoosted: 0,
+    sparseDataInsufficient: 0,
+    sparseSignals: 0,
   };
   private lastStatsLogAt = 0;
 
@@ -68,7 +75,11 @@ export class VolumeMcapSpikeTrigger {
     }
 
     const lookback = this.config.volumeSurgeLookback;
-    const candles = candleBuilder.getRecentCandles(candle.pairAddress, candle.intervalSec, lookback + 1);
+    const sparseLookback = this.config.sparseVolumeLookback ?? 120;
+    const minActive = this.config.minActiveCandles ?? 3;
+    const totalLookback = Math.max(sparseLookback, lookback);
+
+    const candles = candleBuilder.getRecentCandles(candle.pairAddress, candle.intervalSec, totalLookback + 1);
     if (candles.length < lookback + 1) {
       this.rejectStats.insufficientCandles++;
       this.maybeLogStats();
@@ -78,11 +89,29 @@ export class VolumeMcapSpikeTrigger {
     this.rejectStats.evaluations++;
 
     const current = candles[candles.length - 1];
-    const previous = candles.slice(0, -1);
+    // Why: dense mode는 최근 lookback개만, sparse mode는 전체 window 사용
+    const densePrev = candles.slice(-(lookback + 1), -1);
 
-    // HARD gate: volume acceleration (동적 threshold — 저시총 고회전 밈코인 포착)
-    const avgVolume = calcAvgVolume(previous, lookback);
-    const volumeRatio = avgVolume > 0 ? current.volume / avgVolume : 0;
+    // Dense path: 최근 N개 candle 단순 평균
+    const avgVolume = calcAvgVolume(densePrev, lookback);
+    let volumeRatio: number;
+    let sparse = false;
+    let sparseAvg = 0;
+
+    if (avgVolume > 0) {
+      volumeRatio = current.volume / avgVolume;
+    } else {
+      // Sparse path: wider window에서 non-zero candle만 평균
+      sparse = true;
+      const allPrev = candles.slice(0, -1);
+      sparseAvg = calcSparseAvgVolume(allPrev, minActive);
+      if (sparseAvg <= 0) {
+        this.rejectStats.sparseDataInsufficient++;
+        this.maybeLogStats();
+        return null;
+      }
+      volumeRatio = current.volume > 0 ? current.volume / sparseAvg : 0;
+    }
 
     let effectiveMultiplier = this.config.volumeSurgeMultiplier;
     const ctx = this.poolContext.get(candle.pairAddress);
@@ -123,10 +152,11 @@ export class VolumeMcapSpikeTrigger {
       return null;
     }
 
-    const atr = calcATR(candles, Math.min(this.config.atrPeriod, candles.length - 1));
+    const atr = calcATR(candles.slice(-lookback - 1), Math.min(this.config.atrPeriod, lookback));
     const closeTimestampSec = timestampSec + current.intervalSec;
     this.lastSignalAt.set(candle.pairAddress, timestampSec);
     this.rejectStats.signals++;
+    if (sparse) this.rejectStats.sparseSignals++;
 
     // mcap enrichment
     const volumeMcapPct = ctx?.marketCap && ctx.marketCap > 0
@@ -147,10 +177,11 @@ export class VolumeMcapSpikeTrigger {
         primaryCandleStartSec: timestampSec,
         primaryCandleCloseSec: closeTimestampSec,
         volumeRatio,
-        avgVolume,
+        avgVolume: sparse ? sparseAvg : avgVolume,
         currentVolume: current.volume,
         buyRatio,
         atr,
+        ...(sparse ? { sparseMode: 1 } : {}),
         ...(volumeMcapPct !== undefined ? { volumeMcapPct } : {}),
         ...(boosted ? { volumeMcapBoosted: 1, effectiveMultiplier } : {}),
       },
@@ -169,9 +200,9 @@ export class VolumeMcapSpikeTrigger {
     this.lastStatsLogAt = now;
     const s = this.rejectStats;
     log.info(
-      `[RejectStats] evals=${s.evaluations} signals=${s.signals}(boosted=${s.volumeMcapBoosted}) | ` +
+      `[RejectStats] evals=${s.evaluations} signals=${s.signals}(sparse=${s.sparseSignals} boosted=${s.volumeMcapBoosted}) | ` +
       `insuffCandles=${s.insufficientCandles} volInsuf=${s.volumeInsufficient} ` +
-      `lowBuyRatio=${s.lowBuyRatio} cooldown=${s.cooldown}`
+      `sparseInsuf=${s.sparseDataInsufficient} lowBuyRatio=${s.lowBuyRatio} cooldown=${s.cooldown}`
     );
     if (this.onStatsFlush) {
       this.onStatsFlush({ ...this.rejectStats });

@@ -181,6 +181,10 @@ async function main() {
   const ALIAS_MISS_CLEANUP_THRESHOLD = 3;
   const ALIAS_MISS_CLEANUP_TTL_MS = ALIAS_GRACE_PERIOD_MS * 2;
   const aliasMissCleanupState = new Map<string, { count: number; windowStartedMs: number; lastCleanupMs: number }>();
+  // Why: unsubscribe 완료 후에도 WS lag으로 swap이 계속 유입되는 zombie pool 차단
+  // — 반복 unsubscribe + 로깅 노이즈 방지. TTL 후 자동 제거.
+  const ZOMBIE_POOL_TTL_MS = 30 * 60 * 1000; // 30min
+  const zombiePoolBlacklist = new Map<string, number>(); // poolAddress → blacklistedAtMs
 
   const isPendingAliasCleanupPool = (poolAddress: string) => {
     for (const pending of pendingAliasCleanups.values()) {
@@ -239,6 +243,7 @@ async function main() {
     realtimePoolTargets.set(logicalPair, subscriptionPair);
     realtimePoolAliases.set(subscriptionPair, logicalPair);
     aliasMissCleanupState.delete(subscriptionPair);
+    zombiePoolBlacklist.delete(subscriptionPair);
   };
   const setRealtimePoolMetadata = (subscriptionPair: string, metadata: RealtimePoolMetadata) => {
     realtimePoolMetadata.set(subscriptionPair, metadata);
@@ -263,6 +268,8 @@ async function main() {
         if (!realtimePoolTargets.has(logicalPair)) {
           realtimePoolAliases.delete(existing);
           void heliusIngester?.unsubscribePools([existing]);
+          // Why: grace period 종료 후 WS lag swap을 zombie blacklist로 흡수
+          zombiePoolBlacklist.set(existing, Date.now());
         }
         pendingAliasCleanups.delete(logicalPair);
       }, ALIAS_GRACE_PERIOD_MS);
@@ -1013,12 +1020,14 @@ async function main() {
           atrPeriod: 14,
           volumeMcapBoostThreshold: config.realtimeVolumeMcapBoostThreshold,
           volumeMcapBoostMultiplier: config.realtimeVolumeMcapBoostMultiplier,
+          sparseVolumeLookback: config.realtimeSparseVolumeLookback,
+          minActiveCandles: config.realtimeMinActiveCandles,
         },
         // Why: RejectStats → runtime-diagnostics.json (원격 디버깅)
         (s) => {
           runtimeDiagnosticsTracker.recordTriggerStats(
-            `evals=${s.evaluations} signals=${s.signals}(boosted=${s.volumeMcapBoosted}) insuffCandles=${s.insufficientCandles} ` +
-            `volInsuf=${s.volumeInsufficient} lowBuyRatio=${s.lowBuyRatio} cooldown=${s.cooldown}`,
+            `evals=${s.evaluations} signals=${s.signals}(sparse=${s.sparseSignals} boosted=${s.volumeMcapBoosted}) insuffCandles=${s.insufficientCandles} ` +
+            `volInsuf=${s.volumeInsufficient} sparseInsuf=${s.sparseDataInsufficient} lowBuyRatio=${s.lowBuyRatio} cooldown=${s.cooldown}`,
             'bootstrap_trigger'
           );
         },
@@ -1066,7 +1075,14 @@ async function main() {
     heliusIngester.on('swap', (swap) => {
       const logicalPair = realtimePoolAliases.get(swap.pool);
       if (!logicalPair) {
-        // Why: unsubscribe 하지 않음 — grace period 중 또는 재진입 시 alias 복구 후 즉시 swap 처리 가능
+        // Why: zombie blacklist 확인 — 이미 unsubscribe 완료된 pool은 WS lag으로 유입되는 swap 무시
+        const zombieAt = zombiePoolBlacklist.get(swap.pool);
+        if (zombieAt) {
+          if (Date.now() - zombieAt > ZOMBIE_POOL_TTL_MS) {
+            zombiePoolBlacklist.delete(swap.pool);
+          }
+          return; // silently drop — no logging, no re-unsubscribe
+        }
         runtimeDiagnosticsTracker.recordAliasMiss(swap.pool);
         if (
           !isPendingAliasCleanupPool(swap.pool) &&
@@ -1077,6 +1093,9 @@ async function main() {
           heliusIngester?.clearPoolMetadata(swap.pool);
           log.info(`Alias-miss cleanup: unsubscribing stale pool ${swap.pool}`);
           void heliusIngester?.unsubscribePools([swap.pool]);
+          // Why: unsubscribe 후에도 WS lag으로 swap 유입될 수 있음 — blacklist에 등록하여 무시
+          zombiePoolBlacklist.set(swap.pool, Date.now());
+          aliasMissCleanupState.delete(swap.pool);
         }
         return;
       }

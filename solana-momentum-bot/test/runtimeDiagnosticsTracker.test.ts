@@ -120,12 +120,20 @@ describe('RuntimeDiagnosticsTracker', () => {
   it('summarizes watchlist lifecycle and missed tokens', () => {
     const tracker = new RuntimeDiagnosticsTracker();
 
-    tracker.recordCandidateEvicted('token-a');
+    tracker.recordCandidateEvicted({
+      tokenMint: 'token-a',
+      reason: 'idle',
+      detail: 'idleSec=742|lastActivityAt=2026-04-06T12:00:00.000Z|immediate=true',
+    });
     tracker.recordCandidateReadded('token-a', 'within_grace');
     tracker.recordSignalNotInWatchlist('token-a', 'recently_evicted');
     tracker.recordSignalNotInWatchlist('token-a');
 
-    tracker.recordCandidateEvicted('token-b');
+    tracker.recordCandidateEvicted({
+      tokenMint: 'token-b',
+      reason: 'score',
+      detail: 'score=40|lane=B|source=gecko_new_pool|immediate=false',
+    });
     tracker.recordSignalNotInWatchlist('token-b');
     tracker.recordSignalNotInWatchlist('token-b');
 

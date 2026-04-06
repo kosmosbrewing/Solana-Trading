@@ -10,6 +10,7 @@ interface CurrentSession {
 interface RuntimeDiagnosticEvent {
   type: string;
   timestampMs?: number;
+  tokenMint?: string;
   detail?: string;
   reason?: string;
   source?: string;
@@ -43,9 +44,11 @@ export interface FreshnessSummary {
   uniqueSignaledTickers: number;
   candidateSeen: number;
   candidateEvicted: number;
+  idleEvicted: number;
   admissionSkip: number;
   admissionSkipByReason: Array<{ reason: string; count: number }>;
   topIdleOffenders: Array<{ pair: string; count: number }>;
+  topIdleEvictedTickers: Array<{ tokenMint: string; count: number }>;
 }
 
 export interface SparseOpsSummary {
@@ -84,7 +87,9 @@ export function loadSparseOpsSummary(realtimeRoot: string, windowHours: number, 
 
   // ─── Freshness telemetry ───
   const candidateSeen = recentEvents.filter((e) => e.type === 'realtime_candidate_seen').length;
-  const candidateEvicted = recentEvents.filter((e) => e.type === 'candidate_evicted').length;
+  const candidateEvictions = recentEvents.filter((e) => e.type === 'candidate_evicted');
+  const candidateEvicted = candidateEvictions.length;
+  const idleEvictedEvents = candidateEvictions.filter((e) => e.reason === 'idle');
   const admissionSkips = recentEvents.filter((e) => e.type === 'admission_skip');
   const admissionSkipByReason = Object.entries(
     countBy(admissionSkips, (e) => e.reason ?? e.detail ?? 'unknown')
@@ -104,6 +109,13 @@ export function loadSparseOpsSummary(realtimeRoot: string, windowHours: number, 
 
   // per-pair idleSkip top offenders from trigger logs
   const topIdleOffenders = extractTopIdleOffenders(recentEvents, topN);
+  const topIdleEvictedTickers = Object.entries(
+    countBy(idleEvictedEvents, (e) => e.tokenMint ?? 'unknown')
+  )
+    .filter(([tokenMint]) => tokenMint !== 'unknown')
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, topN)
+    .map(([tokenMint, count]) => ({ tokenMint, count }));
 
   return {
     windowHours,
@@ -120,9 +132,11 @@ export function loadSparseOpsSummary(realtimeRoot: string, windowHours: number, 
       uniqueSignaledTickers: signaledPairs.size,
       candidateSeen,
       candidateEvicted,
+      idleEvicted: idleEvictedEvents.length,
       admissionSkip: admissionSkips.length,
       admissionSkipByReason,
       topIdleOffenders,
+      topIdleEvictedTickers,
     },
   };
 }
@@ -170,10 +184,16 @@ export function buildSparseOpsSummaryMessage(summary: SparseOpsSummary | undefin
     lines.push('');
     lines.push(`Freshness (${summary.windowHours}h)`);
     lines.push(`- idleSkip delta: ${f.idleSkipDelta.toLocaleString()} | unique signaled tickers: ${f.uniqueSignaledTickers}`);
-    lines.push(`- candidate turnover: seen=${f.candidateSeen} evicted=${f.candidateEvicted} | admission_skip=${f.admissionSkip}`);
+    lines.push(`- candidate turnover: seen=${f.candidateSeen} evicted=${f.candidateEvicted} idle_evicted=${f.idleEvicted} | admission_skip=${f.admissionSkip}`);
     if (f.admissionSkipByReason.length > 0) {
       const reasons = f.admissionSkipByReason.map((r) => `${r.reason}=${r.count}`).join(', ');
       lines.push(`- admission skip 사유: ${reasons}`);
+    }
+    if (f.topIdleEvictedTickers.length > 0) {
+      const evicted = f.topIdleEvictedTickers
+        .map((o) => `${shortenAddress(o.tokenMint)} ${o.count}건`)
+        .join(', ');
+      lines.push(`- top idle-evicted tickers: ${evicted}`);
     }
     if (f.topIdleOffenders.length > 0) {
       const offenders = f.topIdleOffenders.map((o) => `${shortenAddress(o.pair)} ${o.count.toLocaleString()}회`).join(', ');

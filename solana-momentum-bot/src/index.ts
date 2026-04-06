@@ -875,9 +875,15 @@ async function main() {
       ingesterQueue.push(entry);
       processIngesterQueue().catch(err => log.error(`Ingester queue error: ${err}`));
     });
-    scanner.on('candidateEvicted', (tokenMint: string, reason?: string) => {
+    scanner.on('candidateEvicted', (tokenMint: string, reason?: string, detail?: string) => {
       log.info(`Scanner: evicted ${tokenMint} reason=${reason ?? 'score'}`);
-      runtimeDiagnosticsTracker.recordCandidateEvicted(tokenMint);
+      runtimeDiagnosticsTracker.recordCandidateEvicted({
+        tokenMint,
+        reason,
+        detail: detail != null
+          ? `${detail}|immediate=${reason === 'idle'}`
+          : `immediate=${reason === 'idle'}`,
+      });
       // Why: idle eviction은 10분 무활동 → 재진입 가능성 ≈ 0 → grace 우회하여 즉시 slot 해제
       removeRealtimePoolTarget(tokenMint, { immediate: reason === 'idle' });
       ingester.removePair(tokenMint);

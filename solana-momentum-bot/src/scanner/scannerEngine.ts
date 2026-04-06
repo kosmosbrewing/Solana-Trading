@@ -94,7 +94,7 @@ export interface ScannerEngineConfig {
  * Events:
  *   - 'watchlistUpdated' (WatchlistEntry[])
  *   - 'candidateDiscovered' (WatchlistEntry)
- *   - 'candidateEvicted' (tokenMint: string)
+ *   - 'candidateEvicted' (tokenMint: string, reason?: string, detail?: string)
  */
 export class ScannerEngine extends EventEmitter {
   private config: ScannerEngineConfig;
@@ -548,7 +548,12 @@ export class ScannerEngine extends EventEmitter {
       this.markEvicted(entry);
       this.config.socialMentionTracker?.unregisterTrackedToken(entry.tokenMint);
       log.info(`- Watchlist evicted: ${entry.symbol} score=${entry.watchlistScore.totalScore}`);
-      this.emit('candidateEvicted', entry.tokenMint);
+      this.emit(
+        'candidateEvicted',
+        entry.tokenMint,
+        'score',
+        `score=${entry.watchlistScore.totalScore}|lane=${entry.lane}|source=${entry.discoverySource}`
+      );
     }
   }
 
@@ -717,7 +722,7 @@ export class ScannerEngine extends EventEmitter {
         this.watchlist.delete(tokenMint);
         this.config.socialMentionTracker?.unregisterTrackedToken(tokenMint);
         log.info(`- Watchlist blacklist evict: ${entry.symbol} pair=${entry.pairAddress}`);
-        this.emit('candidateEvicted', tokenMint);
+        this.emit('candidateEvicted', tokenMint, 'blacklist', `pair=${entry.pairAddress}`);
         evicted++;
       }
     }
@@ -753,7 +758,13 @@ export class ScannerEngine extends EventEmitter {
         this.markEvicted(entry);
         this.config.socialMentionTracker?.unregisterTrackedToken(tokenMint);
         log.info(`- Watchlist idle evict: ${entry.symbol} idle=${Math.round((now - lastActive) / 1000)}s`);
-        this.emit('candidateEvicted', tokenMint, 'idle');
+        const lastActivityAt = entry.lastActivityAt ?? entry.addedAt;
+        this.emit(
+          'candidateEvicted',
+          tokenMint,
+          'idle',
+          `idleSec=${Math.round((now - lastActive) / 1000)}|lastActivityAt=${lastActivityAt.toISOString()}`
+        );
         evicted++;
       }
     }

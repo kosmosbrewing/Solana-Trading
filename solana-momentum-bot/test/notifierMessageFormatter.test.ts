@@ -58,6 +58,7 @@ describe('messageFormatter', () => {
     expect(message).toContain('- 종목: <b>PAIR</b>');
     expect(message).toContain('- 전략: Volume Spike');
     expect(message).toContain('- 컨트랙트: <code>PAIR1234567890</code>');
+    expect(message).toContain('- 시그널 시각(UTC): <code>2026-03-22T00:00:00.000Z</code>');
     expect(message).toContain('- 시그널 품질: 74점 (A등급)');
     expect(message).toContain('- MC / TVL: $2.35M / $120K');
     expect(message).toContain('- 24H 거래대금 / 시총: $12.3M / 42.0%');
@@ -73,11 +74,13 @@ describe('messageFormatter', () => {
 
   it('formats trade open and close messages with readable summaries', () => {
     const order: Order = {
+      tradeId: 'trade-open-1',
       pairAddress: 'PAIR1234567890',
       strategy: 'fib_pullback',
       side: 'BUY',
       tokenSymbol: 'PAIR',
       price: 0.00123456,
+      plannedEntryPrice: 0.0012,
       quantity: 2,
       stopLoss: 0.0011,
       takeProfit1: 0.0014,
@@ -91,8 +94,10 @@ describe('messageFormatter', () => {
     const openMessage = buildTradeOpenMessage(order, 'TX123');
 
     expect(openMessage).toContain('🟢 <b>포지션 진입 완료</b>');
+    expect(openMessage).toContain('<code>trade-op</code>');
     expect(openMessage).toContain('- 종목: <b>PAIR</b>');
     expect(openMessage).toContain('- 전략: Fib Pullback');
+    expect(openMessage).toContain('- Entry gap: planned=0.00120000 → fill=0.00123456 (+2.88%)');
     expect(openMessage).toContain('- 진입 금액: 0.002469 SOL');
     expect(openMessage).toContain('- 수량: 2.000000 PAIR');
     expect(openMessage).toContain('- 한눈에 보기: 최대 손실 -0.000269 SOL | TP1 +0.000331 SOL | TP2 +0.000731 SOL');
@@ -116,6 +121,10 @@ describe('messageFormatter', () => {
       status: 'CLOSED',
       createdAt: new Date('2026-03-22T00:00:00Z'),
       closedAt: new Date('2026-03-22T02:30:00Z'),
+      decisionPrice: 0.00142,
+      entrySlippageBps: 25,
+      exitSlippageBps: 40,
+      roundTripCostPct: 0.9,
       stopLoss: 0.0011,
       takeProfit1: 0.0014,
       takeProfit2: 0.0016,
@@ -126,9 +135,12 @@ describe('messageFormatter', () => {
     const closeMessage = buildTradeCloseMessage(trade);
 
     expect(closeMessage).toContain('✅ <b>포지션 종료</b>');
+    expect(closeMessage).toContain('<code>trade-1</code>');
     expect(closeMessage).toContain('- 종료 사유: 1차 익절');
     expect(closeMessage).toContain('- 결과: 이익 실현');
     expect(closeMessage).toContain('- 한눈에 보기: 1차 익절로 종료 | +0.0003 SOL | 보유 2h 30m');
+    expect(closeMessage).toContain('- Exit gap: decision=0.00142000 → fill=0.00140000 (-1.41%)');
+    expect(closeMessage).toContain('- 비용 분해: entry=25bps | exit=40bps | rtCost=0.90%');
     expect(closeMessage).toContain('- 보유 시간: 2h 30m');
     expect(closeMessage).toContain('+0.0003 SOL');
   });

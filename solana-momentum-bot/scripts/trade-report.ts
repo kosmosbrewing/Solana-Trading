@@ -29,6 +29,13 @@ interface TradeRow {
   status: string;
   created_at: Date;
   closed_at: Date | null;
+  planned_entry_price: string | null;
+  decision_price: string | null;
+  entry_slippage_bps: number | null;
+  exit_slippage_bps: number | null;
+  entry_price_impact_pct: string | null;
+  round_trip_cost_pct: string | null;
+  effective_rr: string | null;
 }
 
 interface WindowConfig {
@@ -205,8 +212,110 @@ function printRealizedSummary(rows: TradeRow[], window: WindowConfig): void {
       console.log(
         `  ${String(index + 1).padStart(2)} | ${formatShortTimestamp(trade.closed_at).padEnd(16)} | ${strategy} | ${ep.padStart(12)} | ${xp.padStart(12)} | ${pnl.padStart(11)} | ${reason} | ${grade}`
       );
+      // 비용 분해 서브라인
+      const costParts: string[] = [];
+      if (trade.planned_entry_price != null) {
+        const pp = Number(trade.planned_entry_price);
+        const epNum = Number(trade.entry_price);
+        const gapStr = pp > 0
+          ? `${((epNum - pp) / pp * 100) >= 0 ? '+' : ''}${((epNum - pp) / pp * 100).toFixed(2)}%`
+          : '---';
+        costParts.push(`planned=${pp.toPrecision(6)} entryGap=${gapStr}`);
+      }
+      if (trade.decision_price != null) {
+        const dp = Number(trade.decision_price);
+        const xpNum = trade.exit_price ? Number(trade.exit_price) : null;
+        const gapStr = xpNum != null && dp > 0
+          ? `${((xpNum - dp) / dp * 100) >= 0 ? '+' : ''}${((xpNum - dp) / dp * 100).toFixed(2)}%`
+          : '---';
+        costParts.push(`decision=${dp.toPrecision(6)} exitGap=${gapStr}`);
+      }
+      if (trade.entry_slippage_bps != null || trade.exit_slippage_bps != null) {
+        costParts.push(
+          `entry_slip=${trade.entry_slippage_bps ?? '?'}bps exit_slip=${trade.exit_slippage_bps ?? '?'}bps`
+        );
+      }
+      if (trade.round_trip_cost_pct != null || trade.effective_rr != null) {
+        const rtc = trade.round_trip_cost_pct != null ? `${Number(trade.round_trip_cost_pct).toFixed(2)}%` : '?';
+        const rr = trade.effective_rr != null ? Number(trade.effective_rr).toFixed(1) : '?';
+        costParts.push(`rtCost=${rtc} effRR=${rr}`);
+      }
+      if (costParts.length > 0) {
+        console.log(`      └ ${costParts.join(' | ')}`);
+      }
     });
   }
+
+  // 비용 집계 섹션
+  printCostAggregation(realized);
+}
+
+function printCostAggregation(trades: TradeRow[]): void {
+  const withEntrySl = trades.filter((t) => t.entry_slippage_bps != null);
+  const withExitSl = trades.filter((t) => t.exit_slippage_bps != null);
+  const withRtCost = trades.filter((t) => t.round_trip_cost_pct != null);
+  const withEntryGap = trades.filter((t) => t.planned_entry_price != null);
+  const withGap = trades.filter((t) => t.decision_price != null && t.exit_price != null);
+
+  if (
+    withEntrySl.length === 0 &&
+    withExitSl.length === 0 &&
+    withRtCost.length === 0 &&
+    withEntryGap.length === 0 &&
+    withGap.length === 0
+  ) {
+    return;
+  }
+
+  console.log(`\n${'─'.repeat(76)}`);
+  console.log(' COST DECOMPOSITION (전체 집계)');
+  console.log(`${'─'.repeat(76)}`);
+
+  if (withEntrySl.length > 0) {
+    const avg = withEntrySl.reduce((s, t) => s + (t.entry_slippage_bps ?? 0), 0) / withEntrySl.length;
+    console.log(` 평균 entry slippage: ${avg.toFixed(1)} bps (n=${withEntrySl.length})`);
+  }
+  if (withEntryGap.length > 0) {
+    const gaps = withEntryGap.map((t) => {
+      const pp = Number(t.planned_entry_price!);
+      const ep = Number(t.entry_price);
+      return pp > 0 ? ((ep - pp) / pp) * 100 : 0;
+    });
+    const avgGap = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+    const maxGap = Math.max(...gaps.map(Math.abs));
+    console.log(` 평균 entry gap (planned→fill): ${avgGap >= 0 ? '+' : ''}${avgGap.toFixed(2)}% (n=${withEntryGap.length}, max abs=${maxGap.toFixed(2)}%)`);
+  }
+  if (withExitSl.length > 0) {
+    const avg = withExitSl.reduce((s, t) => s + (t.exit_slippage_bps ?? 0), 0) / withExitSl.length;
+    console.log(` 평균 exit slippage:  ${avg.toFixed(1)} bps (n=${withExitSl.length})`);
+  }
+  if (withRtCost.length > 0) {
+    const avg = withRtCost.reduce((s, t) => s + Number(t.round_trip_cost_pct ?? 0), 0) / withRtCost.length;
+    console.log(` 평균 round-trip cost: ${avg.toFixed(2)}% (n=${withRtCost.length})`);
+  }
+  if (withGap.length > 0) {
+    const gaps = withGap.map((t) => {
+      const dp = Number(t.decision_price!);
+      const xp = Number(t.exit_price!);
+      return dp > 0 ? ((xp - dp) / dp) * 100 : 0;
+    });
+    const avgGap = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+    const maxGap = Math.max(...gaps.map(Math.abs));
+    console.log(` 평균 exit gap (decision→fill): ${avgGap >= 0 ? '+' : ''}${avgGap.toFixed(2)}% (n=${withGap.length}, max abs=${maxGap.toFixed(2)}%)`);
+  }
+
+  printTakeProfitOutcomeSummary(trades);
+}
+
+function printTakeProfitOutcomeSummary(trades: TradeRow[]): void {
+  const tp2Rows = trades.filter((t) => t.exit_reason === 'TAKE_PROFIT_2');
+  if (tp2Rows.length === 0) return;
+
+  const wins = tp2Rows.filter((t) => Number(t.pnl ?? 0) > 0).length;
+  const losses = tp2Rows.length - wins;
+  const totalPnl = tp2Rows.reduce((sum, t) => sum + Number(t.pnl ?? 0), 0);
+
+  console.log(` TP2 realized outcome: ${wins}W / ${losses}L | net=${formatSignedSol(totalPnl)} (n=${tp2Rows.length})`);
 }
 
 function printLedgerActivity(rows: TradeRow[], window: WindowConfig): void {

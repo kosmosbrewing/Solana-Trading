@@ -1,6 +1,6 @@
 # Operations Guide
 
-> Last updated: 2026-04-05
+> Last updated: 2026-04-06
 > Scope: VPS 배포 + paper 운영 점검 + risk tier demotion + live 운영 판단
 
 ---
@@ -519,6 +519,30 @@ npx ts-node scripts/trade-report.ts --hours 24
 - `opened_at 기준 row`: ledger activity
 - `closed_at 기준 실현 row`: realized PnL
 - row 수는 partial close 때문에 독립 진입 횟수와 다를 수 있음
+
+#### 비용 분해 출력 (Cost Decomposition)
+
+`--hours` 옵션으로 실현 PnL을 조회하면, 각 trade 하단에 비용 서브라인이 추가로 표시된다.
+
+```text
+#2 | 14:32 | bootstrap_10s | 0.00001234 → 0.00001180 | -0.000054 SOL | STOP_LOSS | B
+   └ decision=0.00001190 exitGap=-0.84% | entry_slip=5bps exit_slip=8bps | rtCost=0.30% effRR=2.1
+```
+
+필드 설명:
+
+| 필드 | 의미 |
+|------|------|
+| `decision` | exit 판정 시점 가격 (TP2/SL/trailing trigger price) |
+| `exitGap` | decision price vs 실제 fill price 괴리율 |
+| `entry_slip` | 진입 슬리피지 (bps) |
+| `exit_slip` | 종료 슬리피지 (bps) |
+| `rtCost` | round-trip 총비용 (%) |
+| `effRR` | 실효 R:R (slippage/fee 차감 후) |
+
+하단 `COST DECOMPOSITION` 집계 섹션에서 전체 및 토큰별 평균을 볼 수 있다.
+
+**핵심 진단 용도**: "TP2로 종료됐는데 PnL이 음수인 이유"를 `exitGap` + `rtCost`로 즉시 판별 가능.
 
 ### 운영 해석 규칙
 

@@ -116,7 +116,7 @@ Paper/live에서는 `signal_audit_log`, `position signal_data`, daily summary의
 | 항목 | 배점 | 기준 |
 |---|---:|---|
 | Quote quality | 20 | quote decay, sell impact, slippage 안정성 |
-| Fill realism | 15 | paper 추정과 live 체결 괴리 정도 |
+| Fill realism | 15 | paper 추정과 live 체결 괴리 정도. `decision_price` vs `exit_price` gap으로 정량 측정 |
 | Rejection quality | 15 | gate rejection이 일관되고 설명 가능한가 |
 | Stability | 20 | 크래시/429/재연결 실패 없이 운용 가능한가 |
 | Hold/exit quality | 15 | TP1/TP2/SL/time stop 분포가 전략 의도와 맞는가 |
@@ -131,9 +131,26 @@ Paper/live에서는 `signal_audit_log`, `position signal_data`, daily summary의
 | Quote gate enforcement | 측정 구간 중 `quote gate disabled execution count > 0`이면 실패 | live |
 | Quote quality | 최근 `20 measured trades` 기준 `median quote decay > 1.0%` 또는 `p95 > 2.0%`면 실패 | paper, live |
 | Sell impact realism | 최근 `20 measured exits` 기준 `median sell impact > 1.5%` 또는 `p95 > 3.0%`면 실패 | live |
+| Exit gap realism | 최근 `20 measured exits` 기준 `median exitGap > 1.0%`면 경고, `> 2.0%`면 실패 | live |
 | Automation readiness | 최근 `24h` 기준 `manual intervention > 1회`면 실패 | paper, live |
 
 위 조건이면 점수와 무관하게 보류한다.
+
+### Cost Decomposition Telemetry (2026-04-06~)
+
+DB `trades` 테이블에 아래 컬럼이 기록된다. Execution Score의 Quote quality / Fill realism 항목 판단에 사용한다.
+
+| 컬럼 | 의미 | 사용처 |
+|------|------|--------|
+| `decision_price` | exit 판정 시점 가격 (TP/SL trigger price) | Fill realism: exitGap = (fill - decision) / decision |
+| `entry_slippage_bps` | 진입 슬리피지 (bps) | Quote quality |
+| `exit_slippage_bps` | 종료 슬리피지 (bps) | Quote quality |
+| `round_trip_cost_pct` | round-trip 총비용 (%) | Quote quality 종합 |
+| `effective_rr` | 실효 R:R (비용 차감 후) | Execution viability 사후 검증 |
+
+- Paper 모드: `decision_price == exit_price` (gap=0), 비용 컬럼은 probe 값 기준
+- Live 모드: `decision_price ≠ exit_price`일 때만 유의미한 gap 발생
+- `trade-report.ts --hours N`으로 per-trade / 집계 확인 가능
 
 ### Rejection Quality Interpretation
 

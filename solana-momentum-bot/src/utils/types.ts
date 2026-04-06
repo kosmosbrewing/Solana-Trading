@@ -180,8 +180,10 @@ export interface Order {
   pairAddress: string;
   strategy: StrategyName;
   side: TradeSide;
+  tradeId?: string;
   tokenSymbol?: string;
   price: number;
+  plannedEntryPrice?: number;
   quantity: number; // token units, not SOL notional
   sourceLabel?: string;
   discoverySource?: string;
@@ -204,6 +206,7 @@ export interface Trade {
   side: TradeSide;
   tokenSymbol?: string;
   entryPrice: number;
+  plannedEntryPrice?: number;
   sourceLabel?: string;
   discoverySource?: string;
   exitPrice?: number;
@@ -224,6 +227,8 @@ export interface Trade {
   breakoutGrade?: BreakoutGrade;
   sizeConstraint?: SizeConstraint;
   exitReason?: CloseReason;
+  // Why: decision price = exit trigger 판정가 (TP2/SL 등), fill과의 gap 계측용
+  decisionPrice?: number;
   // Why: P0-2 cost decomposition — 거래별 비용 원인 분해
   entrySlippageBps?: number;
   exitSlippageBps?: number;

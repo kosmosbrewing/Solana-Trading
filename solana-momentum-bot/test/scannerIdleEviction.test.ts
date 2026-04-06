@@ -56,12 +56,12 @@ describe('ScannerEngine idle eviction', () => {
       addedAt: new Date(Date.now() - 660_000),
     });
 
-    const evicted: string[] = [];
-    scanner.on('candidateEvicted', (mint: string) => evicted.push(mint));
+    const evicted: Array<{ mint: string; reason?: string }> = [];
+    scanner.on('candidateEvicted', (mint: string, reason?: string) => evicted.push({ mint, reason }));
 
     const count = scanner.evictIdlePairs();
     expect(count).toBe(1);
-    expect(evicted).toEqual(['idle-mint']);
+    expect(evicted).toEqual([{ mint: 'idle-mint', reason: 'idle' }]);
     expect(scanner.getWatchlist()).toHaveLength(0);
   });
 

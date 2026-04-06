@@ -187,6 +187,7 @@ per-token PnL 분해로 runner vs flat 비율 확인 필요.
 - **TP2 10.0 vs 5.0**: sweep 최적 5.0 → v5 runner-centric 10.0 확장. config.ts 기본값은 10.0이나 검증 미완. Live 50-trade 후 TP2 도달률로 판단. 도달률 < 5%면 5.0 복원 검토.
 - replay blacklist 후보가 live에서도 반복 손실 토큰인지
 - live actual-cost accounting 보정 후 DB PnL과 wallet PnL 차이가 얼마나 줄어드는지
+- **decision_price 계측 활성화 (04-06)**: TP2 종료인데 PnL 음수인 원인을 exitGap + rtCost로 분해 가능. Live 10건+ 수집 후 TP distance vs actual cost 점검 예정.
 
 ## Future: 소셜/온체인 인텔리전스 플랫폼 (Phase 4+)
 

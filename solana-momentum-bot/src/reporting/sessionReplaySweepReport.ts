@@ -13,6 +13,7 @@ export interface SessionReplaySweepReportInput {
   generatedAt: string;
   strategy: string;
   mode: string;
+  inputMode?: string;
   gridPreset: string;
   gridSize: number;
   sessions: Array<{ id: string; storedSignals: number }>;
@@ -30,6 +31,7 @@ export function renderSessionReplaySweepReport(input: SessionReplaySweepReportIn
     `> Generated: ${input.generatedAt}`,
     `> Strategy: ${input.strategy}`,
     `> Mode: ${input.mode}`,
+    `> Input mode: ${input.inputMode ?? 'auto'}`,
     `> Grid preset: ${input.gridPreset}`,
     `> Grid size: ${input.gridSize}`,
     '',

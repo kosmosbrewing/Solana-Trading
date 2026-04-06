@@ -753,7 +753,7 @@ export class ScannerEngine extends EventEmitter {
         this.markEvicted(entry);
         this.config.socialMentionTracker?.unregisterTrackedToken(tokenMint);
         log.info(`- Watchlist idle evict: ${entry.symbol} idle=${Math.round((now - lastActive) / 1000)}s`);
-        this.emit('candidateEvicted', tokenMint);
+        this.emit('candidateEvicted', tokenMint, 'idle');
         evicted++;
       }
     }

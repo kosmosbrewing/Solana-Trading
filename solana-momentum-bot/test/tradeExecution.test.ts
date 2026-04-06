@@ -49,12 +49,13 @@ describe('tradeExecution paper balance', () => {
 
     expect(ctx.paperBalance).toBeCloseTo(1.2, 8);
     expect(tradeStore.closeTrade).toHaveBeenCalledTimes(1);
-    const [tradeId, exitPrice, pnl, slippage, reason] = tradeStore.closeTrade.mock.calls[0];
+    const [tradeId, exitPrice, pnl, slippage, reason, , , , , decisionPrice] = tradeStore.closeTrade.mock.calls[0];
     expect(tradeId).toBe('trade-1');
     expect(exitPrice).toBeCloseTo(1.2, 8);
     expect(pnl).toBeCloseTo(0.2, 8);
     expect(slippage).toBe(0);
     expect(reason).toBe('TAKE_PROFIT_2');
+    expect(decisionPrice).toBe(1.2);
   });
 
   it('prefers realtime current price over DB candle close for open-position monitoring', async () => {
@@ -388,7 +389,9 @@ describe('tradeExecution paper balance', () => {
       0,
       'TAKE_PROFIT_1',
       0.3,
-      undefined
+      undefined,
+      undefined, undefined,
+      1.1 // decisionPrice = TP1 trigger price
     );
     expect(tradeStore.insertTrade).toHaveBeenCalledTimes(1);
   });
@@ -595,6 +598,7 @@ describe('tradeExecution paper balance', () => {
 
     const insertedTrade = (tradeStore.insertTrade as jest.Mock).mock.calls[0][0];
     expect(insertedTrade.entryPrice).toBe(1.05);
+    expect(insertedTrade.plannedEntryPrice).toBe(1.0);
     expect(insertedTrade.quantity).toBe(9.5);
     expect(insertedTrade.stopLoss).toBeCloseTo(0.9975, 10);
     expect(insertedTrade.takeProfit1).toBeCloseTo(1.155, 10);
@@ -602,7 +606,9 @@ describe('tradeExecution paper balance', () => {
     expect(insertedTrade.highWaterMark).toBe(1.05);
 
     const openAlertOrder = (notifier.sendTradeOpen as jest.Mock).mock.calls[0][0];
+    expect(openAlertOrder.tradeId).toBe('trade-opened');
     expect(openAlertOrder.price).toBe(1.05);
+    expect(openAlertOrder.plannedEntryPrice).toBe(1.0);
     expect(openAlertOrder.quantity).toBe(9.5);
     expect(openAlertOrder.stopLoss).toBeCloseTo(0.9975, 10);
     expect(openAlertOrder.takeProfit1).toBeCloseTo(1.155, 10);

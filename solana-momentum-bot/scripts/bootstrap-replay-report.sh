@@ -553,6 +553,7 @@ if (basename) {
   fs.writeFileSync(jsonPath, JSON.stringify({
     generatedAt: new Date().toISOString(),
     config: {
+      runner: 'bootstrap-replay-report.sh',
       trigger: 'bootstrap',
       cooldownSec: Number(process.env.COOLDOWN_SEC),
       horizonSec: Number(process.env.HORIZON_SEC),
@@ -565,6 +566,7 @@ if (basename) {
   fs.writeFileSync(detailJsonPath, JSON.stringify({
     generatedAt: new Date().toISOString(),
     config: {
+      runner: 'bootstrap-replay-report.sh',
       trigger: 'bootstrap',
       cooldownSec: Number(process.env.COOLDOWN_SEC),
       horizonSec: Number(process.env.HORIZON_SEC),

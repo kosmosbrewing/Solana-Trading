@@ -19,6 +19,9 @@ describe('sparseOpsSummary', () => {
         { type: 'alias_miss', timestampMs: Date.parse('2026-04-05T06:00:00.000Z'), reason: 'AhuQ6rsnPLbQEXmYwLwWxMmPoc8ZsFwwSxAUym6RKtta' },
         { type: 'alias_miss', timestampMs: Date.parse('2026-04-05T06:00:01.000Z'), reason: 'AhuQ6rsnPLbQEXmYwLwWxMmPoc8ZsFwwSxAUym6RKtta' },
         { type: 'alias_miss', timestampMs: Date.parse('2026-04-05T06:00:02.000Z'), reason: '7Ccf3PNRT5SByzdRE3XiHyptqcDY8c3iDzvBMUGDNzVe' },
+        { type: 'candidate_evicted', timestampMs: Date.parse('2026-04-05T06:05:00.000Z'), tokenMint: 'idle-token-1', reason: 'idle', detail: 'idleSec=640|immediate=true' },
+        { type: 'candidate_evicted', timestampMs: Date.parse('2026-04-05T06:05:01.000Z'), tokenMint: 'idle-token-1', reason: 'idle', detail: 'idleSec=601|immediate=true' },
+        { type: 'candidate_evicted', timestampMs: Date.parse('2026-04-05T06:05:02.000Z'), tokenMint: 'score-token-1', reason: 'score', detail: 'score=42' },
       ],
     }));
     fs.writeFileSync(path.join(sessionDir, 'realtime-signals.jsonl'), '');
@@ -27,10 +30,12 @@ describe('sparseOpsSummary', () => {
     const message = buildSparseOpsSummaryMessage(summary);
 
     expect(message).toContain('희박 거래 점검 (4h)');
-    expect(message).toContain('- 신호 0건 | 실제 진입 0건 | 진단 이벤트 4건');
+    expect(message).toContain('- 신호 0건 | 실제 진입 0건 | 진단 이벤트 7건');
     expect(message).toContain('- 트리거: 평가 9843회 | 신호 0건 | 희박 데이터 부족 9758회 | sparse 신호 0건 | 부스트 0건');
     expect(message).toContain('- 판단: 희박 거래 데이터 부족이 우세함');
     expect(message).toContain('AhuQ6rsn...Ktta 2건');
     expect(message).toContain('7Ccf3PNR...NzVe 1건');
+    expect(message).toContain('idle_evicted=2');
+    expect(message).toContain('top idle-evicted tickers: idle-token-1 2건');
   });
 });

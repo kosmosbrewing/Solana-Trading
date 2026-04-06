@@ -164,11 +164,14 @@ export class RuntimeDiagnosticsTracker {
     });
   }
 
-  recordCandidateEvicted(tokenMint: string): void {
+  recordCandidateEvicted(input: string | { tokenMint: string; reason?: string; detail?: string }): void {
+    const normalized = typeof input === 'string' ? { tokenMint: input } : input;
     this.pushEvent({
       type: 'candidate_evicted',
       timestampMs: Date.now(),
-      tokenMint,
+      tokenMint: normalized.tokenMint,
+      reason: normalized.reason,
+      detail: normalized.detail,
     });
   }
 

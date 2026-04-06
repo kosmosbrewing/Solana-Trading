@@ -59,6 +59,16 @@ export class TradeStore {
         ADD COLUMN IF NOT EXISTS discovery_source TEXT;
       `);
 
+      await client.query(`
+        ALTER TABLE trades
+        ADD COLUMN IF NOT EXISTS decision_price NUMERIC;
+      `);
+
+      await client.query(`
+        ALTER TABLE trades
+        ADD COLUMN IF NOT EXISTS planned_entry_price NUMERIC;
+      `);
+
       // P0-2: cost decomposition 컬럼
       await client.query(`
         ALTER TABLE trades
@@ -91,16 +101,17 @@ export class TradeStore {
 
   async insertTrade(trade: Omit<Trade, 'id'>): Promise<string> {
     const result = await this.pool.query(
-      `INSERT INTO trades (pair_address, strategy, side, token_symbol, entry_price, source_label, discovery_source, quantity,
+      `INSERT INTO trades (pair_address, strategy, side, token_symbol, entry_price, planned_entry_price, source_label, discovery_source, quantity,
         stop_loss, take_profit1, take_profit2, trailing_stop, high_water_mark, time_stop_at,
         status, tx_signature, breakout_score, breakout_grade, size_constraint,
         entry_slippage_bps, entry_price_impact_pct, round_trip_cost_pct, effective_rr,
         degraded_trigger_reason, degraded_quote_fail_count, parent_trade_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
-               $20, $21, $22, $23, $24, $25, $26)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+               $21, $22, $23, $24, $25, $26, $27)
        RETURNING id`,
       [
         trade.pairAddress, trade.strategy, trade.side, trade.tokenSymbol ?? null, trade.entryPrice,
+        trade.plannedEntryPrice ?? null,
         trade.sourceLabel ?? null, trade.discoverySource ?? null,
         trade.quantity, trade.stopLoss, trade.takeProfit1, trade.takeProfit2,
         trade.trailingStop || null, trade.highWaterMark ?? trade.entryPrice, trade.timeStopAt, trade.status,
@@ -128,7 +139,8 @@ export class TradeStore {
     quantity?: number,
     exitSlippageBps?: number,
     degradedTriggerReason?: string,
-    degradedQuoteFailCount?: number
+    degradedQuoteFailCount?: number,
+    decisionPrice?: number
   ): Promise<void> {
     const setClauses = [
       'exit_price = $2',
@@ -158,6 +170,11 @@ export class TradeStore {
     if (degradedQuoteFailCount !== undefined) {
       setClauses.push(`degraded_quote_fail_count = $${params.length + 1}`);
       params.push(degradedQuoteFailCount);
+    }
+
+    if (decisionPrice !== undefined) {
+      setClauses.push(`decision_price = $${params.length + 1}`);
+      params.push(decisionPrice);
     }
 
     await this.pool.query(
@@ -378,6 +395,8 @@ function rowToTrade(row: Record<string, unknown>): Trade {
     breakoutGrade: row.breakout_grade as Trade['breakoutGrade'],
     sizeConstraint: row.size_constraint as Trade['sizeConstraint'],
     exitReason: row.exit_reason as Trade['exitReason'],
+    decisionPrice: row.decision_price != null ? Number(row.decision_price) : undefined,
+    plannedEntryPrice: row.planned_entry_price != null ? Number(row.planned_entry_price) : undefined,
     entrySlippageBps: row.entry_slippage_bps != null ? Number(row.entry_slippage_bps) : undefined,
     exitSlippageBps: row.exit_slippage_bps != null ? Number(row.exit_slippage_bps) : undefined,
     entryPriceImpactPct: row.entry_price_impact_pct != null ? Number(row.entry_price_impact_pct) : undefined,

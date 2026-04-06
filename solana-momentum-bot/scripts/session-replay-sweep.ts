@@ -7,6 +7,7 @@ import { renderSessionReplaySweepReport } from '../src/reporting/sessionReplaySw
 
 type StrategyName = 'bootstrap_10s' | 'volume_spike' | 'fib_pullback';
 type GridPreset = 'standard' | 'wide';
+type InputMode = 'auto' | 'swaps' | 'candles';
 
 interface SessionInfo {
   id: string;
@@ -41,6 +42,7 @@ function parseArgs() {
     saveBase: get('--save', `session-replay-sweep-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`),
     bootstrapHorizon: Number(get('--bootstrap-horizon', '180')),
     estimatedCostPct: Number(get('--estimated-cost-pct', '0.003')),
+    inputMode: get('--input-mode', 'auto') as InputMode,
   };
 }
 
@@ -98,7 +100,7 @@ async function main() {
 
   const fullGrid = buildGrid(args.strategy, args.gridPreset);
   const grid = args.maxProfiles > 0 ? fullGrid.slice(0, args.maxProfiles) : fullGrid;
-  const profiles = grid.map((params) => runProfile(args.strategy, params, sessions, args.bootstrapHorizon, args.estimatedCostPct));
+  const profiles = grid.map((params) => runProfile(args.strategy, params, sessions, args.bootstrapHorizon, args.estimatedCostPct, args.inputMode));
   const sorted = profiles.sort((left, right) => compareSortKey(left.sortKey, right.sortKey)).slice(0, args.top);
   const best = sorted[0];
 
@@ -108,6 +110,7 @@ async function main() {
     generatedAt: new Date().toISOString(),
     strategy: args.strategy,
     mode: args.strategy === 'bootstrap_10s' ? 'realtime micro replay' : '5m price replay screening',
+    inputMode: args.inputMode,
     gridPreset: args.gridPreset,
     gridSize: grid.length,
     sessions,
@@ -121,10 +124,10 @@ async function main() {
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
   const jsonPath = path.join(RESULTS_DIR, `${args.saveBase}.json`);
   const mdPath = path.join(RESULTS_DIR, `${args.saveBase}.md`);
-  fs.writeFileSync(jsonPath, JSON.stringify({ strategy: args.strategy, gridSize: grid.length, sessions, profiles: sorted }, null, 2));
+  fs.writeFileSync(jsonPath, JSON.stringify({ strategy: args.strategy, inputMode: args.inputMode, runner: 'session-replay-sweep.ts', gridSize: grid.length, sessions, profiles: sorted }, null, 2));
   fs.writeFileSync(mdPath, report, 'utf8');
 
-  console.log(`Strategy: ${args.strategy}`);
+  console.log(`Strategy: ${args.strategy} | Input mode: ${args.inputMode}`);
   console.log(`Grid: ${grid.length} profiles | Sessions: ${sessions.length}`);
   if (best) {
     console.log(`Best: ${best.id}`);
@@ -139,21 +142,22 @@ function runProfile(
   params: Record<string, number>,
   sessions: SessionInfo[],
   bootstrapHorizon: number,
-  estimatedCostPct: number
+  estimatedCostPct: number,
+  inputMode: InputMode
 ): ProfileResult {
   return strategy === 'bootstrap_10s'
-    ? runBootstrapProfile(params, sessions, bootstrapHorizon, estimatedCostPct)
+    ? runBootstrapProfile(params, sessions, bootstrapHorizon, estimatedCostPct, inputMode)
     : runSessionProfile(strategy, params, sessions);
 }
 
-function runBootstrapProfile(params: Record<string, number>, sessions: SessionInfo[], horizon: number, estimatedCostPct: number): ProfileResult {
+function runBootstrapProfile(params: Record<string, number>, sessions: SessionInfo[], horizon: number, estimatedCostPct: number, inputMode: InputMode): ProfileResult {
   let totalSignals = 0;
   let weightedAdjustedReturnPct = 0;
   let avgEdgeScore = 0;
   let gatePassSessions = 0;
   let keepLikeSessions = 0;
   const rows = sessions.map((session) => {
-    const raw = execFileSync('npx', ['ts-node', 'scripts/micro-backtest.ts', '--dataset', `data/realtime/sessions/${session.id}`, '--trigger-type', 'bootstrap', '--gate-mode', 'stored', '--volume-multiplier', String(params.volumeMultiplier), '--min-buy-ratio', String(params.minBuyRatio), '--volume-lookback', String(params.volumeLookback), '--cooldown-sec', String(params.cooldownSec), '--estimated-cost-pct', String(estimatedCostPct), '--horizons', '30,60,180,300', '--horizon', String(horizon), '--json'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 1024 * 1024 * 64 });
+    const raw = execFileSync('npx', ['ts-node', 'scripts/micro-backtest.ts', '--dataset', `data/realtime/sessions/${session.id}`, '--trigger-type', 'bootstrap', '--input-mode', inputMode, '--gate-mode', 'stored', '--volume-multiplier', String(params.volumeMultiplier), '--min-buy-ratio', String(params.minBuyRatio), '--volume-lookback', String(params.volumeLookback), '--cooldown-sec', String(params.cooldownSec), '--estimated-cost-pct', String(estimatedCostPct), '--horizons', '30,60,180,300', '--horizon', String(horizon), '--json'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 1024 * 1024 * 64 });
     const data = JSON.parse(raw.slice(raw.indexOf('{')));
     totalSignals += data.summary.totalSignals;
     weightedAdjustedReturnPct += data.summary.avgAdjustedReturnPct * data.summary.totalSignals;

@@ -258,12 +258,21 @@ async function main() {
       quoteTokenSymbol: metadata.quoteMint === SOL_MINT ? 'SOL' : undefined,
     });
   };
-  const removeRealtimePoolTarget = (logicalPair: string) => {
+  const removeRealtimePoolTarget = (logicalPair: string, opts?: { immediate?: boolean }) => {
     const existing = realtimePoolTargets.get(logicalPair);
     realtimePoolTargets.delete(logicalPair);
     if (existing) {
       realtimePoolMetadata.delete(existing);
       heliusIngester?.clearPoolMetadata(existing);
+
+      // Why: idle eviction은 10분 무활동 pair → 재진입 가능성 ≈ 0 → grace 불필요, 즉시 해제
+      if (opts?.immediate) {
+        realtimePoolAliases.delete(existing);
+        void heliusIngester?.unsubscribePools([existing]);
+        zombiePoolBlacklist.set(existing, Date.now());
+        return;
+      }
+
       // Why: alias를 즉시 삭제하지 않고 grace period 후 정리 — 재진입 시 swap 즉시 처리
       const timer = setTimeout(() => {
         if (!realtimePoolTargets.has(logicalPair)) {
@@ -601,7 +610,8 @@ async function main() {
       reentryCooldownMs: config.scannerReentryCooldownMs,
       minimumResidencyMs: config.scannerMinimumResidencyMs,
       replacementScoreMargin: config.scannerReplacementScoreMargin,
-      idleEvictionMs: config.scannerIdleEvictionMs,
+      // Why: idle eviction은 WS slot 순환 목적 → realtime 모드에서만 활성화
+      idleEvictionMs: realtimeModeEnabled ? config.scannerIdleEvictionMs : 0,
       idleEvictionSweepIntervalMs: config.scannerIdleEvictionSweepIntervalMs,
       // Why: Scanner minLiquidity는 SafetyGate minPoolLiquidity 이상이어야 함 (config gap 방지)
       minLiquidityUsd: Math.max(config.eventMinLiquidityUsd, config.minPoolLiquidity),
@@ -865,10 +875,11 @@ async function main() {
       ingesterQueue.push(entry);
       processIngesterQueue().catch(err => log.error(`Ingester queue error: ${err}`));
     });
-    scanner.on('candidateEvicted', (tokenMint: string) => {
-      log.info(`Scanner: evicted ${tokenMint}`);
+    scanner.on('candidateEvicted', (tokenMint: string, reason?: string) => {
+      log.info(`Scanner: evicted ${tokenMint} reason=${reason ?? 'score'}`);
       runtimeDiagnosticsTracker.recordCandidateEvicted(tokenMint);
-      removeRealtimePoolTarget(tokenMint);
+      // Why: idle eviction은 10분 무활동 → 재진입 가능성 ≈ 0 → grace 우회하여 즉시 slot 해제
+      removeRealtimePoolTarget(tokenMint, { immediate: reason === 'idle' });
       ingester.removePair(tokenMint);
       universeEngine.removePool(tokenMint);
       bootstrapTriggerRef?.clearPoolContext(tokenMint);
@@ -1028,12 +1039,20 @@ async function main() {
         },
         // Why: RejectStats → runtime-diagnostics.json (원격 디버깅)
         (s) => {
-          runtimeDiagnosticsTracker.recordTriggerStats(
+          // Why: per-pair idle offender top-5를 detail에 포함 → sparseOpsSummary.extractTopIdleOffenders()에서 파싱
+          let detail =
             `evals=${s.evaluations} signals=${s.signals}(sparse=${s.sparseSignals} boosted=${s.volumeMcapBoosted}) insuffCandles=${s.insufficientCandles} ` +
             `volInsuf=${s.volumeInsufficient} sparseInsuf=${s.sparseDataInsufficient} lowBuyRatio=${s.lowBuyRatio} cooldown=${s.cooldown} ` +
-            `idleSkip=${s.idlePairSkipped ?? 0}`,
-            'bootstrap_trigger'
-          );
+            `idleSkip=${s.idlePairSkipped ?? 0} activePairs=${s.perPairEvaluations?.size ?? 0} sparsePairs=${s.perPairSparseInsuf?.size ?? 0}`;
+          if (s.perPairIdleSkip && s.perPairIdleSkip.size > 0) {
+            const topIdle = [...s.perPairIdleSkip.entries()]
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 5)
+              .map(([p, count]) => `${p}=${count}`)
+              .join(',');
+            detail += ` topIdleSkip: ${topIdle}`;
+          }
+          runtimeDiagnosticsTracker.recordTriggerStats(detail, 'bootstrap_trigger');
         },
       );
       for (const pool of universeEngine.getWatchlist()) {

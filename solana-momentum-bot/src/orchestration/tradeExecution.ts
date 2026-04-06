@@ -139,7 +139,8 @@ export async function handleDegradedExitPhase1(
 
   await ctx.tradeStore.closeTrade(
     trade.id, exitPrice, realizedPnl, executionSlippage, 'DEGRADED_EXIT',
-    soldQuantity, degradedExitSlippageBps, triggerReason, failCount > 0 ? failCount : undefined
+    soldQuantity, degradedExitSlippageBps, triggerReason, failCount > 0 ? failCount : undefined,
+    currentPrice // decision price = degraded trigger price
   );
 
   // 잔여분 새 trade 생성 (phase 2에서 청산)
@@ -164,6 +165,8 @@ export async function handleDegradedExitPhase1(
     ...trade,
     quantity: soldQuantity,
     exitPrice,
+    decisionPrice: currentPrice,
+    exitSlippageBps: degradedExitSlippageBps,
     pnl: realizedPnl,
     slippage: executionSlippage,
     status: 'CLOSED',
@@ -501,15 +504,30 @@ export async function closeTrade(
       }
     }
 
+    // Why: paperExitPrice = decision price (trigger 판정가), exitPrice = 실제 fill 가격
+    const decisionPrice = paperExitPrice;
     const pnl = (exitPrice - trade.entryPrice) * trade.quantity;
     const exitSlippageBps = ctx.tradingMode === 'live' ? Math.round(executionSlippage * 10000) : undefined;
     applyPaperExitProceeds(ctx, trade.quantity, exitPrice);
 
-    await ctx.tradeStore.closeTrade(trade.id, exitPrice, pnl, executionSlippage, reason, undefined, exitSlippageBps);
+    if (decisionPrice != null && decisionPrice > 0 && exitPrice > 0) {
+      const gapPct = ((exitPrice - decisionPrice) / decisionPrice) * 100;
+      log.info(
+        `Close trade ${trade.id}: reason=${reason} decision=${decisionPrice.toFixed(8)} ` +
+        `fill=${exitPrice.toFixed(8)} gap=${gapPct >= 0 ? '+' : ''}${gapPct.toFixed(2)}%`
+      );
+    }
+
+    await ctx.tradeStore.closeTrade(
+      trade.id, exitPrice, pnl, executionSlippage, reason, undefined, exitSlippageBps,
+      undefined, undefined, decisionPrice
+    );
 
     const closedTrade = {
       ...trade,
       exitPrice,
+      decisionPrice,
+      exitSlippageBps,
       pnl,
       slippage: executionSlippage,
       txSignature,
@@ -540,7 +558,7 @@ export async function closeTrade(
     runnerStateMap.delete(trade.id);
 
     ctx.healthMonitor.updateTradeTime();
-    log.info(`Trade ${trade.id} closed (${reason}). PnL: ${pnl.toFixed(6)} SOL`);
+    log.info(`Trade ${trade.id} closed (${reason}). PnL: ${pnl.toFixed(6)} SOL, exitSlipBps=${exitSlippageBps ?? 'paper'}`);
   } catch (error) {
     log.error(`Failed to close trade ${trade.id}: ${error}`);
     await ctx.tradeStore.failTrade(trade.id, `Close failed: ${error}`);
@@ -598,7 +616,7 @@ export async function recordOpenedTrade(
   });
 
   const timeStopAt = new Date(Date.now() + openedOrder.timeStopMinutes * 60 * 1000);
-  await ctx.tradeStore.insertTrade({
+  const tradeId = await ctx.tradeStore.insertTrade({
     pairAddress: openedOrder.pairAddress,
     strategy: openedOrder.strategy,
     side: openedOrder.side,
@@ -606,6 +624,7 @@ export async function recordOpenedTrade(
     sourceLabel: signal.sourceLabel,
     discoverySource: signal.discoverySource,
     entryPrice: openedOrder.price,
+    plannedEntryPrice: executionSummary.plannedEntryPrice,
     quantity: openedOrder.quantity,
     stopLoss: openedOrder.stopLoss,
     takeProfit1: openedOrder.takeProfit1,
@@ -627,7 +646,11 @@ export async function recordOpenedTrade(
 
   await ctx.positionStore.updateState(positionId, 'MONITORING');
   ctx.healthMonitor.updateTradeTime();
-  await ctx.notifier.sendTradeOpen(openedOrder, txSignature);
+  await ctx.notifier.sendTradeOpen({
+    ...openedOrder,
+    tradeId,
+    plannedEntryPrice: executionSummary.plannedEntryPrice,
+  }, txSignature);
   await ctx.auditLogger.logSignal({
     ...buildSignalAuditBase(signal, lastCandle, gateResult, postSizeExecution),
     action: 'EXECUTED',
@@ -775,7 +798,9 @@ async function handleTakeProfit1Partial(
       executionSlippage,
       'TAKE_PROFIT_1',
       soldQuantity,
-      tp1ExitSlippageBps
+      tp1ExitSlippageBps,
+      undefined, undefined,
+      currentPrice // decision price = TP1 trigger price
     );
 
     // v3: TP1 후 잔여 trade에 time stop 연장 — Runner 활성화 시간 확보
@@ -805,6 +830,8 @@ async function handleTakeProfit1Partial(
       ...trade,
       quantity: soldQuantity,
       exitPrice,
+      decisionPrice: currentPrice,
+      exitSlippageBps: tp1ExitSlippageBps,
       pnl: realizedPnl,
       slippage: executionSlippage,
       status: 'CLOSED',
@@ -879,7 +906,10 @@ async function handleRunnerGradeBPartial(
     const realizedPnl = (exitPrice - trade.entryPrice) * soldQuantity;
     const tp2ExitSlippageBps = ctx.tradingMode === 'live' ? Math.round(executionSlippage * 10000) : undefined;
     applyPaperExitProceeds(ctx, soldQuantity, exitPrice);
-    await ctx.tradeStore.closeTrade(trade.id, exitPrice, realizedPnl, executionSlippage, 'TAKE_PROFIT_2', soldQuantity, tp2ExitSlippageBps);
+    await ctx.tradeStore.closeTrade(
+      trade.id, exitPrice, realizedPnl, executionSlippage, 'TAKE_PROFIT_2', soldQuantity, tp2ExitSlippageBps,
+      undefined, undefined, currentPrice // decision price = TP2 trigger price
+    );
 
     // 원본 trade state map 정리 (closeTrade 경유하지 않으므로 수동 정리)
     degradedStateMap.delete(trade.id);
@@ -919,6 +949,8 @@ async function handleRunnerGradeBPartial(
       ...trade,
       quantity: soldQuantity,
       exitPrice,
+      decisionPrice: currentPrice,
+      exitSlippageBps: tp2ExitSlippageBps,
       pnl: realizedPnl,
       slippage: executionSlippage,
       status: 'CLOSED',

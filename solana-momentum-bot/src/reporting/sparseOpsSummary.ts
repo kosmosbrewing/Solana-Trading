@@ -19,6 +19,7 @@ interface RealtimeSignalRecord {
   id?: string;
   timestamp?: string;
   signalTimestamp?: string;
+  pairAddress?: string;
   strategy?: string;
   status?: string;
   processing?: {
@@ -37,6 +38,16 @@ interface ParsedTriggerStats {
   sparseDominantPairCount?: number;
 }
 
+export interface FreshnessSummary {
+  idleSkipDelta: number;
+  uniqueSignaledTickers: number;
+  candidateSeen: number;
+  candidateEvicted: number;
+  admissionSkip: number;
+  admissionSkipByReason: Array<{ reason: string; count: number }>;
+  topIdleOffenders: Array<{ pair: string; count: number }>;
+}
+
 export interface SparseOpsSummary {
   windowHours: number;
   totalSignals: number;
@@ -44,6 +55,7 @@ export interface SparseOpsSummary {
   diagnosticEvents: number;
   latestTriggerStats?: ParsedTriggerStats;
   aliasMissTop: Array<{ label: string; count: number }>;
+  freshness?: FreshnessSummary;
 }
 
 export function loadSparseOpsSummary(realtimeRoot: string, windowHours: number, topN = 3): SparseOpsSummary | undefined {
@@ -70,6 +82,29 @@ export function loadSparseOpsSummary(realtimeRoot: string, windowHours: number, 
     (event) => event.reason || event.detail || event.source || 'unknown',
   );
 
+  // ─── Freshness telemetry ───
+  const candidateSeen = recentEvents.filter((e) => e.type === 'realtime_candidate_seen').length;
+  const candidateEvicted = recentEvents.filter((e) => e.type === 'candidate_evicted').length;
+  const admissionSkips = recentEvents.filter((e) => e.type === 'admission_skip');
+  const admissionSkipByReason = Object.entries(
+    countBy(admissionSkips, (e) => e.reason ?? e.detail ?? 'unknown')
+  )
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, topN)
+    .map(([reason, count]) => ({ reason, count }));
+
+  // idleSkip delta: 첫 trigger_stats와 마지막 trigger_stats의 차이
+  const triggerStatsEvents = recentEvents.filter((e) => e.type === 'trigger_stats');
+  const firstTrigger = parseTriggerStats(triggerStatsEvents.at(0)?.detail);
+  const lastTrigger = parseTriggerStats(triggerStatsEvents.at(-1)?.detail);
+  const idleSkipDelta = (lastTrigger?.idlePairSkipped ?? 0) - (firstTrigger?.idlePairSkipped ?? 0);
+
+  // unique signaled tickers: 시그널이 발생한 고유 pair 수
+  const signaledPairs = new Set(signals.map((s) => s.pairAddress ?? s.id?.split(':')[1] ?? '').filter(Boolean));
+
+  // per-pair idleSkip top offenders from trigger logs
+  const topIdleOffenders = extractTopIdleOffenders(recentEvents, topN);
+
   return {
     windowHours,
     totalSignals: signals.length,
@@ -80,6 +115,15 @@ export function loadSparseOpsSummary(realtimeRoot: string, windowHours: number, 
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
       .slice(0, topN)
       .map(([label, count]) => ({ label, count })),
+    freshness: {
+      idleSkipDelta,
+      uniqueSignaledTickers: signaledPairs.size,
+      candidateSeen,
+      candidateEvicted,
+      admissionSkip: admissionSkips.length,
+      admissionSkipByReason,
+      topIdleOffenders,
+    },
   };
 }
 
@@ -118,6 +162,23 @@ export function buildSparseOpsSummaryMessage(summary: SparseOpsSummary | undefin
       .map((entry) => `${shortenAddress(normalizeAliasLabel(entry.label))} ${entry.count}건`)
       .join(', ');
     lines.push(`- alias miss 상위: ${aliasSummary}`);
+  }
+
+  // ─── Freshness 블록 ───
+  if (summary.freshness) {
+    const f = summary.freshness;
+    lines.push('');
+    lines.push(`Freshness (${summary.windowHours}h)`);
+    lines.push(`- idleSkip delta: ${f.idleSkipDelta.toLocaleString()} | unique signaled tickers: ${f.uniqueSignaledTickers}`);
+    lines.push(`- candidate turnover: seen=${f.candidateSeen} evicted=${f.candidateEvicted} | admission_skip=${f.admissionSkip}`);
+    if (f.admissionSkipByReason.length > 0) {
+      const reasons = f.admissionSkipByReason.map((r) => `${r.reason}=${r.count}`).join(', ');
+      lines.push(`- admission skip 사유: ${reasons}`);
+    }
+    if (f.topIdleOffenders.length > 0) {
+      const offenders = f.topIdleOffenders.map((o) => `${shortenAddress(o.pair)} ${o.count.toLocaleString()}회`).join(', ');
+      lines.push(`- top idle offenders: ${offenders}`);
+    }
   }
 
   return lines.join('\n');
@@ -205,4 +266,26 @@ function resolveSessionDir(realtimeRoot: string, datasetDir: string): string {
 
 function readJson<T>(filePath: string): T {
   return JSON.parse(fs.readFileSync(filePath, 'utf8')) as T;
+}
+
+/** trigger_stats 로그에서 per-pair idle offender 정보 추출 (topIdleSkip: ... 형태) */
+function extractTopIdleOffenders(events: RuntimeDiagnosticEvent[], topN: number): Array<{ pair: string; count: number }> {
+  // Why: trigger_stats 로그의 detail 필드에 topIdleSkip이 포함될 수 있음
+  // 없으면 빈 배열 반환 — 이전 버전 호환
+  const lastPerPairLog = events
+    .filter((e) => e.type === 'trigger_stats' && e.detail?.includes('topIdleSkip'))
+    .at(-1);
+  if (!lastPerPairLog?.detail) return [];
+
+  const match = lastPerPairLog.detail.match(/topIdleSkip:\s*([^\s]+)/);
+  if (!match) return [];
+
+  return match[1]
+    .split(',')
+    .map((entry) => {
+      const [pair, countStr] = entry.split('=');
+      return { pair: pair ?? '', count: Number(countStr) || 0 };
+    })
+    .filter((e) => e.pair && e.count > 0)
+    .slice(0, topN);
 }

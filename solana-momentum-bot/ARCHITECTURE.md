@@ -144,6 +144,7 @@ reporting/paperValidation.ts → risk/drawdownGuard (replayDrawdownGuardState)
 포지션 관리 (checkOpenPositions, 5초 간격):
   PositionStore → 현재 가격 조회 → SL/TP/TimeStop/Exhaustion 체크
   → Executor.executeSell() → TradeStore.closeTrade()
+  → decisionPrice(trigger 판정가) + exitPrice(fill) + cost decomposition 기록
 ```
 
 ## 5. BotContext

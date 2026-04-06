@@ -32,6 +32,7 @@ export interface BootstrapRejectStats {
   perPairEvaluations?: Map<string, number>;
   perPairSparseInsuf?: Map<string, number>;
   perPairSignals?: Map<string, number>;
+  perPairIdleSkip?: Map<string, number>;
 }
 
 const log = createModuleLogger('VolumeMcapSpike');
@@ -58,6 +59,7 @@ export class VolumeMcapSpikeTrigger {
   private readonly perPairEvals = new Map<string, number>();
   private readonly perPairSparseInsuf = new Map<string, number>();
   private readonly perPairSignals = new Map<string, number>();
+  private readonly perPairIdleSkip = new Map<string, number>();
 
   constructor(
     config: VolumeMcapSpikeTriggerConfig,
@@ -80,6 +82,7 @@ export class VolumeMcapSpikeTrigger {
       perPairEvaluations: new Map(this.perPairEvals),
       perPairSparseInsuf: new Map(this.perPairSparseInsuf),
       perPairSignals: new Map(this.perPairSignals),
+      perPairIdleSkip: new Map(this.perPairIdleSkip),
     };
   }
 
@@ -109,6 +112,7 @@ export class VolumeMcapSpikeTrigger {
       const hasNonZero = recentCandles.some(c => c.volume > 0);
       if (!hasNonZero) {
         this.rejectStats.idlePairSkipped = (this.rejectStats.idlePairSkipped ?? 0) + 1;
+        this.perPairIdleSkip.set(candle.pairAddress, (this.perPairIdleSkip.get(candle.pairAddress) ?? 0) + 1);
         this.maybeLogStats();
         return null;
       }
@@ -244,8 +248,17 @@ export class VolumeMcapSpikeTrigger {
         .join(',');
       log.info(`[PerPair] topSparseInsuf: ${topSparse}`);
     }
+    // Why: per-pair top-N idle offender — stale pair occupancy 주범 식별
+    if (this.perPairIdleSkip.size > 0) {
+      const topIdle = [...this.perPairIdleSkip.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([p, count]) => `${p.slice(0, 8)}=${count}`)
+        .join(',');
+      log.info(`[PerPair] topIdleSkip: ${topIdle} (${this.perPairIdleSkip.size} idle pairs)`);
+    }
     if (this.onStatsFlush) {
-      this.onStatsFlush({ ...this.rejectStats });
+      this.onStatsFlush(this.getRejectStats());
     }
   }
 }

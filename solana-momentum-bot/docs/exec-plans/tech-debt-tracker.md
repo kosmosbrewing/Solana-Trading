@@ -1,6 +1,6 @@
 # Tech Debt Tracker
 
-> Last updated: 2026-03-30
+> Last updated: 2026-04-06
 > Scope: 현재 운영과 직접 맞닿은 기술 부채만 남긴다.
 
 ## Current Mission Readiness
@@ -25,6 +25,7 @@
 | TD-5 | `risk/` ↔ `reporting/` 순환 의존 | 구조적 위험 잔존 | 공유 타입/계산 경계 재정리 |
 | TD-6 | venue-aware cost model | 가정값 비중 큼 | 실거래 cost 실측 후 보정 |
 | TD-7 | realtime/watchlist churn 관측성 | 로그는 있으나 요약이 약함 | source별 retained/reject 집계 강화 |
+| TD-8 | `tradeStore.closeTrade()` positional params 10개 | 가독성·유지보수 리스크 | options object 패턴으로 전환 (P3) |
 
 ## Resolved Recently
 
@@ -35,3 +36,4 @@
 | TD-R3 | Security Gate Birdeye hard dependency | 2026-03-24 |
 | TD-R4 | execution viability probe 단위 정합성 | 2026-03-30 |
 | TD-R5 | pre-gate / post-size execution telemetry persistence | 2026-03-30 |
+| TD-R6 | decision_price + cost decomposition DB/report/Telegram 계측 | 2026-04-06 |

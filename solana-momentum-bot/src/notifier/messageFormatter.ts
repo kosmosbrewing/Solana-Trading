@@ -67,12 +67,14 @@ export function buildSignalMessage(signal: Signal): string {
   const score = signal.breakoutScore?.totalScore ?? 0;
   const summaryLines = buildSignalSummaryLines(signal);
   const detailLines = buildSignalDetailLines(signal);
+  const signalTimestampIso = signal.timestamp.toISOString();
 
   return [
     `🟢 <b>${escapeHtml(signal.action)} 시그널</b>`,
     buildInstrumentLine(signal.tokenSymbol, signal.pairAddress),
     `- 전략: ${escapeHtml(formatStrategy(signal.strategy))}`,
     `- 컨트랙트: <code>${escapeHtml(signal.pairAddress)}</code>`,
+    `- 시그널 시각(UTC): <code>${escapeHtml(signalTimestampIso)}</code>`,
     `- 감지 가격: ${signal.price.toFixed(8)}`,
     `- 시그널 품질: ${score}점 (${escapeHtml(formatGrade(grade))})`,
     ...summaryLines,
@@ -85,12 +87,15 @@ export function buildSignalMessage(signal: Signal): string {
 export function buildTradeOpenMessage(order: Order, txSignature?: string): string {
   const entryNotionalSol = order.price * order.quantity;
   const planSummary = buildPlanSummaryLine(order.price, order.stopLoss, order.takeProfit1, order.takeProfit2, order.quantity);
+  const shortTradeId = order.tradeId ? order.tradeId.slice(0, 8) : undefined;
+  const entryGapLine = buildEntryGapLine(order);
   return [
-    `🟢 <b>포지션 진입 완료</b>`,
+    `🟢 <b>포지션 진입 완료</b>${shortTradeId ? ` <code>${escapeHtml(shortTradeId)}</code>` : ''}`,
     buildInstrumentLine(order.tokenSymbol, order.pairAddress),
     `- 전략: ${escapeHtml(formatStrategy(order.strategy))}`,
     `- 컨트랙트: <code>${escapeHtml(order.pairAddress)}</code>`,
     `- 진입 가격: ${order.price.toFixed(8)}`,
+    entryGapLine,
     `- 진입 금액: ${entryNotionalSol.toFixed(6)} SOL`,
     `- 수량: ${order.quantity.toFixed(6)}${order.tokenSymbol ? ` ${escapeHtml(order.tokenSymbol)}` : ''}`,
     planSummary,
@@ -105,15 +110,28 @@ export function buildTradeOpenMessage(order: Order, txSignature?: string): strin
   ].filter(Boolean).join('\n');
 }
 
+function buildEntryGapLine(order: Order): string {
+  if (order.plannedEntryPrice == null || order.plannedEntryPrice <= 0) return '';
+  if (order.plannedEntryPrice === order.price) return '';
+  const gapPct = ((order.price - order.plannedEntryPrice) / order.plannedEntryPrice) * 100;
+  return `- Entry gap: planned=${order.plannedEntryPrice.toFixed(8)} → fill=${order.price.toFixed(8)} (${gapPct >= 0 ? '+' : ''}${gapPct.toFixed(2)}%)`;
+}
+
 export function buildTradeCloseMessage(trade: Trade): string {
   const pnl = trade.pnl;
   const pnlPct = calculatePnlPct(trade);
   const duration = trade.closedAt ? formatDuration(trade.closedAt.getTime() - trade.createdAt.getTime()) : '';
   const resultLabel = pnl == null ? '결과 미정' : pnl >= 0 ? '이익 실현' : '손실 확정';
   const closeSummary = buildCloseSummaryLine(trade, duration);
+  const shortId = trade.id.slice(0, 8);
+
+  // exit gap: decision price vs fill price (live에서만 유의미)
+  const exitGapLine = buildExitGapLine(trade);
+  // cost summary: entry + exit slippage + price impact
+  const costLine = buildCostSummaryLine(trade);
 
   return [
-    `${pnl != null && pnl >= 0 ? '✅' : '❌'} <b>포지션 종료</b>`,
+    `${pnl != null && pnl >= 0 ? '✅' : '❌'} <b>포지션 종료</b> <code>${escapeHtml(shortId)}</code>`,
     buildInstrumentLine(trade.tokenSymbol, trade.pairAddress),
     `- 전략: ${escapeHtml(formatStrategy(trade.strategy))}`,
     `- 컨트랙트: <code>${escapeHtml(trade.pairAddress)}</code>`,
@@ -121,11 +139,31 @@ export function buildTradeCloseMessage(trade: Trade): string {
     `- 결과: ${resultLabel}`,
     closeSummary,
     `- 가격: ${trade.entryPrice.toFixed(8)} → ${trade.exitPrice?.toFixed(8) ?? 'N/A'}`,
+    exitGapLine,
     `- 실현 손익: ${formatSignedSol(pnl)}${pnlPct != null ? ` (${formatSignedPercent(pnlPct)})` : ''}`,
     trade.slippage != null ? `- 슬리피지: ${formatPercent(trade.slippage)}` : '',
+    costLine,
     duration ? `- 보유 시간: ${duration}` : '',
     trade.txSignature ? `- 트랜잭션: <code>${escapeHtml(trade.txSignature)}</code>` : '',
   ].filter(Boolean).join('\n');
+}
+
+function buildExitGapLine(trade: Trade): string {
+  if (trade.decisionPrice == null || trade.exitPrice == null || trade.decisionPrice <= 0) return '';
+  // Paper mode: decision == fill (gap=0), 표시 불필요
+  if (trade.decisionPrice === trade.exitPrice) return '';
+  const gapPct = ((trade.exitPrice - trade.decisionPrice) / trade.decisionPrice) * 100;
+  return `- Exit gap: decision=${trade.decisionPrice.toFixed(8)} → fill=${trade.exitPrice.toFixed(8)} (${gapPct >= 0 ? '+' : ''}${gapPct.toFixed(2)}%)`;
+}
+
+function buildCostSummaryLine(trade: Trade): string {
+  const parts: string[] = [];
+  if (trade.entrySlippageBps != null) parts.push(`entry=${trade.entrySlippageBps}bps`);
+  if (trade.exitSlippageBps != null) parts.push(`exit=${trade.exitSlippageBps}bps`);
+  if (trade.entryPriceImpactPct != null) parts.push(`impact=${trade.entryPriceImpactPct.toFixed(2)}%`);
+  if (trade.roundTripCostPct != null) parts.push(`rtCost=${trade.roundTripCostPct.toFixed(2)}%`);
+  if (parts.length === 0) return '';
+  return `- 비용 분해: ${parts.join(' | ')}`;
 }
 
 export function buildRecoveryReportMessage(details: string[]): string {

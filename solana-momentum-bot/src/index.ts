@@ -601,6 +601,8 @@ async function main() {
       reentryCooldownMs: config.scannerReentryCooldownMs,
       minimumResidencyMs: config.scannerMinimumResidencyMs,
       replacementScoreMargin: config.scannerReplacementScoreMargin,
+      idleEvictionMs: config.scannerIdleEvictionMs,
+      idleEvictionSweepIntervalMs: config.scannerIdleEvictionSweepIntervalMs,
       // Why: Scanner minLiquidity는 SafetyGate minPoolLiquidity 이상이어야 함 (config gap 방지)
       minLiquidityUsd: Math.max(config.eventMinLiquidityUsd, config.minPoolLiquidity),
       socialMentionTracker, // H-02: social score → WatchlistScore 연동
@@ -1131,6 +1133,10 @@ async function main() {
         ...swap,
         pool: logicalPair,
       });
+      // Why: idle eviction — non-zero swap이면 pair activity 갱신
+      if (scanner && swap.amountQuote > 0) {
+        scanner.updateActivity(logicalPair);
+      }
     });
     heliusIngester.on('parseMiss', ({ pool }: { pool: string }) => {
       realtimeAdmissionTracker?.recordParseMiss(pool);

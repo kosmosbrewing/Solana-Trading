@@ -32,6 +32,7 @@ export interface WatchlistEntry {
   watchlistScore: WatchlistScoreResult;
   poolInfo?: PoolInfo;
   addedAt: Date;
+  lastActivityAt?: Date;  // non-zero swap 수신 시 갱신; idle eviction 기준
   lastPriceUsd?: number;
   lastUpdatedAt: Date;
 }
@@ -71,6 +72,10 @@ export interface ScannerEngineConfig {
   socialMentionTracker?: SocialMentionTracker;
   /** R3: 블랙리스트 pair 재진입 차단 — pairAddress → boolean */
   blacklistCheck?: (pairAddress: string) => boolean;
+  /** Maximum idle time before auto-eviction (ms). 0 = disabled. */
+  idleEvictionMs?: number;
+  /** Interval for periodic idle eviction sweep (ms). Default 60_000. */
+  idleEvictionSweepIntervalMs?: number;
   /** Realtime mode pre-watchlist candidate filter */
   candidateFilter?: (
     token: BirdeyeTrendingToken
@@ -100,6 +105,7 @@ export class ScannerEngine extends EventEmitter {
   private dexDiscoveryTimer: ReturnType<typeof setInterval> | null = null;
   private dexEnrichTimer: ReturnType<typeof setInterval> | null = null;
   private blacklistEvictTimer: ReturnType<typeof setInterval> | null = null;
+  private idleEvictTimer: ReturnType<typeof setInterval> | null = null;
   private running = false;
 
   constructor(config: ScannerEngineConfig) {
@@ -174,6 +180,12 @@ export class ScannerEngine extends EventEmitter {
       );
     }
 
+    // Idle eviction sweep — stale pair 자동 제거
+    if ((this.config.idleEvictionMs ?? 0) > 0) {
+      const sweepMs = this.config.idleEvictionSweepIntervalMs ?? 60_000;
+      this.idleEvictTimer = setInterval(() => this.evictIdlePairs(), sweepMs);
+    }
+
     // Schedule DexScreener enrichment
     if (this.config.dexScreenerClient) {
       this.dexEnrichTimer = setInterval(
@@ -192,6 +204,7 @@ export class ScannerEngine extends EventEmitter {
     if (this.dexDiscoveryTimer) { clearInterval(this.dexDiscoveryTimer); this.dexDiscoveryTimer = null; }
     if (this.dexEnrichTimer) { clearInterval(this.dexEnrichTimer); this.dexEnrichTimer = null; }
     if (this.blacklistEvictTimer) { clearInterval(this.blacklistEvictTimer); this.blacklistEvictTimer = null; }
+    if (this.idleEvictTimer) { clearInterval(this.idleEvictTimer); this.idleEvictTimer = null; }
     this.config.socialMentionTracker?.stopFilteredStream();
     log.info('Scanner stopped.');
   }
@@ -708,6 +721,43 @@ export class ScannerEngine extends EventEmitter {
         evicted++;
       }
     }
+    if (evicted > 0) {
+      this.emit('watchlistUpdated', this.getWatchlist());
+    }
+    return evicted;
+  }
+
+  /** non-zero swap 시 activity timestamp 갱신 */
+  updateActivity(tokenMint: string): void {
+    const entry = this.watchlist.get(tokenMint);
+    if (entry) {
+      entry.lastActivityAt = new Date();
+    }
+  }
+
+  /** staleness 기반 idle pair eviction — sweep timer에서 호출 */
+  evictIdlePairs(): number {
+    const idleEvictionMs = this.config.idleEvictionMs ?? 0;
+    if (idleEvictionMs <= 0) return 0;
+
+    const now = Date.now();
+    let evicted = 0;
+
+    for (const [tokenMint, entry] of this.watchlist) {
+      if (this.isResidencyProtected(entry)) continue;
+      if (entry.discoverySource === 'manual') continue;
+
+      const lastActive = entry.lastActivityAt?.getTime() ?? entry.addedAt.getTime();
+      if (now - lastActive >= idleEvictionMs) {
+        this.watchlist.delete(tokenMint);
+        this.markEvicted(entry);
+        this.config.socialMentionTracker?.unregisterTrackedToken(tokenMint);
+        log.info(`- Watchlist idle evict: ${entry.symbol} idle=${Math.round((now - lastActive) / 1000)}s`);
+        this.emit('candidateEvicted', tokenMint);
+        evicted++;
+      }
+    }
+
     if (evicted > 0) {
       this.emit('watchlistUpdated', this.getWatchlist());
     }

@@ -15,23 +15,40 @@ import { BotContext } from './types';
 
 const log = createModuleLogger('Reporting');
 
-/** KST 08~24시 사이 짝수 시각에 heartbeat, 09시에 daily full report */
-const HEARTBEAT_KST_HOURS = [8, 10, 12, 14, 16, 18, 20, 22, 24];
+/** KST 전일 기준 짝수 시각(00, 02, ..., 22)에 heartbeat, 09시에 daily full report */
+const HEARTBEAT_KST_HOURS = Array.from({ length: 12 }, (_, index) => index * 2);
 const DAILY_KST_HOUR = 9;
+
+export function getScheduledReportType(now: Date): 'daily' | 'heartbeat' | null {
+  const kstHour = (now.getUTCHours() + 9) % 24;
+  const minute = now.getMinutes();
+
+  if (minute !== 0) {
+    return null;
+  }
+
+  if (kstHour === DAILY_KST_HOUR) {
+    return 'daily';
+  }
+
+  if (HEARTBEAT_KST_HOURS.includes(kstHour)) {
+    return 'heartbeat';
+  }
+
+  return null;
+}
 
 export function scheduleDailySummary(ctx: BotContext): void {
   setInterval(async () => {
-    const now = new Date();
-    const kstHour = (now.getUTCHours() + 9) % 24;
-    const minute = now.getMinutes();
+    const reportType = getScheduledReportType(new Date());
 
-    if (kstHour === DAILY_KST_HOUR && minute === 0) {
+    if (reportType === 'daily') {
       try {
         await sendDailySummaryReport(ctx);
       } catch (error) {
         log.error(`Daily summary failed: ${error}`);
       }
-    } else if (HEARTBEAT_KST_HOURS.includes(kstHour) && minute === 0) {
+    } else if (reportType === 'heartbeat') {
       try {
         await sendHeartbeatReport(ctx);
       } catch (error) {

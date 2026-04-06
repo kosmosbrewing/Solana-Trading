@@ -149,6 +149,8 @@ export const tradingParams = {
     scannerReentryCooldownMs: 1_800_000,
     scannerMinimumResidencyMs: 180_000,
     scannerReplacementScoreMargin: 5,
+    scannerIdleEvictionMs: 600_000,              // 10분 — idle threshold
+    scannerIdleEvictionSweepIntervalMs: 60_000,  // 1분 — sweep 주기
   },
 
   // ─── Realtime ───

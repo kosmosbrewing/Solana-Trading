@@ -99,6 +99,19 @@ export const config = {
   ...tradingParams.liquidityAdaptation,
   ...tradingParams.degradedExit,
   ...tradingParams.scanner,
+  // ─── Scanner Operational Overrides (.env — 배포 없이 변경) ───
+  ...(process.env.SCANNER_MINIMUM_RESIDENCY_MS
+    ? { scannerMinimumResidencyMs: Number(process.env.SCANNER_MINIMUM_RESIDENCY_MS) }
+    : {}),
+  ...(process.env.SCANNER_REENTRY_COOLDOWN_MS
+    ? { scannerReentryCooldownMs: Number(process.env.SCANNER_REENTRY_COOLDOWN_MS) }
+    : {}),
+  ...(process.env.SCANNER_IDLE_EVICTION_MS
+    ? { scannerIdleEvictionMs: Number(process.env.SCANNER_IDLE_EVICTION_MS) }
+    : {}),
+  ...(process.env.SCANNER_IDLE_EVICTION_SWEEP_INTERVAL_MS
+    ? { scannerIdleEvictionSweepIntervalMs: Number(process.env.SCANNER_IDLE_EVICTION_SWEEP_INTERVAL_MS) }
+    : {}),
   ...tradingParams.realtime,
   ...tradingParams.event,
   ...tradingParams.social,

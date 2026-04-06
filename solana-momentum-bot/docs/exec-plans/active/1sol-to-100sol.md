@@ -1,7 +1,7 @@
 # Execution Plan: 1 SOL → 100 SOL
 
 > Status: current active execution plan
-> Updated: 2026-04-05
+> Updated: 2026-04-06
 > Scope: 구현 완료 이후의 운영 검증, 배포, 표본 축적, live enablement gate
 > Archive: 완료된 root plan과 dated canary history는 [`PLAN_CMPL.md`](../../../PLAN_CMPL.md)에 보관한다.
 
@@ -34,11 +34,38 @@
 
 ### 현재 남은 것
 
-- **P0: Sparse data insufficient 81% 병목 해소** — edge 측정 자체를 가능하게 만들기
+- **P0: Idle universe + volume gate 병목 해소** — stale pair eviction + freshness 개선으로 live signal 확보
+- **P1: Replay baseline sparse 차단율 81% 해소** — edge 측정 자체를 가능하게 만들기 (replay path)
 - 04-04 edge (score 78)의 재현성 검증 — runner outlier vs 구조적 edge
 - Legacy 세션 재검증 (OOM 해결, 113 stored signals)
 - paper 표본을 운영 가능한 방식으로 쌓는다
 - live enablement 기준을 명확히 통과시킨다
+
+### Latest Live Diagnosis (2026-04-06, 12h window)
+
+> 분석 구간: UTC 04-05 14:32 ~ 04-06 02:32 (KST 04-05 23:32 ~ 04-06 11:32)
+
+| metric | value | 의미 |
+|--------|-------|------|
+| signals | 0 | signal 생성 없음 |
+| executed_live | 0 | trade 없음 |
+| idleSkip | 736,515 | idle pair가 candle 평가의 대부분 차지 |
+| volInsuf | 2,560 | 실제 평가된 candle 중 volume gate 미달 |
+| sparseInsuf | 1 | sparse 병목은 현재 주원인 아님 |
+| admission_skip | 1 | 이번 12h window에서는 주병목 아님 |
+| raw swaps | 46,099 | 유입 자체는 있었음 |
+
+**Market shape**: top pair (5ssLca…) 39,788 swaps, quote-volume buy ratio 0.0053 — sell-heavy. 2nd pair buy ratio 0.0.
+
+**주병목 판정**: wallet / overflow / alias / unsupported_dex 가 아님. **idle universe에 stale pair가 오래 남고, 실제 평가 pair도 sell-heavy라 signal을 못 만드는 구조**.
+
+**다음 액션 (우선순위순)**:
+1. idle/stale pair eviction — 가장 적합한 첫 수
+2. `scannerMinimumResidencyMs` / `scannerReentryCooldownMs` 소폭 완화
+3. 이후에도 trade 없으면 `volumeSurgeMultiplier` 1.8 → 1.6 검토
+4. unsupported_dex 확장 / breadth 확장은 후순위
+
+**한 줄**: "더 많이 허용"보다 "stale pair를 빨리 순환시켜 fresh candidate 확보 → 50 live canary trades 먼저"가 사명에 맞다.
 
 ## Workstreams
 
@@ -56,10 +83,30 @@
 완료 기준:
 - paper runtime을 재기동해도 운영 경로를 다시 설명할 수 있다
 
-### W1.5. Sparse Bottleneck Resolution (신규, 04-05)
+### W1.5. Live Freshness & Idle Eviction (신규, 04-06)
 
 목표:
-- replay backtest에서 **sparse data insufficient 차단율을 81% → <30%로** 낮춘다
+- stale pair를 빠르게 순환시켜 **live signal 발생 → 50 canary trades 확보**
+
+현상 (04-06 진단):
+- idleSkip=736K가 candle 평가의 대부분 점유 → 좁은 universe에 stale pair가 오래 남음
+- 실제 평가 pair도 sell-heavy (buy ratio <0.01) → signal 불가
+- sparseInsuf=1이므로 replay sparse 병목은 live의 주원인이 아님
+
+액션:
+- [ ] idle/stale pair eviction 로직 추가 또는 기존 TTL 단축
+- [ ] `scannerMinimumResidencyMs` / `scannerReentryCooldownMs` 소폭 완화
+- [ ] 위 적용 후 24h live 관측 → signal 발생 확인
+- [ ] signal 발생 but trade 없으면 `volumeSurgeMultiplier` 1.8 → 1.6 검토
+- [ ] unsupported_dex 확장은 위 액션 후에도 breadth 부족 시만
+
+완료 기준:
+- live에서 signal > 0 상태를 24h 이상 유지, 50 canary trades 목표 진입
+
+### W1.6. Sparse Bottleneck Resolution (04-05, replay path)
+
+목표:
+- replay backtest에서 **replay baseline sparse 차단율을 81% → <30%로** 낮춘다
 
 현상:
 - Feature 4(zero-volume skip)로 persist candle이 불연속 → lookback window 내 active candle 부족
@@ -147,4 +194,4 @@
 
 ## One-Line Summary
 
-> 구현은 대부분 끝났고, 지금 active work는 sparse data insufficient 81% 병목 해소, 04-04 edge 재현성 검증, 그리고 paper 표본 축적을 통한 live enablement 기준 통과다. Strategy A/C 5m은 dormant.
+> 구현은 대부분 끝났고, 지금 P0는 idle universe + volume gate 병목 해소(stale pair eviction → freshness 개선)로 live signal 확보다. P1은 replay baseline sparse 81% 해소. 50 canary trades 확보 후 live enablement 판단. Strategy A/C 5m은 dormant.

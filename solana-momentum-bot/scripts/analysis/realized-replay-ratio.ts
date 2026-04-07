@@ -3,18 +3,24 @@
  * Realized vs Replay Edge Ratio
  *
  * Why: 2026-04-07 P3 — replay headline edge(+24.02% per-signal weighted adj)가
- * 실제 paper 모드 체결을 거치면 얼마나 보존되는지 측정한다. 핵심 질문은
+ * 실제 체결(라이브 또는 paper)을 거치면 얼마나 보존되는지 측정한다. 핵심 질문은
  * "1 SOL → 100 SOL mission에 도달하기 위한 edge 부족분이 얼마나 큰가?".
  *
  * Inputs:
- *   - DB: PostgreSQL `trades` 테이블 (tx_signature='PAPER_TRADE', status='CLOSED')
+ *   - DB: PostgreSQL `trades` 테이블 (status='CLOSED', mode 필터로 paper/live 분리)
  *   - jsonl: 각 세션의 realtime-signals.jsonl (replay-equivalent adj return horizon 포함)
  *
  * Output: 세션별 + 전체 ratio. realized_pnl_pct / predicted_adj_return_pct.
  *
+ * Modes (--mode):
+ *   - live (default): tx_signature ≠ 'PAPER_TRADE' (real wallet trades). 운영 reality check.
+ *   - paper:          tx_signature = 'PAPER_TRADE'.
+ *   - all:            paper + live 모두 포함.
+ *
  * Usage:
  *   npx ts-node scripts/analysis/realized-replay-ratio.ts \
- *     [--horizon 180] [--strategy bootstrap] [--session-glob '*-live'] \
+ *     [--mode live|paper|all] [--horizon 180] [--strategy bootstrap] \
+ *     [--session-glob '*-live'] \
  *     [--out docs/audits/realized-replay-ratio-2026-04-07.md]
  */
 
@@ -58,17 +64,24 @@ interface MatchedTrade {
   decisionGapPct: number | null; // (entry - decision) / decision (entry slippage)
 }
 
+type ExecMode = 'paper' | 'live' | 'all';
+
 function parseArgs() {
   const args = process.argv.slice(2);
   const get = (flag: string, fallback: string) => {
     const index = args.indexOf(flag);
     return index >= 0 && index + 1 < args.length ? args[index + 1] : fallback;
   };
+  const modeRaw = get('--mode', 'live');
+  if (modeRaw !== 'paper' && modeRaw !== 'live' && modeRaw !== 'all') {
+    throw new Error(`--mode must be 'paper' | 'live' | 'all', got: ${modeRaw}`);
+  }
   return {
     horizonSec: Number(get('--horizon', '180')),
     strategyFilter: get('--strategy', ''),
     sessionGlob: get('--session-glob', ''),
     outPath: get('--out', 'docs/audits/realized-replay-ratio-2026-04-07.md'),
+    mode: modeRaw as ExecMode,
     dryRun: args.includes('--dry-run'),
   };
 }
@@ -107,12 +120,20 @@ async function detectExistingColumns(pool: Pool, candidates: string[]): Promise<
   return new Set<string>(result.rows.map((row) => row.column_name as string));
 }
 
-async function loadPaperTrades(pool: Pool, strategyFilter: string): Promise<PaperTradeRow[]> {
+async function loadPaperTrades(pool: Pool, strategyFilter: string, mode: ExecMode): Promise<PaperTradeRow[]> {
   const params: unknown[] = [];
   let strategyClause = '';
   if (strategyFilter) {
     params.push(`%${strategyFilter}%`);
     strategyClause = `AND strategy ILIKE $${params.length}`;
+  }
+  // Why: 'paper' = paper sim ('PAPER_TRADE'), 'live' = real wallet (anything else, non-null),
+  // 'all' = both. 라이브 운영 reality check 시 mode='live' 가 기본.
+  let modeClause = '';
+  if (mode === 'paper') {
+    modeClause = "AND tx_signature = 'PAPER_TRADE'";
+  } else if (mode === 'live') {
+    modeClause = "AND tx_signature IS NOT NULL AND tx_signature <> 'PAPER_TRADE'";
   }
   const optional = ['decision_price', 'entry_slippage_bps', 'exit_slippage_bps', 'round_trip_cost_pct'];
   const present = await detectExistingColumns(pool, optional);
@@ -124,7 +145,7 @@ async function loadPaperTrades(pool: Pool, strategyFilter: string): Promise<Pape
       SELECT id, pair_address, strategy, entry_price, exit_price, pnl, closed_at, created_at,
              exit_reason, ${optionalSelect}
       FROM trades
-      WHERE status = 'CLOSED' AND tx_signature = 'PAPER_TRADE' ${strategyClause}
+      WHERE status = 'CLOSED' ${modeClause} ${strategyClause}
       ORDER BY closed_at ASC NULLS LAST
     `,
     params
@@ -237,7 +258,9 @@ function aggregate(matched: MatchedTrade[]) {
 
 async function main() {
   const args = parseArgs();
-  console.log(`Horizon: ${args.horizonSec}s | Strategy filter: ${args.strategyFilter || '(all)'} | Session glob: ${args.sessionGlob || '(all)'}`);
+  console.log(
+    `Mode: ${args.mode} | Horizon: ${args.horizonSec}s | Strategy filter: ${args.strategyFilter || '(all)'} | Session glob: ${args.sessionGlob || '(all)'}`
+  );
 
   const sessionDirs = listSessionDirs(args.sessionGlob);
   console.log(`Sessions: ${sessionDirs.length}`);
@@ -246,18 +269,18 @@ async function main() {
 
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
-    console.error('DATABASE_URL is not set. Cannot load paper trades.');
+    console.error('DATABASE_URL is not set. Cannot load trades.');
     process.exit(1);
   }
 
   const pool = new Pool({ connectionString: databaseUrl });
   let trades: PaperTradeRow[] = [];
   try {
-    trades = await loadPaperTrades(pool, args.strategyFilter);
+    trades = await loadPaperTrades(pool, args.strategyFilter, args.mode);
   } finally {
     await pool.end();
   }
-  console.log(`Loaded ${trades.length} closed paper trades`);
+  console.log(`Loaded ${trades.length} closed trades (mode=${args.mode})`);
 
   const matched = joinTradesToSignals(trades, signalEntries, args.horizonSec);
   console.log(`Matched ${matched.length}/${trades.length} trades to signals`);
@@ -272,13 +295,13 @@ async function main() {
   const lines: string[] = [];
   lines.push(`# Realized vs Replay Edge Ratio — 2026-04-07`);
   lines.push('');
-  lines.push(`> Horizon: ${args.horizonSec}s | Strategy filter: \`${args.strategyFilter || 'all'}\``);
+  lines.push(`> Mode: \`${args.mode}\` | Horizon: ${args.horizonSec}s | Strategy filter: \`${args.strategyFilter || 'all'}\``);
   lines.push(`> Sessions scanned: ${sessionDirs.length} | Signal records: ${signalEntries.length}`);
-  lines.push(`> Closed paper trades: ${trades.length} | Matched to signals: ${matched.length}`);
+  lines.push(`> Closed trades: ${trades.length} | Matched to signals: ${matched.length}`);
   lines.push('');
   lines.push('## What this measures');
   lines.push('');
-  lines.push(`- **Realized %** = (exit_price − entry_price) / entry_price × 100 (paper fill price 기반)`);
+  lines.push(`- **Realized %** = (exit_price − entry_price) / entry_price × 100 (실체결 fill price 기반)`);
   lines.push(`- **Predicted adj %** = signal.horizons[${args.horizonSec}s].adjustedReturnPct (replay 헤드라인과 동일 metric)`);
   lines.push(`- **Ratio** = realized / predicted_adj (1.0 = replay 그대로 실현, 0.0 = 완전 손실)`);
   lines.push(`- 이상치 수렴을 위해 \`ratioRealizedTotal\` = Σ realized / Σ predicted_adj 도 함께 보고`);
@@ -287,7 +310,9 @@ async function main() {
   lines.push('## Overall');
   lines.push('');
   if (overall.n === 0) {
-    lines.push('No matched trades. Run paper mode to accumulate signals + trades, then re-run this script.');
+    lines.push(
+      `No matched trades. Verify (1) DATABASE_URL points at the correct DB, (2) tx_signature filter for mode='${args.mode}', (3) signal jsonl 시기와 trades 시기가 겹치는지.`
+    );
     lines.push('');
   } else {
     lines.push(`- Matched trades: **${overall.n}**`);

@@ -1,9 +1,19 @@
 # STRATEGY_NOTES.md
 
 > Status: forward strategy memo
-> Updated: 2026-04-05
+> Updated: 2026-04-07
 > Purpose: 현재 전략 구조의 한계 가설, v5 방향성, 다음 전략 질문을 분리 관리한다.
 > Runtime quick ref: [`STRATEGY.md`](./STRATEGY.md)
+
+## 2026-04-07 — 가격 정합성 회복 메모
+
+CRITICAL_LIVE(`CRITICAL_LIVE.md` §7)의 Phase A/B/C1이 배포됐다. 전략 관점에서의 파급:
+
+- **Pre-guard ledger는 전략 근거로 쓰지 말 것.** `buildEntryExecutionSummary` fallback mix, `alignOrderToExecutedEntry` 광적 증폭, `closeTrade` decision/fill 축 혼재가 복합 작용했을 가능성이 확인됐다. 2026-04-07 이전 closed trade의 `entryPrice / exitPrice / pnl`은 "축이 섞인 값"으로 간주하고, 전략 튜닝·edge 가설 평가에서 제외한다.
+- **EdgeTracker 입력이 이제 sanitizer를 통과한다.** `planned/actual ratio [0.5, 2.0]` 밖이면 drop, `TP + 음수 PnL`도 drop. 기존에 `Pair blacklisted by edge tracker`로 막혔던 pair 중 일부는 sanitize 후 blacklist에서 빠질 가능성이 있다. 따라서 "blacklist가 옳다"는 판단을 재평가해야 한다. `ledger-audit --full-history`로 FLIPPED 목록을 먼저 확인한다.
+- **새로운 baseline은 가드 이후 데이터로만 집계한다.** Open Questions의 `04-04 edge가 runner outlier인가` 질문은 pre-guard 데이터로 답해도 오염 위험이 있다. Phase C2 12h paper canary가 통과한 후의 trade set을 새 측정 기준점으로 고정한다.
+- **전략 튜닝 동결.** Phase D(50-trade 동결) 기간 동안 bootstrap 파라미터/gate/risk rule을 건드리지 않는다. 측정 축이 안정화된 뒤에만 "signal 희소 vs 과잉" 같은 판단을 재시작한다.
+- **mission 정렬 한 줄**: 측정이 정직해진 이후의 데이터만 `1 SOL → 100 SOL` 경로의 근거가 된다.
 
 ## Role
 

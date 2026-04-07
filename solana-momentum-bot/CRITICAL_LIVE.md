@@ -242,3 +242,65 @@ Use with: `OPERATIONS.md`, `docs/runbooks/live-ops-loop.md`, `scripts/ledger-aud
 - 반대로 `stonks`에서는 큰 수익 사례도 확인돼, 문제는 `무조건 손실 로직`이라기보다 `가격 축 / 슬리피지 / exit 라벨의 혼재` 쪽에 더 가깝다.
 - 실제 Telegram 원문도 같은 이상 패턴을 재현했다.
 - 따라서 지금 우선순위는 전략 튜닝보다 `가격 기록/exit 판단 경로 검증`이다.
+
+## 7. Execution Log (2026-04-07)
+
+> 대응 plan: `plans/wiggly-gathering-swan` (CRITICAL_LIVE 대응 — 가격 정합성 회복 + 사명 회귀)
+> 상태: Phase A/B/C1 코드 배포 완료, Phase A1 진단 아티팩트 보존, Phase C2 canary 대기
+
+### 7A. Phase A — 가격 경로 정합성 가드 (배포 완료)
+
+- **A1. 진단**: `npm run ops:check:ledger -- --hours 24` 결과를 `data/diagnostics/ledger-audit-2026-04-07.txt`로 보존. BTW/pippin/stonks raw row + 온체인 교차 검증은 운영자 수작업 체크리스트로 남김.
+- **A2. fallback mix 금지 + 단위 폭발 가드**:
+  - `src/orchestration/signalProcessor.ts` — `buildEntryExecutionSummary`가 `actualInputUiAmount`/`actualOutUiAmount` 중 하나만 set이면 **두 값 모두 planned로 강제**. entryPrice 왜곡 원천 차단.
+  - 동일 함수 내 `entryPrice / order.price` ratio `[0.5, 2.0]` 벗어나면 `log.error` + 이후 Phase A3가 hard-block.
+  - `src/executor/executor.ts` — `resolveInputMetrics`/`resolveOutputMetrics`가 decimals 확보 실패 시 `[DECIMALS_MISSING]` 에러 로깅 후 빈 metrics 반환(orphan token 방지).
+- **A3. `alignOrderToExecutedEntry` ratio clamp + 즉시 dump**:
+  - `src/orchestration/tradeExecution.ts` — `PriceAnomalyError` 클래스 + `assertEntryAlignmentSafe()` 추가. ratio가 `[0.7, 1.3]` 벗어나면 `emergencyDumpPosition()`을 호출해 live 모드에서 **즉시 best-effort `executor.executeSell`** 후 `sendCritical('entry_alignment_unsafe', ...)` → `recordOpenedTrade`는 DB write 전에 throw. 광적인 TP/SL이 ledger에 새로 들어가지 않는다.
+- **A4. `closeTrade` exit anomaly 플래그**:
+  - 동일 파일 — `(exitPrice - entryPrice) / entryPrice`가 `[-0.95, 10]` 벗어나거나 decision vs fill gap이 50% 이상이면 `sendCritical('exit_anomaly', ...)` 발화 + 로그 기록. close 자체는 완료하되 대시보드에서 즉시 감지 가능.
+
+### 7B. Phase B — Edge Blacklist 격리 (배포 완료)
+
+- **B1. EdgeTracker 입력 sanitizer 강화**:
+  - `src/reporting/edgeInputSanitizer.ts` 재작성 — `plannedEntryPrice`, `exitReason` 필드 추가 + `SanitizerDropReason` 9종:
+    `invalid_entry_price`, `invalid_stop_loss`, `invalid_quantity`, `invalid_pnl`, `stop_above_entry`, `zero_planned_risk`, `risk_pct_too_high`, `planned_entry_ratio_corrupt`, `tp_negative_pnl`
+  - `planned/actual ratio`가 `[0.5, 2.0]` 밖이면 `planned_entry_ratio_corrupt`로 drop.
+  - `TAKE_PROFIT_1/2/TRAILING_STOP`인데 `pnl < 0`이면 `tp_negative_pnl`로 drop (P0-C 오염 제거 전까지).
+  - `sanitizeEdgeLikeTrades`가 `dropReasonCounts`를 돌려줘 audit 가능.
+  - 호출부: `src/risk/riskManager.ts`, `src/orchestration/reporting.ts`, `src/scanner/scannerBlacklist.ts` 모두 새 필드 전파. `checkOrder`에서 drop count 발생 시 `log.warn(EdgeTracker input sanitized: dropped ...)`.
+  - `src/reporting/edgeTracker.ts` — `EdgeTrackerTrade` 인터페이스에 `plannedEntryPrice`, `exitReason` optional 추가.
+- **B2. `BOT_BYPASS_EDGE_BLACKLIST` 임시 backdoor**:
+  - `src/utils/config.ts` — `bypassEdgeBlacklist: boolOptional('BOT_BYPASS_EDGE_BLACKLIST', false)`.
+  - `src/risk/riskManager.ts` — `isPairBlacklisted` 경로에서 플래그가 true면 reject 대신 `log.warn([BYPASSED_EDGE_BLACKLIST] ...)` + `appliedAdjustments.push('BYPASSED_EDGE_BLACKLIST')`.
+  - **Production에서는 반드시 false** — Phase C2 canary 중에만 한시적 허용.
+- **B3. `ledger-audit.ts --full-history` + sanitize 비교**:
+  - `scripts/ledger-audit.ts` — `--full-history` 옵션 추가. closed trade 전체 기간을 대상으로 raw/sanitized EdgeTracker를 side-by-side 재현하며, sanitize 적용 후 blacklist가 풀리는 pair를 `FLIPPED` 마커로 표시. window-only 출력과 full-history 출력이 함께 나간다.
+
+### 7C. Phase C1 — Notifier 이벤트 원장 (배포 완료)
+
+- `src/notifier/notifier.ts` — `data/realtime/notifier-events.jsonl`에 append-only 로깅 추가. 각 sendMessage 호출마다 chunk 단위로 `attempt` + `result` 두 이벤트 기록.
+- 필드: `sent_at, direction, phase, category, trade_id, pair_address, chunk_index, chunk_total, message_preview(120자), status(ok/fail/attempt/disabled), error?`
+- 모든 specialized method (`sendCritical`, `sendWarning`, `sendTradeAlert`, `sendInfo`, `sendMessage`, `sendSignal`, `sendTradeOpen`, `sendTradeClose`, `sendRecoveryReport`, `sendDailySummary`, `sendRealtimeShadowSummary`)가 `NotifierEventContext`를 전달.
+- `splitTelegramMessage`로 분할된 chunk도 동일 `trade_id`로 묶여 기록된다.
+
+### 7D. 테스트 검증 상태
+
+- `npx tsc --noEmit` — 0 errors.
+- `npx jest` — 87 suites / 448 tests pass (baseline 427 → +21 new tests).
+- 신규 테스트:
+  - `test/signalProcessor.test.ts` — `buildEntryExecutionSummary` 5 cases (actual/planned 혼합, 부분 fallback guard, paper fallback, BTW ratio 확인).
+  - `test/tradeExecution.test.ts` — Phase A3 3 cases (BTW 케이스 블록+dump, 정상 5% 허용, paper 모드 dump 없음) + Phase A4 2 cases (exit ratio < -95% alert, healthy 무발화).
+  - `test/edgeInputSanitizer.test.ts` (신규) — 10 cases (healthy, stop_above_entry, risk_pct_too_high, planned_entry_ratio_corrupt BTW, TP+loss, STOP_LOSS+loss 허용, drop reason counts, backward compat).
+
+### 7E. 남은 운영 과제
+
+1. **Phase A1 수동 교차 검증** — 운영자가 `data/diagnostics/ledger-audit-2026-04-07.txt`를 기반으로 BTW/pippin/stonks txSignature를 Solscan/Helius에서 조회해 `outAmount_raw / 10^decimals` 실측 vs DB `quantity` 배수 기록.
+2. **Phase C2 12h paper canary** — 가드 배포 후 paper 모드로 12h 운영 후 합격 기준 4종 확인:
+   - 0건 `tp_negative_pnl`
+   - `entry_gap` p95 ≤ 5%
+   - `exit_gap` p95 ≤ 10%
+   - 0건 `gap_vs_slippage_mismatch`
+   합격 후에만 live 재가동.
+3. **Phase D 50-trade 동결 복귀** — canary 합격 후 `BOT_BYPASS_EDGE_BLACKLIST=false`로 복원, bootstrap tier risk 룰 그대로 50 trades까지 유지.
+4. **Live 일시정지 권장** — 운영자 판단으로 Phase C2 통과까지 live는 수동 halt 유지.

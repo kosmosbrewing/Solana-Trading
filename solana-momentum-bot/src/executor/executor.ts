@@ -11,6 +11,7 @@ import { Order } from '../utils/types';
 import { SOL_MINT } from '../utils/constants';
 import { JitoClient } from './jitoClient';
 import { normalizeJupiterSwapApiUrl } from '../utils/jupiterApi';
+import { BPS_DENOMINATOR_BIGINT, decimalToBps } from '../utils/units';
 
 const log = createModuleLogger('Executor');
 
@@ -106,7 +107,7 @@ export class Executor {
       timeout: 15000,
       headers: jupiterHeaders,
     });
-    this.maxSlippageBps = Math.round(executorConfig.maxSlippage * 10000);
+    this.maxSlippageBps = decimalToBps(executorConfig.maxSlippage);
     this.maxRetries = executorConfig.maxRetries;
     this.useJito = executorConfig.useJitoBundles ?? false;
 
@@ -229,7 +230,7 @@ export class Executor {
     if (result.outputAmountResult) {
       actualOutAmount = BigInt(result.outputAmountResult);
       actualSlippageBps = expectedOut > 0n
-        ? Number((expectedOut - actualOutAmount) * 10000n / expectedOut)
+        ? Number((expectedOut - actualOutAmount) * BPS_DENOMINATOR_BIGINT / expectedOut)
         : 0;
     }
     // outputAmountResult 없으면 actualOutAmount=undefined 유지 (before 없이 비교 불가)
@@ -295,7 +296,7 @@ export class Executor {
           : 0n;
         const actualOutAmount = balanceAfter - balanceBefore;
         const actualSlippageBps = expectedOut > 0n
-          ? Number((expectedOut - actualOutAmount) * 10000n / expectedOut)
+          ? Number((expectedOut - actualOutAmount) * BPS_DENOMINATOR_BIGINT / expectedOut)
           : 0;
         const inputMetrics = await this.resolveInputMetrics(
           inputMint,

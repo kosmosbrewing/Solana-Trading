@@ -139,12 +139,16 @@ bootstrap edge가 어디에서 나오는지 `marketCap / volumeMcap / freshness`
 ### Acceptance Criteria
 모두 충족 시 axis_3 종결:
 
-- [ ] signal / trade / realized PnL이 `marketCap cohort` × `volumeMcap cohort` × `freshness cohort` 3차원으로 분리 집계 가능
+- [~] signal / trade / realized PnL이 `marketCap cohort` × `volumeMcap cohort` × `freshness cohort` 3차원으로 분리 집계 가능
+  - **partial (signal-level only, 2026-04-07)**: `scripts/analysis/signal-cohort-audit.ts` 신설로 signal-intents.jsonl을 입력으로 marketCap × volumeMcap × processing.status 분리 가능. trades 테이블에 marketCap 컬럼이 없어 trades-level 집계는 미충족 — 추후 trades schema 확장 또는 JOIN 로직으로 보강 필요. freshness cohort는 미구현 (`discoveryTimestamp` 필드는 signal-intents에 있으나 band 정의 미정).
 - [ ] 7d 누적 표본에서 cohort별 win-rate / R-multiple 차이가 통계적으로 의미 있는 구간 (≥ 30 trades / cohort) 1개 이상 식별
-- [ ] live/paper 결과 기준으로 "low-cap surge" 가설이 cohort 단위로 confirm 또는 reject 됨 (replay 결과만으로는 종결 불가)
+  - 현재(2026-04-07): low-cap surge cohort 7 trades / 3 unique token / 7 losses (Entry 04 audit). 표본 부족, 7d 누적 대기.
+- [~] live/paper 결과 기준으로 "low-cap surge" 가설이 cohort 단위로 confirm 또는 reject 됨 (replay 결과만으로는 종결 불가)
+  - **inconclusive (2026-04-07)**: signal pass rate 측면 partial confirm (29.2% > 16.3%), 실측 손익 측면 partial reject (7/7 loss, n=3 unique token), 극단 저시총 ($44K) cohort 0 trades — confirm/reject 모두 단정 불가. Entry 04 참조.
 
 ### Lifecycle
-- 시작: axis_1 1차 통과 후 (universe가 fresh candidate를 충분히 공급해야 cohort별 표본이 확보된다)
+- 시작: ~~axis_1 1차 통과 후 (universe가 fresh candidate를 충분히 공급해야 cohort별 표본이 확보된다)~~ → **2026-04-07 보강**: signal-level 측정은 axis_1 의존을 떠나 즉시 가능. trade-level 측정만 axis_1 의존 (universe quality가 표본 다양성을 결정).
+- 진행: 2026-04-07 ralph-loop iter7 — signal-level 1차 측정 완료 (Entry 04)
 - 종결 조건: 위 acceptance 3개 모두 통과
 - 종결 시 archive: `PLAN_CMPL.md`
 
@@ -169,3 +173,4 @@ bootstrap edge가 어디에서 나오는지 `marketCap / volumeMcap / freshness`
 ## History
 
 - 2026-04-07: ops-history Entry 02 Long-Term Plan 3축에서 분리 생성
+- 2026-04-07 (ralph-loop iter7): signal-level cohort 측정 도입 — `scripts/analysis/signal-cohort-audit.ts` + `docs/audits/signal-cohort-2026-04-07.md`. axis_3 acceptance 첫·셋째 칸 partial 충족. 4 sessions / 86 signals / 71 with marketCap 표본. 사용자 가설 (저시총 surge edge) 1차 verdict는 inconclusive — Entry 04 참조

@@ -408,6 +408,67 @@ function maxAbs(values: number[]): number | null {
   return Math.max(...values.map((value) => Math.abs(value)));
 }
 
+/**
+ * 2026-04-07: Phase C2 합격 기준 측정용 percentile.
+ * `entry_gap p95 ≤ 5%`, `exit_gap p95 ≤ 10%` 라인을 채우려면 p95 추출이 필요하다.
+ * 입력은 sorted/unsorted 무관 (내부 정렬). nearest-rank 방식 (작은 N에서도 안정).
+ */
+function percentile(values: number[], p: number): number | null {
+  if (values.length === 0) return null;
+  if (p <= 0) return Math.min(...values);
+  if (p >= 100) return Math.max(...values);
+  const sorted = [...values].sort((a, b) => a - b);
+  const rank = Math.ceil((p / 100) * sorted.length);
+  return sorted[Math.min(rank, sorted.length) - 1];
+}
+
+/**
+ * Phase C2 합격 기준 4종 중 entry_gap p95 / exit_gap p95 측정 경로.
+ * 절대값 기준 분포를 출력해 한 줄로 합격 여부를 판정할 수 있게 한다.
+ */
+function printGapDistribution(rows: TradeRow[]): void {
+  const entryGapsAbs = rows
+    .map(entryGapPct)
+    .filter((v): v is number => v != null)
+    .map((v) => Math.abs(v));
+  const exitGapsAbs = rows
+    .map(exitGapPct)
+    .filter((v): v is number => v != null)
+    .map((v) => Math.abs(v));
+
+  console.log('\nGap Distribution (abs %)');
+  console.log('------------------------------------------------------------------------');
+  console.log('metric            | n   | mean    | p50     | p95     | p99     | max    ');
+  printGapRow('entry_gap |abs|', entryGapsAbs);
+  printGapRow('exit_gap  |abs|', exitGapsAbs);
+
+  // Phase C2 합격 기준 라인 — 한 줄 verdict
+  const entryP95 = percentile(entryGapsAbs, 95);
+  const exitP95 = percentile(exitGapsAbs, 95);
+  const entryVerdict = entryP95 == null ? 'n/a' : (entryP95 <= 5 ? 'pass' : 'fail');
+  const exitVerdict = exitP95 == null ? 'n/a' : (exitP95 <= 10 ? 'pass' : 'fail');
+  console.log(
+    `Phase C2 verdict   | entry_gap p95 ${fmtPct(entryP95)} (≤5%) ${entryVerdict} | ` +
+    `exit_gap p95 ${fmtPct(exitP95)} (≤10%) ${exitVerdict}`
+  );
+}
+
+function printGapRow(label: string, values: number[]): void {
+  const n = values.length;
+  if (n === 0) {
+    console.log(`${label.padEnd(17)} | 0   | ---     | ---     | ---     | ---     | ---    `);
+    return;
+  }
+  const mean = average(values);
+  const p50 = percentile(values, 50);
+  const p95 = percentile(values, 95);
+  const p99 = percentile(values, 99);
+  const max = Math.max(...values);
+  console.log(
+    `${label.padEnd(17)} | ${String(n).padEnd(3)} | ${fmtPct(mean).padEnd(7)} | ${fmtPct(p50).padEnd(7)} | ${fmtPct(p95).padEnd(7)} | ${fmtPct(p99).padEnd(7)} | ${fmtPct(max).padEnd(7)}`
+  );
+}
+
 async function main(): Promise<void> {
   const args = parseArgs();
   const dbUrl = process.env.DATABASE_URL;
@@ -473,6 +534,7 @@ async function main(): Promise<void> {
     if (rows.length > 0) {
       printSuspiciousRows(rows, args.limit);
       printPairGapSummary(rows);
+      printGapDistribution(rows);
       printTpNegativeRows(rows);
       printLogicalTrades(rows);
       printEdgeBlacklist(rows, `window=${args.hours}h`);

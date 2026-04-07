@@ -4,6 +4,26 @@ import { Trade } from '../utils/types';
 
 const log = createModuleLogger('TradeStore');
 
+/**
+ * TD-8 (2026-04-07): closeTrade options object 패턴.
+ * Positional 11개에서 부풀던 시그니처를 단일 객체로 통합한다.
+ * - 필수: id, exitPrice, pnl, slippage
+ * - 선택: 나머지 메타데이터 (exitReason 포함; SQL에서 null로 fallback)
+ */
+export interface CloseTradeOptions {
+  id: string;
+  exitPrice: number;
+  pnl: number;
+  slippage: number;
+  exitReason?: string;
+  quantity?: number;
+  exitSlippageBps?: number;
+  degradedTriggerReason?: string;
+  degradedQuoteFailCount?: number;
+  decisionPrice?: number;
+  exitAnomalyReason?: string;
+}
+
 export class TradeStore {
   private pool: Pool;
 
@@ -136,20 +156,26 @@ export class TradeStore {
     return result.rows[0].id;
   }
 
-  async closeTrade(
-    id: string,
-    exitPrice: number,
-    pnl: number,
-    slippage: number,
-    exitReason?: string,
-    quantity?: number,
-    exitSlippageBps?: number,
-    degradedTriggerReason?: string,
-    degradedQuoteFailCount?: number,
-    decisionPrice?: number,
-    // TD-8: 2026-04-07 positional 11번째 인자 추가 — fake-fill/Phase A4 anomaly reasons
-    exitAnomalyReason?: string
-  ): Promise<void> {
+  /**
+   * TD-8 (2026-04-07): closeTrade는 options object 패턴을 사용한다.
+   * Positional 11개로 부풀어 호출처 가독성이 무너지므로, 하나의 options 객체로 통합.
+   * 필수 필드(id/exitPrice/pnl/slippage)와 선택 필드(나머지)를 동일 객체에 둔다.
+   */
+  async closeTrade(opts: CloseTradeOptions): Promise<void> {
+    const {
+      id,
+      exitPrice,
+      pnl,
+      slippage,
+      exitReason,
+      quantity,
+      exitSlippageBps,
+      degradedTriggerReason,
+      degradedQuoteFailCount,
+      decisionPrice,
+      exitAnomalyReason,
+    } = opts;
+
     const setClauses = [
       'exit_price = $2',
       'pnl = $3',

@@ -266,6 +266,12 @@ cat results/vps-analysis/trade-report-latest.txt
 - `signals`는 필요하면 `runtime signal rows`와 `trigger stats signals`를 분리 기록한다
 - incident-recovery 직후 entry는 `meta`에 `post_guard_session: true`와 `bot_restart_at_utc`를 포함해, 해당 window의 metric이 deployment effect 위에서 측정된 것임을 명시한다 (commit hash 나열은 git log/별도 audit 문서에 맡기고 ops-history는 운영 맥락만 한 줄로 남긴다)
 - `exit_slippage_bps`/`entry_slippage_bps` 평균을 기록할 때는 `fake_fill_rows / closed_rows` 비율을 함께 남긴다. trade-report의 `printSlippageRawAndTrimmed` 출력에서 `excluded N saturated >=9000bps`와 하단 `FAKE-FILL WARNING ${count}/${total}` 줄이 근거다. 이 비율이 빠지면 1건 outlier로 평균이 왜곡됐는지 사후 검증 불가능
+- **Phase M day-2부터** `metrics_note`에 다음 4종을 1줄씩 기록한다 (`live-ops-integrity-2026-04-07.md` Phase M acceptance):
+  1. `entry_gap_p95_pct_recent_${H}h` / `exit_gap_p95_pct_recent_${H}h` — `npm run ops:check:ledger -- --hours ${H}` 출력의 `Phase C2 verdict | entry_gap p95 X% (≤5%) pass/fail | exit_gap p95 Y% (≤10%) pass/fail` 라인에서 추출 (`scripts/ledger-audit.ts:printGapDistribution`).
+  2. `exit_anomaly_rows_recent_${H}h` — 같은 ledger-audit 출력의 `Suspicious Rows` 섹션 카운트 (또는 trade-report `FAKE-FILL WARNING N/total` 라인). day-1 baseline은 ops-history Entry 03 기록을 따른다.
+  3. `realized_replay_excluded_groups / rows` — `realized-replay-ratio-latest.md` 헤드라인의 `Anomaly filter (>=9000bps slippage or exit_anomaly_reason set): N parent groups (M rows) excluded` 라인. drop이 실제 작동하는지 누적 추적용 (F1-deep-5).
+  4. `closed_rows_clean_vs_raw` — 같은 헤드라인의 `Closed trades: raw=A, clean=B (anomaly filter excluded N parent groups / M rows)` 라인.
+- 위 4종이 metrics_note에서 빠지면 Phase M 7일 acceptance에 자동으로 미달이다. 7일 누적이 `entry_gap p95 ≤ 5%` 합격이 안 나오면 Phase C2 raw 합격이 영구 실패 상태이므로 fake-fill threshold 또는 size sanitizer 보강을 우선 검토.
 
 새 기록을 시작할 때는 [`docs/ops-history/README.md`](../ops-history/README.md) 템플릿을 그대로 쓴다.
 

@@ -143,13 +143,18 @@ export function parseSwapFromTransaction(
   tx: ParsedTransactionWithMeta,
   context: SwapParseContext
 ): ParsedSwap | null {
+  const meta = tx.meta;
+  const metadataAware = meta ? parseFromPoolMetadata(tx, context) : null;
+  if (metadataAware && isPumpSwapPool(context.poolMetadata)) {
+    // Why: PumpSwap instruction payload semantics can drift from actual fill direction/units.
+    //   pool metadata delta는 base/quote mint 기준 actual token movement라 우선 신뢰한다.
+    return metadataAware;
+  }
+
   const parsedPump = parsePumpSwapFromTransaction(tx, context);
   if (parsedPump) return parsedPump;
 
-  const meta = tx.meta;
   if (!meta) return null;
-
-  const metadataAware = parseFromPoolMetadata(tx, context);
   if (metadataAware) return metadataAware;
 
   // Why: 추적 대상 풀의 mint 메타데이터가 있는데도 정확한 mint delta를 못 맞춘 경우,

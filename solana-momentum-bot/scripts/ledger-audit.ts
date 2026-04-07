@@ -27,6 +27,7 @@ interface TradeRow {
   exit_slippage_bps: number | null;
   round_trip_cost_pct: string | null;
   effective_rr: string | null;
+  exit_anomaly_reason: string | null;
 }
 
 interface Args {
@@ -335,6 +336,9 @@ function rowToEdgeTrade(row: TradeRow): EdgeTrackerTrade {
     // Phase B3: sanitizer가 오염 row를 drop할 수 있도록 정합성 컨텍스트 전달
     plannedEntryPrice: num(row.planned_entry_price),
     exitReason: row.exit_reason,
+    // 2026-04-07: fake-fill/saturated slippage 필터링용 컨텍스트
+    exitSlippageBps: row.exit_slippage_bps,
+    exitAnomalyReason: row.exit_anomaly_reason,
   };
 }
 
@@ -444,7 +448,8 @@ async function main(): Promise<void> {
          entry_slippage_bps,
          exit_slippage_bps,
          round_trip_cost_pct,
-         effective_rr
+         effective_rr,
+         exit_anomaly_reason
        FROM trades
        ${clause}
        ORDER BY coalesce(closed_at, created_at) ASC, created_at ASC`,

@@ -19,6 +19,10 @@ export interface EdgeTrackerTrade {
   plannedEntryPrice?: number | null;
   /** Phase B1: sanitizer가 "TP인데 음수 pnl" 케이스를 제거할 때 참조 */
   exitReason?: string | null;
+  /** 2026-04-07: sanitizer가 Jupiter saturated slippage fake fill을 drop하기 위해 참조 */
+  exitSlippageBps?: number | null;
+  /** 2026-04-07: tradeExecution이 기록한 anomaly reason (fake_fill_*, slippage_saturated=*) */
+  exitAnomalyReason?: string | null;
 }
 
 export interface EdgePerformanceStats {

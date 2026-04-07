@@ -177,7 +177,11 @@ export class Notifier {
       const key = `transient-error:${context}:${normalized}`;
       if (this.isThrottled(key, 2 * 60 * 1000)) return;
       this.updateThrottle(key);
-      await this.send(buildAlertMessage('WARNING', context, `Transient error: ${message}`));
+      // Why: Phase C1 — transient 분기도 audit log에 정확한 category를 남겨야 한다.
+      // 이전에는 context 누락으로 jsonl이 'raw'로 분류되어 sendError 감사가 깨졌다.
+      await this.send(buildAlertMessage('WARNING', context, `Transient error: ${message}`), {
+        category: `alert:transient:${context}`,
+      });
       return;
     }
 

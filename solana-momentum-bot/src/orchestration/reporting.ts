@@ -137,6 +137,9 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
       // Phase B1: sanitizer가 오염된 row를 drop할 수 있도록 정합성 컨텍스트 전달.
       plannedEntryPrice: trade.plannedEntryPrice ?? null,
       exitReason: trade.exitReason ?? null,
+      // 2026-04-07: fake-fill sanitizer filter 컨텍스트
+      exitSlippageBps: trade.exitSlippageBps ?? null,
+      exitAnomalyReason: trade.exitAnomalyReason ?? null,
     }))).trades
   );
 

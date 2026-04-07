@@ -87,6 +87,12 @@ export class TradeStore {
         ADD COLUMN IF NOT EXISTS parent_trade_id UUID;
       `);
 
+      // 2026-04-07: fake-fill / Phase A4 anomaly 사유 기록 — downstream 분석 필터용
+      await client.query(`
+        ALTER TABLE trades
+        ADD COLUMN IF NOT EXISTS exit_anomaly_reason TEXT;
+      `);
+
       await client.query(`
         CREATE INDEX IF NOT EXISTS idx_trades_status ON trades (status);
         CREATE INDEX IF NOT EXISTS idx_trades_created ON trades (created_at DESC);
@@ -140,7 +146,9 @@ export class TradeStore {
     exitSlippageBps?: number,
     degradedTriggerReason?: string,
     degradedQuoteFailCount?: number,
-    decisionPrice?: number
+    decisionPrice?: number,
+    // TD-8: 2026-04-07 positional 11번째 인자 추가 — fake-fill/Phase A4 anomaly reasons
+    exitAnomalyReason?: string
   ): Promise<void> {
     const setClauses = [
       'exit_price = $2',
@@ -175,6 +183,11 @@ export class TradeStore {
     if (decisionPrice !== undefined) {
       setClauses.push(`decision_price = $${params.length + 1}`);
       params.push(decisionPrice);
+    }
+
+    if (exitAnomalyReason !== undefined) {
+      setClauses.push(`exit_anomaly_reason = $${params.length + 1}`);
+      params.push(exitAnomalyReason);
     }
 
     await this.pool.query(
@@ -405,5 +418,6 @@ function rowToTrade(row: Record<string, unknown>): Trade {
     degradedTriggerReason: row.degraded_trigger_reason as Trade['degradedTriggerReason'],
     degradedQuoteFailCount: row.degraded_quote_fail_count != null ? Number(row.degraded_quote_fail_count) : undefined,
     parentTradeId: row.parent_trade_id as string | undefined,
+    exitAnomalyReason: (row.exit_anomaly_reason as string | null | undefined) ?? undefined,
   };
 }

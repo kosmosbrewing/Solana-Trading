@@ -36,6 +36,7 @@ Use with: `docs/runbooks/live-ops-loop.md`, `CRITICAL_LIVE.md`
 1. 실행 시각
    - `started_at_utc`
    - `ended_at_utc`
+   - incident-recovery 직후 entry는 추가로 `post_guard_session: true`와 `bot_restart_at_utc`를 명시 (그 window의 metric이 deployment effect 위에서 측정된 것임을 한 줄로 표현)
 2. 분석 window
    - `runtime_window_start_utc`
    - `runtime_window_end_utc`
@@ -43,6 +44,7 @@ Use with: `docs/runbooks/live-ops-loop.md`, `CRITICAL_LIVE.md`
    - `db_window_start_utc`
    - `db_window_end_utc`
    - `db_window_hours`
+   - 권장: `metric_scope_note` — 어떤 metric suffix(`_recent_2h` / `_recent_12h` 등)가 어떤 window를 가리키는지 한 줄로 명시
 3. runtime 사용 근거
    - 동기화 시각
    - runtime window
@@ -65,9 +67,11 @@ Use with: `docs/runbooks/live-ops-loop.md`, `CRITICAL_LIVE.md`
    - `tp_negative_pnl`
    - `entry_gap`
    - `exit_gap`
+   - 권장: `fake_fill_rows / closed_rows` — `exit_anomaly_reason`이 set이거나 `exit_slippage_bps >= 9000`인 row 비율. trade-report `printSlippageRawAndTrimmed` 출력의 `excluded N saturated`와 `FAKE-FILL WARNING ${count}/${total}` 줄을 그대로 옮긴다. 이 비율이 표시되지 않으면 평균 slippage가 1건 outlier로 왜곡됐는지 사후 추적 불가
    - 그 외 이번 루프에서 중요했던 숫자
 6. 판단
    - 병목 분류: `wallet / overflow / alias / sparse / gate / risk / execution / incident`
+   - `quality_check_of_recent_answers` — 이전 답변/판단을 재검토했을 때의 결과 (`pass` / `pass with refinement` / `revise` / `retroactive: pass`)
    - 왜 그렇게 판단했는지 2~5줄
 7. 조치
    - 실제 변경

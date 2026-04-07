@@ -1,6 +1,7 @@
 import { TradeStore } from '../src/candle/tradeStore';
 import { RiskManager } from '../src/risk';
 import type { PortfolioState } from '../src/utils/types';
+import { config } from '../src/utils/config';
 
 describe('RiskManager unrealized drawdown', () => {
   it('does not treat open-trade raw quantity as SOL equity in portfolio state', async () => {
@@ -240,5 +241,112 @@ describe('RiskManager unrealized drawdown', () => {
 
     expect(result.approved).toBe(true);
     expect(result.reason).toBeUndefined();
+  });
+
+  // Phase B2 — BOT_BYPASS_EDGE_BLACKLIST canary backdoor 동작 검증.
+  // Why: 오염된 ledger 위에 학습된 blacklist가 canary 기간 동안만 해제되어야 하며,
+  // bypass 사건은 반드시 audit log(appliedAdjustments)에 남아야 한다.
+  describe('Phase B2 — bypass edge blacklist canary flag', () => {
+    const blacklistedTrades = Array.from({ length: 5 }, (_, index) => ({
+      id: `blk-${index}`,
+      pairAddress: 'pair-weak',
+      strategy: 'volume_spike',
+      side: 'BUY',
+      entryPrice: 10,
+      exitPrice: 9.5,
+      quantity: 0.1,
+      pnl: -0.05,
+      status: 'CLOSED',
+      createdAt: new Date(`2026-03-15T00:0${index}:00.000Z`),
+      closedAt: new Date(`2026-03-15T00:1${index}:00.000Z`),
+      stopLoss: 9,
+      takeProfit1: 11,
+      takeProfit2: 12,
+      timeStopAt: new Date(`2026-03-15T01:0${index}:00.000Z`),
+    }));
+
+    function buildManager(): RiskManager {
+      const tradeStore = {
+        getClosedTradesChronological: jest.fn().mockResolvedValue(blacklistedTrades),
+      } as unknown as TradeStore;
+      return new RiskManager({
+        maxRiskPerTrade: 0.01,
+        maxDailyLoss: 0.05,
+        maxDrawdownPct: 0.30,
+        recoveryPct: 0.85,
+        maxConsecutiveLosses: 3,
+        cooldownMinutes: 30,
+        maxSlippage: 0.05,
+        minPoolLiquidity: 50_000,
+        minTokenAgeHours: 24,
+        maxHolderConcentration: 0.8,
+      }, tradeStore);
+    }
+
+    const portfolio: PortfolioState = {
+      balanceSol: 10,
+      equitySol: 10,
+      openTrades: [],
+      dailyPnl: 0,
+      consecutiveLosses: 0,
+      drawdownGuard: {
+        peakBalanceSol: 10,
+        currentBalanceSol: 10,
+        drawdownPct: 0,
+        recoveryBalanceSol: 8.5,
+        halted: false,
+      },
+      riskTier: {
+        edgeState: 'Bootstrap',
+        maxRiskPerTrade: 0.01,
+        maxDailyLoss: 0.05,
+        maxDrawdownPct: 0.30,
+        recoveryPct: 0.85,
+        kellyFraction: 0,
+        kellyApplied: false,
+        kellyMode: 'fixed',
+      },
+    };
+
+    const order = {
+      pairAddress: 'pair-weak',
+      strategy: 'volume_spike' as const,
+      side: 'BUY' as const,
+      price: 10,
+      stopLoss: 9,
+    };
+
+    let originalBypass: boolean;
+
+    beforeEach(() => {
+      originalBypass = config.bypassEdgeBlacklist;
+    });
+
+    afterEach(() => {
+      // Why: 전역 config 오염 방지 — 다른 suite는 기본값을 전제로 한다.
+      (config as { bypassEdgeBlacklist: boolean }).bypassEdgeBlacklist = originalBypass;
+    });
+
+    it('blocks blacklisted pair by default (bypass=false)', async () => {
+      (config as { bypassEdgeBlacklist: boolean }).bypassEdgeBlacklist = false;
+      const manager = buildManager();
+
+      const result = await manager.checkOrder(order, portfolio);
+
+      expect(result.approved).toBe(false);
+      expect(result.reason).toContain('Pair blacklisted by edge tracker');
+      expect(result.appliedAdjustments ?? []).not.toContain('BYPASSED_EDGE_BLACKLIST');
+    });
+
+    it('allows blacklisted pair and records audit tag when bypass=true', async () => {
+      (config as { bypassEdgeBlacklist: boolean }).bypassEdgeBlacklist = true;
+      const manager = buildManager();
+
+      const result = await manager.checkOrder(order, portfolio);
+
+      expect(result.approved).toBe(true);
+      expect(result.reason).toBeUndefined();
+      expect(result.appliedAdjustments ?? []).toContain('BYPASSED_EDGE_BLACKLIST');
+    });
   });
 });

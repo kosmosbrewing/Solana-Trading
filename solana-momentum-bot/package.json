@@ -12,6 +12,7 @@
     "migrate": "ts-node scripts/migrate.ts",
     "backtest": "ts-node scripts/backtest.ts",
     "paper-report": "ts-node scripts/paper-report.ts",
+    "ops:check:ledger": "ts-node scripts/ledger-audit.ts",
     "realtime-shadow": "ts-node scripts/realtime-shadow-runner.ts",
     "ops:check": "ts-node scripts/ops-realtime-check.ts",
     "ops:check:sparse": "ts-node scripts/ops-sparse-check.ts",

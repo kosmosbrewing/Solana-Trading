@@ -25,6 +25,9 @@ export async function createScannerBlacklistCheck(
           stopLoss: trade.stopLoss,
           quantity: trade.quantity,
           pnl: trade.pnl ?? 0,
+          // Phase B1: 오염된 row는 blacklist 학습에 쓰지 않음
+          plannedEntryPrice: trade.plannedEntryPrice ?? null,
+          exitReason: trade.exitReason ?? null,
         }))).trades);
         cachedBlacklist = new Set(edgeTracker.getBlacklistedPairs().map((pair) => pair.pairAddress));
         lastRefreshMs = Date.now();

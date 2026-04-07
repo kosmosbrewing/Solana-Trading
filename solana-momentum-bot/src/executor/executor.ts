@@ -393,7 +393,15 @@ export class Executor {
   ): Promise<Partial<Pick<SwapResult, 'actualInputUiAmount' | 'inputDecimals'>>> {
     if (actualInputAmount == null) return {};
     const inputDecimals = inputMint === SOL_MINT ? 9 : await this.getMintDecimals(inputMint);
-    if (inputDecimals == null) return {};
+    if (inputDecimals == null) {
+      // Why: silent fallback은 partial-fill ratio 왜곡으로 이어진다 (CRITICAL_LIVE P0-B).
+      // caller에서 inspect 가능하도록 loud error를 남긴다.
+      log.error(
+        `[DECIMALS_MISSING] Cannot compute actualInputUiAmount for ${inputMint}: ` +
+        `rawAmount=${actualInputAmount.toString()} — input metrics will be undefined`
+      );
+      return {};
+    }
     return {
       actualInputUiAmount: toUiAmount(actualInputAmount, inputDecimals),
       inputDecimals,
@@ -406,7 +414,16 @@ export class Executor {
   ): Promise<Partial<Pick<SwapResult, 'actualOutUiAmount' | 'outputDecimals'>>> {
     if (actualOutAmount == null) return {};
     const outputDecimals = outputMint === SOL_MINT ? 9 : await this.getMintDecimals(outputMint);
-    if (outputDecimals == null) return {};
+    if (outputDecimals == null) {
+      // Why: decimals 미해결 상태에서 ui amount를 만들면 1e6~1e9 배 scale 오차가
+      // signalProcessor → DB → EdgeTracker까지 오염시킨다 (CRITICAL_LIVE P0-B).
+      // loud fail하고 caller가 partial-fill guard에서 fallback 처리한다.
+      log.error(
+        `[DECIMALS_MISSING] Cannot compute actualOutUiAmount for ${outputMint}: ` +
+        `rawAmount=${actualOutAmount.toString()} — output metrics will be undefined`
+      );
+      return {};
+    }
     return {
       actualOutUiAmount: toUiAmount(actualOutAmount, outputDecimals),
       outputDecimals,

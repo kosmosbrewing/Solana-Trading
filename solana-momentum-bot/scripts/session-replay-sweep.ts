@@ -6,7 +6,9 @@ import { execFileSync } from 'child_process';
 import { renderSessionReplaySweepReport } from '../src/reporting/sessionReplaySweepReport';
 
 type StrategyName = 'bootstrap_10s' | 'volume_spike' | 'fib_pullback';
-type GridPreset = 'standard' | 'wide';
+// Why: 'focused' = 2026-04-07 P0 audit 이후 bootstrap 전용 12-combo 핵심 grid. standard=135 → focused=12로
+// samples/combo를 0.067 → 0.75로 상승. swaps replay만 truth이므로 volume/fib는 focused 미지원.
+type GridPreset = 'standard' | 'wide' | 'focused';
 type InputMode = 'auto' | 'swaps' | 'candles';
 
 interface SessionInfo {
@@ -65,13 +67,27 @@ function listSessions(minStoredSignals: number, sessionCount: number, includeLeg
 function buildGrid(strategy: StrategyName, preset: GridPreset): Array<Record<string, number>> {
   let values: Record<string, number[]>;
   if (strategy === 'bootstrap_10s') {
-    values = {
-      volumeMultiplier: preset === 'wide' ? [1.4, 1.6, 1.8, 2.0, 2.2, 2.4, 2.6] : [1.6, 1.8, 2.0, 2.2, 2.4],
-      minBuyRatio: preset === 'wide' ? [0.50, 0.55, 0.60, 0.65, 0.70] : [0.55, 0.60, 0.65],
-      volumeLookback: preset === 'wide' ? [10, 20, 30, 40] : [20, 30, 40],
-      cooldownSec: preset === 'wide' ? [120, 180, 300, 420, 600] : [180, 300, 420],
-    };
+    if (preset === 'focused') {
+      // Why: 2026-04-07 P0 audit 기반 12-combo 핵심 grid. 04-06 swaps sweep top 10이 전부
+      // vm∈[1.8,2.4] × br∈[0.55,0.65] × lb=20 × cd=180 영역에 집중된 사실을 반영.
+      values = {
+        volumeMultiplier: [1.8, 2.0, 2.2, 2.4],
+        minBuyRatio: [0.55, 0.60, 0.65],
+        volumeLookback: [20],
+        cooldownSec: [180],
+      };
+    } else {
+      values = {
+        volumeMultiplier: preset === 'wide' ? [1.4, 1.6, 1.8, 2.0, 2.2, 2.4, 2.6] : [1.6, 1.8, 2.0, 2.2, 2.4],
+        minBuyRatio: preset === 'wide' ? [0.50, 0.55, 0.60, 0.65, 0.70] : [0.55, 0.60, 0.65],
+        volumeLookback: preset === 'wide' ? [10, 20, 30, 40] : [20, 30, 40],
+        cooldownSec: preset === 'wide' ? [120, 180, 300, 420, 600] : [180, 300, 420],
+      };
+    }
   } else if (strategy === 'volume_spike') {
+    if (preset === 'focused') {
+      throw new Error("preset 'focused' is bootstrap_10s-only (volume_spike is dormant per 2026-04-07 P0 audit)");
+    }
     values = {
       volumeMultiplier: preset === 'wide' ? [1.5, 2.0, 2.5, 3.0, 3.5] : [2.0, 2.5, 3.0, 3.5],
       minBreakoutScore: preset === 'wide' ? [30, 40, 50, 60, 70] : [40, 50, 60],
@@ -81,6 +97,9 @@ function buildGrid(strategy: StrategyName, preset: GridPreset): Array<Record<str
       slAtrMultiplier: preset === 'wide' ? [0.75, 1.0, 1.25, 1.5] : [1.0, 1.25],
     };
   } else {
+    if (preset === 'focused') {
+      throw new Error("preset 'focused' is bootstrap_10s-only (fib_pullback is dormant per 2026-04-07 P0 audit)");
+    }
     values = {
       impulseWindowBars: preset === 'wide' ? [4, 6, 8, 10, 12] : [6, 8, 10],
       impulseMinPct: preset === 'wide' ? [0.06, 0.08, 0.10, 0.12, 0.15] : [0.08, 0.10, 0.12, 0.15],

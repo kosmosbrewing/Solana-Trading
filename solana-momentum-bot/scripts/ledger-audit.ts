@@ -1,7 +1,8 @@
 import { Pool } from 'pg';
 import path from 'path';
 import dotenv from 'dotenv';
-import { EdgeTracker } from '../src/reporting/edgeTracker';
+import { EdgeTracker, EdgeTrackerTrade } from '../src/reporting/edgeTracker';
+import { sanitizeEdgeLikeTrades } from '../src/reporting/edgeInputSanitizer';
 
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
@@ -34,6 +35,8 @@ interface Args {
   end?: Date;
   pair?: string;
   limit: number;
+  /** Phase B3: 전체 closed 이력 기준 blacklist 재현 (hours/start/end 무시) */
+  fullHistory: boolean;
 }
 
 function parseArgs(): Args {
@@ -48,6 +51,7 @@ function parseArgs(): Args {
   const end = parseDateArg(getArg(args, '--end'), '--end');
   const pair = getArg(args, '--pair');
   const limit = Number(getArg(args, '--limit') ?? '20');
+  const fullHistory = args.includes('--full-history');
 
   return {
     hours: Number.isFinite(hours) && hours > 0 ? hours : 12,
@@ -55,6 +59,7 @@ function parseArgs(): Args {
     end,
     pair,
     limit: Number.isFinite(limit) && limit > 0 ? limit : 20,
+    fullHistory,
   };
 }
 
@@ -85,11 +90,13 @@ Usage:
   npm run ops:check:ledger -- --pair Dfh5DzRgSvvCFDoYc2ciTkMrbDfRKybA4SoFbPmApump
 
 Options:
-  --hours <n>   Relative window in hours (default: 12)
-  --start <ts>  Absolute UTC start timestamp
-  --end <ts>    Absolute UTC end timestamp
-  --pair <addr> Pair address filter
-  --limit <n>   Max suspicious rows to print (default: 20)
+  --hours <n>      Relative window in hours (default: 12)
+  --start <ts>     Absolute UTC start timestamp
+  --end <ts>       Absolute UTC end timestamp
+  --pair <addr>    Pair address filter
+  --limit <n>      Max suspicious rows to print (default: 20)
+  --full-history   Edge blacklist snapshot을 전체 closed 이력 기준으로 재현
+                   (suspicious row 윈도우는 여전히 --hours/--start 기준)
 `);
 }
 
@@ -317,43 +324,72 @@ function printLogicalTrades(rows: TradeRow[]): void {
   }
 }
 
-function printEdgeBlacklist(rows: TradeRow[]): void {
-  const closedRows = rows
-    .filter((row) => row.status === 'CLOSED' && row.closed_at != null && num(row.pnl) != null)
-    .sort((a, b) => (a.closed_at!.getTime() - b.closed_at!.getTime()));
-
-  const tracker = new EdgeTracker(closedRows.map((row) => ({
+function rowToEdgeTrade(row: TradeRow): EdgeTrackerTrade {
+  return {
     pairAddress: row.pair_address,
     strategy: row.strategy as never,
     entryPrice: num(row.entry_price) ?? 0,
     stopLoss: num(row.stop_loss) ?? 0,
     quantity: num(row.quantity) ?? 0,
     pnl: num(row.pnl) ?? 0,
-  })));
+    // Phase B3: sanitizer가 오염 row를 drop할 수 있도록 정합성 컨텍스트 전달
+    plannedEntryPrice: num(row.planned_entry_price),
+    exitReason: row.exit_reason,
+  };
+}
+
+function printEdgeBlacklist(rows: TradeRow[], label: string): void {
+  const closedRows = rows
+    .filter((row) => row.status === 'CLOSED' && row.closed_at != null && num(row.pnl) != null)
+    .sort((a, b) => (a.closed_at!.getTime() - b.closed_at!.getTime()));
+
+  const rawInputs = closedRows.map(rowToEdgeTrade);
+  const sanitized = sanitizeEdgeLikeTrades(rawInputs);
+
+  const trackerRaw = new EdgeTracker(rawInputs);
+  const trackerClean = new EdgeTracker(sanitized.trades);
 
   const pairAddresses = [...new Set(closedRows.map((row) => row.pair_address))];
   const summaries = pairAddresses.map((pairAddress) => {
-    const stats = tracker.getPairStats(pairAddress);
+    const statsRaw = trackerRaw.getPairStats(pairAddress);
+    const statsClean = trackerClean.getPairStats(pairAddress);
     const recentClosed = closedRows.filter((row) => row.pair_address === pairAddress).slice(-10);
     return {
       pairAddress,
       symbol: closedRows.find((row) => row.pair_address === pairAddress)?.token_symbol ?? '-',
-      stats,
+      statsRaw,
+      statsClean,
       recentTrades: recentClosed.length,
-      blacklisted: tracker.isPairBlacklisted(pairAddress),
+      blacklistedRaw: trackerRaw.isPairBlacklisted(pairAddress),
+      blacklistedClean: trackerClean.isPairBlacklisted(pairAddress),
     };
-  }).sort((a, b) => Number(b.blacklisted) - Number(a.blacklisted) || b.stats.totalTrades - a.stats.totalTrades);
+  }).sort(
+    (a, b) =>
+      Number(b.blacklistedRaw) - Number(a.blacklistedRaw) ||
+      b.statsRaw.totalTrades - a.statsRaw.totalTrades
+  );
 
-  console.log('\nEdge Blacklist Snapshot');
+  console.log(`\nEdge Blacklist Snapshot (${label})`);
   console.log('------------------------------------------------------------------------');
+  console.log(
+    `Sanitizer drop summary: ${sanitized.droppedCount}/${rawInputs.length} trades removed ` +
+    `(${Object.entries(sanitized.dropReasonCounts).map(([k, v]) => `${k}=${v}`).join(' ') || 'none'})`
+  );
+
   if (summaries.length === 0) {
     console.log('(none)');
     return;
   }
 
   for (const item of summaries) {
+    const rawFlag = item.blacklistedRaw ? 'YES' : 'NO';
+    const cleanFlag = item.blacklistedClean ? 'YES' : 'NO';
+    const flip = item.blacklistedRaw !== item.blacklistedClean ? ' <-- FLIPPED' : '';
     console.log(
-      `${shortAddr(item.pairAddress)} | ${item.symbol} | trades=${item.stats.totalTrades} recent10=${item.recentTrades} | WR=${(item.stats.winRate * 100).toFixed(1)}% | RR=${item.stats.rewardRisk.toFixed(2)} | Sharpe=${item.stats.sharpeRatio.toFixed(2)} | MaxL=${item.stats.maxConsecutiveLosses} | blacklisted=${item.blacklisted ? 'YES' : 'NO'}`
+      `${shortAddr(item.pairAddress)} | ${item.symbol} | rawTrades=${item.statsRaw.totalTrades} cleanTrades=${item.statsClean.totalTrades} recent10=${item.recentTrades} | ` +
+      `WR raw=${(item.statsRaw.winRate * 100).toFixed(1)}% clean=${(item.statsClean.winRate * 100).toFixed(1)}% | ` +
+      `RR raw=${item.statsRaw.rewardRisk.toFixed(2)} clean=${item.statsClean.rewardRisk.toFixed(2)} | ` +
+      `blacklisted raw=${rawFlag} clean=${cleanFlag}${flip}`
     );
   }
 }
@@ -422,17 +458,52 @@ async function main(): Promise<void> {
     console.log(`Window end  : ${fmtTs(args.end ?? dbNow)}`);
     console.log(`Pair filter : ${args.pair ?? 'ALL'}`);
     console.log(`Rows loaded : ${rows.length}`);
+    console.log(`Full history: ${args.fullHistory ? 'YES' : 'NO'}`);
 
-    if (rows.length === 0) {
+    if (rows.length === 0 && !args.fullHistory) {
       console.log('\nNo trades in window.');
       return;
     }
 
-    printSuspiciousRows(rows, args.limit);
-    printPairGapSummary(rows);
-    printTpNegativeRows(rows);
-    printLogicalTrades(rows);
-    printEdgeBlacklist(rows);
+    if (rows.length > 0) {
+      printSuspiciousRows(rows, args.limit);
+      printPairGapSummary(rows);
+      printTpNegativeRows(rows);
+      printLogicalTrades(rows);
+      printEdgeBlacklist(rows, `window=${args.hours}h`);
+    }
+
+    if (args.fullHistory) {
+      // Phase B3: 전체 closed 이력 기준 재현
+      const fullRows = (await pool.query<TradeRow>(
+        `SELECT
+           id,
+           pair_address,
+           strategy,
+           token_symbol,
+           status,
+           created_at,
+           closed_at,
+           parent_trade_id,
+           entry_price,
+           planned_entry_price,
+           decision_price,
+           exit_price,
+           quantity,
+           pnl,
+           stop_loss,
+           exit_reason,
+           entry_slippage_bps,
+           exit_slippage_bps,
+           round_trip_cost_pct,
+           effective_rr
+         FROM trades
+         WHERE status = 'CLOSED'
+         ORDER BY closed_at ASC, created_at ASC`
+      )).rows;
+      console.log(`\nFull-history rows loaded: ${fullRows.length}`);
+      printEdgeBlacklist(fullRows, 'full-history');
+    }
   } finally {
     await pool.end();
   }

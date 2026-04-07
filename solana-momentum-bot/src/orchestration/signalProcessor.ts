@@ -388,20 +388,62 @@ export async function processSignal(
   }
 }
 
-function buildEntryExecutionSummary(
+// Why: CRITICAL_LIVE P0-A/B — entry price 생성 경로 오염 감지용 감시 임계.
+// A2는 [0.5, 2.0] 바깥에서 loud warn, A3의 alignment clamp는 [0.7, 1.3]에서 즉시 차단.
+const ENTRY_PRICE_SAFE_RATIO_MIN = 0.5;
+const ENTRY_PRICE_SAFE_RATIO_MAX = 2.0;
+
+export function buildEntryExecutionSummary(
   order: Order,
   actualExecution: { effectiveRR: number; roundTripCost: number },
   buyResult?: SwapResult
 ): EntryExecutionSummary {
-  const actualQuantity = buyResult?.actualOutUiAmount && buyResult.actualOutUiAmount > 0
-    ? buyResult.actualOutUiAmount
-    : order.quantity;
   const plannedEntryNotionalSol = order.quantity * order.price;
-  const actualEntryNotionalSol = buyResult?.actualInputUiAmount && buyResult.actualInputUiAmount > 0
-    ? buyResult.actualInputUiAmount
-    : plannedEntryNotionalSol;
-  const entryPrice = actualQuantity > 0 ? actualEntryNotionalSol / actualQuantity : order.price;
-  const entrySlippagePct = order.price > 0 ? (entryPrice - order.price) / order.price : 0;
+  const hasActualOut =
+    buyResult?.actualOutUiAmount != null && buyResult.actualOutUiAmount > 0;
+  const hasActualIn =
+    buyResult?.actualInputUiAmount != null && buyResult.actualInputUiAmount > 0;
+
+  // Why: 한쪽만 fallback 되면 entryPrice가 ratio 왜곡된다 (CRITICAL_LIVE P0-A).
+  // 둘 다 실측 또는 둘 다 planned로 강제한다.
+  let actualQuantity: number;
+  let actualEntryNotionalSol: number;
+  if (hasActualIn && hasActualOut) {
+    actualQuantity = buyResult!.actualOutUiAmount!;
+    actualEntryNotionalSol = buyResult!.actualInputUiAmount!;
+  } else {
+    if (buyResult && (hasActualIn || hasActualOut)) {
+      log.error(
+        `[PRICE_ANOMALY] Partial fill metrics for ${order.pairAddress}: ` +
+        `actualIn=${buyResult.actualInputUiAmount ?? 'null'} ` +
+        `actualOut=${buyResult.actualOutUiAmount ?? 'null'} ` +
+        `outputDecimals=${buyResult.outputDecimals ?? 'null'} — ` +
+        `forcing both to planned to avoid ratio distortion`
+      );
+    }
+    actualQuantity = order.quantity;
+    actualEntryNotionalSol = plannedEntryNotionalSol;
+  }
+
+  const entryPrice =
+    actualQuantity > 0 ? actualEntryNotionalSol / actualQuantity : order.price;
+  const entrySlippagePct =
+    order.price > 0 ? (entryPrice - order.price) / order.price : 0;
+
+  // Why: ratio가 [0.5, 2.0] 바깥이면 단위/decimals 오염 가능성이 매우 높다 (BTW 1.5e-6 사례).
+  // 여기서는 경고만 찍고, A3의 alignOrderToExecutedEntry에서 [0.7, 1.3] clamp로 차단한다.
+  if (order.price > 0 && entryPrice > 0) {
+    const ratio = entryPrice / order.price;
+    if (ratio < ENTRY_PRICE_SAFE_RATIO_MIN || ratio > ENTRY_PRICE_SAFE_RATIO_MAX) {
+      log.error(
+        `[PRICE_ANOMALY] Entry price ratio ${ratio.toFixed(6)} outside ` +
+        `[${ENTRY_PRICE_SAFE_RATIO_MIN}, ${ENTRY_PRICE_SAFE_RATIO_MAX}]: ` +
+        `pair=${order.pairAddress} planned=${order.price.toFixed(8)} ` +
+        `actual=${entryPrice.toFixed(8)} hasActualIn=${hasActualIn} ` +
+        `hasActualOut=${hasActualOut}`
+      );
+    }
+  }
 
   return {
     entryPrice,

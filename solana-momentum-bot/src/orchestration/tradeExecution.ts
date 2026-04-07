@@ -11,6 +11,34 @@ import { summarizeTradeObservation } from './tradeMonitoring';
 
 const log = createModuleLogger('TradeExecution');
 
+// Why: CRITICAL_LIVE P0-C — alignOrderToExecutedEntry가 actual/planned ratio를
+// 그대로 TP/SL에 곱하기 때문에, ratio가 30% 이상 벌어지면 광적인 TP/SL이 ledger에
+// 저장되어 "currentPrice가 즉시 TP를 상회하는 것처럼 보이는" 망상이 발생한다.
+// A3 clamp는 이 band 바깥에서 trade를 OPEN 상태로 기록하는 것을 차단한다.
+const ENTRY_ALIGN_RATIO_MIN = 0.7;
+const ENTRY_ALIGN_RATIO_MAX = 1.3;
+
+// Why: CRITICAL_LIVE P0-D — exitPrice가 entryPrice와 단위가 어긋나면 pnl이 터무니없이
+// 커지거나 -95% 이하로 폭락한다. 아래 밴드 바깥이면 close 메시지/로그에 [ANOMALY] 표식.
+const EXIT_RATIO_MIN = -0.95; // 95% 손실보다 더 크면 비현실
+const EXIT_RATIO_MAX = 10; // +1000% 초과면 비현실
+
+// Why: decision price와 실제 fill이 50% 이상 벌어지면 price axis mismatch 의심
+// (planned=0.815 → fill=0.00000122 같은 -100% gap 케이스를 잡기 위함)
+const DECISION_FILL_GAP_ALERT_PCT = 0.5;
+
+/**
+ * Phase A3 — recordOpenedTrade에서 ratio clamp 위반 시 throw.
+ * signalProcessor catch 블록이 ORDER_FAILED 상태 전이 + execution_failed 반환을 처리하므로
+ * 여기서는 loud error + emergency dump만 책임진다.
+ */
+export class PriceAnomalyError extends Error {
+  constructor(message: string, public readonly context: Record<string, unknown>) {
+    super(message);
+    this.name = 'PriceAnomalyError';
+  }
+}
+
 // ─── v2: Degraded Exit State (in-memory, DB 변경 불필요) ───
 
 interface DegradedState {
@@ -510,12 +538,47 @@ export async function closeTrade(
     const exitSlippageBps = ctx.tradingMode === 'live' ? Math.round(executionSlippage * 10000) : undefined;
     applyPaperExitProceeds(ctx, trade.quantity, exitPrice);
 
+    // Phase A4: exitPrice/entryPrice 단위 정합성 cross-check.
+    // ratio < -95% 또는 > +1000%면 단위 오염 또는 fill 이상 → loud error + anomaly 플래그.
+    let exitAnomaly = false;
+    let exitAnomalyReasons: string[] = [];
+    if (trade.entryPrice > 0 && exitPrice > 0) {
+      const ratio = (exitPrice - trade.entryPrice) / trade.entryPrice;
+      if (ratio < EXIT_RATIO_MIN || ratio > EXIT_RATIO_MAX) {
+        exitAnomaly = true;
+        exitAnomalyReasons.push(`exit_ratio=${ratio.toFixed(4)}`);
+        log.error(
+          `[EXIT_ANOMALY] Trade ${trade.id} exit ratio ${ratio.toFixed(4)} outside ` +
+          `[${EXIT_RATIO_MIN}, ${EXIT_RATIO_MAX}]: entry=${trade.entryPrice.toFixed(8)} ` +
+          `exit=${exitPrice.toFixed(8)} pair=${trade.pairAddress} reason=${reason}`
+        );
+      }
+    }
+
     if (decisionPrice != null && decisionPrice > 0 && exitPrice > 0) {
       const gapPct = ((exitPrice - decisionPrice) / decisionPrice) * 100;
-      log.info(
+      const gapAbs = Math.abs((exitPrice - decisionPrice) / decisionPrice);
+      const baseLog =
         `Close trade ${trade.id}: reason=${reason} decision=${decisionPrice.toFixed(8)} ` +
-        `fill=${exitPrice.toFixed(8)} gap=${gapPct >= 0 ? '+' : ''}${gapPct.toFixed(2)}%`
-      );
+        `fill=${exitPrice.toFixed(8)} gap=${gapPct >= 0 ? '+' : ''}${gapPct.toFixed(2)}%`;
+      if (gapAbs >= DECISION_FILL_GAP_ALERT_PCT) {
+        exitAnomaly = true;
+        exitAnomalyReasons.push(`decision_fill_gap=${gapPct.toFixed(2)}%`);
+        log.error(`[EXIT_ANOMALY] ${baseLog}`);
+      } else {
+        log.info(baseLog);
+      }
+    }
+
+    if (exitAnomaly) {
+      // best-effort: 메시지 상단에 [ANOMALY] 표식이 찍히도록 notifier에 추가 컨텍스트.
+      // 실제 formatter 수정은 별도 작업 — 우선 log + sendError로 Critical 알림.
+      const anomalyMsg =
+        `[EXIT_ANOMALY] trade=${trade.id} pair=${trade.pairAddress} reason=${reason} ` +
+        `entry=${trade.entryPrice.toFixed(8)} exit=${exitPrice.toFixed(8)} ` +
+        `decision=${decisionPrice ?? 'n/a'} pnl=${pnl.toFixed(6)} SOL ` +
+        `reasons=[${exitAnomalyReasons.join(', ')}]`;
+      await ctx.notifier.sendCritical('exit_anomaly', anomalyMsg).catch(() => {});
     }
 
     await ctx.tradeStore.closeTrade(
@@ -579,6 +642,9 @@ export async function recordOpenedTrade(
   executionSummary: EntryExecutionSummary,
   postSizeExecution?: GateEvaluationResult['executionViability']
 ): Promise<void> {
+  // Phase A3: alignment 적용 전 ratio clamp 검증. 위반 시 DB write 금지 + 토큰 긴급 청산.
+  await assertEntryAlignmentSafe(ctx, order, executionSummary, signal, positionId);
+
   const openedOrder = alignOrderToExecutedEntry({
     ...order,
     price: executionSummary.entryPrice,
@@ -659,6 +725,106 @@ export async function recordOpenedTrade(
     effectiveRR: executionSummary.effectiveRR,
     roundTripCost: executionSummary.roundTripCost,
   });
+}
+
+/**
+ * Phase A3 — ratio clamp.
+ * actualEntryPrice/plannedEntryPrice가 [0.7, 1.3] 바깥이면:
+ *   1) loud log.error
+ *   2) live 모드 + 실제 raw 수량이 있으면 보유 토큰 긴급 청산 시도 (best-effort)
+ *   3) notifier.sendCritical 알림
+ *   4) PriceAnomalyError throw → signalProcessor 상위 catch가 ORDER_FAILED 전이 처리
+ *
+ * 이 함수는 어떠한 DB write도 일어나기 전에 호출되어야 한다.
+ */
+async function assertEntryAlignmentSafe(
+  ctx: BotContext,
+  order: Order,
+  executionSummary: EntryExecutionSummary,
+  signal: Signal,
+  positionId: string
+): Promise<void> {
+  const plannedEntryPrice = executionSummary.plannedEntryPrice;
+  const actualEntryPrice = executionSummary.entryPrice;
+
+  if (
+    !Number.isFinite(plannedEntryPrice) || plannedEntryPrice <= 0 ||
+    !Number.isFinite(actualEntryPrice) || actualEntryPrice <= 0
+  ) {
+    // 유효하지 않은 가격이면 alignment 자체를 적용 못 함 → 보수적으로 차단.
+    const msg =
+      `[PRICE_ANOMALY_BLOCK] Invalid entry prices for ${order.pairAddress}: ` +
+      `planned=${plannedEntryPrice} actual=${actualEntryPrice}`;
+    log.error(msg);
+    await emergencyDumpPosition(ctx, order, executionSummary, msg);
+    await ctx.notifier.sendCritical('price_anomaly', msg).catch(() => {});
+    throw new PriceAnomalyError(msg, { positionId, pair: order.pairAddress });
+  }
+
+  const ratio = actualEntryPrice / plannedEntryPrice;
+  if (ratio < ENTRY_ALIGN_RATIO_MIN || ratio > ENTRY_ALIGN_RATIO_MAX) {
+    const msg =
+      `[PRICE_ANOMALY_BLOCK] Entry ratio ${ratio.toFixed(6)} outside ` +
+      `[${ENTRY_ALIGN_RATIO_MIN}, ${ENTRY_ALIGN_RATIO_MAX}] — refusing to open trade: ` +
+      `pair=${order.pairAddress} strategy=${signal.strategy} ` +
+      `planned=${plannedEntryPrice.toFixed(8)} actual=${actualEntryPrice.toFixed(8)} ` +
+      `actualInputUiAmount=${executionSummary.actualInputUiAmount ?? 'n/a'} ` +
+      `outputDecimals=${executionSummary.outputDecimals ?? 'n/a'}`;
+    log.error(msg);
+    await emergencyDumpPosition(ctx, order, executionSummary, msg);
+    await ctx.notifier.sendCritical('price_anomaly', msg).catch(() => {});
+    throw new PriceAnomalyError(msg, {
+      positionId,
+      pair: order.pairAddress,
+      ratio,
+      plannedEntryPrice,
+      actualEntryPrice,
+    });
+  }
+}
+
+/**
+ * Phase A3 — 이상 감지 직후 live 모드면 보유 토큰을 즉시 SOL로 청산.
+ * paper 모드나 actualOutAmount 없는 경우 no-op. best-effort이며 실패해도 throw는 위에서 수행.
+ */
+async function emergencyDumpPosition(
+  ctx: BotContext,
+  order: Order,
+  executionSummary: EntryExecutionSummary,
+  reason: string
+): Promise<void> {
+  if (ctx.tradingMode !== 'live') return;
+
+  const rawOut = executionSummary.actualOutAmount;
+  if (rawOut == null) {
+    log.warn(`[PRICE_ANOMALY_DUMP] No actualOutAmount — skipping emergency dump for ${order.pairAddress}`);
+    return;
+  }
+
+  let amountRaw: bigint;
+  try {
+    amountRaw = BigInt(rawOut);
+  } catch {
+    log.warn(`[PRICE_ANOMALY_DUMP] actualOutAmount not a valid bigint (${rawOut}) — skipping dump`);
+    return;
+  }
+
+  if (amountRaw <= 0n) {
+    log.warn(`[PRICE_ANOMALY_DUMP] actualOutAmount <= 0 — skipping dump`);
+    return;
+  }
+
+  try {
+    log.error(`[PRICE_ANOMALY_DUMP] Attempting emergency sell of ${amountRaw} raw units for ${order.pairAddress} — ${reason}`);
+    const sellResult = await ctx.executor.executeSell(order.pairAddress, amountRaw);
+    log.error(`[PRICE_ANOMALY_DUMP] Emergency dump complete: sig=${sellResult.txSignature}`);
+  } catch (dumpError) {
+    log.error(
+      `[PRICE_ANOMALY_DUMP] Emergency dump FAILED for ${order.pairAddress}: ${dumpError}. ` +
+      `Manual intervention required to liquidate position.`
+    );
+    // 실패하더라도 위쪽에서 throw가 일어나 trade 기록은 막힌다 — 단 토큰은 지갑에 남는다.
+  }
 }
 
 function alignOrderToExecutedEntry(order: Order, executionSummary: EntryExecutionSummary): Order {

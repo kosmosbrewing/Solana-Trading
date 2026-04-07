@@ -1,4 +1,5 @@
 import { createModuleLogger } from '../utils/logger';
+import { config } from '../utils/config';
 import {
   RiskCheckResult, TokenSafety, PortfolioState, SizeConstraint, BreakoutGrade, DrawdownGuardState, StrategyName,
   Trade,
@@ -127,7 +128,17 @@ export class RiskManager {
         ? this.tradeStore.getTodayTrades()
         : Promise.resolve([] as Trade[]),
     ]);
-    const closedEdgeTrades = sanitizeEdgeLikeTrades(closedTrades.map(toEdgeTrackerTrade)).trades;
+    const sanitizerResult = sanitizeEdgeLikeTrades(closedTrades.map(toEdgeTrackerTrade));
+    const closedEdgeTrades = sanitizerResult.trades;
+    if (sanitizerResult.droppedCount > 0) {
+      const reasons = Object.entries(sanitizerResult.dropReasonCounts)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(' ');
+      log.warn(
+        `EdgeTracker input sanitized: dropped ${sanitizerResult.droppedCount}/${closedTrades.length} ` +
+        `(${reasons})`
+      );
+    }
     const strategyRisk = resolveStrategyRiskTier(
       closedEdgeTrades,
       order.strategy,
@@ -249,14 +260,27 @@ export class RiskManager {
 
     const pairStats = edgeTracker.getPairStats(order.pairAddress);
     if (edgeTracker.isPairBlacklisted(order.pairAddress)) {
-      this.diagnosticsTracker?.recordRiskRejection('edge_blacklist', order.pairAddress);
-      return {
-        approved: false,
-        reason:
-          `Pair blacklisted by edge tracker: WR ${(pairStats.winRate * 100).toFixed(1)}% ` +
-          `RR ${formatMetric(pairStats.rewardRisk)} Sharpe ${formatMetric(pairStats.sharpeRatio)} ` +
-          `MaxL ${pairStats.maxConsecutiveLosses}`,
-      };
+      // Phase B2: BOT_BYPASS_EDGE_BLACKLIST=true면 blacklist를 무시하고 진입 허용.
+      // 단 모든 bypass 사건을 audit log로 남겨 canary 종료 후 역추적 가능하게 한다.
+      if (config.bypassEdgeBlacklist) {
+        log.warn(
+          `[BYPASSED_EDGE_BLACKLIST] ${order.pairAddress} ` +
+          `WR ${(pairStats.winRate * 100).toFixed(1)}% ` +
+          `RR ${formatMetric(pairStats.rewardRisk)} ` +
+          `Sharpe ${formatMetric(pairStats.sharpeRatio)} ` +
+          `MaxL ${pairStats.maxConsecutiveLosses}`
+        );
+        appliedAdjustments.push('BYPASSED_EDGE_BLACKLIST');
+      } else {
+        this.diagnosticsTracker?.recordRiskRejection('edge_blacklist', order.pairAddress);
+        return {
+          approved: false,
+          reason:
+            `Pair blacklisted by edge tracker: WR ${(pairStats.winRate * 100).toFixed(1)}% ` +
+            `RR ${formatMetric(pairStats.rewardRisk)} Sharpe ${formatMetric(pairStats.sharpeRatio)} ` +
+            `MaxL ${pairStats.maxConsecutiveLosses}`,
+        };
+      }
     }
 
     if (tokenSafety) {
@@ -596,6 +620,9 @@ function toEdgeTrackerTrade(
     stopLoss: trade.stopLoss,
     quantity: trade.quantity,
     pnl: trade.pnl ?? 0,
+    // Phase B1: sanitizer가 오염된 ledger row를 drop할 수 있도록 정합성 컨텍스트 전달.
+    plannedEntryPrice: trade.plannedEntryPrice ?? null,
+    exitReason: trade.exitReason ?? null,
   };
 }
 

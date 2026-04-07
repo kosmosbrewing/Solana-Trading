@@ -82,6 +82,12 @@ export const config = {
   runnerGradeBEnabled: process.env.RUNNER_GRADE_B_ENABLED === 'true',
   runnerConcurrentEnabled: process.env.RUNNER_CONCURRENT_ENABLED === 'true',
   degradedExitEnabled: process.env.DEGRADED_EXIT_ENABLED === 'true',
+  // Phase B2: CRITICAL_LIVE canary용 임시 backdoor.
+  // DO NOT enable in production — EdgeTracker blacklist 자체를 무시한다.
+  // 사용 시나리오: Phase A의 가드가 모두 배포된 뒤, 오염된 ledger 위에 학습된 blacklist가
+  // 정상 토큰까지 막는 것을 1회성으로 해제하고 canary 기간 동안만 쓴다.
+  // canary 합격 후 즉시 false로 되돌리고 `clean` 모드로 ledger를 sanitize한다.
+  bypassEdgeBlacklist: boolOptional('BOT_BYPASS_EDGE_BLACKLIST', false),
   realtimePoolDiscoveryEnabled: boolOptional('REALTIME_POOL_DISCOVERY_ENABLED', true),
   realtimeSeedBackfillEnabled: boolOptional('REALTIME_SEED_BACKFILL_ENABLED', true),
 

@@ -1,0 +1,61 @@
+Ledger Audit — Phase A1 Diagnostic Capture
+===========================================
+
+Operator action required — this phase is read-only and must be
+executed on the live VPS where DATABASE_URL is set.
+
+Commands
+--------
+
+# 1) 24h ledger audit 저장 (suspicious rows + pair gap + blacklist snapshot)
+npm run ops:check:ledger -- --hours 24 \
+  > data/diagnostics/ledger-audit-2026-04-07.raw.txt 2>&1
+
+# 2) 문제 pair별 원시 row 직접 조회 (BTW, pippin, stonks)
+psql "$DATABASE_URL" -c "
+  SELECT
+    id,
+    token_symbol,
+    created_at,
+    closed_at,
+    exit_reason,
+    planned_entry_price,
+    entry_price,
+    decision_price,
+    exit_price,
+    quantity,
+    entry_slippage_bps,
+    exit_slippage_bps,
+    pnl,
+    take_profit1,
+    take_profit2,
+    stop_loss,
+    tx_signature
+  FROM trades
+  WHERE token_symbol IN ('BTW', 'pippin', 'stonks')
+    AND closed_at >= now() - INTERVAL '24 hours'
+  ORDER BY closed_at DESC;
+"
+
+# 3) 각 row의 tx_signature로 온체인 inAmount/outAmount + token decimals 조회
+#    (Helius Enhanced Transactions API 또는 Solscan)
+#    - inAmount_raw / 10^inputDecimals  → SOL 실제 지불
+#    - outAmount_raw / 10^outputDecimals → 토큰 실제 수령
+
+Expected Pattern (if P0-B decimals 누락 가설 맞다면)
+----------------------------------------------------
+
+DB quantity / on-chain (outAmount_raw / 10^decimals)
+  → ratio가 정확히 10^n (예: 10^6, 10^9) 배수
+
+DB entry_price / on-chain (inAmount_SOL / outAmount_ui)
+  → ratio가 같은 10^n 배수의 역수
+
+이 조건이 맞으면 root cause는 `resolveOutputMetrics`에서
+decimals 조회 실패 → 잘못된 scale factor 적용.
+
+Follow-up
+---------
+
+진단 결과는 이 파일에 수기 append. Phase A2 가드 배포 후에는
+동일 쿼리로 재확인하여 신규 오염 row가 0건인지 검증한다.

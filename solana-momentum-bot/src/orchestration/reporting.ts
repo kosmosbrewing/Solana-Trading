@@ -134,6 +134,9 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
       stopLoss: trade.stopLoss,
       quantity: trade.quantity,
       pnl: trade.pnl ?? 0,
+      // Phase B1: sanitizer가 오염된 row를 drop할 수 있도록 정합성 컨텍스트 전달.
+      plannedEntryPrice: trade.plannedEntryPrice ?? null,
+      exitReason: trade.exitReason ?? null,
     }))).trades
   );
 

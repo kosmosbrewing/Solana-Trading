@@ -1,5 +1,8 @@
 import axios, { AxiosInstance } from 'axios';
+import fs from 'fs';
+import path from 'path';
 import { createModuleLogger } from '../utils/logger';
+import { config } from '../utils/config';
 import { Signal, Trade, Order, AlertLevel } from '../utils/types';
 import {
   buildAlertMessage,
@@ -15,6 +18,58 @@ import { buildRealtimeShadowSummaryMessage } from './realtimeShadowFormatter';
 
 const log = createModuleLogger('Notifier');
 const TELEGRAM_MESSAGE_LIMIT = 4000;
+
+// Phase C1: 발송/실패 이력을 jsonl로 보존해 사후 감사 가능하게 한다.
+// DB 대신 jsonl을 선택한 이유: schema 변경 없이 적용 가능 + append-only가 경합에 안전.
+const NOTIFIER_EVENT_LOG_PATH = path.resolve(config.realtimeDataDir, 'notifier-events.jsonl');
+
+interface NotifierEventContext {
+  /** signal | trade_open | trade_close | alert | info | summary | recovery | shadow | raw */
+  category: string;
+  tradeId?: string;
+  pairAddress?: string;
+}
+
+interface NotifierEventRecord {
+  sent_at: string;
+  direction: 'out';
+  phase: 'attempt' | 'result';
+  category: string;
+  trade_id?: string;
+  pair_address?: string;
+  chunk_index: number;
+  chunk_total: number;
+  message_preview: string;
+  status: 'ok' | 'fail' | 'attempt' | 'disabled';
+  error?: string;
+}
+
+let notifierLogInitAttempted = false;
+
+function ensureNotifierLogDir(): void {
+  if (notifierLogInitAttempted) return;
+  notifierLogInitAttempted = true;
+  try {
+    fs.mkdirSync(path.dirname(NOTIFIER_EVENT_LOG_PATH), { recursive: true });
+  } catch (error) {
+    log.warn(`Failed to create notifier-events.jsonl dir: ${error}`);
+  }
+}
+
+function appendNotifierEvent(record: NotifierEventRecord): void {
+  ensureNotifierLogDir();
+  try {
+    fs.appendFileSync(NOTIFIER_EVENT_LOG_PATH, `${JSON.stringify(record)}\n`);
+  } catch (error) {
+    // Why: 이력 기록이 실패해도 실제 알림 전송을 막지 않는다.
+    log.warn(`Failed to append notifier event: ${error}`);
+  }
+}
+
+function buildMessagePreview(text: string, maxLen = 120): string {
+  const stripped = text.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+  return stripped.length <= maxLen ? stripped : `${stripped.slice(0, maxLen - 3)}...`;
+}
 
 const ALERT_EMOJI: Record<AlertLevel, string> = {
   CRITICAL: '🔴',

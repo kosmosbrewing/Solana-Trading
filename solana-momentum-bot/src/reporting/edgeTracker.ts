@@ -15,6 +15,10 @@ export interface EdgeTrackerTrade {
   stopLoss: number;
   quantity: number;
   pnl: number;
+  /** Phase B1: sanitizer가 planned vs actual entry 정합성을 검사할 때 참조 */
+  plannedEntryPrice?: number | null;
+  /** Phase B1: sanitizer가 "TP인데 음수 pnl" 케이스를 제거할 때 참조 */
+  exitReason?: string | null;
 }
 
 export interface EdgePerformanceStats {

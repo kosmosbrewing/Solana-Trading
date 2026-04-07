@@ -101,9 +101,11 @@
 모두 충족 시 axis_2 종결:
 
 - [ ] 상시 ops loop에 `top_mint_concentration` 지표가 포함됨 (live-ops-loop.md Section 4D 또는 신규 metric)
-- [ ] 임의 7h window에서 `top_signal_pair / total_signals` 비율이 ≤ 0.5 로 안정화 (현재 0.75)
+- [ ] 임의 7h window에서 `top_signal_pair / total_signals` 비율이 ≤ 0.5 로 안정화 (Entry 02 7h: 0.75 PIPPIN=6/8 → Entry 05 7h: pippin=14/28=0.50, swarms=14/28=0.50 — **임계 상한 정확히 도달, top_signal 단일 ticker가 아니라 두 ticker가 100% 점유**)
 - [ ] `recent signal concentration cap` 또는 동등 사전 분산 장치가 코드로 들어가 있음 (블록 사유 분리 가능)
 - [ ] 위 조건 3개가 연속 3개 ops loop entry에서 유지
+
+**측정 caveat (2026-04-08, ralph-loop iter8)**: 단일 top_signal_pair가 0.5 이하로 떨어졌어도 상위 N개 누적 점유율(`top2_signal_pairs / total`)이 1.0이면 분산 효과는 0이다. Entry 05 window에서 두 ticker(pippin/swarms)가 정확히 7건씩 분할하면서 acceptance metric을 우회한 케이스 발생 — `top_mint_concentration` 지표 정의에 `top1`만 보지 말고 `top2/top3`까지 함께 두는 것을 추가로 검토해야 한다 (별도 task로 분리).
 
 ### Lifecycle
 - 시작: 2026-04-07
@@ -145,6 +147,8 @@ bootstrap edge가 어디에서 나오는지 `marketCap / volumeMcap / freshness`
   - 현재(2026-04-07): low-cap surge cohort 7 trades / 3 unique token / 7 losses (Entry 04 audit). 표본 부족, 7d 누적 대기.
 - [~] live/paper 결과 기준으로 "low-cap surge" 가설이 cohort 단위로 confirm 또는 reject 됨 (replay 결과만으로는 종결 불가)
   - **inconclusive (2026-04-07)**: signal pass rate 측면 partial confirm (29.2% > 16.3%), 실측 손익 측면 partial reject (7/7 loss, n=3 unique token), 극단 저시총 ($44K) cohort 0 trades — confirm/reject 모두 단정 불가. Entry 04 참조.
+- [ ] **(2026-04-08 신설)** exit reason × cohort 교차 측정 가능 — closed trades 의 `TP1 / TP2 / SL / TRAILING / TIME_STOP` 도달 빈도와 평균 R 분포를 marketCap/volumeMcap cohort별로 분리 조회. exit 구조 적합성 판단의 입력값.
+  - 의존: `docs/exec-plans/active/exit-structure-validation-2026-04-08.md` Phase X2 (`scripts/analysis/exit-distribution-audit.ts`). cohort 분리는 trades schema 확장 또는 signal-intents.jsonl JOIN 후 가능.
 
 ### Lifecycle
 - 시작: ~~axis_1 1차 통과 후 (universe가 fresh candidate를 충분히 공급해야 cohort별 표본이 확보된다)~~ → **2026-04-07 보강**: signal-level 측정은 axis_1 의존을 떠나 즉시 가능. trade-level 측정만 axis_1 의존 (universe quality가 표본 다양성을 결정).
@@ -174,3 +178,4 @@ bootstrap edge가 어디에서 나오는지 `marketCap / volumeMcap / freshness`
 
 - 2026-04-07: ops-history Entry 02 Long-Term Plan 3축에서 분리 생성
 - 2026-04-07 (ralph-loop iter7): signal-level cohort 측정 도입 — `scripts/analysis/signal-cohort-audit.ts` + `docs/audits/signal-cohort-2026-04-07.md`. axis_3 acceptance 첫·셋째 칸 partial 충족. 4 sessions / 86 signals / 71 with marketCap 표본. 사용자 가설 (저시총 surge edge) 1차 verdict는 inconclusive — Entry 04 참조
+- 2026-04-08 (ralph-loop iter8): Phase 1 read-only PRICE_ANOMALY ratio audit (`docs/audits/price-anomaly-ratio-2026-04-08.md`). 7h window 28 signals 중 pippin=14/swarms=14 100% 두 ticker 점유 → axis_2 acceptance metric `top_signal_pair / total ≤ 0.5` 임계 정확 도달지만 top2 누적은 1.0으로 분산 효과 zero. caveat 명시 + iter9 PumpSwap IDL discriminator code-only verification 다음 단계로 예약 — Entry 05 참조

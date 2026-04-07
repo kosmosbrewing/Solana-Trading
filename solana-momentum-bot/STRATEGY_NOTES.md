@@ -1,9 +1,37 @@
 # STRATEGY_NOTES.md
 
 > Status: forward strategy memo
-> Updated: 2026-04-07
+> Updated: 2026-04-08
 > Purpose: 현재 전략 구조의 한계 가설, v5 방향성, 다음 전략 질문을 분리 관리한다.
 > Runtime quick ref: [`STRATEGY.md`](./STRATEGY.md)
+
+## 2026-04-08 — Exit 구조 적합성 미검증 메모
+
+Codex의 exit 구조 진단(2026-04-08)에서 다음이 확인됐다.
+
+- **구조의 철학은 정렬돼 있다.** SL 1.5×ATR(짧은 손실) + TP1 partial 30%(작은 부분 실현) + TP2 10×ATR runner(큰 winner 의존)는 "손실 짧게, 수익 길게" 명제와 정합한다.
+- **그러나 live에서 작동 여부가 검증되지 않았다.** 2026-04-07T04:01Z~11:01Z 윈도 entry 기준 `0W / 4L`, `realized = -0.000509 SOL`. 큰 runner가 한 건도 잡히지 않았다.
+- **TP1 30%는 명목 0.3R 실현.** 손실 1R을 상쇄하려면 win rate ≥ 77%가 필요하다 — 현재 표본에서 비현실적.
+- **TP2 10×ATR은 sweep 최적 5×ATR에서 v5 runner-centric 확장.** Open Question(아래)에서 이미 `Live 50-trade 후 도달률로 판단` 으로 적혀 있었으나 표본 누적 전이다.
+- **표본은 결론을 내릴 수 없는 크기다(n=4).** "구조가 틀렸다"가 아니라 "구조를 판단할 측정 인프라가 부족하다"가 정확한 진단.
+- **현재 forbidden**: `tradingParams.ts:56-64` orderShape (`tp1Multiplier`, `tp2Multiplier`, `tp1PartialPct`, `realtimeSlAtrMultiplier`) 직접 변경 금지. Phase X2 측정 통과 전까지 lock.
+- **next**: `docs/exec-plans/active/exit-structure-validation-2026-04-08.md` Phase X1 (Hygiene 누적) → Phase X2 (Distribution Audit, ≥20 clean closed trades) → Phase X3 (가설 옵션 분기). 측정 도구는 `scripts/analysis/exit-distribution-audit.ts`.
+- **mission 정렬 한 줄**: 측정이 정직해진 이후의 데이터만 exit 구조 결정의 근거가 된다.
+
+### Phase X2 v2 measurement gap (2026-04-08, n=18)
+
+`exit-distribution-audit.ts` v2가 intent vs actual outcome cross-tabulation을 출력하기 시작한 후, 첫 audit (n=18, sample-gate 미달)에서 다음이 드러났다:
+
+- **TP2 intent rate** (`exit_reason='TAKE_PROFIT_2'` 카운트): 55.6% (10/18)
+- **Actual TP2 reach rate** (`exit_price ≥ take_profit2`): **0.0% (0/18)**
+- **TP2 intent → actual TP2 match**: 0/10 = **0%**
+- 10건의 TP2 intent 모두 swap latency 동안 price reverse → 실제 fill은 SL_OR_WORSE(5건) 또는 BELOW_ENTRY(5건)에서 체결됨
+
+이것은 stamping bug가 아니다. 코드는 의도대로 동작한다 — `exit_reason`은 monitor loop가 발동시킨 *trigger intent*고 `exit_price`는 Jupiter swap의 *actual fill*이다. 두 값은 분리된 metric이며 메모코인 빠른 변동에서는 자주 어긋난다.
+
+**함의**: 표본은 여전히 18 < 20이라 단정 금지이지만, 만약 누적 후에도 actual TP2 reach가 0%에 가깝다면 Phase X3 Scenario A 옵션 (`tp2Multiplier` 5.0 축소)만으로는 부족할 수 있다. Multiplier만 낮춰도 swap latency 동안의 price reverse 자체는 해결되지 않는다. 그 경우 exit *mechanism* 개선 (candle observation → tick observation, market sell → limit, sub-second monitoring)을 동반해야 하며 이는 본 plan의 Out of Scope로 분리됐다. 후보 plan: `exit-execution-mechanism-YYYY-MM-DD.md`.
+
+지금은 측정 정직성만 확보됐다. 결정은 표본 누적 후로 미룬다.
 
 ## 2026-04-07 — 가격 정합성 회복 메모
 

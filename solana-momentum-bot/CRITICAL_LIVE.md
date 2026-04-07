@@ -1,7 +1,7 @@
-Status: current (Phase E 배포 검증 통과, Phase M day-1 baseline 단계)
-Updated: 2026-04-07T13:50Z
-Purpose: 2026-04-07 live 운영 이상 징후와 현재 판단 근거를 단건 문서로 고정
-Use with: `OPERATIONS.md`, `docs/runbooks/live-ops-loop.md`, `scripts/ledger-audit.ts`, `docs/exec-plans/active/live-ops-integrity-2026-04-07.md`, `docs/ops-history/2026-04-07.md` (Entry 01/02/03)
+Status: current (Phase E 배포 검증 통과, Phase M day-2 + ralph-loop iter10 PRICE_ANOMALY fix 배포 단계)
+Updated: 2026-04-08 (§7H iter10 결과 추가 — `parsePumpSwapInstruction` priceNative 산출 path 폐기 + 87 suites/466 tests pass)
+Purpose: 2026-04-07~04-08 live 운영 이상 징후와 현재 판단 근거를 단건 문서로 고정
+Use with: `OPERATIONS.md`, `docs/runbooks/live-ops-loop.md`, `scripts/ledger-audit.ts`, `docs/exec-plans/active/live-ops-integrity-2026-04-07.md`, `docs/ops-history/2026-04-07.md` (Entry 01/02/03/04), `docs/ops-history/2026-04-08.md` (Entry 05), `docs/audits/price-anomaly-ratio-2026-04-08.md`
 
 # CRITICAL_LIVE
 
@@ -510,3 +510,89 @@ Use with: `OPERATIONS.md`, `docs/runbooks/live-ops-loop.md`, `scripts/ledger-aud
 
 - [`docs/exec-plans/active/edge-cohort-quality-2026-04-07.md`](./docs/exec-plans/active/edge-cohort-quality-2026-04-07.md) Axis 3 acceptance + History (2026-04-07 ralph-loop iter7)
 - [`docs/ops-history/2026-04-07.md`](./docs/ops-history/2026-04-07.md) Entry 04 (cohort signal-level 1차 측정)
+
+### 7H. Price Anomaly Ratio — 7h live window 정밀 진단 (Entry 05, 2026-04-08, ralph-loop iter8)
+
+> Source: [`docs/audits/price-anomaly-ratio-2026-04-08.md`](./docs/audits/price-anomaly-ratio-2026-04-08.md) (read-only Phase 1 diagnosis)
+> Trigger: Codex 운영 로그 분석 — 2026-04-07T15:13Z~22:13Z window에서 28 signals 중 15건 PRICE_ANOMALY_BLOCK (54%)
+> Window: `2026-04-07T15:13:02.733Z ~ 2026-04-07T22:13:02.733Z` (7h)
+> Session: `2026-04-07T14-35-58-100Z-live`
+
+**핵심 정정 (§7G와의 framing 차이)**
+
+- §7G framing: 4-session 평균에서 cohort blocking의 60%가 risk cooldown 누적, PRICE_ANOMALY는 17건 중 3건(18%)
+- 7H framing: 단일 7h window에서 PRICE_ANOMALY 100%(15/15 execution_failed)
+- 두 framing 모두 유효 — 적용 cohort/window가 다르다. §7G는 4-session aggregate, 7H는 단일 7h live window 직접 측정. **PRICE_ANOMALY rate는 시점/cohort에 따라 18~100%로 변동**
+
+**Hard data**
+
+| Status | Count | Note |
+|---|---:|---|
+| `execution_failed` | 15 | 100% PRICE_ANOMALY_BLOCK |
+| `risk_rejected` | 9 | cooldown 누적 |
+| `executed_live` | 4 | pippin × 2, swarms × 2 |
+| **Total** | **28** | 100% pippin(14)+swarms(14) |
+
+| Ticker | mc | volMcap | TVL | mean ratio | inflation |
+|---|---:|---:|---:|---:|---:|
+| pippin | $34.2M | 0.15 | $4.7M | 0.185 | 5.41× |
+| swarms | $14.7M | 0.17 | $1.6M | 0.031 | 32.26× |
+
+**관찰**:
+1. ratio가 토큰별로 다르고 같은 토큰 내에서는 거의 일정 (pippin σ<5%, swarms σ<8%)
+2. 같은 토큰에서 30분 내 success/failure interleave — 토큰 영구 unit bug 아님 (path-dependent)
+3. inflation 5.41× / 32.26×는 정수 decimals shift(10^k) 아님 — 단순 decimals 누락 아님
+
+**Verdict (Phase 1 read-only)**
+
+- **Phase A3 가드는 true positive**. 잘못된 가격을 ledger에 진입시키지 않게 정확히 차단 중. Phase A3 임계 [0.7, 1.3] 조정 금지.
+- **차단의 원인은 timing/sandwich가 아니라 candle.close 산출 path의 오염**이다 — 즉 priceNative computation upstream에 path-dependent bug.
+
+**Suspect ranking** (상세는 audit doc §Suspect Ranking)
+
+| Rank | Path | 확률 | 검증 |
+|---|---|---:|---|
+| 1 | `parsePumpSwapInstruction` offset 16 = `max_quote_amount_in` 디코딩 | **100% 확정** (iter9 IDL verification) | PumpSwap 공식 IDL `buy(base_amount_out, max_quote_amount_in, track_volume)` 시그니처 — 두 u64 모두 user intent (slippage worst-case bound) |
+| 2 | `parseFromPoolMetadata` `sumMintDelta` partial delta | ~20% (iter10 후 decision) | iter10 fix 배포 후 PRICE_ANOMALY rate 변화로 분기 |
+| 3 | `pickLargestTokenDelta` multi-hop intermediate token | ~5% | pool metadata 존재 여부 확인 |
+| 4 | Helius WS feed 자체 inflation | ~5% | `heliusWSIngester.ts` read |
+
+**iter9 verdict (2026-04-08)**: 1순위 100% 확정. `parsePumpSwapInstruction`이 산출하는 `priceNative = max_quote_amount_in / base_amount_out`은 사용자의 worst-case price (slippage upper bound)이지 actual fill price가 아니다. 슬리피지 톨러런스 reverse engineering: pippin 5.41× ≈ 68.7%, swarms 32.26× ≈ 94%. 멤코인 트레이더가 큰 슬리피지를 자주 설정하는 패턴과 일치.
+
+**즉시 차단 우선순위 (다음 ralph-loop iter)**
+
+1. ~~iter9 (code-only): PumpSwap IDL discriminator 확인 → 1순위 verdict~~ ✅ **완료**
+2. ~~iter10: `parsePumpSwapInstruction` priceNative 산출 path 폐기~~ ✅ **완료 (2026-04-08)** — 아래 §iter10 결과 참조
+3. **iter11 (decision-tree, 7h 모니터링 후)**: iter10 배포 후 PRICE_ANOMALY rate 변화 미관측 시 → 시나리오 Y 확정, `sumMintDelta` user-account-only 필터 추가
+4. **Phase 2 (별도 iter)**: 4 entries (PIPPIN×2, SWARMS×2) per-trade timeline decomposition
+
+**iter10 결과 (2026-04-08, ralph-loop iter10)**
+
+- 변경 파일:
+  - `src/realtime/pumpSwapParser.ts` — `parsePumpSwapFromTransaction`, `parsePumpSwapInstruction`, `parsePumpSwapFromLogs`, `BUY_DISCRIMINATOR`, `SELL_DISCRIMINATOR`, `decodeInstructionData`, `decodeSide`, `readU64LE`, `parseNumeric`, `detectSide` 모두 삭제. bs58 / web3.js types import 제거. `PUMP_SWAP_PROGRAM`, `PUMP_SWAP_DEX_IDS`, `isPumpSwapDexId`, `isPumpSwapPool`만 유지 (157 lines → 23 lines)
+  - `src/realtime/swapParser.ts:142` — `parseSwapFromTransaction`에서 PumpSwap pool 분기 단순화: `isPumpSwapPool(metadata)`이면 `parseFromPoolMetadata` 결과를 그대로 반환 (null이면 swap drop). instruction parser fallback 호출 완전 제거.
+  - `test/swapParser.test.ts:108` — 'parses direct PumpSwap instructions...' 테스트를 'drops PumpSwap swaps when pre/post token balance deltas are missing (no instruction-decode fallback)'로 교체. 동일 입력(meta with empty token balances + buy instruction)이 이제 `null`을 반환하는지 검증.
+- 검증:
+  - `npx tsc --noEmit` → 0 errors
+  - `npx jest test/` → **87 suites / 466 tests all pass** (swapParser 16/16)
+- 의도:
+  - PumpSwap pool에 한해 actual fill을 측정 가능한 유일한 source는 pre/postTokenBalances delta. instruction payload는 user intent (slippage 상한)이라 산술적으로 actual price를 산출할 수 없다.
+  - 옵션 A (보수적) 적용: parser 자체를 삭제해 미래에 동일 버그 재발 가능성 차단.
+- VPS 배포 + 7h 모니터링 결과는 다음 ops loop entry에 기록 (decision tree: PRICE_ANOMALY rate 0% → 시나리오 X 확정 → axis 종결 / 여전히 high → 시나리오 Y 확정 → iter11 sumMintDelta 보강).
+
+**iter10 fix 접근법** (audit doc §Phase 1B Verdict 상세)
+
+- 옵션 A (보수적, 권장): `parseFromPoolMetadata`가 null이면 PumpSwap swap을 drop. instruction parser path는 본질적으로 actual fill을 측정 불가하므로 즉시 폐기.
+- 옵션 B (계측 후 결정): 1주일 instrumentation 후 결정 — 거부 (PRICE_ANOMALY 1주일 추가 누적 비용 > 1순위 가설 틀릴 위험)
+
+**Operational verdict**
+
+- 옵션 D 유지: **운영 계속 + 진단 병행**. Phase A3 가드가 ledger 오염을 정확히 막고 있고, 7h window 실손실 -0.0029 SOL = daily 한도의 6%로 제어 범위 내.
+- 4 entry 0W/4L 100% 손실률은 **Phase 2 (per-trade decomposition)에서 별도 분해 필요** — 이번 audit은 Phase 1 read-only diagnosis로만 한정.
+- **Phase A3 임계 조정 금지** — 5×/32× inflation이 사실이면 [0.7, 1.3]는 정확한 임계다. 늘리면 ledger 오염을 풀어준다.
+
+**상위 plan link**
+
+- [`docs/audits/price-anomaly-ratio-2026-04-08.md`](./docs/audits/price-anomaly-ratio-2026-04-08.md) — 본 audit 원문 (Phase 1 diagnosis)
+- [`docs/ops-history/2026-04-08.md`](./docs/ops-history/2026-04-08.md) Entry 05 (day-2 ops loop entry, ralph-loop iter8)
+- [`docs/exec-plans/active/edge-cohort-quality-2026-04-07.md`](./docs/exec-plans/active/edge-cohort-quality-2026-04-07.md) Axis 2 — 7h window `top_signal_pair / total_signals = 14/28 = 0.5` (acceptance 임계 상한)

@@ -1,6 +1,6 @@
 # Tech Debt Tracker
 
-> Last updated: 2026-04-07
+> Last updated: 2026-04-08
 > Scope: 현재 운영과 직접 맞닿은 기술 부채만 남긴다.
 
 ## Current Mission Readiness
@@ -17,6 +17,7 @@
 | TD-2 | blacklist pair 재유입 통제 부족 | 동일 loser pair 재점유 가능성 남음 | scanner cooldown 보강 필요 여부 판단 |
 | TD-3 | Gecko `429` data-plane noise | 지속 발생 | cadence 해석과 분리 추적 |
 | TD-4 | oversized file debt | 일부 핵심 문서/모듈 여전히 큼 | 기능 작업과 분리해 점진 정리 |
+| TD-14 | TP1 partial 30% / TP2 10×ATR / SL 1.5×ATR 의 live 적합성 미검증 | Codex 진단(2026-04-08): 구조 철학은 OK이나 live 4 trades 표본에서 win 0건 — runner-centric 가설이 작동 중인지 측정 인프라가 부재. 표본 부족(n=4)으로 결론 불가 | **재진입 조건**: post-Phase E clean closed trades ≥ 20건 누적 후 `exit-distribution-audit` 실행 → exit reason 분포 확정 → `exit-structure-validation-2026-04-08.md` Phase X3 가설 옵션 분기. 표본 누적 전 직접 튜닝 금지 (`tradingParams.ts:56-64` orderShape lock) |
 
 ## Medium Priority
 

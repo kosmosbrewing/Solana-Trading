@@ -105,7 +105,13 @@ describe('swapParser', () => {
     expect(parsed?.priceNative).toBeCloseTo(0.132065032 / 19.405357, 12);
   });
 
-  it('parses direct PumpSwap instructions from a transaction when pool metadata is present', () => {
+  it('drops PumpSwap swaps when pre/post token balance deltas are missing (no instruction-decode fallback)', () => {
+    // Why: PumpSwap buy(base_amount_out, max_quote_amount_in, ...) instruction payload는
+    //   user intent (slippage 상/하한)이라 actual fill 가격이 아니다. instruction parser fallback이
+    //   살아 있던 시기에는 max_quote_amount_in / base_amount_out 비율이 그대로 priceNative가 되어
+    //   pippin/swarms 같은 토큰에서 5×~30× 부풀려진 가격이 ledger에 들어가 PRICE_ANOMALY_BLOCK
+    //   100%를 만들었다 (docs/audits/price-anomaly-ratio-2026-04-08.md).
+    //   iter10부터는 PumpSwap에서 parseFromPoolMetadata가 null을 반환하면 swap을 drop한다.
     const buyInstructionData = encodePumpInstruction(
       [102, 6, 61, 18, 1, 218, 235, 234],
       1_250_000n,
@@ -156,17 +162,7 @@ describe('swapParser', () => {
       },
     });
 
-    expect(parsed).toMatchObject({
-      pool: 'pool-pump',
-      signature: 'sig-pump',
-      side: 'buy',
-      amountBase: 1.25,
-      amountQuote: 0.25,
-      slot: 999,
-      dexProgram: PUMP_SWAP_PROGRAM,
-      source: 'transaction',
-    });
-    expect(parsed?.priceNative).toBeCloseTo(0.2, 12);
+    expect(parsed).toBeNull();
   });
 
   it('prefers PumpSwap balance-delta parsing over instruction decode when both are available', () => {

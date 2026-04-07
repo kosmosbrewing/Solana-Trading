@@ -14,7 +14,6 @@ import {
 } from './raydiumSwapLogParser';
 import {
   isPumpSwapPool,
-  parsePumpSwapFromTransaction,
   PUMP_SWAP_PROGRAM,
 } from './pumpSwapParser';
 import { ParsedSwap, RealtimePoolMetadata, SwapSide } from './types';
@@ -145,14 +144,15 @@ export function parseSwapFromTransaction(
 ): ParsedSwap | null {
   const meta = tx.meta;
   const metadataAware = meta ? parseFromPoolMetadata(tx, context) : null;
-  if (metadataAware && isPumpSwapPool(context.poolMetadata)) {
-    // Why: PumpSwap instruction payload semantics can drift from actual fill direction/units.
-    //   pool metadata delta는 base/quote mint 기준 actual token movement라 우선 신뢰한다.
+  if (isPumpSwapPool(context.poolMetadata)) {
+    // Why: PumpSwap `buy(base_amount_out, max_quote_amount_in, ...)` instruction payload는
+    //   user intent (slippage 상/하한)이지 실제 fill 가격이 아니다. offset 8/16에서
+    //   priceNative를 만들면 worst-case ≈ expected × (1+s)/(1-s) 로 5×~30× 부풀어
+    //   PRICE_ANOMALY_BLOCK 100% 발생 (docs/audits/price-anomaly-ratio-2026-04-08.md).
+    //   pre/postTokenBalances delta 기반 parseFromPoolMetadata만 신뢰하고, metadataAware가
+    //   null이면 swap을 drop한다 (잘못된 가격으로 ledger를 오염시키는 것보다 누락이 안전).
     return metadataAware;
   }
-
-  const parsedPump = parsePumpSwapFromTransaction(tx, context);
-  if (parsedPump) return parsedPump;
 
   if (!meta) return null;
   if (metadataAware) return metadataAware;

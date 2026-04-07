@@ -1,4 +1,4 @@
-import { checkOpenPositions, closeTrade, recordOpenedTrade } from '../src/orchestration/tradeExecution';
+import { checkOpenPositions, closeTrade, recordOpenedTrade, PriceAnomalyError } from '../src/orchestration/tradeExecution';
 import type { BotContext } from '../src/orchestration/types';
 import type { Trade } from '../src/utils/types';
 
@@ -620,5 +620,286 @@ describe('tradeExecution paper balance', () => {
       effectiveRR: 1.7,
       roundTripCost: 0.012,
     }));
+  });
+
+  // Phase A3 — CRITICAL_LIVE 가격 정합성 clamp 테스트
+  describe('Phase A3 — alignment ratio clamp', () => {
+    function buildMinimalCtx(overrides?: Partial<BotContext>): {
+      ctx: BotContext;
+      positionStore: { updateState: jest.Mock };
+      tradeStore: { insertTrade: jest.Mock };
+      notifier: { sendTradeOpen: jest.Mock; sendCritical: jest.Mock };
+      executor: { executeSell: jest.Mock };
+      auditLogger: { logSignal: jest.Mock };
+    } {
+      const positionStore = { updateState: jest.fn().mockResolvedValue(undefined) };
+      const tradeStore = { insertTrade: jest.fn().mockResolvedValue('trade-opened') };
+      const notifier = {
+        sendTradeOpen: jest.fn().mockResolvedValue(undefined),
+        sendCritical: jest.fn().mockResolvedValue(undefined),
+      };
+      const executor = {
+        executeSell: jest.fn().mockResolvedValue({ txSignature: 'DUMP_SIG' }),
+      };
+      const auditLogger = { logSignal: jest.fn().mockResolvedValue(undefined) };
+      const healthMonitor = { updateTradeTime: jest.fn() };
+
+      const ctx = {
+        positionStore,
+        tradeStore,
+        notifier,
+        executor,
+        auditLogger,
+        healthMonitor,
+        tradingMode: 'live',
+        ...overrides,
+      } as unknown as BotContext;
+
+      return { ctx, positionStore, tradeStore, notifier, executor, auditLogger };
+    }
+
+    const baseSignal = {
+      pairAddress: 'pair-BTW',
+      strategy: 'volume_spike',
+      price: 0.81549236,
+      meta: {},
+      timestamp: new Date(),
+      action: 'BUY',
+      breakoutScore: {
+        volumeScore: 20, buyRatioScore: 20, multiTfScore: 20, whaleScore: 10, lpScore: 10,
+        totalScore: 80, grade: 'A' as const,
+      },
+    };
+    const baseCandle = {
+      pairAddress: 'pair-BTW', timestamp: new Date(), intervalSec: 300,
+      open: 0.8, high: 0.82, low: 0.79, close: 0.81, volume: 100, buyVolume: 60, sellVolume: 40, tradeCount: 12,
+    };
+    const baseOrder = {
+      pairAddress: 'pair-BTW',
+      strategy: 'volume_spike' as const,
+      side: 'BUY' as const,
+      price: 0.81549236,
+      quantity: 1,
+      stopLoss: 0.77,
+      takeProfit1: 0.89,
+      takeProfit2: 0.98,
+      trailingStop: 0.05,
+      timeStopMinutes: 30,
+      breakoutGrade: 'A' as const,
+    };
+
+    it('throws PriceAnomalyError and dumps tokens when actual/planned ratio is outside band', async () => {
+      const { ctx, tradeStore, notifier, executor, positionStore } = buildMinimalCtx();
+
+      // BTW 케이스 재현: planned=0.815, actual=0.00000122 (-100% gap)
+      const executionSummary = {
+        entryPrice: 0.00000122,
+        quantity: 668_436,
+        plannedEntryPrice: 0.81549236,
+        plannedQuantity: 1,
+        actualEntryNotionalSol: 0.815,
+        entrySlippageBps: 0,
+        entrySlippagePct: -1,
+        actualOutAmount: '668436000000', // raw
+        outputDecimals: 6,
+        effectiveRR: 1.7,
+        roundTripCost: 0.012,
+      };
+
+      await expect(
+        recordOpenedTrade(
+          ctx,
+          'pos-btw',
+          baseSignal as any,
+          baseCandle as any,
+          { attentionScore: undefined, executionViability: { rejected: false, effectiveRR: 1.9, roundTripCost: 0.01, sizeMultiplier: 1 } } as any,
+          baseOrder,
+          80,
+          'RISK',
+          'TX_BTW',
+          executionSummary as any
+        )
+      ).rejects.toBeInstanceOf(PriceAnomalyError);
+
+      // DB 기록은 절대 일어나면 안 됨
+      expect(tradeStore.insertTrade).not.toHaveBeenCalled();
+      expect(positionStore.updateState).not.toHaveBeenCalledWith(
+        expect.any(String),
+        'ENTRY_CONFIRMED',
+        expect.anything()
+      );
+      // Critical alert + emergency dump 모두 호출됨
+      expect(notifier.sendCritical).toHaveBeenCalledWith('price_anomaly', expect.stringContaining('PRICE_ANOMALY_BLOCK'));
+      expect(executor.executeSell).toHaveBeenCalledWith('pair-BTW', 668_436_000_000n);
+    });
+
+    it('allows normal fills inside [0.7, 1.3] ratio band', async () => {
+      const { ctx, tradeStore, executor } = buildMinimalCtx();
+
+      // 정상: 5% slippage — ratio 1.05
+      const executionSummary = {
+        entryPrice: 1.05,
+        quantity: 9.5,
+        plannedEntryPrice: 1.0,
+        plannedQuantity: 10,
+        actualEntryNotionalSol: 9.975,
+        entrySlippageBps: 50,
+        entrySlippagePct: 0.05,
+        actualOutAmount: '950000',
+        outputDecimals: 5,
+        effectiveRR: 1.7,
+        roundTripCost: 0.012,
+      };
+
+      await expect(
+        recordOpenedTrade(
+          ctx,
+          'pos-normal',
+          { ...baseSignal, price: 1.0 } as any,
+          baseCandle as any,
+          { attentionScore: undefined, executionViability: { rejected: false, effectiveRR: 1.9, roundTripCost: 0.01, sizeMultiplier: 1 } } as any,
+          { ...baseOrder, price: 1.0, stopLoss: 0.95, takeProfit1: 1.1, takeProfit2: 1.2 },
+          80,
+          'RISK',
+          'TX_OK',
+          executionSummary as any
+        )
+      ).resolves.toBeUndefined();
+
+      expect(tradeStore.insertTrade).toHaveBeenCalledTimes(1);
+      expect(executor.executeSell).not.toHaveBeenCalled();
+    });
+
+    it('skips emergency dump in paper mode but still throws', async () => {
+      const { ctx, executor, notifier } = buildMinimalCtx({ tradingMode: 'paper' } as any);
+      const executionSummary = {
+        entryPrice: 0.00000122,
+        quantity: 668_436,
+        plannedEntryPrice: 0.81549236,
+        plannedQuantity: 1,
+        actualEntryNotionalSol: 0.815,
+        entrySlippageBps: 0,
+        entrySlippagePct: -1,
+        actualOutAmount: '668436000000',
+        outputDecimals: 6,
+        effectiveRR: 1.7,
+        roundTripCost: 0.012,
+      };
+
+      await expect(
+        recordOpenedTrade(
+          ctx,
+          'pos-paper',
+          baseSignal as any,
+          baseCandle as any,
+          { attentionScore: undefined, executionViability: { rejected: false, effectiveRR: 1.9, roundTripCost: 0.01, sizeMultiplier: 1 } } as any,
+          baseOrder,
+          80,
+          'RISK',
+          'TX_PAPER',
+          executionSummary as any
+        )
+      ).rejects.toBeInstanceOf(PriceAnomalyError);
+
+      expect(executor.executeSell).not.toHaveBeenCalled();
+      expect(notifier.sendCritical).toHaveBeenCalled();
+    });
+  });
+
+  // Phase A4 — closeTrade exit anomaly 검증
+  describe('Phase A4 — closeTrade exit anomaly alert', () => {
+    it('sends critical alert when exit/entry ratio falls below -95%', async () => {
+      const tradeStore = {
+        closeTrade: jest.fn().mockResolvedValue(undefined),
+        failTrade: jest.fn().mockResolvedValue(undefined),
+        updateHighWaterMark: jest.fn().mockResolvedValue(undefined),
+      };
+      const notifier = {
+        sendTradeClose: jest.fn().mockResolvedValue(undefined),
+        sendError: jest.fn().mockResolvedValue(undefined),
+        sendCritical: jest.fn().mockResolvedValue(undefined),
+      };
+      const positionStore = {
+        getOpenPositions: jest.fn().mockResolvedValue([]),
+        updateState: jest.fn().mockResolvedValue(undefined),
+      };
+      const healthMonitor = { updateTradeTime: jest.fn() };
+      const ctx = {
+        tradingMode: 'paper',
+        tradeStore,
+        notifier,
+        positionStore,
+        healthMonitor,
+        paperBalance: 0.0,
+      } as unknown as BotContext;
+
+      const trade: Trade = {
+        id: 'trade-anomaly',
+        pairAddress: 'pair-stonks',
+        strategy: 'volume_spike',
+        side: 'BUY',
+        entryPrice: 0.00008227,
+        quantity: 1000,
+        status: 'OPEN',
+        createdAt: new Date('2026-03-21T00:00:00Z'),
+        stopLoss: 0.00007,
+        takeProfit1: 0.00009,
+        takeProfit2: 0.00010,
+        timeStopAt: new Date('2026-03-21T01:00:00Z'),
+      };
+
+      // BTW/stonks 패턴 재현: entry=0.00008227, fill=0.00000358 → ratio=-95.6% < -95%
+      await closeTrade(trade, 'TAKE_PROFIT_2', ctx, 0.00000358);
+
+      expect(notifier.sendCritical).toHaveBeenCalledWith(
+        'exit_anomaly',
+        expect.stringContaining('EXIT_ANOMALY')
+      );
+    });
+
+    it('does not send critical alert for healthy exits within band', async () => {
+      const tradeStore = {
+        closeTrade: jest.fn().mockResolvedValue(undefined),
+        failTrade: jest.fn().mockResolvedValue(undefined),
+        updateHighWaterMark: jest.fn().mockResolvedValue(undefined),
+      };
+      const notifier = {
+        sendTradeClose: jest.fn().mockResolvedValue(undefined),
+        sendError: jest.fn().mockResolvedValue(undefined),
+        sendCritical: jest.fn().mockResolvedValue(undefined),
+      };
+      const positionStore = {
+        getOpenPositions: jest.fn().mockResolvedValue([]),
+        updateState: jest.fn().mockResolvedValue(undefined),
+      };
+      const healthMonitor = { updateTradeTime: jest.fn() };
+      const ctx = {
+        tradingMode: 'paper',
+        tradeStore,
+        notifier,
+        positionStore,
+        healthMonitor,
+        paperBalance: 0.0,
+      } as unknown as BotContext;
+
+      const trade: Trade = {
+        id: 'trade-ok',
+        pairAddress: 'pair-ok',
+        strategy: 'volume_spike',
+        side: 'BUY',
+        entryPrice: 1.0,
+        quantity: 1.0,
+        status: 'OPEN',
+        createdAt: new Date('2026-03-21T00:00:00Z'),
+        stopLoss: 0.9,
+        takeProfit1: 1.1,
+        takeProfit2: 1.2,
+        timeStopAt: new Date('2026-03-21T01:00:00Z'),
+      };
+
+      await closeTrade(trade, 'TAKE_PROFIT_2', ctx, 1.2);
+
+      expect(notifier.sendCritical).not.toHaveBeenCalled();
+    });
   });
 });

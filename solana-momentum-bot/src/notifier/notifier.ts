@@ -107,7 +107,9 @@ export class Notifier {
   // ─── 4-Level Alert System ───
 
   async sendCritical(context: string, message: string): Promise<void> {
-    await this.send(buildAlertMessage('CRITICAL', context, message));
+    await this.send(buildAlertMessage('CRITICAL', context, message), {
+      category: `alert:critical:${context}`,
+    });
   }
 
   async sendWarning(context: string, message: string): Promise<void> {
@@ -115,12 +117,14 @@ export class Notifier {
     if (this.isThrottled(key, 5 * 60 * 1000)) return;
     this.updateThrottle(key);
 
-    await this.send(buildAlertMessage('WARNING', context, message));
+    await this.send(buildAlertMessage('WARNING', context, message), {
+      category: `alert:warning:${context}`,
+    });
   }
 
   async sendTradeAlert(message: string): Promise<void> {
     const msg = `${ALERT_EMOJI.TRADE} ${message}`;
-    await this.send(msg);
+    await this.send(msg, { category: 'trade_alert' });
   }
 
   async sendInfo(message: string, category = 'generic'): Promise<void> {
@@ -129,29 +133,40 @@ export class Notifier {
     this.updateThrottle(key);
 
     const msg = `${ALERT_EMOJI.INFO} ${message}`;
-    await this.send(msg);
+    await this.send(msg, { category: `info:${category}` });
   }
 
   async sendMessage(message: string): Promise<void> {
-    await this.send(message);
+    await this.send(message, { category: 'raw' });
   }
 
   // ─── Trade-specific alerts ───
 
   async sendSignal(signal: Signal): Promise<void> {
-    await this.send(buildSignalMessage(signal));
+    await this.send(buildSignalMessage(signal), {
+      category: 'signal',
+      pairAddress: signal.pairAddress,
+    });
   }
 
-  async sendTradeOpen(order: Order, txSignature?: string): Promise<void> {
-    await this.send(buildTradeOpenMessage(order, txSignature));
+  async sendTradeOpen(order: Order & { tradeId?: string }, txSignature?: string): Promise<void> {
+    await this.send(buildTradeOpenMessage(order, txSignature), {
+      category: 'trade_open',
+      pairAddress: order.pairAddress,
+      tradeId: order.tradeId,
+    });
   }
 
   async sendTradeClose(trade: Trade): Promise<void> {
-    await this.send(buildTradeCloseMessage(trade));
+    await this.send(buildTradeCloseMessage(trade), {
+      category: 'trade_close',
+      pairAddress: trade.pairAddress,
+      tradeId: trade.id,
+    });
   }
 
   async sendRecoveryReport(details: string[]): Promise<void> {
-    await this.send(buildRecoveryReportMessage(details));
+    await this.send(buildRecoveryReportMessage(details), { category: 'recovery' });
   }
 
   async sendError(context: string, error: unknown): Promise<void> {
@@ -173,11 +188,15 @@ export class Notifier {
   }
 
   async sendDailySummary(report: DailySummaryReport): Promise<void> {
-    await this.send(buildDailySummaryMessage(report, formatKstDate(new Date())));
+    await this.send(buildDailySummaryMessage(report, formatKstDate(new Date())), {
+      category: 'daily_summary',
+    });
   }
 
   async sendRealtimeShadowSummary(report: RealtimeShadowReport): Promise<void> {
-    await this.send(buildRealtimeShadowSummaryMessage(report));
+    await this.send(buildRealtimeShadowSummaryMessage(report), {
+      category: 'realtime_shadow',
+    });
   }
 
   // ─── Throttling ───
@@ -212,13 +231,45 @@ export class Notifier {
     }
   }
 
-  private async send(text: string): Promise<void> {
+  private async send(text: string, context: NotifierEventContext = { category: 'raw' }): Promise<void> {
+    const chunks = splitTelegramMessage(text, TELEGRAM_MESSAGE_LIMIT);
+
     if (!this.enabled) {
       log.debug(`[Telegram disabled] ${text.replace(/<[^>]*>/g, '')}`);
+      for (let i = 0; i < chunks.length; i++) {
+        appendNotifierEvent({
+          sent_at: new Date().toISOString(),
+          direction: 'out',
+          phase: 'result',
+          category: context.category,
+          trade_id: context.tradeId,
+          pair_address: context.pairAddress,
+          chunk_index: i,
+          chunk_total: chunks.length,
+          message_preview: buildMessagePreview(chunks[i]),
+          status: 'disabled',
+        });
+      }
       return;
     }
 
-    for (const chunk of splitTelegramMessage(text, TELEGRAM_MESSAGE_LIMIT)) {
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      const preview = buildMessagePreview(chunk);
+
+      appendNotifierEvent({
+        sent_at: new Date().toISOString(),
+        direction: 'out',
+        phase: 'attempt',
+        category: context.category,
+        trade_id: context.tradeId,
+        pair_address: context.pairAddress,
+        chunk_index: i,
+        chunk_total: chunks.length,
+        message_preview: preview,
+        status: 'attempt',
+      });
+
       try {
         await this.client.post('/sendMessage', {
           chat_id: this.chatId,
@@ -226,8 +277,34 @@ export class Notifier {
           parse_mode: 'HTML',
           disable_web_page_preview: true,
         });
+        appendNotifierEvent({
+          sent_at: new Date().toISOString(),
+          direction: 'out',
+          phase: 'result',
+          category: context.category,
+          trade_id: context.tradeId,
+          pair_address: context.pairAddress,
+          chunk_index: i,
+          chunk_total: chunks.length,
+          message_preview: preview,
+          status: 'ok',
+        });
       } catch (error) {
-        log.error(`Telegram send failed: ${error}`);
+        const errMsg = error instanceof Error ? error.message : String(error);
+        log.error(`Telegram send failed: ${errMsg}`);
+        appendNotifierEvent({
+          sent_at: new Date().toISOString(),
+          direction: 'out',
+          phase: 'result',
+          category: context.category,
+          trade_id: context.tradeId,
+          pair_address: context.pairAddress,
+          chunk_index: i,
+          chunk_total: chunks.length,
+          message_preview: preview,
+          status: 'fail',
+          error: errMsg,
+        });
         return;
       }
     }

@@ -31,6 +31,31 @@ interface Args {
   processName: string;
 }
 
+interface AdmissionSummary {
+  updatedAt?: string;
+  poolCount: number;
+  totals: {
+    observed: number;
+    logParsed: number;
+    fallbackParsed: number;
+    fallbackSkipped: number;
+    blocked: number;
+    parseRatePct: number;
+    skippedRatePct: number;
+  };
+}
+
+interface RuntimeSummary {
+  latestTs: number;
+  cutoffTs: number;
+  interestingCounts: Map<string, number>;
+}
+
+interface Pm2Summary {
+  counts: Record<string, number>;
+  interestingLines: string[];
+}
+
 const ROOT = process.cwd();
 const REALTIME_DIR = path.join(ROOT, 'data', 'realtime');
 const CURRENT_SESSION_PATH = path.join(REALTIME_DIR, 'current-session.json');
@@ -44,9 +69,10 @@ function main(): void {
   printHeader('Helius Ops Check');
   printEnvSummary();
   printCurrentSession();
-  printRealtimeAdmission();
-  printRuntimeDiagnostics(args.hours);
-  printPm2LogSummary(args.processName, args.lines);
+  const admission = printRealtimeAdmission();
+  const runtime = printRuntimeDiagnostics(args.hours);
+  const pm2 = printPm2LogSummary(args.processName, args.lines);
+  printVerdict(admission, runtime, pm2);
 }
 
 function parseArgs(argv: string[]): Args {
@@ -139,12 +165,12 @@ function printCurrentSession(): void {
   console.log(`datasetDir=${pointer.datasetDir ?? '(missing)'}`);
 }
 
-function printRealtimeAdmission(): void {
+function printRealtimeAdmission(): AdmissionSummary | null {
   printSection('3. Realtime Admission Snapshot');
   const payload = readJson<{ updatedAt?: string; entries?: AdmissionEntry[] }>(ADMISSION_PATH);
   if (!payload || !Array.isArray(payload.entries)) {
     console.log(`missing: ${ADMISSION_PATH}`);
-    return;
+    return null;
   }
 
   const entries = payload.entries.map((entry) => {
@@ -195,7 +221,15 @@ function printRealtimeAdmission(): void {
   const top = entries.slice(0, 10);
   if (top.length === 0) {
     console.log('top10=(empty)');
-    return;
+    return {
+      updatedAt: payload.updatedAt,
+      poolCount: entries.length,
+      totals: {
+        ...totals,
+        parseRatePct: totals.observed > 0 ? round(((totals.logParsed + totals.fallbackParsed) / totals.observed) * 100) : 0,
+        skippedRatePct: totals.observed > 0 ? round((totals.fallbackSkipped / totals.observed) * 100) : 0,
+      },
+    };
   }
 
   for (const entry of top) {
@@ -204,14 +238,24 @@ function printRealtimeAdmission(): void {
       `fallbackParsed=${entry.fallbackParsed} fallbackSkipped=${entry.fallbackSkipped} blocked=${entry.blocked}`
     );
   }
+
+  return {
+    updatedAt: payload.updatedAt,
+    poolCount: entries.length,
+    totals: {
+      ...totals,
+      parseRatePct: totals.observed > 0 ? round(((totals.logParsed + totals.fallbackParsed) / totals.observed) * 100) : 0,
+      skippedRatePct: totals.observed > 0 ? round((totals.fallbackSkipped / totals.observed) * 100) : 0,
+    },
+  };
 }
 
-function printRuntimeDiagnostics(hours: number): void {
+function printRuntimeDiagnostics(hours: number): RuntimeSummary | null {
   printSection(`4. Runtime Diagnostics Last ${hours}h`);
   const payload = readJson<{ events?: RuntimeDiagnosticEvent[] }>(RUNTIME_DIAGNOSTICS_PATH);
   if (!payload || !Array.isArray(payload.events)) {
     console.log(`missing: ${RUNTIME_DIAGNOSTICS_PATH}`);
-    return;
+    return null;
   }
 
   const events = payload.events.filter((event) => typeof event.timestampMs === 'number');
@@ -234,20 +278,30 @@ function printRuntimeDiagnostics(hours: number): void {
 
   if (interesting.length === 0) {
     console.log('interestingCounts=(empty)');
-    return;
+    return {
+      latestTs,
+      cutoffTs,
+      interestingCounts: new Map<string, number>(),
+    };
   }
 
   for (const [label, count] of interesting) {
     console.log(`${label}=${count}`);
   }
+
+  return {
+    latestTs,
+    cutoffTs,
+    interestingCounts: new Map<string, number>(interesting),
+  };
 }
 
-function printPm2LogSummary(processName: string, lines: number): void {
+function printPm2LogSummary(processName: string, lines: number): Pm2Summary | null {
   printSection('5. PM2 Log Summary');
   const logOutput = readPm2Logs(processName, lines);
   if (logOutput == null) {
     console.log(`pm2 logs unavailable for process=${processName}`);
-    return;
+    return null;
   }
 
   const patterns: Array<[string, RegExp]> = [
@@ -258,28 +312,99 @@ function printPm2LogSummary(processName: string, lines: number): void {
     ['pool_discovered', /Helius pool discovered/g],
     ['rate_limited', /429|rate limited/g],
     ['fallback_word', /fallback/g],
+    ['helius_ws_429', /Helius WS error .*429/g],
+    ['fallback_batch_429', /Swap fallback batch failed: .*429/g],
+    ['batch_unsupported', /Parsed transaction batch RPC unavailable/g],
   ];
 
+  const counts: Record<string, number> = {};
   for (const [label, pattern] of patterns) {
-    console.log(`${label}=${countMatches(logOutput, pattern)}`);
+    counts[label] = countMatches(logOutput, pattern);
+    console.log(`${label}=${counts[label]}`);
   }
+
+  console.log('fallbackSkippedReasonBreakdown=unavailable_from_current_artifacts');
 
   console.log('\nrecentInterestingLines=');
   const interestingLines = logOutput
     .split('\n')
     .filter((line) =>
-      /Helius WS subscriptions active|WS silent|Swap fallback batch failed|Realtime admission blocked|Helius pool discovered|429|rate limited|fallback/.test(line)
+      /Helius WS subscriptions active|WS silent|Swap fallback batch failed|Realtime admission blocked|Helius pool discovered|429|rate limited|fallback|Parsed transaction batch RPC unavailable/.test(line)
     )
     .slice(-30);
 
   if (interestingLines.length === 0) {
     console.log('(empty)');
-    return;
+    return { counts, interestingLines: [] };
   }
 
   for (const line of interestingLines) {
     console.log(line);
   }
+
+  return { counts, interestingLines };
+}
+
+function printVerdict(
+  admission: AdmissionSummary | null,
+  runtime: RuntimeSummary | null,
+  pm2: Pm2Summary | null
+): void {
+  printSection('6. Verdict');
+
+  if (!admission) {
+    console.log('verdict=insufficient_data');
+    console.log('reason=missing realtime-admission snapshot');
+    return;
+  }
+
+  const unsupportedDex = runtime?.interestingCounts.get('admission_skip:unsupported_dex') ?? 0;
+  const noPairs = runtime?.interestingCounts.get('admission_skip:no_pairs') ?? 0;
+  const idleEvicted = runtime?.interestingCounts.get('candidate_evicted:idle') ?? 0;
+  const riskRejections = [...(runtime?.interestingCounts.entries() ?? [])]
+    .filter(([label]) => label.startsWith('risk_rejection:'))
+    .reduce((sum, [, count]) => sum + count, 0);
+
+  const helius429 = (pm2?.counts.helius_ws_429 ?? 0) + (pm2?.counts.fallback_batch_429 ?? 0);
+  const fallbackFailures = pm2?.counts.fallback_batch_failed ?? 0;
+  const admissionBlocked = pm2?.counts.realtime_admission_blocked ?? 0;
+
+  const parseRatePct = admission.totals.parseRatePct;
+  const skippedRatePct = admission.totals.skippedRatePct;
+
+  const primaryBottleneck =
+    unsupportedDex + noPairs + idleEvicted + riskRejections > Math.max(10, helius429 + fallbackFailures + admissionBlocked)
+      ? 'non_fallback_bottlenecks_dominate'
+      : 'fallback_pressure_possible';
+
+  let recommendation = 'hold_rps_and_investigate';
+  if (
+    parseRatePct < 5 &&
+    skippedRatePct > 50 &&
+    (helius429 >= 20 || fallbackFailures >= 10 || admissionBlocked >= 5) &&
+    primaryBottleneck === 'fallback_pressure_possible'
+  ) {
+    recommendation = '2tps_canary_reasonable';
+  }
+
+  console.log(`primaryBottleneck=${primaryBottleneck}`);
+  console.log(`parseRatePct=${parseRatePct}`);
+  console.log(`skippedRatePct=${skippedRatePct}`);
+  console.log(`helius429Signals=${helius429}`);
+  console.log(`fallbackFailures=${fallbackFailures}`);
+  console.log(`admissionBlocked=${admissionBlocked}`);
+  console.log(`unsupportedDexSkips=${unsupportedDex}`);
+  console.log(`noPairsSkips=${noPairs}`);
+  console.log(`idleEvicted=${idleEvicted}`);
+  console.log(`riskRejections=${riskRejections}`);
+  console.log(`recommendation=${recommendation}`);
+
+  if (recommendation === '2tps_canary_reasonable') {
+    console.log('nextStep=raise REALTIME_FALLBACK_RPS from 1 to 2 for a short canary and re-run this script');
+    return;
+  }
+
+  console.log('nextStep=do not change RPS first; inspect unsupported_dex / idle churn / risk rejection / price-path integrity first');
 }
 
 function readPm2Logs(processName: string, lines: number): string | null {

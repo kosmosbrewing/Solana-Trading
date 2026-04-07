@@ -17,7 +17,6 @@
 | TD-2 | blacklist pair 재유입 통제 부족 | 동일 loser pair 재점유 가능성 남음 | scanner cooldown 보강 필요 여부 판단 |
 | TD-3 | Gecko `429` data-plane noise | 지속 발생 | cadence 해석과 분리 추적 |
 | TD-4 | oversized file debt | 일부 핵심 문서/모듈 여전히 큼 | 기능 작업과 분리해 점진 정리 |
-| TD-8 | `tradeStore.closeTrade()` positional params **11개** (2026-04-07 `exitAnomalyReason` 추가로 +1) | 가독성·유지보수 리스크 가속 | options object 패턴으로 전환 — `live-ops-integrity-2026-04-07.md` Phase S-1 |
 
 ## Medium Priority
 
@@ -34,7 +33,6 @@
 | ID | 항목 | 현재 상태 | 다음 조치 |
 |---|---|---|---|
 | TD-11 | Sanitizer drop 81%+ 상태가 운영자 실시간 가시성 없음 | log 로만 확인 가능 | 일간 drop summary 를 Telegram `OpsDigest` 채널에 push — Phase S-4 |
-| TD-12 | bps ↔ decimal 변환 매직넘버 (`/ 10000`, `* 10000`) 코드 곳곳 반복 | 현재 dozens of call sites | `src/utils/units.ts` 로 `bpsToDecimal`/`decimalToBps` util 추출 — Phase S-5 |
 | TD-13 | `runtime_signal_rows` (realtime-signals.jsonl row 수) vs `trigger_signals` (`trigger_stats:*` 이벤트 수) drift 자동 감지 부재 | Entry 02에서 `8 vs 9` 1건 gap 관측. 두 카운터 정의가 다르고 정상 분포 표본이 없어 임계값 정의 불가. 매뉴얼 분리 기록 룰만 `docs/runbooks/live-ops-loop.md:266`에 존재. 두 카운터 자체는 `ops:check:helius` (`trigger_stats:*`) + `ops:check:sparse` (jsonl row 수)로 이미 노출됨 | **재진입 조건**: ops-history entry가 5건 이상 누적되어 `(trigger_signals - runtime_signal_rows)` 분포의 mean/p95를 정의할 수 있게 된 시점. 그 전에는 임계값 추측 = over-engineering이므로 코드 변경 금지. 재진입 시 `scripts/ops-helius-check.ts:printVerdict` 다음에 두 값과 diff를 한 줄로 출력하는 enhancement만 우선 검토 |
 
 ## Resolved Recently
@@ -48,3 +46,5 @@
 | TD-R5 | pre-gate / post-size execution telemetry persistence | 2026-03-30 |
 | TD-R6 | decision_price + cost decomposition DB/report/Telegram 계측 | 2026-04-06 |
 | TD-R7 | fake-fill fallback 4경로 중복 + `currentPrice` 가장 (Phase E P0~P3) | 2026-04-07 |
+| TD-R8 | `tradeStore.closeTrade()` positional 11개 → `CloseTradeOptions` 객체 (Phase S-1) | 2026-04-07 |
+| TD-R9 | bps ↔ decimal 변환 매직넘버 → `src/utils/units.ts` (Phase S-5) | 2026-04-07 |

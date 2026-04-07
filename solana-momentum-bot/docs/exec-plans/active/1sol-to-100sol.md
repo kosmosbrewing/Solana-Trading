@@ -1,9 +1,10 @@
 # Execution Plan: 1 SOL → 100 SOL
 
 > Status: current active execution plan
-> Updated: 2026-04-06
+> Updated: 2026-04-07 (Phase E deploy reflection)
 > Scope: 구현 완료 이후의 운영 검증, 배포, 표본 축적, live enablement gate
 > Archive: 완료된 root plan과 dated canary history는 [`PLAN_CMPL.md`](../../../PLAN_CMPL.md)에 보관한다.
+> Sub-plans: [`live-ops-integrity-2026-04-07.md`](./live-ops-integrity-2026-04-07.md) (Phase E P0~P3 fake-fill 운영 후속 트래킹)
 
 ## Role
 
@@ -29,6 +30,8 @@
 - **Signal attribution 4-feature** (04-05): marketCap context, crash-safe signal-intent, strategy별 분리 집계, zero-volume skip
 - **Replay-loop 병렬 백테스팅** (04-05): 4 sessions × 2 modes = 8 parallel backtests 완료
 - **Strategy A/C 5m dormancy 확인** (04-05): 261 combination 중 3건 trade → 밈코인 구조적 비적합
+- **Phase E P0~P3 fake-fill 감지/마킹** (04-07): `exit_anomaly_reason` 컬럼 + sanitizer + Phase A4 close-time guards 배포 (commit 26fbfea 외). live 배포는 `2026-04-07T12:21:19Z` `Bot started v0.5`. Phase D acceptance 통과 (ops-history Entry 03). Phase M 7일 모니터링 day-1 진입. 상세는 [`live-ops-integrity-2026-04-07.md`](./live-ops-integrity-2026-04-07.md)
+- **Code refactor quality** (04-07): TD-8 `closeTrade` positional → `CloseTradeOptions` 객체 (5 sites + 6 tests), TD-12 bps 매직넘버 → `src/utils/units.ts` (9 sites). tsc 0 errors / jest 87 suites / 466 tests pass
 
 구현 완료 이력과 canary history는 [`PLAN_CMPL.md`](../../../PLAN_CMPL.md)를 본다.
 
@@ -41,9 +44,54 @@
 - paper 표본을 운영 가능한 방식으로 쌓는다
 - live enablement 기준을 명확히 통과시킨다
 
-### Latest Live Diagnosis (2026-04-06, 12h window)
+### Latest Live Diagnosis (2026-04-07, post-Phase E 1h12min window)
 
-> 분석 구간: UTC 04-05 14:32 ~ 04-06 02:32 (KST 04-05 23:32 ~ 04-06 11:32)
+> 분석 구간: UTC 04-07 12:21 ~ 13:33 (Phase E 배포 직후 첫 1h12min, ops-history Entry 03)
+> 04-06 12h baseline은 [Historical Diagnosis (2026-04-06)](#historical-diagnosis-2026-04-06) 섹션 참조
+
+| metric | value | 의미 |
+|--------|-------|------|
+| runtime_signal_rows | 1 | 13:26Z PIPPIN BUY 1건 (gate.passed=true → risk_rejected) |
+| new_entries | 0 | 신규 trade 없음 — `token_safety` (8min < 15min hard floor) |
+| closed_rows | 1 | pre-deploy entry `dd2a6b4e` 자연 unwind (TIME_STOP, +0.000542 SOL, exit_slip=35bps clean) |
+| candidate_seen | 62 (39 distinct token) | universe 자체는 흐름 있음 |
+| candidate_evicted | 54 | **100% idle eviction** — stale pair가 여전히 candidate 점유 |
+| admission_skip | 29 | unsupported_dex 21 + no_pairs 8 |
+| pre_watchlist_reject | 5 | non_sol_quote |
+| trigger_stats_snapshots | 16 (대부분 evals=0, 13:27Z 1회만 evals=6 signals=1) | candle 평가 자체가 희박 |
+| exit_anomaly_reason 자연 발생 | 0 / 1 | post-deploy 1건 close는 깨끗 |
+
+**Phase E 배포 효과 (vs Entry 02 7h)**:
+- exit_gap 분포: Entry 01(12h, pre-A/B/C1) `avg=-77.59%, max abs 100%` → Entry 02(7h, post-A/B/C1) `-0.30%, 0.58%` → Entry 03(1h12min, post-Phase E) `clean (1 close, 35bps)`. 가격 단위 폭발 사실상 사라짐.
+- F1-deep-5 `realized-replay-ratio` anomaly filter: `1 parent groups (2 rows) excluded` (07:50 TP1 partial parent + 07:52 STOP_LOSS child). drop 동작 검증 완료.
+
+**핵심 판정**: **W1.5 idle universe + admission breadth 병목은 Phase E 이후에도 여전히 1차 binding constraint다**. Phase E는 가격 단위 정합성 + fake-fill 격리를 해결했지만, 50 canary trades 확보를 위한 universe 흐름 자체는 아직 트리거되지 않았다.
+
+**다음 액션 (우선순위순)**:
+1. **W1.5 액션 재진입** — idle/stale pair eviction 강화 또는 TTL 단축. Entry 03 1h 표본은 너무 작아 즉시 결정 금지, day-1→day-2 (>19h) 분포 확인 후 결정
+2. **admission_skip:unsupported_dex=21 분석** — 어느 DEX가 차단되는지 확인 후 확장 여부 판단 (W1.5 액션 이후)
+3. Phase M 7일 모니터링 acceptance 누적 — `entry_gap_p95`, `exit_gap_p95`, `exit_anomaly_rows`, `realized_replay_excluded` 4종 metrics_note (`docs/runbooks/live-ops-loop.md:268+`)
+4. `volumeSurgeMultiplier 1.8 → 1.6`은 위 3건 후에도 signal 부족 시 검토
+
+**한 줄**: "측정은 정직해졌다 (Phase E). 이제 universe를 흐르게 만들어야 표본이 쌓인다 (W1.5)".
+
+#### Edge Cohort 1차 측정 (Entry 04, 2026-04-07 ralph-loop iter7)
+
+> 출처: ops-history Entry 04 / [`CRITICAL_LIVE.md §7G`](../../../CRITICAL_LIVE.md) / [`docs/audits/signal-cohort-2026-04-07.md`](../../audits/signal-cohort-2026-04-07.md)
+> 사용자 가설(밈코인 저시총 고거래량 surge edge)을 signal-intents.jsonl 기반으로 1차 측정. trades 테이블에 marketCap 컬럼이 없어 trade 단위 R-multiple은 미산출, **signal 단위 pass rate**로 우회.
+
+| Cohort | Signals | Executed | Exec rate | Outcome |
+|---|---:|---:|---:|---|
+| low-cap surge (mc<$1M, vol/mc>1.0) | 24 | 7 | **29.2%** | 7/7 loss (n=3 unique token, 표본 부족) |
+| high-cap continuation (mc≥$10M, vol/mc<0.5) | 43 | 7 | 16.3% | n=1 (PIPPIN) 집중 |
+
+**verdict**: **inconclusive** — 통과율 측면 partial confirm, 실측 손익 측면 partial reject, 극단 저시총 ($44K 4ytp) 0 trades. axis_3 acceptance는 `[~]` partial로 마킹. **Phase M 7d 누적 후 30 trades / cohort 도달 시 verdict 전환**. 자세한 차단 사유 분포와 Phase A3 false positive 의심 케이스는 §7G 참조.
+
+**현재 active plan과의 관계**: 이 측정은 W1.5 (universe 병목 해소) 이후에 가능해지는 cohort 표본 축적과는 별개로, **signal-level**에서 즉시 가능했던 1차 우회. universe가 흐르기 시작하면 trade-level 측정도 가능해진다.
+
+### Historical Diagnosis (2026-04-06)
+
+> 04-07 Phase E 배포 전 baseline. W1.5 진단 근거.
 
 | metric | value | 의미 |
 |--------|-------|------|
@@ -55,17 +103,9 @@
 | admission_skip | 1 | 이번 12h window에서는 주병목 아님 |
 | raw swaps | 46,099 | 유입 자체는 있었음 |
 
-**Market shape**: top pair (5ssLca…) 39,788 swaps, quote-volume buy ratio 0.0053 — sell-heavy. 2nd pair buy ratio 0.0.
+**Market shape (04-06)**: top pair (5ssLca…) 39,788 swaps, quote-volume buy ratio 0.0053 — sell-heavy. 2nd pair buy ratio 0.0.
 
-**주병목 판정**: wallet / overflow / alias / unsupported_dex 가 아님. **idle universe에 stale pair가 오래 남고, 실제 평가 pair도 sell-heavy라 signal을 못 만드는 구조**.
-
-**다음 액션 (우선순위순)**:
-1. idle/stale pair eviction — 가장 적합한 첫 수
-2. `scannerMinimumResidencyMs` / `scannerReentryCooldownMs` 소폭 완화
-3. 이후에도 trade 없으면 `volumeSurgeMultiplier` 1.8 → 1.6 검토
-4. unsupported_dex 확장 / breadth 확장은 후순위
-
-**한 줄**: "더 많이 허용"보다 "stale pair를 빨리 순환시켜 fresh candidate 확보 → 50 live canary trades 먼저"가 사명에 맞다.
+**주병목 판정 (04-06)**: wallet / overflow / alias / unsupported_dex 가 아님. **idle universe에 stale pair가 오래 남고, 실제 평가 pair도 sell-heavy라 signal을 못 만드는 구조**. → Entry 03 1h12min 윈도에서도 동일 패턴 (idle eviction 100%) 재확인됨.
 
 ## Workstreams
 
@@ -194,4 +234,4 @@
 
 ## One-Line Summary
 
-> 구현은 대부분 끝났고, 지금 P0는 idle universe + volume gate 병목 해소(stale pair eviction → freshness 개선)로 live signal 확보다. P1은 replay baseline sparse 81% 해소. 50 canary trades 확보 후 live enablement 판단. Strategy A/C 5m은 dormant.
+> Phase E P0~P3 fake-fill 정합성은 04-07 배포 완료, Phase D acceptance 통과, Phase M day-1 baseline 기록. **다음 P0는 W1.5 idle universe 병목 해소** — Phase E 직후 1h12min 표본도 candidate 100% idle eviction 재확인. Phase M 7일 누적 + W1.5 액션 진입 + 50 canary trades 확보 후 live enablement 판단. Strategy A/C 5m은 여전히 dormant.

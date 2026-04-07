@@ -49,13 +49,14 @@ describe('tradeExecution paper balance', () => {
 
     expect(ctx.paperBalance).toBeCloseTo(1.2, 8);
     expect(tradeStore.closeTrade).toHaveBeenCalledTimes(1);
-    const [tradeId, exitPrice, pnl, slippage, reason, , , , , decisionPrice] = tradeStore.closeTrade.mock.calls[0];
-    expect(tradeId).toBe('trade-1');
-    expect(exitPrice).toBeCloseTo(1.2, 8);
-    expect(pnl).toBeCloseTo(0.2, 8);
-    expect(slippage).toBe(0);
-    expect(reason).toBe('TAKE_PROFIT_2');
-    expect(decisionPrice).toBe(1.2);
+    // TD-8: closeTrade는 단일 options object를 받는다.
+    const [opts] = tradeStore.closeTrade.mock.calls[0];
+    expect(opts.id).toBe('trade-1');
+    expect(opts.exitPrice).toBeCloseTo(1.2, 8);
+    expect(opts.pnl).toBeCloseTo(0.2, 8);
+    expect(opts.slippage).toBe(0);
+    expect(opts.exitReason).toBe('TAKE_PROFIT_2');
+    expect(opts.decisionPrice).toBe(1.2);
   });
 
   it('prefers realtime current price over DB candle close for open-position monitoring', async () => {
@@ -139,8 +140,8 @@ describe('tradeExecution paper balance', () => {
 
     expect(realtimeCandleBuilder.getCurrentPrice).toHaveBeenCalledWith('pair-rt');
     expect(tradeStore.closeTrade).toHaveBeenCalledTimes(1);
-    const [, exitPrice] = tradeStore.closeTrade.mock.calls[0];
-    expect(exitPrice).toBeCloseTo(1.21, 8);
+    const [opts] = tradeStore.closeTrade.mock.calls[0];
+    expect(opts.exitPrice).toBeCloseTo(1.21, 8);
   });
 
   it('uses internal aggregated candles for open-position monitoring when available', async () => {
@@ -226,8 +227,8 @@ describe('tradeExecution paper balance', () => {
     expect(internalCandleSource.getRecentCandles).toHaveBeenCalledWith('pair-int', 300, 10);
     expect(candleStore.getRecentCandles).not.toHaveBeenCalled();
     expect(tradeStore.closeTrade).toHaveBeenCalledTimes(1);
-    const [, exitPrice] = tradeStore.closeTrade.mock.calls[0];
-    expect(exitPrice).toBeCloseTo(1.2, 8);
+    const [opts] = tradeStore.closeTrade.mock.calls[0];
+    expect(opts.exitPrice).toBeCloseTo(1.2, 8);
   });
 
   it('uses the sell transaction signature in the close notification for live exits', async () => {
@@ -382,18 +383,17 @@ describe('tradeExecution paper balance', () => {
 
     await checkOpenPositions(ctx);
 
-    expect(tradeStore.closeTrade).toHaveBeenCalledWith(
-      'trade-tp1',
-      1.1,
-      expect.any(Number),
-      0,
-      'TAKE_PROFIT_1',
-      0.3,
-      undefined,
-      undefined, undefined,
-      1.1, // decisionPrice = TP1 trigger price
-      undefined // exitAnomalyReason — happy path, no fake-fill
-    );
+    expect(tradeStore.closeTrade).toHaveBeenCalledWith({
+      id: 'trade-tp1',
+      exitPrice: 1.1,
+      pnl: expect.any(Number),
+      slippage: 0,
+      exitReason: 'TAKE_PROFIT_1',
+      quantity: 0.3,
+      exitSlippageBps: undefined,
+      decisionPrice: 1.1, // TP1 trigger price
+      exitAnomalyReason: undefined, // happy path, no fake-fill
+    });
     expect(tradeStore.insertTrade).toHaveBeenCalledTimes(1);
   });
 
@@ -1083,9 +1083,9 @@ describe('tradeExecution paper balance', () => {
       await closeTrade(trade, 'TAKE_PROFIT_1', ctx, 1.1);
 
       expect(tradeStore.closeTrade).toHaveBeenCalledTimes(1);
-      // closeTrade positional signature, 11th arg = exitAnomalyReason
-      const call = tradeStore.closeTrade.mock.calls[0];
-      const anomalyReason = call[10] as string | undefined;
+      // TD-8: closeTrade는 단일 options object를 받는다.
+      const [opts] = tradeStore.closeTrade.mock.calls[0];
+      const anomalyReason = opts.exitAnomalyReason as string | undefined;
       expect(anomalyReason).toBeDefined();
       // P0 reason (fake_fill_no_received) 과 P3 Phase A4 reason (slippage_saturated) 둘 다 포함
       expect(anomalyReason).toContain('fake_fill_no_received(closeTrade)');
@@ -1150,8 +1150,8 @@ describe('tradeExecution paper balance', () => {
       await closeTrade(trade, 'TAKE_PROFIT_2', ctx, 1.2);
 
       expect(tradeStore.closeTrade).toHaveBeenCalledTimes(1);
-      const call = tradeStore.closeTrade.mock.calls[0];
-      const anomalyReason = call[10] as string | undefined;
+      const [opts] = tradeStore.closeTrade.mock.calls[0];
+      const anomalyReason = opts.exitAnomalyReason as string | undefined;
       expect(anomalyReason).toBeUndefined();
       expect(notifier.sendCritical).not.toHaveBeenCalled();
     });

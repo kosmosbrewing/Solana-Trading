@@ -3,6 +3,7 @@ import { config } from '../utils/config';
 import { FAKE_FILL_SLIPPAGE_BPS_THRESHOLD } from '../utils/constants';
 import { createModuleLogger } from '../utils/logger';
 import { Candle, CloseReason, Order, Signal, Trade } from '../utils/types';
+import { bpsToDecimal, decimalToBps } from '../utils/units';
 import { calcATR, calcAdaptiveTrailingStop, checkExhaustion } from '../strategy';
 import { PositionStore } from '../state';
 import { RiskManager } from '../risk';
@@ -85,7 +86,7 @@ function resolveExitFillOrFakeFill(params: {
   anomalyReason: string | undefined;
 } {
   const { tradeId, exitPath, receivedSol, soldQuantity, slippageBps, fallbackPrice } = params;
-  const executionSlippage = slippageBps / 10000;
+  const executionSlippage = bpsToDecimal(slippageBps);
 
   // Happy path: received/quantity 계산. 실패 시 sanitized fallback 으로 대체한다.
   const hasValidFill = receivedSol > 0 && soldQuantity > 0;
@@ -269,7 +270,7 @@ export async function handleDegradedExitPhase1(
   }
 
   const realizedPnl = (exitPrice - trade.entryPrice) * soldQuantity;
-  const degradedExitSlippageBps = ctx.tradingMode === 'live' ? Math.round(executionSlippage * 10000) : undefined;
+  const degradedExitSlippageBps = ctx.tradingMode === 'live' ? decimalToBps(executionSlippage) : undefined;
   applyPaperExitProceeds(ctx, soldQuantity, exitPrice);
 
   // P1-4: degraded exit trigger reason 판정
@@ -277,12 +278,19 @@ export async function handleDegradedExitPhase1(
   const triggerReason: 'sell_impact' | 'quote_fail' =
     failCount >= config.degradedQuoteFailLimit ? 'quote_fail' : 'sell_impact';
 
-  await ctx.tradeStore.closeTrade(
-    trade.id, exitPrice, realizedPnl, executionSlippage, 'DEGRADED_EXIT',
-    soldQuantity, degradedExitSlippageBps, triggerReason, failCount > 0 ? failCount : undefined,
-    currentPrice, // decision price = degraded trigger price
-    degradedAnomalyReason
-  );
+  await ctx.tradeStore.closeTrade({
+    id: trade.id,
+    exitPrice,
+    pnl: realizedPnl,
+    slippage: executionSlippage,
+    exitReason: 'DEGRADED_EXIT',
+    quantity: soldQuantity,
+    exitSlippageBps: degradedExitSlippageBps,
+    degradedTriggerReason: triggerReason,
+    degradedQuoteFailCount: failCount > 0 ? failCount : undefined,
+    decisionPrice: currentPrice, // degraded trigger price
+    exitAnomalyReason: degradedAnomalyReason,
+  });
 
   // 잔여분 새 trade 생성 (phase 2에서 청산)
   const remainingTrade: Omit<Trade, 'id'> = {
@@ -656,7 +664,7 @@ export async function closeTrade(
     // Why: paperExitPrice = decision price (trigger 판정가), exitPrice = 실제 fill 가격
     const decisionPrice = paperExitPrice;
     const pnl = (exitPrice - trade.entryPrice) * trade.quantity;
-    const exitSlippageBps = ctx.tradingMode === 'live' ? Math.round(executionSlippage * 10000) : undefined;
+    const exitSlippageBps = ctx.tradingMode === 'live' ? decimalToBps(executionSlippage) : undefined;
     applyPaperExitProceeds(ctx, trade.quantity, exitPrice);
 
     // Phase A4: exitPrice/entryPrice 단위 정합성 cross-check.
@@ -694,7 +702,7 @@ export async function closeTrade(
     // 2026-04-07 Phase A4 보강 — saturated slippage는 정상 ratio/gap bound 안에도 존재할 수 있다.
     // P0 fake-fill helper와 동일 임계(9000bps) 사용. live 모드에만 의미가 있다.
     if (ctx.tradingMode === 'live') {
-      const slippageBpsCheck = Math.round(executionSlippage * 10000);
+      const slippageBpsCheck = decimalToBps(executionSlippage);
       if (slippageBpsCheck >= SLIPPAGE_SATURATED_BPS) {
         exitAnomaly = true;
         exitAnomalyReasons.push(`slippage_saturated=${slippageBpsCheck}bps`);
@@ -719,11 +727,16 @@ export async function closeTrade(
     // P0 fake-fill reason + P3 Phase A4 reasons → 동일 컬럼(exit_anomaly_reason)에 병합
     const mergedAnomalyReason = mergeAnomalyReasons(fakeFillAnomalyReason, exitAnomalyReasons);
 
-    await ctx.tradeStore.closeTrade(
-      trade.id, exitPrice, pnl, executionSlippage, reason, undefined, exitSlippageBps,
-      undefined, undefined, decisionPrice,
-      mergedAnomalyReason
-    );
+    await ctx.tradeStore.closeTrade({
+      id: trade.id,
+      exitPrice,
+      pnl,
+      slippage: executionSlippage,
+      exitReason: reason,
+      exitSlippageBps,
+      decisionPrice,
+      exitAnomalyReason: mergedAnomalyReason,
+    });
 
     const closedTrade = {
       ...trade,
@@ -1125,21 +1138,20 @@ async function handleTakeProfit1Partial(
     }
 
     const realizedPnl = (exitPrice - trade.entryPrice) * soldQuantity;
-    const tp1ExitSlippageBps = ctx.tradingMode === 'live' ? Math.round(executionSlippage * 10000) : undefined;
+    const tp1ExitSlippageBps = ctx.tradingMode === 'live' ? decimalToBps(executionSlippage) : undefined;
     applyPaperExitProceeds(ctx, soldQuantity, exitPrice);
 
-    await ctx.tradeStore.closeTrade(
-      trade.id,
+    await ctx.tradeStore.closeTrade({
+      id: trade.id,
       exitPrice,
-      realizedPnl,
-      executionSlippage,
-      'TAKE_PROFIT_1',
-      soldQuantity,
-      tp1ExitSlippageBps,
-      undefined, undefined,
-      currentPrice, // decision price = TP1 trigger price
-      tp1AnomalyReason
-    );
+      pnl: realizedPnl,
+      slippage: executionSlippage,
+      exitReason: 'TAKE_PROFIT_1',
+      quantity: soldQuantity,
+      exitSlippageBps: tp1ExitSlippageBps,
+      decisionPrice: currentPrice, // TP1 trigger price
+      exitAnomalyReason: tp1AnomalyReason,
+    });
 
     // v3: TP1 후 잔여 trade에 time stop 연장 — Runner 활성화 시간 확보
     const extendedTimeStopAt = new Date(Date.now() + config.tp1TimeExtensionMinutes * 60_000);
@@ -1253,13 +1265,19 @@ async function handleRunnerGradeBPartial(
     }
 
     const realizedPnl = (exitPrice - trade.entryPrice) * soldQuantity;
-    const tp2ExitSlippageBps = ctx.tradingMode === 'live' ? Math.round(executionSlippage * 10000) : undefined;
+    const tp2ExitSlippageBps = ctx.tradingMode === 'live' ? decimalToBps(executionSlippage) : undefined;
     applyPaperExitProceeds(ctx, soldQuantity, exitPrice);
-    await ctx.tradeStore.closeTrade(
-      trade.id, exitPrice, realizedPnl, executionSlippage, 'TAKE_PROFIT_2', soldQuantity, tp2ExitSlippageBps,
-      undefined, undefined, currentPrice, // decision price = TP2 trigger price
-      runnerBAnomalyReason
-    );
+    await ctx.tradeStore.closeTrade({
+      id: trade.id,
+      exitPrice,
+      pnl: realizedPnl,
+      slippage: executionSlippage,
+      exitReason: 'TAKE_PROFIT_2',
+      quantity: soldQuantity,
+      exitSlippageBps: tp2ExitSlippageBps,
+      decisionPrice: currentPrice, // TP2 trigger price
+      exitAnomalyReason: runnerBAnomalyReason,
+    });
 
     // 원본 trade state map 정리 (closeTrade 경유하지 않으므로 수동 정리)
     degradedStateMap.delete(trade.id);

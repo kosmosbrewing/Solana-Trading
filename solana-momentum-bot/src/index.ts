@@ -1262,7 +1262,13 @@ async function main() {
 
       const resolvedExitPrice = exitPrice ?? openTrade.entryPrice;
       const pnl = (resolvedExitPrice - openTrade.entryPrice) * openTrade.quantity;
-      await tradeStore.closeTrade(openTrade.id, resolvedExitPrice, pnl, 0, exitReason);
+      await tradeStore.closeTrade({
+        id: openTrade.id,
+        exitPrice: resolvedExitPrice,
+        pnl,
+        slippage: 0,
+        exitReason,
+      });
       await notifier.sendTradeClose({
         ...openTrade,
         exitPrice: resolvedExitPrice,

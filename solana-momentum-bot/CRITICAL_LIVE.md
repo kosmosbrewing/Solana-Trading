@@ -1,28 +1,34 @@
-Status: current
-Updated: 2026-04-07
+Status: current (Phase E 배포 검증 통과, Phase M day-1 baseline 단계)
+Updated: 2026-04-07T13:50Z
 Purpose: 2026-04-07 live 운영 이상 징후와 현재 판단 근거를 단건 문서로 고정
-Use with: `OPERATIONS.md`, `docs/runbooks/live-ops-loop.md`, `scripts/ledger-audit.ts`
+Use with: `OPERATIONS.md`, `docs/runbooks/live-ops-loop.md`, `scripts/ledger-audit.ts`, `docs/exec-plans/active/live-ops-integrity-2026-04-07.md`, `docs/ops-history/2026-04-07.md` (Entry 01/02/03)
 
 # CRITICAL_LIVE
 
 ## Scope
 
 - 목적: 최신 live 운영 이슈를 `증거 -> 판단 -> 금지 조치 -> 다음 액션` 순서로 정리
-- 기준 window:
-  - runtime latest synced at `2026-04-07T02:26:20.474Z`
-  - DB trade report window `2026-04-06T14:31:03Z ~ 2026-04-07T02:31:03Z`
+- 기준 window (history):
+  - runtime latest synced at `2026-04-07T02:26:20.474Z` (Entry 01 origin)
+  - DB trade report window `2026-04-06T14:31:03Z ~ 2026-04-07T02:31:03Z` (Entry 01 baseline)
+  - **post Phase A/B/C1 측정**: `2026-04-07T04:01Z ~ 11:01Z` (Entry 02, §7F-pre)
+  - **post Phase E P0~P3 검증**: `2026-04-07T12:21Z ~ 13:33Z` (Entry 03, §7F-post)
 - 기준 소스:
   - `data/realtime/current-session.json`
   - `data/realtime/runtime-diagnostics.json`
-  - `data/realtime/sessions/2026-04-06T14-17-04-255Z-live/realtime-signals.jsonl`
+  - `data/realtime/sessions/2026-04-06T14-17-04-255Z-live/realtime-signals.jsonl` (Entry 01)
+  - `data/realtime/sessions/2026-04-07T12-21-19-322Z-live/realtime-signals.jsonl` (Entry 03)
+  - `data/vps-trades-latest.jsonl` (Entry 03)
   - `scripts/ledger-audit.ts`
+  - `scripts/analysis/realized-replay-ratio.ts` (F1-deep-5)
   - `src/orchestration/tradeExecution.ts`
   - `src/notifier/notifier.ts`
   - `src/notifier/messageFormatter.ts`
 
 ## One-line Conclusion
 
-- 현재 live 핵심 이슈는 단순 `signal 부족`이 아니라, `risk/gate 차단` 위에 `가격 단위 불일치 의심`이 겹쳐 `exit 판단과 ledger 근거가 동시에 오염됐을 가능성`이다.
+- ~~현재 live 핵심 이슈는 단순 `signal 부족`이 아니라, `risk/gate 차단` 위에 `가격 단위 불일치 의심`이 겹쳐 `exit 판단과 ledger 근거가 동시에 오염됐을 가능성`이다.~~
+- **갱신 (2026-04-07T13:50Z, Entry 03 기준)**: Phase A/B/C1 (가격 정합성) + Phase E P0~P3 (fake-fill 감지/마킹) + 품질 개선까지 모두 배포·검증 통과. 가격 단위 폭발은 사실상 사라졌고 (Entry 02 max abs `100%` → `0.58%`), fake-fill row 1건은 sanitizer/replay-ratio anomaly filter가 정확히 격리한다 (Entry 03 `1 parent group / 2 rows excluded`). 현 상태는 `오염 ledger 의심` 단계가 아니라 **Phase M 7일 누적 모니터링 단계**이며, 핵심 미해소 항목은 `per-row anomaly 서브라인 자연 검증` + `entry_gap p95 측정` + `Phase C2 4종 합격 기준 marker-aware 측정 누적` 세 가지다.
 
 ## 1. 테스트 근거
 
@@ -334,12 +340,13 @@ Use with: `OPERATIONS.md`, `docs/runbooks/live-ops-loop.md`, `scripts/ledger-aud
 | Criterion | Threshold | Entry 02 raw | Entry 02 marker-excluded¹ | Status (raw) | Status (excluded) |
 |-----------|-----------|--------------|----------------------------|--------------|-------------------|
 | `tp_negative_pnl` | 0건 | 1건 | 0건 (E0 mark) | ❌ | ✅ |
-| `entry_gap` p95 | ≤ 5% | n/a² | n/a² | ⚠ unmeasured | ⚠ unmeasured |
+| `entry_gap` p95 | ≤ 5% | n/a² | n/a² | ⚠ unmeasured³ | ⚠ unmeasured³ |
 | `exit_gap` p95 | ≤ 10% | max abs 0.58% (n=4) | max abs 0.58% (n=3) | ✅ | ✅ |
 | `gap_vs_slippage_mismatch` | 0건 | 1건 (slip=2500 avg, gap≈0) | 0건 (E0 mark) | ❌ | ✅ |
 
 ¹ Phase E0 `exit_anomaly_reason` 마커가 set된 row 1건을 제외했을 때(`docs/audits/exit-slip-gap-divergence-2026-04-07.md` 가설 A: 1/4 saturated). raw 4건 중 1건은 `>=9000bps` saturated였다.
 ² Entry 02 metrics에 `avg_entry_gap_pct_recent_7h`가 부재. 다음 ops loop에서 `npm run ops:check -- --hours 7` 실행 시 entry-gap 라인을 함께 캡처해야 한다.
+³ 측정 경로 자체는 2026-04-07 ralph-loop iter3에서 `scripts/ledger-audit.ts:printGapDistribution`로 신설됨. Entry 02 시점에는 미존재였으므로 retroactive 측정 대신 다음 ops loop entry부터 자동 채워진다.
 
 **해석**
 
@@ -351,13 +358,75 @@ Use with: `OPERATIONS.md`, `docs/runbooks/live-ops-loop.md`, `scripts/ledger-aud
 
 - raw 메트릭과 sanitized 메트릭 사이 격차가 외부 노이즈가 아니라 **단일 saturated row의 outlier 효과**라는 점이 audit으로 확정됐다. 따라서 Phase C2 합격 기준을 raw로만 보면 단 1건의 fake-fill만 발생해도 canary가 영구히 실패한다.
 - 합격 기준을 `marker-aware`로 보강한다: raw 4종 외에 `marker_excluded_subset`에서도 4종을 본다. 본 entry처럼 raw는 부분 미달이지만 marker-excluded subset은 전부 통과면 **조건부 진입(canary 연장 + 추가 표본 4건)**으로 처리한다.
-- 단 `entry_gap p95`는 어떤 경로로도 측정되지 않은 상태다. 이 line item을 채우기 전까지 Phase C2 entry는 보류한다.
+- ~~단 `entry_gap p95`는 어떤 경로로도 측정되지 않은 상태다.~~ → **2026-04-07 보강**: `scripts/ledger-audit.ts:printGapDistribution`이 `entry_gap |abs|` / `exit_gap |abs|`의 n/mean/p50/p95/p99/max와 함께 `Phase C2 verdict | entry_gap p95 X% (≤5%) pass/fail | exit_gap p95 Y% (≤10%) pass/fail` 한 줄을 출력한다 (commit 미정, ralph-loop iteration 3). 다음 ops loop의 `npm run ops:check:ledger -- --hours 7` 산출물에 자동 포함.
 
 **즉시 액션**
 
 - `data/realtime/notifier-events.jsonl`에서 Entry 02 window 동안 `exit_anomaly` critical alert가 실제로 발화했는지 cross-check (E0/Phase A4가 발화하지 않으면 marker-excluded 가설 자체가 흔들린다).
 - 다음 ops loop entry에서 `npm run ops:check -- --hours 7`의 entry-gap 출력을 캡처해 `avg_entry_gap_pct_recent_7h`, `max_abs_entry_gap_pct_recent_7h`, `entry_gap_p95_recent_7h`를 metrics_note에 포함.
 - `fake_fill_rows / closed_rows` 비율 재측정 (F1-deep-3) — 1/4가 일회성인지 구조적인지 표본 1건만으로는 확정 불가.
+
+### 7F-post. Post-deploy verification (Entry 03, 2026-04-07T12:21Z~13:33Z)
+
+> Source: `docs/ops-history/2026-04-07.md` Entry 03
+> Context: bot restart `2026-04-07T12:21:19Z` (Phase E P0~P3 + 품질 개선 배포 직후), 측정 window 1h12min, post_deploy_session=true
+> Scope: live-ops-integrity-2026-04-07.md **Phase D 종결 + Phase V D-immediate 검증 + Phase M day-1 baseline**
+
+**Phase D (Deploy & DB Migration) 결과**
+
+| Acceptance | Result | Evidence |
+|------------|--------|----------|
+| `exit_anomaly_reason` 컬럼 존재 | ✅ pass | `vps-trades-latest.jsonl` 135 rows 모두 keys에 포함, `tradeStore.initialize()` ALTER TABLE 자동 마이그레이션 동작 |
+| 재기동 후 첫 closeTrade 성공 | ✅ pass | `dd2a6b4e` (pippin) `2026-04-07T12:32:18Z` TIME_STOP, pnl=+0.000542 SOL, exit_slippage_bps=35, sanitizer/Phase A4 가드 정상 통과 |
+| `[FAKE_FILL]` log rotation 부담 | n/a | post-deploy 1h12min 동안 prefix 출력 0건 |
+
+→ Phase D 두 acceptance 모두 통과. live-ops-integrity-2026-04-07.md Phase D 4개 task 전부 종결.
+
+**Phase V D-immediate 결과 (DB UPDATE 없이 즉시 검증 가능 항목)**
+
+| Item | Result | Evidence |
+|------|--------|----------|
+| `realized-replay-ratio` F1-deep-5 stdout | ✅ pass | `Anomaly filter (>=9000bps slippage or exit_anomaly_reason set): 1 parent groups (2 rows) excluded` |
+| `realized-replay-ratio` F1-deep-5 markdown header | ✅ pass | `Closed trades: raw=133, clean=131 (anomaly filter excluded 1 parent groups / 2 rows)` |
+| `trade-report` `printSlippageRawAndTrimmed` | ✅ pass (jq simulation) | n=17, raw avg=598.3 bps (saturated 1건 outlier), trimmed avg=10.7 bps (excluded 1) |
+| `trade-report` `FAKE-FILL WARNING` 섹션 | ✅ pass (jq simulation) | 후보 row=`1/135` (`exit_anomaly_reason set OR exit_slippage_bps>=9000`) |
+| per-row `anomaly=...` 서브라인 | 🟡 deferred | historical row는 `exit_anomaly_reason` NULL이라 자연 검증 불가, 다음 자연 발생 또는 prod DB 1회 backfill 까지 보류 |
+| W/L `(row)`/`(entry)` 두 줄 | 🟡 deferred | 로컬 DATABASE_URL 미설정, 다음 ops loop에서 vps-analysis 자동 산출물로 검증 |
+| `realized-replay-ratio` N/A verdict | 🟡 deferred | 현 dataset finite n=3이라 0건 강제 verdict 미검증 |
+
+**기대값 정정**: live-ops-integrity-2026-04-07.md Phase V 의 expected `excluded 1/1`은 잘못된 추정이었다. 실제 출력은 `1 parent group / 2 rows` — TP1 partial parent (`2207984d`, 07:50, exit_slip=10000bps) 와 child remainder (`694ca489`, 07:52, STOP_LOSS) 가 같은 `parent_trade_id` 로 묶여 함께 drop된다. Parent-group-aware drop이 의도대로 동작 중이다.
+
+**Phase M day-1 baseline**
+
+| Metric | Value |
+|--------|-------|
+| 측정 window | `2026-04-07T12:21:19Z ~ 13:33:04Z` (~1h12min) |
+| closed_rows | `1` (dd2a6b4e, pre-deploy entry의 자연 unwind) |
+| 신규 entry | `0` |
+| realized PnL | `+0.000542 SOL` |
+| `exit_anomaly_reason` set | `0/1` (post-deploy close 1건은 clean) |
+| `fake_fill_rows` (`>=9000bps` or marker) | `0/1` |
+| `anomaly_filter_excluded` (1h window) | `0 parent groups / 0 rows` |
+| Telegram I/O fail | `0` |
+
+→ day-1 baseline = `0 fake-fill, 0 anomaly marker, 0 false positive`. 7일 누적 종결 = `2026-04-14`.
+
+**Activity (universe / candidate diversity)**
+
+- `runtime_signal_rows_recent_1h=1` (13:26Z `pippin` Grade A → Token too new 8min 차단 = 신규 hard floor 정상 작동)
+- `realtime_candidate_seen_recent_1h=62` (distinct 39) / `candidate_evicted_recent_1h=54` (idle 100%)
+- `admission_skip_recent_1h=29` (`unsupported_dex` 21 + `no_pairs` 8)
+- `risk_rejection_recent_1h=1` (`token_safety`)
+- `trigger_stats` reset 12:42Z 이후 대부분 `evals=0`, 13:27Z `evals=6 signals=1 activePairs=1` 1회만 활성
+
+> ⚠ 1h 표본은 universe quality / concentration / 로서 페어 재유입 framing 의 근거로 사용 금지. day-2 비교가 가능해질 때까지 framing 보류.
+
+**즉시 액션 / Action items**
+
+- live-ops-integrity-2026-04-07.md Phase V 에서 검증 끝난 3건은 종결, 5건은 deferred 마킹 (완료).
+- Phase M 7일 모니터링 본격 가동 — day-2 entry부터 metrics_note에 `exit_anomaly_reason` 카운트 + `realized-replay-ratio` excluded 카운트 누적.
+- per-row `anomaly=` 서브라인 검증은 (a) 다음 자연 발생 fake-fill 또는 (b) prod DB 1회 backfill 둘 중 자연 발생 우선. 7일이 지나도 자연 발생이 없으면 backfill 결정 재고려.
+- 7F item 5 (`Live 일시정지 권장`) 은 본 entry로 무효화 — bot v0.5 가 12:22:20Z 부터 정상 가동 중. 일시정지 항목은 §7F 본문에서 제거 또는 status 갱신 (다음 항목 참조).
 
 ### 7F. 남은 운영 과제
 
@@ -395,4 +464,49 @@ Use with: `OPERATIONS.md`, `docs/runbooks/live-ops-loop.md`, `scripts/ledger-aud
    - 0건 `gap_vs_slippage_mismatch`
    합격 후에만 live 재가동. **2026-04-07 보강** — 1건의 saturated fake-fill row가 raw 메트릭을 영구히 실패시키므로 `marker_excluded_subset`에서도 동일 4종을 측정한다(§7F-pre 참조). raw 부분 미달 + sanitized subset 전체 통과 케이스는 canary 연장(추가 표본 ≥ 4건)으로 처리한다.
 4. **Phase D 50-trade 동결 복귀** — canary 합격 후 `BOT_BYPASS_EDGE_BLACKLIST=false`로 복원, bootstrap tier risk 룰 그대로 50 trades까지 유지.
-5. **Live 일시정지 권장** — 운영자 판단으로 Phase C2 통과까지 live는 수동 halt 유지.
+5. **Live 운영 상태** — ~~Phase C2 통과까지 수동 halt 유지~~ → **2026-04-07T12:22:20Z `Bot started v0.5` 부터 live 재가동 중** (Phase E P0~P3 + 품질 개선 배포 직후 자동 부팅, Entry 03 Phase D 통과 확인). Phase M 7일 모니터링 기간 동안 `exit_anomaly_reason` 자연 발생 빈도와 신규 entry 분포를 관찰하며, false positive 발생 시에만 수동 halt 재고려.
+
+### 7G. Edge Cohort Quality — Axis 3 signal-level 1차 측정 (Entry 04, 2026-04-07)
+
+> ops-history Entry 04 / `docs/exec-plans/active/edge-cohort-quality-2026-04-07.md` Axis 3 acceptance 첫·셋째 항목 partial 충족.
+> 출처 audit: [`docs/audits/signal-cohort-2026-04-07.md`](./docs/audits/signal-cohort-2026-04-07.md)
+> 측정 도구: [`scripts/analysis/signal-cohort-audit.ts`](./scripts/analysis/signal-cohort-audit.ts) (read-only, signal-intents.jsonl 기반, DB 의존성 0)
+
+**왜 §7G에 두는가**: 사용자 가설(저시총 고거래량 surge edge)이 가드 차단 때문에 미검증인지, 데이터 자체가 부족해서 미검증인지 1차 분리하기 위해. trade 단위 R-multiple은 trades 테이블에 marketCap 컬럼이 없어 산출 불가 — signal 단위 pass rate로 우회.
+
+**Cohort verdict (4 sessions / 86 signals / 71 with marketCap)**
+
+| Cohort | 정의 | Signals | Executed | Exec rate |
+|---|---|---:|---:|---:|
+| **low-cap surge** | mc<$1M AND vol/mc>1.0 | 24 | 7 | **29.2%** |
+| **high-cap continuation** | mc≥$10M AND vol/mc<0.5 | 43 | 7 | 16.3% |
+
+**해석 (4점)**
+
+1. **partial confirm (통과율)**: low-cap surge cohort exec rate 29.2% > high-cap continuation 16.3% — 가드가 저시총 cohort를 일률적으로 봉인하지 않는다. "가설 검증을 가드가 막는 중"은 사실이 아님.
+2. **partial reject (실측 손익)**: 그러나 executed 7건 모두 손실 (LLM × 2, stonks × 3, BTW × 2). cooldown 발화 사유에서 "6/7/9/10 consecutive losses" 직접 관측. **n=3 unique token이라 cohort-level 단정 불가** — 표본 부족이지 가설 기각 아님.
+3. **inconclusive (극단 저시총 4ytp $44K)**: cohort 내 가장 극단인 `4ytpZgVoNB66bF` ($44K mc, ratio 3.48) 는 0 trades — `[PRICE_ANOMALY_BLOCK] Entry ratio 0.000000 outside [0.7, 1.3]` 로 차단. **cohort 내 어떤 단일 signal도 진입하지 못해 가설 검증 자체가 봉인**.
+4. **Phase A3 false positive 의심**: BTW $47K (ratio 3.29) 도 동일 PRICE_ANOMALY_BLOCK 으로 2회 차단. 다만 BTW는 historical loser (cooldown 누적 토큰)라 PRICE_ANOMALY가 false positive인지 단정 불가 — F1-deep audit (`docs/audits/exit-slip-gap-divergence-2026-04-07.md`)에서 분리 추적 필요.
+
+**차단 사유 분포 (24 low-cap surge → 17 blocked)**
+
+| 사유 | 건수 |
+|---|---:|
+| Cooldown active (6~10 consecutive losses) | 9 |
+| Per-token cooldown (recent losses) | 3 |
+| Quote error (DNS/EPROTO) | 2 |
+| `[PRICE_ANOMALY_BLOCK]` (Phase A3) | 3 |
+| Swap failed after 3 attempts | 1 |
+
+→ **가드 차단의 60%가 risk cooldown 누적**. PRICE_ANOMALY 차단은 17건 중 3건 (18%)에 불과 — 사용자 가설 검증 봉인의 1차 원인은 risk cooldown이지 Phase A3가 아니다.
+
+**즉시 액션 (이 §7G로부터 파생)**
+
+- **금지**: 이 데이터를 근거로 risk cooldown 완화를 검토하지 않는다. F1-deep audit 통과 전까지 forbidden (edge-cohort-quality plan Out-of-Scope 명시).
+- **다음 진입 조건**: Phase M 7d 누적 시 `low-cap surge` cohort closed trades ≥ 30 (현재 7) 도달 후에만 cohort verdict를 confirm/reject로 전환. 그 전까지는 Entry 04 verdict는 inconclusive로 고정.
+- **Axis 3 종결 조건**: 위 30 trades 표본 + cohort별 win-rate / R-multiple 산출 + trades 테이블 marketCap 컬럼화(또는 signal-intents JOIN 로직) — 현 시점에서는 Axis 3 acceptance 첫·셋째 항목 `[~]` partial 마킹 유지.
+
+**상위 plan link**
+
+- [`docs/exec-plans/active/edge-cohort-quality-2026-04-07.md`](./docs/exec-plans/active/edge-cohort-quality-2026-04-07.md) Axis 3 acceptance + History (2026-04-07 ralph-loop iter7)
+- [`docs/ops-history/2026-04-07.md`](./docs/ops-history/2026-04-07.md) Entry 04 (cohort signal-level 1차 측정)

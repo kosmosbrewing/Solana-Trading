@@ -23,6 +23,10 @@ interface RuntimeDiagnosticEvent {
   type?: string;
   reason?: string;
   timestampMs?: number;
+  tokenMint?: string;
+  source?: string;
+  dexId?: string;
+  detail?: string;
 }
 
 interface Args {
@@ -289,6 +293,25 @@ function printRuntimeDiagnostics(hours: number): RuntimeSummary | null {
     console.log(`${label}=${count}`);
   }
 
+  const detailSections: Array<[string, RuntimeDiagnosticEvent[]]> = [
+    ['top_admission_skip_details', recent.filter((event) => event.type === 'admission_skip')],
+    ['top_idle_evicted_tokens', recent.filter((event) => event.type === 'candidate_evicted' && event.reason === 'idle')],
+    ['top_risk_rejection_details', recent.filter((event) => event.type === 'risk_rejection')],
+    ['top_pre_watchlist_reject_details', recent.filter((event) => event.type === 'pre_watchlist_reject')],
+  ];
+
+  for (const [label, eventsOfType] of detailSections) {
+    console.log(`${label}=`);
+    const lines = summarizeEventBreakdown(label, eventsOfType);
+    if (lines.length === 0) {
+      console.log('(empty)');
+      continue;
+    }
+    for (const line of lines) {
+      console.log(line);
+    }
+  }
+
   return {
     latestTs,
     cutoffTs,
@@ -453,6 +476,34 @@ function shortAddress(value: string): string {
 
 function countMatches(input: string, pattern: RegExp): number {
   return (input.match(pattern) || []).length;
+}
+
+function summarizeEventBreakdown(label: string, events: RuntimeDiagnosticEvent[]): string[] {
+  const counts = new Map<string, number>();
+
+  for (const event of events) {
+    let key = '';
+    if (label === 'top_idle_evicted_tokens') {
+      key = event.tokenMint ?? '(missing_token)';
+    } else if (label === 'top_risk_rejection_details') {
+      key = event.detail ?? event.reason ?? '(missing_detail)';
+    } else if (label === 'top_pre_watchlist_reject_details') {
+      key = [event.reason, event.source, event.detail].filter(Boolean).join('|') || '(missing_detail)';
+    } else {
+      key = [event.reason, event.detail, event.dexId, event.source].filter(Boolean).join('|') || '(missing_detail)';
+    }
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 10)
+    .map(([key, count]) => `${count} ${truncate(key, 180)}`);
+}
+
+function truncate(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, Math.max(0, maxLength - 3))}...`;
 }
 
 function round(value: number): number {

@@ -14,6 +14,7 @@
  *   row 수는 독립 진입 횟수와 다를 수 있다.
  */
 import { Pool } from 'pg';
+import { FAKE_FILL_SLIPPAGE_BPS_THRESHOLD } from '../src/utils/constants';
 
 interface TradeRow {
   id: string;
@@ -36,7 +37,14 @@ interface TradeRow {
   entry_price_impact_pct: string | null;
   round_trip_cost_pct: string | null;
   effective_rr: string | null;
+  // 2026-04-07: parent-child 그룹핑 (TP1 partial → child remainder 합산)
+  parent_trade_id: string | null;
+  // 2026-04-07: fake-fill / Phase A4 anomaly 마커 (comma-joined)
+  exit_anomaly_reason: string | null;
 }
+
+// 2026-04-07: Jupiter Ultra outputAmountResult="0" fake-fill 경보 임계값은
+// src/utils/constants.ts에 공유 상수로 존재 (9000bps = 90%).
 
 interface WindowConfig {
   dbNow: Date;
@@ -109,6 +117,19 @@ function groupByPair(rows: TradeRow[]): Array<[string, TradeRow[]]> {
   return Array.from(grouped.entries()).sort((a, b) => b[1].length - a[1].length);
 }
 
+// Why: TP1 partial은 부모 row + 자식 remainder row로 나뉘어 저장된다. row 단위 W/L은
+// 한 엔트리를 중복 카운트하므로, 논리적 entry 기준으로 다시 합산해야 정확한 승률이 나온다.
+// parent_trade_id가 null이면 자신이 parent, 아니면 parent에 귀속된다.
+function groupByParent(rows: TradeRow[]): TradeRow[][] {
+  const byParent = new Map<string, TradeRow[]>();
+  for (const row of rows) {
+    const key = row.parent_trade_id ?? row.id;
+    if (!byParent.has(key)) byParent.set(key, []);
+    byParent.get(key)!.push(row);
+  }
+  return Array.from(byParent.values());
+}
+
 function printActivitySummary(rows: TradeRow[], window: WindowConfig): void {
   const openedRows = rows.filter((row) => inWindow(row.created_at, window.windowStart));
   const openRows = openedRows.filter((row) => row.status === 'OPEN');
@@ -147,8 +168,16 @@ function printRealizedSummary(rows: TradeRow[], window: WindowConfig): void {
   const wins = realized.filter((row) => Number(row.pnl ?? 0) > 0);
   const losses = realized.filter((row) => Number(row.pnl ?? 0) <= 0);
 
+  // Entry 기준: TP1 partial child를 parent에 다시 합산 — 논리적 거래 1건당 1 W/L
+  const entryGroups = groupByParent(realized);
+  const entryPnls = entryGroups.map((group) => group.reduce((s, r) => s + Number(r.pnl ?? 0), 0));
+  const entryWins = entryPnls.filter((p) => p > 0).length;
+  const entryLosses = entryPnls.length - entryWins;
+  const entryWinRate = entryGroups.length > 0 ? (entryWins / entryGroups.length) * 100 : 0;
+
   console.log(` 총 실현 row: ${realized.length}건`);
-  console.log(` 승/패: ${wins.length}W / ${losses.length}L (승률 ${((wins.length / realized.length) * 100).toFixed(1)}%)`);
+  console.log(` 승/패 (row): ${wins.length}W / ${losses.length}L (승률 ${((wins.length / realized.length) * 100).toFixed(1)}%)`);
+  console.log(` 승/패 (entry): ${entryWins}W / ${entryLosses}L (승률 ${entryWinRate.toFixed(1)}%) — partial close 합산 기준`);
   console.log(` 순 실현 손익: ${formatSignedSol(totalPnl)}`);
   console.log(` 토큰 수: ${grouped.length}개`);
 
@@ -236,9 +265,14 @@ function printRealizedSummary(rows: TradeRow[], window: WindowConfig): void {
         );
       }
       if (trade.round_trip_cost_pct != null || trade.effective_rr != null) {
+        // Why: rtCost/effRR는 entry-time gate snapshot 값이다 (exit 시점 갱신 X)
         const rtc = trade.round_trip_cost_pct != null ? `${Number(trade.round_trip_cost_pct).toFixed(2)}%` : '?';
         const rr = trade.effective_rr != null ? Number(trade.effective_rr).toFixed(1) : '?';
-        costParts.push(`rtCost=${rtc} effRR=${rr}`);
+        costParts.push(`rtCost(entry)=${rtc} effRR(entry)=${rr}`);
+      }
+      // 2026-04-07: fake-fill / Phase A4 anomaly 마커 노출
+      if (trade.exit_anomaly_reason) {
+        costParts.push(`anomaly=${trade.exit_anomaly_reason}`);
       }
       if (costParts.length > 0) {
         console.log(`      └ ${costParts.join(' | ')}`);
@@ -248,6 +282,32 @@ function printRealizedSummary(rows: TradeRow[], window: WindowConfig): void {
 
   // 비용 집계 섹션
   printCostAggregation(realized);
+}
+
+// 2026-04-07 (F1-deep-1): saturated slippage row(>=9000bps) 1건이 4건 평균을 2500bps로
+// 끌어올리는 outlier 효과를 ops-history 작성 시 즉시 가시화하기 위해 raw + trimmed 두 줄을 항상
+// 출력한다. trimmed가 raw와 동일하면 contamination 없음을 확인할 수 있다.
+function printSlippageRawAndTrimmed(label: 'entry' | 'exit', samples: number[]): void {
+  const labelText = label === 'entry' ? 'entry slippage' : 'exit slippage ';
+  const rawAvg = samples.reduce((s, v) => s + v, 0) / samples.length;
+  const trimmed = samples.filter((v) => v < FAKE_FILL_SLIPPAGE_BPS_THRESHOLD);
+  const excluded = samples.length - trimmed.length;
+  const trimmedAvg =
+    trimmed.length > 0 ? trimmed.reduce((s, v) => s + v, 0) / trimmed.length : 0;
+  const trimmedNote =
+    excluded > 0
+      ? `excluded ${excluded} saturated >=${FAKE_FILL_SLIPPAGE_BPS_THRESHOLD}bps`
+      : 'no saturated rows';
+  console.log(` 평균 ${labelText} (raw):     ${rawAvg.toFixed(1)} bps (n=${samples.length})`);
+  if (trimmed.length > 0) {
+    console.log(
+      ` 평균 ${labelText} (trimmed): ${trimmedAvg.toFixed(1)} bps (n=${trimmed.length}, ${trimmedNote})`
+    );
+  } else {
+    console.log(
+      ` 평균 ${labelText} (trimmed): -- bps (n=0, ${trimmedNote})`
+    );
+  }
 }
 
 function printCostAggregation(trades: TradeRow[]): void {
@@ -272,8 +332,7 @@ function printCostAggregation(trades: TradeRow[]): void {
   console.log(`${'─'.repeat(76)}`);
 
   if (withEntrySl.length > 0) {
-    const avg = withEntrySl.reduce((s, t) => s + (t.entry_slippage_bps ?? 0), 0) / withEntrySl.length;
-    console.log(` 평균 entry slippage: ${avg.toFixed(1)} bps (n=${withEntrySl.length})`);
+    printSlippageRawAndTrimmed('entry', withEntrySl.map((t) => t.entry_slippage_bps ?? 0));
   }
   if (withEntryGap.length > 0) {
     const gaps = withEntryGap.map((t) => {
@@ -286,12 +345,12 @@ function printCostAggregation(trades: TradeRow[]): void {
     console.log(` 평균 entry gap (planned→fill): ${avgGap >= 0 ? '+' : ''}${avgGap.toFixed(2)}% (n=${withEntryGap.length}, max abs=${maxGap.toFixed(2)}%)`);
   }
   if (withExitSl.length > 0) {
-    const avg = withExitSl.reduce((s, t) => s + (t.exit_slippage_bps ?? 0), 0) / withExitSl.length;
-    console.log(` 평균 exit slippage:  ${avg.toFixed(1)} bps (n=${withExitSl.length})`);
+    printSlippageRawAndTrimmed('exit', withExitSl.map((t) => t.exit_slippage_bps ?? 0));
   }
   if (withRtCost.length > 0) {
     const avg = withRtCost.reduce((s, t) => s + Number(t.round_trip_cost_pct ?? 0), 0) / withRtCost.length;
-    console.log(` 평균 round-trip cost: ${avg.toFixed(2)}% (n=${withRtCost.length})`);
+    // Why: 컬럼은 entry 시점 gate snapshot 값 — exit 시 갱신되지 않는다. 라벨 명시.
+    console.log(` 평균 round-trip cost (entry-time gate snapshot): ${avg.toFixed(2)}% (n=${withRtCost.length})`);
   }
   if (withGap.length > 0) {
     const gaps = withGap.map((t) => {
@@ -305,6 +364,16 @@ function printCostAggregation(trades: TradeRow[]): void {
   }
 
   printTakeProfitOutcomeSummary(trades);
+
+  // 2026-04-07: Jupiter Ultra saturated swap 경보 — 마킹된 row가 있으면 위쪽 집계는 왜곡됨
+  const fakeFillRows = trades.filter((t) =>
+    (t.exit_anomaly_reason != null && t.exit_anomaly_reason.length > 0) ||
+    (t.exit_slippage_bps != null && t.exit_slippage_bps >= FAKE_FILL_SLIPPAGE_BPS_THRESHOLD)
+  );
+  if (fakeFillRows.length > 0) {
+    console.log(`\n ⚠ FAKE-FILL WARNING: ${fakeFillRows.length}/${trades.length} rows contain saturated slippage or anomaly markers.`);
+    console.log(`   → Aggregations above (esp. exit slippage avg) are distorted. Filter and re-run for clean view.`);
+  }
 }
 
 function printTakeProfitOutcomeSummary(trades: TradeRow[]): void {

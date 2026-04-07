@@ -94,4 +94,54 @@ describe('edgeInputSanitizer (Phase B1)', () => {
     expect(result.keptCount).toBe(2);
     expect(result.droppedCount).toBe(0);
   });
+
+  // 2026-04-07 — P1c fake-fill fallback 필터
+  // Jupiter Ultra 가 outputAmountResult=0 을 반환 → currentPrice fallback 으로 인해
+  // 양수 PnL 을 가진 fake-fill 이 edge input 오염을 일으키던 경로를 차단한다.
+  describe('fake_fill_slippage filter (P1c)', () => {
+    it('drops trades with exitAnomalyReason even when PnL is positive', () => {
+      const trade = {
+        ...baseTrade,
+        pnl: 0.35,
+        exitAnomalyReason: 'fake_fill_no_received(closeTrade),slippage_saturated=10000bps',
+      };
+      expect(validateEdgeLikeTradeReason(trade)).toBe('fake_fill_slippage');
+    });
+
+    it('drops trades with exit slippage >= 9000bps regardless of PnL sign', () => {
+      const winningFakeFill = { ...baseTrade, pnl: 0.42, exitSlippageBps: 10000 };
+      const losingFakeFill = { ...baseTrade, pnl: -0.1, exitSlippageBps: 9500 };
+      expect(validateEdgeLikeTradeReason(winningFakeFill)).toBe('fake_fill_slippage');
+      expect(validateEdgeLikeTradeReason(losingFakeFill)).toBe('fake_fill_slippage');
+    });
+
+    it('keeps trades with exit slippage just below the 9000bps floor', () => {
+      const trade = { ...baseTrade, exitSlippageBps: 8999 };
+      expect(validateEdgeLikeTradeReason(trade)).toBeNull();
+    });
+
+    it('precedes tp_negative_pnl check so winning fake fills are not missed', () => {
+      // exitReason TAKE_PROFIT_1 + negative PnL would normally be tp_negative_pnl,
+      // but slippage saturation is a more fundamental contamination signal.
+      const trade = {
+        ...baseTrade,
+        pnl: -0.08,
+        exitReason: 'TAKE_PROFIT_1',
+        exitSlippageBps: 10000,
+      };
+      expect(validateEdgeLikeTradeReason(trade)).toBe('fake_fill_slippage');
+    });
+
+    it('surfaces fake_fill_slippage in sanitizeEdgeLikeTrades drop breakdown', () => {
+      const trades = [
+        { ...baseTrade },
+        { ...baseTrade, pnl: 0.3, exitSlippageBps: 10000 },
+        { ...baseTrade, pnl: 0.15, exitAnomalyReason: 'fake_fill_no_received(tp1_partial)' },
+      ];
+      const result = sanitizeEdgeLikeTrades(trades);
+      expect(result.keptCount).toBe(1);
+      expect(result.droppedCount).toBe(2);
+      expect(result.dropReasonCounts).toMatchObject({ fake_fill_slippage: 2 });
+    });
+  });
 });

@@ -391,7 +391,8 @@ describe('tradeExecution paper balance', () => {
       0.3,
       undefined,
       undefined, undefined,
-      1.1 // decisionPrice = TP1 trigger price
+      1.1, // decisionPrice = TP1 trigger price
+      undefined // exitAnomalyReason — happy path, no fake-fill
     );
     expect(tradeStore.insertTrade).toHaveBeenCalledTimes(1);
   });
@@ -624,12 +625,15 @@ describe('tradeExecution paper balance', () => {
 
   // Phase A3 — CRITICAL_LIVE 가격 정합성 clamp 테스트
   describe('Phase A3 — alignment ratio clamp', () => {
-    function buildMinimalCtx(overrides?: Partial<BotContext>): {
+    function buildMinimalCtx(overrides?: {
+      tradingMode?: 'live' | 'paper';
+      tokenBalance?: bigint | Error;
+    }): {
       ctx: BotContext;
       positionStore: { updateState: jest.Mock };
       tradeStore: { insertTrade: jest.Mock };
       notifier: { sendTradeOpen: jest.Mock; sendCritical: jest.Mock };
-      executor: { executeSell: jest.Mock };
+      executor: { executeSell: jest.Mock; getTokenBalance: jest.Mock };
       auditLogger: { logSignal: jest.Mock };
     } {
       const positionStore = { updateState: jest.fn().mockResolvedValue(undefined) };
@@ -638,8 +642,18 @@ describe('tradeExecution paper balance', () => {
         sendTradeOpen: jest.fn().mockResolvedValue(undefined),
         sendCritical: jest.fn().mockResolvedValue(undefined),
       };
+      // Why: Phase A3 hardening — emergencyDumpPosition이 getTokenBalance를 우선 사용하므로
+      // BTW 재현 케이스(668_436_000_000n)를 default로 돌려준다. fallback path 테스트는 override.
+      const tokenBalanceSetting = overrides?.tokenBalance;
+      const getTokenBalance = jest.fn().mockImplementation(async () => {
+        if (tokenBalanceSetting instanceof Error) {
+          throw tokenBalanceSetting;
+        }
+        return tokenBalanceSetting !== undefined ? tokenBalanceSetting : 668_436_000_000n;
+      });
       const executor = {
         executeSell: jest.fn().mockResolvedValue({ txSignature: 'DUMP_SIG' }),
+        getTokenBalance,
       };
       const auditLogger = { logSignal: jest.fn().mockResolvedValue(undefined) };
       const healthMonitor = { updateTradeTime: jest.fn() };
@@ -651,8 +665,7 @@ describe('tradeExecution paper balance', () => {
         executor,
         auditLogger,
         healthMonitor,
-        tradingMode: 'live',
-        ...overrides,
+        tradingMode: overrides?.tradingMode ?? 'live',
       } as unknown as BotContext;
 
       return { ctx, positionStore, tradeStore, notifier, executor, auditLogger };
@@ -771,7 +784,7 @@ describe('tradeExecution paper balance', () => {
     });
 
     it('skips emergency dump in paper mode but still throws', async () => {
-      const { ctx, executor, notifier } = buildMinimalCtx({ tradingMode: 'paper' } as any);
+      const { ctx, executor, notifier } = buildMinimalCtx({ tradingMode: 'paper' });
       const executionSummary = {
         entryPrice: 0.00000122,
         quantity: 668_436,
@@ -803,6 +816,116 @@ describe('tradeExecution paper balance', () => {
 
       expect(executor.executeSell).not.toHaveBeenCalled();
       expect(notifier.sendCritical).toHaveBeenCalled();
+    });
+
+    it('falls back to executionSummary.actualOutAmount when getTokenBalance returns 0n', async () => {
+      // Why: on-chain balance가 0으로 보고되어도 summary에 raw outAmount가 있으면 덤프는 계속 시도.
+      const { ctx, executor } = buildMinimalCtx({ tokenBalance: 0n });
+
+      const executionSummary = {
+        entryPrice: 0.00000122,
+        quantity: 668_436,
+        plannedEntryPrice: 0.81549236,
+        plannedQuantity: 1,
+        actualEntryNotionalSol: 0.815,
+        entrySlippageBps: 0,
+        entrySlippagePct: -1,
+        actualOutAmount: '668436000000',
+        outputDecimals: 6,
+        effectiveRR: 1.7,
+        roundTripCost: 0.012,
+      };
+
+      await expect(
+        recordOpenedTrade(
+          ctx,
+          'pos-fallback',
+          baseSignal as any,
+          baseCandle as any,
+          { attentionScore: undefined, executionViability: { rejected: false, effectiveRR: 1.9, roundTripCost: 0.01, sizeMultiplier: 1 } } as any,
+          baseOrder,
+          80,
+          'RISK',
+          'TX_FALLBACK',
+          executionSummary as any
+        )
+      ).rejects.toBeInstanceOf(PriceAnomalyError);
+
+      expect(executor.getTokenBalance).toHaveBeenCalledWith('pair-BTW');
+      expect(executor.executeSell).toHaveBeenCalledWith('pair-BTW', 668_436_000_000n);
+    });
+
+    it('falls back to executionSummary when getTokenBalance throws', async () => {
+      // Why: RPC 순단으로 balance 조회가 실패해도 dump 경로가 완전히 막히면 안 된다.
+      const { ctx, executor } = buildMinimalCtx({ tokenBalance: new Error('RPC timeout') });
+
+      const executionSummary = {
+        entryPrice: 0.00000122,
+        quantity: 668_436,
+        plannedEntryPrice: 0.81549236,
+        plannedQuantity: 1,
+        actualEntryNotionalSol: 0.815,
+        entrySlippageBps: 0,
+        entrySlippagePct: -1,
+        actualOutAmount: '668436000000',
+        outputDecimals: 6,
+        effectiveRR: 1.7,
+        roundTripCost: 0.012,
+      };
+
+      await expect(
+        recordOpenedTrade(
+          ctx,
+          'pos-rpc-fail',
+          baseSignal as any,
+          baseCandle as any,
+          { attentionScore: undefined, executionViability: { rejected: false, effectiveRR: 1.9, roundTripCost: 0.01, sizeMultiplier: 1 } } as any,
+          baseOrder,
+          80,
+          'RISK',
+          'TX_RPC_FAIL',
+          executionSummary as any
+        )
+      ).rejects.toBeInstanceOf(PriceAnomalyError);
+
+      expect(executor.getTokenBalance).toHaveBeenCalledWith('pair-BTW');
+      expect(executor.executeSell).toHaveBeenCalledWith('pair-BTW', 668_436_000_000n);
+    });
+
+    it('skips dump attempt when both getTokenBalance and summary are empty', async () => {
+      // Why: 양쪽 모두 비어있으면 sell 시도 자체가 없어야 한다 (잘못된 amount로 호출 금지).
+      const { ctx, executor } = buildMinimalCtx({ tokenBalance: 0n });
+
+      const executionSummary = {
+        entryPrice: 0.00000122,
+        quantity: 668_436,
+        plannedEntryPrice: 0.81549236,
+        plannedQuantity: 1,
+        actualEntryNotionalSol: 0.815,
+        entrySlippageBps: 0,
+        entrySlippagePct: -1,
+        actualOutAmount: null,
+        outputDecimals: 6,
+        effectiveRR: 1.7,
+        roundTripCost: 0.012,
+      };
+
+      await expect(
+        recordOpenedTrade(
+          ctx,
+          'pos-empty',
+          baseSignal as any,
+          baseCandle as any,
+          { attentionScore: undefined, executionViability: { rejected: false, effectiveRR: 1.9, roundTripCost: 0.01, sizeMultiplier: 1 } } as any,
+          baseOrder,
+          80,
+          'RISK',
+          'TX_EMPTY',
+          executionSummary as any
+        )
+      ).rejects.toBeInstanceOf(PriceAnomalyError);
+
+      expect(executor.executeSell).not.toHaveBeenCalled();
     });
   });
 
@@ -899,6 +1022,137 @@ describe('tradeExecution paper balance', () => {
 
       await closeTrade(trade, 'TAKE_PROFIT_2', ctx, 1.2);
 
+      expect(notifier.sendCritical).not.toHaveBeenCalled();
+    });
+  });
+
+  // 2026-04-07 — P0/P3 fake-fill fallback 감지
+  // Jupiter Ultra 가 outputAmountResult=0 반환 + 10000bps saturated slippage → currentPrice fallback
+  // 으로 wining-trade 가장되는 경로에서 exit_anomaly_reason 이 DB 에 기록되는지 검증한다.
+  describe('P0/P3 — fake-fill fallback marking', () => {
+    it('records exitAnomalyReason when live sell returns 0 SOL with saturated slippage', async () => {
+      const tradeStore = {
+        closeTrade: jest.fn().mockResolvedValue(undefined),
+        failTrade: jest.fn().mockResolvedValue(undefined),
+        updateHighWaterMark: jest.fn().mockResolvedValue(undefined),
+      };
+      const notifier = {
+        sendTradeClose: jest.fn().mockResolvedValue(undefined),
+        sendError: jest.fn().mockResolvedValue(undefined),
+        sendCritical: jest.fn().mockResolvedValue(undefined),
+      };
+      const positionStore = {
+        getOpenPositions: jest.fn().mockResolvedValue([]),
+        updateState: jest.fn().mockResolvedValue(undefined),
+      };
+      const healthMonitor = { updateTradeTime: jest.fn() };
+      const executor = {
+        getTokenBalance: jest.fn().mockResolvedValue(1_000_000n),
+        getBalance: jest.fn()
+          .mockResolvedValueOnce(5.0) // before sell
+          .mockResolvedValueOnce(5.0), // after sell — received 0 SOL
+        executeSell: jest.fn().mockResolvedValue({
+          txSignature: 'FAKE_FILL_SIG',
+          slippageBps: 10000,
+        }),
+      };
+      const ctx = {
+        tradingMode: 'live',
+        tradeStore,
+        notifier,
+        positionStore,
+        healthMonitor,
+        executor,
+      } as unknown as BotContext;
+
+      const trade: Trade = {
+        id: 'trade-fake-fill',
+        pairAddress: 'pair-fake',
+        strategy: 'volume_spike',
+        side: 'BUY',
+        entryPrice: 1.0,
+        quantity: 1.0,
+        status: 'OPEN',
+        createdAt: new Date('2026-03-21T00:00:00Z'),
+        stopLoss: 0.9,
+        takeProfit1: 1.1,
+        takeProfit2: 1.2,
+        timeStopAt: new Date('2026-03-21T01:00:00Z'),
+      };
+
+      await closeTrade(trade, 'TAKE_PROFIT_1', ctx, 1.1);
+
+      expect(tradeStore.closeTrade).toHaveBeenCalledTimes(1);
+      // closeTrade positional signature, 11th arg = exitAnomalyReason
+      const call = tradeStore.closeTrade.mock.calls[0];
+      const anomalyReason = call[10] as string | undefined;
+      expect(anomalyReason).toBeDefined();
+      // P0 reason (fake_fill_no_received) 과 P3 Phase A4 reason (slippage_saturated) 둘 다 포함
+      expect(anomalyReason).toContain('fake_fill_no_received(closeTrade)');
+      expect(anomalyReason).toContain('slippage_saturated=10000bps');
+      // Phase A4 critical alert 도 발송되어야 함
+      expect(notifier.sendCritical).toHaveBeenCalledWith(
+        'exit_anomaly',
+        expect.stringContaining('slippage_saturated=10000bps')
+      );
+    });
+
+    it('does not record exitAnomalyReason on a normal live fill', async () => {
+      const tradeStore = {
+        closeTrade: jest.fn().mockResolvedValue(undefined),
+        failTrade: jest.fn().mockResolvedValue(undefined),
+        updateHighWaterMark: jest.fn().mockResolvedValue(undefined),
+      };
+      const notifier = {
+        sendTradeClose: jest.fn().mockResolvedValue(undefined),
+        sendError: jest.fn().mockResolvedValue(undefined),
+        sendCritical: jest.fn().mockResolvedValue(undefined),
+      };
+      const positionStore = {
+        getOpenPositions: jest.fn().mockResolvedValue([]),
+        updateState: jest.fn().mockResolvedValue(undefined),
+      };
+      const healthMonitor = { updateTradeTime: jest.fn() };
+      const executor = {
+        getTokenBalance: jest.fn().mockResolvedValue(1_000_000n),
+        getBalance: jest.fn()
+          .mockResolvedValueOnce(5.0)
+          .mockResolvedValueOnce(6.2), // 받은 1.2 SOL
+        executeSell: jest.fn().mockResolvedValue({
+          txSignature: 'OK_SIG',
+          slippageBps: 50,
+        }),
+      };
+      const ctx = {
+        tradingMode: 'live',
+        tradeStore,
+        notifier,
+        positionStore,
+        healthMonitor,
+        executor,
+      } as unknown as BotContext;
+
+      const trade: Trade = {
+        id: 'trade-ok-live',
+        pairAddress: 'pair-ok-live',
+        strategy: 'volume_spike',
+        side: 'BUY',
+        entryPrice: 1.0,
+        quantity: 1.0,
+        status: 'OPEN',
+        createdAt: new Date('2026-03-21T00:00:00Z'),
+        stopLoss: 0.9,
+        takeProfit1: 1.1,
+        takeProfit2: 1.2,
+        timeStopAt: new Date('2026-03-21T01:00:00Z'),
+      };
+
+      await closeTrade(trade, 'TAKE_PROFIT_2', ctx, 1.2);
+
+      expect(tradeStore.closeTrade).toHaveBeenCalledTimes(1);
+      const call = tradeStore.closeTrade.mock.calls[0];
+      const anomalyReason = call[10] as string | undefined;
+      expect(anomalyReason).toBeUndefined();
       expect(notifier.sendCritical).not.toHaveBeenCalled();
     });
   });

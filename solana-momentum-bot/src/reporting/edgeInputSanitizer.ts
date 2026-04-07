@@ -1,3 +1,5 @@
+import { FAKE_FILL_SLIPPAGE_BPS_THRESHOLD } from '../utils/constants';
+
 interface EdgeLikeTrade {
   entryPrice: number;
   stopLoss: number;
@@ -7,6 +9,10 @@ interface EdgeLikeTrade {
   plannedEntryPrice?: number | null;
   /** Phase B1: TP인데 음수 PnL 필터용 — 없으면 검사 생략 */
   exitReason?: string | null;
+  /** 2026-04-07: Jupiter Ultra saturated slippage / fake-fill 감지 (>=9000bps) */
+  exitSlippageBps?: number | null;
+  /** 2026-04-07: tradeExecution이 DB에 기록한 anomaly reason (fake_fill_*, slippage_saturated=*) */
+  exitAnomalyReason?: string | null;
 }
 
 export interface EdgeInputSanitizerResult<T> {
@@ -32,6 +38,10 @@ const TP_EXIT_REASONS = new Set([
   'TRAILING_STOP', // 이익 상태 trailing 종료 (pnl<0은 단위 오염 의심)
 ]);
 
+// 2026-04-07: Jupiter Ultra outputAmountResult="0" 케이스는 exit_slippage_bps=10000(=100%)으로
+// 저장된다. 9000bps 이상이면 정상 체결이 아닌 saturated swap으로 간주하고 edge 표본에서 제외.
+// 임계값은 src/utils/constants.ts에 공유 상수로 존재.
+
 export type SanitizerDropReason =
   | 'invalid_entry_price'
   | 'invalid_stop_loss'
@@ -41,7 +51,8 @@ export type SanitizerDropReason =
   | 'zero_planned_risk'
   | 'risk_pct_too_high'
   | 'planned_entry_ratio_corrupt'
-  | 'tp_negative_pnl';
+  | 'tp_negative_pnl'
+  | 'fake_fill_slippage';
 
 export function sanitizeEdgeLikeTrades<T extends EdgeLikeTrade>(
   trades: T[]
@@ -97,6 +108,16 @@ export function validateEdgeLikeTradeReason(
     if (!Number.isFinite(ratio) || ratio < PLANNED_ENTRY_RATIO_MIN || ratio > PLANNED_ENTRY_RATIO_MAX) {
       return 'planned_entry_ratio_corrupt';
     }
+  }
+
+  // 2026-04-07: Fake-fill (Jupiter saturated swap) — tradeExecution 마킹이 있거나 slippage가 9000bps 이상이면
+  //            exitPrice가 currentPrice로 마스킹된 contaminated row이므로 edge 입력에서 제외.
+  //            양수 PnL로 위장되는 케이스까지 잡기 위해 tp_negative_pnl 체크보다 먼저 실행.
+  if (trade.exitAnomalyReason && trade.exitAnomalyReason.length > 0) {
+    return 'fake_fill_slippage';
+  }
+  if (trade.exitSlippageBps != null && trade.exitSlippageBps >= FAKE_FILL_SLIPPAGE_BPS_THRESHOLD) {
+    return 'fake_fill_slippage';
   }
 
   // Phase B1: TP 계열인데 pnl<0은 P0-C contaminated trade — EdgeTracker 입력에서 제거

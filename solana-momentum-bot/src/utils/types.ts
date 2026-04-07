@@ -239,6 +239,9 @@ export interface Trade {
   degradedTriggerReason?: 'sell_impact' | 'quote_fail';
   degradedQuoteFailCount?: number;
   parentTradeId?: string;
+  // Why: 2026-04-07 — fake-fill (Jupiter Ultra outputAmountResult=0 fallback) 또는
+  //       Phase A4 anomaly reason을 downstream 분석(sanitizer/edge/ratio)이 필터링할 수 있게 마킹
+  exitAnomalyReason?: string | null;
 }
 
 // ─── Position State Machine (v0.3) ───

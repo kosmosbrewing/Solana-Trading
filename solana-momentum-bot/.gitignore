@@ -19,5 +19,10 @@ data/realtime-admission.json
 data/historical-swaps/
 data/data/
 
+# VPS trades snapshot (sync-vps-data.sh 산출, read-only 분석용)
+data/vps-trades-*.jsonl
+data/vps-trades-*.sql
+data/local-trades-backup-*.jsonl
+
 # Patch 백업
 *.bak

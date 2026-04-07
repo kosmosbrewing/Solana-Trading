@@ -1,5 +1,6 @@
 import { GateEvaluationResult } from '../gate';
 import { config } from '../utils/config';
+import { FAKE_FILL_SLIPPAGE_BPS_THRESHOLD } from '../utils/constants';
 import { createModuleLogger } from '../utils/logger';
 import { Candle, CloseReason, Order, Signal, Trade } from '../utils/types';
 import { calcATR, calcAdaptiveTrailingStop, checkExhaustion } from '../strategy';
@@ -26,6 +27,106 @@ const EXIT_RATIO_MAX = 10; // +1000% 초과면 비현실
 // Why: decision price와 실제 fill이 50% 이상 벌어지면 price axis mismatch 의심
 // (planned=0.815 → fill=0.00000122 같은 -100% gap 케이스를 잡기 위함)
 const DECISION_FILL_GAP_ALERT_PCT = 0.5;
+
+// Why: 2026-04-07 fake-fill detection — Jupiter Ultra outputAmountResult="0" 케이스에서
+// receivedSol <= 0이면 currentPrice로 fallback하는 기존 패턴이 "승리한 것처럼" 마스킹했다.
+// 임계값(9000bps)은 src/utils/constants.ts에 공유 상수로 존재.
+// Phase A4 재사용 — 같은 임계를 쓴다.
+const SLIPPAGE_SATURATED_BPS = FAKE_FILL_SLIPPAGE_BPS_THRESHOLD;
+
+interface FakeFillDetection {
+  isFake: boolean;
+  reasons: string[];
+}
+
+/**
+ * Jupiter Ultra saturated swap 감지.
+ * exit path에서 receivedSol <= 0이거나 slippageBps >= 9000이면 fake-fill로 판정.
+ * 반환된 reason은 exit_anomaly_reason 컬럼에 콤마 조인으로 저장된다.
+ */
+function detectFakeFill(
+  receivedSol: number,
+  slippageBps: number,
+  exitPath: string,
+): FakeFillDetection {
+  const reasons: string[] = [];
+  if (receivedSol <= 0) reasons.push(`fake_fill_no_received(${exitPath})`);
+  if (slippageBps >= FAKE_FILL_SLIPPAGE_BPS_THRESHOLD) {
+    reasons.push(`slippage_saturated=${slippageBps}bps`);
+  }
+  return { isFake: reasons.length > 0, reasons };
+}
+
+/**
+ * 4개 exit path 공통 패턴 — Jupiter live sell 응답을 exitPrice/anomalyReason으로 해석.
+ *
+ * Why: closeTrade / handleDegradedExitPhase1 / handleTakeProfit1Partial /
+ * handleRunnerGradeBPartial 4곳이 같은 `received > 0 ? received/qty : fallback` 패턴과
+ * saturated-slippage 보조 검사를 반복 구현해 왔다. 단일 helper로 drift를 차단한다.
+ *
+ * 입력:
+ *   - `fallbackPrice`: receivedSol <= 0일 때 사용할 사전 계산된 가격.
+ *     closeTrade는 decisionPrice ?? entryPrice, 나머지 3경로는 currentPrice.
+ *     이 값이 실제로 DB exitPrice에 기록되는 가격이므로 log 메시지에도 동일 값을 출력한다.
+ *   - `soldQuantity`: 부분 청산 시 sold 분량. closeTrade는 trade.quantity.
+ *
+ * 출력: `exitPrice`, `executionSlippage`(소수), `anomalyReason`(comma-joined reason).
+ */
+function resolveExitFillOrFakeFill(params: {
+  tradeId: string;
+  exitPath: string;
+  receivedSol: number;
+  soldQuantity: number;
+  slippageBps: number;
+  fallbackPrice: number;
+}): {
+  exitPrice: number;
+  executionSlippage: number;
+  anomalyReason: string | undefined;
+} {
+  const { tradeId, exitPath, receivedSol, soldQuantity, slippageBps, fallbackPrice } = params;
+  const executionSlippage = slippageBps / 10000;
+
+  // Happy path: received/quantity 계산. 실패 시 sanitized fallback 으로 대체한다.
+  const hasValidFill = receivedSol > 0 && soldQuantity > 0;
+  const exitPrice = hasValidFill ? receivedSol / soldQuantity : fallbackPrice;
+
+  // detectFakeFill 이 두 가지 상호 배타적 원인(`fake_fill_no_received`, `slippage_saturated=*`)을
+  // 한 번에 수집하므로 호출은 한 번이면 충분하다. fallback 여부와 무관하게 동일 helper 를 쓴다.
+  const detection = detectFakeFill(receivedSol, slippageBps, exitPath);
+  if (!detection.isFake) {
+    return { exitPrice, executionSlippage, anomalyReason: undefined };
+  }
+
+  // log 의 trigger 문구는 원인에 맞춰 다르게 출력하여 운영 디버깅을 돕는다.
+  const trigger = hasValidFill
+    ? 'saturated slippage'
+    : `fallback to ${exitPrice.toFixed(8)}`;
+  log.error(
+    `[FAKE_FILL] Trade ${tradeId} ${trigger} (${exitPath}): ` +
+    `received=${receivedSol.toFixed(6)} slip=${slippageBps}bps`,
+  );
+  return {
+    exitPrice,
+    executionSlippage,
+    anomalyReason: detection.reasons.join(','),
+  };
+}
+
+/**
+ * Fake-fill detection reason과 Phase A4 anomaly reasons를 단일 문자열로 병합.
+ * 중복 토큰은 제거한다 (slippage_saturated가 양쪽에서 모두 push될 수 있음).
+ */
+function mergeAnomalyReasons(
+  fakeFillReason: string | undefined,
+  phaseA4Reasons: string[],
+): string | undefined {
+  const all: string[] = [];
+  if (fakeFillReason) all.push(...fakeFillReason.split(','));
+  if (phaseA4Reasons.length > 0) all.push(...phaseA4Reasons);
+  const deduped = Array.from(new Set(all.map((s) => s.trim()).filter((s) => s.length > 0)));
+  return deduped.length > 0 ? deduped.join(',') : undefined;
+}
 
 /**
  * Phase A3 — recordOpenedTrade에서 ratio clamp 위반 시 throw.
@@ -141,6 +242,7 @@ export async function handleDegradedExitPhase1(
   // TP1 partial 패턴: 부분 청산
   let exitPrice = currentPrice;
   let executionSlippage = 0;
+  let degradedAnomalyReason: string | undefined;
 
   if (ctx.tradingMode === 'live') {
     const tokenBalance = await ctx.executor.getTokenBalance(trade.pairAddress);
@@ -151,8 +253,18 @@ export async function handleDegradedExitPhase1(
       const sellResult = await ctx.executor.executeSell(trade.pairAddress, partialTokenAmount);
       const solAfter = await ctx.executor.getBalance();
       const receivedSol = solAfter - solBefore;
-      exitPrice = receivedSol > 0 ? receivedSol / soldQuantity : currentPrice;
-      executionSlippage = sellResult.slippageBps / 10000;
+
+      const resolved = resolveExitFillOrFakeFill({
+        tradeId: trade.id,
+        exitPath: 'degraded_phase1',
+        receivedSol,
+        soldQuantity,
+        slippageBps: sellResult.slippageBps,
+        fallbackPrice: currentPrice,
+      });
+      exitPrice = resolved.exitPrice;
+      executionSlippage = resolved.executionSlippage;
+      degradedAnomalyReason = resolved.anomalyReason;
     }
   }
 
@@ -168,7 +280,8 @@ export async function handleDegradedExitPhase1(
   await ctx.tradeStore.closeTrade(
     trade.id, exitPrice, realizedPnl, executionSlippage, 'DEGRADED_EXIT',
     soldQuantity, degradedExitSlippageBps, triggerReason, failCount > 0 ? failCount : undefined,
-    currentPrice // decision price = degraded trigger price
+    currentPrice, // decision price = degraded trigger price
+    degradedAnomalyReason
   );
 
   // 잔여분 새 trade 생성 (phase 2에서 청산)
@@ -502,6 +615,8 @@ export async function closeTrade(
     let txSignature: string | undefined;
     let exitPrice = paperExitPrice ?? trade.entryPrice;
     let executionSlippage = 0;
+    // 2026-04-07: fake-fill/slippage saturation 감지 시 사유를 collected — closeTrade DB에 기록
+    let fakeFillAnomalyReason: string | undefined;
 
     if (ctx.tradingMode === 'paper') {
       txSignature = 'PAPER_TRADE';
@@ -517,11 +632,17 @@ export async function closeTrade(
         const solAfter = await ctx.executor.getBalance();
         const receivedSol = solAfter - solBefore;
 
-        if (receivedSol > 0 && trade.quantity > 0) {
-          exitPrice = receivedSol / trade.quantity;
-        }
-
-        executionSlippage = sellResult.slippageBps / 10000;
+        const resolved = resolveExitFillOrFakeFill({
+          tradeId: trade.id,
+          exitPath: 'closeTrade',
+          receivedSol,
+          soldQuantity: trade.quantity,
+          slippageBps: sellResult.slippageBps,
+          fallbackPrice: exitPrice, // paperExitPrice(decisionPrice) ?? entryPrice
+        });
+        exitPrice = resolved.exitPrice;
+        executionSlippage = resolved.executionSlippage;
+        fakeFillAnomalyReason = resolved.anomalyReason;
 
         log.info(
           `Sell executed: received=${receivedSol.toFixed(6)} SOL, ` +
@@ -570,6 +691,20 @@ export async function closeTrade(
       }
     }
 
+    // 2026-04-07 Phase A4 보강 — saturated slippage는 정상 ratio/gap bound 안에도 존재할 수 있다.
+    // P0 fake-fill helper와 동일 임계(9000bps) 사용. live 모드에만 의미가 있다.
+    if (ctx.tradingMode === 'live') {
+      const slippageBpsCheck = Math.round(executionSlippage * 10000);
+      if (slippageBpsCheck >= SLIPPAGE_SATURATED_BPS) {
+        exitAnomaly = true;
+        exitAnomalyReasons.push(`slippage_saturated=${slippageBpsCheck}bps`);
+        log.error(
+          `[EXIT_ANOMALY] Trade ${trade.id} slippage saturated: ${slippageBpsCheck}bps ` +
+          `(likely fake fill — verify Jupiter Ultra outputAmountResult)`
+        );
+      }
+    }
+
     if (exitAnomaly) {
       // best-effort: 메시지 상단에 [ANOMALY] 표식이 찍히도록 notifier에 추가 컨텍스트.
       // 실제 formatter 수정은 별도 작업 — 우선 log + sendError로 Critical 알림.
@@ -581,9 +716,13 @@ export async function closeTrade(
       await ctx.notifier.sendCritical('exit_anomaly', anomalyMsg).catch(() => {});
     }
 
+    // P0 fake-fill reason + P3 Phase A4 reasons → 동일 컬럼(exit_anomaly_reason)에 병합
+    const mergedAnomalyReason = mergeAnomalyReasons(fakeFillAnomalyReason, exitAnomalyReasons);
+
     await ctx.tradeStore.closeTrade(
       trade.id, exitPrice, pnl, executionSlippage, reason, undefined, exitSlippageBps,
-      undefined, undefined, decisionPrice
+      undefined, undefined, decisionPrice,
+      mergedAnomalyReason
     );
 
     const closedTrade = {
@@ -596,6 +735,7 @@ export async function closeTrade(
       txSignature,
       status: 'CLOSED' as const,
       exitReason: reason,
+      exitAnomalyReason: mergedAnomalyReason,
     };
     await ctx.notifier.sendTradeClose(closedTrade);
     await updatePositionsForPair(ctx, trade.pairAddress, 'EXIT_CONFIRMED', {
@@ -785,7 +925,11 @@ async function assertEntryAlignmentSafe(
 
 /**
  * Phase A3 — 이상 감지 직후 live 모드면 보유 토큰을 즉시 SOL로 청산.
- * paper 모드나 actualOutAmount 없는 경우 no-op. best-effort이며 실패해도 throw는 위에서 수행.
+ * paper 모드면 no-op. best-effort이며 실패해도 throw는 위에서 수행.
+ *
+ * Why (on-chain balance 우선): buy tx 직후 race condition/RPC lag 상황에서
+ * executionSummary.actualOutAmount가 실제 지갑 잔액과 어긋날 수 있다.
+ * closeTrade와 동일하게 getTokenBalance를 1차로 쓰고, 실패 시에만 summary 값을 fallback.
  */
 async function emergencyDumpPosition(
   ctx: BotContext,
@@ -795,27 +939,44 @@ async function emergencyDumpPosition(
 ): Promise<void> {
   if (ctx.tradingMode !== 'live') return;
 
-  const rawOut = executionSummary.actualOutAmount;
-  if (rawOut == null) {
-    log.warn(`[PRICE_ANOMALY_DUMP] No actualOutAmount — skipping emergency dump for ${order.pairAddress}`);
-    return;
-  }
+  let amountRaw = 0n;
+  let source: 'onchain' | 'summary' = 'onchain';
 
-  let amountRaw: bigint;
   try {
-    amountRaw = BigInt(rawOut);
-  } catch {
-    log.warn(`[PRICE_ANOMALY_DUMP] actualOutAmount not a valid bigint (${rawOut}) — skipping dump`);
-    return;
+    amountRaw = await ctx.executor.getTokenBalance(order.pairAddress);
+  } catch (balanceError) {
+    log.warn(
+      `[PRICE_ANOMALY_DUMP] getTokenBalance failed for ${order.pairAddress}: ${balanceError} ` +
+      `— falling back to executionSummary.actualOutAmount`
+    );
   }
 
   if (amountRaw <= 0n) {
-    log.warn(`[PRICE_ANOMALY_DUMP] actualOutAmount <= 0 — skipping dump`);
+    const rawOut = executionSummary.actualOutAmount;
+    if (rawOut != null) {
+      try {
+        amountRaw = BigInt(rawOut);
+        source = 'summary';
+      } catch {
+        log.warn(`[PRICE_ANOMALY_DUMP] actualOutAmount not a valid bigint (${rawOut}) — skipping dump`);
+        return;
+      }
+    }
+  }
+
+  if (amountRaw <= 0n) {
+    log.warn(
+      `[PRICE_ANOMALY_DUMP] No dumpable balance for ${order.pairAddress} ` +
+      `(on-chain=0, summary=${executionSummary.actualOutAmount ?? 'null'}) — skipping dump`
+    );
     return;
   }
 
   try {
-    log.error(`[PRICE_ANOMALY_DUMP] Attempting emergency sell of ${amountRaw} raw units for ${order.pairAddress} — ${reason}`);
+    log.error(
+      `[PRICE_ANOMALY_DUMP] Attempting emergency sell of ${amountRaw} raw units ` +
+      `(source=${source}) for ${order.pairAddress} — ${reason}`
+    );
     const sellResult = await ctx.executor.executeSell(order.pairAddress, amountRaw);
     log.error(`[PRICE_ANOMALY_DUMP] Emergency dump complete: sig=${sellResult.txSignature}`);
   } catch (dumpError) {
@@ -933,6 +1094,7 @@ async function handleTakeProfit1Partial(
 
     let exitPrice = currentPrice;
     let executionSlippage = 0;
+    let tp1AnomalyReason: string | undefined;
 
     if (ctx.tradingMode === 'live') {
       const tokenBalance = await ctx.executor.getTokenBalance(trade.pairAddress);
@@ -949,8 +1111,17 @@ async function handleTakeProfit1Partial(
       const solAfter = await ctx.executor.getBalance();
       const receivedSol = solAfter - solBefore;
 
-      exitPrice = receivedSol > 0 ? receivedSol / soldQuantity : currentPrice;
-      executionSlippage = sellResult.slippageBps / 10000;
+      const resolved = resolveExitFillOrFakeFill({
+        tradeId: trade.id,
+        exitPath: 'tp1_partial',
+        receivedSol,
+        soldQuantity,
+        slippageBps: sellResult.slippageBps,
+        fallbackPrice: currentPrice,
+      });
+      exitPrice = resolved.exitPrice;
+      executionSlippage = resolved.executionSlippage;
+      tp1AnomalyReason = resolved.anomalyReason;
     }
 
     const realizedPnl = (exitPrice - trade.entryPrice) * soldQuantity;
@@ -966,7 +1137,8 @@ async function handleTakeProfit1Partial(
       soldQuantity,
       tp1ExitSlippageBps,
       undefined, undefined,
-      currentPrice // decision price = TP1 trigger price
+      currentPrice, // decision price = TP1 trigger price
+      tp1AnomalyReason
     );
 
     // v3: TP1 후 잔여 trade에 time stop 연장 — Runner 활성화 시간 확보
@@ -1050,6 +1222,7 @@ async function handleRunnerGradeBPartial(
 
     let exitPrice = currentPrice;
     let executionSlippage = 0;
+    let runnerBAnomalyReason: string | undefined;
 
     if (ctx.tradingMode === 'live') {
       const tokenBalance = await ctx.executor.getTokenBalance(trade.pairAddress);
@@ -1065,8 +1238,18 @@ async function handleRunnerGradeBPartial(
       const sellResult = await ctx.executor.executeSell(trade.pairAddress, partialTokenAmount);
       const solAfter = await ctx.executor.getBalance();
       const receivedSol = solAfter - solBefore;
-      exitPrice = receivedSol > 0 ? receivedSol / soldQuantity : currentPrice;
-      executionSlippage = sellResult.slippageBps / 10000;
+
+      const resolved = resolveExitFillOrFakeFill({
+        tradeId: trade.id,
+        exitPath: 'runner_b_partial',
+        receivedSol,
+        soldQuantity,
+        slippageBps: sellResult.slippageBps,
+        fallbackPrice: currentPrice,
+      });
+      exitPrice = resolved.exitPrice;
+      executionSlippage = resolved.executionSlippage;
+      runnerBAnomalyReason = resolved.anomalyReason;
     }
 
     const realizedPnl = (exitPrice - trade.entryPrice) * soldQuantity;
@@ -1074,7 +1257,8 @@ async function handleRunnerGradeBPartial(
     applyPaperExitProceeds(ctx, soldQuantity, exitPrice);
     await ctx.tradeStore.closeTrade(
       trade.id, exitPrice, realizedPnl, executionSlippage, 'TAKE_PROFIT_2', soldQuantity, tp2ExitSlippageBps,
-      undefined, undefined, currentPrice // decision price = TP2 trigger price
+      undefined, undefined, currentPrice, // decision price = TP2 trigger price
+      runnerBAnomalyReason
     );
 
     // 원본 trade state map 정리 (closeTrade 경유하지 않으므로 수동 정리)

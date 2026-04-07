@@ -287,20 +287,112 @@ Use with: `OPERATIONS.md`, `docs/runbooks/live-ops-loop.md`, `scripts/ledger-aud
 ### 7D. 테스트 검증 상태
 
 - `npx tsc --noEmit` — 0 errors.
-- `npx jest` — 87 suites / 448 tests pass (baseline 427 → +21 new tests).
-- 신규 테스트:
+- `npx jest` — 87 suites / 465 tests pass (baseline 427 → +38 new tests 누적).
+- 신규 테스트 (누적):
   - `test/signalProcessor.test.ts` — `buildEntryExecutionSummary` 5 cases (actual/planned 혼합, 부분 fallback guard, paper fallback, BTW ratio 확인).
-  - `test/tradeExecution.test.ts` — Phase A3 3 cases (BTW 케이스 블록+dump, 정상 5% 허용, paper 모드 dump 없음) + Phase A4 2 cases (exit ratio < -95% alert, healthy 무발화).
-  - `test/edgeInputSanitizer.test.ts` (신규) — 10 cases (healthy, stop_above_entry, risk_pct_too_high, planned_entry_ratio_corrupt BTW, TP+loss, STOP_LOSS+loss 허용, drop reason counts, backward compat).
+  - `test/tradeExecution.test.ts` — Phase A3 3 cases + Phase A4 2 cases + **Phase E 2 cases** (live fake-fill 시 `exit_anomaly_reason` 기록 + Phase A4 critical alert, 정상 live fill 무발화).
+  - `test/edgeInputSanitizer.test.ts` — 10 cases + **Phase E 5 cases** (exitAnomalyReason drop, slippageBps ≥ 9000 drop, 8999bps 허용, tp_negative_pnl 보다 우선, dropReasonCounts 노출).
 
-### 7E. 남은 운영 과제
+### 7E. Phase E — Live Ops Integrity (2026-04-07 P0~P3 배포 완료)
+
+배경: 2026-04-07 `trade-report` / `realized-replay-ratio` 품질 감사에서 **Jupiter Ultra `outputAmountResult="0"` fake-fill fallback**이 4개 exit path에서 winning trade로 마스킹되는 것이 모든 의심 수치의 root cause로 확인됨. 증거: row #1 `exit_slip=10000bps + exitGap=0.00% + 양수 PnL` 모순 상태.
+
+- **E0. Fake-fill 감지 + 영구 마킹** (`src/orchestration/tradeExecution.ts`, `src/utils/types.ts`, `src/candle/tradeStore.ts`):
+  - `detectFakeFill()` helper — `receivedSol <= 0` 또는 `slippageBps >= 9000` 이면 reasons 배열 반환.
+  - `resolveExitFillOrFakeFill()` helper — 4개 exit path (`closeTrade`, `degraded_phase1`, `tp1_partial`, `runner_b_partial`) 의 중복되는 `receivedSol > 0 ? received/qty : fallback + saturated slippage guard` 블록을 단일 함수로 통합. path drift 차단.
+  - `Trade` 인터페이스에 `exitAnomalyReason?: string | null` 추가, DB `trades.exit_anomaly_reason TEXT` 컬럼 마이그레이션 자동 적용.
+  - `tradeStore.closeTrade()` 11번째 positional 인자로 `exitAnomalyReason` 전달 (TD-8 부채 +1, 후속 PR 에서 options object 전환 예정).
+- **E1a. Trade-report parent grouping + 라벨 정정** (`scripts/trade-report.ts`):
+  - `groupByParent()` helper — TP1 partial + remainder 를 parent 단위로 합산.
+  - W/L 라인 이중화: `승/패 (row)` 기존 값 + `승/패 (entry)` entry 단위 합산. entry 기준이 1차 메트릭.
+  - 라벨 정정: `rtCost(entry)`, `effRR(entry)`, `평균 round-trip cost (entry-time gate snapshot)` — `round_trip_cost_pct` 는 현재 entry-time gate snapshot 이라는 사실 명시.
+  - 각 row 서브라인에 `anomaly=...` 노출, `printCostAggregation` 끝에 `FAKE-FILL WARNING` 섹션 추가 (saturated slippage 또는 exit_anomaly_reason 이 N건 있으면 경고).
+- **E1c. EdgeTracker sanitizer `fake_fill_slippage` filter** (`src/reporting/edgeInputSanitizer.ts` 외 6 callers):
+  - `EdgeLikeTrade` 에 `exitSlippageBps?`, `exitAnomalyReason?` 추가.
+  - 신규 drop reason `fake_fill_slippage` — `tp_negative_pnl` 보다 **먼저** 검사해 양수 PnL fake fill 도 차단.
+  - `edgeTracker.ts`, `riskManager.ts`, `scannerBlacklist.ts`, `orchestration/reporting.ts`, `scripts/ledger-audit.ts` 모두 새 필드 전파.
+- **E2. realized-replay-ratio parent dedup + magnitude floor** (`scripts/analysis/realized-replay-ratio.ts`):
+  - `aggregateByParent()` — child row (TP1 partial + remainder) 가 tx_signature 로 중복 매칭되는 경로 차단. pnl 합산, 마지막 exit 가격 사용.
+  - `MIN_PREDICTED_MAGNITUDE_PCT = 0.05` floor — per-trade `ratio` 와 `ratioRealizedTotal` 양쪽에 적용. `|denom| < 0.05%` 면 NaN 처리 (tiny denominator 분모 증폭 차단).
+  - `AggregateResult` 에 `sumPredictedAdj`, `finiteRatioCount`, `excludedByMagnitudeFloor` 노출. 헤드라인 메시지에 `Mean of per-trade ratios: **X** (n=Y finite, Z excluded by floor)` + `Sum-based ratio: N/A — predicted edge ≈ 0` 처리.
+  - finite ratio 가 0 개면 verdict 섹션에 `⚠ **Verdict: 표본 부족 (predicted edge ≈ 0)**` 강제 표시.
+- **E3. Phase A4 `EXIT_ANOMALY` slippage saturation guard** (`tradeExecution.ts:670-680`):
+  - Phase A4 기존 ratio/gap 체크 다음에 `slippageBps >= 9000` 체크 추가 (live 모드만).
+  - E0 fake-fill reason 과 Phase A4 reasons 를 `mergeAnomalyReasons()` 로 dedupe 후 단일 `exit_anomaly_reason` 컬럼에 기록. `slippage_saturated=*` 이 양쪽에서 모두 push 되는 중복 제거.
+- **품질 개선 (refactor)**:
+  - 4× 중복된 fake-fill detect 블록을 `resolveExitFillOrFakeFill()` helper 로 통합 — 약 100 줄 중복 제거, 향후 drift 차단.
+  - `closeTrade` 로그 메시지가 실제 fallback 값 (`exitPrice.toFixed(8)`) 을 출력해 "fallback to entryPrice" 오해 소지 제거.
+  - `realized-replay-ratio` 헤드라인에서 `avgPredictedAdj * n` 우회 계산을 `sumPredictedAdj` 직접 노출로 교체.
+
+### 7F-pre. Post-guard 7h window 측정 (Entry 02, 2026-04-07T04:01Z~11:01Z)
+
+> Source: `docs/ops-history/2026-04-07.md` Entry 02
+> Context: bot restart `2026-04-07T03:53:05Z` (Phase A/B/C1 배포 직후), 측정 window 7h, closed_rows=4
+
+**raw 측정값 vs Phase C2 합격 기준 (4종)**
+
+| Criterion | Threshold | Entry 02 raw | Entry 02 marker-excluded¹ | Status (raw) | Status (excluded) |
+|-----------|-----------|--------------|----------------------------|--------------|-------------------|
+| `tp_negative_pnl` | 0건 | 1건 | 0건 (E0 mark) | ❌ | ✅ |
+| `entry_gap` p95 | ≤ 5% | n/a² | n/a² | ⚠ unmeasured | ⚠ unmeasured |
+| `exit_gap` p95 | ≤ 10% | max abs 0.58% (n=4) | max abs 0.58% (n=3) | ✅ | ✅ |
+| `gap_vs_slippage_mismatch` | 0건 | 1건 (slip=2500 avg, gap≈0) | 0건 (E0 mark) | ❌ | ✅ |
+
+¹ Phase E0 `exit_anomaly_reason` 마커가 set된 row 1건을 제외했을 때(`docs/audits/exit-slip-gap-divergence-2026-04-07.md` 가설 A: 1/4 saturated). raw 4건 중 1건은 `>=9000bps` saturated였다.
+² Entry 02 metrics에 `avg_entry_gap_pct_recent_7h`가 부재. 다음 ops loop에서 `npm run ops:check -- --hours 7` 실행 시 entry-gap 라인을 함께 캡처해야 한다.
+
+**해석**
+
+- Phase A/B/C1 배포 효과는 명확하다: Entry 01(12h) `avg_exit_gap_pct: -77.59%, max abs 100%` → Entry 02(7h) `-0.30%, 0.58%`. 가격 단위 폭발은 사실상 사라졌다.
+- 그러나 raw 카운트 기준 Phase C2 4종 합격은 아직 **2/4 통과 + 2/4 미달**이다. 미달 2건은 모두 같은 saturated row 1개에서 발생한 outlier 효과다.
+- E0 마커를 제외한 sanitized subset 기준으로는 측정 가능한 3종이 모두 통과한다. 학습 측면에서 Phase B1 sanitizer가 이 row를 EdgeTracker 입력에서 자동 격리하고 있으므로, **제거된 효과는 이미 운영 중**이다.
+
+**판단**
+
+- raw 메트릭과 sanitized 메트릭 사이 격차가 외부 노이즈가 아니라 **단일 saturated row의 outlier 효과**라는 점이 audit으로 확정됐다. 따라서 Phase C2 합격 기준을 raw로만 보면 단 1건의 fake-fill만 발생해도 canary가 영구히 실패한다.
+- 합격 기준을 `marker-aware`로 보강한다: raw 4종 외에 `marker_excluded_subset`에서도 4종을 본다. 본 entry처럼 raw는 부분 미달이지만 marker-excluded subset은 전부 통과면 **조건부 진입(canary 연장 + 추가 표본 4건)**으로 처리한다.
+- 단 `entry_gap p95`는 어떤 경로로도 측정되지 않은 상태다. 이 line item을 채우기 전까지 Phase C2 entry는 보류한다.
+
+**즉시 액션**
+
+- `data/realtime/notifier-events.jsonl`에서 Entry 02 window 동안 `exit_anomaly` critical alert가 실제로 발화했는지 cross-check (E0/Phase A4가 발화하지 않으면 marker-excluded 가설 자체가 흔들린다).
+- 다음 ops loop entry에서 `npm run ops:check -- --hours 7`의 entry-gap 출력을 캡처해 `avg_entry_gap_pct_recent_7h`, `max_abs_entry_gap_pct_recent_7h`, `entry_gap_p95_recent_7h`를 metrics_note에 포함.
+- `fake_fill_rows / closed_rows` 비율 재측정 (F1-deep-3) — 1/4가 일회성인지 구조적인지 표본 1건만으로는 확정 불가.
+
+### 7F. 남은 운영 과제
+
+> **Phase E(2026-04-07 Live Ops Integrity) 배포 이후 작업은 별도 실행 플랜으로 분리**:
+> [`docs/exec-plans/active/live-ops-integrity-2026-04-07.md`](./docs/exec-plans/active/live-ops-integrity-2026-04-07.md)
+> — Phase D(배포) / Phase V(실데이터 검증) / Phase M(7일 모니터링) / Phase S(별도 PR 부채) 참조.
 
 1. **Phase A1 수동 교차 검증** — 운영자가 `data/diagnostics/ledger-audit-2026-04-07.txt`를 기반으로 BTW/pippin/stonks txSignature를 Solscan/Helius에서 조회해 `outAmount_raw / 10^decimals` 실측 vs DB `quantity` 배수 기록.
-2. **Phase C2 12h paper canary** — 가드 배포 후 paper 모드로 12h 운영 후 합격 기준 4종 확인:
+2. **Pre-guard row 격리 절차** — 2026-04-07 이전에 생성된 trade rows(특히 `planned_entry_price IS NULL` 또는 `planned/entry ratio ∉ [0.5, 2.0]`)는 sanitizer가 부분적으로만 걸러내므로 EdgeTracker 학습과 daily/shadow 리포트에서 명시적으로 제외해야 한다. 스키마 변경 없이 **cutoff 기준 + sanitizer 의존** 방식으로 처리한다.
+   - **(a) 오염 범위 조회** (read-only SQL, 삭제 금지):
+     ```sql
+     SELECT id, pair_address, created_at, planned_entry_price, entry_price,
+            CASE WHEN planned_entry_price > 0
+                 THEN entry_price / planned_entry_price ELSE NULL END AS ratio
+     FROM trades
+     WHERE created_at < '2026-04-07T00:00:00Z'
+       AND status = 'CLOSED'
+       AND (planned_entry_price IS NULL
+            OR planned_entry_price <= 0
+            OR entry_price / planned_entry_price NOT BETWEEN 0.5 AND 2.0)
+     ORDER BY created_at DESC;
+     ```
+     결과를 `data/diagnostics/pre-guard-rows-2026-04-07.csv`로 보존.
+   - **(b) audit 실행** — `npm run ops:check:ledger -- --hours 336 --full-history`로 sanitize on/off 차이를 재확인. `FLIPPED` 마커가 있는 pair는 bypass canary 기간 동안 차단 해제 대상.
+   - **(c) Cutoff 기준** — rows는 물리적으로 삭제하지 않는다. 경로별 처리는 다음과 같다:
+     - **EdgeTracker 학습** — `sanitizeEdgeLikeTrades`가 이미 `invalid_stop_loss`(stop_loss=0 케이스, VPS dump의 대부분 pre-guard row가 여기에 해당) + `planned_entry_ratio_corrupt`(plannedEntryPrice가 세팅된 후 ratio 이탈) 두 필터로 drop하므로 `toEdgeTrackerTrade` 경로는 **자동 격리**.
+     - **`plannedEntryPrice IS NULL` 잔여 갭** — plannedEntryPrice는 NULL이지만 stop_loss는 유효한 희귀 케이스는 sanitizer가 잡지 못한다. (a) 조회 결과에서 해당 row가 존재하면 `scripts/ledger-audit.ts`의 추가 필터(`created_at < cutoff AND planned_entry_price IS NULL`) 명시적 exclusion이 필요.
+     - **Daily/shadow 리포트** — `closedTodayTrades`가 24h window라 cutoff 이전 row를 자연스럽게 벗어난다. 별도 조치 불필요.
+   - **(d) EdgeTracker 재학습** — `BOT_BYPASS_EDGE_BLACKLIST=true` 상태에서 최소 20개의 post-guard closed trade가 쌓인 뒤에만 `false`로 복귀. 이 시점에 EdgeTracker가 재계산되며 sanitizer가 pre-guard row를 drop한다.
+   - **(e) 검증** — Phase D1 baseline 측정 시 `scripts/ledger-audit.ts --full-history` 출력의 `sanitizer dropReasonCounts`에서 `invalid_stop_loss` + `planned_entry_ratio_corrupt` 합계가 (a) 카운트와 일치해야 한다. 차이가 나면 NULL plannedEntryPrice 잔여 갭(위 두 번째 항목)에 해당하므로 수동 exclusion 필요.
+3. **Phase C2 12h paper canary** — 가드 배포 후 paper 모드로 12h 운영 후 합격 기준 4종 확인:
    - 0건 `tp_negative_pnl`
    - `entry_gap` p95 ≤ 5%
    - `exit_gap` p95 ≤ 10%
    - 0건 `gap_vs_slippage_mismatch`
-   합격 후에만 live 재가동.
-3. **Phase D 50-trade 동결 복귀** — canary 합격 후 `BOT_BYPASS_EDGE_BLACKLIST=false`로 복원, bootstrap tier risk 룰 그대로 50 trades까지 유지.
-4. **Live 일시정지 권장** — 운영자 판단으로 Phase C2 통과까지 live는 수동 halt 유지.
+   합격 후에만 live 재가동. **2026-04-07 보강** — 1건의 saturated fake-fill row가 raw 메트릭을 영구히 실패시키므로 `marker_excluded_subset`에서도 동일 4종을 측정한다(§7F-pre 참조). raw 부분 미달 + sanitized subset 전체 통과 케이스는 canary 연장(추가 표본 ≥ 4건)으로 처리한다.
+4. **Phase D 50-trade 동결 복귀** — canary 합격 후 `BOT_BYPASS_EDGE_BLACKLIST=false`로 복원, bootstrap tier risk 룰 그대로 50 trades까지 유지.
+5. **Live 일시정지 권장** — 운영자 판단으로 Phase C2 통과까지 live는 수동 halt 유지.

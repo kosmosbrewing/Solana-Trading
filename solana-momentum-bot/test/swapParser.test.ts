@@ -169,6 +169,100 @@ describe('swapParser', () => {
     expect(parsed?.priceNative).toBeCloseTo(0.2, 12);
   });
 
+  it('prefers PumpSwap balance-delta parsing over instruction decode when both are available', () => {
+    const buyInstructionData = encodePumpInstruction(
+      [102, 6, 61, 18, 1, 218, 235, 234],
+      1_250_000n,
+      250_000_000n,
+    );
+    const parsed = parseSwapFromTransaction({
+      blockTime: 1_700_000_202,
+      meta: {
+        err: null,
+        fee: 5_000,
+        innerInstructions: [],
+        loadedAddresses: { readonly: [], writable: [] },
+        logMessages: ['Program pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA invoke [1]'],
+        postBalances: [],
+        postTokenBalances: [
+          {
+            accountIndex: 1,
+            mint: 'mint-base',
+            owner: 'owner-1',
+            programId: 'token-program',
+            uiTokenAmount: { amount: '500000', decimals: 6, uiAmount: 0.5, uiAmountString: '0.5' },
+          },
+          {
+            accountIndex: 2,
+            mint: 'So11111111111111111111111111111111111111112',
+            owner: 'owner-2',
+            programId: 'token-program',
+            uiTokenAmount: { amount: '250000000', decimals: 9, uiAmount: 0.25, uiAmountString: '0.25' },
+          },
+        ],
+        preBalances: [],
+        preTokenBalances: [
+          {
+            accountIndex: 1,
+            mint: 'mint-base',
+            owner: 'owner-1',
+            programId: 'token-program',
+            uiTokenAmount: { amount: '0', decimals: 6, uiAmount: 0, uiAmountString: '0' },
+          },
+          {
+            accountIndex: 2,
+            mint: 'So11111111111111111111111111111111111111112',
+            owner: 'owner-2',
+            programId: 'token-program',
+            uiTokenAmount: { amount: '500000000', decimals: 9, uiAmount: 0.5, uiAmountString: '0.5' },
+          },
+        ],
+        rewards: [],
+        status: { Ok: null },
+      },
+      slot: 1_000,
+      transaction: {
+        message: {
+          accountKeys: [],
+          instructions: [{
+            programId: { toBase58: () => PUMP_SWAP_PROGRAM },
+            accounts: [
+              { toBase58: () => 'pool-pump' },
+              { toBase58: () => 'user-1' },
+            ],
+            data: buyInstructionData,
+          }],
+          recentBlockhash: 'hash',
+        },
+        signatures: ['sig-pump-metadata'],
+      },
+    } as any, {
+      poolAddress: 'pool-pump',
+      signature: 'sig-pump-metadata',
+      slot: 1_000,
+      poolMetadata: {
+        dexId: 'pumpswap',
+        baseMint: 'mint-base',
+        quoteMint: 'So11111111111111111111111111111111111111112',
+        baseDecimals: 6,
+        quoteDecimals: 9,
+        poolProgram: PUMP_SWAP_PROGRAM,
+      },
+    });
+
+    expect(parsed).toMatchObject({
+      pool: 'pool-pump',
+      signature: 'sig-pump-metadata',
+      side: 'buy',
+      amountBase: 0.5,
+      amountQuote: 0.25,
+      slot: 1_000,
+      dexProgram: PUMP_SWAP_PROGRAM,
+      source: 'transaction',
+    });
+    expect(parsed?.priceNative).toBeCloseTo(0.5, 12);
+  });
+
   it('skips PumpSwap log parsing to force transaction fallback', () => {
     const parsed = tryParseSwapFromLogs([
       'Program log: buy',

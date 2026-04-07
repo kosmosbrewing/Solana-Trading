@@ -28,6 +28,9 @@ export async function createScannerBlacklistCheck(
           // Phase B1: 오염된 row는 blacklist 학습에 쓰지 않음
           plannedEntryPrice: trade.plannedEntryPrice ?? null,
           exitReason: trade.exitReason ?? null,
+          // 2026-04-07: fake-fill sanitizer filter 컨텍스트
+          exitSlippageBps: trade.exitSlippageBps ?? null,
+          exitAnomalyReason: trade.exitAnomalyReason ?? null,
         }))).trades);
         cachedBlacklist = new Set(edgeTracker.getBlacklistedPairs().map((pair) => pair.pairAddress));
         lastRefreshMs = Date.now();

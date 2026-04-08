@@ -1,10 +1,10 @@
 # Execution Plan: 1 SOL → 100 SOL
 
 > Status: current active execution plan
-> Updated: 2026-04-08 (exit mechanism binding constraint 추가)
+> Updated: 2026-04-08 (mission P0 trio 정렬)
 > Scope: 구현 완료 이후의 운영 검증, 배포, 표본 축적, live enablement gate
 > Archive: 완료된 root plan과 dated canary history는 [`PLAN_CMPL.md`](../../../PLAN_CMPL.md)에 보관한다.
-> Sub-plans: [`live-ops-integrity-2026-04-07.md`](./live-ops-integrity-2026-04-07.md) (Phase E P0~P3 fake-fill 운영 후속 트래킹), [`exit-execution-mechanism-2026-04-08.md`](./exit-execution-mechanism-2026-04-08.md) (monitor → swap latency mechanism 회복 — 현재 binding constraint), [`exit-structure-validation-2026-04-08.md`](./exit-structure-validation-2026-04-08.md) (orderShape parameter 측정/결정, mechanism plan 에 의존)
+> Sub-plans: [`live-ops-integrity-2026-04-07.md`](./live-ops-integrity-2026-04-07.md) (Phase E P0~P3 fake-fill 운영 후속 트래킹), [`exit-execution-mechanism-2026-04-08.md`](./exit-execution-mechanism-2026-04-08.md) (P0-A: monitor → swap latency / winner preservation execution path), [`exit-structure-validation-2026-04-08.md`](./exit-structure-validation-2026-04-08.md) (parameter / exhaustion 가설 측정·결정, mechanism plan 과 병렬 계측)
 > Triage: [`../../audits/mission-recovery-triage-2026-04-08.md`](../../audits/mission-recovery-triage-2026-04-08.md) (2026-04-08 현재 우선순위 재정렬)
 
 ## Role
@@ -38,12 +38,25 @@
 
 ### 현재 남은 것
 
-- **P0: Idle universe + volume gate 병목 해소** — stale pair eviction + freshness 개선으로 live signal 확보
-- **P1: Replay baseline sparse 차단율 81% 해소** — edge 측정 자체를 가능하게 만들기 (replay path)
+- **P0-A: Exit mechanism + winner preservation baseline** — TP2 intent/fill gap 축소와 `pre-TP1 EXHAUSTION` 빈도 측정을 함께 진행
+- **P0-B: Idle universe + admission breadth 병목 해소** — stale pair eviction + freshness 개선으로 live signal / fresh trade flow 확보
+- **P0-C: Replay baseline sparse 차단율 81% 해소** — edge 측정 자체를 가능하게 만들기 (replay path)
 - 04-04 edge (score 78)의 재현성 검증 — runner outlier vs 구조적 edge
 - Legacy 세션 재검증 (OOM 해결, 113 stored signals)
 - paper 표본을 운영 가능한 방식으로 쌓는다
 - live enablement 기준을 명확히 통과시킨다
+
+### Mission P0 Model (2026-04-08)
+
+사명 기준 현재 P0는 하나가 아니다. 아래 3축을 **병렬**로 전진시켜야 한다.
+
+1. **P0-A Exit mechanism** — TP2 trigger intent와 actual fill gap을 줄여 runner를 실제로 보존할 수 있게 만든다.
+2. **P0-B Fresh flow** — fresh pair가 discovery → admission → signal → executed_live로 이어지는 폭을 넓힌다.
+3. **P0-C Winner preservation audit** — `EXHAUSTION / TIME_STOP / TRAILING` 이 TP1 이전 winner를 잘라먹는지 측정한다.
+
+원칙:
+- 세 축 중 하나만 해결해도 사명 경로는 복구되지 않는다.
+- `execution integrity`, `sample flow`, `winner preservation`을 동시에 개선해야 `1 SOL → 100 SOL` 경로가 열린다.
 
 ### Latest Live Diagnosis (2026-04-07, post-Phase E 1h12min window)
 
@@ -66,15 +79,16 @@
 - exit_gap 분포: Entry 01(12h, pre-A/B/C1) `avg=-77.59%, max abs 100%` → Entry 02(7h, post-A/B/C1) `-0.30%, 0.58%` → Entry 03(1h12min, post-Phase E) `clean (1 close, 35bps)`. 가격 단위 폭발 사실상 사라짐.
 - F1-deep-5 `realized-replay-ratio` anomaly filter: `1 parent groups (2 rows) excluded` (07:50 TP1 partial parent + 07:52 STOP_LOSS child). drop 동작 검증 완료.
 
-**핵심 판정**: **W1.5 idle universe + admission breadth 병목은 Phase E 이후에도 여전히 1차 binding constraint다**. Phase E는 가격 단위 정합성 + fake-fill 격리를 해결했지만, 50 canary trades 확보를 위한 universe 흐름 자체는 아직 트리거되지 않았다.
+**핵심 판정**: **W1.5 idle universe + admission breadth 병목은 Phase E 이후에도 여전히 P0-B다**. 다만 Phase E 이후의 다음 병목은 `exit mechanism / winner preservation`까지 포함한 **mission P0 trio**로 읽어야 한다. 가격 단위 정합성 + fake-fill 격리는 회복됐지만, 50 canary trades 확보와 실제 winner 보존은 아직 열리지 않았다.
 
 **다음 액션 (우선순위순)**:
 1. **W1.5 액션 재진입** — idle/stale pair eviction 강화 또는 TTL 단축. Entry 03 1h 표본은 너무 작아 즉시 결정 금지, day-1→day-2 (>19h) 분포 확인 후 결정
-2. **admission_skip:unsupported_dex=21 분석** — 어느 DEX가 차단되는지 확인 후 확장 여부 판단 (W1.5 액션 이후)
-3. Phase M 7일 모니터링 acceptance 누적 — `entry_gap_p95`, `exit_gap_p95`, `exit_anomaly_rows`, `realized_replay_excluded` 4종 metrics_note (`docs/runbooks/live-ops-loop.md:268+`)
-4. `volumeSurgeMultiplier 1.8 → 1.6`은 위 3건 후에도 signal 부족 시 검토
+2. **exit mechanism 계측 병행** — `monitor_trigger_price → exit_price`, `actual TP2 match`, `pre-TP1 EXHAUSTION rate`를 같은 ops-history 루프에 기록
+3. **admission_skip:unsupported_dex=21 분석** — 어느 DEX가 차단되는지 확인 후 확장 여부 판단 (W1.5 액션 이후)
+4. Phase M 7일 모니터링 acceptance 누적 — `entry_gap_p95`, `exit_gap_p95`, `exit_anomaly_rows`, `realized_replay_excluded` 4종 metrics_note (`docs/runbooks/live-ops-loop.md:268+`)
+5. `volumeSurgeMultiplier 1.8 → 1.6`은 위 4건 후에도 signal 부족 시 검토
 
-**한 줄**: "측정은 정직해졌다 (Phase E). 이제 universe를 흐르게 만들어야 표본이 쌓인다 (W1.5)".
+**한 줄**: "측정은 정직해졌다 (Phase E). 이제 `fresh flow`를 넓히고, 동시에 `winner 보존`이 실제로 가능한지 계측해야 한다."
 
 #### Edge Cohort 1차 측정 (Entry 04, 2026-04-07 ralph-loop iter7)
 
@@ -235,4 +249,4 @@
 
 ## One-Line Summary
 
-> Phase E P0~P3 fake-fill 정합성은 04-07 배포 완료, Phase D acceptance 통과, Phase M day-1 baseline 기록. **다음 P0는 W1.5 idle universe 병목 해소** — Phase E 직후 1h12min 표본도 candidate 100% idle eviction 재확인. Phase M 7일 누적 + W1.5 액션 진입 + 50 canary trades 확보 후 live enablement 판단. Strategy A/C 5m은 여전히 dormant.
+> Phase E P0~P3 fake-fill 정합성은 04-07 배포 완료, Phase D acceptance 통과, Phase M day-1 baseline 기록. **현재 P0는 trio다: `exit mechanism`, `fresh flow`, `winner preservation audit`**. W1.5로 표본을 늘리고, 동시에 exit intent/fill gap과 `pre-TP1 EXHAUSTION`을 계측해야 live enablement 판단이 가능하다. Strategy A/C 5m은 여전히 dormant.

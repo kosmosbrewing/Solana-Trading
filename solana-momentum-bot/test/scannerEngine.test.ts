@@ -1001,6 +1001,30 @@ describe('ScannerEngine cohort assignment (Phase 1)', () => {
     expect(entry!.lane).toBe('B');
   });
 
+  it('exposes entries via pair-side lookup (getEntryByPairAddress)', async () => {
+    // Why: signalProcessor / realtimeHandler 가 cohort 를 조회할 때 사용하는 핵심 경로.
+    //      watchlist 는 tokenMint 로 키잉되므로 pair-side lookup 이 없으면 cohort 가 항상 'unknown' 이 된다.
+    const scanner = makeScanner([
+      makeCohortToken('mint-pair-lookup', {
+        poolCreatedAtMs: NOW - 5 * 60 * 1000,
+        updatedAtIso: new Date(NOW).toISOString(),
+      }),
+    ]);
+    await scanner.start();
+    scanner.stop();
+    const entry = scanner.getEntry('mint-pair-lookup');
+    expect(entry).toBeDefined();
+
+    // raw.pair_address 가 없으면 entry.pairAddress = token.address (R3 fallback)
+    const found = scanner.getEntryByPairAddress(entry!.pairAddress);
+    expect(found).toBeDefined();
+    expect(found!.tokenMint).toBe('mint-pair-lookup');
+    expect(found!.cohort).toBe('fresh');
+
+    expect(scanner.getEntryByPairAddress('not-a-pair')).toBeUndefined();
+    expect(scanner.getEntryByPairAddress('')).toBeUndefined();
+  });
+
   it('falls through to unknown when pool_created_at is missing and updatedAt is unparseable', async () => {
     const scanner = makeScanner([
       makeCohortToken('mint-unknown', {

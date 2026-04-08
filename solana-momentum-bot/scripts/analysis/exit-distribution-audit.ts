@@ -24,6 +24,7 @@
  * Usage:
  *   npx ts-node scripts/analysis/exit-distribution-audit.ts
  *   npx ts-node scripts/analysis/exit-distribution-audit.ts --strategy bootstrap_10s
+ *   npx ts-node scripts/analysis/exit-distribution-audit.ts --closed-after 2026-04-07T12:21:19Z
  *   npx ts-node scripts/analysis/exit-distribution-audit.ts --out docs/audits/exit-distribution-2026-04-08.md
  *
  * Important caveat:
@@ -48,6 +49,7 @@ interface TradeRow {
   stop_loss: number | string | null;
   take_profit1: number | string | null;
   take_profit2: number | string | null;
+  high_water_mark: number | string | null;
   created_at: string;
   closed_at: string | null;
   parent_trade_id: string | null;
@@ -58,6 +60,7 @@ interface TradeRow {
 interface Args {
   inputPath: string;
   strategyFilter: string | null;
+  closedAfter: string | null;
   outPath: string | null;
   includeDirty: boolean;
   sampleGate: number;
@@ -68,6 +71,7 @@ function parseArgs(): Args {
   const args: Args = {
     inputPath: 'data/vps-trades-latest.jsonl',
     strategyFilter: null,
+    closedAfter: null,
     outPath: null,
     includeDirty: false,
     sampleGate: 20, // Phase X1 acceptance gate (Bootstrap → Calibration tier 전환점)
@@ -77,6 +81,7 @@ function parseArgs(): Args {
     const value = argv[i + 1];
     if (flag === '--input' && value) { args.inputPath = value; i++; }
     else if (flag === '--strategy' && value) { args.strategyFilter = value; i++; }
+    else if (flag === '--closed-after' && value) { args.closedAfter = value; i++; }
     else if (flag === '--out' && value) { args.outPath = value; i++; }
     else if (flag === '--sample-gate' && value) { args.sampleGate = Number(value); i++; }
     else if (flag === '--include-dirty') { args.includeDirty = true; }
@@ -136,6 +141,9 @@ interface EntryGroup {
   riskPerUnit: number;
   symbol: string;
   actualBucket: ActualBucket;
+  maxHighWaterMark: number;
+  exhaustionBeforeTp1: boolean;
+  exhaustionAfterTp1: boolean;
 }
 
 function classifyActualBucket(
@@ -185,6 +193,7 @@ function groupByParent(rows: TradeRow[]): EntryGroup[] {
     const stopLoss = num(parent.stop_loss);
     const takeProfit1 = num(parent.take_profit1);
     const takeProfit2 = num(parent.take_profit2);
+    const maxHighWaterMark = legs.reduce((max, leg) => Math.max(max, num(leg.high_water_mark)), 0);
     // Risk per unit = entry - SL. legacy v3 이전 row는 stop_loss=0 → NaN R.
     const riskPerUnit = (entryPrice > 0 && stopLoss > 0 && entryPrice > stopLoss)
       ? entryPrice - stopLoss
@@ -200,6 +209,17 @@ function groupByParent(rows: TradeRow[]): EntryGroup[] {
       takeProfit1,
       takeProfit2,
     );
+    const exhaustionBeforeTp1 =
+      finalExitReason === 'EXHAUSTION' &&
+      takeProfit1 > 0 &&
+      !tp1Hit &&
+      maxHighWaterMark > entryPrice &&
+      maxHighWaterMark > 0 &&
+      maxHighWaterMark < takeProfit1;
+    const exhaustionAfterTp1 =
+      finalExitReason === 'EXHAUSTION' &&
+      takeProfit1 > 0 &&
+      (tp1Hit || maxHighWaterMark >= takeProfit1);
     groups.push({
       parentId,
       legs,
@@ -218,6 +238,9 @@ function groupByParent(rows: TradeRow[]): EntryGroup[] {
       riskPerUnit,
       symbol: parent.token_symbol ?? parent.pair_address.slice(0, 12),
       actualBucket,
+      maxHighWaterMark,
+      exhaustionBeforeTp1,
+      exhaustionAfterTp1,
     });
   }
   return groups;
@@ -282,6 +305,14 @@ function fmt(v: number, digits = 2): string {
   return v.toFixed(digits);
 }
 
+function parseIsoOrThrow(raw: string): Date {
+  const dt = new Date(raw);
+  if (!Number.isFinite(dt.getTime())) {
+    throw new Error(`invalid ISO timestamp for --closed-after: ${raw}`);
+  }
+  return dt;
+}
+
 function buildReport(
   groups: EntryGroup[],
   args: Args,
@@ -294,7 +325,7 @@ function buildReport(
   lines.push('');
   lines.push(`Generated: ${new Date().toISOString()}`);
   lines.push(`Source: ${args.inputPath}`);
-  const filterDesc = `parent group fully CLOSED${args.includeDirty ? '' : ' AND no leg has exit_anomaly_reason'}${args.strategyFilter ? ` AND strategy=${args.strategyFilter}` : ''}`;
+  const filterDesc = `parent group fully CLOSED${args.includeDirty ? '' : ' AND no leg has exit_anomaly_reason'}${args.strategyFilter ? ` AND strategy=${args.strategyFilter}` : ''}${args.closedAfter ? ` AND final closed_at >= ${args.closedAfter}` : ''}`;
   lines.push(`Filter: ${filterDesc}`);
   lines.push(
     `Input rows: ${totalRowsBeforeFilter}, dropped (anomaly): ${droppedDirty}, dropped (open runner leg): ${droppedOpen}, parent groups: ${groups.length}`
@@ -336,6 +367,9 @@ function buildReport(
   const slCount = groups.filter((g) => g.finalExitReason === 'STOP_LOSS').length;
   const trailingCount = groups.filter((g) => g.finalExitReason === 'TRAILING_STOP').length;
   const timeStopCount = groups.filter((g) => g.finalExitReason === 'TIME_STOP').length;
+  const exhaustionCount = groups.filter((g) => g.finalExitReason === 'EXHAUSTION').length;
+  const exhaustionBeforeTp1Count = groups.filter((g) => g.exhaustionBeforeTp1).length;
+  const exhaustionAfterTp1Count = groups.filter((g) => g.exhaustionAfterTp1).length;
 
   lines.push('## Hit Rate Headlines (Intent — exit_reason 기반)');
   lines.push('');
@@ -348,6 +382,11 @@ function buildReport(
   lines.push(`- **SL final rate (intent)**: ${slCount}/${groups.length} = ${fmt((slCount/groups.length)*100, 1)}%`);
   lines.push(`- **TRAILING final rate (intent)**: ${trailingCount}/${groups.length} = ${fmt((trailingCount/groups.length)*100, 1)}%`);
   lines.push(`- **TIME_STOP final rate (intent)**: ${timeStopCount}/${groups.length} = ${fmt((timeStopCount/groups.length)*100, 1)}%`);
+  lines.push(`- **EXHAUSTION final rate (intent)**: ${exhaustionCount}/${groups.length} = ${fmt((exhaustionCount/groups.length)*100, 1)}%`);
+  if (exhaustionCount > 0) {
+    lines.push(`- **EXHAUSTION before TP1**: ${exhaustionBeforeTp1Count}/${exhaustionCount} = ${fmt((exhaustionBeforeTp1Count/exhaustionCount)*100, 1)}%`);
+    lines.push(`- **EXHAUSTION after TP1**: ${exhaustionAfterTp1Count}/${exhaustionCount} = ${fmt((exhaustionAfterTp1Count/exhaustionCount)*100, 1)}%`);
+  }
   lines.push('');
 
   // Intent vs Actual Outcome cross-tabulation
@@ -468,6 +507,11 @@ function buildReport(
       lines.push(`- **Scenario C 후보**: actual TP1+ reach ${fmt(actualTp1Rate, 1)}% ≥ 50% AND actual TP2 ${fmt(actualTp2RateLocal, 1)}% ≤ 10% — 본전 보호 + trailing이 잔여 70%를 의미 없게 종결시키는 가설.`);
       anyHint = true;
     }
+    if (exhaustionBeforeTp1Count > 0) {
+      const exhaustionBeforePct = (exhaustionBeforeTp1Count / groups.length) * 100;
+      lines.push(`- **Scenario E 후보**: pre-TP1 EXHAUSTION ${exhaustionBeforeTp1Count}/${groups.length} = ${fmt(exhaustionBeforePct, 1)}% — winner가 TP1 이전 exhaustion으로 조기 차단될 가능성.`);
+      anyHint = true;
+    }
     if (actualTp2RateLocal >= 20) {
       const tp2ActualGroups = groups.filter((g) => g.actualBucket === 'TP2_OR_BETTER');
       const tp2FiniteR = tp2ActualGroups.map((g) => g.realizedR).filter((r) => Number.isFinite(r));
@@ -499,8 +543,8 @@ function buildReport(
   // Per-group detail (first 30)
   lines.push('## Entry Group Detail (first 30)');
   lines.push('');
-  lines.push('| symbol | n legs | intent reason | actual bucket | total pnl SOL | realized R |');
-  lines.push('|---|---:|---|---|---:|---:|');
+  lines.push('| symbol | n legs | intent reason | actual bucket | max HWM | total pnl SOL | realized R |');
+  lines.push('|---|---:|---|---|---:|---:|---:|');
   const detailGroups = groups.slice(0, 30);
   for (const g of detailGroups) {
     const sym = (g.symbol ?? '?').slice(0, 14);
@@ -510,8 +554,9 @@ function buildReport(
       : g.finalExitReason === 'TAKE_PROFIT_1' && g.actualBucket === 'SL_OR_WORSE'
         ? ' ⚠'
         : '';
+    const hwmStr = g.maxHighWaterMark > 0 ? fmt(((g.maxHighWaterMark - g.entryPrice) / g.entryPrice) * 100, 2) + '%' : '—';
     lines.push(
-      `| ${sym} | ${g.legs.length} | ${g.finalExitReason} | ${g.actualBucket}${mismatch} | ${pnlStr} | ${fmt(g.realizedR)} |`
+      `| ${sym} | ${g.legs.length} | ${g.finalExitReason} | ${g.actualBucket}${mismatch} | ${hwmStr} | ${pnlStr} | ${fmt(g.realizedR)} |`
     );
   }
   lines.push('');
@@ -532,6 +577,7 @@ function buildReport(
 
 function main(): void {
   const args = parseArgs();
+  const closedAfterTs = args.closedAfter ? parseIsoOrThrow(args.closedAfter).getTime() : null;
   const allTrades = loadTrades(args);
   // Why: 기존 로직은 status=CLOSED만 먼저 필터하고 groupByParent를 돌렸다. 하지만 TP1
   //   partial exit 후 parent row는 status='CLOSED'로 닫히고 runner leg은 새로
@@ -556,9 +602,18 @@ function main(): void {
       });
   // 2) leg 중 하나라도 OPEN인 group은 final exit bucket이 확정되지 않았으므로 제외.
   const closedGroups = cleanGroups.filter((g) => g.legs.every((l) => l.status === 'CLOSED'));
+  const timeFilteredGroups = closedAfterTs == null
+    ? closedGroups
+    : closedGroups.filter((g) => {
+        const lastClosedAt = g.legs.reduce((max, leg) => {
+          const ts = leg.closed_at ? new Date(leg.closed_at).getTime() : 0;
+          return Math.max(max, ts);
+        }, 0);
+        return lastClosedAt >= closedAfterTs;
+      });
   const droppedDirty = dirtyGroupLegCount;
   const droppedOpen = cleanGroups.length - closedGroups.length;
-  const report = buildReport(closedGroups, args, allTrades.length, droppedDirty, droppedOpen);
+  const report = buildReport(timeFilteredGroups, args, allTrades.length, droppedDirty, droppedOpen);
   console.log(report);
   if (args.outPath) {
     const outAbs = path.resolve(process.cwd(), args.outPath);

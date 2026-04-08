@@ -37,6 +37,8 @@ interface TradeRow {
   entry_price_impact_pct: string | null;
   round_trip_cost_pct: string | null;
   effective_rr: string | null;
+  take_profit1: string | null;
+  high_water_mark: string | null;
   // 2026-04-07: parent-child 그룹핑 (TP1 partial → child remainder 합산)
   parent_trade_id: string | null;
   // 2026-04-07: fake-fill / Phase A4 anomaly 마커 (comma-joined)
@@ -130,6 +132,55 @@ function groupByParent(rows: TradeRow[]): TradeRow[][] {
   return Array.from(byParent.values());
 }
 
+interface ClosedEntryGroupSummary {
+  rows: TradeRow[];
+  totalPnl: number;
+  tp1Hit: boolean;
+  finalExitReason: string;
+  exhaustionBeforeTp1: boolean;
+  exhaustionAfterTp1: boolean;
+}
+
+function buildClosedEntryGroups(rows: TradeRow[], window: WindowConfig): ClosedEntryGroupSummary[] {
+  const groups = groupByParent(rows);
+  const summaries: ClosedEntryGroupSummary[] = [];
+  for (const group of groups) {
+    const hasRealizedCloseInWindow = group.some((row) => row.status === 'CLOSED' && inWindow(row.closed_at, window.windowStart));
+    if (!hasRealizedCloseInWindow) continue;
+    if (!group.every((row) => row.status === 'CLOSED')) continue;
+
+    const parent = group.find((row) => row.parent_trade_id == null) ?? group[0];
+    const sorted = [...group].sort((a, b) => (a.closed_at?.getTime() ?? 0) - (b.closed_at?.getTime() ?? 0));
+    const lastRow = sorted[sorted.length - 1];
+    const totalPnl = group.reduce((sum, row) => sum + Number(row.pnl ?? 0), 0);
+    const tp1Hit = group.some((row) => row.exit_reason === 'TAKE_PROFIT_1');
+    const takeProfit1 = Number(parent.take_profit1 ?? 0);
+    const maxHighWaterMark = group.reduce((max, row) => Math.max(max, Number(row.high_water_mark ?? 0)), 0);
+    const finalExitReason = lastRow.exit_reason ?? 'unknown';
+    const exhaustionBeforeTp1 =
+      finalExitReason === 'EXHAUSTION' &&
+      takeProfit1 > 0 &&
+      !tp1Hit &&
+      maxHighWaterMark > entryPrice &&
+      maxHighWaterMark > 0 &&
+      maxHighWaterMark < takeProfit1;
+    const exhaustionAfterTp1 =
+      finalExitReason === 'EXHAUSTION' &&
+      takeProfit1 > 0 &&
+      (tp1Hit || maxHighWaterMark >= takeProfit1);
+
+    summaries.push({
+      rows: group,
+      totalPnl,
+      tp1Hit,
+      finalExitReason,
+      exhaustionBeforeTp1,
+      exhaustionAfterTp1,
+    });
+  }
+  return summaries;
+}
+
 function printActivitySummary(rows: TradeRow[], window: WindowConfig): void {
   const openedRows = rows.filter((row) => inWindow(row.created_at, window.windowStart));
   const openRows = openedRows.filter((row) => row.status === 'OPEN');
@@ -169,17 +220,21 @@ function printRealizedSummary(rows: TradeRow[], window: WindowConfig): void {
   const losses = realized.filter((row) => Number(row.pnl ?? 0) <= 0);
 
   // Entry 기준: TP1 partial child를 parent에 다시 합산 — 논리적 거래 1건당 1 W/L
-  const entryGroups = groupByParent(realized);
-  const entryPnls = entryGroups.map((group) => group.reduce((s, r) => s + Number(r.pnl ?? 0), 0));
+  const entryGroups = buildClosedEntryGroups(rows, window);
+  const entryPnls = entryGroups.map((group) => group.totalPnl);
   const entryWins = entryPnls.filter((p) => p > 0).length;
   const entryLosses = entryPnls.length - entryWins;
   const entryWinRate = entryGroups.length > 0 ? (entryWins / entryGroups.length) * 100 : 0;
+  const exhaustionGroups = entryGroups.filter((group) => group.finalExitReason === 'EXHAUSTION');
+  const exhaustionBeforeTp1 = exhaustionGroups.filter((group) => group.exhaustionBeforeTp1).length;
+  const exhaustionAfterTp1 = exhaustionGroups.filter((group) => group.exhaustionAfterTp1).length;
 
   console.log(` 총 실현 row: ${realized.length}건`);
   console.log(` 승/패 (row): ${wins.length}W / ${losses.length}L (승률 ${((wins.length / realized.length) * 100).toFixed(1)}%)`);
   console.log(` 승/패 (entry): ${entryWins}W / ${entryLosses}L (승률 ${entryWinRate.toFixed(1)}%) — partial close 합산 기준`);
   console.log(` 순 실현 손익: ${formatSignedSol(totalPnl)}`);
   console.log(` 토큰 수: ${grouped.length}개`);
+  console.log(` EXHAUSTION (entry): ${exhaustionGroups.length}건 | pre-TP1 ${exhaustionBeforeTp1} | post-TP1 ${exhaustionAfterTp1}`);
 
   for (const [, trades] of grouped) {
     const { symbol, shortAddr } = getTokenLabel(trades);
@@ -459,15 +514,27 @@ async function main() {
   try {
     const nowResult = await pool.query<{ db_now: Date }>('SELECT now() AS db_now');
     const window = buildWindowConfig(nowResult.rows[0].db_now, hours);
-    const whereClause = window.windowStart
-      ? `WHERE created_at >= $1 OR closed_at >= $1`
-      : '';
+    const query = window.windowStart
+      ? `
+        WITH seeded_groups AS (
+          SELECT DISTINCT COALESCE(parent_trade_id, id) AS trade_group_id
+          FROM trades
+          WHERE created_at >= $1 OR closed_at >= $1
+        )
+        SELECT t.*
+        FROM trades t
+        JOIN seeded_groups g
+          ON COALESCE(t.parent_trade_id, t.id) = g.trade_group_id
+        ORDER BY COALESCE(t.closed_at, t.created_at) ASC, t.created_at ASC
+      `
+      : `
+        SELECT *
+        FROM trades
+        ORDER BY COALESCE(closed_at, created_at) ASC, created_at ASC
+      `;
     const params = window.windowStart ? [window.windowStart] : [];
 
-    const { rows } = await pool.query<TradeRow>(
-      `SELECT * FROM trades ${whereClause} ORDER BY COALESCE(closed_at, created_at) ASC, created_at ASC`,
-      params
-    );
+    const { rows } = await pool.query<TradeRow>(query, params);
 
     if (rows.length === 0) {
       console.log(hours ? `최근 ${hours}시간 거래 없음.` : '거래 없음.');

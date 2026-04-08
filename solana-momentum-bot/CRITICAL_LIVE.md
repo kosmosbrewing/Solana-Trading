@@ -1,5 +1,5 @@
 Status: current (Phase E 배포 검증 통과, Phase M day-2 + ralph-loop iter10 PRICE_ANOMALY fix 배포 단계)
-Updated: 2026-04-08 (§7H iter10 결과 추가 — `parsePumpSwapInstruction` priceNative 산출 path 폐기 + 87 suites/466 tests pass)
+Updated: 2026-04-08 (§7H iter10 post-review P1/P2 fix 추가 — PumpSwap pool-owner filter 회귀 방지 + exit audit partial-exit bias 제거, 87 suites/468 tests pass)
 Purpose: 2026-04-07~04-08 live 운영 이상 징후와 현재 판단 근거를 단건 문서로 고정
 Use with: `OPERATIONS.md`, `docs/runbooks/live-ops-loop.md`, `scripts/ledger-audit.ts`, `docs/exec-plans/active/live-ops-integrity-2026-04-07.md`, `docs/ops-history/2026-04-07.md` (Entry 01/02/03/04), `docs/ops-history/2026-04-08.md` (Entry 05), `docs/audits/price-anomaly-ratio-2026-04-08.md`
 
@@ -579,6 +579,41 @@ Use with: `OPERATIONS.md`, `docs/runbooks/live-ops-loop.md`, `scripts/ledger-aud
   - PumpSwap pool에 한해 actual fill을 측정 가능한 유일한 source는 pre/postTokenBalances delta. instruction payload는 user intent (slippage 상한)이라 산술적으로 actual price를 산출할 수 없다.
   - 옵션 A (보수적) 적용: parser 자체를 삭제해 미래에 동일 버그 재발 가능성 차단.
 - VPS 배포 + 7h 모니터링 결과는 다음 ops loop entry에 기록 (decision tree: PRICE_ANOMALY rate 0% → 시나리오 X 확정 → axis 종결 / 여전히 high → 시나리오 Y 확정 → iter11 sumMintDelta 보강).
+
+**iter10 post-review P1/P2 fix (2026-04-08, Codex review 대응)**
+
+- 원인: iter10 초안 release candidate를 Codex review(`/codex:review`)로 감수한 결과 두 개의 회귀/축 편향이 추가 지적됨. Verbatim 요약:
+  1. **P1 — PumpSwap swaps silently dropped**: `parseFromPoolMetadata`의 `sumMintDelta`는 동일 mint에 대해 pre/postTokenBalances 전체를 합산한다. 정상 PumpSwap fill에서는 user token ATA와 pool vault가 반대 부호로 움직여 총합이 **정확히 0**이 된다. iter10 초안의 `return metadataAware` 분기가 모든 PumpSwap swap을 조용히 drop → swap stream 손실.
+  2. **P2 — Exit audit partial-exit bias**: `scripts/analysis/exit-distribution-audit.ts`가 grouping 전에 `status === 'CLOSED'`로 필터. TP1 부분 청산 후 parent row는 CLOSED(TAKE_PROFIT_1)로 닫히고 runner leg은 별도 OPEN row로 insert되는 구조라, runner가 drop된 채 parent가 "완료된 TP1 trade"로 집계됨. Phase X3 bucket distribution 통계가 왜곡.
+- P1 검증 (실제 mainnet tx):
+  - 대상: `5dFPmLE7Gz1zNiXQR2eqyytRn3fDynmiJ2ciUd4ArBK3DJdnS2w3UJPtXuRvvFd72RzFsosNkHbeu1qmEGmDyXM2` (PumpSwap SELL)
+  - preTokenBalances/postTokenBalances 직접 조회 → user base ATA delta `-106_310_234_819`, pool base vault (owner=`AyDbuMurRfVKrdmv4aUAz5XmscSRwgQzsRGTCdXHzfJV`) delta `+106_310_234_819`. **whole-tx sum = 0 재현 확인**.
+  - pool vault의 `owner` 필드 = pool address와 **정확히 일치** → owner-filter가 안전하게 pool-only delta를 추출 가능.
+  - user wSOL은 temp ATA(tx 내 생성/폐쇄)라 token balances에 나타나지 않고 lamports로 처리 → pool-only filter가 SOL 쪽에서도 단독 읽기로 일관된 결과 생성.
+- P1 fix (`src/realtime/swapParser.ts`):
+  - `sumMintDelta(tx, mint, ownerFilter?)` — owner 필터 인자 추가. `balance.owner !== ownerFilter`인 row 전체 skip.
+  - `parseFromPoolMetadata` — `isPumpSwapPool(metadata)`일 때 `context.poolAddress`를 ownerFilter로 전달. 결과는 **pool 관점 delta**이므로 base/quote 각각 `-amountRaw`로 부호 반전하여 user 관점으로 재구성. 기존 side 판정 로직 그대로 재사용. non-PumpSwap 풀은 ownerFilter=undefined로 기존 동작 유지.
+  - 주석에 "회귀 방지 이유 + wSOL temp ATA 특이성" 명시.
+- P1 테스트 (`test/swapParser.test.ts`):
+  - 기존 'prefers PumpSwap balance-delta parsing...' 테스트를 'parses PumpSwap buy via pool-owned vault deltas (ignores instruction payload)'로 교체. user ATA + pool vault 양쪽을 포함하되, user ATA owner='user-1'로 필터에서 제외되도록 구성. pool 관점 base vault -0.5 / quote vault +0.25 → 부호 반전 후 user 관점 +0.5/-0.25 → side='buy'.
+  - 'parses PumpSwap sell via pool-owned vault deltas (mirror of buy case)' 테스트 신규 추가 — 반대 방향 대칭 검증.
+- P2 fix (`scripts/analysis/exit-distribution-audit.ts`):
+  - `main()` 재구성 — 필터 순서 변경: (1) strategy 필터 → (2) `groupByParent` 전체 적용 → (3) dirty group 전체 제외 (leg 중 하나라도 anomaly) → (4) `legs.every(l => l.status === 'CLOSED')` 아닌 group 전체 제외.
+  - `buildReport` 시그니처에 `droppedOpen` 추가. Filter 설명을 "parent group fully CLOSED AND no leg has exit_anomaly_reason"로 갱신.
+  - Caveats에 "Partial-exit 안전장치" + "group 단위 dirty 제외" 명시.
+- P2 검증 (`data/vps-trades-latest.jsonl` 143 rows dry run):
+  - `Input rows: 143, dropped (anomaly): 1, dropped (open runner leg): 4, parent groups: 134`
+  - **4 parent groups 정확히 격리** — runner leg 여전히 OPEN인 entries가 더 이상 TP1 통계에 기여하지 않음.
+- 검증:
+  - `npx tsc --noEmit` → 0 errors
+  - `npx jest` → **87 suites / 468 tests all pass** (swapParser 17개)
+  - audit script dry run → 정상 출력 + 4 groups 격리 확인
+- 영향:
+  - PumpSwap swap stream 복원 (iter10 초안의 silent drop 방지) → swap-layer 데이터 손실 없이 priceNative 산출 정확성 유지
+  - exit distribution bucket 통계가 runner-open 상태 parent에 오염되지 않음 → Phase X3 판단 신뢰도 회복
+- 결정:
+  - P1/P2 포함된 iter10 최종본을 VPS 배포 후보로 전환. Task #52 진행 조건 유지 (7h monitoring 후 decision tree).
+  - Codex review 결과는 별도 audit 파일로 보존하지 않고 본 엔트리 + ops-history Entry 08에만 기록 — review 결과가 self-contained라 별도 문서 불필요.
 
 **iter10 fix 접근법** (audit doc §Phase 1B Verdict 상세)
 

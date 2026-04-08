@@ -282,15 +282,23 @@ function fmt(v: number, digits = 2): string {
   return v.toFixed(digits);
 }
 
-function buildReport(groups: EntryGroup[], args: Args, totalRowsBeforeFilter: number, droppedDirty: number): string {
+function buildReport(
+  groups: EntryGroup[],
+  args: Args,
+  totalRowsBeforeFilter: number,
+  droppedDirty: number,
+  droppedOpen: number,
+): string {
   const lines: string[] = [];
   lines.push('# Exit Distribution Audit');
   lines.push('');
   lines.push(`Generated: ${new Date().toISOString()}`);
   lines.push(`Source: ${args.inputPath}`);
-  const filterDesc = `status=CLOSED${args.includeDirty ? '' : ' AND exit_anomaly_reason IS NULL'}${args.strategyFilter ? ` AND strategy=${args.strategyFilter}` : ''}`;
+  const filterDesc = `parent group fully CLOSED${args.includeDirty ? '' : ' AND no leg has exit_anomaly_reason'}${args.strategyFilter ? ` AND strategy=${args.strategyFilter}` : ''}`;
   lines.push(`Filter: ${filterDesc}`);
-  lines.push(`Input rows: ${totalRowsBeforeFilter}, dropped (anomaly): ${droppedDirty}, parent groups: ${groups.length}`);
+  lines.push(
+    `Input rows: ${totalRowsBeforeFilter}, dropped (anomaly): ${droppedDirty}, dropped (open runner leg): ${droppedOpen}, parent groups: ${groups.length}`
+  );
   lines.push('');
 
   if (groups.length === 0) {
@@ -514,8 +522,9 @@ function buildReport(groups: EntryGroup[], args: Args, totalRowsBeforeFilter: nu
   lines.push('## Caveats');
   lines.push('');
   lines.push('- 1-level parent grouping (`parent_trade_id ?? id`). 깊은 chain (T1→T2→T3) 처리 한계는 trade-report.ts와 동일. root parent resolver 도입 시 본 스크립트도 함께 갱신 필요.');
+  lines.push('- **Partial-exit 안전장치**: parent 기준 grouping 후 leg 중 하나라도 `status != CLOSED`인 group은 집계에서 제외한다. TP1 이후 runner leg이 OPEN으로 남아있는 동안에는 final exit bucket이 확정되지 않기 때문 (Codex P2).');
   lines.push('- `stop_loss == 0` 인 legacy row는 R 계산에서 NaN 처리 + actualBucket=UNKNOWN (legacy v3 이전 데이터).');
-  lines.push('- `exit_anomaly_reason IS NULL` 필터로 Phase E fake-fill 마커가 있는 row는 제외. `--include-dirty` 로 해제 가능.');
+  lines.push('- `exit_anomaly_reason IS NULL` 필터는 group 단위로 적용: leg 중 하나라도 anomaly가 있으면 해당 group 전체를 제외. `--include-dirty` 로 해제 가능.');
   lines.push(`- Phase X1 acceptance gate (≥ ${args.sampleGate} clean trades) 미달 시 본 결과로 가설 분기 금지.`);
   lines.push('- **measurement gap**: `exit_reason`은 monitor loop가 발동시킨 *trigger intent*고, `exit_price`는 Jupiter swap의 *actual fill*이다. 메모코인 빠른 변동 + swap latency 때문에 두 값이 자주 분리된다. Phase X3 판단은 actual bucket을 사용해야 한다 (intent 기반 hit rate는 over-counting).');
   return lines.join('\n');
@@ -524,17 +533,32 @@ function buildReport(groups: EntryGroup[], args: Args, totalRowsBeforeFilter: nu
 function main(): void {
   const args = parseArgs();
   const allTrades = loadTrades(args);
-  const closed = allTrades.filter((t) => t.status === 'CLOSED');
-  const droppedDirty = args.includeDirty
-    ? 0
-    : closed.filter((t) => t.exit_anomaly_reason != null).length;
-  const filtered = closed.filter((t) => {
-    if (!args.includeDirty && t.exit_anomaly_reason != null) return false;
-    if (args.strategyFilter && t.strategy !== args.strategyFilter) return false;
-    return true;
-  });
-  const groups = groupByParent(filtered);
-  const report = buildReport(groups, args, allTrades.length, droppedDirty);
+  // Why: 기존 로직은 status=CLOSED만 먼저 필터하고 groupByParent를 돌렸다. 하지만 TP1
+  //   partial exit 후 parent row는 status='CLOSED'로 닫히고 runner leg은 새로
+  //   status='OPEN'으로 insert되는 구조이므로, pre-filter가 runner를 drop한 채 parent를
+  //   "완료된 TAKE_PROFIT_1 trade"로 집계해 버린다 (logical entry는 여전히 live인데도).
+  //   Codex review P2 지적. 수정 방향: parent 기준 grouping을 먼저 수행하고, leg 중
+  //   하나라도 CLOSED가 아니면 그 group 전체를 집계에서 제외한다.
+  const byStrategy = args.strategyFilter
+    ? allTrades.filter((t) => t.strategy === args.strategyFilter)
+    : allTrades;
+  const preGroups = groupByParent(byStrategy);
+  // 1) 집계에서 dirty (exit_anomaly_reason) leg이 섞인 group은 전체 제외.
+  //    closed-only가 아닌 OPEN leg에는 anomaly가 없지만, 나중에 닫힐 때 anomaly가 붙을
+  //    수도 있으므로 pending 상태의 group은 다음 항목에서 별도 처리한다.
+  let dirtyGroupLegCount = 0;
+  const cleanGroups = args.includeDirty
+    ? preGroups
+    : preGroups.filter((g) => {
+        const isDirty = g.legs.some((l) => l.exit_anomaly_reason != null);
+        if (isDirty) dirtyGroupLegCount += g.legs.length;
+        return !isDirty;
+      });
+  // 2) leg 중 하나라도 OPEN인 group은 final exit bucket이 확정되지 않았으므로 제외.
+  const closedGroups = cleanGroups.filter((g) => g.legs.every((l) => l.status === 'CLOSED'));
+  const droppedDirty = dirtyGroupLegCount;
+  const droppedOpen = cleanGroups.length - closedGroups.length;
+  const report = buildReport(closedGroups, args, allTrades.length, droppedDirty, droppedOpen);
   console.log(report);
   if (args.outPath) {
     const outAbs = path.resolve(process.cwd(), args.outPath);

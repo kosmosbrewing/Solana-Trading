@@ -165,7 +165,13 @@ describe('swapParser', () => {
     expect(parsed).toBeNull();
   });
 
-  it('prefers PumpSwap balance-delta parsing over instruction decode when both are available', () => {
+  it('parses PumpSwap buy via pool-owned vault deltas (ignores instruction payload)', () => {
+    // Why: 실제 PumpSwap tx는 user token ATA와 pool vault 양쪽을 mint별 pre/postTokenBalances에
+    //   포함한다. sumMintDelta가 owner 필터 없이 전체를 합산하면 두 측의 delta가 정확히
+    //   반대 부호라 0이 되어 swap이 통째로 drop되는 회귀가 발생한다. 본 테스트는 fix의 핵심
+    //   불변식 — pool vault (owner == poolAddress)만 모아 pool 관점 delta를 구하고, 그 부호를
+    //   뒤집어 user 관점을 재구성 — 을 강제한다. instruction payload의 max_quote_amount_in
+    //   (user intent, slippage 상한)은 절대 사용되면 안 된다.
     const buyInstructionData = encodePumpInstruction(
       [102, 6, 61, 18, 1, 218, 235, 234],
       1_250_000n,
@@ -181,17 +187,27 @@ describe('swapParser', () => {
         logMessages: ['Program pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA invoke [1]'],
         postBalances: [],
         postTokenBalances: [
+          // user token ATA — owner ≠ pool, 필터에서 제외되어야 함
           {
             accountIndex: 1,
             mint: 'mint-base',
-            owner: 'owner-1',
+            owner: 'user-1',
             programId: 'token-program',
             uiTokenAmount: { amount: '500000', decimals: 6, uiAmount: 0.5, uiAmountString: '0.5' },
           },
+          // pool base vault (pool 소유) — 0.5 base 송출 → post < pre
           {
-            accountIndex: 2,
+            accountIndex: 3,
+            mint: 'mint-base',
+            owner: 'pool-pump',
+            programId: 'token-program',
+            uiTokenAmount: { amount: '500000', decimals: 6, uiAmount: 0.5, uiAmountString: '0.5' },
+          },
+          // pool quote vault (pool 소유) — 0.25 SOL 수취 → post > pre
+          {
+            accountIndex: 4,
             mint: 'So11111111111111111111111111111111111111112',
-            owner: 'owner-2',
+            owner: 'pool-pump',
             programId: 'token-program',
             uiTokenAmount: { amount: '250000000', decimals: 9, uiAmount: 0.25, uiAmountString: '0.25' },
           },
@@ -201,16 +217,23 @@ describe('swapParser', () => {
           {
             accountIndex: 1,
             mint: 'mint-base',
-            owner: 'owner-1',
+            owner: 'user-1',
             programId: 'token-program',
             uiTokenAmount: { amount: '0', decimals: 6, uiAmount: 0, uiAmountString: '0' },
           },
           {
-            accountIndex: 2,
-            mint: 'So11111111111111111111111111111111111111112',
-            owner: 'owner-2',
+            accountIndex: 3,
+            mint: 'mint-base',
+            owner: 'pool-pump',
             programId: 'token-program',
-            uiTokenAmount: { amount: '500000000', decimals: 9, uiAmount: 0.5, uiAmountString: '0.5' },
+            uiTokenAmount: { amount: '1000000', decimals: 6, uiAmount: 1.0, uiAmountString: '1.0' },
+          },
+          {
+            accountIndex: 4,
+            mint: 'So11111111111111111111111111111111111111112',
+            owner: 'pool-pump',
+            programId: 'token-program',
+            uiTokenAmount: { amount: '0', decimals: 9, uiAmount: 0, uiAmountString: '0' },
           },
         ],
         rewards: [],
@@ -257,6 +280,118 @@ describe('swapParser', () => {
       source: 'transaction',
     });
     expect(parsed?.priceNative).toBeCloseTo(0.5, 12);
+  });
+
+  it('parses PumpSwap sell via pool-owned vault deltas (mirror of buy case)', () => {
+    // Why: sell 반대 방향 대칭 검증 — pool 기준으로 base 유입 + quote 송출.
+    const sellInstructionData = encodePumpInstruction(
+      [51, 230, 133, 164, 1, 127, 131, 173],
+      2_000_000n,
+      100_000_000n,
+    );
+    const parsed = parseSwapFromTransaction({
+      blockTime: 1_700_000_203,
+      meta: {
+        err: null,
+        fee: 5_000,
+        innerInstructions: [],
+        loadedAddresses: { readonly: [], writable: [] },
+        logMessages: ['Program pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA invoke [1]'],
+        postBalances: [],
+        postTokenBalances: [
+          // user token ATA — sell 이후 0
+          {
+            accountIndex: 1,
+            mint: 'mint-base',
+            owner: 'user-1',
+            programId: 'token-program',
+            uiTokenAmount: { amount: '0', decimals: 6, uiAmount: 0, uiAmountString: '0' },
+          },
+          // pool base vault — 2 token 수취 → post > pre
+          {
+            accountIndex: 3,
+            mint: 'mint-base',
+            owner: 'pool-pump',
+            programId: 'token-program',
+            uiTokenAmount: { amount: '3000000', decimals: 6, uiAmount: 3.0, uiAmountString: '3.0' },
+          },
+          // pool quote vault — 0.1 SOL 송출 → post < pre
+          {
+            accountIndex: 4,
+            mint: 'So11111111111111111111111111111111111111112',
+            owner: 'pool-pump',
+            programId: 'token-program',
+            uiTokenAmount: { amount: '400000000', decimals: 9, uiAmount: 0.4, uiAmountString: '0.4' },
+          },
+        ],
+        preBalances: [],
+        preTokenBalances: [
+          {
+            accountIndex: 1,
+            mint: 'mint-base',
+            owner: 'user-1',
+            programId: 'token-program',
+            uiTokenAmount: { amount: '2000000', decimals: 6, uiAmount: 2.0, uiAmountString: '2.0' },
+          },
+          {
+            accountIndex: 3,
+            mint: 'mint-base',
+            owner: 'pool-pump',
+            programId: 'token-program',
+            uiTokenAmount: { amount: '1000000', decimals: 6, uiAmount: 1.0, uiAmountString: '1.0' },
+          },
+          {
+            accountIndex: 4,
+            mint: 'So11111111111111111111111111111111111111112',
+            owner: 'pool-pump',
+            programId: 'token-program',
+            uiTokenAmount: { amount: '500000000', decimals: 9, uiAmount: 0.5, uiAmountString: '0.5' },
+          },
+        ],
+        rewards: [],
+        status: { Ok: null },
+      },
+      slot: 1_002,
+      transaction: {
+        message: {
+          accountKeys: [],
+          instructions: [{
+            programId: { toBase58: () => PUMP_SWAP_PROGRAM },
+            accounts: [
+              { toBase58: () => 'pool-pump' },
+              { toBase58: () => 'user-1' },
+            ],
+            data: sellInstructionData,
+          }],
+          recentBlockhash: 'hash',
+        },
+        signatures: ['sig-pump-sell'],
+      },
+    } as any, {
+      poolAddress: 'pool-pump',
+      signature: 'sig-pump-sell',
+      slot: 1_002,
+      poolMetadata: {
+        dexId: 'pumpswap',
+        baseMint: 'mint-base',
+        quoteMint: 'So11111111111111111111111111111111111111112',
+        baseDecimals: 6,
+        quoteDecimals: 9,
+        poolProgram: PUMP_SWAP_PROGRAM,
+      },
+    });
+
+    expect(parsed).toMatchObject({
+      pool: 'pool-pump',
+      signature: 'sig-pump-sell',
+      side: 'sell',
+      amountBase: 2.0,
+      amountQuote: 0.1,
+      slot: 1_002,
+      dexProgram: PUMP_SWAP_PROGRAM,
+      source: 'transaction',
+    });
+    expect(parsed?.priceNative).toBeCloseTo(0.05, 12);
   });
 
   it('skips PumpSwap log parsing to force transaction fallback', () => {

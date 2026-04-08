@@ -142,6 +142,21 @@ export class ScannerEngine extends EventEmitter {
     return this.watchlist.get(tokenMint);
   }
 
+  /**
+   * pairAddress 로 WatchlistEntry 를 조회한다.
+   * Why: watchlist 는 tokenMint 로 키잉되지만 strategy signal 은 pairAddress 만 들고 다닌다.
+   *      signalProcessor / realtimeHandler / riskManager 는 signal 시점에 cohort 등
+   *      entry metadata 를 읽어야 하므로 pair-side lookup 이 필요하다.
+   *      Watchlist 크기가 bounded (수십~수백) 이므로 선형 탐색으로 충분.
+   */
+  getEntryByPairAddress(pairAddress: string): WatchlistEntry | undefined {
+    if (!pairAddress) return undefined;
+    for (const entry of this.watchlist.values()) {
+      if (entry.pairAddress === pairAddress) return entry;
+    }
+    return undefined;
+  }
+
   isInWatchlist(tokenMint: string): boolean {
     return this.watchlist.has(tokenMint);
   }

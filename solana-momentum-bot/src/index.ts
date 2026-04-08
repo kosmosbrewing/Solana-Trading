@@ -241,9 +241,16 @@ async function main() {
     if (pending) {
       clearTimeout(pending.timer);
       pendingAliasCleanups.delete(logicalPair);
-      // Phase 1: cohort tagging for re-admission events (closure-captured scanner may be null before init)
-      const readdedCohort = scanner?.getEntry(logicalPair)?.cohort;
-      runtimeDiagnosticsTracker.recordCandidateReadded(logicalPair, 'within_grace', readdedCohort);
+      // Phase 1: cohort tagging for re-admission events (closure-captured scanner may be null before init).
+      // Why: logicalPair 는 호출자에 따라 tokenMint (line 769) 또는 pairAddress (line 945) 일 수 있으므로
+      //      양쪽 lookup 을 모두 시도한다.
+      const readdedEntry =
+        scanner?.getEntry(logicalPair) ?? scanner?.getEntryByPairAddress(logicalPair);
+      runtimeDiagnosticsTracker.recordCandidateReadded(
+        logicalPair,
+        'within_grace',
+        readdedEntry?.cohort
+      );
     }
     realtimePoolTargets.set(logicalPair, subscriptionPair);
     realtimePoolAliases.set(subscriptionPair, logicalPair);

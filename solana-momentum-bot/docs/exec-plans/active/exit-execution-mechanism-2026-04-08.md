@@ -16,7 +16,13 @@
 - orderShape 튜닝 (tp1/tp2/sl multiplier) 은 본 plan 의 **전제 조건**이지 **대상**이 아니다 → `exit-structure-validation-2026-04-08.md`
 - 본 plan 은 "TP2 trigger 발동 후 체결 시점까지 가격 축이 어긋나는 현상" 을 고친다
 - 모든 결정은 measurement 이후. paper prototype → live canary → decision 순서 엄수
-- 사명 경로(`1 SOL → 100 SOL`) 상에서 현재 **binding constraint 1 순위**이다 (triage §2 A1)
+- 사명 경로(`1 SOL → 100 SOL`) 상에서 현재 **P0-A** 다. 단독 P0가 아니라 `1sol-to-100sol.md`의 `fresh flow (P0-B)` 및 `winner preservation audit (P0-C)` 과 **병렬**로 전진한다
+
+### Mission Boundary
+
+- 이 plan 이 직접 해결하는 것은 **monitor trigger → actual fill gap** 이다
+- 이 plan 만으로 사명이 회복되지는 않는다. `fresh sample flow` 와 `pre-TP1 EXHAUSTION` 은 병렬 축이다
+- 따라서 success 기준도 `gap 축소`만이 아니라 **winner를 실제로 더 오래 보존했는지**까지 최소 계측해야 한다
 
 ---
 
@@ -30,6 +36,7 @@
 | 동 문서 | Actual outcome distribution: SL_OR_WORSE 50%, BELOW_ENTRY 44.4%, BELOW_TP1 5.6% |
 | 동 문서 | net realized PnL (n=18) = −0.017809 SOL |
 | `signal-cohort-2026-04-07.md` | low-cap surge cohort 7 executed / 7 losses |
+| 최신 clean live trade | `effective_rr=6.28` fresh trade 1건도 `EXHAUSTION` 손실로 종료 → mechanism 외 winner preservation 축도 별도 측정 필요 |
 
 ### 현재 exit 경로 (검증된 동작)
 
@@ -130,6 +137,7 @@ exit latency 와 price reverse 의 분포를 실측으로 확정하고, C3/C5 pr
   - 입력: `trades` 테이블 (clean, `exit_anomaly_reason IS NULL`)
   - 출력: `trigger → submit` gap, `submit → response` gap, `trigger_price → exit_price` ratio 분포
   - 출력: exit reason × {latency p50/p95, price reverse ratio p50/p95}
+  - 출력: entry-group 기준 `realized R`, `pre-TP1 EXHAUSTION` count, `actual TP2 match` headline
 - [ ] `trade-report.ts` 확장: exit latency 한 줄 헤드라인 추가
 
 #### E1-2. C5 (Hybrid) prototype — paper mode only
@@ -146,7 +154,8 @@ exit latency 와 price reverse 의 분포를 실측으로 확정하고, C3/C5 pr
 #### E1-3. Paper validation loop
 
 - [ ] `EXIT_MECHANISM_MODE=hybrid_c5` 로 paper 재기동
-- [ ] 최소 ≥ 100 closed trades (paper) 또는 ≥ 7 일 운용 중 먼저 도달하는 쪽까지 누적
+- [ ] 최소 ≥ 20 closed trades (paper) 또는 ≥ 72 시간 운용 중 먼저 도달하는 쪽까지 1차 baseline 누적
+- [ ] 1차 baseline 이후 필요 시 ≥ 100 closed trades까지 추가 누적 (Phase E2 분기용)
 - [ ] `exit-latency-audit.ts` 실행하여 gap 분포 기록
 
 ### Target Files
@@ -167,7 +176,7 @@ exit latency 와 price reverse 의 분포를 실측으로 확정하고, C3/C5 pr
 
 - [ ] migration 배포 → `trades` 테이블에 5 개 신규 컬럼 존재
 - [ ] paper 모드 `EXIT_MECHANISM_MODE=hybrid_c5` 로 재기동 후 첫 closeTrade 호출이 에러 없이 성공 + 5 개 컬럼 non-null
-- [ ] ≥ 100 paper closed trades 또는 7 일 경과 후 `exit-latency-audit` 첫 실행 → latency 분포 + reverse ratio 분포 출력
+- [ ] ≥ 20 paper closed trades 또는 72 시간 경과 후 `exit-latency-audit` 첫 실행 → latency 분포 + reverse ratio 분포 출력
 - [ ] `docs/audits/exit-latency-*.md` 에 결과 + Phase E2 진행 권장 / 보류 판정 기록
 
 ### Lifecycle
@@ -180,7 +189,7 @@ exit latency 와 price reverse 의 분포를 실측으로 확정하고, C3/C5 pr
 Phase E1 측정 결과에 따라 다음 분기:
 
 - **E1 결과 A**: paper 에서도 submit-before tick price 가 trigger price 대비 > 2% 분기. 근본은 monitor observation 지연이 아니라 swap latency → Phase E2 (C2 tick-level) 필요
-- **E1 결과 B**: paper 에서 gap 이 작고 monitor polling 지연만 문제 → live 에서는 C5 단독으로 충분할 가능성. Phase E3 로 바로 진입 검토
+- **E1 결과 B**: paper 에서 gap 이 작고 monitor polling 지연만 문제 → C5 는 **제한된 live mini-canary 후보**. paper 결과만으로 "충분" 판정 금지
 - **E1 결과 C**: paper 에서 유의미 signal 부족 (universe 문제로 n<20) → A2 (universe flow) 선행 필요. 본 plan 일시 대기
 
 ---
@@ -293,7 +302,7 @@ tick-level SL/TP trigger 를 paper 모드에서 구현하고 dual-path race cond
 
 ### 진입 조건
 
-Phase E1 결과 B (C5 단독 충분) 또는 Phase E2 acceptance 전체 통과.
+Phase E1 결과 B (`C5` limited live mini-canary 적합) 또는 Phase E2 acceptance 전체 통과.
 
 ### 목표
 
@@ -309,6 +318,8 @@ Phase E1 결과 B (C5 단독 충분) 또는 Phase E2 acceptance 전체 통과.
   - `trigger → submit` latency p50 / p95
   - `submit → response` latency p50 / p95
   - `exit_anomaly_reason` 신규 발생 여부
+  - entry-group 기준 `realized R`
+  - `pre-TP1 EXHAUSTION` rate
 - [ ] `docs/ops-history/YYYY-MM-DD.md` 에 Phase E3 전용 섹션 추가
 
 ### Rollback 조건 (자동 또는 수동)
@@ -335,6 +346,7 @@ Phase E1 결과 B (C5 단독 충분) 또는 Phase E2 acceptance 전체 통과.
 - [ ] `monitor_trigger_price → exit_price` reverse ratio p95 ≤ 2%
 - [ ] `exit_anomaly_reason` 신규 발생 0 건
 - [ ] Phase X1 (live-ops-integrity Phase M) 와 병행하여 post-Phase E clean closed trades ≥ 20 누적
+- [ ] `pre-TP1 EXHAUSTION` rate 가 baseline 대비 악화되지 않았고, winner preservation 해석이 audit 문서에 명시됨
 
 ### Lifecycle
 
@@ -401,7 +413,7 @@ exit-execution-mechanism-2026-04-08.md  (본 plan — MECHANISM)
 **핵심 원칙:**
 - 본 plan 은 **exit-structure-validation** 과 독립이지만 **선행**이다
 - parameter 튜닝을 먼저 하면 mechanism 노이즈에 파라미터를 fit 시키게 됨 → 오염된 결정
-- mechanism 을 먼저 고치고 → 측정이 정직해지고 → 그 후 parameter 판정
+- mechanism 을 먼저 계측하고 → `fresh flow`, `winner preservation` 과 병렬로 개선하고 → 그 후 parameter 판정
 
 ---
 

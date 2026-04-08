@@ -53,6 +53,17 @@ run_remote_trade_report() {
   cp "${REPORT_SNAPSHOT}" "${REPORT_LATEST}"
   echo "[refresh-vps-analysis] trade-report: saved ${REPORT_SNAPSHOT}"
   echo "[refresh-vps-analysis] trade-report: latest ${REPORT_LATEST}"
+  local exhaustion_line
+  local empty_window_line
+  exhaustion_line="$(grep -F "EXHAUSTION (entry):" "${REPORT_LATEST}" || true)"
+  empty_window_line="$(grep -E "거래 없음\\.|실현 손익 row 없음\\." "${REPORT_LATEST}" || true)"
+  if [ -n "${exhaustion_line}" ]; then
+    echo "[refresh-vps-analysis] trade-report: ${exhaustion_line}"
+  elif [ -n "${empty_window_line}" ]; then
+    echo "[refresh-vps-analysis] trade-report: no realized rows in requested window"
+  else
+    echo "[refresh-vps-analysis] trade-report: WARNING missing 'EXHAUSTION (entry)' line (old remote script or fetch failure)"
+  fi
 }
 
 run_realized_ratio() {

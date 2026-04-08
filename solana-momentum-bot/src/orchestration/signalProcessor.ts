@@ -153,8 +153,9 @@ export async function processSignal(
       }).stopLoss;
     })();
 
-    // Phase 1 fresh-cohort instrumentation — risk_rejection 이벤트에 cohort 태깅
-    const orderCohort = ctx.scanner?.getEntry(signal.pairAddress)?.cohort;
+    // Phase 1 fresh-cohort instrumentation — risk_rejection 이벤트에 cohort 태깅.
+    // Watchlist 는 tokenMint 로 키잉되므로 pair-side lookup 사용.
+    const orderCohort = ctx.scanner?.getEntryByPairAddress(signal.pairAddress)?.cohort;
     const riskResult = await ctx.riskManager.checkOrder(
       {
         pairAddress: signal.pairAddress,

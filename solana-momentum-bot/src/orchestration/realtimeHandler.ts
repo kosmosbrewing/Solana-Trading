@@ -40,9 +40,12 @@ export async function handleRealtimeSignal(
   if (!poolInfo) {
     log.info(`Skipping realtime signal for ${signal.pairAddress}: not in watchlist`);
     const recentlyEvicted = ctx.isInGracePeriod?.(signal.pairAddress) ?? false;
+    // Phase 1: cohort 는 scanner 가 여전히 들고 있을 때만 파악 가능 — 그 외엔 'unknown'
+    const fallbackCohort = ctx.scanner?.getEntry(signal.pairAddress)?.cohort;
     ctx.runtimeDiagnosticsTracker?.recordSignalNotInWatchlist(
       signal.pairAddress,
-      recentlyEvicted ? 'recently_evicted' : undefined
+      recentlyEvicted ? 'recently_evicted' : undefined,
+      fallbackCohort
     );
     await trackRealtimeShadowSignal({
       signal,
@@ -211,6 +214,8 @@ export async function handleRealtimeSignal(
       5,
       ctx.realtimeOutcomeTracker.getRequiredHistoryCount()
     );
+    // Phase 1: cohort attached from scanner watchlist at signal time
+    const signalCohort = ctx.scanner?.getEntry(signal.pairAddress)?.cohort;
     ctx.realtimeOutcomeTracker.track({
       version: 1,
       id: `${signal.strategy}:${signal.pairAddress}:${signal.timestamp.toISOString()}`,
@@ -219,6 +224,7 @@ export async function handleRealtimeSignal(
       pairAddress: signal.pairAddress,
       poolAddress: poolInfo.pairAddress,
       tokenMint: poolInfo.tokenMint,
+      cohort: signalCohort,
       referencePrice: signal.price,
       signalTimestamp: signal.timestamp.toISOString(),
       estimatedCostPct,
@@ -328,6 +334,8 @@ async function trackRealtimeShadowSignal({
     signal.timestamp.toISOString()
   );
 
+  // Phase 1: cohort attached from scanner watchlist at shadow-track time
+  const shadowCohort = ctx.scanner?.getEntry(signal.pairAddress)?.cohort;
   ctx.realtimeOutcomeTracker.track({
     version: 1,
     id: `${signal.strategy}:${signal.pairAddress}:${signal.timestamp.toISOString()}`,
@@ -337,6 +345,7 @@ async function trackRealtimeShadowSignal({
     poolAddress: poolInfo?.pairAddress,
     tokenMint: poolInfo?.tokenMint,
     tokenSymbol: poolInfo?.symbol,
+    cohort: shadowCohort,
     signalTimestamp: signal.timestamp.toISOString(),
     referencePrice: signal.price,
     estimatedCostPct,

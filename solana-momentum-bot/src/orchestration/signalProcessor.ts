@@ -153,6 +153,8 @@ export async function processSignal(
       }).stopLoss;
     })();
 
+    // Phase 1 fresh-cohort instrumentation — risk_rejection 이벤트에 cohort 태깅
+    const orderCohort = ctx.scanner?.getEntry(signal.pairAddress)?.cohort;
     const riskResult = await ctx.riskManager.checkOrder(
       {
         pairAddress: signal.pairAddress,
@@ -162,6 +164,7 @@ export async function processSignal(
         stopLoss: probeSL,
         breakoutGrade: grade,
         poolTvl: signal.poolTvl,
+        cohort: orderCohort,
       },
       portfolio,
       gateResult.tokenSafety
@@ -263,6 +266,8 @@ export async function processSignal(
     order.breakoutGrade = grade;
     order.sizeConstraint = riskResult.sizeConstraint;
     order.tokenSymbol = signal.tokenSymbol;
+    // Phase 1: cohort propagation through Order → Trade (instrumentation only, not persisted)
+    order.cohort = orderCohort;
 
     const rrThresholds = {
       rrReject: config.executionRrReject,

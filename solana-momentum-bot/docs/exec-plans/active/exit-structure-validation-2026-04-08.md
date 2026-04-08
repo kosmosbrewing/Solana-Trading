@@ -1,10 +1,11 @@
 # Execution Plan: Exit Structure Validation
 
-> Status: active
+> Status: active (depends on `exit-execution-mechanism-2026-04-08.md` completion)
 > Created: 2026-04-08
 > Origin: Codex 진단 (2026-04-08) — bootstrap_10s live exit 구조의 적합성 의문 제기
-> Scope: TP1 partial 30% / TP2 10×ATR / SL 1.5×ATR runner-centric 구조의 live 적합성 측정 + 가설 옵션 분기
-> Use with: `STRATEGY.md`, `STRATEGY_NOTES.md` (2026-04-08 메모), `docs/exec-plans/active/edge-cohort-quality-2026-04-07.md` Axis 3, `docs/exec-plans/active/live-ops-integrity-2026-04-07.md` Phase M, `docs/exec-plans/tech-debt-tracker.md` TD-14
+> Scope: TP1 partial 30% / TP2 10×ATR / SL 1.5×ATR runner-centric 구조의 live 적합성 측정 + 가설 옵션 분기 (**parameter side**)
+> Depends on: [`exit-execution-mechanism-2026-04-08.md`](./exit-execution-mechanism-2026-04-08.md) — Phase X2 v2 finding (`TP2 intent → actual = 0/10`)이 mechanism issue 임이 확인되어 parameter 결정은 mechanism plan 완료 후에만 valid
+> Use with: `STRATEGY.md`, `STRATEGY_NOTES.md` (2026-04-08 메모), `docs/exec-plans/active/edge-cohort-quality-2026-04-07.md` Axis 3, `docs/exec-plans/active/live-ops-integrity-2026-04-07.md` Phase M, `docs/exec-plans/tech-debt-tracker.md` TD-14 / TD-15
 
 ## Role
 

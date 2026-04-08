@@ -118,4 +118,81 @@ describe('summarizeRealtimeSignalsByStrategy', () => {
     expect(breakdown.overall.totalSignals).toBe(1);
     expect(Object.keys(breakdown.byStrategy)).toEqual(['volume_spike']);
   });
+
+  it('groups signals into byCohort and zero-fills missing cohorts', () => {
+    // Why: Phase 1 fresh-cohort instrumentation — cohort 축 집계가 signal 관점에서도
+    //      유지되어야 fresh 분포를 리포트에서 바로 읽을 수 있다.
+    const freshRecord: RealtimeSignalRecord = { ...makeRecord(), id: 'fresh-1', cohort: 'fresh' };
+    const matureRecord: RealtimeSignalRecord = { ...makeRecord(), id: 'mature-1', cohort: 'mature' };
+    // cohort 미지정 → 'unknown' 으로 귀속되어야 한다.
+    const legacyRecord: RealtimeSignalRecord = { ...makeRecord(), id: 'legacy-1' };
+
+    const breakdown = summarizeRealtimeSignalsByStrategy(
+      [freshRecord, matureRecord, legacyRecord],
+      180
+    );
+
+    expect(breakdown.byCohort).toBeDefined();
+    const byCohort = breakdown.byCohort!;
+    expect(byCohort.fresh.totalSignals).toBe(1);
+    expect(byCohort.mature.totalSignals).toBe(1);
+    expect(byCohort.unknown.totalSignals).toBe(1);
+    // 빈 cohort 도 zero-filled summary 로 키가 존재해야 한다 (downstream optional-chain 제거용).
+    expect(byCohort.mid).toBeDefined();
+    expect(byCohort.mid.totalSignals).toBe(0);
+
+    // Why: empty mid slot 이 다른 slot 과 참조 공유가 아니어야 한다 (mutation footgun 방지).
+    //      같은 factory 로 독립 인스턴스가 만들어져 서로 다른 참조를 가져야 한다.
+    expect(byCohort.mid).not.toBe(byCohort.unknown);
+  });
+
+  it('builds byCohortStrategy cross-aggregation keyed by `${cohort}:${strategy}`', () => {
+    const freshVolume: RealtimeSignalRecord = {
+      ...makeRecord(),
+      id: 'fv-1',
+      cohort: 'fresh',
+      strategy: 'volume_spike',
+    };
+    const matureVolume: RealtimeSignalRecord = {
+      ...makeRecord(),
+      id: 'mv-1',
+      cohort: 'mature',
+      strategy: 'volume_spike',
+    };
+    const freshFib: RealtimeSignalRecord = {
+      ...makeRecord(),
+      id: 'ff-1',
+      cohort: 'fresh',
+      strategy: 'fib_pullback',
+    };
+
+    const breakdown = summarizeRealtimeSignalsByStrategy(
+      [freshVolume, matureVolume, freshFib],
+      180
+    );
+
+    expect(breakdown.byCohortStrategy).toBeDefined();
+    const cross = breakdown.byCohortStrategy!;
+    // 3 개 cross 키가 존재해야 하고, 비어있는 조합은 포함되지 않아야 한다.
+    expect(Object.keys(cross).sort()).toEqual([
+      'fresh:fib_pullback',
+      'fresh:volume_spike',
+      'mature:volume_spike',
+    ]);
+    expect(cross['fresh:volume_spike'].totalSignals).toBe(1);
+    expect(cross['mature:volume_spike'].totalSignals).toBe(1);
+    expect(cross['fresh:fib_pullback'].totalSignals).toBe(1);
+  });
+
+  it('labels records missing cohort as "unknown:<strategy>" in cross breakdown', () => {
+    const breakdown = summarizeRealtimeSignalsByStrategy([makeRecord()], 180);
+    expect(breakdown.byCohortStrategy).toBeDefined();
+    expect(Object.keys(breakdown.byCohortStrategy!)).toEqual(['unknown:volume_spike']);
+  });
+
+  it('omits byCohort / byCohortStrategy entirely when input is empty', () => {
+    const breakdown = summarizeRealtimeSignalsByStrategy([], 180);
+    expect(breakdown.byCohort).toBeUndefined();
+    expect(breakdown.byCohortStrategy).toBeUndefined();
+  });
 });

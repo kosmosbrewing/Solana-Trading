@@ -1,5 +1,6 @@
 import path from 'path';
 import { readFile } from 'fs/promises';
+import type { Cohort } from '../scanner/cohort';
 import { RealtimeReplayStore } from '../realtime';
 import { RealtimeAdmissionSnapshotEntry } from '../realtime/realtimeAdmissionTracker';
 import { RealtimeMeasurementSummary, RealtimeSignalRecord, summarizeRealtimeSignalsByStrategy } from './realtimeMeasurement';
@@ -47,6 +48,10 @@ export interface RealtimeShadowReport {
   };
   summary: RealtimeMeasurementSummary;
   byStrategy?: Record<string, RealtimeMeasurementSummary>;
+  /** Phase 1: cohort 단독 aggregation (strategy 합산) */
+  byCohort?: Record<Cohort, RealtimeMeasurementSummary>;
+  /** Phase 1: cohort × strategy 2-D aggregation (키 = `${cohort}:${strategy}`) */
+  byCohortStrategy?: Record<string, RealtimeMeasurementSummary>;
   statusCounts: RealtimeShadowStatusCount[];
   reasonCounts: RealtimeShadowReasonCount[];
   latestSignal?: RealtimeShadowLatestSignal;
@@ -85,6 +90,8 @@ export async function buildRealtimeShadowReport(options: {
     },
     summary: breakdown.overall,
     byStrategy,
+    byCohort: breakdown.byCohort,
+    byCohortStrategy: breakdown.byCohortStrategy,
     statusCounts: buildStatusCounts(signals),
     reasonCounts: buildReasonCounts(signals),
     latestSignal: buildLatestSignal(signals, horizonSec),

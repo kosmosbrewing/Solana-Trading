@@ -52,7 +52,12 @@ function isRuntimeDiagnosticEvent(value: unknown): value is RuntimeDiagnosticEve
     && (candidate.tokenMint == null || typeof candidate.tokenMint === 'string')
     && (candidate.reason == null || typeof candidate.reason === 'string')
     && (candidate.source == null || typeof candidate.source === 'string')
-    && (candidate.dexId == null || typeof candidate.dexId === 'string');
+    && (candidate.dexId == null || typeof candidate.dexId === 'string')
+    && (candidate.cohort == null
+      || candidate.cohort === 'fresh'
+      || candidate.cohort === 'mid'
+      || candidate.cohort === 'mature'
+      || candidate.cohort === 'unknown');
 }
 
 function isCapSuppressSnapshot(value: unknown): value is CapSuppressSnapshot {

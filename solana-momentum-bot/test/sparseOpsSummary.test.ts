@@ -2,7 +2,12 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { mkdtempSync } from 'fs';
-import { buildSparseOpsSummaryMessage, loadSparseOpsSummary } from '../src/reporting/sparseOpsSummary';
+import {
+  buildCohortFunnelBreakdown,
+  buildSparseOpsSummaryMessage,
+  loadSparseOpsSummary,
+  type SparseOpsDiagnosticEvent,
+} from '../src/reporting/sparseOpsSummary';
 
 describe('sparseOpsSummary', () => {
   it('builds a compact operator-friendly sparse summary', () => {
@@ -37,5 +42,70 @@ describe('sparseOpsSummary', () => {
     expect(message).toContain('7Ccf3PNR...NzVe 1건');
     expect(message).toContain('idle_evicted=2');
     expect(message).toContain('top idle-evicted tickers: idle-token-1 2건');
+  });
+
+  it('partitions cohort funnel counts by cohort label and stage', () => {
+    // Why: Phase 1 의 핵심 관측 축 — fresh cohort 가 어느 funnel stage 에서
+    //      떨어지는지 숫자로 보이는지 검증한다.
+    const events: SparseOpsDiagnosticEvent[] = [
+      // fresh: 2 seen, 1 admission skip, 1 evict
+      { type: 'realtime_candidate_seen', tokenMint: 'tok-f1', cohort: 'fresh' },
+      { type: 'realtime_candidate_seen', tokenMint: 'tok-f2', cohort: 'fresh' },
+      { type: 'admission_skip', tokenMint: 'tok-f1', reason: 'no_pairs', cohort: 'fresh' },
+      { type: 'candidate_evicted', tokenMint: 'tok-f2', reason: 'idle', cohort: 'fresh' },
+      // mid: 1 seen, 1 pre-reject
+      { type: 'realtime_candidate_seen', tokenMint: 'tok-m1', cohort: 'mid' },
+      { type: 'pre_watchlist_reject', tokenMint: 'tok-m2', reason: 'unsupported_dex', cohort: 'mid' },
+      // mature: 1 risk reject
+      { type: 'risk_rejection', tokenMint: 'tok-x1', reason: 'max_concurrent', cohort: 'mature' },
+      // cohort 누락 이벤트 → unknown 버킷
+      { type: 'realtime_candidate_seen', tokenMint: 'tok-u1' },
+      // funnel 외 이벤트는 무시되어야 함 (rate_limit 등)
+      { type: 'rate_limit', source: 'gecko', cohort: 'fresh' },
+    ];
+
+    const byCohort = buildCohortFunnelBreakdown(events);
+
+    expect(byCohort.fresh).toEqual({
+      candidateSeen: 2,
+      preWatchlistReject: 0,
+      admissionSkip: 1,
+      candidateEvicted: 1,
+      riskRejection: 0,
+    });
+    expect(byCohort.mid).toEqual({
+      candidateSeen: 1,
+      preWatchlistReject: 1,
+      admissionSkip: 0,
+      candidateEvicted: 0,
+      riskRejection: 0,
+    });
+    expect(byCohort.mature).toEqual({
+      candidateSeen: 0,
+      preWatchlistReject: 0,
+      admissionSkip: 0,
+      candidateEvicted: 0,
+      riskRejection: 1,
+    });
+    expect(byCohort.unknown).toEqual({
+      candidateSeen: 1,
+      preWatchlistReject: 0,
+      admissionSkip: 0,
+      candidateEvicted: 0,
+      riskRejection: 0,
+    });
+  });
+
+  it('returns zero-filled breakdown for all cohorts when events are empty', () => {
+    const byCohort = buildCohortFunnelBreakdown([]);
+    for (const cohort of ['fresh', 'mid', 'mature', 'unknown'] as const) {
+      expect(byCohort[cohort]).toEqual({
+        candidateSeen: 0,
+        preWatchlistReject: 0,
+        admissionSkip: 0,
+        candidateEvicted: 0,
+        riskRejection: 0,
+      });
+    }
   });
 });

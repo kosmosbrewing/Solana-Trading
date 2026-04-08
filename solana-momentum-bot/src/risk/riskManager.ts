@@ -3,6 +3,7 @@ import { config } from '../utils/config';
 import {
   RiskCheckResult, TokenSafety, PortfolioState, SizeConstraint, BreakoutGrade, DrawdownGuardState, StrategyName,
   Trade,
+  Cohort,
 } from '../utils/types';
 import { TradeStore } from '../candle/tradeStore';
 import { EdgeTracker, EdgeTrackerTrade, sanitizeEdgeLikeTrades } from '../reporting';
@@ -75,6 +76,8 @@ export interface RiskOrderInput {
   stopLoss: number;
   breakoutGrade?: BreakoutGrade;
   poolTvl?: number;
+  /** Phase 1 instrumentation — risk_rejection event 에 cohort 태깅용 */
+  cohort?: Cohort;
 }
 
 export class RiskManager {
@@ -175,7 +178,7 @@ export class RiskManager {
       riskTier: portfolioRisk,
     });
     if (activeHalt) {
-      this.diagnosticsTracker?.recordRiskRejection('active_halt', order.pairAddress);
+      this.diagnosticsTracker?.recordRiskRejection('active_halt', order.pairAddress, order.cohort);
       return {
         approved: false,
         reason: activeHalt.reason,
@@ -183,7 +186,7 @@ export class RiskManager {
     }
 
     if (this.isInCooldown(portfolio)) {
-      this.diagnosticsTracker?.recordRiskRejection('portfolio_cooldown', order.pairAddress);
+      this.diagnosticsTracker?.recordRiskRejection('portfolio_cooldown', order.pairAddress, order.cohort);
       return {
         approved: false,
         reason: `Cooldown active: ${portfolio.consecutiveLosses} consecutive losses`,
@@ -191,7 +194,7 @@ export class RiskManager {
     }
 
     if (this.hasOpenTradeForPair(order.pairAddress, portfolio)) {
-      this.diagnosticsTracker?.recordRiskRejection('same_pair_block', order.pairAddress);
+      this.diagnosticsTracker?.recordRiskRejection('same_pair_block', order.pairAddress, order.cohort);
       return {
         approved: false,
         reason: `Same-pair position already open: ${order.pairAddress}`,
@@ -208,7 +211,7 @@ export class RiskManager {
           `until ${pairLossCooldown.until.toISOString()}`
         );
       }
-      this.diagnosticsTracker?.recordRiskRejection('per_token_cooldown', order.pairAddress);
+      this.diagnosticsTracker?.recordRiskRejection('per_token_cooldown', order.pairAddress, order.cohort);
       return {
         approved: false,
         reason:
@@ -225,7 +228,7 @@ export class RiskManager {
       if (pairTradesToday >= perTokenDailyTradeCap) {
         this.suppressedPairs.set(order.pairAddress, getNextUtcDayStartMs());
         log.info(`Cap-suppress activated: ${order.pairAddress} (${pairTradesToday}/${perTokenDailyTradeCap})`);
-        this.diagnosticsTracker?.recordRiskRejection('daily_trade_cap', order.pairAddress);
+        this.diagnosticsTracker?.recordRiskRejection('daily_trade_cap', order.pairAddress, order.cohort);
         return {
           approved: false,
           reason:
@@ -248,7 +251,7 @@ export class RiskManager {
         portfolio.openTrades.some(t => portfolio.runnerTradeIds!.has(t.id));
 
       if (!canBypassForRunner) {
-        this.diagnosticsTracker?.recordRiskRejection('max_concurrent', order.pairAddress);
+        this.diagnosticsTracker?.recordRiskRejection('max_concurrent', order.pairAddress, order.cohort);
         return {
           approved: false,
           reason: `Max concurrent position limit reached (${maxConcurrent})`,
@@ -272,7 +275,7 @@ export class RiskManager {
         );
         appliedAdjustments.push('BYPASSED_EDGE_BLACKLIST');
       } else {
-        this.diagnosticsTracker?.recordRiskRejection('edge_blacklist', order.pairAddress);
+        this.diagnosticsTracker?.recordRiskRejection('edge_blacklist', order.pairAddress, order.cohort);
         return {
           approved: false,
           reason:
@@ -286,7 +289,7 @@ export class RiskManager {
     if (tokenSafety) {
       const safetyResult = this.checkTokenSafety(tokenSafety, portfolio.equitySol);
       if (!safetyResult.approved) {
-        this.diagnosticsTracker?.recordRiskRejection('token_safety', order.pairAddress);
+        this.diagnosticsTracker?.recordRiskRejection('token_safety', order.pairAddress, order.cohort);
         return safetyResult;
       }
       safetyMultiplier = safetyResult.sizeMultiplier ?? 1.0;
@@ -299,7 +302,7 @@ export class RiskManager {
       strategyRisk
     );
     if (adjustedQuantity <= 0) {
-      this.diagnosticsTracker?.recordRiskRejection('zero_position_size', order.pairAddress);
+      this.diagnosticsTracker?.recordRiskRejection('zero_position_size', order.pairAddress, order.cohort);
       return {
         approved: false,
         reason: 'Calculated position size is zero or negative',
@@ -310,7 +313,7 @@ export class RiskManager {
     const finalQuantity = adjustedQuantity * gradeMultiplier * safetyMultiplier;
 
     if (finalQuantity <= 0) {
-      this.diagnosticsTracker?.recordRiskRejection('zero_position_size_after_adjustments', order.pairAddress);
+      this.diagnosticsTracker?.recordRiskRejection('zero_position_size_after_adjustments', order.pairAddress, order.cohort);
       return {
         approved: false,
         reason: 'Calculated position size is zero or negative after safety adjustments',

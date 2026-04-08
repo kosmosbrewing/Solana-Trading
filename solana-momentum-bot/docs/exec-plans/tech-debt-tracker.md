@@ -2,6 +2,7 @@
 
 > Last updated: 2026-04-08
 > Scope: 현재 운영과 직접 맞닿은 기술 부채만 남긴다.
+> Related: [`active/exit-execution-mechanism-2026-04-08.md`](./active/exit-execution-mechanism-2026-04-08.md) (TD-15 참조)
 
 ## Current Mission Readiness
 
@@ -18,6 +19,7 @@
 | TD-3 | Gecko `429` data-plane noise | 지속 발생 | cadence 해석과 분리 추적 |
 | TD-4 | oversized file debt | 일부 핵심 문서/모듈 여전히 큼 | 기능 작업과 분리해 점진 정리 |
 | TD-14 | TP1 partial 30% / TP2 10×ATR / SL 1.5×ATR 의 live 적합성 미검증 | Codex 진단(2026-04-08): 구조 철학은 OK이나 live 4 trades 표본에서 win 0건 — runner-centric 가설이 작동 중인지 측정 인프라가 부재. 표본 부족(n=4)으로 결론 불가 | **재진입 조건**: post-Phase E clean closed trades ≥ 20건 누적 후 `exit-distribution-audit` 실행 → exit reason 분포 확정 → `exit-structure-validation-2026-04-08.md` Phase X3 가설 옵션 분기. 표본 누적 전 직접 튜닝 금지 (`tradingParams.ts:56-64` orderShape lock) |
+| TD-15 | Exit execution mechanism mismatch — TP2 intent → actual fill 0/10 | Phase X2 v2 audit (n=18, 2026-04-08): monitor loop 5s polling → Jupiter swap 수초 지연 → 메모코인 price reverse → actual fill 이 SL 근처. `exit_reason=TP2, exit_price=SL_level` 기록. runner-centric 전략의 핵심 가정이 측정상 무효화됨. stamping bug 아니라 mechanism issue | **active plan**: [`active/exit-execution-mechanism-2026-04-08.md`](./active/exit-execution-mechanism-2026-04-08.md). Phase E0 complete → E1 pending (measurement infra + C5 hybrid paper prototype). 본 plan 종결 전 exit parameter 결정 금지 (TD-14 선행 조건) |
 
 ## Medium Priority
 

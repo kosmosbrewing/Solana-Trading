@@ -225,6 +225,54 @@ describe('RuntimeDiagnosticsTracker', () => {
     }
   });
 
+  it('round-trips cohort field through pushEvent → buildSummary.cohortCounts', () => {
+    // Why: Phase 1 instrumentation 계약 — record* 계열 API 에 주입한 cohort 가
+    //      cohortCounts 집계에 그대로 반영되어야 cohort funnel 리포트가 신뢰 가능.
+    const tracker = new RuntimeDiagnosticsTracker();
+
+    tracker.recordRealtimeCandidateSeen({ tokenMint: 'tok-fresh', source: 'helius', cohort: 'fresh' });
+    tracker.recordRealtimeCandidateSeen({ tokenMint: 'tok-mid', source: 'gecko', cohort: 'mid' });
+    tracker.recordRealtimeCandidateSeen({ tokenMint: 'tok-mature', source: 'dex_boost', cohort: 'mature' });
+    tracker.recordRealtimeCandidateSeen({ tokenMint: 'tok-legacy', source: 'dex_boost' }); // no cohort
+
+    tracker.recordPreWatchlistReject({
+      tokenMint: 'tok-fresh-rej',
+      reason: 'unsupported_dex',
+      cohort: 'fresh',
+    });
+    tracker.recordAdmissionSkip({
+      tokenMint: 'tok-fresh-skip',
+      reason: 'no_pairs',
+      detail: 'resolver_miss',
+      cohort: 'fresh',
+    });
+    tracker.recordCandidateEvicted({ tokenMint: 'tok-fresh-evict', reason: 'idle', cohort: 'fresh' });
+    tracker.recordSignalNotInWatchlist('tok-mid-late', 'recently_evicted', 'mid');
+    tracker.recordRiskRejection('concurrent_limit', 'detail', 'mature');
+
+    const summary = tracker.buildSummary(24);
+
+    // cohortCounts: fresh/mid/mature/unknown × event_type 기대값 확인
+    expect(summary.cohortCounts.fresh).toEqual({
+      realtime_candidate_seen: 1,
+      pre_watchlist_reject: 1,
+      admission_skip: 1,
+      candidate_evicted: 1,
+    });
+    expect(summary.cohortCounts.mid).toEqual({
+      realtime_candidate_seen: 1,
+      signal_not_in_watchlist: 1,
+    });
+    expect(summary.cohortCounts.mature).toEqual({
+      realtime_candidate_seen: 1,
+      risk_rejection: 1,
+    });
+    // cohort 누락 이벤트는 'unknown' bucket 으로 귀속
+    expect(summary.cohortCounts.unknown).toEqual({
+      realtime_candidate_seen: 1,
+    });
+  });
+
   it('includes admission_skip:all_pairs_blocked tokens in missedTokens', () => {
     const tracker = new RuntimeDiagnosticsTracker();
 

@@ -12,3 +12,12 @@ export type { WatchlistScoreInput, WatchlistScoreResult } from './watchlistScore
 export { SocialMentionTracker } from './socialMentionTracker';
 export type { SocialMention, SocialMentionConfig } from './socialMentionTracker';
 export { createScannerBlacklistCheck } from './scannerBlacklist';
+export {
+  resolveCohort,
+  resolveCohortFromSources,
+  createCohortRecord,
+  COHORT_ORDER,
+  COHORT_FRESH_MAX_HOURS,
+  COHORT_MID_MAX_HOURS,
+} from './cohort';
+export type { Cohort, CohortAgeSources } from './cohort';

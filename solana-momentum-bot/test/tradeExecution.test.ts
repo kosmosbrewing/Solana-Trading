@@ -296,6 +296,7 @@ describe('tradeExecution paper balance', () => {
       id: 'trade-tp1',
       pairAddress: 'pair-tp1',
       strategy: 'volume_spike',
+      tokenSymbol: 'TP1TKN',
       side: 'BUY',
       entryPrice: 1.0,
       quantity: 1.0,
@@ -395,6 +396,9 @@ describe('tradeExecution paper balance', () => {
       exitAnomalyReason: undefined, // happy path, no fake-fill
     });
     expect(tradeStore.insertTrade).toHaveBeenCalledTimes(1);
+    expect(notifier.sendTradeAlert).toHaveBeenCalledWith(
+      'TP1 partial exit: volume_spike remaining 0.700000 TP1TKN, SL moved to breakeven 1.00000000'
+    );
   });
 
   it('does not treat pre-entry candle highs as post-entry peak data', async () => {

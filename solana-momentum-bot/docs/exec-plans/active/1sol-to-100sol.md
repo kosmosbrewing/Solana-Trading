@@ -1,10 +1,11 @@
 # Execution Plan: 1 SOL → 100 SOL
 
 > Status: current active execution plan
-> Updated: 2026-04-07 (Phase E deploy reflection)
+> Updated: 2026-04-08 (exit mechanism binding constraint 추가)
 > Scope: 구현 완료 이후의 운영 검증, 배포, 표본 축적, live enablement gate
 > Archive: 완료된 root plan과 dated canary history는 [`PLAN_CMPL.md`](../../../PLAN_CMPL.md)에 보관한다.
-> Sub-plans: [`live-ops-integrity-2026-04-07.md`](./live-ops-integrity-2026-04-07.md) (Phase E P0~P3 fake-fill 운영 후속 트래킹)
+> Sub-plans: [`live-ops-integrity-2026-04-07.md`](./live-ops-integrity-2026-04-07.md) (Phase E P0~P3 fake-fill 운영 후속 트래킹), [`exit-execution-mechanism-2026-04-08.md`](./exit-execution-mechanism-2026-04-08.md) (monitor → swap latency mechanism 회복 — 현재 binding constraint), [`exit-structure-validation-2026-04-08.md`](./exit-structure-validation-2026-04-08.md) (orderShape parameter 측정/결정, mechanism plan 에 의존)
+> Triage: [`../../audits/mission-recovery-triage-2026-04-08.md`](../../audits/mission-recovery-triage-2026-04-08.md) (2026-04-08 현재 우선순위 재정렬)
 
 ## Role
 

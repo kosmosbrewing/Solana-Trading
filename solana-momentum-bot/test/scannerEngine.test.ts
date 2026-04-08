@@ -887,6 +887,136 @@ describe('ScannerEngine blacklist integration (R3)', () => {
   });
 });
 
+describe('ScannerEngine cohort assignment (Phase 1)', () => {
+  // Why: Phase 1 의 핵심 계약 — evaluateCandidate 가 WatchlistEntry.cohort 를
+  //      올바르게 설정해야 downstream funnel instrumentation 이 정확히 집계된다.
+  const NOW = Date.now();
+  const HOUR_MS = 60 * 60 * 1000;
+
+  function makeCohortToken(
+    address: string,
+    opts: { poolCreatedAtMs?: number | null; updatedAtIso?: string }
+  ): BirdeyeTrendingToken {
+    const updatedAtIso = opts.updatedAtIso ?? new Date(NOW).toISOString();
+    const raw: Record<string, unknown> = {
+      buys_24h: 10,
+      sells_24h: 5,
+    };
+    if (opts.poolCreatedAtMs != null) {
+      raw.pool_created_at = new Date(opts.poolCreatedAtMs).toISOString();
+    }
+    // Why: poolCreatedAtMs === null 인 경우는 명시적으로 생략 (pool_created_at 미제공 시나리오)
+    return {
+      address,
+      symbol: address.toUpperCase(),
+      rank: 1,
+      volume24hUsd: 1_000_000,
+      liquidityUsd: 500_000,
+      priceChange24hPct: 30,
+      updatedAt: updatedAtIso,
+      source: 'token_trending',
+      raw,
+    };
+  }
+
+  function makeScanner(trendingTokens: BirdeyeTrendingToken[]): ScannerEngine {
+    return new ScannerEngine({
+      geckoClient: {
+        getTrendingTokens: jest.fn().mockResolvedValue(trendingTokens),
+      } as never,
+      dexScreenerClient: null,
+      maxWatchlistSize: 10,
+      minWatchlistScore: 0,
+      trendingPollIntervalMs: 60_000,
+      geckoNewPoolIntervalMs: 60_000,
+      dexDiscoveryIntervalMs: 60_000,
+      dexEnrichIntervalMs: 60_000,
+      laneAMinAgeSec: 3600,   // ≥ 1h → Lane A
+      laneBMaxAgeSec: 1200,   // ≤ 20min → Lane B
+      minLiquidityUsd: 1000,
+    });
+  }
+
+  it('tags brand-new tokens (≤20min both sources) as fresh', async () => {
+    const scanner = makeScanner([
+      makeCohortToken('mint-fresh', {
+        poolCreatedAtMs: NOW - 3 * 60 * 1000,   // 3 min ago
+        updatedAtIso: new Date(NOW).toISOString(), // now
+      }),
+    ]);
+    await scanner.start();
+    scanner.stop();
+    const entry = scanner.getEntry('mint-fresh');
+    expect(entry).toBeDefined();
+    expect(entry!.cohort).toBe('fresh');
+    expect(entry!.lane).toBe('B'); // 3 min → Lane B
+  });
+
+  it('tags pairs aged 2h (both sources) as mid', async () => {
+    const scanner = makeScanner([
+      makeCohortToken('mint-mid', {
+        poolCreatedAtMs: NOW - 2 * HOUR_MS,
+        updatedAtIso: new Date(NOW - 2 * HOUR_MS).toISOString(),
+      }),
+    ]);
+    await scanner.start();
+    scanner.stop();
+    const entry = scanner.getEntry('mint-mid');
+    expect(entry).toBeDefined();
+    expect(entry!.cohort).toBe('mid');
+    expect(entry!.lane).toBe('A'); // 2h → Lane A
+  });
+
+  it('tags pairs aged 12h (both sources) as mature', async () => {
+    const scanner = makeScanner([
+      makeCohortToken('mint-mature', {
+        poolCreatedAtMs: NOW - 12 * HOUR_MS,
+        updatedAtIso: new Date(NOW - 12 * HOUR_MS).toISOString(),
+      }),
+    ]);
+    await scanner.start();
+    scanner.stop();
+    const entry = scanner.getEntry('mint-mature');
+    expect(entry).toBeDefined();
+    expect(entry!.cohort).toBe('mature');
+    expect(entry!.lane).toBe('A');
+  });
+
+  it('prevents false-fresh: old pool_created_at overrides fresh birdeye updatedAt', async () => {
+    // Why: Birdeye updatedAt 가 "최근 활동" 을 의미하므로 1 min 전도 나올 수 있다.
+    //      그러나 실제 pool 은 12h 전에 생성된 mature pair 라면 cohort 도 mature 여야 한다.
+    //      현재 resolver 는 ageHours override 우선이므로 pool_created_at 기준으로 판정된다.
+    const scanner = makeScanner([
+      makeCohortToken('mint-false-fresh', {
+        poolCreatedAtMs: NOW - 12 * HOUR_MS,              // 12h ago (mature)
+        updatedAtIso: new Date(NOW - 60 * 1000).toISOString(), // 1 min ago (looks fresh)
+      }),
+    ]);
+    await scanner.start();
+    scanner.stop();
+    const entry = scanner.getEntry('mint-false-fresh');
+    expect(entry).toBeDefined();
+    expect(entry!.cohort).toBe('mature');
+    // Lane 은 여전히 B (updatedAt 기반) — Lane 과 cohort 는 독립적 축
+    expect(entry!.lane).toBe('B');
+  });
+
+  it('falls through to unknown when pool_created_at is missing and updatedAt is unparseable', async () => {
+    const scanner = makeScanner([
+      makeCohortToken('mint-unknown', {
+        poolCreatedAtMs: null,    // pool_created_at 키 자체 생략
+        updatedAtIso: '',         // 빈 문자열 — determineLane 은 Lane A 로 fallback
+      }),
+    ]);
+    await scanner.start();
+    scanner.stop();
+    const entry = scanner.getEntry('mint-unknown');
+    expect(entry).toBeDefined();
+    expect(entry!.cohort).toBe('unknown');
+    expect(entry!.lane).toBe('A');
+  });
+});
+
 function makeToken(
   address: string,
   symbol: string,

@@ -14,10 +14,19 @@ import { calcWatchlistScore, mergeWatchlistScore, WatchlistScoreInput, Watchlist
 import { SocialMentionTracker } from './socialMentionTracker';
 import { PoolInfo } from '../utils/types';
 import { resolveAmmFeePct } from '../utils/dexFeeMap';
+import { resolveCohortFromSources, type Cohort } from './cohort';
 
 const log = createModuleLogger('Scanner');
 const HOT_SOURCE_REENTRY_MULTIPLIER = 1.5;
 const STABLE_SOURCE_REENTRY_MULTIPLIER = 0.5;
+
+/**
+ * calcTokenAgeHours() 가 createdAt 데이터 부재 시 반환하는 sentinel.
+ * Why: cohort resolver 로 전파될 때 이 값은 실제 나이가 아니라 "미지" 를 의미하므로
+ *      호출자는 sentinel 여부를 검사해 null 로 치환해야 한다. 숫자 리터럴 비교가 여러 곳으로
+ *      흩어지면 추후 sentinel 변경 시 silent breakage 가 발생하기 때문에 단일 상수로 고정한다.
+ */
+const UNKNOWN_TOKEN_AGE_HOURS = 999;
 
 export interface WatchlistEntry {
   tokenMint: string;
@@ -35,6 +44,13 @@ export interface WatchlistEntry {
   lastActivityAt?: Date;  // non-zero swap 수신 시 갱신; idle eviction 기준
   lastPriceUsd?: number;
   lastUpdatedAt: Date;
+  /**
+   * Phase 1 fresh-cohort instrumentation (optional).
+   * Why: evaluateCandidate 시점에 age source 를 취합해 1 회 계산 후 재사용 —
+   *      downstream (index.ts listeners, runtime diagnostics) hot path 에 resolver 를
+   *      반복 호출하지 않기 위해.
+   */
+  cohort?: Cohort;
 }
 
 export interface ScannerEngineConfig {
@@ -94,7 +110,7 @@ export interface ScannerEngineConfig {
  * Events:
  *   - 'watchlistUpdated' (WatchlistEntry[])
  *   - 'candidateDiscovered' (WatchlistEntry)
- *   - 'candidateEvicted' (tokenMint: string, reason?: string, detail?: string)
+ *   - 'candidateEvicted' (tokenMint: string, reason?: string, detail?: string, cohort?: Cohort)
  */
 export class ScannerEngine extends EventEmitter {
   private config: ScannerEngineConfig;
@@ -316,6 +332,14 @@ export class ScannerEngine extends EventEmitter {
     const lane = this.determineLane(token);
     if (!lane) return undefined; // doesn't fit either lane
 
+    const tokenAgeHours = this.calcTokenAgeHours(token.raw?.pool_created_at as string | undefined);
+    // Phase 1: cohort 를 evaluateCandidate 시점에 단 1 회 계산해 재사용.
+    // sentinel UNKNOWN_TOKEN_AGE_HOURS → null 치환 후 resolver 에 전달 (false-mature 방지).
+    const cohort = resolveCohortFromSources({
+      birdeyeUpdatedAt: token.updatedAt,
+      ageHours: tokenAgeHours >= UNKNOWN_TOKEN_AGE_HOURS ? null : tokenAgeHours,
+    });
+
     const entry: WatchlistEntry = {
       tokenMint: token.address,
       pairAddress, // R3: raw.pair_address 우선, 없으면 token.address
@@ -330,6 +354,7 @@ export class ScannerEngine extends EventEmitter {
       name: token.name,
       discoverySource: this.resolveDiscoverySource(token),
       lane,
+      cohort,
       watchlistScore: scoreResult,
       poolInfo: {
         pairAddress,
@@ -340,7 +365,7 @@ export class ScannerEngine extends EventEmitter {
         tradeCount24h: (token.raw?.buys_24h as number ?? 0) + (token.raw?.sells_24h as number ?? 0),
         spreadPct: 0,
         ammFeePct: resolveAmmFeePct(typeof token.raw?.dex_id === 'string' ? token.raw.dex_id : undefined),
-        tokenAgeHours: this.calcTokenAgeHours(token.raw?.pool_created_at as string | undefined),
+        tokenAgeHours,
         top10HolderPct: 0,
         lpBurned: null,
         ownershipRenounced: null,
@@ -552,7 +577,8 @@ export class ScannerEngine extends EventEmitter {
         'candidateEvicted',
         entry.tokenMint,
         'score',
-        `score=${entry.watchlistScore.totalScore}|lane=${entry.lane}|source=${entry.discoverySource}`
+        `score=${entry.watchlistScore.totalScore}|lane=${entry.lane}|source=${entry.discoverySource}`,
+        entry.cohort
       );
     }
   }
@@ -581,11 +607,15 @@ export class ScannerEngine extends EventEmitter {
     log.info(`+ Manual watchlist entry: ${symbol} (${tokenMint})`);
   }
 
-  /** ISO 8601 pool_created_at → 시간 단위 나이 */
+  /**
+   * ISO 8601 pool_created_at → 시간 단위 나이.
+   * createdAt 미제공/파싱 실패 시 UNKNOWN_TOKEN_AGE_HOURS 반환 — 호출자는
+   * 이 sentinel 을 null 로 치환해 cohort resolver 가 'unknown' 으로 분류하도록 해야 한다.
+   */
   private calcTokenAgeHours(createdAt?: string): number {
-    if (!createdAt) return 999; // 데이터 없으면 충분히 오래된 것으로 간주
+    if (!createdAt) return UNKNOWN_TOKEN_AGE_HOURS;
     const ts = new Date(createdAt).getTime();
-    if (isNaN(ts)) return 999;
+    if (isNaN(ts)) return UNKNOWN_TOKEN_AGE_HOURS;
     return (Date.now() - ts) / (3600 * 1000);
   }
 
@@ -722,7 +752,7 @@ export class ScannerEngine extends EventEmitter {
         this.watchlist.delete(tokenMint);
         this.config.socialMentionTracker?.unregisterTrackedToken(tokenMint);
         log.info(`- Watchlist blacklist evict: ${entry.symbol} pair=${entry.pairAddress}`);
-        this.emit('candidateEvicted', tokenMint, 'blacklist', `pair=${entry.pairAddress}`);
+        this.emit('candidateEvicted', tokenMint, 'blacklist', `pair=${entry.pairAddress}`, entry.cohort);
         evicted++;
       }
     }
@@ -763,7 +793,8 @@ export class ScannerEngine extends EventEmitter {
           'candidateEvicted',
           tokenMint,
           'idle',
-          `idleSec=${Math.round((now - lastActive) / 1000)}|lastActivityAt=${lastActivityAt.toISOString()}`
+          `idleSec=${Math.round((now - lastActive) / 1000)}|lastActivityAt=${lastActivityAt.toISOString()}`,
+          entry.cohort
         );
         evicted++;
       }

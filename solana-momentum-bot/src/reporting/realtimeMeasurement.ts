@@ -1,3 +1,5 @@
+import type { Cohort } from '../scanner/cohort';
+import { createCohortRecord } from '../scanner/cohort';
 import { assessMeasuredEdgeStage, BacktestStageAssessment } from './measurement';
 import { summarizeRiskMetrics } from './riskMetrics';
 
@@ -33,6 +35,12 @@ export interface RealtimeSignalRecord {
   poolAddress?: string;
   tokenMint?: string;
   tokenSymbol?: string;
+  /**
+   * Phase 1 fresh-cohort instrumentation (optional).
+   * 해당 signal 발화 당시의 scanner watchlist cohort 라벨. 소급 계산 불가능한
+   * legacy 레코드는 필드가 없거나 'unknown'.
+   */
+  cohort?: Cohort;
   signalTimestamp: string;
   referencePrice: number;
   estimatedCostPct: number;
@@ -204,6 +212,13 @@ export function summarizeRealtimeSignals(
 export interface RealtimeStrategyBreakdown {
   overall: RealtimeMeasurementSummary;
   byStrategy: Record<string, RealtimeMeasurementSummary>;
+  /**
+   * Phase 1 fresh-cohort instrumentation: cohort × strategy 2-D measurement.
+   * 키는 `${cohort}:${strategy}` 형태. 비어있는 조합은 포함되지 않는다.
+   */
+  byCohortStrategy?: Record<string, RealtimeMeasurementSummary>;
+  /** cohort 단독 집계 (strategy 합산) */
+  byCohort?: Record<Cohort, RealtimeMeasurementSummary>;
 }
 
 export function summarizeRealtimeSignalsByStrategy(
@@ -224,7 +239,46 @@ export function summarizeRealtimeSignalsByStrategy(
     byStrategy[strategy] = summarizeRealtimeSignals(group, horizonSec);
   }
 
-  return { overall, byStrategy };
+  // Phase 1: cohort 단독 집계.
+  // Why: 빈 cohort 에도 zero-summary 를 채워 다운스트림 리포트가 optional chain 없이
+  //      읽을 수 있게 한다. 각 cohort 는 factory 로 독립 인스턴스를 만들어 공유-참조
+  //      footgun 을 방지한다 (assessment 등 nested 필드가 mutable 하기 때문).
+  const cohortGroups = new Map<Cohort, RealtimeSignalRecord[]>();
+  for (const record of records) {
+    const cohort: Cohort = record.cohort ?? 'unknown';
+    const group = cohortGroups.get(cohort) ?? [];
+    group.push(record);
+    cohortGroups.set(cohort, group);
+  }
+  let byCohort: Record<Cohort, RealtimeMeasurementSummary> | undefined;
+  if (cohortGroups.size > 0) {
+    byCohort = createCohortRecord<RealtimeMeasurementSummary>(() =>
+      summarizeRealtimeSignals([], horizonSec)
+    );
+    for (const [cohort, group] of cohortGroups) {
+      if (group.length > 0) {
+        byCohort[cohort] = summarizeRealtimeSignals(group, horizonSec);
+      }
+    }
+  }
+
+  // Phase 1: cohort × strategy 2-D breakdown
+  const crossGroups = new Map<string, RealtimeSignalRecord[]>();
+  for (const record of records) {
+    const key = `${record.cohort ?? 'unknown'}:${record.strategy}`;
+    const group = crossGroups.get(key) ?? [];
+    group.push(record);
+    crossGroups.set(key, group);
+  }
+  let byCohortStrategy: Record<string, RealtimeMeasurementSummary> | undefined;
+  if (crossGroups.size > 0) {
+    byCohortStrategy = {};
+    for (const [key, group] of crossGroups) {
+      byCohortStrategy[key] = summarizeRealtimeSignals(group, horizonSec);
+    }
+  }
+
+  return { overall, byStrategy, byCohortStrategy, byCohort };
 }
 
 function estimateDrawdownPct(returns: number[]): number {

@@ -1,4 +1,6 @@
 import { RuntimeDiagnosticsStore, CapSuppressSnapshot } from './runtimeDiagnosticsStore';
+import type { Cohort } from '../scanner/cohort';
+import { createCohortRecord } from '../scanner/cohort';
 
 export interface RuntimeDiagnosticsSummary {
   hours: number;
@@ -33,6 +35,12 @@ export interface RuntimeDiagnosticsSummary {
     ready: number;
     readinessRate: number;
   };
+  /**
+   * Phase 1 fresh-cohort instrumentation:
+   *   funnel 단계별 (event_type) × cohort 이벤트 카운트.
+   *   buildSummary 호출 시 cutoff 내 이벤트를 순회해 일괄 집계한다.
+   */
+  cohortCounts: Record<Cohort, Record<string, number>>;
 }
 
 export interface TodayUtcOperationalSummary {
@@ -60,6 +68,12 @@ export interface RuntimeDiagnosticEvent {
   source?: string;
   dexId?: string;
   detail?: string;
+  /**
+   * Phase 1 fresh-cohort instrumentation (optional).
+   * Absent on legacy events; absent on events where cohort 판정이 불가능할 때는
+   * 'unknown' 으로 명시하거나 생략할 수 있다.
+   */
+  cohort?: Cohort;
 }
 
 type RuntimeDecisionType = 'admission_skip' | 'pre_watchlist_reject';
@@ -96,7 +110,7 @@ export class RuntimeDiagnosticsTracker {
     }
   }
 
-  recordAdmissionSkip(input: { tokenMint: string; reason: string; detail?: string; source?: string; dexId?: string }): void {
+  recordAdmissionSkip(input: { tokenMint: string; reason: string; detail?: string; source?: string; dexId?: string; cohort?: Cohort }): void {
     this.pushEvent({
       type: 'admission_skip',
       timestampMs: Date.now(),
@@ -105,10 +119,11 @@ export class RuntimeDiagnosticsTracker {
       detail: input.detail,
       source: input.source,
       dexId: input.dexId,
+      cohort: input.cohort,
     });
   }
 
-  recordPreWatchlistReject(input: { tokenMint: string; reason: string; detail?: string; source?: string; dexId?: string }): void {
+  recordPreWatchlistReject(input: { tokenMint: string; reason: string; detail?: string; source?: string; dexId?: string; cohort?: Cohort }): void {
     this.pushEvent({
       type: 'pre_watchlist_reject',
       timestampMs: Date.now(),
@@ -117,15 +132,17 @@ export class RuntimeDiagnosticsTracker {
       detail: input.detail,
       source: input.source,
       dexId: input.dexId,
+      cohort: input.cohort,
     });
   }
 
-  recordRealtimeCandidateSeen(input: { tokenMint: string; source?: string }): void {
+  recordRealtimeCandidateSeen(input: { tokenMint: string; source?: string; cohort?: Cohort }): void {
     this.pushEvent({
       type: 'realtime_candidate_seen',
       timestampMs: Date.now(),
       tokenMint: input.tokenMint,
       source: input.source,
+      cohort: input.cohort,
     });
   }
 
@@ -164,32 +181,38 @@ export class RuntimeDiagnosticsTracker {
     });
   }
 
-  recordCandidateEvicted(input: string | { tokenMint: string; reason?: string; detail?: string }): void {
-    const normalized = typeof input === 'string' ? { tokenMint: input } : input;
+  recordCandidateEvicted(input: string | { tokenMint: string; reason?: string; detail?: string; cohort?: Cohort }): void {
+    // Why: string overload 는 legacy 호출자용. 이 경로에서는 reason/detail/cohort 가 모두 부재하므로
+    //      object literal 로 normalize 후 그대로 펼치면 cohort 는 자연스럽게 undefined 가 된다.
+    const normalized: { tokenMint: string; reason?: string; detail?: string; cohort?: Cohort } =
+      typeof input === 'string' ? { tokenMint: input } : input;
     this.pushEvent({
       type: 'candidate_evicted',
       timestampMs: Date.now(),
       tokenMint: normalized.tokenMint,
       reason: normalized.reason,
       detail: normalized.detail,
+      cohort: normalized.cohort,
     });
   }
 
-  recordCandidateReadded(tokenMint: string, detail?: string): void {
+  recordCandidateReadded(tokenMint: string, detail?: string, cohort?: Cohort): void {
     this.pushEvent({
       type: 'candidate_readded',
       timestampMs: Date.now(),
       tokenMint,
       detail,
+      cohort,
     });
   }
 
-  recordSignalNotInWatchlist(tokenMint: string, detail?: string): void {
+  recordSignalNotInWatchlist(tokenMint: string, detail?: string, cohort?: Cohort): void {
     this.pushEvent({
       type: 'signal_not_in_watchlist',
       timestampMs: Date.now(),
       tokenMint,
       detail,
+      cohort,
     });
   }
 
@@ -202,12 +225,13 @@ export class RuntimeDiagnosticsTracker {
     });
   }
 
-  recordRiskRejection(reason: string, detail?: string): void {
+  recordRiskRejection(reason: string, detail?: string, cohort?: Cohort): void {
     this.pushEvent({
       type: 'risk_rejection',
       timestampMs: Date.now(),
       reason,
       detail,
+      cohort,
     });
   }
 
@@ -268,6 +292,7 @@ export class RuntimeDiagnosticsTracker {
         ready: readyTokens.size,
         readinessRate: totalCandidateTokens.size > 0 ? readyTokens.size / totalCandidateTokens.size : 0,
       },
+      cohortCounts: summarizeCohortCounts(this.events, cutoffMs),
     };
   }
 
@@ -611,4 +636,24 @@ function summarizeRiskRejectionCounts(
   return [...counts.entries()]
     .map(([reason, count]) => ({ reason, count }))
     .sort((left, right) => right.count - left.count || left.reason.localeCompare(right.reason));
+}
+
+/**
+ * Phase 1: cohort × event_type 카운트 집계.
+ * - cohort 가 event 에 없으면 'unknown' 버킷으로 분류한다.
+ * - 모든 cohort key 는 반드시 0 으로라도 초기화해 다운스트림 리포트가
+ *   optional chain 없이 바로 읽을 수 있게 한다.
+ */
+function summarizeCohortCounts(
+  events: RuntimeDiagnosticEvent[],
+  cutoffMs: number
+): Record<Cohort, Record<string, number>> {
+  const result = createCohortRecord<Record<string, number>>(() => ({}));
+  for (const event of events) {
+    if (event.timestampMs < cutoffMs) continue;
+    const cohort: Cohort = event.cohort ?? 'unknown';
+    const bucket = result[cohort];
+    bucket[event.type] = (bucket[event.type] ?? 0) + 1;
+  }
+  return result;
 }

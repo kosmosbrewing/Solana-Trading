@@ -57,6 +57,8 @@ import {
   SocialMentionTracker,
   attachScannerFreshListingSource,
   createScannerBlacklistCheck,
+  resolveCohortFromSources,
+  type Cohort,
 } from './scanner';
 import { ExecutionLock, PositionStore, runRecovery } from './state';
 import { SignalAuditLogger } from './audit';
@@ -239,7 +241,9 @@ async function main() {
     if (pending) {
       clearTimeout(pending.timer);
       pendingAliasCleanups.delete(logicalPair);
-      runtimeDiagnosticsTracker.recordCandidateReadded(logicalPair, 'within_grace');
+      // Phase 1: cohort tagging for re-admission events (closure-captured scanner may be null before init)
+      const readdedCohort = scanner?.getEntry(logicalPair)?.cohort;
+      runtimeDiagnosticsTracker.recordCandidateReadded(logicalPair, 'within_grace', readdedCohort);
     }
     realtimePoolTargets.set(logicalPair, subscriptionPair);
     realtimePoolAliases.set(subscriptionPair, logicalPair);
@@ -624,6 +628,15 @@ async function main() {
           typeof token.raw?.discovery_source === 'string' ? token.raw.discovery_source : undefined;
         const dexId = typeof token.raw?.dex_id === 'string' ? token.raw.dex_id : undefined;
         const pairAddress = typeof token.raw?.pair_address === 'string' ? token.raw.pair_address : undefined;
+        // Why: Phase 1 fresh-cohort instrumentation — pre-watchlist reject 도 cohort tagging.
+        //      여기서는 evaluateCandidate 이전이므로 WatchlistEntry 가 없어 cohort 를 즉석 판정한다.
+        const rawPoolCreatedAt =
+          typeof token.raw?.pool_created_at === 'string' ? token.raw.pool_created_at : undefined;
+        const pairCreatedAtMs = rawPoolCreatedAt ? Date.parse(rawPoolCreatedAt) : NaN;
+        const cohort: Cohort = resolveCohortFromSources({
+          birdeyeUpdatedAt: token.updatedAt,
+          pairCreatedAtMs: Number.isFinite(pairCreatedAtMs) ? pairCreatedAtMs : null,
+        });
         if (isOperatorBlacklisted(token.address) || isOperatorBlacklisted(pairAddress)) {
           runtimeDiagnosticsTracker.recordPreWatchlistReject({
             tokenMint: token.address,
@@ -631,6 +644,7 @@ async function main() {
             detail: pairAddress && isOperatorBlacklisted(pairAddress) ? 'pair_address' : 'token_mint',
             source: discoverySource,
             dexId,
+            cohort,
           });
           return { allowed: false, reason: 'operator_blacklist' };
         }
@@ -648,6 +662,7 @@ async function main() {
             reason: mismatch,
             source: discoverySource,
             dexId,
+            cohort,
           });
           return { allowed: false, reason: mismatch };
         }
@@ -664,6 +679,7 @@ async function main() {
                 reason: poolProgramMismatch,
                 source: discoverySource,
                 dexId,
+                cohort,
               });
               return { allowed: false, reason: poolProgramMismatch };
             }
@@ -719,6 +735,7 @@ async function main() {
                 detail: pairs.length === 0 ? 'resolver_miss' : 'empty_pairs',
                 source: entry.discoverySource,
                 dexId: bestPair?.dexId,
+                cohort: entry.cohort,
               });
             }
             log.warn(`No pool found for ${entry.symbol} (${entry.tokenMint}), skipping ingester`);
@@ -815,6 +832,7 @@ async function main() {
                 detail: admissionSkipDetail,
                 source: entry.discoverySource,
                 dexId: admissionPairs[0]?.dexId ?? pairs[0]?.dexId,
+                cohort: entry.cohort,
               });
               log.info(
                 `Realtime skipped for ${entry.symbol} (${entry.tokenMint}) — ${realtimeEligibility.reason} ` +
@@ -849,6 +867,7 @@ async function main() {
       runtimeDiagnosticsTracker.recordRealtimeCandidateSeen({
         tokenMint: entry.tokenMint,
         source: entry.discoverySource,
+        cohort: entry.cohort,
       });
       log.info(`Scanner: new candidate ${entry.symbol} lane=${entry.lane} score=${entry.watchlistScore.totalScore}`);
 
@@ -875,7 +894,7 @@ async function main() {
       ingesterQueue.push(entry);
       processIngesterQueue().catch(err => log.error(`Ingester queue error: ${err}`));
     });
-    scanner.on('candidateEvicted', (tokenMint: string, reason?: string, detail?: string) => {
+    scanner.on('candidateEvicted', (tokenMint: string, reason?: string, detail?: string, cohort?: Cohort) => {
       log.info(`Scanner: evicted ${tokenMint} reason=${reason ?? 'score'}`);
       runtimeDiagnosticsTracker.recordCandidateEvicted({
         tokenMint,
@@ -883,6 +902,7 @@ async function main() {
         detail: detail != null
           ? `${detail}|immediate=${reason === 'idle'}`
           : `immediate=${reason === 'idle'}`,
+        cohort,
       });
       // Why: idle eviction은 10분 무활동 → 재진입 가능성 ≈ 0 → grace 우회하여 즉시 slot 해제
       removeRealtimePoolTarget(tokenMint, { immediate: reason === 'idle' });

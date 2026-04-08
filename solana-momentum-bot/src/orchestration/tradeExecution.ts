@@ -114,6 +114,10 @@ function resolveExitFillOrFakeFill(params: {
   };
 }
 
+function formatTokenQuantity(quantity: number, tokenSymbol?: string): string {
+  return `${quantity.toFixed(6)} ${tokenSymbol?.trim() || 'tokens'}`;
+}
+
 /**
  * Fake-fill detection reason과 Phase A4 anomaly reasons를 단일 문자열로 병합.
  * 중복 토큰은 제거한다 (slippage_saturated가 양쪽에서 모두 push될 수 있음).
@@ -237,7 +241,7 @@ export async function handleDegradedExitPhase1(
 
   log.warn(
     `DEGRADED_EXIT phase 1: selling ${(partialPct * 100).toFixed(0)}% ` +
-    `of trade ${trade.id} (${soldQuantity.toFixed(6)} SOL)`
+    `of trade ${trade.id} (${formatTokenQuantity(soldQuantity, trade.tokenSymbol)})`
   );
 
   // TP1 partial 패턴: 부분 청산
@@ -325,7 +329,8 @@ export async function handleDegradedExitPhase1(
   await ctx.notifier.sendTradeClose(partialTrade);
   await ctx.notifier.sendTradeAlert(
     `DEGRADED_EXIT phase 1: ${trade.strategy} sold ${(partialPct * 100).toFixed(0)}%, ` +
-    `remaining ${remainingQuantity.toFixed(6)} SOL — phase 2 in ${(config.degradedDelayMs / 60_000).toFixed(0)}min`
+    `remaining ${formatTokenQuantity(remainingQuantity, trade.tokenSymbol)} ` +
+    `— phase 2 in ${(config.degradedDelayMs / 60_000).toFixed(0)}min`
   );
   ctx.healthMonitor.updateTradeTime();
 }
@@ -355,7 +360,7 @@ async function handleDegradedExit(
 
   if (elapsed >= config.degradedDelayMs) {
     log.warn(
-      `DEGRADED_EXIT phase 2: closing remaining ${trade.quantity.toFixed(6)} SOL ` +
+      `DEGRADED_EXIT phase 2: closing remaining ${formatTokenQuantity(trade.quantity, trade.tokenSymbol)} ` +
       `of trade ${trade.id} (original: ${originalId})`
     );
     degradedStateMap.delete(originalId);
@@ -1190,7 +1195,7 @@ async function handleTakeProfit1Partial(
     };
     await ctx.notifier.sendTradeClose(partialTrade);
     await ctx.notifier.sendTradeAlert(
-      `TP1 partial exit: ${trade.strategy} remaining ${remainingQuantity.toFixed(6)} SOL, ` +
+      `TP1 partial exit: ${trade.strategy} remaining ${formatTokenQuantity(remainingQuantity, trade.tokenSymbol)}, ` +
       `SL moved to breakeven ${trade.entryPrice.toFixed(8)}`
     );
 
@@ -1339,7 +1344,7 @@ async function handleRunnerGradeBPartial(
 
     await ctx.notifier.sendTradeAlert(
       `Runner activated (B, 0.5x): ${trade.strategy} ${trade.id}, ` +
-      `sold 50% at TP2, remaining ${remainingQuantity.toFixed(6)} SOL trailing`
+      `sold 50% at TP2, remaining ${formatTokenQuantity(remainingQuantity, trade.tokenSymbol)} trailing`
     );
 
     await updatePositionsForPair(ctx, trade.pairAddress, 'MONITORING', {

@@ -7,6 +7,8 @@
 - 에이전트 규칙 + 문서 맵: [`AGENTS.md`](./AGENTS.md)
 - mission / plan hierarchy: [`PLAN.md`](./PLAN.md)
 - 현재 active execution plan: [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md)
+- **현재 binding constraint (2026-04-08)**: [`docs/exec-plans/active/exit-execution-mechanism-2026-04-08.md`](./docs/exec-plans/active/exit-execution-mechanism-2026-04-08.md) — monitor → swap latency mechanism
+- **2026-04-08 triage**: [`docs/audits/mission-recovery-triage-2026-04-08.md`](./docs/audits/mission-recovery-triage-2026-04-08.md)
 - archive: [`PLAN_CMPL.md`](./PLAN_CMPL.md)
 - 현재 전략 quick reference: [`STRATEGY.md`](./STRATEGY.md)
 - 전략 방향/다음 가설: [`STRATEGY_NOTES.md`](./STRATEGY_NOTES.md)

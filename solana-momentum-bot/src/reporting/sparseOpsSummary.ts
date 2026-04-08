@@ -1,20 +1,32 @@
 import fs from 'fs';
 import path from 'path';
 import { shortenAddress } from '../notifier/formatting';
+import type { Cohort } from '../scanner/cohort';
+import { COHORT_ORDER, createCohortRecord } from '../scanner/cohort';
 
 interface CurrentSession {
   datasetDir: string;
   startedAt: string;
 }
 
-interface RuntimeDiagnosticEvent {
+/**
+ * Internal shape of the diagnostic events consumed by the sparse summary.
+ * Why: Exposed as a type-only export so downstream tests can construct fixtures
+ *      without importing the full RuntimeDiagnosticEvent union from the tracker.
+ */
+export interface SparseOpsDiagnosticEvent {
   type: string;
   timestampMs?: number;
   tokenMint?: string;
   detail?: string;
   reason?: string;
   source?: string;
+  // Phase 1 instrumentation — optional cohort label attached to funnel events
+  cohort?: Cohort;
 }
+
+// Kept as an alias so existing call-sites continue to resolve the local name.
+type RuntimeDiagnosticEvent = SparseOpsDiagnosticEvent;
 
 interface RealtimeSignalRecord {
   id?: string;
@@ -39,6 +51,14 @@ interface ParsedTriggerStats {
   sparseDominantPairCount?: number;
 }
 
+export interface CohortFunnelBreakdown {
+  candidateSeen: number;
+  preWatchlistReject: number;
+  admissionSkip: number;
+  candidateEvicted: number;
+  riskRejection: number;
+}
+
 export interface FreshnessSummary {
   idleSkipDelta: number;
   uniqueSignaledTickers: number;
@@ -49,6 +69,11 @@ export interface FreshnessSummary {
   admissionSkipByReason: Array<{ reason: string; count: number }>;
   topIdleOffenders: Array<{ pair: string; count: number }>;
   topIdleEvictedTickers: Array<{ tokenMint: string; count: number }>;
+  /**
+   * Phase 1 instrumentation — cohort × funnel 단계 카운트.
+   * 24h 관찰 데이터로 fresh cohort 가 어느 funnel 단계에서 떨어지는지 판정한다.
+   */
+  byCohort: Record<Cohort, CohortFunnelBreakdown>;
 }
 
 export interface SparseOpsSummary {
@@ -117,6 +142,8 @@ export function loadSparseOpsSummary(realtimeRoot: string, windowHours: number, 
     .slice(0, topN)
     .map(([tokenMint, count]) => ({ tokenMint, count }));
 
+  const byCohort = buildCohortFunnelBreakdown(recentEvents);
+
   return {
     windowHours,
     totalSignals: signals.length,
@@ -137,8 +164,50 @@ export function loadSparseOpsSummary(realtimeRoot: string, windowHours: number, 
       admissionSkipByReason,
       topIdleOffenders,
       topIdleEvictedTickers,
+      byCohort,
     },
   };
+}
+
+/**
+ * Phase 1: cohort × funnel 단계별 count.
+ * byCohort.fresh 가 꾸준히 0 이면 신생 pair 가 파이프라인에 전혀 닿지 못하고 있는 것.
+ *
+ * Exported (test only): 직접 단위 테스트 용.
+ */
+export function buildCohortFunnelBreakdown(
+  events: RuntimeDiagnosticEvent[]
+): Record<Cohort, CohortFunnelBreakdown> {
+  const result = createCohortRecord<CohortFunnelBreakdown>(() => ({
+    candidateSeen: 0,
+    preWatchlistReject: 0,
+    admissionSkip: 0,
+    candidateEvicted: 0,
+    riskRejection: 0,
+  }));
+  for (const event of events) {
+    const bucket = result[event.cohort ?? 'unknown'];
+    switch (event.type) {
+      case 'realtime_candidate_seen':
+        bucket.candidateSeen++;
+        break;
+      case 'pre_watchlist_reject':
+        bucket.preWatchlistReject++;
+        break;
+      case 'admission_skip':
+        bucket.admissionSkip++;
+        break;
+      case 'candidate_evicted':
+        bucket.candidateEvicted++;
+        break;
+      case 'risk_rejection':
+        bucket.riskRejection++;
+        break;
+      default:
+        break;
+    }
+  }
+  return result;
 }
 
 export function buildSparseOpsSummaryMessage(summary: SparseOpsSummary | undefined): string | undefined {
@@ -199,9 +268,40 @@ export function buildSparseOpsSummaryMessage(summary: SparseOpsSummary | undefin
       const offenders = f.topIdleOffenders.map((o) => `${shortenAddress(o.pair)} ${o.count.toLocaleString()}회`).join(', ');
       lines.push(`- top idle offenders: ${offenders}`);
     }
+    // Phase 1: cohort breakdown block (fresh / mid / mature / unknown)
+    const cohortLines = formatCohortBreakdownLines(f.byCohort);
+    if (cohortLines.length > 0) {
+      lines.push('');
+      lines.push(`Cohort funnel (${summary.windowHours}h)`);
+      lines.push(...cohortLines);
+    }
   }
 
   return lines.join('\n');
+}
+
+function formatCohortBreakdownLines(
+  byCohort: Record<Cohort, CohortFunnelBreakdown>
+): string[] {
+  const lines: string[] = [];
+  for (const cohort of COHORT_ORDER) {
+    const bucket = byCohort[cohort];
+    const total =
+      bucket.candidateSeen +
+      bucket.preWatchlistReject +
+      bucket.admissionSkip +
+      bucket.candidateEvicted +
+      bucket.riskRejection;
+    if (total === 0) continue;
+    lines.push(
+      `- ${cohort}: seen=${bucket.candidateSeen} ` +
+        `preRej=${bucket.preWatchlistReject} ` +
+        `admSkip=${bucket.admissionSkip} ` +
+        `evict=${bucket.candidateEvicted} ` +
+        `riskRej=${bucket.riskRejection}`
+    );
+  }
+  return lines;
 }
 
 function diagnoseSparseState(stats: ParsedTriggerStats): string | undefined {

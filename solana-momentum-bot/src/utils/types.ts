@@ -1,3 +1,7 @@
+// Re-exported to keep Order/Trade/RiskOrderInput self-contained without circular scanner imports.
+import type { Cohort } from '../scanner/cohort';
+export type { Cohort } from '../scanner/cohort';
+
 // ─── Candle ───
 
 export type CandleInterval = '5s' | '15s' | '1m' | '5m' | '15m' | '1H' | '4H';
@@ -197,6 +201,12 @@ export interface Order {
   sizeConstraint?: SizeConstraint;
   /** Strategy-specific slippage override (bps). Executor uses this if set, else config default. */
   slippageBps?: number;
+  /**
+   * Phase 1 fresh-cohort instrumentation (optional).
+   * Upstream watchlist 에서 판정한 cohort. Risk/Trade/diagnostic 로 전파되어
+   * fresh pair drop 경로를 측정 가능하게 한다.
+   */
+  cohort?: Cohort;
 }
 
 export interface Trade {
@@ -242,6 +252,12 @@ export interface Trade {
   // Why: 2026-04-07 — fake-fill (Jupiter Ultra outputAmountResult=0 fallback) 또는
   //       Phase A4 anomaly reason을 downstream 분석(sanitizer/edge/ratio)이 필터링할 수 있게 마킹
   exitAnomalyReason?: string | null;
+  /**
+   * Phase 1 fresh-cohort instrumentation (optional).
+   * Order 에서 전파되어 reporting/DB 회고에 사용된다. Phase 1 에서는 in-memory 전파만 수행,
+   * DB 컬럼 추가(Phase 2.7) 전까지는 persist 되지 않는다.
+   */
+  cohort?: Cohort;
 }
 
 // ─── Position State Machine (v0.3) ───

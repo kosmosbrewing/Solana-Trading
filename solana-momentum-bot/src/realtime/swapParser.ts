@@ -285,16 +285,32 @@ function parseFromPoolMetadata(
   const metadata = context.poolMetadata;
   if (!metadata) return null;
 
-  const baseDelta = sumMintDelta(tx, metadata.baseMint);
-  const quoteDelta = sumMintDelta(tx, metadata.quoteMint);
+  // Why: PumpSwap (및 유사 SPL-token AMM)에서 한 트랜잭션의 pre/postTokenBalances는
+  //   user token ATA와 pool vault 양쪽을 모두 포함한다. 두 side의 delta가 동일 mint 기준
+  //   정확히 반대 부호라 전체 합이 0이 되어 sumMintDelta가 null을 반환해왔다 (iter10 초안의
+  //   회귀 버그). pool vault만 필터링해 pool 관점 net flow를 구한 뒤, 부호를 뒤집어 user 관점
+  //   delta로 변환하면 기존 side 판정 로직을 그대로 재사용할 수 있다. user의 wSOL은 임시
+  //   ATA(tx 내 생성/폐쇄)로 tokenBalances에 나타나지 않고 lamports로 처리되므로 pool-owner
+  //   filter는 SOL 쪽에서도 (pool vault 단독 → 부호 반전) 일관된 결과를 준다.
+  //   non-PumpSwap 풀은 지금까지 log 파서 경로로 커버됐으므로 이 filter를 적용하지 않아
+  //   기존 동작을 유지한다.
+  const isPumpSwap = isPumpSwapPool(metadata);
+  const ownerFilter = isPumpSwap ? context.poolAddress : undefined;
+
+  const baseDelta = sumMintDelta(tx, metadata.baseMint, ownerFilter);
+  const quoteDelta = sumMintDelta(tx, metadata.quoteMint, ownerFilter);
   if (baseDelta == null || quoteDelta == null) return null;
 
   if (baseDelta.amountRaw === 0n || quoteDelta.amountRaw === 0n) return null;
 
+  // pool 관점 → user 관점: owner filter가 적용된 경우에만 부호 반전.
+  const baseAmountRaw = isPumpSwap ? -baseDelta.amountRaw : baseDelta.amountRaw;
+  const quoteAmountRaw = isPumpSwap ? -quoteDelta.amountRaw : quoteDelta.amountRaw;
+
   let side: SwapSide | null = null;
-  if (baseDelta.amountRaw > 0n && quoteDelta.amountRaw < 0n) {
+  if (baseAmountRaw > 0n && quoteAmountRaw < 0n) {
     side = 'buy';
-  } else if (baseDelta.amountRaw < 0n && quoteDelta.amountRaw > 0n) {
+  } else if (baseAmountRaw < 0n && quoteAmountRaw > 0n) {
     side = 'sell';
   } else {
     return null;
@@ -302,8 +318,8 @@ function parseFromPoolMetadata(
 
   const baseDecimals = metadata.baseDecimals ?? baseDelta.decimals;
   const quoteDecimals = metadata.quoteDecimals ?? quoteDelta.decimals;
-  const amountBase = toUiAmount(absBigInt(baseDelta.amountRaw), baseDecimals);
-  const amountQuote = toUiAmount(absBigInt(quoteDelta.amountRaw), quoteDecimals);
+  const amountBase = toUiAmount(absBigInt(baseAmountRaw), baseDecimals);
+  const amountQuote = toUiAmount(absBigInt(quoteAmountRaw), quoteDecimals);
   if (amountBase <= 0 || amountQuote <= 0) return null;
 
   return {
@@ -320,7 +336,11 @@ function parseFromPoolMetadata(
   };
 }
 
-function sumMintDelta(tx: ParsedTransactionWithMeta, mint: string): MintDelta | null {
+function sumMintDelta(
+  tx: ParsedTransactionWithMeta,
+  mint: string,
+  ownerFilter?: string
+): MintDelta | null {
   const pre = tx.meta?.preTokenBalances ?? [];
   const post = tx.meta?.postTokenBalances ?? [];
   let total = 0n;
@@ -329,6 +349,7 @@ function sumMintDelta(tx: ParsedTransactionWithMeta, mint: string): MintDelta | 
 
   for (const balance of pre) {
     if (balance.mint !== mint) continue;
+    if (ownerFilter && balance.owner !== ownerFilter) continue;
     const amountRaw = parseRawAmount(balance.uiTokenAmount.amount);
     if (amountRaw == null) continue;
     total -= amountRaw;
@@ -339,6 +360,7 @@ function sumMintDelta(tx: ParsedTransactionWithMeta, mint: string): MintDelta | 
   }
   for (const balance of post) {
     if (balance.mint !== mint) continue;
+    if (ownerFilter && balance.owner !== ownerFilter) continue;
     const amountRaw = parseRawAmount(balance.uiTokenAmount.amount);
     if (amountRaw == null) continue;
     total += amountRaw;

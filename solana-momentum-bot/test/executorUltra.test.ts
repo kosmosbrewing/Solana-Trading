@@ -17,6 +17,8 @@ const mockSendTransaction = jest.fn().mockResolvedValue('mock-sig-v6');
 const mockConfirmTransaction = jest.fn().mockResolvedValue({ value: { err: null } });
 const mockGetBalance = jest.fn().mockResolvedValue(1_000_000_000); // 1 SOL
 const mockGetTokenAccountsByOwner = jest.fn().mockResolvedValue({ value: [] });
+const mockGetTokenAccountBalance = jest.fn();
+const mockGetParsedAccountInfo = jest.fn();
 
 jest.mock('@solana/web3.js', () => {
   const original = jest.requireActual('@solana/web3.js');
@@ -27,6 +29,8 @@ jest.mock('@solana/web3.js', () => {
       confirmTransaction: mockConfirmTransaction,
       getBalance: mockGetBalance,
       getTokenAccountsByOwner: mockGetTokenAccountsByOwner,
+      getTokenAccountBalance: mockGetTokenAccountBalance,
+      getParsedAccountInfo: mockGetParsedAccountInfo,
     })),
     Keypair: {
       fromSecretKey: jest.fn().mockReturnValue({
@@ -105,6 +109,11 @@ describe('Executor Ultra V3', () => {
     });
     mockV6Post.mockResolvedValue({
       data: { swapTransaction: Buffer.from('mock-tx').toString('base64') },
+    });
+    mockGetTokenAccountsByOwner.mockResolvedValue({ value: [] });
+    mockGetTokenAccountBalance.mockReset();
+    mockGetParsedAccountInfo.mockResolvedValue({
+      value: { data: { parsed: { info: { decimals: 6 } } } },
     });
   });
 
@@ -265,5 +274,60 @@ describe('Executor Ultra V3', () => {
     expect(mockUltraResult.signature).toBe('ultra-sig-123');
     expect(mockUltraResult.status).toBe('Success');
     expect(BigInt(mockUltraResult.outputAmountResult)).toBe(500000000n);
+  });
+
+  it('Ultra entry metrics prefer wallet deltas over API output amounts', async () => {
+    mockGetBalance
+      .mockResolvedValueOnce(1_000_000_000)
+      .mockResolvedValueOnce(749_990_000);
+    mockGetTokenAccountsByOwner
+      .mockResolvedValueOnce({ value: [] })
+      .mockResolvedValueOnce({ value: [{ pubkey: 'TokenAcct1' }] });
+    mockGetTokenAccountBalance.mockResolvedValue({
+      value: { amount: '1250000' },
+    });
+    mockUltraGet.mockResolvedValue({
+      data: {
+        transaction: Buffer.from('mock-ultra-tx').toString('base64'),
+        requestId: 'req-1',
+        inputMint: 'So11111111111111111111111111111111111111112',
+        outputMint: 'TokenMint1111111111111111111111111111111111',
+        inAmount: '250000000',
+        outAmount: '1250000',
+      },
+    });
+    mockUltraPost.mockResolvedValue({
+      data: {
+        signature: 'ultra-sig-123',
+        status: 'Success',
+        inputAmountResult: '250000000',
+        outputAmountResult: '40000000',
+      },
+    });
+
+    const executor = new Executor({
+      ...BASE_CONFIG,
+      useJupiterUltra: true,
+      jupiterApiKey: 'test-api-key-123',
+      jupiterUltraApiUrl: 'https://api.jup.ag',
+    });
+
+    const result = await executor.executeBuy({
+      pairAddress: 'TokenMint1111111111111111111111111111111111',
+      strategy: 'volume_spike',
+      side: 'BUY',
+      price: 0.2,
+      quantity: 1.25,
+      stopLoss: 0.15,
+      takeProfit1: 0.25,
+      takeProfit2: 0.3,
+      timeStopMinutes: 15,
+    });
+
+    expect(result.actualInputAmount).toBe(250010000n);
+    expect(result.actualInputUiAmount).toBeCloseTo(0.25001, 8);
+    expect(result.actualOutAmount).toBe(1250000n);
+    expect(result.actualOutUiAmount).toBeCloseTo(1.25, 8);
+    expect(result.outputDecimals).toBe(6);
   });
 });

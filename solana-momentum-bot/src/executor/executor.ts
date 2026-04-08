@@ -182,6 +182,9 @@ export class Executor {
   ): Promise<SwapResult> {
     if (!this.ultraClient) throw new Error('Ultra client not initialized');
 
+    const inputBalanceBefore = await this.getAssetBalanceRaw(inputMint);
+    const outputBalanceBefore = await this.getAssetBalanceRaw(outputMint);
+
     // Step 1: GET /ultra/v1/order
     const orderResponse = await this.ultraClient.get<UltraOrderResponse>('/ultra/v1/order', {
       params: {
@@ -219,21 +222,44 @@ export class Executor {
       throw new Error(`Ultra execute failed: status=${result.status}`);
     }
 
-    // 실제 수신량 계산 — Ultra 응답에 결과가 있으면 사용, 없으면 잔액 비교
-    let actualOutAmount: bigint | undefined;
-    let actualInputAmount: bigint | undefined;
-    let actualSlippageBps = 0;
+    const confirmation = await this.connection.confirmTransaction(result.signature, 'confirmed');
+    if (confirmation.value.err) {
+      throw new Error(`Ultra tx failed on-chain: ${JSON.stringify(confirmation.value.err)}`);
+    }
 
-    if (result.inputAmountResult) {
-      actualInputAmount = BigInt(result.inputAmountResult);
+    // Why: Ultra outputAmountResult/inputAmountResult는 route/path별로 wallet delta와 어긋날 수 있다.
+    // entry alignment는 ledger 안전성이 더 중요하므로, live buy/sell 실측은 wallet balance delta를
+    // 우선 사용하고 Ultra API 값은 balance 측정 실패/0일 때만 fallback한다.
+    const inputBalanceAfter = await this.getAssetBalanceRaw(inputMint);
+    const outputBalanceAfter = await this.getAssetBalanceRaw(outputMint);
+    const balanceInputAmount = inputBalanceBefore > inputBalanceAfter
+      ? inputBalanceBefore - inputBalanceAfter
+      : 0n;
+    const balanceOutputAmount = outputBalanceAfter > outputBalanceBefore
+      ? outputBalanceAfter - outputBalanceBefore
+      : 0n;
+
+    const apiInputAmount = result.inputAmountResult ? BigInt(result.inputAmountResult) : undefined;
+    const apiOutputAmount = result.outputAmountResult ? BigInt(result.outputAmountResult) : undefined;
+    const actualInputAmount = balanceInputAmount > 0n ? balanceInputAmount : apiInputAmount;
+    const actualOutAmount = balanceOutputAmount > 0n ? balanceOutputAmount : apiOutputAmount;
+    const actualSlippageBps = actualOutAmount != null && expectedOut > 0n
+      ? Number((expectedOut - actualOutAmount) * BPS_DENOMINATOR_BIGINT / expectedOut)
+      : 0;
+
+    if (apiOutputAmount != null && balanceOutputAmount > 0n && apiOutputAmount !== balanceOutputAmount) {
+      log.warn(
+        `[ULTRA_OUTPUT_MISMATCH] ${outputMint}: api=${apiOutputAmount.toString()} ` +
+        `walletDelta=${balanceOutputAmount.toString()} sig=${result.signature}`
+      );
     }
-    if (result.outputAmountResult) {
-      actualOutAmount = BigInt(result.outputAmountResult);
-      actualSlippageBps = expectedOut > 0n
-        ? Number((expectedOut - actualOutAmount) * BPS_DENOMINATOR_BIGINT / expectedOut)
-        : 0;
+    if (apiInputAmount != null && balanceInputAmount > 0n && apiInputAmount !== balanceInputAmount) {
+      log.warn(
+        `[ULTRA_INPUT_MISMATCH] ${inputMint}: api=${apiInputAmount.toString()} ` +
+        `walletDelta=${balanceInputAmount.toString()} sig=${result.signature}`
+      );
     }
-    // outputAmountResult 없으면 actualOutAmount=undefined 유지 (before 없이 비교 불가)
+
     const inputMetrics = await this.resolveInputMetrics(inputMint, actualInputAmount);
     const outputMetrics = await this.resolveOutputMetrics(outputMint, actualOutAmount);
 
@@ -384,8 +410,20 @@ export class Executor {
     );
     if (accounts.value.length === 0) return 0n;
 
-    const info = await this.connection.getTokenAccountBalance(accounts.value[0].pubkey);
-    return BigInt(info.value.amount);
+    const balances = await Promise.all(
+      accounts.value.map(async ({ pubkey }) => {
+        const info = await this.connection.getTokenAccountBalance(pubkey);
+        return BigInt(info.value.amount);
+      })
+    );
+    return balances.reduce((sum, amount) => sum + amount, 0n);
+  }
+
+  private async getAssetBalanceRaw(mint: string): Promise<bigint> {
+    if (mint === SOL_MINT) {
+      return BigInt(await this.connection.getBalance(this.wallet.publicKey));
+    }
+    return this.getTokenBalance(mint);
   }
 
   private async resolveInputMetrics(

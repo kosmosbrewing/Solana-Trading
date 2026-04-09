@@ -227,6 +227,13 @@ export async function handleDegradedExitPhase1(
   currentPrice: number,
   ctx: BotContext
 ): Promise<void> {
+  // Phase E1 telemetry capture (degraded exit path)
+  const monitorTriggerAt = new Date();
+  const monitorTriggerPrice = currentPrice;
+  let swapSubmitAt: Date | undefined = monitorTriggerAt;
+  let swapResponseAt: Date | undefined = monitorTriggerAt;
+  let preSubmitTickPrice: number | undefined =
+    ctx.realtimeCandleBuilder?.getCurrentPrice(trade.pairAddress) ?? undefined;
   const partialPct = config.degradedPartialPct;
   const soldQuantity = trade.quantity * partialPct;
   const remainingQuantity = trade.quantity - soldQuantity;
@@ -255,7 +262,12 @@ export async function handleDegradedExitPhase1(
 
     if (partialTokenAmount > 0n) {
       const solBefore = await ctx.executor.getBalance();
+      // Phase E1: swap 직전 timing + tick price 재캡처
+      swapSubmitAt = new Date();
+      preSubmitTickPrice =
+        ctx.realtimeCandleBuilder?.getCurrentPrice(trade.pairAddress) ?? preSubmitTickPrice;
       const sellResult = await ctx.executor.executeSell(trade.pairAddress, partialTokenAmount);
+      swapResponseAt = new Date();
       const solAfter = await ctx.executor.getBalance();
       const receivedSol = solAfter - solBefore;
 
@@ -294,6 +306,12 @@ export async function handleDegradedExitPhase1(
     degradedQuoteFailCount: failCount > 0 ? failCount : undefined,
     decisionPrice: currentPrice, // degraded trigger price
     exitAnomalyReason: degradedAnomalyReason,
+    // Phase E1 telemetry
+    monitorTriggerPrice,
+    monitorTriggerAt,
+    swapSubmitAt,
+    swapResponseAt,
+    preSubmitTickPrice,
   });
 
   // 잔여분 새 trade 생성 (phase 2에서 청산)
@@ -624,6 +642,16 @@ export async function closeTrade(
   ctx: BotContext,
   paperExitPrice?: number
 ): Promise<void> {
+  // Phase E1 (2026-04-08): exit execution mechanism telemetry capture.
+  // monitorTriggerAt = closeTrade 진입 시각 (monitor 가 trigger 발동시킨 직후 호출됐다고 가정)
+  // monitorTriggerPrice = caller 가 넘긴 paperExitPrice (TP/SL trigger price)
+  // paper 모드에선 swap 이 즉시 처리되므로 submit/response 시각은 monitorTriggerAt 와 동일.
+  const monitorTriggerAt = new Date();
+  const monitorTriggerPrice = paperExitPrice;
+  let swapSubmitAt: Date | undefined = monitorTriggerAt;
+  let swapResponseAt: Date | undefined = monitorTriggerAt;
+  let preSubmitTickPrice: number | undefined =
+    ctx.realtimeCandleBuilder?.getCurrentPrice(trade.pairAddress) ?? undefined;
   try {
     let txSignature: string | undefined;
     let exitPrice = paperExitPrice ?? trade.entryPrice;
@@ -639,7 +667,12 @@ export async function closeTrade(
 
       if (tokenBalance > 0n) {
         const solBefore = await ctx.executor.getBalance();
+        // Phase E1: swap 호출 직전 시각 + tick price 재캡처 (live 에서만 의미 있음)
+        swapSubmitAt = new Date();
+        preSubmitTickPrice =
+          ctx.realtimeCandleBuilder?.getCurrentPrice(trade.pairAddress) ?? preSubmitTickPrice;
         const sellResult = await ctx.executor.executeSell(trade.pairAddress, tokenBalance);
+        swapResponseAt = new Date();
         txSignature = sellResult.txSignature;
 
         const solAfter = await ctx.executor.getBalance();
@@ -741,6 +774,12 @@ export async function closeTrade(
       exitSlippageBps,
       decisionPrice,
       exitAnomalyReason: mergedAnomalyReason,
+      // Phase E1 telemetry
+      monitorTriggerPrice,
+      monitorTriggerAt,
+      swapSubmitAt,
+      swapResponseAt,
+      preSubmitTickPrice,
     });
 
     const closedTrade = {
@@ -754,6 +793,11 @@ export async function closeTrade(
       status: 'CLOSED' as const,
       exitReason: reason,
       exitAnomalyReason: mergedAnomalyReason,
+      monitorTriggerPrice,
+      monitorTriggerAt,
+      swapSubmitAt,
+      swapResponseAt,
+      preSubmitTickPrice,
     };
     await ctx.notifier.sendTradeClose(closedTrade);
     await updatePositionsForPair(ctx, trade.pairAddress, 'EXIT_CONFIRMED', {
@@ -1098,6 +1142,13 @@ async function handleTakeProfit1Partial(
   currentPrice: number,
   ctx: BotContext
 ): Promise<void> {
+  // Phase E1 telemetry capture (TP1 partial path)
+  const monitorTriggerAt = new Date();
+  const monitorTriggerPrice = currentPrice;
+  let swapSubmitAt: Date | undefined = monitorTriggerAt;
+  let swapResponseAt: Date | undefined = monitorTriggerAt;
+  let preSubmitTickPrice: number | undefined =
+    ctx.realtimeCandleBuilder?.getCurrentPrice(trade.pairAddress) ?? undefined;
   try {
     // v5: TP1 부분 청산 비율 — config.tp1PartialPct (기존 0.5 → 0.3)
     const tp1PartialPct = config.tp1PartialPct;
@@ -1125,7 +1176,12 @@ async function handleTakeProfit1Partial(
       }
 
       const solBefore = await ctx.executor.getBalance();
+      // Phase E1: swap 직전 timing + tick price 재캡처
+      swapSubmitAt = new Date();
+      preSubmitTickPrice =
+        ctx.realtimeCandleBuilder?.getCurrentPrice(trade.pairAddress) ?? preSubmitTickPrice;
       const sellResult = await ctx.executor.executeSell(trade.pairAddress, partialTokenAmount);
+      swapResponseAt = new Date();
       const solAfter = await ctx.executor.getBalance();
       const receivedSol = solAfter - solBefore;
 
@@ -1156,6 +1212,12 @@ async function handleTakeProfit1Partial(
       exitSlippageBps: tp1ExitSlippageBps,
       decisionPrice: currentPrice, // TP1 trigger price
       exitAnomalyReason: tp1AnomalyReason,
+      // Phase E1 telemetry
+      monitorTriggerPrice,
+      monitorTriggerAt,
+      swapSubmitAt,
+      swapResponseAt,
+      preSubmitTickPrice,
     });
 
     // v3: TP1 후 잔여 trade에 time stop 연장 — Runner 활성화 시간 확보
@@ -1227,6 +1289,13 @@ async function handleRunnerGradeBPartial(
   currentPrice: number,
   ctx: BotContext
 ): Promise<void> {
+  // Phase E1 telemetry capture (Runner B partial path)
+  const monitorTriggerAt = new Date();
+  const monitorTriggerPrice = currentPrice;
+  let swapSubmitAt: Date | undefined = monitorTriggerAt;
+  let swapResponseAt: Date | undefined = monitorTriggerAt;
+  let preSubmitTickPrice: number | undefined =
+    ctx.realtimeCandleBuilder?.getCurrentPrice(trade.pairAddress) ?? undefined;
   try {
     const soldQuantity = trade.quantity * 0.5;
     const remainingQuantity = trade.quantity - soldQuantity;
@@ -1252,7 +1321,12 @@ async function handleRunnerGradeBPartial(
       }
 
       const solBefore = await ctx.executor.getBalance();
+      // Phase E1: swap 직전 timing + tick price 재캡처
+      swapSubmitAt = new Date();
+      preSubmitTickPrice =
+        ctx.realtimeCandleBuilder?.getCurrentPrice(trade.pairAddress) ?? preSubmitTickPrice;
       const sellResult = await ctx.executor.executeSell(trade.pairAddress, partialTokenAmount);
+      swapResponseAt = new Date();
       const solAfter = await ctx.executor.getBalance();
       const receivedSol = solAfter - solBefore;
 
@@ -1282,6 +1356,12 @@ async function handleRunnerGradeBPartial(
       exitSlippageBps: tp2ExitSlippageBps,
       decisionPrice: currentPrice, // TP2 trigger price
       exitAnomalyReason: runnerBAnomalyReason,
+      // Phase E1 telemetry
+      monitorTriggerPrice,
+      monitorTriggerAt,
+      swapSubmitAt,
+      swapResponseAt,
+      preSubmitTickPrice,
     });
 
     // 원본 trade state map 정리 (closeTrade 경유하지 않으므로 수동 정리)

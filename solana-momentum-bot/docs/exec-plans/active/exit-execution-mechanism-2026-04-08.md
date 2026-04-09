@@ -1,6 +1,6 @@
 # Execution Plan: Exit Execution Mechanism
 
-> Status: active (draft — Phase E0 complete, Phase E1 pending)
+> Status: active (Phase E0 complete, Phase E1 measurement infra implemented — paper validation pending)
 > Created: 2026-04-08
 > Origin: Phase X2 v2 audit 발견 (`TP2 intent → actual fill match = 0/10 = 0%`) + `mission-recovery-triage-2026-04-08.md` A1 지시
 > Scope: monitor loop 가 exit 를 트리거한 뒤 Jupiter swap 이 체결될 때까지의 **execution mechanism** 만 다룬다. exit parameter tuning 은 본 plan 범위 밖
@@ -124,39 +124,47 @@ exit latency 와 price reverse 의 분포를 실측으로 확정하고, C3/C5 pr
 
 ### 작업
 
-#### E1-1. Measurement infra 확장
+#### E1-1. Measurement infra 확장 (구현 완료 2026-04-08)
 
-- [ ] `trades` 테이블에 신규 컬럼 추가 (Drizzle migration):
-  - `monitor_trigger_price NUMERIC` — monitor 가 trigger 발동 시점에 관찰한 가격 (observedHigh / observedLow 또는 tick price)
-  - `monitor_trigger_at TIMESTAMPTZ` — trigger 발동 시각
-  - `swap_submit_at TIMESTAMPTZ` — Jupiter swap 호출 직전 시각
-  - `swap_response_at TIMESTAMPTZ` — Jupiter 응답 수신 시각
-  - `pre_submit_tick_price NUMERIC` — submit 직전 `realtimeCandleBuilder.getCurrentPrice()` (C3 시 기록)
-- [ ] `closeTrade()` 에서 위 5 개 값 persist ([`tradeExecution.ts:621`](../../../src/orchestration/tradeExecution.ts))
-- [ ] `scripts/analysis/exit-latency-audit.ts` 신규 생성
-  - 입력: `trades` 테이블 (clean, `exit_anomaly_reason IS NULL`)
-  - 출력: `trigger → submit` gap, `submit → response` gap, `trigger_price → exit_price` ratio 분포
-  - 출력: exit reason × {latency p50/p95, price reverse ratio p50/p95}
-  - 출력: entry-group 기준 `realized R`, `pre-TP1 EXHAUSTION` count, `actual TP2 match` headline
-- [ ] `trade-report.ts` 확장: exit latency 한 줄 헤드라인 추가
+- [x] `trades` 테이블에 신규 컬럼 추가 (idempotent ALTER, `tradeStore.initialize()`):
+  - `monitor_trigger_price NUMERIC` — monitor 가 trigger 발동 시점에 관찰한 가격 (caller 가 `paperExitPrice` 인자로 전달)
+  - `monitor_trigger_at TIMESTAMPTZ` — `closeTrade` 진입 시각
+  - `swap_submit_at TIMESTAMPTZ` — Jupiter swap 호출 직전 시각 (paper 모드에선 monitor_trigger_at 와 동일)
+  - `swap_response_at TIMESTAMPTZ` — Jupiter 응답 수신 시각 (paper 모드에선 monitor_trigger_at 와 동일)
+  - `pre_submit_tick_price NUMERIC` — submit 직전 `realtimeCandleBuilder.getCurrentPrice()` (live + paper 둘 다 캡처)
+- [x] 4 개 exit 경로 모두에서 5 개 값 persist:
+  - `closeTrade` ([`tradeExecution.ts:621`](../../../src/orchestration/tradeExecution.ts))
+  - `handleTakeProfit1Partial`
+  - `handleRunnerGradeBPartial`
+  - `handleDegradedExitPhase1`
+- [x] `scripts/analysis/exit-latency-audit.ts` 신규 생성
+  - 입력: `data/vps-trades-latest.jsonl` (clean, `exit_anomaly_reason IS NULL`, `monitor_trigger_at IS NOT NULL`)
+  - 출력: `trigger → submit` gap p50/p95, `submit → response` gap p50/p95, `monitor_trigger_price → exit_price` reverse ratio p50/p95
+  - 출력: exit reason × {n, latency p50/p95, reverse ratio p50/p95}
+  - 출력: entry-group 기준 realized R 분포, `actual TP2 match rate`, `pre-TP1 EXHAUSTION` count
+  - 출력: Phase E1 Decision Branch hint (A/B/C)
+- [x] `trade-report.ts` 확장: `printExitLatencySummary()` 한 줄 헤드라인 (`trigger→fill p50/p95 | reverse p50/p95`)
 
-#### E1-2. C5 (Hybrid) prototype — paper mode only
+#### E1-2. C5 (Hybrid) prototype — paper mode only (구현 완료 2026-04-08)
 
-- [ ] Feature flag 추가: `EXIT_MECHANISM_MODE` env var
-  - 값: `legacy` (기본) | `hybrid_c5`
-  - `config.ts` 에 `exitMechanismMode: string` 추가
-- [ ] `monitoringLoops.ts` 의 position check interval 을 `exitMechanismMode === 'hybrid_c5'` 일 때 5000 → 1000 로 단축 (C1 part)
-- [ ] `closeTrade()` 진입 시 (paper 모드에서도) `realtimeCandleBuilder.getCurrentPrice()` 조회하여 `pre_submit_tick_price` 에 persist (C3 part, paper 모드에선 abort 경로 skip)
-- [ ] paper 모드에서 `decision_price == exit_price` 유지하되 `monitor_trigger_price`, `pre_submit_tick_price` 는 실측
+- [x] Feature flag 추가: `EXIT_MECHANISM_MODE` env var
+  - 값: `legacy` (기본) | `hybrid_c5` (그 외 값은 legacy 로 fallback)
+  - `config.ts` 의 `exitMechanismMode: 'legacy' | 'hybrid_c5'` 필드
+  - `test/config.test.ts` 에 3 케이스 추가 (default / hybrid_c5 / unknown fallback)
+- [x] `monitoringLoops.ts` 의 position check interval 을 `exitMechanismMode === 'hybrid_c5'` 일 때 5000 → 1000 로 단축 (C1 part)
+- [x] `closeTrade()` 진입 시 (paper 모드에서도) `realtimeCandleBuilder.getCurrentPrice()` 조회하여 `pre_submit_tick_price` 에 persist (C3 part, paper 모드에선 abort 경로 skip)
+- [x] paper 모드에서 `decision_price == exit_price` 유지하되 `monitor_trigger_price`, `pre_submit_tick_price` 는 실측
 
 **핵심 제약:** Phase E1 은 **paper 모드에서 measurement 만** 한다. Live canary 는 Phase E3 이후.
 
-#### E1-3. Paper validation loop
+**검증 결과 (구현 시점):** `tsc --noEmit` 0 errors / `npx jest` **88 suites / 496 tests pass** (config 신규 3 + tradeExecution 신규 5 필드 expectation 포함).
+
+#### E1-3. Paper validation loop (구현 후 운영 단계 — pending)
 
 - [ ] `EXIT_MECHANISM_MODE=hybrid_c5` 로 paper 재기동
 - [ ] 최소 ≥ 20 closed trades (paper) 또는 ≥ 72 시간 운용 중 먼저 도달하는 쪽까지 1차 baseline 누적
-- [ ] 1차 baseline 이후 필요 시 ≥ 100 closed trades까지 추가 누적 (Phase E2 분기용)
-- [ ] `exit-latency-audit.ts` 실행하여 gap 분포 기록
+- [ ] 1차 baseline 이후 필요 시 ≥ 100 closed trades 까지 추가 누적 (Phase E2 분기용)
+- [ ] `exit-latency-audit.ts` 실행하여 gap 분포 기록 + `docs/audits/exit-latency-YYYY-MM-DD.md` 작성
 
 ### Target Files
 
@@ -174,7 +182,7 @@ exit latency 와 price reverse 의 분포를 실측으로 확정하고, C3/C5 pr
 
 ### Acceptance Criteria
 
-- [ ] migration 배포 → `trades` 테이블에 5 개 신규 컬럼 존재
+- [x] migration 코드 배포 (idempotent ALTER, `tradeStore.initialize()` 자동 실행) — 운영 VPS 재기동 후 컬럼 존재 검증은 paper validation 시점에 함께 수행
 - [ ] paper 모드 `EXIT_MECHANISM_MODE=hybrid_c5` 로 재기동 후 첫 closeTrade 호출이 에러 없이 성공 + 5 개 컬럼 non-null
 - [ ] ≥ 20 paper closed trades 또는 72 시간 경과 후 `exit-latency-audit` 첫 실행 → latency 분포 + reverse ratio 분포 출력
 - [ ] `docs/audits/exit-latency-*.md` 에 결과 + Phase E2 진행 권장 / 보류 판정 기록
@@ -449,7 +457,7 @@ exit-execution-mechanism-2026-04-08.md  (본 plan — MECHANISM)
 | Phase | Status | Owner | 의존 |
 |---|---|---|---|
 | E0 — Problem Verification | 🟢 complete | — | — |
-| E1 — Measurement + C3/C5 paper | 🔴 pending | igyubin | E0 |
+| E1 — Measurement + C3/C5 paper | 🟡 infra implemented (2026-04-08), paper validation pending | igyubin | E0 |
 | E2 — C2 tick-level paper | 🔴 pending (조건부) | igyubin | E1 결과 분기 + A2 (선행 또는 병렬) |
 | E3 — Live canary | 🔴 pending | igyubin | E1 결과 B 또는 E2 종결 |
 | E4 — Decision window | 🔴 pending | igyubin | E3 종결 |
@@ -472,3 +480,4 @@ Phase 진행 중 답해야 할 질문들. 지금 답 내지 말 것.
 ## History
 
 - 2026-04-08: 초기 작성. Phase X2 v2 audit (`TP2 intent → actual = 0/10`) finding + `mission-recovery-triage-2026-04-08.md` A1 지시에 따라 생성. Phase E0 complete 로 시작. 상위 mission plan 은 `1sol-to-100sol.md`, parameter 쪽은 `exit-structure-validation-2026-04-08.md`.
+- 2026-04-08 (later): Phase E1 measurement infra + C5 hybrid prototype 코드 구현 완료. 변경 파일: `src/candle/tradeStore.ts` (5 컬럼 ALTER + CloseTradeOptions 5 필드 + rowToTrade 매핑), `src/utils/types.ts` (Trade 5 필드), `src/utils/config.ts` (`exitMechanismMode` env), `src/init/monitoringLoops.ts` (interval 5000/1000 분기), `src/orchestration/tradeExecution.ts` (4 exit 경로 timing + tick price 캡처), `scripts/analysis/exit-latency-audit.ts` (신규), `scripts/trade-report.ts` (latency 헤드라인), `test/config.test.ts` (3 case), `test/tradeExecution.test.ts` (TP1 partial expectation 갱신). 검증: `tsc --noEmit` 0 errors / `jest` 88 suites / 496 tests pass. 다음 단계는 paper 운영 + ≥20 closed trades 누적 + `exit-latency-audit` 첫 실행.

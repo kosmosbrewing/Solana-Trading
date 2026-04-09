@@ -82,6 +82,12 @@ export const config = {
   runnerGradeBEnabled: process.env.RUNNER_GRADE_B_ENABLED === 'true',
   runnerConcurrentEnabled: process.env.RUNNER_CONCURRENT_ENABLED === 'true',
   degradedExitEnabled: process.env.DEGRADED_EXIT_ENABLED === 'true',
+  // Phase E1 (2026-04-08): exit execution mechanism mode flag.
+  // - 'legacy' (default): 기존 5s polling, swap submit 직전 recheck 없음
+  // - 'hybrid_c5': polling 1s 단축 (C1) + submit 직전 pre_submit_tick_price 캡처 (C3, paper 에선 abort 안 함)
+  // measurement (5 컬럼 persist) 는 두 모드 모두 동일하게 동작한다.
+  // 자세한 lifecycle 은 docs/exec-plans/active/exit-execution-mechanism-2026-04-08.md
+  exitMechanismMode: (process.env.EXIT_MECHANISM_MODE === 'hybrid_c5' ? 'hybrid_c5' : 'legacy') as 'legacy' | 'hybrid_c5',
   // Phase B2: CRITICAL_LIVE canary용 임시 backdoor.
   // DO NOT enable in production — EdgeTracker blacklist 자체를 무시한다.
   // 사용 시나리오: Phase A의 가드가 모두 배포된 뒤, 오염된 ledger 위에 학습된 blacklist가

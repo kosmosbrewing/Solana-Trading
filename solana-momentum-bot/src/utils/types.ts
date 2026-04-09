@@ -258,6 +258,19 @@ export interface Trade {
    * DB 컬럼 추가(Phase 2.7) 전까지는 persist 되지 않는다.
    */
   cohort?: Cohort;
+  // Why: 2026-04-08 Phase E1 — exit execution mechanism telemetry.
+  // monitor trigger 발동 시점 ~ Jupiter swap 응답까지의 latency 와 가격 reverse 측정.
+  // exit-execution-mechanism-2026-04-08.md Phase E1 참조.
+  /** monitor 가 trigger 발동 시점에 관찰한 가격 (closeTrade 의 paperExitPrice 인자로 전달됨) */
+  monitorTriggerPrice?: number;
+  /** monitor trigger 발동 시각 (closeTrade 진입 직후 캡처) */
+  monitorTriggerAt?: Date;
+  /** Jupiter swap 호출 직전 시각. paper 모드에선 monitorTriggerAt 와 동일 */
+  swapSubmitAt?: Date;
+  /** Jupiter swap 응답 수신 시각. paper 모드에선 monitorTriggerAt 와 동일 */
+  swapResponseAt?: Date;
+  /** swap 호출 직전 realtimeCandleBuilder.getCurrentPrice() (없으면 undefined) */
+  preSubmitTickPrice?: number;
 }
 
 // ─── Position State Machine (v0.3) ───

@@ -22,6 +22,12 @@ export interface CloseTradeOptions {
   degradedQuoteFailCount?: number;
   decisionPrice?: number;
   exitAnomalyReason?: string;
+  // Phase E1 telemetry — exit-execution-mechanism-2026-04-08.md
+  monitorTriggerPrice?: number;
+  monitorTriggerAt?: Date;
+  swapSubmitAt?: Date;
+  swapResponseAt?: Date;
+  preSubmitTickPrice?: number;
 }
 
 export class TradeStore {
@@ -113,6 +119,18 @@ export class TradeStore {
         ADD COLUMN IF NOT EXISTS exit_anomaly_reason TEXT;
       `);
 
+      // 2026-04-08 Phase E1: exit execution mechanism telemetry
+      // Why: monitor trigger 발동 ~ Jupiter swap 응답 사이의 latency / price reverse 분포 측정.
+      // exit-execution-mechanism-2026-04-08.md Phase E1.E1-1 참조.
+      await client.query(`
+        ALTER TABLE trades
+        ADD COLUMN IF NOT EXISTS monitor_trigger_price NUMERIC,
+        ADD COLUMN IF NOT EXISTS monitor_trigger_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS swap_submit_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS swap_response_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS pre_submit_tick_price NUMERIC;
+      `);
+
       await client.query(`
         CREATE INDEX IF NOT EXISTS idx_trades_status ON trades (status);
         CREATE INDEX IF NOT EXISTS idx_trades_created ON trades (created_at DESC);
@@ -174,6 +192,11 @@ export class TradeStore {
       degradedQuoteFailCount,
       decisionPrice,
       exitAnomalyReason,
+      monitorTriggerPrice,
+      monitorTriggerAt,
+      swapSubmitAt,
+      swapResponseAt,
+      preSubmitTickPrice,
     } = opts;
 
     const setClauses = [
@@ -214,6 +237,32 @@ export class TradeStore {
     if (exitAnomalyReason !== undefined) {
       setClauses.push(`exit_anomaly_reason = $${params.length + 1}`);
       params.push(exitAnomalyReason);
+    }
+
+    // Phase E1: exit execution mechanism telemetry
+    if (monitorTriggerPrice !== undefined) {
+      setClauses.push(`monitor_trigger_price = $${params.length + 1}`);
+      params.push(monitorTriggerPrice);
+    }
+
+    if (monitorTriggerAt !== undefined) {
+      setClauses.push(`monitor_trigger_at = $${params.length + 1}`);
+      params.push(monitorTriggerAt);
+    }
+
+    if (swapSubmitAt !== undefined) {
+      setClauses.push(`swap_submit_at = $${params.length + 1}`);
+      params.push(swapSubmitAt);
+    }
+
+    if (swapResponseAt !== undefined) {
+      setClauses.push(`swap_response_at = $${params.length + 1}`);
+      params.push(swapResponseAt);
+    }
+
+    if (preSubmitTickPrice !== undefined) {
+      setClauses.push(`pre_submit_tick_price = $${params.length + 1}`);
+      params.push(preSubmitTickPrice);
     }
 
     await this.pool.query(
@@ -445,5 +494,11 @@ function rowToTrade(row: Record<string, unknown>): Trade {
     degradedQuoteFailCount: row.degraded_quote_fail_count != null ? Number(row.degraded_quote_fail_count) : undefined,
     parentTradeId: row.parent_trade_id as string | undefined,
     exitAnomalyReason: (row.exit_anomaly_reason as string | null | undefined) ?? undefined,
+    // Phase E1 telemetry
+    monitorTriggerPrice: row.monitor_trigger_price != null ? Number(row.monitor_trigger_price) : undefined,
+    monitorTriggerAt: row.monitor_trigger_at ? new Date(row.monitor_trigger_at as string) : undefined,
+    swapSubmitAt: row.swap_submit_at ? new Date(row.swap_submit_at as string) : undefined,
+    swapResponseAt: row.swap_response_at ? new Date(row.swap_response_at as string) : undefined,
+    preSubmitTickPrice: row.pre_submit_tick_price != null ? Number(row.pre_submit_tick_price) : undefined,
   };
 }

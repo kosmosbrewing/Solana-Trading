@@ -394,6 +394,12 @@ describe('tradeExecution paper balance', () => {
       exitSlippageBps: undefined,
       decisionPrice: 1.1, // TP1 trigger price
       exitAnomalyReason: undefined, // happy path, no fake-fill
+      // Phase E1 telemetry
+      monitorTriggerPrice: 1.1,
+      monitorTriggerAt: expect.any(Date),
+      swapSubmitAt: expect.any(Date),
+      swapResponseAt: expect.any(Date),
+      preSubmitTickPrice: 1.05,
     });
     expect(tradeStore.insertTrade).toHaveBeenCalledTimes(1);
     expect(notifier.sendTradeAlert).toHaveBeenCalledWith(

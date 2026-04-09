@@ -1166,4 +1166,148 @@ describe('tradeExecution paper balance', () => {
       expect(notifier.sendCritical).not.toHaveBeenCalled();
     });
   });
+
+  // Phase E1 (2026-04-08): decision_price sanity clamp — VDOR bad-tick 패턴 방어.
+  describe('Phase E1 — decision_price sanity clamp', () => {
+    function makeMocks() {
+      return {
+        tradeStore: {
+          closeTrade: jest.fn().mockResolvedValue(undefined),
+          failTrade: jest.fn().mockResolvedValue(undefined),
+          updateHighWaterMark: jest.fn().mockResolvedValue(undefined),
+        },
+        notifier: {
+          sendTradeClose: jest.fn().mockResolvedValue(undefined),
+          sendError: jest.fn().mockResolvedValue(undefined),
+          sendCritical: jest.fn().mockResolvedValue(undefined),
+        },
+        positionStore: {
+          getOpenPositions: jest.fn().mockResolvedValue([]),
+          updateState: jest.fn().mockResolvedValue(undefined),
+        },
+        healthMonitor: { updateTradeTime: jest.fn() },
+      };
+    }
+
+    const baseTrade: Trade = {
+      id: 'trade-vdor',
+      pairAddress: 'VDOR-pair',
+      strategy: 'bootstrap_10s',
+      side: 'BUY',
+      entryPrice: 0.012,
+      quantity: 10.0,
+      status: 'OPEN',
+      createdAt: new Date('2026-04-09T03:42:00Z'),
+      stopLoss: 0.0118,
+      takeProfit1: 0.01212,
+      takeProfit2: 0.0132,
+      timeStopAt: new Date('2026-04-09T04:12:00Z'),
+    };
+
+    it('clamps decision_price when caller passes a value 12x below entry', async () => {
+      // VDOR row 4 재현: entry=0.0122, decision=0.00100 (0.082x, 바운드 [0.5, 1.5] 밖)
+      const mocks = makeMocks();
+      const ctx = {
+        tradingMode: 'paper',
+        paperBalance: 10.0,
+        realtimeCandleBuilder: {
+          getCurrentPrice: jest.fn().mockReturnValue(0.0119), // 현 tick 정상 범위
+        },
+        ...mocks,
+      } as unknown as BotContext;
+
+      await closeTrade(baseTrade, 'STOP_LOSS', ctx, 0.00100056);
+
+      expect(mocks.tradeStore.closeTrade).toHaveBeenCalledTimes(1);
+      const [opts] = mocks.tradeStore.closeTrade.mock.calls[0];
+      // 원본은 monitorTriggerPrice 에 보존
+      expect(opts.monitorTriggerPrice).toBeCloseTo(0.00100056, 10);
+      // sanitized decision_price 는 fallback (currentPrice 0.0119)
+      expect(opts.decisionPrice).toBeCloseTo(0.0119, 10);
+      // paper fill 도 fallback 값을 쓴다 (currentPrice)
+      expect(opts.exitPrice).toBeCloseTo(0.0119, 10);
+      // exit_anomaly_reason 에 decision clamp 사유 마킹
+      const anomalyReason = opts.exitAnomalyReason as string | undefined;
+      expect(anomalyReason).toBeDefined();
+      expect(anomalyReason).toContain('decision_price_anomaly_ratio');
+      expect(mocks.notifier.sendCritical).toHaveBeenCalledWith(
+        'exit_anomaly',
+        expect.stringContaining('decision_price_anomaly_ratio')
+      );
+    });
+
+    it('clamps decision_price when caller passes a value 3.3x above entry', async () => {
+      // VDOR row 1 재현: entry=0.0118, decision=0.0398 (3.37x)
+      const mocks = makeMocks();
+      const ctx = {
+        tradingMode: 'paper',
+        paperBalance: 10.0,
+        realtimeCandleBuilder: {
+          getCurrentPrice: jest.fn().mockReturnValue(0.01181),
+        },
+        ...mocks,
+      } as unknown as BotContext;
+
+      const trade = { ...baseTrade, entryPrice: 0.01180, id: 'trade-vdor-hi' };
+      await closeTrade(trade, 'TAKE_PROFIT_2', ctx, 0.0398274);
+
+      const [opts] = mocks.tradeStore.closeTrade.mock.calls[0];
+      expect(opts.monitorTriggerPrice).toBeCloseTo(0.0398274, 10);
+      expect(opts.decisionPrice).toBeCloseTo(0.01181, 10);
+      expect(opts.exitPrice).toBeCloseTo(0.01181, 10);
+      expect(opts.exitAnomalyReason).toContain('decision_price_anomaly_ratio');
+    });
+
+    it('does not clamp when decision_price is within [0.5, 1.5]x entry', async () => {
+      // PIPPIN row 2 재현: 정상 5% gap 범위
+      const mocks = makeMocks();
+      const ctx = {
+        tradingMode: 'paper',
+        paperBalance: 10.0,
+        realtimeCandleBuilder: {
+          getCurrentPrice: jest.fn().mockReturnValue(0.00256),
+        },
+        ...mocks,
+      } as unknown as BotContext;
+
+      const trade = {
+        ...baseTrade,
+        id: 'trade-pippin-normal',
+        entryPrice: 0.00257621,
+        stopLoss: 0.00253,
+        takeProfit2: 0.00270,
+      };
+      await closeTrade(trade, 'TAKE_PROFIT_2', ctx, 0.00268821);
+
+      const [opts] = mocks.tradeStore.closeTrade.mock.calls[0];
+      expect(opts.monitorTriggerPrice).toBeCloseTo(0.00268821, 10);
+      expect(opts.decisionPrice).toBeCloseTo(0.00268821, 10); // 원본 유지
+      // anomaly 마킹 없음 (decision clamp 관점)
+      const anomalyReason = opts.exitAnomalyReason as string | undefined;
+      if (anomalyReason != null) {
+        expect(anomalyReason).not.toContain('decision_price_anomaly_ratio');
+      }
+    });
+
+    it('falls back to entryPrice when realtime builder returns null', async () => {
+      const mocks = makeMocks();
+      const ctx = {
+        tradingMode: 'paper',
+        paperBalance: 10.0,
+        realtimeCandleBuilder: {
+          getCurrentPrice: jest.fn().mockReturnValue(null),
+        },
+        ...mocks,
+      } as unknown as BotContext;
+
+      await closeTrade(baseTrade, 'STOP_LOSS', ctx, 0.00050);
+
+      const [opts] = mocks.tradeStore.closeTrade.mock.calls[0];
+      expect(opts.monitorTriggerPrice).toBeCloseTo(0.00050, 10);
+      // fallback = entryPrice
+      expect(opts.decisionPrice).toBeCloseTo(baseTrade.entryPrice, 10);
+      expect(opts.exitPrice).toBeCloseTo(baseTrade.entryPrice, 10);
+      expect(opts.exitAnomalyReason).toContain('decision_price_anomaly_ratio');
+    });
+  });
 });

@@ -29,6 +29,15 @@ const EXIT_RATIO_MAX = 10; // +1000% 초과면 비현실
 // (planned=0.815 → fill=0.00000122 같은 -100% gap 케이스를 잡기 위함)
 const DECISION_FILL_GAP_ALERT_PCT = 0.5;
 
+// Phase E1 (2026-04-08): monitor 가 bad tick (e.g. VDOR CLMM multi-swap parser artifact) 에서
+// trigger 발동 시 caller 가 넘기는 paperExitPrice 가 entryPrice 의 자릿수 단위 어긋나 있을 수 있다.
+// 이 clamp 는 decision_price 오염이 DB (decision_price / exit_anomaly_reason) 에 남는 것을 막지 않고,
+// 다만 downstream 계산 (exitGap warn, exit ratio clamp, paper fill 가정) 이 오염된 값으로
+// 돌아가지 않도록 현재 MicroCandleBuilder tick price 로 fallback 한다.
+// 원본 monitorTriggerPrice 는 Phase E1 telemetry 에 그대로 보존된다.
+const DECISION_ENTRY_RATIO_MIN = 0.5;
+const DECISION_ENTRY_RATIO_MAX = 1.5;
+
 // Why: 2026-04-07 fake-fill detection — Jupiter Ultra outputAmountResult="0" 케이스에서
 // receivedSol <= 0이면 currentPrice로 fallback하는 기존 패턴이 "승리한 것처럼" 마스킹했다.
 // 임계값(9000bps)은 src/utils/constants.ts에 공유 상수로 존재.
@@ -56,6 +65,59 @@ function detectFakeFill(
     reasons.push(`slippage_saturated=${slippageBps}bps`);
   }
   return { isFake: reasons.length > 0, reasons };
+}
+
+/**
+ * Phase E1: decision_price (caller 가 넘긴 paperExitPrice) 가 trade.entryPrice 대비
+ * [0.5, 1.5] 바깥이면 clamp.
+ * - 반환 `sanitizedDecisionPrice`: fallback 적용된 값 (downstream 계산용)
+ * - 반환 `originalDecisionPrice`: caller 원본 값 (telemetry 보존용, monitorTriggerPrice 로 기록)
+ * - 반환 `anomalyReason`: clamp 발동 시 exit_anomaly_reason 에 추가할 사유, 아니면 undefined
+ *
+ * Why: VDOR Raydium CLMM multi-swap parser artifact 가 observedHigh/Low 에 자릿수 단위
+ * 어긋난 tick 을 쌓고 → monitor loop 가 bad price 에서 TP/SL trigger 발동 → caller 가
+ * bad price 를 paperExitPrice 로 넘긴다. 이 clamp 는 decisionPrice 가 계속 DB 에 기록되되
+ * sanitize 된 값을 실제 계산에 사용하도록 분리한다.
+ */
+function sanitizeDecisionPrice(
+  tradeId: string,
+  entryPrice: number,
+  decisionPrice: number | undefined,
+  fallbackCurrentPrice: number | undefined
+): {
+  sanitizedDecisionPrice: number | undefined;
+  originalDecisionPrice: number | undefined;
+  anomalyReason: string | undefined;
+} {
+  const originalDecisionPrice = decisionPrice;
+  if (
+    decisionPrice == null ||
+    !Number.isFinite(decisionPrice) ||
+    decisionPrice <= 0 ||
+    !Number.isFinite(entryPrice) ||
+    entryPrice <= 0
+  ) {
+    return { sanitizedDecisionPrice: decisionPrice, originalDecisionPrice, anomalyReason: undefined };
+  }
+  const ratio = decisionPrice / entryPrice;
+  if (ratio >= DECISION_ENTRY_RATIO_MIN && ratio <= DECISION_ENTRY_RATIO_MAX) {
+    return { sanitizedDecisionPrice: decisionPrice, originalDecisionPrice, anomalyReason: undefined };
+  }
+  // fallback: 가능하면 realtime candle builder 의 현재 가격, 없으면 entryPrice
+  const fallback = fallbackCurrentPrice != null && Number.isFinite(fallbackCurrentPrice) && fallbackCurrentPrice > 0
+    ? fallbackCurrentPrice
+    : entryPrice;
+  log.error(
+    `[DECISION_ANOMALY_CLAMP] Trade ${tradeId} decisionPrice ratio=${ratio.toFixed(4)} outside ` +
+    `[${DECISION_ENTRY_RATIO_MIN}, ${DECISION_ENTRY_RATIO_MAX}] — ` +
+    `original=${decisionPrice.toExponential(4)} entry=${entryPrice.toExponential(4)} ` +
+    `fallback=${fallback.toExponential(4)}`
+  );
+  return {
+    sanitizedDecisionPrice: fallback,
+    originalDecisionPrice,
+    anomalyReason: `decision_price_anomaly_ratio=${ratio.toFixed(4)}`,
+  };
 }
 
 /**
@@ -644,7 +706,7 @@ export async function closeTrade(
 ): Promise<void> {
   // Phase E1 (2026-04-08): exit execution mechanism telemetry capture.
   // monitorTriggerAt = closeTrade 진입 시각 (monitor 가 trigger 발동시킨 직후 호출됐다고 가정)
-  // monitorTriggerPrice = caller 가 넘긴 paperExitPrice (TP/SL trigger price)
+  // monitorTriggerPrice = caller 가 넘긴 paperExitPrice (TP/SL trigger price, 원본 보존)
   // paper 모드에선 swap 이 즉시 처리되므로 submit/response 시각은 monitorTriggerAt 와 동일.
   const monitorTriggerAt = new Date();
   const monitorTriggerPrice = paperExitPrice;
@@ -652,9 +714,22 @@ export async function closeTrade(
   let swapResponseAt: Date | undefined = monitorTriggerAt;
   let preSubmitTickPrice: number | undefined =
     ctx.realtimeCandleBuilder?.getCurrentPrice(trade.pairAddress) ?? undefined;
+
+  // Phase E1: decision_price sanity clamp.
+  // caller 가 넘긴 paperExitPrice 가 trade.entryPrice 대비 [0.5, 1.5] 바깥이면
+  // realtimeCandleBuilder 의 currentPrice (또는 entryPrice) 로 fallback.
+  // originalDecisionPrice 는 monitorTriggerPrice 로 telemetry 에 보존 (위 capture).
+  const decisionClamp = sanitizeDecisionPrice(
+    trade.id,
+    trade.entryPrice,
+    paperExitPrice,
+    preSubmitTickPrice,
+  );
+  const sanitizedDecisionPrice = decisionClamp.sanitizedDecisionPrice;
+  const decisionAnomalyReason = decisionClamp.anomalyReason;
   try {
     let txSignature: string | undefined;
-    let exitPrice = paperExitPrice ?? trade.entryPrice;
+    let exitPrice = sanitizedDecisionPrice ?? trade.entryPrice;
     let executionSlippage = 0;
     // 2026-04-07: fake-fill/slippage saturation 감지 시 사유를 collected — closeTrade DB에 기록
     let fakeFillAnomalyReason: string | undefined;
@@ -684,7 +759,7 @@ export async function closeTrade(
           receivedSol,
           soldQuantity: trade.quantity,
           slippageBps: sellResult.slippageBps,
-          fallbackPrice: exitPrice, // paperExitPrice(decisionPrice) ?? entryPrice
+          fallbackPrice: exitPrice, // sanitizedDecisionPrice ?? entryPrice
         });
         exitPrice = resolved.exitPrice;
         executionSlippage = resolved.executionSlippage;
@@ -699,8 +774,9 @@ export async function closeTrade(
       }
     }
 
-    // Why: paperExitPrice = decision price (trigger 판정가), exitPrice = 실제 fill 가격
-    const decisionPrice = paperExitPrice;
+    // Why: sanitizedDecisionPrice = clamp 적용된 decision price (Phase E1),
+    // originalDecisionPrice = caller 원본값 (telemetry 보존용)
+    const decisionPrice = sanitizedDecisionPrice;
     const pnl = (exitPrice - trade.entryPrice) * trade.quantity;
     const exitSlippageBps = ctx.tradingMode === 'live' ? decimalToBps(executionSlippage) : undefined;
     applyPaperExitProceeds(ctx, trade.quantity, exitPrice);
@@ -709,6 +785,11 @@ export async function closeTrade(
     // ratio < -95% 또는 > +1000%면 단위 오염 또는 fill 이상 → loud error + anomaly 플래그.
     let exitAnomaly = false;
     let exitAnomalyReasons: string[] = [];
+    // Phase E1: decision clamp 가 발동했으면 exit anomaly 로 승급 — downstream sanitizer 가 필터
+    if (decisionAnomalyReason) {
+      exitAnomaly = true;
+      exitAnomalyReasons.push(decisionAnomalyReason);
+    }
     if (trade.entryPrice > 0 && exitPrice > 0) {
       const ratio = (exitPrice - trade.entryPrice) / trade.entryPrice;
       if (ratio < EXIT_RATIO_MIN || ratio > EXIT_RATIO_MAX) {

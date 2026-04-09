@@ -94,4 +94,88 @@ describe('MicroCandleBuilder', () => {
     });
     expect(emitted).toEqual([]);
   });
+
+  // Phase E1 (2026-04-08): per-pool tick sanity bound — VDOR Raydium CLMM parser artifact 대응.
+  describe('tick sanity bound (Phase E1)', () => {
+    it('accepts the first tick unconditionally (lastPriceByPool unset)', () => {
+      const builder = new MicroCandleBuilder({ intervals: [5], maxHistory: 10 });
+      const rejected: unknown[] = [];
+      builder.on('tickRejected', (ev) => rejected.push(ev));
+
+      // 극단적 low price — 여전히 첫 tick 은 accept (baseline 없음)
+      builder.onSwap(makeSwap({ timestamp: 1, priceNative: 0.00001, amountQuote: 1 }));
+
+      expect(rejected).toHaveLength(0);
+      expect(builder.getCurrentPrice('pool-1')).toBe(0.00001);
+    });
+
+    it('rejects ticks beyond ±50% of last close by default', () => {
+      const builder = new MicroCandleBuilder({ intervals: [5], maxHistory: 10 });
+      const rejected: Array<{ pool: string; price: number; lastPrice?: number }> = [];
+      builder.on('tickRejected', (ev) => rejected.push(ev as any));
+
+      builder.onSwap(makeSwap({ timestamp: 1, priceNative: 1.0, amountQuote: 1 }));
+      // 2배 점프 (+100%) → reject
+      builder.onSwap(makeSwap({ timestamp: 2, priceNative: 2.0, amountQuote: 1 }));
+      // 0.3 (−70%) → reject
+      builder.onSwap(makeSwap({ timestamp: 3, priceNative: 0.3, amountQuote: 1 }));
+      // 1.4 (+40%) → accept (±50% 이내)
+      builder.onSwap(makeSwap({ timestamp: 4, priceNative: 1.4, amountQuote: 1 }));
+
+      expect(rejected).toHaveLength(2);
+      expect(rejected[0].price).toBe(2.0);
+      expect(rejected[1].price).toBe(0.3);
+      // 누적 count 확인
+      expect(builder.getSanityRejectCounts().get('pool-1')).toBe(2);
+      // last price 는 1.4 (accept 된 마지막) 여야 함
+      expect(builder.getCurrentPrice('pool-1')).toBe(1.4);
+    });
+
+    it('rejected tick does not pollute candle open/high/low/close', () => {
+      const builder = new MicroCandleBuilder({ intervals: [5], maxHistory: 10 });
+      // bucket [0,5): 2 swaps (1 정상, 1 bad → reject)
+      builder.onSwap(makeSwap({ timestamp: 1, priceNative: 1.0, amountQuote: 2 }));
+      // VDOR 패턴: 0.001 로 10x 낙하 시도 → reject 되어야
+      builder.onSwap(makeSwap({ timestamp: 2, priceNative: 0.001, amountQuote: 3, signature: 'sig-bad' }));
+      builder.onSwap(makeSwap({ timestamp: 3, priceNative: 1.05, amountQuote: 4, signature: 'sig-3' }));
+      // bucket boundary 넘김 → 이전 bucket close
+      builder.onSwap(makeSwap({ timestamp: 6, priceNative: 1.1, amountQuote: 1, signature: 'sig-4' }));
+
+      const candles = builder.getRecentCandles('pool-1', 5, 10);
+      expect(candles.length).toBeGreaterThanOrEqual(1);
+      const closed = candles[0];
+      // low 는 1.0 이어야 (0.001 이 반영되면 low = 0.001)
+      expect(closed.low).toBe(1.0);
+      expect(closed.high).toBe(1.05);
+      expect(closed.tradeCount).toBe(2); // bad tick 제외 (sig-1, sig-3 두 건)
+    });
+
+    it('respects per-pool isolation (one pool reject does not affect another)', () => {
+      const builder = new MicroCandleBuilder({ intervals: [5], maxHistory: 10 });
+      builder.onSwap(makeSwap({ pool: 'pool-a', timestamp: 1, priceNative: 1.0, amountQuote: 1 }));
+      builder.onSwap(makeSwap({ pool: 'pool-b', timestamp: 1, priceNative: 100, amountQuote: 1 }));
+      // pool-a 에서 10x 점프 시도 → reject
+      builder.onSwap(makeSwap({ pool: 'pool-a', timestamp: 2, priceNative: 10, amountQuote: 1 }));
+      // pool-b 에 150 (+50%) → boundary, accept
+      builder.onSwap(makeSwap({ pool: 'pool-b', timestamp: 2, priceNative: 150, amountQuote: 1 }));
+
+      expect(builder.getCurrentPrice('pool-a')).toBe(1.0);
+      expect(builder.getCurrentPrice('pool-b')).toBe(150);
+      expect(builder.getSanityRejectCounts().get('pool-a')).toBe(1);
+      expect(builder.getSanityRejectCounts().get('pool-b')).toBeUndefined();
+    });
+
+    it('can be disabled via tickSanityBoundPct=0', () => {
+      const builder = new MicroCandleBuilder({
+        intervals: [5],
+        maxHistory: 10,
+        tickSanityBoundPct: 0,
+      });
+      builder.onSwap(makeSwap({ timestamp: 1, priceNative: 1.0, amountQuote: 1 }));
+      // 10x 점프도 accept
+      builder.onSwap(makeSwap({ timestamp: 2, priceNative: 10, amountQuote: 1 }));
+      expect(builder.getCurrentPrice('pool-1')).toBe(10);
+      expect(builder.getSanityRejectCounts().size).toBe(0);
+    });
+  });
 });

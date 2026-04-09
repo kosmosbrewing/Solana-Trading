@@ -75,12 +75,34 @@ function parseClmmSwapFromLogs(
   const metadata = context.poolMetadata;
   if (!metadata) return null;
 
-  const encoded = [...logs]
-    .reverse()
-    .find((line) => line.startsWith('Program data: '))
-    ?.slice('Program data: '.length);
-  const event = encoded ? decodeClmmSwapEvent(encoded) : null;
-  if (!event) return null;
+  // 2026-04-08 P0-M5: 같은 tx 안에 Raydium CLMM SwapEvent 가 여러 개 쌓이는 케이스
+  // (aggregator / arbitrage 왕복) 에서 이전 구현은 `.reverse().find()` 로 마지막 event 만
+  // 읽었다. VDOR 24h trade-report 에서 2969 raw swap 중 149건 (5%) bad tick 이 관측됐고,
+  // 그중 동일 second 클러스터는 작은 arbitrage leg 이 monitor 의 trigger price 로 쓰여
+  // decision_fill_gap 이 자릿수 단위로 오염됐다. 아래 루프는 모든 Program data line 을
+  // decode 한 뒤 `amount0 + amount1` 기준 **가장 큰 magnitude** event 를 선택한다.
+  // pool 별 대표 가격이 "가장 큰 거래" 로 결정되므로 작은 cleanup/arbitrage leg 영향 차단.
+  const events: NonNullable<ReturnType<typeof decodeClmmSwapEvent>>[] = [];
+  for (const line of logs) {
+    if (!line.startsWith('Program data: ')) continue;
+    const encoded = line.slice('Program data: '.length);
+    const event = decodeClmmSwapEvent(encoded);
+    if (event) events.push(event);
+  }
+  if (events.length === 0) return null;
+
+  // magnitude = amount0 + amount1 (둘 다 raw integer 이므로 동일 대소 비교 가능).
+  // 동률이면 먼저 decode 된 event 가 우선 (안정적 순서).
+  let largest = events[0];
+  let largestMag = largest.amount0 + largest.amount1;
+  for (let i = 1; i < events.length; i++) {
+    const mag = events[i].amount0 + events[i].amount1;
+    if (mag > largestMag) {
+      largest = events[i];
+      largestMag = mag;
+    }
+  }
+  const event = largest;
 
   const tokenMints = sortMints(metadata.baseMint, metadata.quoteMint);
   if (!tokenMints) return null;

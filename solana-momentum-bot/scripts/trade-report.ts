@@ -43,6 +43,12 @@ interface TradeRow {
   parent_trade_id: string | null;
   // 2026-04-07: fake-fill / Phase A4 anomaly 마커 (comma-joined)
   exit_anomaly_reason: string | null;
+  // 2026-04-08 Phase E1: exit execution mechanism telemetry
+  monitor_trigger_price: string | null;
+  monitor_trigger_at: Date | string | null;
+  swap_submit_at: Date | string | null;
+  swap_response_at: Date | string | null;
+  pre_submit_tick_price: string | null;
 }
 
 // 2026-04-07: Jupiter Ultra outputAmountResult="0" fake-fill 경보 임계값은
@@ -419,6 +425,7 @@ function printCostAggregation(trades: TradeRow[]): void {
   }
 
   printTakeProfitOutcomeSummary(trades);
+  printExitLatencySummary(trades);
 
   // 2026-04-07: Jupiter Ultra saturated swap 경보 — 마킹된 row가 있으면 위쪽 집계는 왜곡됨
   const fakeFillRows = trades.filter((t) =>
@@ -440,6 +447,54 @@ function printTakeProfitOutcomeSummary(trades: TradeRow[]): void {
   const totalPnl = tp2Rows.reduce((sum, t) => sum + Number(t.pnl ?? 0), 0);
 
   console.log(` TP2 realized outcome: ${wins}W / ${losses}L | net=${formatSignedSol(totalPnl)} (n=${tp2Rows.length})`);
+}
+
+// 2026-04-08 Phase E1: exit-execution-mechanism plan 의 telemetry 한 줄 헤드라인.
+// 자세한 분포는 scripts/analysis/exit-latency-audit.ts 사용.
+function printExitLatencySummary(trades: TradeRow[]): void {
+  const cleanRows = trades.filter((t) =>
+    t.exit_anomaly_reason == null &&
+    t.monitor_trigger_at != null &&
+    t.swap_submit_at != null &&
+    t.swap_response_at != null
+  );
+  if (cleanRows.length === 0) return;
+
+  const triggerToFillMs: number[] = [];
+  const reverseRatios: number[] = [];
+  for (const t of cleanRows) {
+    const triggerAt = new Date(t.monitor_trigger_at as string | Date).getTime();
+    const responseAt = new Date(t.swap_response_at as string | Date).getTime();
+    if (Number.isFinite(triggerAt) && Number.isFinite(responseAt)) {
+      triggerToFillMs.push(responseAt - triggerAt);
+    }
+    const triggerPrice = t.monitor_trigger_price != null ? Number(t.monitor_trigger_price) : 0;
+    const exitPrice = t.exit_price != null ? Number(t.exit_price) : 0;
+    if (triggerPrice > 0 && exitPrice > 0) {
+      reverseRatios.push(((exitPrice - triggerPrice) / triggerPrice) * 100);
+    }
+  }
+  if (triggerToFillMs.length === 0 && reverseRatios.length === 0) return;
+
+  const sortedLat = [...triggerToFillMs].sort((a, b) => a - b);
+  const sortedRev = [...reverseRatios].sort((a, b) => a - b);
+  const q = (arr: number[], p: number) => {
+    if (arr.length === 0) return NaN;
+    const pos = (arr.length - 1) * p;
+    const base = Math.floor(pos);
+    const rest = pos - base;
+    return arr[base + 1] !== undefined ? arr[base] + rest * (arr[base + 1] - arr[base]) : arr[base];
+  };
+  const latP50 = q(sortedLat, 0.5);
+  const latP95 = q(sortedLat, 0.95);
+  const revP50 = q(sortedRev, 0.5);
+  const revP95 = q(sortedRev, 0.95);
+  const fmtMs = (v: number) => Number.isFinite(v) ? (v < 1000 ? `${Math.round(v)}ms` : `${(v / 1000).toFixed(2)}s`) : 'n/a';
+  const fmtPct = (v: number) => Number.isFinite(v) ? `${v >= 0 ? '+' : ''}${v.toFixed(2)}%` : 'n/a';
+  console.log(
+    ` exit latency (n=${cleanRows.length}): trigger→fill p50=${fmtMs(latP50)} p95=${fmtMs(latP95)} ` +
+    `| reverse p50=${fmtPct(revP50)} p95=${fmtPct(revP95)}`
+  );
 }
 
 function printLedgerActivity(rows: TradeRow[], window: WindowConfig): void {

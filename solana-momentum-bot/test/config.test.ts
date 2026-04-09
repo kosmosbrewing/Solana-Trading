@@ -29,4 +29,22 @@ describe('config', () => {
 
     expect(config.jupiterApiUrl).toBe('https://api.jup.ag/swap/v1');
   });
+
+  it('defaults exitMechanismMode to legacy when env is unset', async () => {
+    delete process.env.EXIT_MECHANISM_MODE;
+    const { config } = await import('../src/utils/config');
+    expect(config.exitMechanismMode).toBe('legacy');
+  });
+
+  it('parses exitMechanismMode=hybrid_c5 when env is set', async () => {
+    process.env.EXIT_MECHANISM_MODE = 'hybrid_c5';
+    const { config } = await import('../src/utils/config');
+    expect(config.exitMechanismMode).toBe('hybrid_c5');
+  });
+
+  it('falls back to legacy when exitMechanismMode env is unknown value', async () => {
+    process.env.EXIT_MECHANISM_MODE = 'tick_c2'; // not yet supported
+    const { config } = await import('../src/utils/config');
+    expect(config.exitMechanismMode).toBe('legacy');
+  });
 });

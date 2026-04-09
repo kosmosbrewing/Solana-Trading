@@ -37,11 +37,25 @@ export interface MonitoringHandles {
   pruneInterval: ReturnType<typeof setInterval>;
 }
 
+// Phase E1 (2026-04-08): exit mechanism mode 별 position check 주기.
+// - legacy: 5s (기존 동작)
+// - hybrid_c5: 1s — C1 part. swap latency 자체는 줄지 않으나 monitor observation lag 축소
+// 자세한 lifecycle 은 docs/exec-plans/active/exit-execution-mechanism-2026-04-08.md
+const POSITION_CHECK_INTERVAL_MS_LEGACY = 5000;
+const POSITION_CHECK_INTERVAL_MS_HYBRID = 1000;
+
 /**
  * 모니터링 루프 시작: position check, regime update, EventScore pruning
  */
 export async function startMonitoringLoops(deps: MonitoringDeps): Promise<MonitoringHandles> {
   // ─── Position monitor (SL/TP/Time Stop/Exhaustion)
+  const positionCheckIntervalMs = config.exitMechanismMode === 'hybrid_c5'
+    ? POSITION_CHECK_INTERVAL_MS_HYBRID
+    : POSITION_CHECK_INTERVAL_MS_LEGACY;
+  log.info(
+    `Position check interval: ${positionCheckIntervalMs}ms ` +
+    `(exitMechanismMode=${config.exitMechanismMode})`
+  );
   const positionCheckInterval = setInterval(async () => {
     try {
       await checkOpenPositions(deps.ctx);
@@ -49,7 +63,7 @@ export async function startMonitoringLoops(deps: MonitoringDeps): Promise<Monito
       log.error(`Position check error: ${error}`);
       await deps.notifier.sendError('position_check', error).catch(() => {});
     }
-  }, 5000);
+  }, positionCheckIntervalMs);
 
   // ─── Regime Filter periodic update
   let solPoolAddress: string | null = null;

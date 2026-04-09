@@ -160,6 +160,7 @@ function buildClosedEntryGroups(rows: TradeRow[], window: WindowConfig): ClosedE
     const lastRow = sorted[sorted.length - 1];
     const totalPnl = group.reduce((sum, row) => sum + Number(row.pnl ?? 0), 0);
     const tp1Hit = group.some((row) => row.exit_reason === 'TAKE_PROFIT_1');
+    const entryPrice = Number(parent.entry_price ?? 0);
     const takeProfit1 = Number(parent.take_profit1 ?? 0);
     const maxHighWaterMark = group.reduce((max, row) => Math.max(max, Number(row.high_water_mark ?? 0)), 0);
     const finalExitReason = lastRow.exit_reason ?? 'unknown';

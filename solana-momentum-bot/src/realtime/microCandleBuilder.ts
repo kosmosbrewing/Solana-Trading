@@ -6,22 +6,58 @@ export interface MicroCandleConfig {
   intervals: number[];
   maxHistory: number;
   sweepIntervalMs?: number;
+  /**
+   * Phase E1 (2026-04-08): tick sanity bound.
+   * 신규 tick 이 last close 대비 이 ratio 바깥이면 reject 한다.
+   * 기본값 0.5 = ±50% (즉 last * 0.5 ~ last * 1.5 만 accept).
+   * Why: VDOR 같은 Raydium CLMM pair 에서 관측된 multi-swap-per-tx parser artifact 가
+   * 5~12x 자릿수 bad tick 을 생산하는 케이스를 차단. monitor loop 가 bad tick 에서
+   * TP2/SL trigger 발동 후 Jupiter swap 이 정상가에서 체결되어 intent≠actual gap 폭발.
+   * 신규 pool (lastPriceByPool 미설정) 은 바운드 검증 없이 accept.
+   * 0 으로 설정하면 전면 비활성.
+   */
+  tickSanityBoundPct?: number;
 }
 
 export class MicroCandleBuilder extends EventEmitter {
   private readonly intervals: number[];
   private readonly maxHistory: number;
   private readonly sweepIntervalMs: number;
+  private readonly tickSanityBoundPct: number;
   private readonly openCandles = new Map<string, Map<number, Candle>>();
   private readonly closedCandles = new Map<string, Map<number, Candle[]>>();
   private readonly lastPriceByPool = new Map<string, number>();
   private sweepTimer?: NodeJS.Timeout;
+  // Phase E1: per-pool reject count (snapshot via getSanityRejectCounts())
+  private readonly sanityRejectCounts = new Map<string, number>();
 
   constructor(config: MicroCandleConfig) {
     super();
     this.intervals = [...new Set(config.intervals)].filter((value) => value > 0).sort((a, b) => a - b);
     this.maxHistory = config.maxHistory;
     this.sweepIntervalMs = config.sweepIntervalMs ?? 1000;
+    // default 0.5 = ±50% band; 0 또는 음수 = 비활성
+    this.tickSanityBoundPct = config.tickSanityBoundPct ?? 0.5;
+  }
+
+  /** Phase E1 telemetry: 각 pool 에서 sanity bound 로 reject 된 tick 누적 카운트. */
+  getSanityRejectCounts(): ReadonlyMap<string, number> {
+    return this.sanityRejectCounts;
+  }
+
+  /**
+   * Phase E1 (2026-04-08): sanity bound 통과 여부 판정.
+   * lastPriceByPool 미설정이면 무조건 accept (신규 pool).
+   * tickSanityBoundPct ≤ 0 이면 비활성.
+   */
+  private isSaneTick(pool: string, priceNative: number): boolean {
+    if (this.tickSanityBoundPct <= 0) return true;
+    const lastPrice = this.lastPriceByPool.get(pool);
+    if (lastPrice == null || !Number.isFinite(lastPrice) || lastPrice <= 0) return true;
+    if (!Number.isFinite(priceNative) || priceNative <= 0) return false;
+    const lo = lastPrice * (1 - this.tickSanityBoundPct);
+    const hi = lastPrice * (1 + this.tickSanityBoundPct);
+    return priceNative >= lo && priceNative <= hi;
   }
 
   start(): void {
@@ -62,6 +98,22 @@ export class MicroCandleBuilder extends EventEmitter {
   }
 
   private applySwapEvent(swap: ParsedSwap, emitEvents: boolean): void {
+    // Phase E1: per-pool price sanity check. last close 대비 ±50% 바깥 tick 은 reject.
+    // reject 시 lastPriceByPool / candle 업데이트 전혀 안 함 → downstream (monitor trigger,
+    // strategy, realtime outcome tracker) 가 bad tick 을 절대 관측하지 않는다.
+    if (!this.isSaneTick(swap.pool, swap.priceNative)) {
+      const prev = this.sanityRejectCounts.get(swap.pool) ?? 0;
+      this.sanityRejectCounts.set(swap.pool, prev + 1);
+      if (emitEvents) {
+        this.emit('tickRejected', {
+          pool: swap.pool,
+          price: swap.priceNative,
+          lastPrice: this.lastPriceByPool.get(swap.pool),
+          timestamp: swap.timestamp,
+        });
+      }
+      return;
+    }
     this.lastPriceByPool.set(swap.pool, swap.priceNative);
     if (emitEvents) {
       this.emit('tick', {

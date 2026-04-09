@@ -441,12 +441,27 @@ export function buildEntryExecutionSummary(
   if (order.price > 0 && entryPrice > 0) {
     const ratio = entryPrice / order.price;
     if (ratio < ENTRY_PRICE_SAFE_RATIO_MIN || ratio > ENTRY_PRICE_SAFE_RATIO_MAX) {
+      // 2026-04-08 P1-D2: PRICE_ANOMALY_BLOCK 이 signal 의 80%+ 를 차지하는 상태에서
+      // root cause 분해가 불가능해 입력 원본을 그대로 덤프한다. 특히 buyResult 의 raw
+      // fields (expectedInAmount, actualInputAmount, expectedOutAmount, actualOutAmount,
+      // inputDecimals, outputDecimals) 를 bits-level 로 남겨 decimals mismatch vs
+      // partial-fill vs fee-inclusion 을 사후 분류한다.
       log.error(
         `[PRICE_ANOMALY] Entry price ratio ${ratio.toFixed(6)} outside ` +
         `[${ENTRY_PRICE_SAFE_RATIO_MIN}, ${ENTRY_PRICE_SAFE_RATIO_MAX}]: ` +
         `pair=${order.pairAddress} planned=${order.price.toFixed(8)} ` +
         `actual=${entryPrice.toFixed(8)} hasActualIn=${hasActualIn} ` +
-        `hasActualOut=${hasActualOut}`
+        `hasActualOut=${hasActualOut} ` +
+        `expectedIn=${buyResult?.expectedInAmount?.toString() ?? 'null'} ` +
+        `actualIn=${buyResult?.actualInputAmount?.toString() ?? 'null'} ` +
+        `actualInUi=${buyResult?.actualInputUiAmount ?? 'null'} ` +
+        `inputDec=${buyResult?.inputDecimals ?? 'null'} ` +
+        `expectedOut=${buyResult?.expectedOutAmount?.toString() ?? 'null'} ` +
+        `actualOut=${buyResult?.actualOutAmount?.toString() ?? 'null'} ` +
+        `actualOutUi=${buyResult?.actualOutUiAmount ?? 'null'} ` +
+        `outputDec=${buyResult?.outputDecimals ?? 'null'} ` +
+        `slipBps=${buyResult?.slippageBps ?? 'null'} ` +
+        `plannedQty=${order.quantity} actualQty=${actualQuantity}`
       );
     }
   }

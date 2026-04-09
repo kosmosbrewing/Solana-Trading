@@ -46,7 +46,19 @@ export interface SwapResult {
   actualOutAmount?: bigint;    // 온체인 실제 수신량 (확인 가능 시)
   actualOutUiAmount?: number;  // 실제 수신량 (UI amount)
   outputDecimals?: number;     // output mint decimals
-  slippageBps: number;         // 실제 슬리피지 (bps)
+  /**
+   * 실제 슬리피지 (bps). 부호 convention:
+   * - **positive** (`actualOut < expectedOut`): 불리한 fill — 유저가 quote 대비 적게 받음
+   * - **zero**: actualOut == expectedOut
+   * - **negative** (`actualOut > expectedOut`): 유리한 fill — 유저가 quote 대비 많이 받음
+   *   Jupiter quote safety margin 으로 인해 드물게 발생. bug 아님.
+   *
+   * 2026-04-08 P0-M4 확인: VPS trade-report 의 `-55bps / -68bps` 케이스는
+   * 정상 favorable fill 이다. slippage 계산이 Jupiter 의 "quote → actual fill" gap 만
+   * 측정하기 때문에 monitor trigger 시점과 quote submit 시점 사이의 price movement 는
+   * 별도 telemetry (Phase E1 `monitor_trigger_price` vs `pre_submit_tick_price`) 로 측정한다.
+   */
+  slippageBps: number;
 }
 
 interface JupiterQuote {

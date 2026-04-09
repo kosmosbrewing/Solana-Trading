@@ -23,6 +23,8 @@
     "restart:bot-ops": "bash scripts/restart-bot-and-ops.sh",
     "docs:lint": "node scripts/docs-lint.js && bash scripts/check-docs-freshness.sh",
     "lint": "eslint src/ --ext .ts",
+    "typecheck": "tsc --noEmit",
+    "typecheck:scripts": "tsc --noEmit -p tsconfig.scripts.json",
     "test": "jest --config jest.config.cjs"
   },
   "dependencies": {

@@ -291,7 +291,7 @@ describe('tradeExecution paper balance', () => {
     }));
   });
 
-  it('triggers TP1 partial when a post-entry candle high touches the target', async () => {
+  it('triggers TP1 full close when a post-entry candle high touches the target (Option β 2026-04-10)', async () => {
     const trade: Trade = {
       id: 'trade-tp1',
       pairAddress: 'pair-tp1',
@@ -384,13 +384,15 @@ describe('tradeExecution paper balance', () => {
 
     await checkOpenPositions(ctx);
 
+    // Option β 2026-04-10: tp1PartialPct=0 → handleTakeProfit1Partial 의 guard 가 soldQuantity<=0
+    // 로 감지 → closeTrade full close 경로로 분기. 이전 partial (quantity: 0.3) 기대값 제거.
     expect(tradeStore.closeTrade).toHaveBeenCalledWith({
       id: 'trade-tp1',
       exitPrice: 1.1,
       pnl: expect.any(Number),
       slippage: 0,
       exitReason: 'TAKE_PROFIT_1',
-      quantity: 0.3,
+      // quantity 필드 없음 — closeTrade full close 는 trade.quantity 전체 사용 (inplicit)
       exitSlippageBps: undefined,
       decisionPrice: 1.1, // TP1 trigger price
       exitAnomalyReason: undefined, // happy path, no fake-fill
@@ -401,9 +403,11 @@ describe('tradeExecution paper balance', () => {
       swapResponseAt: expect.any(Date),
       preSubmitTickPrice: 1.05,
     });
-    expect(tradeStore.insertTrade).toHaveBeenCalledTimes(1);
-    expect(notifier.sendTradeAlert).toHaveBeenCalledWith(
-      'TP1 partial exit: volume_spike remaining 0.700000 TP1TKN, SL moved to breakeven 1.00000000'
+    // Option β: full close → remainder trade 생성 없음
+    expect(tradeStore.insertTrade).not.toHaveBeenCalled();
+    // Option β: partial 알림 없음
+    expect(notifier.sendTradeAlert).not.toHaveBeenCalledWith(
+      expect.stringContaining('TP1 partial exit')
     );
   });
 

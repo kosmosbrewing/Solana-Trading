@@ -52,15 +52,19 @@ export const tradingParams = {
     sandboxMaxPositionSol: 0.05,
   },
 
-  // ─── Order Shape (v5 runner-centric) ───
+  // ─── Order Shape (Option β 재설계 — 2026-04-10) ───
+  // Why: 48h live 에서 clean expectancy -0.00108 SOL/trade 확정 → DD halt ETA ~16일.
+  // 이전 v5 runner-centric 확장 (tp2=10.0, tp1 partial 30%) 는 backtest 2026-04-01 sweep 과 정합 X.
+  // backtest 수렴값 (tp2=5.0 100%, tp1=1.5 mode, timeStop=20-25) 복원 + TP1 partial 제거 + ATR floor.
+  // 전체 근거: docs/design-docs/strategy-redesign-2026-04-10.md
   orderShape: {
-    tp1Multiplier: 1.0,
-    tp2Multiplier: 10.0,
-    slAtrMultiplier: 1.25,                // runtime_canary: 1.25 (code_default: 1.0, live_path: 1.5)
-    timeStopMinutes: 20,
-    tp1PartialPct: 0.3,
-    trailingAfterTp1Only: true,
-    tp1TimeExtensionMinutes: 30,
+    tp1Multiplier: 1.5,                   // 1.0 → 1.5: backtest mode (2026-04-01 sweep)
+    tp2Multiplier: 5.0,                   // 10.0 → 5.0: backtest 100% 수렴 (v5 주관 확장 철회)
+    slAtrMultiplier: 1.25,                // 유지: runtime_canary 부합 (code_default 1.0, live_path overridden)
+    timeStopMinutes: 25,                  // 20 → 25: backtest mode 상단
+    tp1PartialPct: 0,                     // 0.3 → 0: TP1 partial 제거, backtest 정합 + runner thesis 순수화
+    trailingAfterTp1Only: false,          // true → false: partial 제거 후 entry 직후 trailing 가능
+    tp1TimeExtensionMinutes: 0,           // 30 → 0: no-op (partial removed)
   },
 
   // ─── Risk ───
@@ -181,9 +185,13 @@ export const tradingParams = {
     realtimeDisableSingleTxFallbackOnBatchUnsupported: true,
     realtimeSeedAllowSingleTxFallback: false,
     realtimeSlMode: 'atr',
-    realtimeSlAtrMultiplier: 1.5,
+    realtimeSlAtrMultiplier: 2.0,         // 1.5 → 2.0 (Option β 2026-04-10): noise floor + swap latency 버퍼
     realtimeSlSwingLookback: 5,
-    realtimeTimeStopMinutes: 15,
+    realtimeTimeStopMinutes: 20,          // 15 → 20 (Option β 2026-04-10): backtest mode 최하단
+    // 2026-04-10 Option β: 10s ATR 이 noise floor (0.3~0.5% of price) 수준일 때 absolute floor 강제.
+    // TP1 / SL 이 noise 에 잡히지 않도록 effective_atr = max(raw_atr, entry_price × atrFloorPct).
+    // 0.008 = 0.8% (raw noise 0.3-0.5% 위로 margin 0.3% 확보). 근거: strategy-redesign-2026-04-10.md
+    atrFloorPct: 0.008,
   },
 
   // ─── Event Context ───

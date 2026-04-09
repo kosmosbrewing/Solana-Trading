@@ -143,6 +143,7 @@ export async function processSignal(
           atrPeriod: 14,
           tp1Multiplier: config.tp1Multiplier,
           tp2Multiplier: config.tp2Multiplier,
+          atrFloorPct: config.atrFloorPct,   // Option β 2026-04-10
         }).stopLoss;
       }
       return buildVolumeSpikeOrder(signal, candles, 1, {
@@ -248,6 +249,7 @@ export async function processSignal(
           atrPeriod: 14,
           tp1Multiplier: config.tp1Multiplier,
           tp2Multiplier: config.tp2Multiplier,
+          atrFloorPct: config.atrFloorPct,   // Option β 2026-04-10
         })
         : buildVolumeSpikeOrder(signal, candles, quantity, {
           tp1Multiplier: config.tp1Multiplier,

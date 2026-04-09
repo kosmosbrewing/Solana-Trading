@@ -1231,13 +1231,18 @@ async function handleTakeProfit1Partial(
   let preSubmitTickPrice: number | undefined =
     ctx.realtimeCandleBuilder?.getCurrentPrice(trade.pairAddress) ?? undefined;
   try {
-    // v5: TP1 부분 청산 비율 — config.tp1PartialPct (기존 0.5 → 0.3)
+    // Option β (2026-04-10): tp1PartialPct=0 이면 soldQuantity=0 → 자동 full close.
+    // 이전 v5 (tp1PartialPct=0.3) 는 TP1 에서 30% 분할 청산했으나 backtest 와 정합 X
+    // 이고 live 에서 runner thesis 파괴 원인. 이제 TP1 hit 시 풀 포지션 close.
+    // partialPct > 0 케이스는 downstream 호환성을 위해 코드는 유지한다.
     const tp1PartialPct = config.tp1PartialPct;
     const soldQuantity = trade.quantity * tp1PartialPct;
     const remainingQuantity = trade.quantity - soldQuantity;
 
     if (remainingQuantity <= 0 || soldQuantity <= 0) {
-      log.warn(`Invalid TP1 split for trade ${trade.id}; closing full position instead`);
+      // Option β: tp1PartialPct=0 은 정상 full close 경로.
+      // (legacy invalid split 케이스도 같은 경로로 합류)
+      log.info(`TP1 full close for trade ${trade.id} (tp1PartialPct=${tp1PartialPct})`);
       await closeTrade(trade, 'TAKE_PROFIT_1', ctx, currentPrice);
       return;
     }

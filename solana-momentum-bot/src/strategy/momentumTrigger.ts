@@ -22,16 +22,25 @@ export interface MomentumOrderParams {
   atrPeriod: number;
   tp1Multiplier: number;
   tp2Multiplier: number;
+  /**
+   * Option β (2026-04-10): ATR floor 비율.
+   * 10s candle 의 raw ATR 이 noise floor (0.3~0.5% of price) 수준일 때,
+   * effectiveAtr = max(rawAtr, signalPrice × atrFloorPct) 로 보정한다.
+   * 0.008 = 0.8% (raw 0.3-0.5% 위로 margin 0.3% 확보).
+   * undefined 또는 0 이면 floor 비활성 (pre-redesign 동작).
+   */
+  atrFloorPct?: number;
 }
 
 const DEFAULT_ORDER_PARAMS: MomentumOrderParams = {
   slMode: 'atr',
-  slAtrMultiplier: 1.0,     // v5: 1.5→1.0 (일정한 risk 단위)
+  slAtrMultiplier: 1.0,     // code_default (runtime_canary 는 2.0, Option β 2026-04-10)
   slSwingLookback: 5,
-  timeStopMinutes: 20,      // v5: 15→20 (volume spike와 통일)
+  timeStopMinutes: 20,      // code_default (runtime_canary 20)
   atrPeriod: 14,
-  tp1Multiplier: 1.0,       // v5: 1.5→1.0
-  tp2Multiplier: 10.0,      // v5: 3.5→10.0
+  tp1Multiplier: 1.0,       // code_default (runtime_canary 1.5, Option β 2026-04-10)
+  tp2Multiplier: 10.0,      // code_default (runtime_canary 5.0, Option β 2026-04-10)
+  atrFloorPct: 0,           // code_default 비활성 (runtime_canary 0.008, Option β 2026-04-10)
 };
 
 export interface TriggerRejectStats {
@@ -204,6 +213,18 @@ export class MomentumTrigger {
   }
 }
 
+/**
+ * Option β (2026-04-10): ATR floor 계산.
+ * raw ATR 이 signalPrice × atrFloorPct 미만이면 floor 값으로 대체.
+ * floor 비활성 (undefined 또는 0) 이면 raw 그대로 반환.
+ */
+function applyAtrFloor(rawAtr: number, signalPrice: number, atrFloorPct?: number): number {
+  if (!atrFloorPct || atrFloorPct <= 0) return rawAtr;
+  if (!Number.isFinite(signalPrice) || signalPrice <= 0) return rawAtr;
+  const floor = signalPrice * atrFloorPct;
+  return Math.max(rawAtr, floor);
+}
+
 export function buildMomentumTriggerOrder(
   signal: Signal,
   candles: Candle[],
@@ -212,7 +233,10 @@ export function buildMomentumTriggerOrder(
 ): Order {
   const config = { ...DEFAULT_ORDER_PARAMS, ...params };
   const current = candles[candles.length - 1];
-  const atr = signal.meta.atr || calcATR(candles, Math.min(config.atrPeriod, candles.length - 1));
+  const rawAtr = signal.meta.atr || calcATR(candles, Math.min(config.atrPeriod, candles.length - 1));
+  // Option β 2026-04-10: ATR floor 적용. raw 가 noise 수준 (0.3-0.5%) 일 때 0.8% 로 보정.
+  // TP1/SL 이 swap latency 동안의 reversion 에 잡히지 않도록 absolute 하한선 강제.
+  const atr = applyAtrFloor(rawAtr, signal.price, config.atrFloorPct);
   const stopLoss = resolveStopLoss(signal.price, current.low, candles, atr, config);
   const trailingStop = atr > 0 ? atr : Math.max(signal.price - stopLoss, 0);
 

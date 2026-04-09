@@ -134,6 +134,7 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
           atrPeriod: 14,
           tp1Multiplier: config.tp1Multiplier,
           tp2Multiplier: config.tp2Multiplier,
+          atrFloorPct: config.atrFloorPct,   // Option β 2026-04-10
         },
         fibConfig: {
           impulseMinPct: config.fibImpulseMinPct,
@@ -221,6 +222,7 @@ export async function handleNewCandle(candle: Candle, ctx: BotContext): Promise<
             atrPeriod: 14,
             tp1Multiplier: config.tp1Multiplier,
             tp2Multiplier: config.tp2Multiplier,
+            atrFloorPct: config.atrFloorPct,   // Option β 2026-04-10
           },
           fibConfig: {
             impulseMinPct: config.fibImpulseMinPct,

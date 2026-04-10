@@ -414,11 +414,32 @@ export function buildEntryExecutionSummary(
 
   // Why: 한쪽만 fallback 되면 entryPrice가 ratio 왜곡된다 (CRITICAL_LIVE P0-A).
   // 둘 다 실측 또는 둘 다 planned로 강제한다.
+  //
+  // 2026-04-10 P1-D2 fix: output quantity sanity guard.
+  // getTokenBalance() 가 wallet 의 모든 SPL token account 를 합산하므로, 이전 거래의 잔여분이
+  // 남아있으면 balance delta 에 이전 잔고가 포함된다 (RPC timing race 시 before=0 / after=old+new).
+  // GRIFFAIN 사례: 682 tokens received vs expected 27.25 = 25x 초과 → entryPrice 25x 왜곡
+  // → Phase A3 ratio 0.04 → PRICE_ANOMALY_BLOCK (per-token 80% 차단의 주요 원인 — TD-16).
+  // Fix: actualOut 이 expected 의 5x 를 초과하면 force-to-planned 으로 전환.
+  // 이러면 Phase A3 ratio = 1.0 으로 정상 통과. 실제 fill 은 Jupiter 가 정상 처리한 것이므로
+  // trade 자체는 유효하고, 단지 "얼마에 들어갔는지" 의 기록만 planned 기준으로 남는다.
+  const OUTPUT_SANITY_MULTIPLIER = 5;
   let actualQuantity: number;
   let actualEntryNotionalSol: number;
   if (hasActualIn && hasActualOut) {
-    actualQuantity = buyResult!.actualOutUiAmount!;
-    actualEntryNotionalSol = buyResult!.actualInputUiAmount!;
+    const expectedQty = order.price > 0 ? buyResult!.actualInputUiAmount! / order.price : 0;
+    if (expectedQty > 0 && buyResult!.actualOutUiAmount! > expectedQty * OUTPUT_SANITY_MULTIPLIER) {
+      log.error(
+        `[MULTI_ACCOUNT_RISK] actualOut ${buyResult!.actualOutUiAmount!.toFixed(4)} >> ` +
+        `expected ${expectedQty.toFixed(4)} (${(buyResult!.actualOutUiAmount! / expectedQty).toFixed(1)}x) ` +
+        `pair=${order.pairAddress} — forcing planned to avoid ratio distortion`
+      );
+      actualQuantity = order.quantity;
+      actualEntryNotionalSol = plannedEntryNotionalSol;
+    } else {
+      actualQuantity = buyResult!.actualOutUiAmount!;
+      actualEntryNotionalSol = buyResult!.actualInputUiAmount!;
+    }
   } else {
     if (buyResult && (hasActualIn || hasActualOut)) {
       log.error(

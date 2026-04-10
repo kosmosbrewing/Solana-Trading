@@ -132,18 +132,20 @@ describe('buildEntryExecutionSummary (Phase A2 guard)', () => {
     expect(summary.entrySlippageBps).toBe(0);
   });
 
-  it('still builds a summary even when actual/planned ratio is way off (warn only in A2)', () => {
-    // BTW 케이스: ratio 1.5e-6 (A2는 log warn만, 차단은 A3에서)
+  it('forces planned when actualOut is 5x+ larger than expected (multi-account guard)', () => {
+    // 2026-04-10 P1-D2: GRIFFAIN 사례 — actualOut 682 tokens vs expected 27 = 25x.
+    // getTokenBalance 가 이전 잔여분을 합산하거나 RPC race 로 인한 over-report.
+    // Output sanity guard 가 발동하여 planned 로 fallback.
     const summary = buildEntryExecutionSummary(baseOrder, baseExecution, {
       actualInputUiAmount: 10,
-      actualOutUiAmount: 8_200_000, // 1 token = 0.00000122 SOL
+      actualOutUiAmount: 8_200_000, // 820_000x of expected (10/1=10) → 5x 초과 → guard 발동
       outputDecimals: 6,
       slippageBps: 0,
       txSignature: 'TX_BTW',
     } as any);
 
-    // summary는 만들어지지만 A3의 assertEntryAlignmentSafe가 recordOpenedTrade에서 차단한다
-    expect(summary.entryPrice).toBeCloseTo(10 / 8_200_000, 10);
-    expect(summary.quantity).toBe(8_200_000);
+    // Guard 발동 → force-to-planned: entryPrice = order.price, quantity = order.quantity
+    expect(summary.entryPrice).toBeCloseTo(1.0, 8);
+    expect(summary.quantity).toBe(10);
   });
 });

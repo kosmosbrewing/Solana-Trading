@@ -185,7 +185,7 @@ export const tradingParams = {
     realtimeDisableSingleTxFallbackOnBatchUnsupported: true,
     realtimeSeedAllowSingleTxFallback: false,
     realtimeSlMode: 'atr',
-    realtimeSlAtrMultiplier: 2.0,         // 1.5 → 2.0 (Option β 2026-04-10): noise floor + swap latency 버퍼
+    realtimeSlAtrMultiplier: 1.25,        // 1.5 → 1.25 (Option β-B 2026-04-10): backtest 수렴값 직접 적용. ATR floor 0.8% 가 noise 이미 흡수, RR 4.0 유지
     realtimeSlSwingLookback: 5,
     realtimeTimeStopMinutes: 20,          // 15 → 20 (Option β 2026-04-10): backtest mode 최하단
     // 2026-04-10 Option β: 10s ATR 이 noise floor (0.3~0.5% of price) 수준일 때 absolute floor 강제.

@@ -150,10 +150,10 @@ export const tradingParams = {
     scannerDexEnrichMs: 300_000,
     scannerLaneAMinAgeSec: 3_600,
     scannerLaneBMaxAgeSec: 1_200,
-    scannerReentryCooldownMs: 1_800_000,
+    scannerReentryCooldownMs: 900_000,            // 30분 → 15분 (2026-04-10 W1.5): evict → 재발견 주기 단축. edge blacklist 가 loser 이중 보호
     scannerMinimumResidencyMs: 180_000,
     scannerReplacementScoreMargin: 5,
-    scannerIdleEvictionMs: 600_000,              // 10분 — idle threshold
+    scannerIdleEvictionMs: 1_800_000,             // 10분 → 30분 (2026-04-10 W1.5): token 이 activity 가질 시간 확보. 6h idle_evicted 99% → 목표 70% 이하
     scannerIdleEvictionSweepIntervalMs: 60_000,  // 1분 — sweep 주기
   },
 

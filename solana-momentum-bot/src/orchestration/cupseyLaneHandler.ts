@@ -24,18 +24,30 @@ import { BotContext } from './types';
 const log = createModuleLogger('CupseyLane');
 
 // ─── State Machine Types ───
+//
+// STALK → PROBE → WINNER → CLOSED
+//                → REJECT → CLOSED
+//
+// STALK (신규): signal 직후 즉시 매수하지 않고 pullback 대기.
+// spike 꼭대기 매수 방지. pullback 오면 entry, 안 오면 skip.
 
-type CupseyTradeState = 'PROBE' | 'WINNER' | 'REJECT' | 'CLOSED';
+type CupseyTradeState = 'STALK' | 'PROBE' | 'WINNER' | 'REJECT' | 'CLOSED';
 
 interface CupseyPosition {
   tradeId: string;
   pairAddress: string;
+  /** STALK 시: signal price (아직 미매수). PROBE/WINNER 시: actual entry price */
   entryPrice: number;
+  /** signal 발화 시각 (STALK 시작) */
+  signalTimeSec: number;
+  /** 실제 매수 시각 (STALK → PROBE 전환 시) */
   entryTimeSec: number;
   quantity: number;
   state: CupseyTradeState;
-  peakPrice: number;  // MFE tracking
-  troughPrice: number; // MAE tracking
+  /** STALK 시: signal price (pullback 기준). PROBE/WINNER 시: entry 이후 peak */
+  signalPrice: number;
+  peakPrice: number;
+  troughPrice: number;
   tokenSymbol?: string;
 }
 
@@ -76,71 +88,33 @@ export async function handleCupseyLaneSignal(
     return;
   }
 
-  // Fixed ticket sizing (risk-per-trade 가 아닌 fixed SOL)
   const ticketSol = config.cupseyLaneTicketSol;
   const quantity = signal.price > 0 ? ticketSol / signal.price : 0;
   if (quantity <= 0) return;
 
-  // Entry execution (paper 에서는 시뮬레이션)
-  log.info(
-    `[CUPSEY_ENTRY] ${signal.pairAddress.slice(0, 12)} price=${signal.price.toFixed(8)} ` +
-    `ticket=${ticketSol} SOL strategy=cupsey_flip_10s`
-  );
-
   const now = Math.floor(Date.now() / 1000);
   const positionId = `cupsey-${signal.pairAddress.slice(0, 8)}-${now}`;
 
-  let actualEntryPrice = signal.price;
-  let actualQuantity = quantity;
-
-  if (ctx.tradingMode === 'live') {
-    // Live entry: Jupiter swap via main executor (0.01 SOL micro-ticket, 위험 한정)
-    try {
-      const ticketLamports = BigInt(Math.round(ticketSol * 1e9));
-      const order: Order = {
-        pairAddress: signal.pairAddress,
-        strategy: 'cupsey_flip_10s',
-        side: 'BUY',
-        price: signal.price,
-        quantity,
-        stopLoss: signal.price * (1 - config.cupseyProbeHardCutPct),
-        takeProfit1: signal.price * (1 + config.cupseyProbeMfeThreshold),
-        takeProfit2: signal.price * (1 + config.cupseyWinnerTrailingPct * 2),
-        timeStopMinutes: Math.ceil(config.cupseyWinnerMaxHoldSec / 60),
-      };
-      const buyResult = await ctx.executor.executeBuy(order);
-      // actual fill 반영
-      if (buyResult.actualOutUiAmount && buyResult.actualOutUiAmount > 0) {
-        actualQuantity = buyResult.actualOutUiAmount;
-      }
-      if (buyResult.actualInputUiAmount && buyResult.actualInputUiAmount > 0 && actualQuantity > 0) {
-        actualEntryPrice = buyResult.actualInputUiAmount / actualQuantity;
-      }
-      log.info(
-        `[CUPSEY_LIVE_BUY] ${positionId} sig=${buyResult.txSignature.slice(0, 12)} ` +
-        `slip=${buyResult.slippageBps}bps qty=${actualQuantity.toFixed(4)}`
-      );
-    } catch (buyErr) {
-      log.warn(`[CUPSEY_LIVE_BUY] Failed: ${buyErr}`);
-      await ctx.notifier.sendError('cupsey_entry', buyErr).catch(() => {});
-      return; // entry 실패 → position 생성 안 함
-    }
-  }
-  // Paper: signal.price 그대로 사용 (위 actualEntryPrice = signal.price)
-
+  // STALK state: 즉시 매수하지 않고 pullback 대기 (spike 꼭대기 매수 방지).
+  // signal price 에서 -0.3% 떨어지면 entry, 20s 안에 안 떨어지면 skip.
   const position: CupseyPosition = {
     tradeId: positionId,
     pairAddress: signal.pairAddress,
-    entryPrice: actualEntryPrice,
-    entryTimeSec: now,
-    quantity: actualQuantity,
-    state: 'PROBE',
-    peakPrice: actualEntryPrice,
-    troughPrice: actualEntryPrice,
+    signalPrice: signal.price,
+    entryPrice: signal.price,   // STALK 동안은 signal price (실제 entry 시 갱신)
+    signalTimeSec: now,
+    entryTimeSec: now,          // STALK → PROBE 전환 시 갱신
+    quantity,
+    state: 'STALK',
+    peakPrice: signal.price,
+    troughPrice: signal.price,
     tokenSymbol: signal.tokenSymbol,
   };
   activePositions.set(positionId, position);
-  log.info(`[CUPSEY_PROBE] ${positionId} entered PROBE state (${ctx.tradingMode})`);
+  log.info(
+    `[CUPSEY_STALK] ${positionId} ${signal.pairAddress.slice(0, 12)} ` +
+    `signalPrice=${signal.price.toFixed(8)} waiting for -${(config.cupseyStalkDropPct * 100).toFixed(1)}% pullback`
+  );
 }
 
 // ─── Tick Monitor (MicroCandleBuilder.on('tick') 에서 호출) ───
@@ -162,6 +136,91 @@ export async function updateCupseyPositions(
 
     const currentPrice = candleBuilder.getCurrentPrice(pos.pairAddress);
     if (currentPrice == null || currentPrice <= 0) continue;
+
+    // ─── STALK state: pullback 대기 (매수 전) ───
+    if (pos.state === 'STALK') {
+      const stalkElapsed = now - pos.signalTimeSec;
+      const dropFromSignal = (currentPrice - pos.signalPrice) / pos.signalPrice;
+
+      // STALK → SKIP: 시간 초과 (pullback 안 옴)
+      if (stalkElapsed >= config.cupseyStalKWindowSec) {
+        log.info(
+          `[CUPSEY_STALK_SKIP] ${id} no pullback in ${stalkElapsed}s ` +
+          `drop=${(dropFromSignal * 100).toFixed(2)}%`
+        );
+        activePositions.delete(id);
+        continue;
+      }
+
+      // STALK → SKIP: 너무 많이 떨어짐 (crash, not pullback)
+      if (dropFromSignal <= -config.cupseyStalkMaxDropPct) {
+        log.info(
+          `[CUPSEY_STALK_CRASH] ${id} drop ${(dropFromSignal * 100).toFixed(2)}% > ` +
+          `max ${(config.cupseyStalkMaxDropPct * 100).toFixed(1)}% — skipping`
+        );
+        activePositions.delete(id);
+        continue;
+      }
+
+      // STALK → PROBE: pullback 확인 → 실제 매수!
+      if (dropFromSignal <= -config.cupseyStalkDropPct) {
+        log.info(
+          `[CUPSEY_STALK_ENTRY] ${id} pullback confirmed ` +
+          `signal=${pos.signalPrice.toFixed(8)} → current=${currentPrice.toFixed(8)} ` +
+          `drop=${(dropFromSignal * 100).toFixed(2)}% — entering PROBE`
+        );
+
+        // 실제 매수 실행
+        const ticketSol = config.cupseyLaneTicketSol;
+        let actualEntryPrice = currentPrice;
+        let actualQuantity = pos.quantity;
+
+        if (ctx.tradingMode === 'live') {
+          try {
+            const order: Order = {
+              pairAddress: pos.pairAddress,
+              strategy: 'cupsey_flip_10s',
+              side: 'BUY',
+              price: currentPrice,
+              quantity: pos.quantity,
+              stopLoss: currentPrice * (1 - config.cupseyProbeHardCutPct),
+              takeProfit1: currentPrice * (1 + config.cupseyProbeMfeThreshold),
+              takeProfit2: currentPrice * (1 + config.cupseyWinnerTrailingPct * 2),
+              timeStopMinutes: Math.ceil(config.cupseyWinnerMaxHoldSec / 60),
+            };
+            const buyResult = await ctx.executor.executeBuy(order);
+            if (buyResult.actualOutUiAmount && buyResult.actualOutUiAmount > 0) {
+              actualQuantity = buyResult.actualOutUiAmount;
+            }
+            if (buyResult.actualInputUiAmount && buyResult.actualInputUiAmount > 0 && actualQuantity > 0) {
+              actualEntryPrice = buyResult.actualInputUiAmount / actualQuantity;
+            }
+            log.info(
+              `[CUPSEY_LIVE_BUY] ${id} pullback entry sig=${buyResult.txSignature.slice(0, 12)} ` +
+              `slip=${buyResult.slippageBps}bps`
+            );
+          } catch (buyErr) {
+            log.warn(`[CUPSEY_LIVE_BUY] ${id} pullback buy failed: ${buyErr}`);
+            activePositions.delete(id);
+            continue;
+          }
+        }
+
+        // STALK → PROBE 전환
+        pos.state = 'PROBE';
+        pos.entryPrice = actualEntryPrice;
+        pos.entryTimeSec = now;
+        pos.quantity = actualQuantity;
+        pos.peakPrice = actualEntryPrice;
+        pos.troughPrice = actualEntryPrice;
+        continue;
+      }
+
+      // STALK 진행 중 — 대기
+      continue;
+    }
+
+    // ─── PROBE / WINNER states (매수 후) ───
 
     // Update MFE / MAE
     pos.peakPrice = Math.max(pos.peakPrice, currentPrice);

@@ -63,7 +63,7 @@ export const config = {
   scannerEnabled: process.env.SCANNER_ENABLED === 'true',
   realtimeEnabled: boolOptional('REALTIME_ENABLED', false),
   realtimePersistenceEnabled: boolOptional('REALTIME_PERSISTENCE_ENABLED', true),
-  realtimeTriggerMode: optional('REALTIME_TRIGGER_MODE', 'bootstrap') as 'bootstrap' | 'core',
+  realtimeTriggerMode: optional('REALTIME_TRIGGER_MODE', 'bootstrap') as 'bootstrap' | 'core' | 'tick',
   realtimeReplayWarmSyncEnabled: boolOptional('REALTIME_REPLAY_WARM_SYNC_ENABLED', true),
   birdeyeWSEnabled: process.env.BIRDEYE_WS_ENABLED === 'true',
   // Why: Paper 모드에서 Birdeye Premium 미보유 시 401 → 자동 비활성화
@@ -131,6 +131,7 @@ export const config = {
     ? { scannerIdleEvictionSweepIntervalMs: Number(process.env.SCANNER_IDLE_EVICTION_SWEEP_INTERVAL_MS) }
     : {}),
   ...tradingParams.realtime,
+  ...tradingParams.tickTrigger,
   ...tradingParams.event,
   ...tradingParams.social,
   ...tradingParams.jito,

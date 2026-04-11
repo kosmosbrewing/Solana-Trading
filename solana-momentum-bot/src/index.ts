@@ -67,10 +67,12 @@ import { handleNewCandle } from './orchestration/candleHandler';
 import { handleRealtimeSignal } from './orchestration/realtimeHandler';
 import { handleCupseyLaneSignal, updateCupseyPositions } from './orchestration/cupseyLaneHandler';
 import { evaluateNewLpSniper, buildNewLpOrder, prepareNewLpCandidate } from './strategy/newLpSniper';
-import { MomentumTrigger, VolumeMcapSpikeTrigger } from './strategy';
+import { MomentumTrigger, VolumeMcapSpikeTrigger, TickTrigger } from './strategy';
 import { closeTrade } from './orchestration/tradeExecution';
+import { checkTickLevelExit } from './orchestration/tickPositionMonitor';
 import { runPreflightCheck } from './orchestration/preflightCheck';
 import { SpreadMeasurer } from './gate/spreadMeasurer';
+import { GateCacheManager } from './gate/gateCacheManager';
 import { SOL_MINT } from './utils/constants';
 import { BotContext } from './orchestration/types';
 import { resolveAmmFeePct } from './utils/dexFeeMap';
@@ -178,6 +180,7 @@ async function main() {
   let replayWarmSync: ReplayWarmSync | null = null;
   let realtimeCandleBuilder: MicroCandleBuilder | null = null;
   let bootstrapTriggerRef: VolumeMcapSpikeTrigger | null = null;
+  let tickTriggerRef: TickTrigger | null = null;
 
   const ALIAS_GRACE_PERIOD_MS = 5 * 60 * 1000;
   const pendingAliasCleanups = new Map<string, { timer: NodeJS.Timeout; poolAddress: string }>();
@@ -476,6 +479,16 @@ async function main() {
   };
   const executor = new Executor(executorConfig);
 
+  // 2026-04-11: Sandbox Executor (Strategy D live 전용, main wallet 격리)
+  let sandboxExecutor: Executor | null = null;
+  if (config.sandboxWalletKey && config.strategyDLiveEnabled) {
+    sandboxExecutor = new Executor({
+      ...executorConfig,
+      walletPrivateKey: config.sandboxWalletKey,
+    });
+    log.info('Sandbox executor initialized for Strategy D live');
+  }
+
   // ─── Phase 3: Wallet Manager (main + sandbox isolation) ───
   await walletManager.initDailyPnlStore();
 
@@ -549,14 +562,50 @@ async function main() {
       if (effectiveMode === 'paper') {
         log.info(`[PAPER] Strategy D: ${JSON.stringify(order)}`);
       }
-      // 2026-04-11 Path B1: Strategy D live 는 sandbox Executor 필요 (미구현).
-      // 현재 `executor` 는 main wallet 으로 초기화돼 있어 sandbox 격리 불가.
-      // STRATEGY_D_LIVE_ENABLED=true 가 되어도 sandbox Executor 가 없으면 실행 안 함.
-      // TODO: sandbox wallet 전용 Executor 인스턴스 생성 + 여기에 연결.
-      if (effectiveMode === 'live' && config.strategyDLiveEnabled) {
+      // 2026-04-11: Strategy D live via sandbox Executor (main wallet 격리)
+      if (effectiveMode === 'live' && config.strategyDLiveEnabled && sandboxExecutor) {
+        try {
+          log.info(
+            `[STRATEGY_D_LIVE] Executing via sandbox: ${prepared.candidate!.tokenSymbol ?? order.pairAddress.slice(0, 12)} ` +
+            `ticket=${order.quantity.toFixed(4)} SOL`
+          );
+          const buyResult = await sandboxExecutor.executeBuy(order);
+          log.info(
+            `[STRATEGY_D_LIVE] Filled: sig=${buyResult.txSignature.slice(0, 16)} ` +
+            `slip=${buyResult.slippageBps}bps qty=${buyResult.actualOutUiAmount ?? 'unknown'}`
+          );
+          // DB record
+          await tradeStore.insertTrade({
+            pairAddress: order.pairAddress,
+            strategy: 'new_lp_sniper',
+            side: 'BUY',
+            tokenSymbol: signal.tokenSymbol,
+            entryPrice: order.price,
+            quantity: order.quantity,
+            stopLoss: order.stopLoss,
+            takeProfit1: order.takeProfit1,
+            takeProfit2: order.takeProfit2,
+            trailingStop: undefined,
+            highWaterMark: order.price,
+            timeStopAt: new Date(Date.now() + (order.timeStopMinutes ?? 15) * 60_000),
+            status: 'OPEN',
+            txSignature: buyResult.txSignature,
+            createdAt: new Date(),
+          });
+          walletManager.recordPnl('sandbox', 0);
+          await notifier.sendInfo(
+            `[Strategy D Live] ${prepared.candidate!.tokenSymbol ?? 'unknown'} ` +
+            `BUY ${order.quantity.toFixed(4)} SOL via sandbox`,
+            'trade'
+          ).catch(() => {});
+        } catch (execErr) {
+          log.warn(`[STRATEGY_D_LIVE] Execution failed: ${execErr}`);
+          await notifier.sendError('strategy_d_live', execErr).catch(() => {});
+        }
+      } else if (effectiveMode === 'live' && config.strategyDLiveEnabled && !sandboxExecutor) {
         log.warn(
-          `[STRATEGY_D_LIVE] Signal detected but sandbox Executor not yet implemented. ` +
-          `Skipping live execution to prevent main wallet trade. pair=${order.pairAddress.slice(0, 12)}`
+          `[STRATEGY_D_LIVE] Signal detected but SANDBOX_WALLET_PRIVATE_KEY not configured. ` +
+          `Skipping. pair=${order.pairAddress.slice(0, 12)}`
         );
       }
     } catch (err) {
@@ -910,6 +959,17 @@ async function main() {
       // Ingester는 큐잉 후 순차 처리 (rate limit 방지)
       ingesterQueue.push(entry);
       processIngesterQueue().catch(err => log.error(`Ingester queue error: ${err}`));
+
+      // Gate cache pre-warm: tick mode에서 signal 도착 전 security/liquidity 사전 적재
+      if (ctx.gateCache && ctx.onchainSecurityClient) {
+        void (async () => {
+          const [secData, exitData] = await Promise.all([
+            ctx.onchainSecurityClient!.getTokenSecurityDetailed(entry.tokenMint),
+            ctx.onchainSecurityClient!.getExitLiquidity(entry.tokenMint),
+          ]);
+          ctx.gateCache!.set(entry.tokenMint, { tokenSecurityData: secData, exitLiquidityData: exitData });
+        })().catch(() => {});
+      }
     });
     scanner.on('candidateEvicted', (tokenMint: string, reason?: string, detail?: string, cohort?: Cohort) => {
       log.info(`Scanner: evicted ${tokenMint} reason=${reason ?? 'score'}`);
@@ -926,6 +986,9 @@ async function main() {
       ingester.removePair(tokenMint);
       universeEngine.removePool(tokenMint);
       bootstrapTriggerRef?.clearPoolContext(tokenMint);
+      tickTriggerRef?.clearPoolContext(tokenMint);
+      // Why: evicted token의 stale security data 방지 — 재발견 시 fresh fetch 강제
+      ctx.gateCache?.invalidate(tokenMint);
     });
     log.info('Scanner engine initialized');
   }
@@ -1009,6 +1072,10 @@ async function main() {
     isInGracePeriod: (tokenMint) => pendingAliasCleanups.has(tokenMint),
     // Why: Paper 모드에서 온체인 잔고 대신 시뮬레이션 잔고 (기본 1 SOL)
     paperBalance: effectiveMode === 'paper' ? config.paperInitialBalance : undefined,
+    // 2026-04-11: Strategy D sandbox executor (isSandboxStrategy trade 의 sell 에 사용)
+    sandboxExecutor: sandboxExecutor ?? undefined,
+    // 2026-04-11: Gate cache for tick mode — security/liquidity fetch 재사용 (30s TTL)
+    gateCache: config.realtimeTriggerMode === 'tick' ? new GateCacheManager(30_000) : undefined,
   };
 
   if (realtimeModeEnabled) {
@@ -1064,9 +1131,50 @@ async function main() {
       maxHistory: 200,
     });
     // Why: bootstrap 모드는 breakout/confirm 제거, volume+buyRatio만으로 발화 (signal 밀도 개선)
+    // tick 모드는 candle trigger 불필요 — swap handler에서 TickTrigger 직접 평가
     let trigger: MomentumTrigger | VolumeMcapSpikeTrigger;
 
-    if (config.realtimeTriggerMode === 'bootstrap') {
+    // Why: tick mode에서도 candle trigger는 bootstrap으로 초기화 (ATR/history 전용, eval은 skip)
+    if (config.realtimeTriggerMode === 'tick') {
+      const tickTrigger = new TickTrigger(
+        {
+          windowSec: config.tickTriggerWindowSec,
+          burstSec: config.tickTriggerBurstSec,
+          volumeSurgeMultiplier: config.tickTriggerVolumeSurgeMultiplier,
+          minBuyRatio: config.tickTriggerMinBuyRatio,
+          cooldownSec: config.tickTriggerCooldownSec,
+          sparseMinSwaps: config.tickTriggerSparseMinSwaps,
+          volumeMcapBoostThreshold: config.tickTriggerVolumeMcapBoostThreshold,
+          volumeMcapBoostMultiplier: config.tickTriggerVolumeMcapBoostMultiplier,
+        },
+        (s) => {
+          runtimeDiagnosticsTracker.recordTriggerStats(
+            `evals=${s.evaluations} signals=${s.signals} insuffSwaps=${s.insufficientSwaps} ` +
+            `volInsuf=${s.volumeInsufficient} lowBuyRatio=${s.lowBuyRatio} cooldown=${s.cooldown} ` +
+            `boosted=${s.volumeMcapBoosted} sparseRef=${s.sparseReference}`,
+            'tick_trigger',
+          );
+        },
+      );
+      for (const pool of universeEngine.getWatchlist()) {
+        if (pool.marketCap !== undefined) {
+          tickTrigger.setPoolContext(pool.pairAddress, { marketCap: pool.marketCap });
+        }
+      }
+      tickTriggerRef = tickTrigger;
+      // Why: tick mode에서도 candle-based trigger는 필요 (ATR 계산, candle persistence)
+      // bootstrap trigger를 dummy로 초기화하되 candle handler에서 eval은 skip
+      const dummyBootstrap = new VolumeMcapSpikeTrigger({
+        primaryIntervalSec: config.realtimePrimaryIntervalSec,
+        volumeSurgeLookback: config.realtimeVolumeSurgeLookback,
+        volumeSurgeMultiplier: config.realtimeVolumeSurgeMultiplier,
+        cooldownSec: config.realtimeCooldownSec,
+        minBuyRatio: config.realtimeBootstrapMinBuyRatio,
+        atrPeriod: 14,
+      });
+      trigger = dummyBootstrap;
+      log.info(`Trigger: tick (vm=${config.tickTriggerVolumeSurgeMultiplier}, br=${config.tickTriggerMinBuyRatio}, burst=${config.tickTriggerBurstSec}s)`);
+    } else if (config.realtimeTriggerMode === 'bootstrap') {
       const bootstrapTrigger = new VolumeMcapSpikeTrigger(
         {
           primaryIntervalSec: config.realtimePrimaryIntervalSec,
@@ -1199,6 +1307,38 @@ async function main() {
       if (scanner && swap.amountQuote > 0) {
         scanner.updateActivity(logicalPair);
       }
+      // [Tick Mode] swap마다 즉시 trigger 평가 — candle close 대기 없음
+      if (config.realtimeTriggerMode === 'tick' && tickTriggerRef) {
+        if (!ctx.riskManager.isCapSuppressed(logicalPair)) {
+          const signal = tickTriggerRef.onTick({
+            pool: logicalPair,
+            amountQuote: swap.amountQuote,
+            side: swap.side,
+            priceNative: swap.priceNative,
+            timestamp: swap.timestamp ?? Date.now(),
+          });
+          if (signal) {
+            log.info(`🎯 Tick signal: ${signal.strategy} ${signal.pairAddress.slice(0, 12)}… price=${signal.price} vr=${signal.meta.volumeRatio?.toFixed(1)}`);
+            void handleRealtimeSignal(signal, realtimeCandleBuilder!, ctx).catch((err) => {
+              log.error(`Tick signal handling failed: ${err}`);
+              notifier.sendError('tick_signal', err).catch(() => {});
+            });
+            if (config.cupseyLaneEnabled) {
+              void handleCupseyLaneSignal(signal, realtimeCandleBuilder!, ctx).catch((err) => {
+                log.error(`Tick cupsey signal handling failed: ${err}`);
+              });
+            }
+          }
+        }
+        // Tick-level position monitoring: 활성 포지션의 swap → 즉시 SL/TP 체크
+        void checkTickLevelExit(logicalPair, swap.priceNative, ctx).catch((err) => {
+          log.warn(`Tick position monitor error: ${err}`);
+        });
+        // Cupsey position update on each swap (tick mode only)
+        if (config.cupseyLaneEnabled) {
+          void updateCupseyPositions(ctx, realtimeCandleBuilder!).catch(() => {});
+        }
+      }
     });
     heliusIngester.on('parseMiss', ({ pool }: { pool: string }) => {
       realtimeAdmissionTracker?.recordParseMiss(pool);
@@ -1254,14 +1394,17 @@ async function main() {
           }
           return;
         }
-        const signal = trigger.onCandle(candle, realtimeCandleBuilder!);
-        if (signal) {
-          log.info(`🎯 Signal fired: ${signal.strategy} ${signal.pairAddress.slice(0, 12)}… price=${signal.price} vr=${signal.meta.volumeRatio?.toFixed(1)}`);
-          await handleRealtimeSignal(signal, realtimeCandleBuilder!, ctx);
-          // Path A (2026-04-11): cupsey-inspired lane — 같은 signal, 별도 post-entry state machine.
-          // 기존 handleRealtimeSignal 과 독립적으로 실행. sandbox ticket, main core 오염 없음.
-          if (config.cupseyLaneEnabled) {
-            await handleCupseyLaneSignal(signal, realtimeCandleBuilder!, ctx);
+        // Trigger evaluation: tick mode에서는 swap handler에서 이미 평가 → candle trigger skip
+        if (config.realtimeTriggerMode !== 'tick') {
+          const signal = trigger.onCandle(candle, realtimeCandleBuilder!);
+          if (signal) {
+            log.info(`🎯 Signal fired: ${signal.strategy} ${signal.pairAddress.slice(0, 12)}… price=${signal.price} vr=${signal.meta.volumeRatio?.toFixed(1)}`);
+            await handleRealtimeSignal(signal, realtimeCandleBuilder!, ctx);
+            // Path A (2026-04-11): cupsey-inspired lane — 같은 signal, 별도 post-entry state machine.
+            // 기존 handleRealtimeSignal 과 독립적으로 실행. sandbox ticket, main core 오염 없음.
+            if (config.cupseyLaneEnabled) {
+              await handleCupseyLaneSignal(signal, realtimeCandleBuilder!, ctx);
+            }
           }
         }
         // Path A: cupsey position monitoring (매 candle tick 마다)
@@ -1400,11 +1543,18 @@ async function main() {
       void heliusIngester!.subscribePools(
         resolveRealtimePools(pools.map((pool) => pool.pairAddress))
       );
-      // Bootstrap trigger mcap context 갱신
+      // Bootstrap/Tick trigger mcap context 갱신
       if (bootstrapTriggerRef) {
         for (const pool of pools) {
           if (pool.marketCap !== undefined) {
             bootstrapTriggerRef.setPoolContext(pool.pairAddress, { marketCap: pool.marketCap });
+          }
+        }
+      }
+      if (tickTriggerRef) {
+        for (const pool of pools) {
+          if (pool.marketCap !== undefined) {
+            tickTriggerRef.setPoolContext(pool.pairAddress, { marketCap: pool.marketCap });
           }
         }
       }

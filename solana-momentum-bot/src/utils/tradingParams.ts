@@ -163,7 +163,7 @@ export const tradingParams = {
     realtimePrimaryIntervalSec: 10,
     realtimeConfirmIntervalSec: 60,
     realtimeVolumeSurgeLookback: 20,
-    realtimeVolumeSurgeMultiplier: 1.8,   // runtime_canary: 1.8 (code_default: 3.0)
+    realtimeVolumeSurgeMultiplier: 1.3,   // 1.8 → 1.3 (2026-04-11): signal 고갈 해소. cupsey STALK 가 noise 관리
     realtimeSparseVolumeLookback: 120,    // sparse DEX: wider window에서 non-zero candle 탐색 (120 × 10s = 20min)
     realtimeMinActiveCandles: 2,          // sparse avg 계산에 필요한 최소 non-zero candle 수 (runtime 완화: 3→2)
     realtimePriceBreakoutLookback: 20,
@@ -172,7 +172,7 @@ export const tradingParams = {
     realtimeCooldownSec: 300,
     realtimeOutcomeHorizonsSec: [30, 60, 180, 300],
     realtimeMaxSubscriptions: 30,
-    realtimeBootstrapMinBuyRatio: 0.60,   // runtime_canary: 0.60 (code_default: 0.55)
+    realtimeBootstrapMinBuyRatio: 0.50,   // 0.60 → 0.50 (2026-04-11): signal 고갈 해소. STALK + PROBE 가 noise 관리
     realtimeVolumeMcapBoostThreshold: 0.005, // low-cap/high-turnover 포착 완화 (runtime zero-boost 빈도 완화)
     realtimeVolumeMcapBoostMultiplier: 1.5,
     realtimePoolDiscoveryConcurrency: 6,   // 4→6: filter 강화 후에도 burst 흡수 여유 확보
@@ -192,6 +192,20 @@ export const tradingParams = {
     // TP1 / SL 이 noise 에 잡히지 않도록 effective_atr = max(raw_atr, entry_price × atrFloorPct).
     // 0.008 = 0.8% (raw noise 0.3-0.5% 위로 margin 0.3% 확보). 근거: strategy-redesign-2026-04-10.md
     atrFloorPct: 0.008,
+  },
+
+  // ─── Tick Trigger (2026-04-11, Sub-Second Architecture) ───
+  // Why: 10s candle close 대기 제거 → raw swap event마다 즉시 trigger 평가.
+  // 기존 bootstrap_10s와 동일한 volume/buyRatio metric, 평가 시점만 즉시로 변경.
+  tickTrigger: {
+    tickTriggerWindowSec: 200,                    // rolling window 전체
+    tickTriggerBurstSec: 10,                      // burst 구간 (기존 candle interval 대체)
+    tickTriggerVolumeSurgeMultiplier: 1.3,        // 기존 realtime과 동일
+    tickTriggerMinBuyRatio: 0.50,                 // 기존 realtime과 동일
+    tickTriggerCooldownSec: 300,                  // 기존 realtime과 동일
+    tickTriggerSparseMinSwaps: 3,                 // burst window 내 최소 swap 수
+    tickTriggerVolumeMcapBoostThreshold: 0.005,   // 기존 realtime과 동일
+    tickTriggerVolumeMcapBoostMultiplier: 1.5,    // 기존 realtime과 동일
   },
 
   // ─── Event Context ───

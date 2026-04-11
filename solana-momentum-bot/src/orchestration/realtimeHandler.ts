@@ -92,7 +92,14 @@ export async function handleRealtimeSignal(
 
   let tokenSecurityData = undefined;
   let exitLiquidityData = undefined;
-  if (config.securityGateEnabled && ctx.onchainSecurityClient) {
+
+  // Gate cache: tick mode에서 동일 토큰 반복 fetch 방지
+  // Why: security/exit liquidity만 cache — spread/sellImpact은 quote 기반이라 매번 측정
+  const cached = ctx.gateCache?.get(poolInfo.tokenMint);
+  if (cached) {
+    tokenSecurityData = cached.tokenSecurityData;
+    exitLiquidityData = cached.exitLiquidityData;
+  } else if (config.securityGateEnabled && ctx.onchainSecurityClient) {
     try {
       const [secData, exitData] = await Promise.all([
         ctx.onchainSecurityClient.getTokenSecurityDetailed(poolInfo.tokenMint),
@@ -103,6 +110,10 @@ export async function handleRealtimeSignal(
       // P2-3: Token-2022 감지 시 로그
       if (secData?.tokenProgram === 'spl-token-2022') {
         log.info(`Token-2022 detected: ${poolInfo.tokenMint} extensions=[${secData.extensions?.join(',') ?? ''}]`);
+      }
+      // cache에 저장 (다음 signal에서 재사용)
+      if (ctx.gateCache) {
+        ctx.gateCache.set(poolInfo.tokenMint, { tokenSecurityData: secData, exitLiquidityData: exitData });
       }
     } catch (error) {
       log.warn(`Realtime security data fetch failed for ${poolInfo.tokenMint}: ${error}`);

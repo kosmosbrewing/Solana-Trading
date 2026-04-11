@@ -22,6 +22,7 @@ const STRATEGY_LABELS: Record<StrategyName, string> = {
   volume_spike: 'Volume Spike',
   bootstrap_10s: 'Bootstrap 10s',
   core_momentum: 'Core Momentum',
+  tick_momentum: 'Tick Momentum',
   fib_pullback: 'Fib Pullback',
   new_lp_sniper: 'New LP Sniper',
   momentum_cascade: 'Momentum Cascade',

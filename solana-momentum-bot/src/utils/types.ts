@@ -131,6 +131,7 @@ export type StrategyName =
   | 'volume_spike'       // Strategy A: 5min breakout
   | 'bootstrap_10s'      // Realtime bootstrap trigger (10s volume+buyRatio)
   | 'core_momentum'      // Realtime core trigger (10s 3-AND, standby)
+  | 'tick_momentum'      // Tick-level trigger (raw swap, sub-second eval)
   | 'fib_pullback'       // Strategy C: confirmed pullback
   | 'new_lp_sniper'      // Strategy D: sandbox LP sniper
   | 'momentum_cascade'   // Strategy E: conditional add-on
@@ -142,6 +143,7 @@ export const VOLUME_SPIKE_FAMILY: ReadonlySet<StrategyName> = new Set([
   'volume_spike',
   'bootstrap_10s',
   'core_momentum',
+  'tick_momentum',
 ]);
 
 export function isVolumeSpikeFamilyStrategy(s: StrategyName): boolean {

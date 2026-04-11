@@ -2,7 +2,7 @@ import { GateEvaluationResult } from '../gate';
 import { config } from '../utils/config';
 import { FAKE_FILL_SLIPPAGE_BPS_THRESHOLD } from '../utils/constants';
 import { createModuleLogger } from '../utils/logger';
-import { Candle, CloseReason, Order, Signal, Trade } from '../utils/types';
+import { Candle, CloseReason, Order, Signal, Trade, isSandboxStrategy } from '../utils/types';
 import { bpsToDecimal, decimalToBps } from '../utils/units';
 import { calcATR, calcAdaptiveTrailingStop, checkExhaustion } from '../strategy';
 import { PositionStore } from '../state';
@@ -737,20 +737,25 @@ export async function closeTrade(
     if (ctx.tradingMode === 'paper') {
       txSignature = 'PAPER_TRADE';
     } else {
+      // 2026-04-11: sandbox strategy (new_lp_sniper, cupsey_flip_10s) 는 sandboxExecutor 로 sell.
+      // main wallet 에 token 이 없으므로 main executor 로 sell 하면 실패.
+      const sellExecutor = (isSandboxStrategy(trade.strategy) && ctx.sandboxExecutor)
+        ? ctx.sandboxExecutor
+        : ctx.executor;
       await updatePositionsForPair(ctx, trade.pairAddress, 'EXIT_TRIGGERED', { exitReason: reason });
-      const tokenBalance = await ctx.executor.getTokenBalance(trade.pairAddress);
+      const tokenBalance = await sellExecutor.getTokenBalance(trade.pairAddress);
 
       if (tokenBalance > 0n) {
-        const solBefore = await ctx.executor.getBalance();
+        const solBefore = await sellExecutor.getBalance();
         // Phase E1: swap 호출 직전 시각 + tick price 재캡처 (live 에서만 의미 있음)
         swapSubmitAt = new Date();
         preSubmitTickPrice =
           ctx.realtimeCandleBuilder?.getCurrentPrice(trade.pairAddress) ?? preSubmitTickPrice;
-        const sellResult = await ctx.executor.executeSell(trade.pairAddress, tokenBalance);
+        const sellResult = await sellExecutor.executeSell(trade.pairAddress, tokenBalance);
         swapResponseAt = new Date();
         txSignature = sellResult.txSignature;
 
-        const solAfter = await ctx.executor.getBalance();
+        const solAfter = await sellExecutor.getBalance();
         const receivedSol = solAfter - solBefore;
 
         const resolved = resolveExitFillOrFakeFill({

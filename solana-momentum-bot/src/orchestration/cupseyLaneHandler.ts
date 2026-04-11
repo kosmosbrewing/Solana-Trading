@@ -15,8 +15,9 @@
  */
 
 import { createModuleLogger } from '../utils/logger';
-import { Signal } from '../utils/types';
+import { Signal, Order } from '../utils/types';
 import { config } from '../utils/config';
+import { SOL_MINT } from '../utils/constants';
 import { MicroCandleBuilder } from '../realtime';
 import { BotContext } from './types';
 
@@ -89,30 +90,57 @@ export async function handleCupseyLaneSignal(
   const now = Math.floor(Date.now() / 1000);
   const positionId = `cupsey-${signal.pairAddress.slice(0, 8)}-${now}`;
 
-  // Why: cupsey lane 은 paper mode 전용 (live 는 sandbox wallet executor 필요 — 미구현).
-  // live 에서 flag 켜도 entry 안 함 — 안전장치.
-  if (ctx.tradingMode !== 'paper') {
-    log.debug(`Cupsey lane skip: live mode not supported yet (paper only)`);
-    return;
+  let actualEntryPrice = signal.price;
+  let actualQuantity = quantity;
+
+  if (ctx.tradingMode === 'live') {
+    // Live entry: Jupiter swap via main executor (0.01 SOL micro-ticket, 위험 한정)
+    try {
+      const ticketLamports = BigInt(Math.round(ticketSol * 1e9));
+      const order: Order = {
+        pairAddress: signal.pairAddress,
+        strategy: 'cupsey_flip_10s',
+        side: 'BUY',
+        price: signal.price,
+        quantity,
+        stopLoss: signal.price * (1 - config.cupseyProbeHardCutPct),
+        takeProfit1: signal.price * (1 + config.cupseyProbeMfeThreshold),
+        takeProfit2: signal.price * (1 + config.cupseyWinnerTrailingPct * 2),
+        timeStopMinutes: Math.ceil(config.cupseyWinnerMaxHoldSec / 60),
+      };
+      const buyResult = await ctx.executor.executeBuy(order);
+      // actual fill 반영
+      if (buyResult.actualOutUiAmount && buyResult.actualOutUiAmount > 0) {
+        actualQuantity = buyResult.actualOutUiAmount;
+      }
+      if (buyResult.actualInputUiAmount && buyResult.actualInputUiAmount > 0 && actualQuantity > 0) {
+        actualEntryPrice = buyResult.actualInputUiAmount / actualQuantity;
+      }
+      log.info(
+        `[CUPSEY_LIVE_BUY] ${positionId} sig=${buyResult.txSignature.slice(0, 12)} ` +
+        `slip=${buyResult.slippageBps}bps qty=${actualQuantity.toFixed(4)}`
+      );
+    } catch (buyErr) {
+      log.warn(`[CUPSEY_LIVE_BUY] Failed: ${buyErr}`);
+      await ctx.notifier.sendError('cupsey_entry', buyErr).catch(() => {});
+      return; // entry 실패 → position 생성 안 함
+    }
   }
+  // Paper: signal.price 그대로 사용 (위 actualEntryPrice = signal.price)
 
   const position: CupseyPosition = {
     tradeId: positionId,
     pairAddress: signal.pairAddress,
-    entryPrice: signal.price,
+    entryPrice: actualEntryPrice,
     entryTimeSec: now,
-    quantity,
+    quantity: actualQuantity,
     state: 'PROBE',
-    peakPrice: signal.price,
-    troughPrice: signal.price,
+    peakPrice: actualEntryPrice,
+    troughPrice: actualEntryPrice,
     tokenSymbol: signal.tokenSymbol,
   };
   activePositions.set(positionId, position);
-  log.info(`[CUPSEY_PROBE] ${positionId} entered PROBE state`);
-
-  // Why: cupsey lane 은 자체 paper balance 를 추적하지 않음 (main core 격리).
-  // 대신 DB record 의 strategy='cupsey_flip_10s' 로 분리 집계.
-  // ctx.paperBalance 는 건드리지 않는다 — main core 오염 방지.
+  log.info(`[CUPSEY_PROBE] ${positionId} entered PROBE state (${ctx.tradingMode})`);
 }
 
 // ─── Tick Monitor (MicroCandleBuilder.on('tick') 에서 호출) ───
@@ -223,14 +251,38 @@ async function closeCupseyPosition(
   reason: string,
   ctx: BotContext
 ): Promise<void> {
-  const pnl = (exitPrice - pos.entryPrice) * pos.quantity;
-  const pnlPct = pos.entryPrice > 0 ? ((exitPrice - pos.entryPrice) / pos.entryPrice) * 100 : 0;
+  let actualExitPrice = exitPrice;
   const holdSec = Math.floor(Date.now() / 1000) - pos.entryTimeSec;
 
   pos.state = 'CLOSED';
 
-  // Why: cupsey lane 은 ctx.paperBalance 를 건드리지 않는다 (main core 격리).
-  // PnL 은 DB record (strategy='cupsey_flip_10s') 에서만 집계.
+  // Live exit: Jupiter sell
+  if (ctx.tradingMode === 'live') {
+    try {
+      const tokenBalance = await ctx.executor.getTokenBalance(pos.pairAddress);
+      if (tokenBalance > 0n) {
+        const solBefore = await ctx.executor.getBalance();
+        const sellResult = await ctx.executor.executeSell(pos.pairAddress, tokenBalance);
+        const solAfter = await ctx.executor.getBalance();
+        const receivedSol = solAfter - solBefore;
+        if (receivedSol > 0 && pos.quantity > 0) {
+          actualExitPrice = receivedSol / pos.quantity;
+        }
+        log.info(
+          `[CUPSEY_LIVE_SELL] ${id} sig=${sellResult.txSignature.slice(0, 12)} ` +
+          `received=${receivedSol.toFixed(6)} SOL slip=${sellResult.slippageBps}bps`
+        );
+      } else {
+        log.warn(`[CUPSEY_LIVE_SELL] ${id} no token balance — closing at current price`);
+      }
+    } catch (sellErr) {
+      log.warn(`[CUPSEY_LIVE_SELL] ${id} sell failed: ${sellErr}`);
+      // sell 실패해도 position state 는 CLOSED 로 전환 (stale 방지)
+    }
+  }
+
+  const pnl = (actualExitPrice - pos.entryPrice) * pos.quantity;
+  const pnlPct = pos.entryPrice > 0 ? ((actualExitPrice - pos.entryPrice) / pos.entryPrice) * 100 : 0;
 
   // DB record: insert → 반환된 id 로 즉시 close (race condition 방지)
   try {

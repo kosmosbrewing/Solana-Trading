@@ -65,6 +65,7 @@ import { SignalAuditLogger } from './audit';
 import { scheduleDailySummary } from './orchestration/reporting';
 import { handleNewCandle } from './orchestration/candleHandler';
 import { handleRealtimeSignal } from './orchestration/realtimeHandler';
+import { handleCupseyLaneSignal, updateCupseyPositions } from './orchestration/cupseyLaneHandler';
 import { evaluateNewLpSniper, buildNewLpOrder, prepareNewLpCandidate } from './strategy/newLpSniper';
 import { MomentumTrigger, VolumeMcapSpikeTrigger } from './strategy';
 import { closeTrade } from './orchestration/tradeExecution';
@@ -548,7 +549,16 @@ async function main() {
       if (effectiveMode === 'paper') {
         log.info(`[PAPER] Strategy D: ${JSON.stringify(order)}`);
       }
-      // Live execution은 Jito bundle + sandbox wallet 통합 후 활성화
+      // 2026-04-11 Path B1: Strategy D live 는 sandbox Executor 필요 (미구현).
+      // 현재 `executor` 는 main wallet 으로 초기화돼 있어 sandbox 격리 불가.
+      // STRATEGY_D_LIVE_ENABLED=true 가 되어도 sandbox Executor 가 없으면 실행 안 함.
+      // TODO: sandbox wallet 전용 Executor 인스턴스 생성 + 여기에 연결.
+      if (effectiveMode === 'live' && config.strategyDLiveEnabled) {
+        log.warn(
+          `[STRATEGY_D_LIVE] Signal detected but sandbox Executor not yet implemented. ` +
+          `Skipping live execution to prevent main wallet trade. pair=${order.pairAddress.slice(0, 12)}`
+        );
+      }
     } catch (err) {
       log.warn(`Strategy D evaluation failed (${sourceLabel}): ${err}`);
     }
@@ -1248,6 +1258,15 @@ async function main() {
         if (signal) {
           log.info(`🎯 Signal fired: ${signal.strategy} ${signal.pairAddress.slice(0, 12)}… price=${signal.price} vr=${signal.meta.volumeRatio?.toFixed(1)}`);
           await handleRealtimeSignal(signal, realtimeCandleBuilder!, ctx);
+          // Path A (2026-04-11): cupsey-inspired lane — 같은 signal, 별도 post-entry state machine.
+          // 기존 handleRealtimeSignal 과 독립적으로 실행. sandbox ticket, main core 오염 없음.
+          if (config.cupseyLaneEnabled) {
+            await handleCupseyLaneSignal(signal, realtimeCandleBuilder!, ctx);
+          }
+        }
+        // Path A: cupsey position monitoring (매 candle tick 마다)
+        if (config.cupseyLaneEnabled) {
+          await updateCupseyPositions(ctx, realtimeCandleBuilder!);
         }
       } catch (error) {
         log.error(`Realtime candle handling failed: ${error}`);
@@ -1391,6 +1410,31 @@ async function main() {
       }
     });
     log.info('Real-time Helius pipeline started');
+  }
+
+  // Path B2 (2026-04-11): KOL wallet tracker — cupsey wallet buy 감지 → scanner watchlist 추가
+  if (config.kolWalletTrackingEnabled && config.kolWalletAddresses.length > 0 && scanner) {
+    const { KolWalletTracker } = await import('./discovery/kolWalletTracker');
+    const kolTracker = new KolWalletTracker({
+      rpcUrl: config.solanaRpcUrl,
+      walletAddresses: config.kolWalletAddresses,
+    });
+    kolTracker.on('buy', (signal: { tokenMint: string; estimatedPrice: number; walletAddress: string }) => {
+      log.info(
+        `[KOL_DISCOVERY] ${signal.walletAddress.slice(0, 8)} → ${signal.tokenMint.slice(0, 12)} ` +
+        `price=${signal.estimatedPrice.toFixed(8)} — adding to scanner`
+      );
+      scanner!.addManualEntry(
+        signal.tokenMint,
+        signal.tokenMint, // pairAddress = tokenMint (scanner 가 pair resolve)
+        `KOL:${signal.walletAddress.slice(0, 8)}`
+      );
+    });
+    kolTracker.on('error', ({ wallet, error }: { wallet: string; error: unknown }) => {
+      log.warn(`KOL tracker error for ${wallet.slice(0, 8)}: ${error}`);
+    });
+    await kolTracker.start();
+    log.info(`KOL wallet tracker started: ${config.kolWalletAddresses.length} wallets`);
   }
 
   // Phase 1A: Start scanner + WS

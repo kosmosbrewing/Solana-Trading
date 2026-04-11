@@ -232,6 +232,24 @@ export const tradingParams = {
     pm2AllowedProcesses: ['momentum-bot', 'momentum-ops-bot'] as string[],
   },
 
+  // ─── Cupsey-Inspired Lane (2026-04-11, Path A) ───
+  // Why: bootstrap_10s trigger 의 entry timing 이 lagging → post-entry 30-45s 판정으로 winner/loser 분류.
+  // 기존 core 와 완전 격리된 sandbox lane. 근거: docs/design-docs/mission-pivot-ab-parallel-2026-04-11.md
+  cupseyLane: {
+    cupseyLaneTicketSol: 0.01,         // fixed micro-ticket (risk-per-trade 가 아닌 fixed)
+    cupseyProbeWindowSec: 45,          // PROBE 관찰 구간 (cupsey p75=1.8m 의 1/3)
+    cupseyProbeMfeThreshold: 0.001,    // +0.1% MFE → WINNER_MODE 전환
+    cupseyProbeHardCutPct: 0.01,       // -1.0% MAE → 즉시 REJECT
+    cupseyWinnerMaxHoldSec: 300,       // WINNER_MODE 최대 보유 5min
+    cupseyWinnerTrailingPct: 0.005,    // 0.5% trailing distance
+    cupseyWinnerBreakevenPct: 0.001,   // winner 진입 후 SL = entry + 0.1%
+  },
+
+  // ─── KOL Wallet Tracking (2026-04-11, Path B2) ───
+  kolTracking: {
+    kolWalletAddresses: [] as string[], // 운영 시 env 로 override
+  },
+
   // ─── Operator ───
   operator: {
     operatorTokenBlacklist: [] as string[],

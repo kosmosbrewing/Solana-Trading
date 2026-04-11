@@ -25,6 +25,7 @@ const STRATEGY_LABELS: Record<StrategyName, string> = {
   fib_pullback: 'Fib Pullback',
   new_lp_sniper: 'New LP Sniper',
   momentum_cascade: 'Momentum Cascade',
+  cupsey_flip_10s: 'Cupsey Flip 10s',
 };
 
 const CLOSE_REASON_LABELS: Record<CloseReason, string> = {

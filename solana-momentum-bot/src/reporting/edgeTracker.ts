@@ -63,6 +63,7 @@ export interface PairBlacklistConfig {
 const STRATEGIES: StrategyName[] = [
   'volume_spike', 'bootstrap_10s', 'core_momentum',
   'fib_pullback', 'new_lp_sniper', 'momentum_cascade',
+  'cupsey_flip_10s',
 ];
 const DEFAULT_PAIR_BLACKLIST_CONFIG: PairBlacklistConfig = {
   minTrades: 5,

@@ -133,7 +133,8 @@ export type StrategyName =
   | 'core_momentum'      // Realtime core trigger (10s 3-AND, standby)
   | 'fib_pullback'       // Strategy C: confirmed pullback
   | 'new_lp_sniper'      // Strategy D: sandbox LP sniper
-  | 'momentum_cascade';  // Strategy E: conditional add-on
+  | 'momentum_cascade'   // Strategy E: conditional add-on
+  | 'cupsey_flip_10s';   // Path A: cupsey-inspired quick-reject + winner-hold lane (sandbox)
 
 // Why: volume_spike order building logic을 bootstrap_10s, core_momentum도 공유한다.
 // 라우팅(order shape, scoring, gate)은 같지만 expectancy/reporting은 분리 집계.
@@ -151,6 +152,7 @@ export function isVolumeSpikeFamilyStrategy(s: StrategyName): boolean {
 // 포트폴리오 수준 quality metrics(risk tier, Kelly, drawdown guard)에 섞지 않는다.
 export const SANDBOX_STRATEGIES: ReadonlySet<StrategyName> = new Set([
   'new_lp_sniper',
+  'cupsey_flip_10s',  // Path A: sandbox lane, main core 오염 차단
 ]);
 
 export function isSandboxStrategy(s: StrategyName): boolean {

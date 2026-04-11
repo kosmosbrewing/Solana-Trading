@@ -96,6 +96,12 @@ export const config = {
   bypassEdgeBlacklist: boolOptional('BOT_BYPASS_EDGE_BLACKLIST', false),
   realtimePoolDiscoveryEnabled: boolOptional('REALTIME_POOL_DISCOVERY_ENABLED', true),
   realtimeSeedBackfillEnabled: boolOptional('REALTIME_SEED_BACKFILL_ENABLED', true),
+  // 2026-04-11: Path A — cupsey-inspired lane (sandbox, post-entry state machine)
+  cupseyLaneEnabled: boolOptional('CUPSEY_LANE_ENABLED', false),
+  // 2026-04-11: Path B1 — Strategy D live execution (sandbox wallet only)
+  strategyDLiveEnabled: boolOptional('STRATEGY_D_LIVE_ENABLED', false),
+  // 2026-04-11: Path B2 — KOL wallet tracking (discovery source)
+  kolWalletTrackingEnabled: boolOptional('KOL_WALLET_TRACKING_ENABLED', false),
 
   // ─── Tier 3: Trading Params (코드 관리 — tradingParams.ts) ───
   ...tradingParams.universe,
@@ -132,4 +138,6 @@ export const config = {
   ...tradingParams.safety,
   ...tradingParams.notification,
   ...tradingParams.operator,
+  ...tradingParams.cupseyLane,
+  ...tradingParams.kolTracking,
 } as const;

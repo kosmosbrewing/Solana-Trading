@@ -237,11 +237,17 @@ export const tradingParams = {
   // 기존 core 와 완전 격리된 sandbox lane. 근거: docs/design-docs/mission-pivot-ab-parallel-2026-04-11.md
   cupseyLane: {
     cupseyLaneTicketSol: 0.01,         // fixed micro-ticket (risk-per-trade 가 아닌 fixed)
-    cupseyProbeWindowSec: 45,          // PROBE 관찰 구간 (cupsey p75=1.8m 의 1/3)
-    cupseyProbeMfeThreshold: 0.001,    // +0.1% MFE → WINNER_MODE 전환
-    cupseyProbeHardCutPct: 0.01,       // -1.0% MAE → 즉시 REJECT
-    cupseyWinnerMaxHoldSec: 300,       // WINNER_MODE 최대 보유 5min
-    cupseyWinnerTrailingPct: 0.005,    // 0.5% trailing distance
+    // STALK phase: signal 직후 즉시 매수하지 않고 pullback 대기 (spike 꼭대기 매수 방지)
+    cupseyStalKWindowSec: 20,          // signal 후 pullback 대기 시간
+    cupseyStalkDropPct: 0.003,         // signal price 에서 -0.3% 떨어지면 entry (pullback confirmed)
+    cupseyStalkMaxDropPct: 0.015,      // -1.5% 이상 떨어지면 skip (crash, not pullback)
+    // PROBE phase: 진입 후 초기 방향 판정
+    cupseyProbeWindowSec: 45,          // PROBE 관찰 구간
+    cupseyProbeMfeThreshold: 0.0005,   // +0.05% MFE → WINNER (0.001 → 0.0005, 더 쉽게 승격)
+    cupseyProbeHardCutPct: 0.008,      // -0.8% MAE → 즉시 REJECT (0.01 → 0.008, 더 빠른 손절)
+    // WINNER phase: runner 보유
+    cupseyWinnerMaxHoldSec: 480,       // WINNER_MODE 최대 보유 8min (backtest grid 최적: 5m→8m 으로 runner 캡쳐)
+    cupseyWinnerTrailingPct: 0.015,    // 1.5% trailing distance (0.005 → 0.015, runner 여유)
     cupseyWinnerBreakevenPct: 0.001,   // winner 진입 후 SL = entry + 0.1%
   },
 

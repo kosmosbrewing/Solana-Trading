@@ -11,6 +11,7 @@ import { RiskManager, RegimeFilter } from '../risk';
 import { ScannerEngine, SocialMentionTracker } from '../scanner';
 import { ExecutionLock, PositionStore } from '../state';
 import { UniverseEngine } from '../universe';
+import { GateCacheManager } from '../gate/gateCacheManager';
 import { HealthMonitor } from '../utils/healthMonitor';
 import { TradingMode } from '../utils/config';
 import { RealtimeReplayStore } from '../realtime';
@@ -67,4 +68,8 @@ export interface BotContext {
   isInGracePeriod?: (tokenMint: string) => boolean;
   /** Paper 모드 시뮬레이션 잔고 (SOL). PnL에 따라 동적 업데이트 */
   paperBalance?: number;
+  /** 2026-04-11: Strategy D sandbox Executor (main wallet 격리). isSandboxStrategy 인 trade 의 sell 에 사용 */
+  sandboxExecutor?: Executor;
+  /** 2026-04-11: Gate result cache for tick mode — security/liquidity fetch 재사용 */
+  gateCache?: GateCacheManager;
 }

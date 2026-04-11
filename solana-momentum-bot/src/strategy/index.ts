@@ -8,6 +8,8 @@ export { MomentumTrigger, buildMomentumTriggerOrder } from './momentumTrigger';
 export type { MomentumTriggerConfig, MomentumOrderParams, TriggerRejectStats } from './momentumTrigger';
 export { VolumeMcapSpikeTrigger } from './volumeMcapSpikeTrigger';
 export type { VolumeMcapSpikeTriggerConfig, BootstrapRejectStats } from './volumeMcapSpikeTrigger';
+export { TickTrigger } from './tickTrigger';
+export type { TickTriggerConfig, TickTriggerRejectStats, SwapEntry } from './tickTrigger';
 
 export {
   calcATR,

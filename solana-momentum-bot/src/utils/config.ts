@@ -140,5 +140,12 @@ export const config = {
   ...tradingParams.notification,
   ...tradingParams.operator,
   ...tradingParams.cupseyLane,
+  // ─── Cupsey / Execution Operational Overrides (.env — 배포 없이 변경) ───
+  ...(process.env.EXECUTION_RR_REJECT
+    ? { executionRrReject: Number(process.env.EXECUTION_RR_REJECT) }
+    : {}),
+  ...(process.env.CUPSEY_LANE_TICKET_SOL
+    ? { cupseyLaneTicketSol: Number(process.env.CUPSEY_LANE_TICKET_SOL) }
+    : {}),
   ...tradingParams.kolTracking,
 } as const;

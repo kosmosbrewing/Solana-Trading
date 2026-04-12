@@ -245,9 +245,22 @@ export function isDegraded(tradeId: string): boolean {
   return degradedStateMap.has(tradeId);
 }
 
-function applyPaperExitProceeds(ctx: BotContext, quantity: number, exitPrice: number): void {
+function applyPaperExitProceeds(ctx: BotContext, quantity: number, exitPrice: number, costDeduction: number = 0): void {
   if (ctx.tradingMode !== 'paper' || ctx.paperBalance == null) return;
-  ctx.paperBalance = Math.max(0, ctx.paperBalance + (quantity * exitPrice));
+  ctx.paperBalance = Math.max(0, ctx.paperBalance + (quantity * exitPrice) - costDeduction);
+}
+
+// Why: paper 모드는 wallet delta 없이 시장가로 PnL 계산 → AMM fee/slippage 비용 누락.
+// live 모드는 wallet balance delta 에 비용이 자연 포함되므로 0 반환.
+function estimatePaperCost(
+  tradingMode: string,
+  entryPrice: number,
+  quantity: number,
+  roundTripCostPct?: number | null,
+): number {
+  if (tradingMode !== 'paper') return 0;
+  const costPct = roundTripCostPct ?? (config.defaultAmmFeePct + config.defaultMevMarginPct);
+  return entryPrice * quantity * costPct;
 }
 
 /**
@@ -347,9 +360,11 @@ export async function handleDegradedExitPhase1(
     }
   }
 
-  const realizedPnl = (exitPrice - trade.entryPrice) * soldQuantity;
+  const rawPnl = (exitPrice - trade.entryPrice) * soldQuantity;
+  const degradedPaperCost = estimatePaperCost(ctx.tradingMode, trade.entryPrice, soldQuantity, trade.roundTripCostPct);
+  const realizedPnl = rawPnl - degradedPaperCost;
   const degradedExitSlippageBps = ctx.tradingMode === 'live' ? decimalToBps(executionSlippage) : undefined;
-  applyPaperExitProceeds(ctx, soldQuantity, exitPrice);
+  applyPaperExitProceeds(ctx, soldQuantity, exitPrice, degradedPaperCost);
 
   // P1-4: degraded exit trigger reason 판정
   const failCount = quoteFailCountMap.get(trade.id) ?? 0;
@@ -782,9 +797,11 @@ export async function closeTrade(
     // Why: sanitizedDecisionPrice = clamp 적용된 decision price (Phase E1),
     // originalDecisionPrice = caller 원본값 (telemetry 보존용)
     const decisionPrice = sanitizedDecisionPrice;
-    const pnl = (exitPrice - trade.entryPrice) * trade.quantity;
+    const rawPnl = (exitPrice - trade.entryPrice) * trade.quantity;
+    const paperCost = estimatePaperCost(ctx.tradingMode, trade.entryPrice, trade.quantity, trade.roundTripCostPct);
+    const pnl = rawPnl - paperCost;
     const exitSlippageBps = ctx.tradingMode === 'live' ? decimalToBps(executionSlippage) : undefined;
-    applyPaperExitProceeds(ctx, trade.quantity, exitPrice);
+    applyPaperExitProceeds(ctx, trade.quantity, exitPrice, paperCost);
 
     // Phase A4: exitPrice/entryPrice 단위 정합성 cross-check.
     // ratio < -95% 또는 > +1000%면 단위 오염 또는 fill 이상 → loud error + anomaly 플래그.
@@ -1289,9 +1306,11 @@ async function handleTakeProfit1Partial(
       tp1AnomalyReason = resolved.anomalyReason;
     }
 
-    const realizedPnl = (exitPrice - trade.entryPrice) * soldQuantity;
+    const rawPnl = (exitPrice - trade.entryPrice) * soldQuantity;
+    const tp1PaperCost = estimatePaperCost(ctx.tradingMode, trade.entryPrice, soldQuantity, trade.roundTripCostPct);
+    const realizedPnl = rawPnl - tp1PaperCost;
     const tp1ExitSlippageBps = ctx.tradingMode === 'live' ? decimalToBps(executionSlippage) : undefined;
-    applyPaperExitProceeds(ctx, soldQuantity, exitPrice);
+    applyPaperExitProceeds(ctx, soldQuantity, exitPrice, tp1PaperCost);
 
     await ctx.tradeStore.closeTrade({
       id: trade.id,
@@ -1434,9 +1453,11 @@ async function handleRunnerGradeBPartial(
       runnerBAnomalyReason = resolved.anomalyReason;
     }
 
-    const realizedPnl = (exitPrice - trade.entryPrice) * soldQuantity;
+    const rawPnl = (exitPrice - trade.entryPrice) * soldQuantity;
+    const runnerBPaperCost = estimatePaperCost(ctx.tradingMode, trade.entryPrice, soldQuantity, trade.roundTripCostPct);
+    const realizedPnl = rawPnl - runnerBPaperCost;
     const tp2ExitSlippageBps = ctx.tradingMode === 'live' ? decimalToBps(executionSlippage) : undefined;
-    applyPaperExitProceeds(ctx, soldQuantity, exitPrice);
+    applyPaperExitProceeds(ctx, soldQuantity, exitPrice, runnerBPaperCost);
     await ctx.tradeStore.closeTrade({
       id: trade.id,
       exitPrice,

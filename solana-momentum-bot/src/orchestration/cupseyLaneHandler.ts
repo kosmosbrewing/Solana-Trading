@@ -83,7 +83,7 @@ export async function handleCupseyLaneSignal(
 
   // Guard: max concurrent cupsey positions (sandbox 보호)
   const activeCount = [...activePositions.values()].filter(p => p.state !== 'CLOSED').length;
-  if (activeCount >= 3) {
+  if (activeCount >= config.cupseyMaxConcurrent) {
     log.debug(`Cupsey lane skip: max concurrent (${activeCount})`);
     return;
   }
@@ -340,7 +340,12 @@ async function closeCupseyPosition(
     }
   }
 
-  const pnl = (actualExitPrice - pos.entryPrice) * pos.quantity;
+  const rawPnl = (actualExitPrice - pos.entryPrice) * pos.quantity;
+  // Why: paper 모드는 wallet delta 없이 시장가로 PnL 계산 → AMM/MEV 비용 누락
+  const paperCost = ctx.tradingMode === 'paper'
+    ? pos.entryPrice * pos.quantity * (config.defaultAmmFeePct + config.defaultMevMarginPct)
+    : 0;
+  const pnl = rawPnl - paperCost;
   const pnlPct = pos.entryPrice > 0 ? ((actualExitPrice - pos.entryPrice) / pos.entryPrice) * 100 : 0;
 
   // DB record: insert → 반환된 id 로 즉시 close (race condition 방지)

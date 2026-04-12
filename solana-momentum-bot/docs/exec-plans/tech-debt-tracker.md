@@ -1,6 +1,6 @@
 # Tech Debt Tracker
 
-> Last updated: 2026-04-08
+> Last updated: 2026-04-12
 > Scope: 현재 운영과 직접 맞닿은 기술 부채만 남긴다.
 > Related: [`active/exit-execution-mechanism-2026-04-08.md`](./active/exit-execution-mechanism-2026-04-08.md) (TD-15 참조)
 
@@ -32,7 +32,7 @@
 | TD-6 | venue-aware cost model | 가정값 비중 큼 | 실거래 cost 실측 후 보정 |
 | TD-7 | realtime/watchlist churn 관측성 | 로그는 있으나 요약이 약함 | source별 retained/reject 집계 강화 |
 | TD-9 | `round_trip_cost_pct` 값이 entry-time snapshot (라벨만 정정됨) | 2026-04-07 PR 로 라벨만 `(entry-time gate snapshot)` 표기 | `realized_round_trip_cost_pct` 컬럼 신설 + closeTrade 시 실측값 기록 — `live-ops-integrity-2026-04-07.md` Phase S-2 |
-| TD-10 | paper mode `decision == fill` 가정 → fake-fill path 미시뮬 | canary 신뢰도 저하 | paper 실행 시 가짜 slippage 분포 주입 — Phase S-3 |
+| TD-10 | paper mode `decision == fill` 가정 → fake-fill path 미시뮬 | **부분 해소 (2026-04-12)**: `estimatePaperCost()` 로 왕복 비용(AMM+MEV+impact) 차감 도입. PnL/paperBalance 모두 적용. fake-fill 시뮬은 미완 | fake-fill slippage 분포 주입 — Phase S-3 (잔여) |
 
 ## Low Priority
 
@@ -54,3 +54,4 @@
 | TD-R7 | fake-fill fallback 4경로 중복 + `currentPrice` 가장 (Phase E P0~P3) | 2026-04-07 |
 | TD-R8 | `tradeStore.closeTrade()` positional 11개 → `CloseTradeOptions` 객체 (Phase S-1) | 2026-04-07 |
 | TD-R9 | bps ↔ decimal 변환 매직넘버 → `src/utils/units.ts` (Phase S-5) | 2026-04-07 |
+| TD-R10 | paper mode PnL 비용 0% 반영 → 수익 과대계상 | 2026-04-12 — `estimatePaperCost()` helper + 4개 exit path 적용 (closeTrade/TP1/RunnerB/DegradedExit). `roundTripCostPct` 우선, fallback `ammFee+mev=0.45%` |

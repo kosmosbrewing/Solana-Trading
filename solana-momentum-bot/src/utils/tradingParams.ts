@@ -97,7 +97,7 @@ export const tradingParams = {
     perTokenLossCooldownLosses: 2,
     perTokenLossCooldownMinutes: 240,
     perTokenDailyTradeCap: 15,
-    executionRrReject: 1.2,
+    executionRrReject: 99.0,               // 1.2 → 99.0 (cupsey-primary): bootstrap 실거래 100% 억제. rollback: env EXECUTION_RR_REJECT=1.2
     executionRrPass: 1.5,
     executionRrBasis: 'tp2' as 'tp1' | 'tp2',
   },
@@ -263,6 +263,7 @@ export const tradingParams = {
     cupseyWinnerMaxHoldSec: 480,       // WINNER_MODE 최대 보유 8min (backtest grid 최적: 5m→8m 으로 runner 캡쳐)
     cupseyWinnerTrailingPct: 0.015,    // 1.5% trailing distance (0.005 → 0.015, runner 여유)
     cupseyWinnerBreakevenPct: 0.001,   // winner 진입 후 SL = entry + 0.1%
+    cupseyMaxConcurrent: 3,            // 동시 cupsey 포지션 상한
   },
 
   // ─── KOL Wallet Tracking (2026-04-11, Path B2) ───

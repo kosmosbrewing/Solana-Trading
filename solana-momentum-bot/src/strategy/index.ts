@@ -1,3 +1,6 @@
+export { evaluateCupseySignalGate } from './cupseySignalGate';
+export type { CupseySignalGateConfig, CupseySignalGateResult } from './cupseySignalGate';
+
 export {
   evaluateVolumeSpikeBreakout,
   buildVolumeSpikeOrder,

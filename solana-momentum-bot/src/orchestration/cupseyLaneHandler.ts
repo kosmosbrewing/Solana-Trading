@@ -17,8 +17,8 @@
 import { createModuleLogger } from '../utils/logger';
 import { Signal, Order } from '../utils/types';
 import { config } from '../utils/config';
-import { SOL_MINT } from '../utils/constants';
 import { MicroCandleBuilder } from '../realtime';
+import { evaluateCupseySignalGate, CupseySignalGateConfig } from '../strategy/cupseySignalGate';
 import { BotContext } from './types';
 
 const log = createModuleLogger('CupseyLane');
@@ -86,6 +86,38 @@ export async function handleCupseyLaneSignal(
   if (activeCount >= config.cupseyMaxConcurrent) {
     log.debug(`Cupsey lane skip: max concurrent (${activeCount})`);
     return;
+  }
+
+  // ─── Signal Quality Gate ───
+  if (config.cupseyGateEnabled) {
+    const recentCandles = candleBuilder.getRecentCandles(
+      signal.pairAddress,
+      config.realtimePrimaryIntervalSec,
+      config.cupseyGateLookbackBars
+    );
+    const gateConfig: CupseySignalGateConfig = {
+      enabled: true,
+      minVolumeAccelRatio: config.cupseyGateMinVolumeAccelRatio,
+      minPriceChangePct: config.cupseyGateMinPriceChangePct,
+      minAvgBuyRatio: config.cupseyGateMinAvgBuyRatio,
+      minTradeCountRatio: config.cupseyGateMinTradeCountRatio,
+      lookbackBars: config.cupseyGateLookbackBars,
+      recentBars: config.cupseyGateRecentBars,
+    };
+    const gateResult = evaluateCupseySignalGate(recentCandles, gateConfig);
+    if (!gateResult.pass) {
+      log.debug(
+        `[CUPSEY_GATE_REJECT] ${signal.pairAddress.slice(0, 12)} ` +
+        `reason=${gateResult.rejectReason} score=${gateResult.score}`
+      );
+      return;
+    }
+    log.info(
+      `[CUPSEY_GATE_PASS] ${signal.pairAddress.slice(0, 12)} ` +
+      `score=${gateResult.score} vol=${gateResult.factors.volumeAccelRatio.toFixed(2)} ` +
+      `price=${(gateResult.factors.priceChangePct * 100).toFixed(3)}% ` +
+      `buy=${gateResult.factors.avgBuyRatio.toFixed(3)}`
+    );
   }
 
   const ticketSol = config.cupseyLaneTicketSol;

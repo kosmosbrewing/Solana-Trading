@@ -16,7 +16,7 @@ export const tradingParams = {
     minDailyVolume: 10_000,
     minTradeCount24h: 50,
     maxSpreadPct: 0.03,
-    maxWatchlistSize: 20,
+    maxWatchlistSize: 30,              // 20 → 30 (cupsey-primary): signal 공급 확대. 동시 감시 풀 수 +50%
     universeRefreshIntervalMs: 300_000,
   },
 
@@ -163,7 +163,7 @@ export const tradingParams = {
     realtimePrimaryIntervalSec: 10,
     realtimeConfirmIntervalSec: 60,
     realtimeVolumeSurgeLookback: 20,
-    realtimeVolumeSurgeMultiplier: 1.3,   // 1.8 → 1.3 (2026-04-11): signal 고갈 해소. cupsey STALK 가 noise 관리
+    realtimeVolumeSurgeMultiplier: 2.5,   // 1.3 → 2.5 (2026-04-12): signal quality gate 도입 후 trigger 품질 강화. noise signal 원천 차단
     realtimeSparseVolumeLookback: 120,    // sparse DEX: wider window에서 non-zero candle 탐색 (120 × 10s = 20min)
     realtimeMinActiveCandles: 2,          // sparse avg 계산에 필요한 최소 non-zero candle 수 (runtime 완화: 3→2)
     realtimePriceBreakoutLookback: 20,
@@ -172,7 +172,7 @@ export const tradingParams = {
     realtimeCooldownSec: 300,
     realtimeOutcomeHorizonsSec: [30, 60, 180, 300],
     realtimeMaxSubscriptions: 30,
-    realtimeBootstrapMinBuyRatio: 0.50,   // 0.60 → 0.50 (2026-04-11): signal 고갈 해소. STALK + PROBE 가 noise 관리
+    realtimeBootstrapMinBuyRatio: 0.70,   // 0.50 → 0.70 (2026-04-12): signal quality gate 도입 후 trigger 품질 강화. 저품질 buy pressure signal 차단
     realtimeVolumeMcapBoostThreshold: 0.005, // low-cap/high-turnover 포착 완화 (runtime zero-boost 빈도 완화)
     realtimeVolumeMcapBoostMultiplier: 1.5,
     realtimePoolDiscoveryConcurrency: 6,   // 4→6: filter 강화 후에도 burst 흡수 여유 확보
@@ -253,17 +253,31 @@ export const tradingParams = {
     cupseyLaneTicketSol: 0.01,         // fixed micro-ticket (risk-per-trade 가 아닌 fixed)
     // STALK phase: signal 직후 즉시 매수하지 않고 pullback 대기 (spike 꼭대기 매수 방지)
     cupseyStalKWindowSec: 20,          // signal 후 pullback 대기 시간
-    cupseyStalkDropPct: 0.003,         // signal price 에서 -0.3% 떨어지면 entry (pullback confirmed)
+    cupseyStalkDropPct: 0.005,         // 0.003 → 0.005 (2026-04-12 sweep 최적): signal price 에서 -0.5% 떨어지면 entry. 더 깊은 pullback 확인
     cupseyStalkMaxDropPct: 0.015,      // -1.5% 이상 떨어지면 skip (crash, not pullback)
     // PROBE phase: 진입 후 초기 방향 판정
     cupseyProbeWindowSec: 45,          // PROBE 관찰 구간
-    cupseyProbeMfeThreshold: 0.0005,   // +0.05% MFE → WINNER (0.001 → 0.0005, 더 쉽게 승격)
+    cupseyProbeMfeThreshold: 0.020,    // 0.0005 → 0.020 (2026-04-12 sweep 최적): +2.0% MFE → WINNER. 노이즈 승격 방지, 진짜 모멘텀만 통과
     cupseyProbeHardCutPct: 0.008,      // -0.8% MAE → 즉시 REJECT (0.01 → 0.008, 더 빠른 손절)
     // WINNER phase: runner 보유
-    cupseyWinnerMaxHoldSec: 480,       // WINNER_MODE 최대 보유 8min (backtest grid 최적: 5m→8m 으로 runner 캡쳐)
-    cupseyWinnerTrailingPct: 0.015,    // 1.5% trailing distance (0.005 → 0.015, runner 여유)
-    cupseyWinnerBreakevenPct: 0.001,   // winner 진입 후 SL = entry + 0.1%
-    cupseyMaxConcurrent: 3,            // 동시 cupsey 포지션 상한
+    cupseyWinnerMaxHoldSec: 720,       // 480 → 720 (2026-04-12 sweep 최적): 12min 최대 보유. runner 캡처 시간 확대
+    cupseyWinnerTrailingPct: 0.040,    // 0.015 → 0.040 (2026-04-12 sweep 최적): 4.0% trailing distance. runner 에 충분한 여유
+    cupseyWinnerBreakevenPct: 0.005,   // 0.001 → 0.005 (2026-04-12 sweep 최적): winner SL = entry + 0.5%. noise whipsaw 방어 강화
+    cupseyMaxConcurrent: 5,            // 3 → 5 (cupsey-primary): signal 유실 감소. 0.05 SOL 최대 lock
+  },
+
+  // ─── Cupsey Signal Quality Gate (2026-04-12) ───
+  // Why: bootstrap trigger 가 volume spike peak 에서 발화 → lagging entry timing.
+  // multi-bar momentum 사전 검증으로 단일-bar noise signal 필터.
+  // 좋은 signal = 수 바 동안 지속된 volume + 상승 가격. 나쁜 signal = 단일 바 flush.
+  cupseyGate: {
+    cupseyGateEnabled: true,
+    cupseyGateMinVolumeAccelRatio: 1.5,   // 3-bar avg / baseline avg ≥ 1.5x (sustained, not isolated)
+    cupseyGateMinPriceChangePct: 0.001,   // +0.1% over 3 bars (trending up)
+    cupseyGateMinAvgBuyRatio: 0.55,       // 3-bar avg buy ratio ≥ 0.55 (sustained buy pressure)
+    cupseyGateMinTradeCountRatio: 1.5,    // 3-bar avg trades / baseline avg ≥ 1.5x (organic vs whale)
+    cupseyGateLookbackBars: 20,           // baseline window
+    cupseyGateRecentBars: 3,              // recent momentum window
   },
 
   // ─── KOL Wallet Tracking (2026-04-11, Path B2) ───

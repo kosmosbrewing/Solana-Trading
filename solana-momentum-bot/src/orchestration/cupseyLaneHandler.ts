@@ -14,14 +14,54 @@
  * sandbox wallet + fixed ticket sizing.
  */
 
+import { appendFile, mkdir } from 'fs/promises';
+import path from 'path';
 import { createModuleLogger } from '../utils/logger';
 import { Signal, Order } from '../utils/types';
 import { config } from '../utils/config';
 import { MicroCandleBuilder } from '../realtime';
-import { evaluateCupseySignalGate, CupseySignalGateConfig } from '../strategy/cupseySignalGate';
+import { evaluateCupseySignalGate, CupseySignalGateConfig, CupseySignalGateResult } from '../strategy/cupseySignalGate';
 import { BotContext } from './types';
 
 const log = createModuleLogger('CupseyLane');
+
+// ─── Gate Log Persistence (Phase 0 measurement) ───
+// Why: gate score + factors 를 JSONL 로 persist 하여 Phase 1 score-outcome 상관 분석에 사용.
+// pass + reject 모두 기록. 거래 파라미터는 건드리지 않음.
+
+let gateLogDirEnsured = false;
+
+async function persistCupseyGateLog(
+  pairAddress: string,
+  signalPrice: number,
+  gateResult: CupseySignalGateResult,
+  tokenSymbol?: string
+): Promise<void> {
+  try {
+    const logDir = config.realtimeDataDir;
+    if (!gateLogDirEnsured) {
+      await mkdir(logDir, { recursive: true });
+      gateLogDirEnsured = true;
+    }
+    const entry = {
+      t: new Date().toISOString(),
+      pair: pairAddress,
+      sym: tokenSymbol,
+      price: signalPrice,
+      pass: gateResult.pass,
+      score: gateResult.score,
+      f: gateResult.factors,
+      reason: gateResult.rejectReason ?? null,
+    };
+    await appendFile(
+      path.join(logDir, 'cupsey-gate-log.jsonl'),
+      JSON.stringify(entry) + '\n',
+      'utf8'
+    );
+  } catch {
+    // Why: persist 실패해도 trading path 차단하지 않음
+  }
+}
 
 // ─── State Machine Types ───
 //
@@ -105,6 +145,8 @@ export async function handleCupseyLaneSignal(
       recentBars: config.cupseyGateRecentBars,
     };
     const gateResult = evaluateCupseySignalGate(recentCandles, gateConfig);
+    // Why: Phase 0 measurement — pass/reject 모두 persist하여 score-outcome 상관 분석 가능
+    persistCupseyGateLog(signal.pairAddress, signal.price, gateResult, signal.tokenSymbol);
     if (!gateResult.pass) {
       log.debug(
         `[CUPSEY_GATE_REJECT] ${signal.pairAddress.slice(0, 12)} ` +

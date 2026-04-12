@@ -47,13 +47,15 @@ describe('tradeExecution paper balance', () => {
 
     await closeTrade(trade, 'TAKE_PROFIT_2', ctx, 1.2);
 
-    expect(ctx.paperBalance).toBeCloseTo(1.2, 8);
+    // Paper 비용 차감: entryPrice * quantity * (ammFee + mev) = 1.0 * 1.0 * 0.0045 = 0.0045
+    const paperCost = 1.0 * 1.0 * (0.003 + 0.0015);
+    expect(ctx.paperBalance).toBeCloseTo(1.2 - paperCost, 8);
     expect(tradeStore.closeTrade).toHaveBeenCalledTimes(1);
     // TD-8: closeTrade는 단일 options object를 받는다.
     const [opts] = tradeStore.closeTrade.mock.calls[0];
     expect(opts.id).toBe('trade-1');
     expect(opts.exitPrice).toBeCloseTo(1.2, 8);
-    expect(opts.pnl).toBeCloseTo(0.2, 8);
+    expect(opts.pnl).toBeCloseTo(0.2 - paperCost, 8);
     expect(opts.slippage).toBe(0);
     expect(opts.exitReason).toBe('TAKE_PROFIT_2');
     expect(opts.decisionPrice).toBe(1.2);

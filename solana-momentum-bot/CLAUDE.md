@@ -7,6 +7,7 @@
 - 에이전트 규칙 + 문서 맵: [`AGENTS.md`](./AGENTS.md)
 - mission / plan hierarchy: [`PLAN.md`](./PLAN.md)
 - 현재 active execution plan: [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md)
+- **현재 운영 모드 (2026-04-12)**: Cupsey-Primary — bootstrap signal-only (`executionRrReject=99.0`), cupsey_flip_10s 실거래 primary
 - **현재 binding constraint (2026-04-08)**: [`docs/exec-plans/active/exit-execution-mechanism-2026-04-08.md`](./docs/exec-plans/active/exit-execution-mechanism-2026-04-08.md) — monitor → swap latency mechanism
 - **2026-04-08 triage**: [`docs/audits/mission-recovery-triage-2026-04-08.md`](./docs/audits/mission-recovery-triage-2026-04-08.md)
 - archive: [`PLAN_CMPL.md`](./PLAN_CMPL.md)

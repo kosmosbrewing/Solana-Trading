@@ -1,9 +1,36 @@
 # STRATEGY_NOTES.md
 
 > Status: forward strategy memo
-> Updated: 2026-04-08
+> Updated: 2026-04-12
 > Purpose: 현재 전략 구조의 한계 가설, v5 방향성, 다음 전략 질문을 분리 관리한다.
 > Runtime quick ref: [`STRATEGY.md`](./STRATEGY.md)
+
+## 2026-04-12 — Cupsey-Primary 전환 + Paper PnL Cost Deduction
+
+### Cupsey-Primary 운영 전환
+
+24시간 운영 로그 분석 결과에 따라 bootstrap → cupsey-primary로 전환:
+
+- **bootstrap_10s**: 99 trades, +0.04 SOL, 26% WR, MFE(0.23%) < cost(0.31%) → 구조적 음의 기대값
+- **cupsey_flip_10s**: 17 trades, +0.65 SOL, 59% WR → 명확한 알파 후보
+- **핵심 관계**: cupsey는 bootstrap signal에 기생 — bootstrap trigger 없이 작동 불가
+
+**방법**: `executionRrReject: 99.0`으로 bootstrap 실거래 100% gate 차단. signal 생성은 유지 (cupsey의 trigger source). 코드 1줄, env rollback 즉시 가능 (`EXECUTION_RR_REJECT=1.2`).
+
+**추가**: `cupseyMaxConcurrent` 설정 이관 (하드코딩 3 → config), `CUPSEY_LANE_TICKET_SOL` env override 추가 (50-trade 합격 후 ticket 확대용).
+
+### Paper PnL Cost Deduction 도입
+
+**문제**: Paper 모드 PnL에 AMM fee/slippage/MEV 비용이 0% 반영 → 수익을 체계적으로 과대계상. bootstrap_10s가 +0.04 SOL (양수) 보고했으나 비용 차감 시 ~-0.01 SOL (적자) — gate 분석 "MFE < cost" 와 정합.
+
+**수정**: 4개 exit path (closeTrade, TP1 partial, Runner B partial, Degraded exit)에 paper 모드 비용 추정 적용:
+- Gate 통과 trade: `trade.roundTripCostPct` 사용 (사전 계산된 entry+exit impact+AMM+MEV)
+- Cupsey/fallback: `defaultAmmFeePct + defaultMevMarginPct` = 0.45% (최소 보수 추정)
+- **Live 모드: 변경 없음** — wallet balance delta에 모든 비용이 이미 포함
+
+**영향**: Paper 모드 WR과 expectancy가 현실에 더 가까워짐. 기존에 borderline 양수였던 trade가 음수로 정정됨.
+
+---
 
 ## 2026-04-08 — Exit 구조 적합성 미검증 메모
 
@@ -224,7 +251,7 @@ per-token PnL 분해로 runner vs flat 비율 확인 필요.
 - runner hold가 실제로 다수 손실을 덮는 구조를 만드는가
 - **TP2 10.0 vs 5.0**: sweep 최적 5.0 → v5 runner-centric 10.0 확장. config.ts 기본값은 10.0이나 검증 미완. Live 50-trade 후 TP2 도달률로 판단. 도달률 < 5%면 5.0 복원 검토.
 - replay blacklist 후보가 live에서도 반복 손실 토큰인지
-- live actual-cost accounting 보정 후 DB PnL과 wallet PnL 차이가 얼마나 줄어드는지
+- ~~live actual-cost accounting 보정 후 DB PnL과 wallet PnL 차이가 얼마나 줄어드는지~~ **해소 (2026-04-12)**: paper 모드 PnL에 roundTripCostPct 차감 도입. Live는 이미 wallet delta 방식으로 비용 반영 확인됨
 - **decision_price 계측 활성화 (04-06)**: TP2 종료인데 PnL 음수인 원인을 exitGap + rtCost로 분해 가능. Live 10건+ 수집 후 TP distance vs actual cost 점검 예정.
 
 ## Future: 소셜/온체인 인텔리전스 플랫폼 (Phase 4+)

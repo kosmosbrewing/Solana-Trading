@@ -125,21 +125,25 @@ function analyzeTrades(trades: TradeRow[]) {
     exitReasons[reason] = (exitReasons[reason] ?? 0) + 1;
   }
 
-  // STALK success: non-STALK_TIMEOUT/STALK_CRASH trades = entries that reached PROBE
+  // Why: cupseyLaneHandler는 STALK skip을 DB에 기록하지 않음 (activePositions.delete만 수행).
+  // DB에 있는 trade는 전부 PROBE 진입한 것. STALK_TIMEOUT 비율은 gate log에서만 추정 가능.
   const stalkTimeouts = trades.filter(t =>
     t.exit_reason === 'STALK_TIMEOUT' || t.exit_reason === 'STALK_CRASH'
   ).length;
   const probeEntries = trades.length - stalkTimeouts;
 
-  // Hold time (only for trades that entered PROBE)
-  const holdSecs = trades
-    .filter(t => t.closed_at && t.created_at && t.exit_reason !== 'STALK_TIMEOUT' && t.exit_reason !== 'STALK_CRASH')
-    .map(t => (new Date(t.closed_at!).getTime() - new Date(t.created_at).getTime()) / 1000);
+  // Why: cupsey insert→close가 같은 함수에서 즉시 실행되므로 DB closed_at - created_at ≈ 0.
+  // 실제 hold time은 time_stop_at - created_at (설정된 최대 hold로 추정) 또는 exit_reason 기반 추정만 가능.
+  // 현재는 DB에서 정확한 hold time 복원 불가 → N/A 처리.
+  const holdSecs: number[] = [];
 
-  // MFE (from high_water_mark)
+  // MFE: high_water_mark / entry_price.
+  // Why: 두 값 모두 token price (SOL 단위가 아닌 token/SOL 가격).
+  // ratio가 비정상(>10x)이면 price scale mismatch → 필터.
   const mfePcts = trades
     .filter(t => t.high_water_mark && t.entry_price && Number(t.entry_price) > 0)
-    .map(t => (Number(t.high_water_mark!) - Number(t.entry_price)) / Number(t.entry_price));
+    .map(t => (Number(t.high_water_mark!) - Number(t.entry_price)) / Number(t.entry_price))
+    .filter(m => Math.abs(m) < 1.0); // cap ±100% — 1599% 같은 outlier 제거
 
   // Bootstrap CI on PnL
   const pnlCI = bootstrapMeanCI(pnls, { nResamples: 10_000, alpha: 0.05 });
@@ -242,28 +246,43 @@ function printReport(gate: ReturnType<typeof analyzeGateLog>, trades: ReturnType
 
   // STALK Success
   console.log(`\n${sep}`);
-  console.log('STALK → PROBE SUCCESS');
+  console.log('STALK → PROBE (DB records PROBE+ only)');
   console.log(sep);
-  console.log(
-    `STALK timeout rate: ${pct(trades.stalkTimeoutRate)} (target: <50%) ` +
-    `${trades.stalkTimeoutRate < 0.5 ? '✓' : '✗'}`
-  );
-  console.log(`PROBE entries: ${trades.probeEntries} / ${trades.totalTrades}`);
-
-  // Hold Time & MFE
-  if (trades.holdSecStats.count > 0) {
-    const h = trades.holdSecStats;
-    console.log(`Hold time: median=${h.median.toFixed(0)}s p75=${h.p75.toFixed(0)}s max=${h.max.toFixed(0)}s`);
+  if (trades.stalkTimeoutRate > 0) {
+    console.log(
+      `STALK timeout rate (DB): ${pct(trades.stalkTimeoutRate)} ` +
+      `${trades.stalkTimeoutRate < 0.5 ? '✓' : '✗'}`
+    );
+  } else {
+    console.log('STALK timeout: N/A (STALK skips are not recorded in DB)');
+    if (gate.total > 0 && gate.passed > 0) {
+      // Gate pass → trade conversion rate 로 간접 추정
+      const conversionRate = trades.totalTrades > 0 && gate.passed > 0
+        ? trades.totalTrades / gate.passed : 0;
+      console.log(
+        `Gate pass → trade conversion: ${trades.totalTrades}/${gate.passed} ` +
+        `(${pct(conversionRate)}) — gap = STALK skips`
+      );
+    }
   }
+  console.log(`DB trades (PROBE+): ${trades.probeEntries} / ${trades.totalTrades}`);
+
+  // MFE (hold time not available from DB)
   if (trades.mfePctStats.count > 0) {
     const m = trades.mfePctStats;
-    console.log(`MFE: median=${sign(m.median)}% p75=${sign(m.p75)}% max=${sign(m.max)}%`);
+    console.log(`MFE (filtered <100%): median=${(m.median).toFixed(3)}% p75=${(m.p75).toFixed(3)}% max=${(m.max).toFixed(3)}%`);
   }
 
   // Phase 1 Readiness
   console.log(`\n${sep}`);
   console.log('PHASE 1 READINESS');
   console.log(sep);
+
+  // Why: gate pass → trade conversion 으로 STALK skip 간접 추정.
+  // gate log 없으면 DB만으로는 판정 불가 → N/A.
+  const stalkCheckable = gate.passed > 0;
+  const stalkConversion = stalkCheckable && gate.passed > 0
+    ? trades.totalTrades / gate.passed : 1;
 
   const checks = [
     {
@@ -277,9 +296,9 @@ function printReport(gate: ReturnType<typeof analyzeGateLog>, trades: ReturnType
       detail: `CI: [${sign(trades.pnlCI.lower)}, ${sign(trades.pnlCI.upper)}]`,
     },
     {
-      label: 'STALK_TIMEOUT < 50%',
-      status: trades.stalkTimeoutRate < 0.5,
-      detail: pct(trades.stalkTimeoutRate),
+      label: 'Gate pass→trade conversion > 50%',
+      status: stalkCheckable ? stalkConversion > 0.5 : false,
+      detail: stalkCheckable ? `${pct(stalkConversion)} (${trades.totalTrades}/${gate.passed})` : 'N/A (no gate log yet)',
     },
     {
       label: 'Gate evaluations ≥ 30 (score analysis)',

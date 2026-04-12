@@ -140,6 +140,10 @@ export const config = {
   ...tradingParams.notification,
   ...tradingParams.operator,
   ...tradingParams.cupseyLane,
+  ...tradingParams.cupseyGate,
+  ...(process.env.CUPSEY_GATE_ENABLED !== undefined
+    ? { cupseyGateEnabled: process.env.CUPSEY_GATE_ENABLED !== 'false' }
+    : {}),
   // ─── Cupsey / Execution Operational Overrides (.env — 배포 없이 변경) ───
   ...(process.env.EXECUTION_RR_REJECT
     ? { executionRrReject: Number(process.env.EXECUTION_RR_REJECT) }

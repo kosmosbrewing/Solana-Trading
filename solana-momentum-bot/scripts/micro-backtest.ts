@@ -53,6 +53,8 @@ async function main() {
     atrPeriod: numArg(args, '--atr-period', 14),
     volumeMcapBoostThreshold: numArg(args, '--volume-mcap-boost-threshold', 0.01),
     volumeMcapBoostMultiplier: numArg(args, '--volume-mcap-boost-multiplier', 1.5),
+    minActiveCandles: numArg(args, '--min-active-candles', 3),
+    sparseVolumeLookback: numArg(args, '--sparse-volume-lookback', 120),
   } : undefined;
 
   const resolvedDatasetRoot = path.resolve(datasetDir);

@@ -163,7 +163,7 @@ export const tradingParams = {
     realtimePrimaryIntervalSec: 10,
     realtimeConfirmIntervalSec: 60,
     realtimeVolumeSurgeLookback: 20,
-    realtimeVolumeSurgeMultiplier: 2.5,   // 1.3 → 2.5 (2026-04-12): signal quality gate 도입 후 trigger 품질 강화. noise signal 원천 차단
+    realtimeVolumeSurgeMultiplier: 1.3,   // 2.5 → 1.3 (2026-04-14): signal drought 복원. gate가 quality 담당, trigger는 throughput 담당
     realtimeSparseVolumeLookback: 120,    // sparse DEX: wider window에서 non-zero candle 탐색 (120 × 10s = 20min)
     realtimeMinActiveCandles: 2,          // sparse avg 계산에 필요한 최소 non-zero candle 수 (runtime 완화: 3→2)
     realtimePriceBreakoutLookback: 20,
@@ -172,7 +172,7 @@ export const tradingParams = {
     realtimeCooldownSec: 300,
     realtimeOutcomeHorizonsSec: [30, 60, 180, 300],
     realtimeMaxSubscriptions: 30,
-    realtimeBootstrapMinBuyRatio: 0.70,   // 0.50 → 0.70 (2026-04-12): signal quality gate 도입 후 trigger 품질 강화. 저품질 buy pressure signal 차단
+    realtimeBootstrapMinBuyRatio: 0.50,   // 0.70 → 0.50 (2026-04-14): signal drought 복원. gate가 quality 담당, trigger는 throughput 담당
     realtimeVolumeMcapBoostThreshold: 0.005, // low-cap/high-turnover 포착 완화 (runtime zero-boost 빈도 완화)
     realtimeVolumeMcapBoostMultiplier: 1.5,
     realtimePoolDiscoveryConcurrency: 6,   // 4→6: filter 강화 후에도 burst 흡수 여유 확보
@@ -253,7 +253,7 @@ export const tradingParams = {
     cupseyLaneTicketSol: 0.01,         // fixed micro-ticket (risk-per-trade 가 아닌 fixed)
     // STALK phase: signal 직후 즉시 매수하지 않고 pullback 대기 (spike 꼭대기 매수 방지)
     cupseyStalKWindowSec: 20,          // signal 후 pullback 대기 시간
-    cupseyStalkDropPct: 0.005,         // 0.003 → 0.005 (2026-04-12 sweep 최적): signal price 에서 -0.5% 떨어지면 entry. 더 깊은 pullback 확인
+    cupseyStalkDropPct: 0.003,         // 0.005 → 0.003 (2026-04-14): signal drought 복원. 3중 필터(trigger+gate+STALK)가 throughput 0 유발
     cupseyStalkMaxDropPct: 0.015,      // -1.5% 이상 떨어지면 skip (crash, not pullback)
     // PROBE phase: 진입 후 초기 방향 판정
     cupseyProbeWindowSec: 45,          // PROBE 관찰 구간
@@ -278,6 +278,15 @@ export const tradingParams = {
     cupseyGateMinTradeCountRatio: 1.5,    // 3-bar avg trades / baseline avg ≥ 1.5x (organic vs whale)
     cupseyGateLookbackBars: 20,           // baseline window
     cupseyGateRecentBars: 3,              // recent momentum window
+  },
+
+  // ─── CUSUM Volume Regime Change Detector (2026-04-14) ───
+  // Why: bootstrap trigger 는 spike peak 에서 발화 → CUSUM 은 mean shift 를 조기 감지.
+  // Phase 0: observation-only (gate log 에 strength 기록만). Phase 1 에서 gate factor 편입 결정.
+  cusumDetector: {
+    cusumKMultiplier: 0.3,      // allowance = k × σ. 작을수록 민감
+    cusumHMultiplier: 4.0,      // threshold = h × σ. 클수록 신중
+    cusumWarmupPeriods: 10,     // mean/std 안정화에 필요한 최소 캔들 수
   },
 
   // ─── KOL Wallet Tracking (2026-04-11, Path B2) ───

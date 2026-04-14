@@ -21,6 +21,7 @@ import { Signal, Order } from '../utils/types';
 import { config } from '../utils/config';
 import { MicroCandleBuilder } from '../realtime';
 import { evaluateCupseySignalGate, CupseySignalGateConfig, CupseySignalGateResult } from '../strategy/cupseySignalGate';
+import { initCusumState, updateCusum, CusumState, CusumConfig } from '../strategy/cusumDetector';
 import { BotContext } from './types';
 
 const log = createModuleLogger('CupseyLane');
@@ -31,11 +32,15 @@ const log = createModuleLogger('CupseyLane');
 
 let gateLogDirEnsured = false;
 
+// ─── CUSUM Per-Pair State (Phase 0: observation-only) ───
+const cusumStates = new Map<string, CusumState>();
+
 async function persistCupseyGateLog(
   pairAddress: string,
   signalPrice: number,
   gateResult: CupseySignalGateResult,
-  tokenSymbol?: string
+  tokenSymbol?: string,
+  cusumStrength?: number
 ): Promise<void> {
   try {
     const logDir = config.realtimeDataDir;
@@ -52,6 +57,7 @@ async function persistCupseyGateLog(
       score: gateResult.score,
       f: gateResult.factors,
       reason: gateResult.rejectReason ?? null,
+      cusum: cusumStrength ?? null,  // Phase 0: observation-only. Phase 1 상관 분석용
     };
     await appendFile(
       path.join(logDir, 'cupsey-gate-log.jsonl'),
@@ -128,6 +134,52 @@ export async function handleCupseyLaneSignal(
     return;
   }
 
+  // ─── CUSUM Volume Regime Change Detection (Phase 0: observation-only) ───
+  // Why: CUSUM strength 를 gate log 에 기록하여 Phase 1 상관 분석에 사용.
+  // trade 결정에는 영향 없음. bootstrap trigger 가 이미 fire 한 signal 에 대해서만 적용.
+  let cusumStrength = 0;
+  {
+    const cusumCfg: CusumConfig = {
+      kMultiplier: config.cusumKMultiplier,
+      hMultiplier: config.cusumHMultiplier,
+      warmupPeriods: config.cusumWarmupPeriods,
+    };
+    let state = cusumStates.get(signal.pairAddress) ?? initCusumState();
+    // Cold start warmup: feed recent candles to build mean/variance
+    if (state.sampleCount < cusumCfg.warmupPeriods) {
+      const warmupCandles = candleBuilder.getRecentCandles(
+        signal.pairAddress,
+        config.realtimePrimaryIntervalSec,
+        30 // feed up to 30 candles for warmup
+      );
+      // Feed all but the last (which we process below)
+      for (const c of warmupCandles.slice(0, -1)) {
+        state = updateCusum(state, c.volume, cusumCfg).state;
+      }
+      // Process the last candle (current signal candle)
+      const lastCandle = warmupCandles[warmupCandles.length - 1];
+      if (lastCandle) {
+        const result = updateCusum(state, lastCandle.volume, cusumCfg);
+        state = result.state;
+        cusumStrength = result.strength;
+      }
+    } else {
+      // Already warm: just update with signal's trigger volume
+      const recentCandles = candleBuilder.getRecentCandles(
+        signal.pairAddress,
+        config.realtimePrimaryIntervalSec,
+        1
+      );
+      const lastCandle = recentCandles[recentCandles.length - 1];
+      if (lastCandle) {
+        const result = updateCusum(state, lastCandle.volume, cusumCfg);
+        state = result.state;
+        cusumStrength = result.strength;
+      }
+    }
+    cusumStates.set(signal.pairAddress, state);
+  }
+
   // ─── Signal Quality Gate ───
   if (config.cupseyGateEnabled) {
     const recentCandles = candleBuilder.getRecentCandles(
@@ -146,11 +198,11 @@ export async function handleCupseyLaneSignal(
     };
     const gateResult = evaluateCupseySignalGate(recentCandles, gateConfig);
     // Why: Phase 0 measurement — pass/reject 모두 persist하여 score-outcome 상관 분석 가능
-    persistCupseyGateLog(signal.pairAddress, signal.price, gateResult, signal.tokenSymbol);
+    persistCupseyGateLog(signal.pairAddress, signal.price, gateResult, signal.tokenSymbol, cusumStrength);
     if (!gateResult.pass) {
       log.debug(
         `[CUPSEY_GATE_REJECT] ${signal.pairAddress.slice(0, 12)} ` +
-        `reason=${gateResult.rejectReason} score=${gateResult.score}`
+        `reason=${gateResult.rejectReason} score=${gateResult.score} cusum=${cusumStrength.toFixed(3)}`
       );
       return;
     }
@@ -158,7 +210,7 @@ export async function handleCupseyLaneSignal(
       `[CUPSEY_GATE_PASS] ${signal.pairAddress.slice(0, 12)} ` +
       `score=${gateResult.score} vol=${gateResult.factors.volumeAccelRatio.toFixed(2)} ` +
       `price=${(gateResult.factors.priceChangePct * 100).toFixed(3)}% ` +
-      `buy=${gateResult.factors.avgBuyRatio.toFixed(3)}`
+      `buy=${gateResult.factors.avgBuyRatio.toFixed(3)} cusum=${cusumStrength.toFixed(3)}`
     );
   }
 

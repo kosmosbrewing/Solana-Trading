@@ -8,6 +8,7 @@
 
 import { VolumeMcapSpikeTriggerConfig, VolumeMcapSpikeTrigger, BootstrapRejectStats } from '../strategy';
 import { evaluateCupseySignalGate, CupseySignalGateConfig } from '../strategy/cupseySignalGate';
+import { initCusumState, updateCusum, CusumConfig, CusumState } from '../strategy/cusumDetector';
 import { MicroCandleBuilder } from '../realtime';
 import { Candle } from '../utils/types';
 import { fillCandleGaps } from './microReplayEngine';
@@ -26,6 +27,7 @@ export interface CupseyReplayOptions {
   bootstrapTriggerConfig: VolumeMcapSpikeTriggerConfig;
   cupseyConfig: CupseyReplayConfig;
   gateConfig?: CupseySignalGateConfig;
+  cusumConfig?: CusumConfig;
 }
 
 export interface CupseyReplaySummary {
@@ -46,6 +48,8 @@ export interface CupseyReplaySummary {
   maxConcurrentUsed: number;
   gateRejects: number;
   gatePassRate: number;
+  avgCusumStrengthAtEntry: number;
+  cusumSignalCount: number;
 }
 
 export interface CupseyReplayResult {
@@ -133,6 +137,11 @@ interface CupseyRuntime {
   lastTimeSec: number;
   gateConfig?: CupseySignalGateConfig;
   gateRejects: number;
+  cusumConfig?: CusumConfig;
+  cusumStates: Map<string, CusumState>;
+  cusumStrengthSum: number;    // sum of CUSUM strength at signal time
+  cusumStrengthCount: number;  // number of signals where CUSUM was computed
+  cusumSignalCount: number;    // number of CUSUM threshold breaches
 }
 
 function createRuntime(options: CupseyReplayOptions): CupseyRuntime {
@@ -153,6 +162,11 @@ function createRuntime(options: CupseyReplayOptions): CupseyRuntime {
     lastTimeSec: 0,
     gateConfig: options.gateConfig,
     gateRejects: 0,
+    cusumConfig: options.cusumConfig,
+    cusumStates: new Map(),
+    cusumStrengthSum: 0,
+    cusumStrengthCount: 0,
+    cusumSignalCount: 0,
   };
 }
 
@@ -175,11 +189,35 @@ function processCandle(candle: Candle, rt: CupseyRuntime): void {
     );
   }
 
-  // Primary interval 캔들에서만 trigger 평가
+  // Primary interval 캔들에서만 trigger 평가 + CUSUM update
   if (candle.intervalSec === rt.primaryIntervalSec) {
+    // CUSUM per-pair update (observation-only: strength 기록만)
+    if (rt.cusumConfig) {
+      let cusumState = rt.cusumStates.get(candle.pairAddress) ?? initCusumState();
+      const cusumResult = updateCusum(cusumState, candle.volume, rt.cusumConfig);
+      cusumState = cusumResult.state;
+      rt.cusumStates.set(candle.pairAddress, cusumState);
+      if (cusumResult.signal) {
+        rt.cusumSignalCount++;
+      }
+    }
+
     const signal = rt.trigger.onCandle(candle, rt.builder);
     if (signal) {
       rt.totalSignals++;
+
+      // CUSUM strength at signal time (for correlation analysis)
+      if (rt.cusumConfig) {
+        const cusumState = rt.cusumStates.get(signal.pairAddress);
+        if (cusumState && cusumState.sampleCount >= rt.cusumConfig.warmupPeriods) {
+          const variance = cusumState.logM2 / (cusumState.sampleCount - 1);
+          const sigma = Math.sqrt(Math.max(variance, 1e-12));
+          const threshold = rt.cusumConfig.hMultiplier * sigma;
+          const strength = threshold > 0 ? cusumState.cumSum / threshold : 0;
+          rt.cusumStrengthSum += strength;
+          rt.cusumStrengthCount++;
+        }
+      }
 
       // Signal Quality Gate: multi-bar momentum 사전 검증
       if (rt.gateConfig && rt.gateConfig.enabled) {
@@ -219,7 +257,11 @@ function buildResult(
 ): CupseyReplayResult {
   return {
     trades: rt.completedTrades,
-    summary: buildCupseyReplaySummary(rt.completedTrades, rt.totalSignals, rt.maxConcurrentUsed, rt.gateRejects),
+    summary: buildCupseyReplaySummary(
+      rt.completedTrades, rt.totalSignals, rt.maxConcurrentUsed, rt.gateRejects,
+      rt.cusumStrengthCount > 0 ? rt.cusumStrengthSum / rt.cusumStrengthCount : 0,
+      rt.cusumSignalCount
+    ),
     dataset: { inputMode: 'candles', ...dataset },
     rejectStats: rt.trigger.getRejectStats() as BootstrapRejectStats,
   };
@@ -231,7 +273,9 @@ export function buildCupseyReplaySummary(
   trades: CupseyTradeResult[],
   totalSignals: number,
   maxConcurrentUsed: number,
-  gateRejects: number = 0
+  gateRejects: number = 0,
+  avgCusumStrengthAtEntry: number = 0,
+  cusumSignalCount: number = 0
 ): CupseyReplaySummary {
   const stalkSkips = trades.filter(t => t.stalkSkip);
   const entered = trades.filter(t => !t.stalkSkip);
@@ -279,6 +323,8 @@ export function buildCupseyReplaySummary(
     maxConcurrentUsed,
     gateRejects,
     gatePassRate: totalSignals > 0 ? (totalSignals - gateRejects) / totalSignals : 1,
+    avgCusumStrengthAtEntry,
+    cusumSignalCount,
   };
 }
 

@@ -1,6 +1,9 @@
 export { evaluateCupseySignalGate } from './cupseySignalGate';
 export type { CupseySignalGateConfig, CupseySignalGateResult } from './cupseySignalGate';
 
+export { initCusumState, updateCusum } from './cusumDetector';
+export type { CusumConfig, CusumState, CusumResult } from './cusumDetector';
+
 export {
   evaluateVolumeSpikeBreakout,
   buildVolumeSpikeOrder,

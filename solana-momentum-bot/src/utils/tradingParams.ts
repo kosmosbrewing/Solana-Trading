@@ -252,8 +252,8 @@ export const tradingParams = {
   cupseyLane: {
     cupseyLaneTicketSol: 0.01,         // fixed micro-ticket (risk-per-trade 가 아닌 fixed)
     // STALK phase: signal 직후 즉시 매수하지 않고 pullback 대기 (spike 꼭대기 매수 방지)
-    cupseyStalKWindowSec: 20,          // signal 후 pullback 대기 시간
-    cupseyStalkDropPct: 0.003,         // 0.005 → 0.003 (2026-04-14): signal drought 복원. 3중 필터(trigger+gate+STALK)가 throughput 0 유발
+    cupseyStalKWindowSec: 60,          // 20 → 60 (2026-04-14): pullback 대기 창 확대. 완만한 패턴에서 7분 뒤 pullback 사례 관찰
+    cupseyStalkDropPct: 0.001,         // 0.003 → 0.001 (2026-04-14): BELIEF 패턴 포착. -0.1% 진입으로 완화
     cupseyStalkMaxDropPct: 0.015,      // -1.5% 이상 떨어지면 skip (crash, not pullback)
     // PROBE phase: 진입 후 초기 방향 판정
     cupseyProbeWindowSec: 45,          // PROBE 관찰 구간

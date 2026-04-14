@@ -163,7 +163,7 @@ export const tradingParams = {
     realtimePrimaryIntervalSec: 10,
     realtimeConfirmIntervalSec: 60,
     realtimeVolumeSurgeLookback: 20,
-    realtimeVolumeSurgeMultiplier: 1.3,   // 2.5 → 1.3 (2026-04-14): signal drought 복원. gate가 quality 담당, trigger는 throughput 담당
+    realtimeVolumeSurgeMultiplier: 1.8,   // 1.3 → 1.8 (2026-04-14): VPS 검증 baseline 복원. 1.3은 vol_accel 중간값 1.17로 gate(1.5) 전량 차단됨
     realtimeSparseVolumeLookback: 120,    // sparse DEX: wider window에서 non-zero candle 탐색 (120 × 10s = 20min)
     realtimeMinActiveCandles: 2,          // sparse avg 계산에 필요한 최소 non-zero candle 수 (runtime 완화: 3→2)
     realtimePriceBreakoutLookback: 20,
@@ -172,7 +172,7 @@ export const tradingParams = {
     realtimeCooldownSec: 300,
     realtimeOutcomeHorizonsSec: [30, 60, 180, 300],
     realtimeMaxSubscriptions: 30,
-    realtimeBootstrapMinBuyRatio: 0.50,   // 0.70 → 0.50 (2026-04-14): signal drought 복원. gate가 quality 담당, trigger는 throughput 담당
+    realtimeBootstrapMinBuyRatio: 0.60,   // 0.50 → 0.60 (2026-04-14): VPS 검증 baseline 복원
     realtimeVolumeMcapBoostThreshold: 0.005, // low-cap/high-turnover 포착 완화 (runtime zero-boost 빈도 완화)
     realtimeVolumeMcapBoostMultiplier: 1.5,
     realtimePoolDiscoveryConcurrency: 6,   // 4→6: filter 강화 후에도 burst 흡수 여유 확보
@@ -275,7 +275,7 @@ export const tradingParams = {
     cupseyGateMinVolumeAccelRatio: 1.5,   // 3-bar avg / baseline avg ≥ 1.5x (sustained, not isolated)
     cupseyGateMinPriceChangePct: 0.001,   // +0.1% over 3 bars (trending up)
     cupseyGateMinAvgBuyRatio: 0.55,       // 3-bar avg buy ratio ≥ 0.55 (sustained buy pressure)
-    cupseyGateMinTradeCountRatio: 1.5,    // 3-bar avg trades / baseline avg ≥ 1.5x (organic vs whale)
+    cupseyGateMinTradeCountRatio: 1.0,    // 1.5 → 1.0 (2026-04-14): trade_count가 2번째 bottleneck. vol_accel+buy_ratio가 이미 organic 검증
     cupseyGateLookbackBars: 20,           // baseline window
     cupseyGateRecentBars: 3,              // recent momentum window
   },

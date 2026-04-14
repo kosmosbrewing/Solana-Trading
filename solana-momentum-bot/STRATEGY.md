@@ -174,7 +174,7 @@ Signal Quality Gate + sweep 최적 파라미터 반영 (2026-04-12).
 
 ```text
 Ticket = 0.01 SOL fixed (env: CUPSEY_LANE_TICKET_SOL)
-STALK window = 20s (pullback -0.3% 대기, -1.5% 초과 drop = skip)
+STALK window = 60s (pullback -0.1% 대기, -1.5% 초과 drop = skip)
 PROBE window = 45s
 PROBE → WINNER: MFE ≥ +2.0%
 PROBE → REJECT: MAE ≤ -0.8% OR 45s timeout

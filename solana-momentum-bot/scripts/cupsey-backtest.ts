@@ -233,7 +233,7 @@ Options:
 
   Cupsey state machine:
   --stalk-window <sec>        STALK pullback window (default: 20)
-  --stalk-drop <pct>          STALK entry drop threshold (default: 0.003)
+  --stalk-drop <pct>          STALK entry drop threshold (default: 0.001)
   --stalk-max-drop <pct>      STALK crash threshold (default: 0.015)
   --probe-window <sec>        PROBE observation window (default: 45)
   --probe-mfe <pct>           PROBE → WINNER MFE threshold (default: 0.020)

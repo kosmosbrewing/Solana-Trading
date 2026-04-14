@@ -11,7 +11,7 @@ import {
 function makeConfig(overrides: Partial<CupseyReplayConfig> = {}): CupseyReplayConfig {
   return {
     stalkWindowSec: 20,
-    stalkDropPct: 0.005,
+    stalkDropPct: 0.003,
     stalkMaxDropPct: 0.015,
     probeWindowSec: 45,
     probeMfeThreshold: 0.020,
@@ -30,7 +30,7 @@ describe('cupseyStateMachine', () => {
     it('returns valid config from tradingParams', () => {
       const config = defaultCupseyReplayConfig();
       expect(config.stalkWindowSec).toBe(20);
-      expect(config.stalkDropPct).toBe(0.005);
+      expect(config.stalkDropPct).toBe(0.003);
       expect(config.probeMfeThreshold).toBe(0.020);
       expect(config.winnerBreakevenPct).toBe(0.005);
       expect(config.winnerTrailingPct).toBe(0.040);

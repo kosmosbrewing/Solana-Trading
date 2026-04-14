@@ -15,6 +15,7 @@ import { defaultCupseyReplayConfig, CupseyReplayConfig } from '../src/backtest/c
 import { RealtimeReplayStore } from '../src/realtime';
 import { VolumeMcapSpikeTriggerConfig, BootstrapRejectStats } from '../src/strategy';
 import { CupseySignalGateConfig } from '../src/strategy/cupseySignalGate';
+import { CusumConfig } from '../src/strategy/cusumDetector';
 import { tradingParams } from '../src/utils/tradingParams';
 
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
@@ -79,10 +80,19 @@ async function main() {
     recentBars: numArg(args, '--gate-recent', gateDefaults.cupseyGateRecentBars),
   } : undefined;
 
+  // ─── CUSUM Config ───
+  const cusumDefaults = tradingParams.cusumDetector;
+  const cusumEnabled = !args.includes('--no-cusum');
+  const cusumConfig: CusumConfig | undefined = cusumEnabled ? {
+    kMultiplier: numArg(args, '--cusum-k', cusumDefaults.cusumKMultiplier),
+    hMultiplier: numArg(args, '--cusum-h', cusumDefaults.cusumHMultiplier),
+    warmupPeriods: numArg(args, '--cusum-warmup', cusumDefaults.cusumWarmupPeriods),
+  } : undefined;
+
   // ─── Replay ───
   const result = await replayCupseyStream(
     store.streamCandles(candlesPath),
-    { bootstrapTriggerConfig, cupseyConfig, gateConfig }
+    { bootstrapTriggerConfig, cupseyConfig, gateConfig, cusumConfig }
   );
 
   const s = result.summary;
@@ -97,6 +107,7 @@ async function main() {
       bootstrapTriggerConfig,
       cupseyConfig,
       gateConfig: gateConfig ?? null,
+      cusumConfig: cusumConfig ?? null,
     },
     summary: s,
     rejectStats: stripMaps(rs),
@@ -150,6 +161,16 @@ async function main() {
     );
   } else {
     console.log('Gate: disabled (--no-gate)');
+  }
+
+  // CUSUM stats
+  if (cusumConfig) {
+    console.log(
+      `CUSUM: avg_strength_at_entry=${s.avgCusumStrengthAtEntry.toFixed(3)}, ` +
+      `cusum_signals=${s.cusumSignalCount}`
+    );
+  } else {
+    console.log('CUSUM: disabled (--no-cusum)');
   }
 
   if (s.maxConcurrentUsed > 0) {
@@ -212,7 +233,7 @@ Options:
 
   Cupsey state machine:
   --stalk-window <sec>        STALK pullback window (default: 20)
-  --stalk-drop <pct>          STALK entry drop threshold (default: 0.005)
+  --stalk-drop <pct>          STALK entry drop threshold (default: 0.003)
   --stalk-max-drop <pct>      STALK crash threshold (default: 0.015)
   --probe-window <sec>        PROBE observation window (default: 45)
   --probe-mfe <pct>           PROBE → WINNER MFE threshold (default: 0.020)
@@ -231,6 +252,12 @@ Options:
   --gate-trade-count <n>        Min trade count ratio (default: 1.5)
   --gate-lookback <n>           Gate baseline lookback bars (default: 20)
   --gate-recent <n>             Gate recent momentum bars (default: 3)
+
+  CUSUM detector:
+  --no-cusum                    Disable CUSUM observation
+  --cusum-k <n>                 CUSUM allowance k multiplier (default: 0.3)
+  --cusum-h <n>                 CUSUM threshold h multiplier (default: 4.0)
+  --cusum-warmup <n>            CUSUM warmup periods (default: 10)
 
   Output:
   --json                      JSON output (grid sweep compatible)

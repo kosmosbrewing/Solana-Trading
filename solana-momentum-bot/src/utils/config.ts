@@ -141,6 +141,7 @@ export const config = {
   ...tradingParams.operator,
   ...tradingParams.cupseyLane,
   ...tradingParams.cupseyGate,
+  ...tradingParams.cusumDetector,
   ...(process.env.CUPSEY_GATE_ENABLED !== undefined
     ? { cupseyGateEnabled: process.env.CUPSEY_GATE_ENABLED !== 'false' }
     : {}),

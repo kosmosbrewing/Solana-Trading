@@ -184,7 +184,7 @@ WINNER breakeven = entry + 0.5%
 Max concurrent = 5 (config: cupseyMaxConcurrent)
 
 Signal Quality Gate (cupseyGate):
-  Volume Acceleration: 3-bar avg / baseline avg ≥ 1.5x
+  Volume Acceleration: 3-bar avg / baseline avg ≥ 1.2x  ← 1.5 → 1.2 (2026-04-15)
   Price Momentum: 3-bar price change ≥ +0.1%
   Buy Ratio Consistency: 3-bar avg buy ratio ≥ 0.55
   Trade Count Density: 3-bar avg / baseline avg ≥ 1.0x  ← 1.5 → 1.0 (2026-04-14)

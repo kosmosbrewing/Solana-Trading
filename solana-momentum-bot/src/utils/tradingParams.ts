@@ -272,7 +272,7 @@ export const tradingParams = {
   // 좋은 signal = 수 바 동안 지속된 volume + 상승 가격. 나쁜 signal = 단일 바 flush.
   cupseyGate: {
     cupseyGateEnabled: true,
-    cupseyGateMinVolumeAccelRatio: 1.5,   // 3-bar avg / baseline avg ≥ 1.5x (sustained, not isolated)
+    cupseyGateMinVolumeAccelRatio: 1.2,   // 1.5 → 1.2 (2026-04-15): AIMT 패턴 포착. buy_ratio 0.97 축적형 신호가 1.5로 전량 차단됨
     cupseyGateMinPriceChangePct: 0.001,   // +0.1% over 3 bars (trending up)
     cupseyGateMinAvgBuyRatio: 0.55,       // 3-bar avg buy ratio ≥ 0.55 (sustained buy pressure)
     cupseyGateMinTradeCountRatio: 1.0,    // 1.5 → 1.0 (2026-04-14): trade_count가 2번째 bottleneck. vol_accel+buy_ratio가 이미 organic 검증

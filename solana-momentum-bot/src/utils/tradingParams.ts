@@ -144,16 +144,16 @@ export const tradingParams = {
   // ─── Scanner ───
   scanner: {
     scannerMinWatchlistScore: 30,
-    scannerTrendingPollMs: 900_000,       // runtime_canary: 900K (code_default: 600K)
+    scannerTrendingPollMs: 300_000,       // 900K → 300K (2026-04-15): trending 발견 주기 15분→5분. 새 활성 토큰 빠른 포착
     scannerGeckoNewPoolMs: 60_000,
     scannerDexDiscoveryMs: 60_000,
     scannerDexEnrichMs: 300_000,
     scannerLaneAMinAgeSec: 3_600,
     scannerLaneBMaxAgeSec: 1_200,
-    scannerReentryCooldownMs: 900_000,            // 30분 → 15분 (2026-04-10 W1.5): evict → 재발견 주기 단축. edge blacklist 가 loser 이중 보호
+    scannerReentryCooldownMs: 300_000,            // 900K → 300K (2026-04-15): 5분으로 단축. idle 퇴장 토큰 재진입 속도 향상
     scannerMinimumResidencyMs: 180_000,
     scannerReplacementScoreMargin: 5,
-    scannerIdleEvictionMs: 1_800_000,             // 10분 → 30분 (2026-04-10 W1.5): token 이 activity 가질 시간 확보. 6h idle_evicted 99% → 목표 70% 이하
+    scannerIdleEvictionMs: 600_000,               // 1800K → 600K (2026-04-15): 10분으로 복원. 100% 토큰이 30분 슬롯 낭비 → 빠른 순환
     scannerIdleEvictionSweepIntervalMs: 60_000,  // 1분 — sweep 주기
   },
 
@@ -272,7 +272,7 @@ export const tradingParams = {
   // 좋은 signal = 수 바 동안 지속된 volume + 상승 가격. 나쁜 signal = 단일 바 flush.
   cupseyGate: {
     cupseyGateEnabled: true,
-    cupseyGateMinVolumeAccelRatio: 1.2,   // 1.5 → 1.2 (2026-04-15): AIMT 패턴 포착. buy_ratio 0.97 축적형 신호가 1.5로 전량 차단됨
+    cupseyGateMinVolumeAccelRatio: 1.5,   // 1.2 → 1.5 롤백 (2026-04-15): 백테스트 3세션 전부 1.2가 1.5 대비 PnL 열위 확인. 추가 trade 품질 미달
     cupseyGateMinPriceChangePct: 0.001,   // +0.1% over 3 bars (trending up)
     cupseyGateMinAvgBuyRatio: 0.55,       // 3-bar avg buy ratio ≥ 0.55 (sustained buy pressure)
     cupseyGateMinTradeCountRatio: 1.0,    // 1.5 → 1.0 (2026-04-14): trade_count가 2번째 bottleneck. vol_accel+buy_ratio가 이미 organic 검증

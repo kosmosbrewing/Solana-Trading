@@ -101,6 +101,28 @@ async function appendExecutedLedger(
 
 // ─── CUSUM Per-Pair State (Phase 0: observation-only) ───
 const cusumStates = new Map<string, CusumState>();
+const cusumLastProcessedBucketSec = new Map<string, number>();
+
+export function getCupseyCusumState(pairAddress: string): Readonly<CusumState> | undefined {
+  return cusumStates.get(pairAddress);
+}
+
+// 테스트에서 runtime singleton 상태를 초기화할 때 사용.
+export function resetCupseyLaneStateForTests(): void {
+  activePositions.clear();
+  cusumStates.clear();
+  cusumLastProcessedBucketSec.clear();
+  integrityHaltActive = false;
+  funnelStats.signalsReceived = 0;
+  funnelStats.gatePass = 0;
+  funnelStats.stalkCreated = 0;
+  funnelStats.stalkEntry = 0;
+  funnelStats.txSuccess = 0;
+  funnelStats.dbPersisted = 0;
+  funnelStats.notifierOpenSent = 0;
+  funnelStats.closedTrades = 0;
+  funnelStats.sessionStartAt = new Date();
+}
 
 async function persistCupseyGateLog(
   pairAddress: string,
@@ -211,7 +233,7 @@ export async function recoverCupseyOpenPositions(ctx: BotContext): Promise<numbe
     if (alreadyTracked) continue;
 
     const entryTimeSec = Math.floor(trade.createdAt.getTime() / 1000);
-    const positionId = `cupsey-recovered-${trade.id.slice(0, 8)}`;
+    const positionId = `cupsey-recovered-${trade.id}`; // full id — slice(0,8)은 테스트 ID에서 충돌 가능
     const recoveredState = inferRecoveredCupseyState(trade);
     activePositions.set(positionId, {
       tradeId: positionId,
@@ -290,37 +312,27 @@ export async function handleCupseyLaneSignal(
       warmupPeriods: config.cusumWarmupPeriods,
     };
     let state = cusumStates.get(signal.pairAddress) ?? initCusumState();
-    // Cold start warmup: feed recent candles to build mean/variance
-    if (state.sampleCount < cusumCfg.warmupPeriods) {
-      const warmupCandles = candleBuilder.getRecentCandles(
-        signal.pairAddress,
-        config.realtimePrimaryIntervalSec,
-        30 // feed up to 30 candles for warmup
-      );
-      // Feed all but the last (which we process below)
-      for (const c of warmupCandles.slice(0, -1)) {
-        state = updateCusum(state, c.volume, cusumCfg).state;
-      }
-      // Process the last candle (current signal candle)
-      const lastCandle = warmupCandles[warmupCandles.length - 1];
-      if (lastCandle) {
-        const result = updateCusum(state, lastCandle.volume, cusumCfg);
-        state = result.state;
-        cusumStrength = result.strength;
-      }
-    } else {
-      // Already warm: just update with signal's trigger volume
-      const recentCandles = candleBuilder.getRecentCandles(
-        signal.pairAddress,
-        config.realtimePrimaryIntervalSec,
-        1
-      );
-      const lastCandle = recentCandles[recentCandles.length - 1];
-      if (lastCandle) {
-        const result = updateCusum(state, lastCandle.volume, cusumCfg);
-        state = result.state;
-        cusumStrength = result.strength;
-      }
+    const lastProcessedBucketSec = cusumLastProcessedBucketSec.get(signal.pairAddress) ?? -1;
+    const recentCandles = candleBuilder.getRecentCandles(
+      signal.pairAddress,
+      config.realtimePrimaryIntervalSec,
+      30
+    );
+    const unseenCandles = recentCandles.filter((candle) => {
+      const bucketSec = Math.floor(candle.timestamp.getTime() / 1000);
+      return bucketSec > lastProcessedBucketSec;
+    });
+
+    let nextProcessedBucketSec = lastProcessedBucketSec;
+    for (const candle of unseenCandles) {
+      const result = updateCusum(state, candle.volume, cusumCfg);
+      state = result.state;
+      cusumStrength = result.strength;
+      nextProcessedBucketSec = Math.floor(candle.timestamp.getTime() / 1000);
+    }
+
+    if (nextProcessedBucketSec >= 0) {
+      cusumLastProcessedBucketSec.set(signal.pairAddress, nextProcessedBucketSec);
     }
     cusumStates.set(signal.pairAddress, state);
   }
@@ -836,6 +848,12 @@ async function closeCupseyPosition(
       `[Cupsey Lane] ${sym} ${reason}: ${pnl >= 0 ? '+' : ''}${pnl.toFixed(6)} SOL (${holdSec}s hold)`,
       'trade'
     ).catch(() => {});
+  }
+
+  // Funnel: closed trade count + 100 trades 마다 자동 로그
+  funnelStats.closedTrades++;
+  if (funnelStats.closedTrades % 10 === 0) {
+    logCupseyFunnelStats();
   }
 
   // Cleanup

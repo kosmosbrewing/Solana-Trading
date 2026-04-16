@@ -82,6 +82,7 @@ export interface SparseOpsSummary {
   executedLiveSignals: number;
   diagnosticEvents: number;
   latestTriggerStats?: ParsedTriggerStats;
+  latestCupseyFunnel?: string;
   aliasMissTop: Array<{ label: string; count: number }>;
   freshness?: FreshnessSummary;
 }
@@ -105,6 +106,7 @@ export function loadSparseOpsSummary(realtimeRoot: string, windowHours: number, 
   const signals = loadSignals(sessionDir).filter((signal) => resolveSignalTimestampMs(signal) >= cutoffMs);
   const recentEvents = events.filter((event) => (event.timestampMs ?? 0) >= cutoffMs);
   const latestTrigger = recentEvents.filter((event) => event.type === 'trigger_stats').at(-1)?.detail;
+  const latestCupseyFunnel = recentEvents.filter((event) => event.type === 'cupsey_funnel').at(-1)?.detail;
   const aliasMiss = countBy(
     recentEvents.filter((event) => event.type === 'alias_miss'),
     (event) => event.reason || event.detail || event.source || 'unknown',
@@ -150,6 +152,7 @@ export function loadSparseOpsSummary(realtimeRoot: string, windowHours: number, 
     executedLiveSignals: signals.filter((signal) => (signal.processing?.status || signal.status) === 'executed_live').length,
     diagnosticEvents: recentEvents.length,
     latestTriggerStats: parseTriggerStats(latestTrigger),
+    latestCupseyFunnel,
     aliasMissTop: Object.entries(aliasMiss)
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
       .slice(0, topN)
@@ -238,6 +241,10 @@ export function buildSparseOpsSummaryMessage(summary: SparseOpsSummary | undefin
     if (diagnosis) {
       lines.push(`- 판단: ${diagnosis}`);
     }
+  }
+
+  if (summary.latestCupseyFunnel) {
+    lines.push(`- cupsey funnel: ${summary.latestCupseyFunnel}`);
   }
 
   if (summary.aliasMissTop.length > 0) {

@@ -272,9 +272,9 @@ export const tradingParams = {
   // 좋은 signal = 수 바 동안 지속된 volume + 상승 가격. 나쁜 signal = 단일 바 flush.
   cupseyGate: {
     cupseyGateEnabled: true,
-    cupseyGateMinVolumeAccelRatio: 1.5,   // 1.2 → 1.5 롤백 (2026-04-15): 백테스트 3세션 전부 1.2가 1.5 대비 PnL 열위 확인. 추가 trade 품질 미달
-    cupseyGateMinPriceChangePct: 0.001,   // +0.1% over 3 bars (trending up)
-    cupseyGateMinAvgBuyRatio: 0.55,       // 3-bar avg buy ratio ≥ 0.55 (sustained buy pressure)
+    cupseyGateMinVolumeAccelRatio: 1.2,   // 1.5 → 1.2 (2026-04-16): 측정 우선 전략. 48h reject 66% 해소. 추가 trade 절대 비용 < 0.01 SOL (0.01 티켓 기준)
+    cupseyGateMinPriceChangePct: 0.000,   // 0.001 → 0.000 (2026-04-16): cupsey STALK은 pullback 진입 — 가격 하락 중인 신호가 오히려 적합
+    cupseyGateMinAvgBuyRatio: 0.50,       // 0.55 → 0.50 (2026-04-16): BORAHAEM 0.535 사례 포착. buy pressure 최소 기준만 유지
     cupseyGateMinTradeCountRatio: 1.0,    // 1.5 → 1.0 (2026-04-14): trade_count가 2번째 bottleneck. vol_accel+buy_ratio가 이미 organic 검증
     cupseyGateLookbackBars: 20,           // baseline window
     cupseyGateRecentBars: 3,              // recent momentum window

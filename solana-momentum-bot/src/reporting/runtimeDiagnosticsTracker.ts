@@ -61,7 +61,8 @@ export interface RuntimeDiagnosticEvent {
     | 'candidate_evicted'
     | 'candidate_readded'
     | 'signal_not_in_watchlist'
-    | 'risk_rejection';
+    | 'risk_rejection'
+    | 'cupsey_funnel';
   timestampMs: number;
   tokenMint?: string;
   reason?: string;
@@ -232,6 +233,15 @@ export class RuntimeDiagnosticsTracker {
       reason,
       detail,
       cohort,
+    });
+  }
+
+  recordCupseyFunnel(detail: string): void {
+    this.pushEvent({
+      type: 'cupsey_funnel',
+      timestampMs: Date.now(),
+      source: 'cupsey_lane',
+      detail,
     });
   }
 

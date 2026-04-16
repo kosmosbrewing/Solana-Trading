@@ -33,6 +33,7 @@ const log = createModuleLogger('CupseyLane');
 
 let gateLogDirEnsured = false;
 let executedLedgerDirEnsured = false;
+const executedLedgerDedupTimestamps = new Map<string, number>();
 
 // ─── P0-3: Integrity Halt ───
 // Why: live buy tx 성공 후 insertTrade 실패 시 DB와 온체인이 어긋남 → 신규 포지션 중단.
@@ -65,14 +66,29 @@ const funnelStats: CupseyFunnelStats = {
 export function getCupseyFunnelStats(): Readonly<CupseyFunnelStats> {
   return funnelStats;
 }
+
+function buildCupseyFunnelDetail(): string {
+  return [
+    `signals=${funnelStats.signalsReceived}`,
+    `gate_pass=${funnelStats.gatePass}`,
+    `stalk=${funnelStats.stalkCreated}`,
+    `entry=${funnelStats.stalkEntry}`,
+    `tx_ok=${funnelStats.txSuccess}`,
+    `db_ok=${funnelStats.dbPersisted}`,
+    `notif_ok=${funnelStats.notifierOpenSent}`,
+    `closed=${funnelStats.closedTrades}`,
+  ].join(' ');
+}
+
+function recordCupseyFunnelSnapshot(ctx?: BotContext): void {
+  ctx?.runtimeDiagnosticsTracker?.recordCupseyFunnel(buildCupseyFunnelDetail());
+}
+
 export function logCupseyFunnelStats(): void {
-  const s = funnelStats;
-  const elapsedH = ((Date.now() - s.sessionStartAt.getTime()) / 3_600_000).toFixed(1);
+  const elapsedH = ((Date.now() - funnelStats.sessionStartAt.getTime()) / 3_600_000).toFixed(1);
   log.info(
     `[CUPSEY_FUNNEL] ${elapsedH}h | ` +
-    `signals=${s.signalsReceived} gate_pass=${s.gatePass} stalk=${s.stalkCreated} ` +
-    `entry=${s.stalkEntry} tx_ok=${s.txSuccess} db_ok=${s.dbPersisted} ` +
-    `notif_ok=${s.notifierOpenSent} closed=${s.closedTrades}`
+    buildCupseyFunnelDetail()
   );
 }
 
@@ -84,6 +100,21 @@ async function appendExecutedLedger(
   entry: Record<string, unknown>
 ): Promise<void> {
   try {
+    const txSignature = typeof entry.txSignature === 'string' ? entry.txSignature : '';
+    if (txSignature) {
+      const dedupeKey = `${type}:${txSignature}`;
+      const nowMs = Date.now();
+      const pruneBeforeMs = nowMs - 86_400_000;
+      for (const [key, timestampMs] of executedLedgerDedupTimestamps) {
+        if (timestampMs < pruneBeforeMs) {
+          executedLedgerDedupTimestamps.delete(key);
+        }
+      }
+      if (executedLedgerDedupTimestamps.has(dedupeKey)) {
+        return;
+      }
+      executedLedgerDedupTimestamps.set(dedupeKey, nowMs);
+    }
     const logDir = config.realtimeDataDir;
     if (!executedLedgerDirEnsured) {
       await mkdir(logDir, { recursive: true });
@@ -99,6 +130,13 @@ async function appendExecutedLedger(
   }
 }
 
+export async function appendExecutedLedgerForTests(
+  type: 'buy' | 'sell',
+  entry: Record<string, unknown>
+): Promise<void> {
+  await appendExecutedLedger(type, entry);
+}
+
 // ─── CUSUM Per-Pair State (Phase 0: observation-only) ───
 const cusumStates = new Map<string, CusumState>();
 const cusumLastProcessedBucketSec = new Map<string, number>();
@@ -112,6 +150,7 @@ export function resetCupseyLaneStateForTests(): void {
   activePositions.clear();
   cusumStates.clear();
   cusumLastProcessedBucketSec.clear();
+  executedLedgerDedupTimestamps.clear();
   integrityHaltActive = false;
   funnelStats.signalsReceived = 0;
   funnelStats.gatePass = 0;
@@ -279,6 +318,7 @@ export async function handleCupseyLaneSignal(
   if (!config.cupseyLaneEnabled) return;
 
   funnelStats.signalsReceived++;
+  recordCupseyFunnelSnapshot(ctx);
 
   // Guard: integrity halt (live buy 성공 후 DB persist 실패 시 설정됨)
   if (integrityHaltActive) {
@@ -370,6 +410,7 @@ export async function handleCupseyLaneSignal(
       `buy=${gateResult.factors.avgBuyRatio.toFixed(3)} cusum=${cusumStrength.toFixed(3)}`
     );
     funnelStats.gatePass++;
+    recordCupseyFunnelSnapshot(ctx);
   }
 
   const ticketSol = config.cupseyLaneTicketSol;
@@ -398,6 +439,7 @@ export async function handleCupseyLaneSignal(
   };
   activePositions.set(positionId, position);
   funnelStats.stalkCreated++;
+  recordCupseyFunnelSnapshot(ctx);
   log.info(
     `[CUPSEY_STALK] ${positionId} ${signal.pairAddress.slice(0, 12)} ` +
     `signalPrice=${signal.price.toFixed(8)} waiting for -${(config.cupseyStalkDropPct * 100).toFixed(1)}% pullback`
@@ -459,6 +501,7 @@ export async function updateCupseyPositions(
 
         // 실제 매수 실행
         funnelStats.stalkEntry++;
+        recordCupseyFunnelSnapshot(ctx);
         const ticketSol = config.cupseyLaneTicketSol;
         let actualEntryPrice = currentPrice;
         let actualQuantity = pos.quantity;
@@ -493,6 +536,7 @@ export async function updateCupseyPositions(
               `slip=${entrySlippageBps}bps`
             );
             funnelStats.txSuccess++;
+            recordCupseyFunnelSnapshot(ctx);
             // P0-2 + P0-4: tx 성공 직후 fallback ledger 기록 (DB insert 실패 대비)
             // signalId = positionId (1:1 관계 — 각 포지션은 정확히 하나의 signal에서 발생)
             appendExecutedLedger('buy', {
@@ -550,6 +594,7 @@ export async function updateCupseyPositions(
           });
           pos.dbTradeId = dbTradeId;
           funnelStats.dbPersisted++;
+          recordCupseyFunnelSnapshot(ctx);
           await ctx.notifier.sendTradeOpen({
             tradeId: dbTradeId,
             pairAddress: pos.pairAddress,
@@ -567,6 +612,7 @@ export async function updateCupseyPositions(
             timeStopMinutes: Math.ceil(config.cupseyWinnerMaxHoldSec / 60),
           }, entryTxSignature);
           funnelStats.notifierOpenSent++;
+          recordCupseyFunnelSnapshot(ctx);
         } catch (persistErr) {
           log.error(`[CUPSEY_PERSIST_OPEN_FAIL] ${id} ${persistErr}`);
           // P0-3: live tx 성공 후 DB 실패 → 신규 포지션 halt (integrity 불일치 방지)
@@ -850,8 +896,9 @@ async function closeCupseyPosition(
     ).catch(() => {});
   }
 
-  // Funnel: closed trade count + 100 trades 마다 자동 로그
+  // Funnel: closed trade count + 10 trades 마다 자동 로그
   funnelStats.closedTrades++;
+  recordCupseyFunnelSnapshot(ctx);
   if (funnelStats.closedTrades % 10 === 0) {
     logCupseyFunnelStats();
   }

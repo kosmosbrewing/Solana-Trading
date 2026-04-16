@@ -1,5 +1,9 @@
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { config } from '../src/utils/config';
 import {
+  appendExecutedLedgerForTests,
   getActiveCupseyPositions,
   getCupseyCusumState,
   handleCupseyLaneSignal,
@@ -88,15 +92,19 @@ describe('cupseyLaneHandler persistence', () => {
       getTokenBalance: jest.fn(),
       getBalance: jest.fn(),
     };
+    const runtimeDiagnosticsTracker = {
+      recordCupseyFunnel: jest.fn(),
+    };
     const ctx = {
       tradingMode: 'live',
       tradeStore,
       notifier,
       executor,
       sandboxExecutor,
+      runtimeDiagnosticsTracker,
     } as unknown as BotContext;
 
-    return { ctx, tradeStore, notifier, executor, sandboxExecutor };
+    return { ctx, tradeStore, notifier, executor, sandboxExecutor, runtimeDiagnosticsTracker };
   }
 
   function buildOpenCupseyTrade(overrides: Partial<Trade> = {}): Trade {
@@ -127,7 +135,7 @@ describe('cupseyLaneHandler persistence', () => {
       getCurrentPrice: jest.fn(() => currentPrice),
       getRecentCandles: jest.fn(() => []),
     } as any;
-    const { ctx, tradeStore, notifier, executor, sandboxExecutor } = buildContext();
+    const { ctx, tradeStore, notifier, executor, sandboxExecutor, runtimeDiagnosticsTracker } = buildContext();
     sandboxExecutor.executeBuy.mockResolvedValue({
       txSignature: 'BUYTX',
       expectedOutAmount: 1n,
@@ -158,6 +166,7 @@ describe('cupseyLaneHandler persistence', () => {
     expect(openOrder.tradeId).toBe('db-trade-1');
     expect(openOrder.plannedEntryPrice).toBeCloseTo(99.8, 8);
     expect(openTx).toBe('BUYTX');
+    expect(runtimeDiagnosticsTracker.recordCupseyFunnel).toHaveBeenCalled();
   });
 
   it('closes the persisted OPEN trade instead of inserting a second row on sell', async () => {
@@ -377,6 +386,32 @@ describe('cupseyLaneHandler persistence', () => {
       (config as unknown as Record<string, unknown>).cupseyGateEnabled = originalGateEnabled;
       (config as unknown as Record<string, unknown>).cupseyGateLookbackBars = originalLookbackBars;
       (config as unknown as Record<string, unknown>).cupseyGateRecentBars = originalRecentBars;
+    }
+  });
+
+  it('dedupes executed ledger rows by tx signature', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cupsey-ledger-'));
+    const originalRealtimeDataDir = config.realtimeDataDir;
+    try {
+      (config as unknown as Record<string, unknown>).realtimeDataDir = tempDir;
+
+      await appendExecutedLedgerForTests('sell', {
+        txSignature: 'SELLTX-DEDUP',
+        pairAddress: 'PAIR1234567890',
+        strategy: 'cupsey_flip_10s',
+      });
+      await appendExecutedLedgerForTests('sell', {
+        txSignature: 'SELLTX-DEDUP',
+        pairAddress: 'PAIR1234567890',
+        strategy: 'cupsey_flip_10s',
+      });
+
+      const ledgerPath = path.join(tempDir, 'executed-sells.jsonl');
+      const rows = fs.readFileSync(ledgerPath, 'utf8').trim().split('\n');
+      expect(rows).toHaveLength(1);
+    } finally {
+      (config as unknown as Record<string, unknown>).realtimeDataDir = originalRealtimeDataDir;
+      fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
 });

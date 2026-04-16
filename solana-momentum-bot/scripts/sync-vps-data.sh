@@ -28,9 +28,36 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REMOTE_HOST="${REMOTE_HOST:-root@104.238.181.61}"
 REMOTE_PATH="${REMOTE_PATH:-~/Solana/Solana-Trading/solana-momentum-bot/data/}"
 LOCAL_PATH="${LOCAL_PATH:-${ROOT_DIR}/data/}"
+VPS_PM2_APP_NAME="${VPS_PM2_APP_NAME:-momentum-bot}"
+ALLOW_STALE_DB_DUMP="${ALLOW_STALE_DB_DUMP:-false}"
 
 SKIP_FILES="${SKIP_FILES:-false}"
 SKIP_TRADES="${SKIP_TRADES:-${SKIP_DB:-false}}"  # legacy SKIP_DB 호환
+
+to_epoch() {
+  local ts="${1%%.*}"  # 소수점 이하 제거
+  ts="${ts%+*}"        # +00:00 제거
+  ts="${ts%Z}"         # Z 제거
+  date -d "${ts}" +%s 2>/dev/null || \
+  date -jf "%Y-%m-%dT%H:%M:%S" "${ts}" +%s 2>/dev/null || echo 0
+}
+
+resolve_remote_database_url() {
+  ssh "${REMOTE_HOST}" "PM2_APP_NAME='${VPS_PM2_APP_NAME}' node -e \"const { execSync } = require('child_process'); const app = process.env.PM2_APP_NAME; const list = JSON.parse(execSync('pm2 jlist', { stdio: ['ignore','pipe','ignore'] }).toString()); const proc = list.find((item) => item.name === app); if (!proc) process.exit(2); const env = proc.pm2_env?.env || proc.pm2_env || {}; const url = env.DATABASE_URL || ''; if (!url) process.exit(3); process.stdout.write(url);\"" 2>/dev/null
+}
+
+handle_stale_db() {
+  local message="$1"
+  if [ "${ALLOW_STALE_DB_DUMP}" = "true" ]; then
+    echo "[sync-vps-data] ⚠️  WARNING: ${message}"
+    echo "[sync-vps-data]    ALLOW_STALE_DB_DUMP=true 이므로 계속 진행"
+  else
+    echo "[sync-vps-data] ERROR: ${message}"
+    echo "[sync-vps-data]   잘못된 DB dump 로 분석이 오염될 수 있어 중단합니다."
+    echo "[sync-vps-data]   override: ALLOW_STALE_DB_DUMP=true bash scripts/sync-vps-data.sh"
+    exit 1
+  fi
+}
 
 # ─── 1. Files (jsonl, raw-swaps, micro-candles, sessions) ───
 if [ "$SKIP_FILES" != "true" ]; then
@@ -49,12 +76,16 @@ if [ "$SKIP_TRADES" = "true" ]; then
 fi
 
 if [ -z "${VPS_DATABASE_URL:-}" ]; then
-  echo "[sync-vps-data] trades: SKIPPED (VPS_DATABASE_URL not set)"
-  echo "[sync-vps-data]   설정 방법:"
-  echo "[sync-vps-data]     export VPS_DATABASE_URL=\$(ssh ${REMOTE_HOST} \"pm2 env 0 | grep '^DATABASE_URL:' | awk '{print \\\$2}'\")"
-  echo "[sync-vps-data]     # 또는 직접: export VPS_DATABASE_URL='postgresql://...'"
-  echo "[sync-vps-data] done"
-  exit 0
+  echo "[sync-vps-data] trades: VPS_DATABASE_URL not set — resolving from pm2 app '${VPS_PM2_APP_NAME}'"
+  if VPS_DATABASE_URL="$(resolve_remote_database_url)"; then
+    echo "[sync-vps-data] trades: resolved DATABASE_URL from pm2 app '${VPS_PM2_APP_NAME}'"
+  else
+    echo "[sync-vps-data] ERROR: failed to resolve DATABASE_URL from pm2 app '${VPS_PM2_APP_NAME}'"
+    echo "[sync-vps-data]   fallback:"
+    echo "[sync-vps-data]     export VPS_DATABASE_URL='postgresql://...'"
+    echo "[sync-vps-data]     # 또는 VPS에서: pm2 jlist | jq '.[] | select(.name==\"${VPS_PM2_APP_NAME}\")'"
+    exit 1
+  fi
 fi
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -75,6 +106,11 @@ MAX_CREATED="$(echo "${DB_META}" | cut -d'|' -f3 | tr -d ' \n')"
 MAX_CLOSED="$(echo "${DB_META}" | cut -d'|' -f4 | tr -d ' \n')"
 DB_ROWS="$(echo "${DB_META}" | cut -d'|' -f5 | tr -d ' \n')"
 
+if [ -z "${DB_NAME}" ] || [ "${DB_ROWS}" = "ERROR" ]; then
+  echo "[sync-vps-data] ERROR: failed to query trades metadata from VPS DB"
+  exit 1
+fi
+
 echo "[sync-vps-data] trades: DB=${DB_NAME}@${DB_HOST}  rows=${DB_ROWS}"
 echo "[sync-vps-data] trades: max_created=${MAX_CREATED}"
 echo "[sync-vps-data] trades: max_closed=${MAX_CLOSED}"
@@ -92,25 +128,13 @@ except:
 " 2>/dev/null || echo "")"
 
   if [ -n "${SESSION_START}" ]; then
-    # macOS(BSD) / Linux date 모두 지원
-    to_epoch() {
-      local ts="${1%%.*}"  # 소수점 이하 제거
-      ts="${ts%+*}"        # +00:00 제거
-      ts="${ts%Z}"         # Z 제거
-      date -d "${ts}" +%s 2>/dev/null || \
-      date -jf "%Y-%m-%dT%H:%M:%S" "${ts}" +%s 2>/dev/null || echo 0
-    }
     SESSION_TS="$(to_epoch "${SESSION_START}")"
     MAX_CREATED_TS="$(to_epoch "${MAX_CREATED}")"
 
     if [ "${SESSION_TS}" -gt 0 ] && [ "${MAX_CREATED_TS}" -gt 0 ]; then
       if [ "${MAX_CREATED_TS}" -lt "${SESSION_TS}" ]; then
         GAP_H=$(( (SESSION_TS - MAX_CREATED_TS) / 3600 ))
-        echo "[sync-vps-data] ⚠️  WARNING: DB 최신 거래가 현재 세션 시작보다 ${GAP_H}h 이전"
-        echo "[sync-vps-data]    session_start : ${SESSION_START}"
-        echo "[sync-vps-data]    db_max_created: ${MAX_CREATED}"
-        echo "[sync-vps-data]    → VPS_DATABASE_URL 이 잘못된 DB를 가리킬 가능성"
-        echo "[sync-vps-data]    → 확인: ssh ${REMOTE_HOST} \"pm2 env 0 | grep DATABASE_URL\""
+        handle_stale_db "DB 최신 거래가 현재 세션 시작보다 ${GAP_H}h 이전 (session_start=${SESSION_START}, db_max_created=${MAX_CREATED}, app=${VPS_PM2_APP_NAME})"
       else
         echo "[sync-vps-data] ✓  DB 신선도 OK (max_created ≥ session_start)"
       fi
@@ -133,18 +157,24 @@ if [ "${SNAPSHOT_LINES}" -lt 1 ]; then
   echo "[sync-vps-data]   empty trades table is allowed for fresh/canary environments"
 fi
 
-# 2-4. latest 심볼릭 (cp 사용 — symlink 보다 git/rsync 친화적)
+# 2-4. dump 최대 시각 교차 검증 (jq 가 있으면 수행)
+if [ "${SNAPSHOT_LINES}" -gt 0 ] && command -v jq >/dev/null 2>&1; then
+  DUMP_MAX_CREATED="$(jq -r '.created_at // empty' "${SNAPSHOT_FILE}" | sort | tail -1)"
+  echo "[sync-vps-data] trades: dump_max_created=${DUMP_MAX_CREATED}"
+  if [ -n "${DUMP_MAX_CREATED}" ] && [ "${MAX_CREATED}" != "EMPTY" ] && [ "${DUMP_MAX_CREATED}" != "${MAX_CREATED}" ]; then
+    handle_stale_db "dump_max_created (${DUMP_MAX_CREATED}) != preflight max_created (${MAX_CREATED})"
+  fi
+fi
+
+# 2-5. latest 심볼릭 (cp 사용 — symlink 보다 git/rsync 친화적)
 cp "${SNAPSHOT_FILE}" "${LATEST_FILE}"
 
 echo "[sync-vps-data] trades: ${SNAPSHOT_LINES} rows, ${SNAPSHOT_BYTES} bytes"
 
-# 2-5. breakdown (jq 가 있으면 strategy/status 그룹, 없으면 skip)
+# 2-6. breakdown (jq 가 있으면 strategy/status 그룹, 없으면 skip)
 if [ "${SNAPSHOT_LINES}" -gt 0 ] && command -v jq >/dev/null 2>&1; then
   echo "[sync-vps-data] trades: breakdown (strategy / status):"
   jq -r '"\(.strategy)\t\(.status)"' "${LATEST_FILE}" | sort | uniq -c | sort -rn | sed 's/^/  /'
-  # 덤프 내 실제 max_created 교차 검증
-  DUMP_MAX_CREATED="$(jq -r '.created_at // empty' "${LATEST_FILE}" | sort | tail -1)"
-  echo "[sync-vps-data] trades: dump_max_created=${DUMP_MAX_CREATED}"
 fi
 
 echo "[sync-vps-data] done"

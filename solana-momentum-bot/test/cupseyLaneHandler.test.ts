@@ -1,7 +1,14 @@
 import { config } from '../src/utils/config';
-import { getActiveCupseyPositions, handleCupseyLaneSignal, recoverCupseyOpenPositions, updateCupseyPositions } from '../src/orchestration/cupseyLaneHandler';
+import {
+  getActiveCupseyPositions,
+  getCupseyCusumState,
+  handleCupseyLaneSignal,
+  recoverCupseyOpenPositions,
+  resetCupseyLaneStateForTests,
+  updateCupseyPositions,
+} from '../src/orchestration/cupseyLaneHandler';
 import type { BotContext } from '../src/orchestration/types';
-import type { Signal, Trade } from '../src/utils/types';
+import type { Candle, Signal, Trade } from '../src/utils/types';
 
 describe('cupseyLaneHandler persistence', () => {
   const configPatch = {
@@ -28,7 +35,7 @@ describe('cupseyLaneHandler persistence', () => {
       originalConfig.set(key, (config as unknown as Record<string, unknown>)[key]);
       (config as unknown as Record<string, unknown>)[key] = value;
     }
-    (getActiveCupseyPositions() as Map<string, unknown>).clear();
+    resetCupseyLaneStateForTests();
   });
 
   afterEach(() => {
@@ -36,7 +43,7 @@ describe('cupseyLaneHandler persistence', () => {
       (config as unknown as Record<string, unknown>)[key] = value;
     }
     originalConfig.clear();
-    (getActiveCupseyPositions() as Map<string, unknown>).clear();
+    resetCupseyLaneStateForTests();
     jest.useRealTimers();
     jest.restoreAllMocks();
   });
@@ -329,5 +336,47 @@ describe('cupseyLaneHandler persistence', () => {
       'open-cupsey-winner',
       106 * (1 - config.cupseyWinnerTrailingPct)
     );
+  });
+
+  it('does not double-count identical recent candles while CUSUM warmup is incomplete', async () => {
+    const originalGateEnabled = config.cupseyGateEnabled;
+    const originalLookbackBars = config.cupseyGateLookbackBars;
+    const originalRecentBars = config.cupseyGateRecentBars;
+    try {
+      (config as unknown as Record<string, unknown>).cupseyGateEnabled = true;
+      (config as unknown as Record<string, unknown>).cupseyGateLookbackBars = 20;
+      (config as unknown as Record<string, unknown>).cupseyGateRecentBars = 3;
+
+      const warmupCandles: Candle[] = Array.from({ length: 9 }, (_, index) => ({
+        pairAddress: 'PAIR1234567890',
+        timestamp: new Date(`2026-04-16T00:0${index}:00.000Z`),
+        intervalSec: 10,
+        open: 100,
+        high: 100,
+        low: 100,
+        close: 100,
+        volume: 100 + index,
+        buyVolume: 60,
+        sellVolume: 40,
+        tradeCount: 1,
+      }));
+      const candleBuilder = {
+        getCurrentPrice: jest.fn(() => 100),
+        getRecentCandles: jest.fn(() => warmupCandles),
+      } as any;
+      const { ctx } = buildContext();
+
+      await handleCupseyLaneSignal(buildSignal(), candleBuilder, ctx);
+      const firstState = getCupseyCusumState('PAIR1234567890');
+      expect(firstState?.sampleCount).toBe(9);
+
+      await handleCupseyLaneSignal(buildSignal(), candleBuilder, ctx);
+      const secondState = getCupseyCusumState('PAIR1234567890');
+      expect(secondState?.sampleCount).toBe(9);
+    } finally {
+      (config as unknown as Record<string, unknown>).cupseyGateEnabled = originalGateEnabled;
+      (config as unknown as Record<string, unknown>).cupseyGateLookbackBars = originalLookbackBars;
+      (config as unknown as Record<string, unknown>).cupseyGateRecentBars = originalRecentBars;
+    }
   });
 });

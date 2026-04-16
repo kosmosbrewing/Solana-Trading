@@ -145,6 +145,18 @@ export const config = {
   ...(process.env.CUPSEY_GATE_ENABLED !== undefined
     ? { cupseyGateEnabled: process.env.CUPSEY_GATE_ENABLED !== 'false' }
     : {}),
+  ...(process.env.CUPSEY_GATE_MIN_VOLUME_ACCEL_RATIO
+    ? { cupseyGateMinVolumeAccelRatio: Number(process.env.CUPSEY_GATE_MIN_VOLUME_ACCEL_RATIO) }
+    : {}),
+  ...(process.env.CUPSEY_GATE_MIN_PRICE_CHANGE_PCT
+    ? { cupseyGateMinPriceChangePct: Number(process.env.CUPSEY_GATE_MIN_PRICE_CHANGE_PCT) }
+    : {}),
+  ...(process.env.CUPSEY_GATE_MIN_AVG_BUY_RATIO
+    ? { cupseyGateMinAvgBuyRatio: Number(process.env.CUPSEY_GATE_MIN_AVG_BUY_RATIO) }
+    : {}),
+  ...(process.env.CUPSEY_GATE_MIN_TRADE_COUNT_RATIO
+    ? { cupseyGateMinTradeCountRatio: Number(process.env.CUPSEY_GATE_MIN_TRADE_COUNT_RATIO) }
+    : {}),
   // ─── Cupsey / Execution Operational Overrides (.env — 배포 없이 변경) ───
   ...(process.env.EXECUTION_RR_REJECT
     ? { executionRrReject: Number(process.env.EXECUTION_RR_REJECT) }

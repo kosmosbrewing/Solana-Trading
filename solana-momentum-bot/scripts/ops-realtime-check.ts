@@ -97,6 +97,10 @@ function printRuntimeDiagnostics(events: RuntimeDiagnosticEvent[], cutoffMs: num
 
   console.log('\nRuntime Diagnostics');
   console.log(`- events in window: ${recent.length}`);
+  const latestCupseyFunnel = recent.filter((event) => event.type === 'cupsey_funnel').at(-1)?.detail;
+  if (latestCupseyFunnel) {
+    console.log(`- cupsey funnel: ${latestCupseyFunnel}`);
+  }
   printCountSection('alias_miss top', aliasMiss, topN);
   printCountSection('pre_watchlist_reject top', preWatchlistReject, topN);
   printCountSection('capacity top', capacity, topN);

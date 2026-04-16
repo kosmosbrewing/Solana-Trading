@@ -281,6 +281,15 @@ export class TradeStore {
     );
   }
 
+  async updateTrailingStop(id: string, trailingStop: number): Promise<void> {
+    await this.pool.query(
+      `UPDATE trades
+       SET trailing_stop = GREATEST(COALESCE(trailing_stop, 0), $2)
+       WHERE id = $1`,
+      [id, trailingStop]
+    );
+  }
+
   async failTrade(id: string, reason: string): Promise<void> {
     await this.pool.query(
       `UPDATE trades SET status = 'FAILED', closed_at = now()

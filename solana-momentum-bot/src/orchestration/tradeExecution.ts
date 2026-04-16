@@ -525,7 +525,7 @@ export async function checkOpenPositions(ctx: BotContext): Promise<void> {
     ? ctx.paperBalance
     : await ctx.executor.getBalance();
   const portfolio = await ctx.riskManager.getPortfolioState(balanceSol);
-  const openTrades = portfolio.openTrades;
+  const openTrades = portfolio.openTrades.filter((trade) => !isSandboxStrategy(trade.strategy));
   ctx.healthMonitor.updatePositions(openTrades.length);
   ctx.healthMonitor.updateDailyPnl(portfolio.dailyPnl);
 

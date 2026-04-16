@@ -45,6 +45,19 @@ describe('checkTickLevelExit', () => {
     expect(ctx.tradeStore.getOpenTrades).toHaveBeenCalled();
   });
 
+  it('should ignore sandbox strategies in the cached open-trade set', async () => {
+    const sandboxTrade = makeTrade({
+      strategy: 'cupsey_flip_10s',
+      stopLoss: 1.5,
+    });
+    const ctx = makeCtx([sandboxTrade]);
+
+    await checkTickLevelExit('PAIR_A', 1.0, ctx);
+
+    expect(ctx.tradeStore.getOpenTrades).toHaveBeenCalledTimes(1);
+    expect(ctx.tradeStore.updateHighWaterMark).not.toHaveBeenCalled();
+  });
+
   it('should skip when execution lock is held', async () => {
     const trade = makeTrade();
     const ctx = makeCtx([trade]);

@@ -233,6 +233,74 @@ describe('tradeExecution paper balance', () => {
     expect(opts.exitPrice).toBeCloseTo(1.2, 8);
   });
 
+  it('ignores sandbox strategy rows in the common open-position monitor', async () => {
+    const trade: Trade = {
+      id: 'trade-cupsey-open',
+      pairAddress: 'pair-cupsey-open',
+      strategy: 'cupsey_flip_10s',
+      side: 'BUY',
+      entryPrice: 1.0,
+      quantity: 1.0,
+      status: 'OPEN',
+      createdAt: new Date('2026-03-21T00:00:00Z'),
+      stopLoss: 0.9,
+      takeProfit1: 1.1,
+      takeProfit2: 1.2,
+      highWaterMark: 1.0,
+      timeStopAt: new Date(Date.now() + 3600_000),
+    };
+    const candleStore = {
+      getRecentCandles: jest.fn().mockResolvedValue([]),
+    };
+    const tradeStore = {
+      closeTrade: jest.fn().mockResolvedValue(undefined),
+      failTrade: jest.fn().mockResolvedValue(undefined),
+      updateHighWaterMark: jest.fn().mockResolvedValue(undefined),
+    };
+    const notifier = {
+      sendTradeClose: jest.fn().mockResolvedValue(undefined),
+      sendError: jest.fn().mockResolvedValue(undefined),
+      sendCritical: jest.fn().mockResolvedValue(undefined),
+      sendInfo: jest.fn().mockResolvedValue(undefined),
+      sendTradeAlert: jest.fn().mockResolvedValue(undefined),
+    };
+    const positionStore = {
+      getOpenPositions: jest.fn().mockResolvedValue([]),
+      updateState: jest.fn().mockResolvedValue(undefined),
+    };
+    const healthMonitor = {
+      updateTradeTime: jest.fn(),
+      updatePositions: jest.fn(),
+      updateDailyPnl: jest.fn(),
+    };
+    const riskManager = {
+      getPortfolioState: jest.fn().mockResolvedValue({
+        openTrades: [trade],
+        dailyPnl: 0,
+      }),
+      applyUnrealizedDrawdown: jest.fn().mockImplementation((portfolio) => portfolio),
+      getActiveHalt: jest.fn().mockReturnValue(null),
+    };
+    const ctx = {
+      tradingMode: 'paper',
+      paperBalance: 10,
+      candleStore,
+      tradeStore,
+      notifier,
+      positionStore,
+      healthMonitor,
+      riskManager,
+      executor: { getBalance: jest.fn() },
+      realtimeCandleBuilder: { getCurrentPrice: jest.fn().mockReturnValue(0.5) },
+    } as unknown as BotContext;
+
+    await checkOpenPositions(ctx);
+
+    expect(candleStore.getRecentCandles).not.toHaveBeenCalled();
+    expect(tradeStore.closeTrade).not.toHaveBeenCalled();
+    expect(healthMonitor.updatePositions).toHaveBeenCalledWith(0);
+  });
+
   it('uses the sell transaction signature in the close notification for live exits', async () => {
     const tradeStore = {
       closeTrade: jest.fn().mockResolvedValue(undefined),

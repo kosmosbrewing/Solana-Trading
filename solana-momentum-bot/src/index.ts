@@ -65,7 +65,7 @@ import { SignalAuditLogger } from './audit';
 import { scheduleDailySummary } from './orchestration/reporting';
 import { handleNewCandle } from './orchestration/candleHandler';
 import { handleRealtimeSignal } from './orchestration/realtimeHandler';
-import { handleCupseyLaneSignal, updateCupseyPositions } from './orchestration/cupseyLaneHandler';
+import { handleCupseyLaneSignal, recoverCupseyOpenPositions, updateCupseyPositions } from './orchestration/cupseyLaneHandler';
 import { evaluateNewLpSniper, buildNewLpOrder, prepareNewLpCandidate } from './strategy/newLpSniper';
 import { MomentumTrigger, VolumeMcapSpikeTrigger, TickTrigger } from './strategy';
 import { closeTrade } from './orchestration/tradeExecution';
@@ -1474,6 +1474,16 @@ async function main() {
 
   if (recoveryResult.recovered > 0 || recoveryResult.closed > 0) {
     await notifier.sendRecoveryReport(recoveryResult.details);
+  }
+
+  if (config.cupseyLaneEnabled) {
+    const recoveredCupseyCount = await recoverCupseyOpenPositions(ctx);
+    if (recoveredCupseyCount > 0) {
+      await notifier.sendInfo(
+        `Cupsey recovery: ${recoveredCupseyCount} OPEN trades rehydrated from ledger`,
+        'recovery'
+      ).catch(() => {});
+    }
   }
 
   // ─── Configure ingester ─────────────────────────────

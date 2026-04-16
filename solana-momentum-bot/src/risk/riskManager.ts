@@ -2,7 +2,7 @@ import { createModuleLogger } from '../utils/logger';
 import { config } from '../utils/config';
 import {
   RiskCheckResult, TokenSafety, PortfolioState, SizeConstraint, BreakoutGrade, DrawdownGuardState, StrategyName,
-  Trade,
+  Trade, isSandboxStrategy,
   Cohort,
 } from '../utils/types';
 import { TradeStore } from '../candle/tradeStore';
@@ -564,12 +564,19 @@ export class RiskManager {
    * 현재 포트폴리오 상태 구성 — 병렬 DB 쿼리
    */
   async getPortfolioState(balanceSol: number): Promise<PortfolioState> {
-    const [openTrades, dailyPnl, recentClosed, closedTrades] = await Promise.all([
+    const [allOpenTrades, recentClosedAll, closedTradesAll] = await Promise.all([
       this.tradeStore.getOpenTrades(),
-      this.tradeStore.getTodayPnl(),
       this.tradeStore.getRecentClosedTrades(10),
       this.tradeStore.getClosedTradesChronological(),
     ]);
+    const openTrades = allOpenTrades.filter((trade) => !isSandboxStrategy(trade.strategy));
+    const recentClosed = recentClosedAll.filter((trade) => !isSandboxStrategy(trade.strategy));
+    const closedTrades = closedTradesAll.filter((trade) => !isSandboxStrategy(trade.strategy));
+    const todayStart = new Date();
+    todayStart.setUTCHours(0, 0, 0, 0);
+    const dailyPnl = closedTrades
+      .filter((trade) => trade.status === 'CLOSED' && trade.closedAt && trade.closedAt >= todayStart)
+      .reduce((sum, trade) => sum + (trade.pnl ?? 0), 0);
 
     // Open-position mark-to-market requires live candle prices and is applied later via applyUnrealizedDrawdown().
     // 여기서 raw trade.quantity를 더하면 token units를 SOL equity로 오인해 HWM/drawdown이 왜곡된다.

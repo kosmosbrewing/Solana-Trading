@@ -4,6 +4,133 @@ import type { PortfolioState } from '../src/utils/types';
 import { config } from '../src/utils/config';
 
 describe('RiskManager unrealized drawdown', () => {
+  it('excludes sandbox strategies from portfolio open trades and realized risk state', async () => {
+    const tradeStore = {
+      getOpenTrades: jest.fn().mockResolvedValue([
+        {
+          id: 'main-open',
+          pairAddress: 'pair-main',
+          strategy: 'volume_spike',
+          side: 'BUY',
+          entryPrice: 1,
+          quantity: 1,
+          status: 'OPEN',
+          createdAt: new Date('2026-04-16T00:00:00.000Z'),
+          stopLoss: 0.9,
+          takeProfit1: 1.1,
+          takeProfit2: 1.2,
+          timeStopAt: new Date('2026-04-16T01:00:00.000Z'),
+        },
+        {
+          id: 'sandbox-open',
+          pairAddress: 'pair-cupsey',
+          strategy: 'cupsey_flip_10s',
+          side: 'BUY',
+          entryPrice: 2,
+          quantity: 1,
+          status: 'OPEN',
+          createdAt: new Date('2026-04-16T00:00:00.000Z'),
+          stopLoss: 1.8,
+          takeProfit1: 2.1,
+          takeProfit2: 2.2,
+          timeStopAt: new Date('2026-04-16T01:00:00.000Z'),
+        },
+      ]),
+      getRecentClosedTrades: jest.fn().mockResolvedValue([
+        {
+          id: 'sandbox-loss',
+          pairAddress: 'pair-cupsey',
+          strategy: 'cupsey_flip_10s',
+          side: 'BUY',
+          entryPrice: 1,
+          exitPrice: 0.8,
+          quantity: 1,
+          pnl: -0.2,
+          status: 'CLOSED',
+          createdAt: new Date('2026-04-16T00:10:00.000Z'),
+          closedAt: new Date('2026-04-16T00:20:00.000Z'),
+          stopLoss: 0.9,
+          takeProfit1: 1.1,
+          takeProfit2: 1.2,
+          timeStopAt: new Date('2026-04-16T01:00:00.000Z'),
+        },
+        {
+          id: 'main-win',
+          pairAddress: 'pair-main',
+          strategy: 'volume_spike',
+          side: 'BUY',
+          entryPrice: 1,
+          exitPrice: 1.2,
+          quantity: 1,
+          pnl: 0.2,
+          status: 'CLOSED',
+          createdAt: new Date('2026-04-16T00:30:00.000Z'),
+          closedAt: new Date('2026-04-16T00:40:00.000Z'),
+          stopLoss: 0.9,
+          takeProfit1: 1.1,
+          takeProfit2: 1.2,
+          timeStopAt: new Date('2026-04-16T01:00:00.000Z'),
+        },
+      ]),
+      getClosedTradesChronological: jest.fn().mockResolvedValue([
+        {
+          id: 'sandbox-loss',
+          pairAddress: 'pair-cupsey',
+          strategy: 'cupsey_flip_10s',
+          side: 'BUY',
+          entryPrice: 1,
+          exitPrice: 0.8,
+          quantity: 1,
+          pnl: -0.2,
+          status: 'CLOSED',
+          createdAt: new Date('2026-04-16T00:10:00.000Z'),
+          closedAt: new Date('2026-04-16T00:20:00.000Z'),
+          stopLoss: 0.9,
+          takeProfit1: 1.1,
+          takeProfit2: 1.2,
+          timeStopAt: new Date('2026-04-16T01:00:00.000Z'),
+        },
+        {
+          id: 'main-win',
+          pairAddress: 'pair-main',
+          strategy: 'volume_spike',
+          side: 'BUY',
+          entryPrice: 1,
+          exitPrice: 1.2,
+          quantity: 1,
+          pnl: 0.2,
+          status: 'CLOSED',
+          createdAt: new Date('2026-04-16T00:30:00.000Z'),
+          closedAt: new Date('2026-04-16T00:40:00.000Z'),
+          stopLoss: 0.9,
+          takeProfit1: 1.1,
+          takeProfit2: 1.2,
+          timeStopAt: new Date('2026-04-16T01:00:00.000Z'),
+        },
+      ]),
+    } as unknown as TradeStore;
+
+    const manager = new RiskManager({
+      maxRiskPerTrade: 0.01,
+      maxDailyLoss: 0.05,
+      maxDrawdownPct: 0.30,
+      recoveryPct: 0.85,
+      maxConsecutiveLosses: 3,
+      cooldownMinutes: 30,
+      maxSlippage: 0.05,
+      minPoolLiquidity: 50_000,
+      minTokenAgeHours: 24,
+      maxHolderConcentration: 0.8,
+    }, tradeStore);
+
+    const portfolio = await manager.getPortfolioState(5);
+
+    expect(portfolio.openTrades).toHaveLength(1);
+    expect(portfolio.openTrades[0].strategy).toBe('volume_spike');
+    expect(portfolio.dailyPnl).toBeCloseTo(0.2, 8);
+    expect(portfolio.consecutiveLosses).toBe(0);
+  });
+
   it('does not treat open-trade raw quantity as SOL equity in portfolio state', async () => {
     const tradeStore = {
       getOpenTrades: jest.fn().mockResolvedValue([

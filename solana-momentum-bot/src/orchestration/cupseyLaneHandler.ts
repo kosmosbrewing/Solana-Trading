@@ -231,6 +231,14 @@ interface CupseyPosition {
   entryTxSignature?: string;
   entrySlippageBps?: number;
   lastCloseFailureAtSec?: number;
+  /**
+   * Reentrancy guard for STALK → PROBE transition.
+   * Why: updateCupseyPositions는 index.ts:1339에서 fire-and-forget으로 호출되므로,
+   * 같은 초에 swap 이벤트가 N개 들어오면 N번 동시 실행되어 같은 STALK 포지션이
+   * 각각 executeBuy → insertTrade를 수행해 DB duplicate row를 생성한다.
+   * 실측: 187 unique buy_tx 중 45개(24%)가 duplicate. 이 플래그로 한 번만 진행.
+   */
+  enteringLock?: boolean;
 }
 
 // ─── Active Positions ───
@@ -493,6 +501,16 @@ export async function updateCupseyPositions(
 
       // STALK → PROBE: pullback 확인 → 실제 매수!
       if (dropFromSignal <= -config.cupseyStalkDropPct) {
+        // Reentrancy guard: updateCupseyPositions가 fire-and-forget으로 호출될 때
+        // 같은 STALK 포지션에 대한 executeBuy + insertTrade 중복 실행을 차단.
+        // lock은 성공 경로에서 state='PROBE' 전환 후 해제되고, 실패 경로에서는
+        // activePositions.delete()로 position 자체가 사라지므로 별도 cleanup 불필요.
+        if (pos.enteringLock) {
+          log.debug(`[CUPSEY_STALK_REENTRY_BLOCKED] ${id} entering in progress — skip`);
+          continue;
+        }
+        pos.enteringLock = true;
+
         log.info(
           `[CUPSEY_STALK_ENTRY] ${id} pullback confirmed ` +
           `signal=${pos.signalPrice.toFixed(8)} → current=${currentPrice.toFixed(8)} ` +

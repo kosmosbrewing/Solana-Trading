@@ -26,6 +26,7 @@ import { BotContext } from './types';
 import { bpsToDecimal } from '../utils/units';
 import { isWalletStopActive } from '../risk/walletStopGuard';
 import { serializeClose } from './swapSerializer';
+import { appendEntryLedger, persistOpenTradeWithIntegrity, isEntryHaltActive } from './entryIntegrity';
 
 const log = createModuleLogger('MigrationLane');
 
@@ -178,6 +179,11 @@ export function onMigrationEvent(event: MigrationEvent, ctx: BotContext): void {
   // Wallet stop guard (override 가드레일 #2) — entry만 차단
   if (isWalletStopActive()) {
     log.debug(`[MIG_EVENT_WALLET_STOP] ${event.signature.slice(0, 12)} ignored — wallet stop active`);
+    return;
+  }
+  // 2026-04-17 Block 1.5-2: entry integrity halt (insertTrade 실패 누적 방지)
+  if (isEntryHaltActive('migration')) {
+    log.debug(`[MIG_EVENT_HALT] ${event.signature.slice(0, 12)} ignored — migration entry halt active`);
     return;
   }
   pruneProcessedEvents();
@@ -424,9 +430,13 @@ async function enterMigrationProbe(
   pos.entryTxSignature = entryTxSignature;
   pos.entrySlippageBps = entrySlippageBps;
 
-  // DB persist — cupsey와 동일한 `source_label` 구분으로 attribution 분리
-  try {
-    const dbTradeId = await ctx.tradeStore.insertTrade({
+  // DB persist — cupsey와 동일한 `source_label` 구분으로 attribution 분리.
+  // 2026-04-17 Block 1.5-2: 공통 entryIntegrity helper 적용 (lane='migration').
+  // 이전에는 halt 없이 critical 만 발송 (M8 Low 우선순위로 flag됨) — 이제 승격.
+  const persistResult = await persistOpenTradeWithIntegrity({
+    ctx,
+    lane: 'migration',
+    tradeData: {
       pairAddress: pos.event.pairAddress,
       strategy: 'migration_reclaim',
       side: 'BUY',
@@ -446,10 +456,27 @@ async function enterMigrationProbe(
       txSignature: entryTxSignature,
       createdAt: new Date(pos.entryTimeSec * 1000),
       entrySlippageBps,
-    });
-    pos.dbTradeId = dbTradeId;
+    },
+    ledgerEntry: {
+      positionId: id,
+      txSignature: entryTxSignature,
+      strategy: 'migration_reclaim',
+      pairAddress: pos.event.pairAddress,
+      tokenSymbol: pos.event.tokenSymbol,
+      plannedEntryPrice: currentPrice,
+      actualEntryPrice,
+      actualQuantity,
+      slippageBps: entrySlippageBps,
+    },
+    notifierKey: 'migration_open_persist',
+    buildNotifierMessage: (err) =>
+      `${id} ${pos.event.pairAddress} buy persisted FAILED after tx=${entryTxSignature} — ` +
+      `NEW MIGRATION ENTRIES HALTED. Call resetEntryHalt('migration') after reconciliation. err=${err}`,
+  });
+  if (persistResult.dbTradeId) {
+    pos.dbTradeId = persistResult.dbTradeId;
     await ctx.notifier.sendTradeOpen({
-      tradeId: dbTradeId,
+      tradeId: persistResult.dbTradeId,
       pairAddress: pos.event.pairAddress,
       strategy: 'migration_reclaim',
       side: 'BUY',
@@ -464,13 +491,6 @@ async function enterMigrationProbe(
       takeProfit2: actualEntryPrice * (1 + config.migrationWinnerTrailingPct * 2),
       timeStopMinutes: Math.ceil(config.migrationWinnerMaxHoldSec / 60),
     }, entryTxSignature).catch(() => {});
-  } catch (err) {
-    log.error(`[MIG_PERSIST_OPEN_FAIL] ${id} ${err}`);
-    // cupsey와 달리 integrity halt는 두지 않음 — tier 1은 실험 단계. 대신 notifier 알림.
-    await ctx.notifier.sendCritical(
-      'migration_open_persist',
-      `${id} ${pos.event.pairAddress} buy persisted FAILED after tx=${entryTxSignature}`
-    ).catch(() => {});
   }
 }
 

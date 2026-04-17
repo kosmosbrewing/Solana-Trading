@@ -10,6 +10,7 @@ import { RiskManager } from '../risk';
 import { BotContext } from './types';
 import { buildGateTraceSnapshot } from './signalTrace';
 import { summarizeTradeObservation } from './tradeMonitoring';
+import { appendEntryLedger, persistOpenTradeWithIntegrity } from './entryIntegrity';
 
 const log = createModuleLogger('TradeExecution');
 
@@ -404,6 +405,19 @@ export async function handleDegradedExitPhase1(
     slippage: undefined,
     exitReason: undefined,
   };
+  // 2026-04-17 Block 1.5-2: partial close 후 remaining row 생성 실패 시에도
+  // on-chain 사실 (original trade close 는 이미 발생) 을 fallback ledger 에 남긴다.
+  // partial close 경로는 **halt 없음** — exit 는 계속 허용되어야 stuck 토큰이 자연 해소됨.
+  await appendEntryLedger('buy', {
+    parentTradeId: trade.id,
+    txSignature: trade.txSignature ?? `partial-${trade.id}`,
+    strategy: trade.strategy,
+    pairAddress: trade.pairAddress,
+    tokenSymbol: trade.tokenSymbol,
+    actualEntryPrice: trade.entryPrice,
+    actualQuantity: remainingQuantity,
+    note: 'degraded_exit_remaining',
+  });
   await ctx.tradeStore.insertTrade(remainingTrade);
 
   // degraded 상태 기록 (phase 2 타이머 시작)
@@ -987,33 +1001,61 @@ export async function recordOpenedTrade(
   });
 
   const timeStopAt = new Date(Date.now() + openedOrder.timeStopMinutes * 60 * 1000);
-  const tradeId = await ctx.tradeStore.insertTrade({
-    pairAddress: openedOrder.pairAddress,
-    strategy: openedOrder.strategy,
-    side: openedOrder.side,
-    tokenSymbol: openedOrder.tokenSymbol,
-    sourceLabel: signal.sourceLabel,
-    discoverySource: signal.discoverySource,
-    entryPrice: openedOrder.price,
-    plannedEntryPrice: executionSummary.plannedEntryPrice,
-    quantity: openedOrder.quantity,
-    stopLoss: openedOrder.stopLoss,
-    takeProfit1: openedOrder.takeProfit1,
-    takeProfit2: openedOrder.takeProfit2,
-    trailingStop: openedOrder.trailingStop,
-    highWaterMark: openedOrder.price,
-    timeStopAt,
-    status: 'OPEN',
-    txSignature,
-    createdAt: new Date(),
-    breakoutScore: totalScore,
-    breakoutGrade: order.breakoutGrade,
-    sizeConstraint,
-    entrySlippageBps: executionSummary.entrySlippageBps,
-    entryPriceImpactPct: postSizeExecution?.entryPriceImpactPct,
-    roundTripCostPct: executionSummary.roundTripCost,
-    effectiveRR: executionSummary.effectiveRR,
+  // 2026-04-17 Block 1.5-2: `insertTrade` 실패 시 halt + fallback ledger.
+  // sandbox strategy (new_lp_sniper) 는 lane=strategy_d, 아니면 lane=main 으로 attribute.
+  const integrityLane = isSandboxStrategy(openedOrder.strategy) ? 'strategy_d' : 'main';
+  const persistResult = await persistOpenTradeWithIntegrity({
+    ctx,
+    lane: integrityLane,
+    tradeData: {
+      pairAddress: openedOrder.pairAddress,
+      strategy: openedOrder.strategy,
+      side: openedOrder.side,
+      tokenSymbol: openedOrder.tokenSymbol,
+      sourceLabel: signal.sourceLabel,
+      discoverySource: signal.discoverySource,
+      entryPrice: openedOrder.price,
+      plannedEntryPrice: executionSummary.plannedEntryPrice,
+      quantity: openedOrder.quantity,
+      stopLoss: openedOrder.stopLoss,
+      takeProfit1: openedOrder.takeProfit1,
+      takeProfit2: openedOrder.takeProfit2,
+      trailingStop: openedOrder.trailingStop,
+      highWaterMark: openedOrder.price,
+      timeStopAt,
+      status: 'OPEN',
+      txSignature,
+      createdAt: new Date(),
+      breakoutScore: totalScore,
+      breakoutGrade: order.breakoutGrade,
+      sizeConstraint,
+      entrySlippageBps: executionSummary.entrySlippageBps,
+      entryPriceImpactPct: postSizeExecution?.entryPriceImpactPct,
+      roundTripCostPct: executionSummary.roundTripCost,
+      effectiveRR: executionSummary.effectiveRR,
+    },
+    ledgerEntry: {
+      txSignature,
+      strategy: openedOrder.strategy,
+      pairAddress: openedOrder.pairAddress,
+      tokenSymbol: openedOrder.tokenSymbol,
+      plannedEntryPrice: executionSummary.plannedEntryPrice,
+      actualEntryPrice: openedOrder.price,
+      actualQuantity: openedOrder.quantity,
+      slippageBps: executionSummary.entrySlippageBps,
+    },
+    notifierKey: `${integrityLane}_open_persist`,
+    buildNotifierMessage: (err) =>
+      `${integrityLane} entry persist FAILED after tx=${txSignature.slice(0, 16)} ` +
+      `strategy=${openedOrder.strategy} pair=${openedOrder.pairAddress.slice(0, 12)} — ` +
+      `NEW ENTRIES HALTED. Call resetEntryHalt('${integrityLane}') after reconciliation. err=${err}`,
   });
+  if (!persistResult.dbTradeId) {
+    // DB 기록 실패 — 상위 signalProcessor 가 ORDER_FAILED 로 전이하도록 throw.
+    // 단, appendEntryLedger 와 critical notifier 는 이미 발송됨 → 지갑-DB 정합성 recover 가능.
+    throw new Error(`[MAIN_ENTRY_PERSIST_FAIL] lane=${integrityLane} tx=${txSignature}`);
+  }
+  const tradeId = persistResult.dbTradeId;
 
   await ctx.positionStore.updateState(positionId, 'MONITORING');
   ctx.healthMonitor.updateTradeTime();
@@ -1351,6 +1393,17 @@ async function handleTakeProfit1Partial(
       exitReason: undefined,
     };
 
+    // 2026-04-17 Block 1.5-2: TP1 partial close remaining — fallback ledger (no halt).
+    await appendEntryLedger('buy', {
+      parentTradeId: trade.id,
+      txSignature: trade.txSignature ?? `partial-tp1-${trade.id}`,
+      strategy: trade.strategy,
+      pairAddress: trade.pairAddress,
+      tokenSymbol: trade.tokenSymbol,
+      actualEntryPrice: trade.entryPrice,
+      actualQuantity: remainingQuantity,
+      note: 'tp1_partial_remaining',
+    });
     await ctx.tradeStore.insertTrade(remainingTrade);
 
     const partialTrade: Trade = {
@@ -1503,6 +1556,17 @@ async function handleRunnerGradeBPartial(
       slippage: undefined,
       exitReason: undefined,
     };
+    // 2026-04-17 Block 1.5-2: Runner Grade B partial remaining — fallback ledger (no halt).
+    await appendEntryLedger('buy', {
+      parentTradeId: trade.id,
+      txSignature: trade.txSignature ?? `partial-runner-${trade.id}`,
+      strategy: trade.strategy,
+      pairAddress: trade.pairAddress,
+      tokenSymbol: trade.tokenSymbol,
+      actualEntryPrice: trade.entryPrice,
+      actualQuantity: remainingQuantity,
+      note: 'runner_grade_b_partial_remaining',
+    });
     const insertedId = await ctx.tradeStore.insertTrade(remainingTrade);
 
     // 잔여분을 runner로 등록

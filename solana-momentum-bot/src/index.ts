@@ -66,6 +66,10 @@ import { scheduleDailySummary } from './orchestration/reporting';
 import { handleNewCandle } from './orchestration/candleHandler';
 import { handleRealtimeSignal } from './orchestration/realtimeHandler';
 import { handleCupseyLaneSignal, recoverCupseyOpenPositions, updateCupseyPositions } from './orchestration/cupseyLaneHandler';
+import { updateMigrationPositions, onMigrationEvent, recoverMigrationOpenPositions } from './orchestration/migrationLaneHandler';
+import type { MigrationEvent } from './strategy/migrationHandoffReclaim';
+import { isPumpSwapDexId } from './realtime/pumpSwapParser';
+import { startWalletStopGuard, stopWalletStopGuardPoller } from './risk/walletStopGuard';
 import { evaluateNewLpSniper, buildNewLpOrder, prepareNewLpCandidate } from './strategy/newLpSniper';
 import { MomentumTrigger, VolumeMcapSpikeTrigger, TickTrigger } from './strategy';
 import { closeTrade } from './orchestration/tradeExecution';
@@ -499,6 +503,21 @@ async function main() {
   const healthMonitor = new HealthMonitor();
   healthMonitor.setDbConnected(true);
   healthMonitor.start();
+
+  // 2026-04-17: Wallet Stop Guard (override 가드레일 #2)
+  // live 모드에서만 poller 시작. paper 에서는 wallet balance 의미 없음.
+  if (config.walletStopGuardEnabled && tradingMode === 'live') {
+    startWalletStopGuard(walletManager, notifier, {
+      minWalletSol: config.walletStopMinSol,
+      pollIntervalMs: config.walletStopPollIntervalMs,
+      walletName: config.walletStopWalletName,
+      rpcFailSafeThreshold: config.walletStopRpcFailSafeThreshold,
+    });
+  } else {
+    log.info(
+      `[WALLET_STOP] guard ${config.walletStopGuardEnabled ? 'skipped (paper mode)' : 'disabled (config)'}`
+    );
+  }
   const internalCandleSource = new InternalCandleSource(candleStore);
 
   // ─── Execution Lock (v0.3) ─────────────────────────
@@ -970,6 +989,52 @@ async function main() {
           ctx.gateCache!.set(entry.tokenMint, { tokenSecurityData: secData, exitLiquidityData: exitData });
         })().catch(() => {});
       }
+
+      // Tier 1 (2026-04-17): Migration Handoff Reclaim detection
+      // Why: pumpfun graduation → PumpSwap canonical pool 이벤트는 scanner 의
+      // candidateDiscovered 시점에 dexId=pumpswap 이고 tokenAgeHours 가 작은 pair 로 나타난다.
+      // 정확한 on-chain tx decode 는 후속 작업 — 현재는 heuristic (dexId + age) 기반.
+      if (config.migrationLaneEnabled) {
+        const ageHours = entry.poolInfo?.tokenAgeHours ?? 999;
+        const isPumpSwap = isPumpSwapDexId(entry.dexId);
+        const isFreshEnough = ageHours <= 0.25; // 15분 이내
+        if (isPumpSwap && isFreshEnough) {
+          // Why: universe/candle builder 는 tokenMint 를 primary key 로 사용 (line 944 참조)
+          // 하지만 pairAddress 기반 경로도 있어 둘 다 시도. 첫 candle 도착 전이면 price=null →
+          // 10초 간격 최대 6회 (60초) retry. 60초 이후는 migration edge 판정 시간 내 (900s) 충분.
+          const candleKey = entry.tokenMint;
+          const eventSignature = `migration-${candleKey}`;
+          const firstRegisteredAt = Math.floor(Date.now() / 1000);
+          const attemptRegister = (attemptsLeft: number): void => {
+            const candlePrice =
+              realtimeCandleBuilder?.getCurrentPrice(candleKey) ??
+              realtimeCandleBuilder?.getCurrentPrice(entry.pairAddress);
+            if (candlePrice && candlePrice > 0) {
+              const ageSec = Math.floor(ageHours * 3600);
+              const event: MigrationEvent = {
+                kind: 'pumpswap_canonical_init',
+                pairAddress: candleKey,
+                tokenSymbol: entry.symbol,
+                eventPrice: candlePrice,
+                eventTimeSec: firstRegisteredAt - ageSec,
+                signature: eventSignature, // idempotent — retry 해도 중복 방지
+              };
+              log.info(
+                `[MIG_CANDIDATE] ${entry.symbol} pair=${candleKey.slice(0, 12)} ` +
+                `ageHours=${ageHours.toFixed(3)} price=${candlePrice.toFixed(8)} (SOL axis)`
+              );
+              onMigrationEvent(event, ctx);
+              return;
+            }
+            if (attemptsLeft > 0) {
+              setTimeout(() => attemptRegister(attemptsLeft - 1), 10_000);
+            } else {
+              log.debug(`[MIG_CANDIDATE_TIMEOUT] ${entry.symbol} no candle price after 60s — skip`);
+            }
+          };
+          attemptRegister(6);
+        }
+      }
     });
     scanner.on('candidateEvicted', (tokenMint: string, reason?: string, detail?: string, cohort?: Cohort) => {
       log.info(`Scanner: evicted ${tokenMint} reason=${reason ?? 'score'}`);
@@ -1411,6 +1476,10 @@ async function main() {
         if (config.cupseyLaneEnabled) {
           await updateCupseyPositions(ctx, realtimeCandleBuilder!);
         }
+        // Tier 1 (2026-04-17): migration handoff reclaim lane. candle tick 경로만 사용 (race 예방).
+        if (config.migrationLaneEnabled) {
+          await updateMigrationPositions(ctx, realtimeCandleBuilder!);
+        }
       } catch (error) {
         log.error(`Realtime candle handling failed: ${error}`);
         await notifier.sendError('realtime_candle', error).catch(() => {});
@@ -1481,6 +1550,16 @@ async function main() {
     if (recoveredCupseyCount > 0) {
       await notifier.sendInfo(
         `Cupsey recovery: ${recoveredCupseyCount} OPEN trades rehydrated from ledger`,
+        'recovery'
+      ).catch(() => {});
+    }
+  }
+
+  if (config.migrationLaneEnabled) {
+    const recoveredMigrationCount = await recoverMigrationOpenPositions(ctx);
+    if (recoveredMigrationCount > 0) {
+      await notifier.sendInfo(
+        `Migration recovery: ${recoveredMigrationCount} OPEN trades rehydrated from ledger`,
         'recovery'
       ).catch(() => {});
     }
@@ -1658,6 +1737,7 @@ async function main() {
     if (heliusIngester) await heliusIngester.stop();
     executionLock.destroy();
     healthMonitor.stop();
+    stopWalletStopGuardPoller();
     await dbPool.end();
     log.info('Shutdown complete');
     process.exit(0);

@@ -128,14 +128,15 @@ export interface Signal {
 // ─── Strategy ───
 
 export type StrategyName =
-  | 'volume_spike'       // Strategy A: 5min breakout
-  | 'bootstrap_10s'      // Realtime bootstrap trigger (10s volume+buyRatio)
-  | 'core_momentum'      // Realtime core trigger (10s 3-AND, standby)
-  | 'tick_momentum'      // Tick-level trigger (raw swap, sub-second eval)
-  | 'fib_pullback'       // Strategy C: confirmed pullback
-  | 'new_lp_sniper'      // Strategy D: sandbox LP sniper
-  | 'momentum_cascade'   // Strategy E: conditional add-on
-  | 'cupsey_flip_10s';   // Path A: cupsey-inspired quick-reject + winner-hold lane (sandbox)
+  | 'volume_spike'         // Strategy A: 5min breakout
+  | 'bootstrap_10s'        // Realtime bootstrap trigger (10s volume+buyRatio)
+  | 'core_momentum'        // Realtime core trigger (10s 3-AND, standby)
+  | 'tick_momentum'        // Tick-level trigger (raw swap, sub-second eval)
+  | 'fib_pullback'         // Strategy C: confirmed pullback
+  | 'new_lp_sniper'        // Strategy D: sandbox LP sniper
+  | 'momentum_cascade'     // Strategy E: conditional add-on
+  | 'cupsey_flip_10s'      // Path A: cupsey-inspired quick-reject + winner-hold lane (sandbox)
+  | 'migration_reclaim';   // Tier 1 (2026-04-17): Pump.fun/PumpSwap/LaunchLab post-migration reclaim
 
 // Why: volume_spike order building logic을 bootstrap_10s, core_momentum도 공유한다.
 // 라우팅(order shape, scoring, gate)은 같지만 expectancy/reporting은 분리 집계.
@@ -154,7 +155,8 @@ export function isVolumeSpikeFamilyStrategy(s: StrategyName): boolean {
 // 포트폴리오 수준 quality metrics(risk tier, Kelly, drawdown guard)에 섞지 않는다.
 export const SANDBOX_STRATEGIES: ReadonlySet<StrategyName> = new Set([
   'new_lp_sniper',
-  'cupsey_flip_10s',  // Path A: sandbox lane, main core 오염 차단
+  'cupsey_flip_10s',    // Path A: sandbox lane, main core 오염 차단
+  'migration_reclaim',  // Tier 1: 실험 단계, portfolio-level quality에 섞지 않음
 ]);
 
 export function isSandboxStrategy(s: StrategyName): boolean {

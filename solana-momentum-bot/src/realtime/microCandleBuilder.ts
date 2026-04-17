@@ -90,7 +90,17 @@ export class MicroCandleBuilder extends EventEmitter {
   }
 
   ingestClosedCandle(candle: Candle, emitEvents = true): void {
-    this.lastPriceByPool.set(candle.pairAddress, candle.close);
+    // 2026-04-17 (HWM axis oxidation audit 후속): Phase E1 sanity bound 를 ingestClosedCandle
+    // 에도 적용. 기존에는 `applySwapEvent` 경로에만 검사 → backfill/replay/internal source 가
+    // 오염된 axis candle 을 넣으면 lastPriceByPool 오염 baseline 확정 → downstream peak HWM
+    // 영구 고착. close 값이 기존 lastPrice 대비 ±50% 바깥이면 lastPrice 업데이트 skip
+    // (candle 자체는 closedCandles 에는 기록 — gate/replay 로직은 그대로 작동).
+    if (this.isSaneTick(candle.pairAddress, candle.close)) {
+      this.lastPriceByPool.set(candle.pairAddress, candle.close);
+    } else {
+      const prev = this.sanityRejectCounts.get(candle.pairAddress) ?? 0;
+      this.sanityRejectCounts.set(candle.pairAddress, prev + 1);
+    }
     this.pushClosedCandle({ ...candle });
     if (emitEvents) {
       this.emit('candle', { ...candle });

@@ -102,6 +102,17 @@ export const config = {
   strategyDLiveEnabled: boolOptional('STRATEGY_D_LIVE_ENABLED', false),
   // 2026-04-11: Path B2 — KOL wallet tracking (discovery source)
   kolWalletTrackingEnabled: boolOptional('KOL_WALLET_TRACKING_ENABLED', false),
+  // 2026-04-17: Tier 1 — Migration Handoff Reclaim lane (off by default, paper→live 단계 승격)
+  migrationLaneEnabled: boolOptional('MIGRATION_LANE_ENABLED', false),
+  // 2026-04-17: Tier 1 — signal-only mode (detection + logging, 체결 없음. paper 전 검증용)
+  migrationLaneSignalOnly: boolOptional('MIGRATION_LANE_SIGNAL_ONLY', true),
+  // 2026-04-17: Wallet Stop Guard (override 가드레일 #2)
+  // wallet balance < threshold 시 cupsey + migration 신규 진입 차단. exit는 영향 없음.
+  walletStopGuardEnabled: boolOptional('WALLET_STOP_GUARD_ENABLED', true),
+  walletStopMinSol: Number(process.env.WALLET_STOP_MIN_SOL ?? '0.8'),
+  walletStopPollIntervalMs: Number(process.env.WALLET_STOP_POLL_INTERVAL_MS ?? '30000'),
+  walletStopWalletName: process.env.WALLET_STOP_WALLET_NAME ?? 'main',
+  walletStopRpcFailSafeThreshold: Number(process.env.WALLET_STOP_RPC_FAIL_SAFE ?? '3'),
 
   // ─── Tier 3: Trading Params (코드 관리 — tradingParams.ts) ───
   ...tradingParams.universe,
@@ -164,5 +175,28 @@ export const config = {
   ...(process.env.CUPSEY_LANE_TICKET_SOL
     ? { cupseyLaneTicketSol: Number(process.env.CUPSEY_LANE_TICKET_SOL) }
     : {}),
+  ...(process.env.CUPSEY_MAX_PEAK_MULTIPLIER
+    ? { cupseyMaxPeakMultiplier: Number(process.env.CUPSEY_MAX_PEAK_MULTIPLIER) }
+    : {}),
+  ...(process.env.CUPSEY_STALK_DROP_PCT
+    ? { cupseyStalkDropPct: Number(process.env.CUPSEY_STALK_DROP_PCT) }
+    : {}),
   ...tradingParams.kolTracking,
+  ...tradingParams.migrationLane,
+  // ─── Migration Lane Operational Overrides ───
+  ...(process.env.MIGRATION_LANE_TICKET_SOL
+    ? { migrationLaneTicketSol: Number(process.env.MIGRATION_LANE_TICKET_SOL) }
+    : {}),
+  ...(process.env.MIGRATION_COOLDOWN_SEC
+    ? { migrationCooldownSec: Number(process.env.MIGRATION_COOLDOWN_SEC) }
+    : {}),
+  ...(process.env.MIGRATION_STALK_MIN_PULLBACK_PCT
+    ? { migrationStalkMinPullbackPct: Number(process.env.MIGRATION_STALK_MIN_PULLBACK_PCT) }
+    : {}),
+  ...(process.env.MIGRATION_STALK_MAX_PULLBACK_PCT
+    ? { migrationStalkMaxPullbackPct: Number(process.env.MIGRATION_STALK_MAX_PULLBACK_PCT) }
+    : {}),
+  ...(process.env.MIGRATION_RECLAIM_BUY_RATIO_MIN
+    ? { migrationReclaimBuyRatioMin: Number(process.env.MIGRATION_RECLAIM_BUY_RATIO_MIN) }
+    : {}),
 } as const;

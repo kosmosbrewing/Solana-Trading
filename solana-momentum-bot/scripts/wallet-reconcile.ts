@@ -189,25 +189,37 @@ async function fetchTxDelta(
   };
 }
 
+/** DB 의 각 buy row — FIFO 매칭용. consumed 는 sell 매칭 시 true 로 표시. */
+interface DbBuyEntry {
+  strategy: string;
+  symbol: string | null;
+  pairAddress: string;
+  createdAtMs: number;
+  txSignature: string | null;
+  consumed: boolean;
+}
+
 interface DbContext {
   /** tx_signature → strategy/symbol/pnl (buy tx 매칭용) */
   txMap: Map<string, { strategy: string; symbol: string | null; storedPnl: number | null }>;
-  /** pair_address (= mint) → strategy (sell tx mint 매칭용; 같은 mint 가 여러 strategy 에 쓰이면 가장 최근 buy 기준) */
-  mintMap: Map<string, { strategy: string; symbol: string | null }>;
+  /** pair_address (= token mint) → 시간순(ASC) buy queue. FIFO 매칭 */
+  buyQueueByMint: Map<string, DbBuyEntry[]>;
 }
 
 async function loadDbContext(since: Date): Promise<DbContext> {
   const txMap = new Map<string, { strategy: string; symbol: string | null; storedPnl: number | null }>();
-  const mintMap = new Map<string, { strategy: string; symbol: string | null }>();
-  if (!process.env.DATABASE_URL) return { txMap, mintMap };
+  const buyQueueByMint = new Map<string, DbBuyEntry[]>();
+  if (!process.env.DATABASE_URL) return { txMap, buyQueueByMint };
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
   try {
-    const { rows } = await pool.query<{ tx_signature: string; strategy: string; token_symbol: string | null; pair_address: string; pnl: string | null; created_at: Date }>(
-      `SELECT tx_signature, strategy, token_symbol, pair_address, pnl, created_at
+    // 2026-04-17 FIFO pair matching: since cutoff 무시하고 전체 DB trades 를 로드.
+    // Why: sell tx 의 blockTime 이 window 내 라도 매칭 대상 buy 는 window 이전일 수 있다
+    // (volume_spike 2026-04-03 buy + 그 이후 sell).  ASC 정렬로 per-mint queue 를 만든다.
+    const { rows } = await pool.query<{ tx_signature: string | null; strategy: string; token_symbol: string | null; pair_address: string; pnl: string | null; created_at: Date; side: string }>(
+      `SELECT tx_signature, strategy, token_symbol, pair_address, pnl, created_at, side
        FROM trades
-       WHERE created_at >= $1
-       ORDER BY created_at DESC`,
-      [since]
+       WHERE side = 'BUY'
+       ORDER BY created_at ASC`
     );
     for (const r of rows) {
       if (r.tx_signature) {
@@ -217,15 +229,47 @@ async function loadDbContext(since: Date): Promise<DbContext> {
           storedPnl: r.pnl != null ? Number(r.pnl) : null,
         });
       }
-      // 같은 pair 가 여러 strategy 로 쓰이면 가장 최근 (ORDER BY DESC 첫 번째) 만 유지.
-      if (r.pair_address && !mintMap.has(r.pair_address)) {
-        mintMap.set(r.pair_address, { strategy: r.strategy, symbol: r.token_symbol });
+      if (r.pair_address) {
+        const queue = buyQueueByMint.get(r.pair_address) ?? [];
+        queue.push({
+          strategy: r.strategy,
+          symbol: r.token_symbol,
+          pairAddress: r.pair_address,
+          createdAtMs: r.created_at.getTime(),
+          txSignature: r.tx_signature,
+          consumed: false,
+        });
+        buyQueueByMint.set(r.pair_address, queue);
       }
     }
   } finally {
     await pool.end();
   }
-  return { txMap, mintMap };
+  return { txMap, buyQueueByMint };
+}
+
+/**
+ * On-chain sell tx 를 해당 mint 의 가장 오래된 unconsumed DB buy 와 FIFO 매칭.
+ * Returns null if no eligible buy found (unresolved sell).
+ */
+function matchSellToFifoBuy(
+  involvedMints: string[],
+  sellBlockTimeMs: number | null,
+  buyQueueByMint: Map<string, DbBuyEntry[]>
+): DbBuyEntry | null {
+  for (const mint of involvedMints) {
+    const queue = buyQueueByMint.get(mint);
+    if (!queue) continue;
+    for (const entry of queue) {
+      if (entry.consumed) continue;
+      // sell blockTime 이 buy 보다 이전이면 매칭 불가 (factual ordering).
+      // blockTime 미상(null)이면 관대하게 허용 — fallback.
+      if (sellBlockTimeMs != null && sellBlockTimeMs < entry.createdAtMs - 60_000) continue;
+      entry.consumed = true;
+      return entry;
+    }
+  }
+  return null;
 }
 
 async function main(): Promise<void> {
@@ -250,9 +294,10 @@ async function main(): Promise<void> {
     loadDbContext(since),
   ]);
   const dbMap = dbCtx.txMap;
-  const dbMintMap = dbCtx.mintMap;
+  const buyQueueByMint = dbCtx.buyQueueByMint;
+  const totalBuyQueueSize = [...buyQueueByMint.values()].reduce((s, q) => s + q.length, 0);
   console.log(`On-chain tx signatures: ${sigs.length}`);
-  console.log(`DB rows with tx_signature: ${dbMap.size}  (pair_address mints: ${dbMintMap.size})`);
+  console.log(`DB buy tx in txMap: ${dbMap.size}  |  per-mint FIFO queue: ${buyQueueByMint.size} mints, ${totalBuyQueueSize} total buys`);
 
   const limit = args.limit > 0 ? Math.min(args.limit, sigs.length) : sigs.length;
   const deltas: TxDelta[] = [];
@@ -326,51 +371,76 @@ async function main(): Promise<void> {
   console.log(`\n  unmatched_tx    = ${unmatched.length}  (not in trades.tx_signature — includes sells, dust)`);
   console.log(`  unmatched_delta = ${unmatchedDelta.toFixed(6)} SOL`);
 
-  // ─── 2026-04-17: Per-strategy Net Wallet Delta (buy + sell 매칭) ───
-  // Why: buy tx 는 trades.tx_signature 로 직접 매칭되지만, sell tx 는 DB 에 저장되지 않는다.
-  // 대신 tx 의 SPL preTokenBalances/postTokenBalances 에서 wallet 소유 mint 를 추출하고,
-  // 해당 mint 를 DB pair_address 로 역매핑하여 sell tx 를 strategy 에 배분한다.
-  // 같은 mint 가 여러 strategy 에 쓰였으면 가장 최근 buy 기준 (loadDbContext 가 DESC 정렬).
+  // ─── 2026-04-17: Per-strategy Net Wallet Delta (FIFO buy↔sell matching) ───
+  // Why: sell tx 는 trades.tx_signature 에 저장 안 됨. 대신 `preTokenBalances/postTokenBalances`
+  // 에서 wallet 소유 mint 를 추출하고, 해당 mint 의 **가장 오래된 unconsumed DB buy** 와 FIFO 매칭.
+  // 같은 mint 가 여러 strategy 에 쓰여도 (예: pippin = volume_spike + bootstrap + cupsey)
+  // 각 sell 은 가장 오래된 buy 의 strategy 로 귀속된다 (standard inventory accounting).
+  //
+  // 처리 순서: on-chain deltas 를 blockTime ASC 로 정렬 → 시간 순서대로 buy 매칭/sell 매칭.
+  // buy: tx_signature 로 직접 strategy 확정 (FIFO queue 에도 이미 존재).
+  // sell: FIFO queue 의 가장 오래된 unconsumed buy 에 매칭 → 해당 buy 의 strategy 로 귀속.
   const netByStrategy = new Map<string, { buySol: number; sellSol: number; buyTx: number; sellTx: number; otherTx: number }>();
   const unresolvedSell: TxDelta[] = [];
   const UNKNOWN = '<unknown>';
-  for (const d of deltas) {
+  const UNRESOLVED = '<unresolved_sell>';
+
+  // blockTime 정렬 (null 은 끝으로)
+  const sortedDeltas = [...deltas].sort((a, b) => (a.blockTime ?? Number.MAX_SAFE_INTEGER) - (b.blockTime ?? Number.MAX_SAFE_INTEGER));
+  for (const d of sortedDeltas) {
     let strat: string | null = null;
-    // 1) buy tx 는 trades.tx_signature 에서 직접 매칭
-    const dbByTx = dbMap.get(d.signature);
-    if (dbByTx) {
-      strat = dbByTx.strategy;
-    } else if (d.involvedMints.length > 0) {
-      // 2) sell tx 는 involvedMints 중 DB 에 기록된 pair_address 찾기
-      for (const mint of d.involvedMints) {
-        const mintInfo = dbMintMap.get(mint);
-        if (mintInfo) {
-          strat = mintInfo.strategy;
-          break;
-        }
+    if (d.type === 'buy') {
+      const dbByTx = dbMap.get(d.signature);
+      strat = dbByTx?.strategy ?? null;
+    } else if (d.type === 'sell') {
+      const blockTimeMs = d.blockTime != null ? d.blockTime * 1000 : null;
+      const matched = matchSellToFifoBuy(d.involvedMints, blockTimeMs, buyQueueByMint);
+      if (matched) {
+        strat = matched.strategy;
+      } else {
+        unresolvedSell.push(d);
       }
     }
-    const key = strat ?? UNKNOWN;
+    const key = strat ?? (d.type === 'sell' ? UNRESOLVED : UNKNOWN);
     const acc = netByStrategy.get(key) ?? { buySol: 0, sellSol: 0, buyTx: 0, sellTx: 0, otherTx: 0 };
     if (d.type === 'buy') { acc.buySol += d.deltaSol; acc.buyTx++; }
     else if (d.type === 'sell') { acc.sellSol += d.deltaSol; acc.sellTx++; }
     else { acc.otherTx++; }
     netByStrategy.set(key, acc);
-    if (!strat && d.type === 'sell') unresolvedSell.push(d);
   }
 
-  console.log('\n=== Per-Strategy Net Wallet Delta (buy + sell via mint match) ===');
-  console.log(`${'strategy'.padEnd(20)} ${'buy_tx'.padEnd(8)} ${'sell_tx'.padEnd(8)} ${'buy_sol'.padEnd(12)} ${'sell_sol'.padEnd(12)} ${'net_sol'.padEnd(12)}`);
+  // FIFO queue 에서 unconsumed buy = stuck positions
+  let stuckCount = 0;
+  const stuckByStrategy = new Map<string, { count: number; mints: Set<string> }>();
+  for (const [mint, queue] of buyQueueByMint) {
+    for (const entry of queue) {
+      if (entry.consumed) continue;
+      stuckCount++;
+      const acc = stuckByStrategy.get(entry.strategy) ?? { count: 0, mints: new Set<string>() };
+      acc.count++;
+      acc.mints.add(mint);
+      stuckByStrategy.set(entry.strategy, acc);
+    }
+  }
+
+  console.log('\n=== Per-Strategy Net Wallet Delta (FIFO buy↔sell matching) ===');
+  console.log(`${'strategy'.padEnd(22)} ${'buy_tx'.padEnd(8)} ${'sell_tx'.padEnd(8)} ${'buy_sol'.padEnd(14)} ${'sell_sol'.padEnd(14)} ${'net_sol'.padEnd(12)}`);
   for (const [strat, v] of [...netByStrategy.entries()].sort((a, b) => (a[1].buySol + a[1].sellSol) - (b[1].buySol + b[1].sellSol))) {
     const net = v.buySol + v.sellSol;
     console.log(
-      `${strat.padEnd(20)} ${String(v.buyTx).padEnd(8)} ${String(v.sellTx).padEnd(8)} ` +
-      `${v.buySol.toFixed(6).padEnd(12)} +${v.sellSol.toFixed(6).padEnd(11)} ${net >= 0 ? '+' : ''}${net.toFixed(6)}`
+      `${strat.padEnd(22)} ${String(v.buyTx).padEnd(8)} ${String(v.sellTx).padEnd(8)} ` +
+      `${v.buySol.toFixed(6).padEnd(14)} +${v.sellSol.toFixed(6).padEnd(13)} ${net >= 0 ? '+' : ''}${net.toFixed(6)}`
     );
   }
   if (unresolvedSell.length > 0) {
     const unresolvedSolSum = unresolvedSell.reduce((s, d) => s + d.deltaSol, 0);
-    console.log(`  ⚠ unresolved sell tx (mint not in DB): ${unresolvedSell.length} tx, +${unresolvedSolSum.toFixed(6)} SOL`);
+    console.log(`  ⚠ unresolved sell tx (no matching buy in DB): ${unresolvedSell.length} tx, +${unresolvedSolSum.toFixed(6)} SOL`);
+  }
+
+  console.log('\n=== Stuck Buys (unconsumed FIFO entries = buy with no matched sell) ===');
+  console.log(`  total stuck: ${stuckCount}`);
+  for (const [strat, v] of [...stuckByStrategy.entries()].sort((a, b) => b[1].count - a[1].count)) {
+    console.log(`  ${strat.padEnd(22)} ${v.count} stuck buys across ${v.mints.size} unique mints`);
   }
 
   // Ranked deltas

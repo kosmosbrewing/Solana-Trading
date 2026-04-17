@@ -70,6 +70,7 @@ import { updateMigrationPositions, onMigrationEvent, recoverMigrationOpenPositio
 import type { MigrationEvent } from './strategy/migrationHandoffReclaim';
 import { isPumpSwapDexId } from './realtime/pumpSwapParser';
 import { startWalletStopGuard, stopWalletStopGuardPoller } from './risk/walletStopGuard';
+import { persistOpenTradeWithIntegrity, isEntryHaltActive } from './orchestration/entryIntegrity';
 import { evaluateNewLpSniper, buildNewLpOrder, prepareNewLpCandidate } from './strategy/newLpSniper';
 import { MomentumTrigger, VolumeMcapSpikeTrigger, TickTrigger } from './strategy';
 import { closeTrade } from './orchestration/tradeExecution';
@@ -583,6 +584,11 @@ async function main() {
       }
       // 2026-04-11: Strategy D live via sandbox Executor (main wallet 격리)
       if (effectiveMode === 'live' && config.strategyDLiveEnabled && sandboxExecutor) {
+        // 2026-04-17 Block 1.5-2: halt check — integrity 실패 후 새 entry 차단
+        if (isEntryHaltActive('strategy_d')) {
+          log.warn(`[STRATEGY_D_HALT] skipping entry — entry halt active. Call resetEntryHalt('strategy_d') after reconciliation.`);
+          return;
+        }
         try {
           log.info(
             `[STRATEGY_D_LIVE] Executing via sandbox: ${prepared.candidate!.tokenSymbol ?? order.pairAddress.slice(0, 12)} ` +
@@ -593,24 +599,43 @@ async function main() {
             `[STRATEGY_D_LIVE] Filled: sig=${buyResult.txSignature.slice(0, 16)} ` +
             `slip=${buyResult.slippageBps}bps qty=${buyResult.actualOutUiAmount ?? 'unknown'}`
           );
-          // DB record
-          await tradeStore.insertTrade({
-            pairAddress: order.pairAddress,
-            strategy: 'new_lp_sniper',
-            side: 'BUY',
-            tokenSymbol: signal.tokenSymbol,
-            entryPrice: order.price,
-            quantity: order.quantity,
-            stopLoss: order.stopLoss,
-            takeProfit1: order.takeProfit1,
-            takeProfit2: order.takeProfit2,
-            trailingStop: undefined,
-            highWaterMark: order.price,
-            timeStopAt: new Date(Date.now() + (order.timeStopMinutes ?? 15) * 60_000),
-            status: 'OPEN',
-            txSignature: buyResult.txSignature,
-            createdAt: new Date(),
+          // DB record — shared integrity helper (2026-04-17)
+          const persistResult = await persistOpenTradeWithIntegrity({
+            ctx,
+            lane: 'strategy_d',
+            tradeData: {
+              pairAddress: order.pairAddress,
+              strategy: 'new_lp_sniper',
+              side: 'BUY',
+              tokenSymbol: signal.tokenSymbol,
+              entryPrice: order.price,
+              quantity: order.quantity,
+              stopLoss: order.stopLoss,
+              takeProfit1: order.takeProfit1,
+              takeProfit2: order.takeProfit2,
+              trailingStop: undefined,
+              highWaterMark: order.price,
+              timeStopAt: new Date(Date.now() + (order.timeStopMinutes ?? 15) * 60_000),
+              status: 'OPEN',
+              txSignature: buyResult.txSignature,
+              createdAt: new Date(),
+            },
+            ledgerEntry: {
+              txSignature: buyResult.txSignature,
+              strategy: 'new_lp_sniper',
+              pairAddress: order.pairAddress,
+              tokenSymbol: signal.tokenSymbol,
+              plannedEntryPrice: order.price,
+              actualEntryPrice: order.price,
+              actualQuantity: order.quantity,
+              slippageBps: buyResult.slippageBps,
+            },
+            notifierKey: 'strategy_d_open_persist',
+            buildNotifierMessage: (err) =>
+              `strategy_d entry persist FAILED after tx=${buyResult.txSignature.slice(0, 16)} ` +
+              `pair=${order.pairAddress.slice(0, 12)} — sandbox. err=${err}`,
           });
+          if (!persistResult.dbTradeId) return;
           walletManager.recordPnl('sandbox', 0);
           await notifier.sendInfo(
             `[Strategy D Live] ${prepared.candidate!.tokenSymbol ?? 'unknown'} ` +

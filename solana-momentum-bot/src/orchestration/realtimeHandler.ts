@@ -8,6 +8,7 @@ import { Signal } from '../utils/types';
 import { resolveRealtimeDiscoveryTelemetry } from './realtimeDiscoveryTelemetry';
 import { processSignal } from './signalProcessor';
 import { BotContext } from './types';
+import { isEntryHaltActive } from './entryIntegrity';
 
 const log = createModuleLogger('RealtimeHandler');
 
@@ -16,6 +17,12 @@ export async function handleRealtimeSignal(
   candleBuilder: MicroCandleBuilder,
   ctx: BotContext
 ): Promise<void> {
+  // 2026-04-17 Block 1.5-2: main-lane entry halt check. insertTrade 실패 누적 방지.
+  // `resetEntryHalt('main')` 후에만 신규 entry 재개.
+  if (isEntryHaltActive('main')) {
+    log.warn(`[MAIN_ENTRY_HALT] signal ignored — entry halt active. Call resetEntryHalt('main') after reconciliation. pair=${signal.pairAddress.slice(0,12)}`);
+    return;
+  }
   const gateStartedAt = new Date();
   const watchlist = ctx.universeEngine.getWatchlist();
   const poolInfo = watchlist.find((pool) => pool.pairAddress === signal.pairAddress);

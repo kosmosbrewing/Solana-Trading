@@ -27,6 +27,7 @@ const STRATEGY_LABELS: Record<StrategyName, string> = {
   new_lp_sniper: 'New LP Sniper',
   momentum_cascade: 'Momentum Cascade',
   cupsey_flip_10s: 'Cupsey Flip 10s',
+  migration_reclaim: 'Migration Reclaim',
 };
 
 const CLOSE_REASON_LABELS: Record<CloseReason, string> = {

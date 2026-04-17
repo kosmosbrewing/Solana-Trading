@@ -253,7 +253,12 @@ export const tradingParams = {
     cupseyLaneTicketSol: 0.01,         // fixed micro-ticket (risk-per-trade 가 아닌 fixed)
     // STALK phase: signal 직후 즉시 매수하지 않고 pullback 대기 (spike 꼭대기 매수 방지)
     cupseyStalKWindowSec: 60,          // 20 → 60 (2026-04-14): pullback 대기 창 확대. 완만한 패턴에서 7분 뒤 pullback 사례 관찰
-    cupseyStalkDropPct: 0.001,         // 0.003 → 0.001 (2026-04-14): BELIEF 패턴 포착. -0.1% 진입으로 완화
+    // 2026-04-17 variant analysis (`docs/audits/entry-timing-variants-2026-04-17.md`):
+    //   0.001(-0.1%): n=145, avg_exit_720s=-0.23%, 30s flat=90%  → 음의 기대값
+    //   0.005(-0.5%): n=81, avg_exit_720s=+0.47%, 30s flat=86%   → 양의 기대값 전환 지점
+    //   0.010(-1.0%): n=21, avg_exit_720s=+3.28%, 30s flat=76%   → 최대 edge, 샘플 variance 큼
+    // 기본값을 0.005 로 채택 (수익 전환 + 샘플 안정성). CUPSEY_STALK_DROP_PCT 환경변수로 0.010 공격 모드 전환 가능.
+    cupseyStalkDropPct: 0.005,         // 0.001 → 0.005 (2026-04-17 variant analysis)
     cupseyStalkMaxDropPct: 0.015,      // -1.5% 이상 떨어지면 skip (crash, not pullback)
     // PROBE phase: 진입 후 초기 방향 판정
     cupseyProbeWindowSec: 45,          // PROBE 관찰 구간
@@ -264,6 +269,13 @@ export const tradingParams = {
     cupseyWinnerTrailingPct: 0.040,    // 0.015 → 0.040 (2026-04-12 sweep 최적): 4.0% trailing distance. runner 에 충분한 여유
     cupseyWinnerBreakevenPct: 0.005,   // 0.001 → 0.005 (2026-04-12 sweep 최적): winner SL = entry + 0.5%. noise whipsaw 방어 강화
     cupseyMaxConcurrent: 5,            // 3 → 5 (cupsey-primary): signal 유실 감소. 0.05 SOL 최대 lock
+    // 2026-04-17 peak sanity guard (HWM axis oxidation 방어)
+    // Why: realtimeCandleBuilder ±50% sanity bound 가 신규 pool 첫 tick + ingestClosedCandle 경로를
+    // 커버 못 함 → 오염된 price가 pos.peakPrice / DB high_water_mark 에 영구 고착 → WINNER 판정 / trailing
+    // 전체 오염 (VPS 2026-04-17 실측: WINNER_TIME_STOP 11/11 HWM=+500% 허수).
+    // entry 대비 이 배율 초과 peak은 spurious spike로 간주하고 업데이트 skip.
+    // 15x = Cupsey winner 프로필(+500~700%)의 2-3x 여유. 100x 밈코인 outlier는 env 로 override.
+    cupseyMaxPeakMultiplier: 15,
   },
 
   // ─── Cupsey Signal Quality Gate (2026-04-12) ───
@@ -297,5 +309,30 @@ export const tradingParams = {
   // ─── Operator ───
   operator: {
     operatorTokenBlacklist: [] as string[],
+  },
+
+  // ─── Migration Handoff Reclaim Lane (2026-04-17, Tier 1) ───
+  // Why: Pump.fun graduation / PumpSwap canonical pool / Raydium LaunchLab 이벤트 직후
+  // first overshoot 통과 → reclaim pullback 진입. cupsey와 독립 lane.
+  // 설계: docs/design-docs/migration-handoff-reclaim-2026-04-17.md
+  migrationLane: {
+    migrationLaneTicketSol: 0.01,           // hard guardrail (override 조건)
+    migrationMaxConcurrent: 1,              // Phase 2 초기 — 관측 우선
+    migrationMaxAgeSec: 900,                // 15min 이후 edge expired
+    // COOLDOWN: graduation 직후 first overshoot 대기
+    migrationCooldownSec: 90,
+    // STALK: reclaim pullback 대기
+    migrationStalkWindowSec: 180,           // 3min pullback 관측창
+    migrationStalkMinPullbackPct: 0.10,     // -10% pullback 최소
+    migrationStalkMaxPullbackPct: 0.30,     // -30% 초과 = rug suspect
+    migrationReclaimBuyRatioMin: 0.55,      // reclaim candle 에서 매수 우세 확인
+    // PROBE: cupsey와 동일한 window/cut 재사용 (검증된 파라미터)
+    migrationProbeWindowSec: 45,
+    migrationProbeHardCutPct: 0.008,
+    migrationProbeMfeThreshold: 0.020,
+    // WINNER
+    migrationWinnerMaxHoldSec: 720,
+    migrationWinnerTrailingPct: 0.040,
+    migrationSourceLabel: 'migration_reclaim',
   },
 };

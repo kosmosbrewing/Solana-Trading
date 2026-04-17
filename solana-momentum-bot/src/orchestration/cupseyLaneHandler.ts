@@ -24,6 +24,8 @@ import { evaluateCupseySignalGate, CupseySignalGateConfig, CupseySignalGateResul
 import { initCusumState, updateCusum, CusumState, CusumConfig } from '../strategy/cusumDetector';
 import { BotContext } from './types';
 import { bpsToDecimal } from '../utils/units';
+import { isWalletStopActive } from '../risk/walletStopGuard';
+import { serializeClose, resetSharedCloseMutexForTests } from './swapSerializer';
 
 const log = createModuleLogger('CupseyLane');
 
@@ -44,26 +46,12 @@ export function resetCupseyIntegrityHalt(): void {
   log.info('[CUPSEY_INTEGRITY_HALT] cleared by operator');
 }
 
-// ─── Patch B1: Close Serialization Mutex ───
-// Why: updateCupseyPositions는 index.ts:1339에서 fire-and-forget으로 호출되므로
-// 여러 position의 close가 동시에 진행되면 solBefore/solAfter 측정 구간이 겹친다.
-// A close의 solAfter가 B close의 sell SOL까지 포함 → receivedSol = (A의 SOL + B의 SOL)
-// → 양쪽 모두 과대 기록되어 pnl 허수 부풀림 (실측: 21/30 cupsey CLOSED row에서
-// stored_pnl > recomputed 일관적 양의 skew). 한 번에 한 close만 실행되도록 직렬화한다.
-let closeMutex: Promise<void> = Promise.resolve();
-async function serializeClose<T>(task: () => Promise<T>): Promise<T> {
-  const prev = closeMutex;
-  let release: () => void = () => {};
-  closeMutex = new Promise<void>((resolve) => { release = resolve; });
-  try {
-    await prev;
-    return await task();
-  } finally {
-    release();
-  }
-}
+// ─── Patch B1 + 2026-04-17 확장: Shared Close Serialization ───
+// Why: cupsey 와 migration lane 은 동일 wallet 을 공유 → lane-간 close 가 동시 진행되면
+// `solBefore/solAfter` 측정이 섞여 receivedSol 허수. Patch B1 초기에는 cupsey 내부 mutex 였으나
+// migration lane 추가로 **두 lane 공유 mutex** 로 전환. 구현은 `./swapSerializer.ts` 참조.
 export function resetCupseyCloseMutexForTests(): void {
-  closeMutex = Promise.resolve();
+  resetSharedCloseMutexForTests();
 }
 
 // ─── P1: Execution Funnel Stats ───
@@ -303,7 +291,20 @@ export async function recoverCupseyOpenPositions(ctx: BotContext): Promise<numbe
 
     const entryTimeSec = Math.floor(trade.createdAt.getTime() / 1000);
     const positionId = `cupsey-recovered-${trade.id}`; // full id — slice(0,8)은 테스트 ID에서 충돌 가능
-    const recoveredState = inferRecoveredCupseyState(trade);
+    // 2026-04-17 peak sanity on recover: DB의 high_water_mark 가 entry 대비 cupseyMaxPeakMultiplier 초과면
+    // 오염된 값으로 간주하고 entry 로 clamp. 재시작 시 oxidized HWM 가 in-memory 로 전파되어
+    // trailing stop 즉시 trigger → sell loop 폭발 위험 차단.
+    // state 판정도 sanitized HWM 기준 — oxidized HWM 로 인한 잘못된 WINNER 분류 방어.
+    const maxAllowedPeak = trade.entryPrice * config.cupseyMaxPeakMultiplier;
+    const rawHwm = trade.highWaterMark ?? trade.entryPrice;
+    const sanitizedHwm = rawHwm > maxAllowedPeak ? trade.entryPrice : Math.max(rawHwm, trade.entryPrice);
+    if (rawHwm > maxAllowedPeak) {
+      log.warn(
+        `[CUPSEY_RECOVER_HWM_CLAMP] ${positionId} DB hwm=${rawHwm.toFixed(8)} > ` +
+        `${config.cupseyMaxPeakMultiplier}x entry=${trade.entryPrice.toFixed(8)} — clamped to entry`
+      );
+    }
+    const recoveredState = inferRecoveredCupseyState({ ...trade, highWaterMark: sanitizedHwm });
     activePositions.set(positionId, {
       tradeId: positionId,
       dbTradeId: trade.id,
@@ -314,7 +315,7 @@ export async function recoverCupseyOpenPositions(ctx: BotContext): Promise<numbe
       quantity: trade.quantity,
       state: recoveredState,
       signalPrice: trade.plannedEntryPrice ?? trade.entryPrice,
-      peakPrice: Math.max(trade.highWaterMark ?? trade.entryPrice, trade.entryPrice),
+      peakPrice: sanitizedHwm,
       troughPrice: trade.entryPrice,
       tokenSymbol: trade.tokenSymbol,
       sourceLabel: trade.sourceLabel,
@@ -353,6 +354,12 @@ export async function handleCupseyLaneSignal(
   // Guard: integrity halt (live buy 성공 후 DB persist 실패 시 설정됨)
   if (integrityHaltActive) {
     log.warn('[CUPSEY_INTEGRITY_HALT] signal ignored — ledger integrity issue, call resetCupseyIntegrityHalt() after reconciliation');
+    return;
+  }
+
+  // Guard: wallet stop (override 가드레일 #2). entry만 차단, 기존 position exit는 영향 없음.
+  if (isWalletStopActive()) {
+    log.debug(`[CUPSEY_WALLET_STOP] signal ignored — wallet balance below threshold`);
     return;
   }
 
@@ -531,6 +538,15 @@ export async function updateCupseyPositions(
           log.debug(`[CUPSEY_STALK_REENTRY_BLOCKED] ${id} entering in progress — skip`);
           continue;
         }
+
+        // Wallet stop guard: signal handler 에서 이미 체크했지만 STALK → PROBE 전환 시점에
+        // balance 재확인. STALK 생성 후 buy 시점 사이(최대 60초)에 잔고가 급감할 수 있다.
+        if (isWalletStopActive()) {
+          log.info(`[CUPSEY_STALK_WALLET_STOP] ${id} skipping entry — wallet stop active. dropping STALK.`);
+          activePositions.delete(id);
+          continue;
+        }
+
         pos.enteringLock = true;
 
         log.info(
@@ -674,14 +690,25 @@ export async function updateCupseyPositions(
     // ─── PROBE / WINNER states (매수 후) ───
 
     // Update MFE / MAE
+    // 2026-04-17 peak sanity guard: entry 대비 cupseyMaxPeakMultiplier (기본 15x) 초과 currentPrice 는
+    // spurious spike 로 간주하고 peak 갱신 skip. ingestClosedCandle 경로나 신규 pool 첫 tick 이
+    // ±50% sanity bound 를 우회하여 오염된 axis price 가 들어오는 케이스를 차단 (VPS 04-17 실측 근거).
+    const maxAllowedPeak = pos.entryPrice * config.cupseyMaxPeakMultiplier;
     const previousPeakPrice = pos.peakPrice;
-    pos.peakPrice = Math.max(pos.peakPrice, currentPrice);
-    pos.troughPrice = Math.min(pos.troughPrice, currentPrice);
-    if (pos.dbTradeId && pos.peakPrice > previousPeakPrice) {
-      void ctx.tradeStore.updateHighWaterMark(pos.dbTradeId, pos.peakPrice).catch((error) => {
-        log.warn(`[CUPSEY_HWM_PERSIST_FAIL] ${id} ${error}`);
-      });
+    if (currentPrice > maxAllowedPeak) {
+      log.warn(
+        `[CUPSEY_PEAK_SPIKE_SKIP] ${id} currentPrice=${currentPrice.toFixed(8)} > ` +
+        `${config.cupseyMaxPeakMultiplier}x entry=${pos.entryPrice.toFixed(8)} — skipping peak update`
+      );
+    } else {
+      pos.peakPrice = Math.max(pos.peakPrice, currentPrice);
+      if (pos.dbTradeId && pos.peakPrice > previousPeakPrice) {
+        void ctx.tradeStore.updateHighWaterMark(pos.dbTradeId, pos.peakPrice).catch((error) => {
+          log.warn(`[CUPSEY_HWM_PERSIST_FAIL] ${id} ${error}`);
+        });
+      }
     }
+    pos.troughPrice = Math.min(pos.troughPrice, currentPrice);
 
     const elapsed = now - pos.entryTimeSec;
     const mfePct = (pos.peakPrice - pos.entryPrice) / pos.entryPrice;

@@ -347,6 +347,96 @@ describe('cupseyLaneHandler persistence', () => {
     );
   });
 
+  describe('peak sanity guard (HWM axis oxidation 방어, 2026-04-17)', () => {
+    it('skips peak update when currentPrice > cupseyMaxPeakMultiplier × entry (spurious spike)', async () => {
+      let currentPrice = 99.8;
+      const candleBuilder = {
+        getCurrentPrice: jest.fn(() => currentPrice),
+        getRecentCandles: jest.fn(() => []),
+      } as any;
+      const { ctx, tradeStore, sandboxExecutor } = buildContext();
+      sandboxExecutor.executeBuy.mockResolvedValue({
+        txSignature: 'BUYTX',
+        expectedOutAmount: 1n,
+        actualOutUiAmount: 1,
+        actualInputUiAmount: 99.8,
+        slippageBps: 12,
+      });
+
+      await handleCupseyLaneSignal(buildSignal(), candleBuilder, ctx);
+      await updateCupseyPositions(ctx, candleBuilder);
+
+      // entry = 99.8, maxAllowed = 99.8 * 15 = 1497. spurious spike 2000 (axis 오염 시뮬)
+      tradeStore.updateHighWaterMark.mockClear();
+      currentPrice = 2000;
+      await updateCupseyPositions(ctx, candleBuilder);
+
+      // peak 업데이트 안 됨 + DB persist 호출 없음
+      const positions = [...getActiveCupseyPositions().values()];
+      expect(positions[0].peakPrice).toBeCloseTo(99.8, 8);
+      expect(tradeStore.updateHighWaterMark).not.toHaveBeenCalled();
+    });
+
+    it('accepts currentPrice just below cupseyMaxPeakMultiplier × entry (legitimate rally)', async () => {
+      let currentPrice = 99.8;
+      const candleBuilder = {
+        getCurrentPrice: jest.fn(() => currentPrice),
+        getRecentCandles: jest.fn(() => []),
+      } as any;
+      const { ctx, tradeStore, sandboxExecutor } = buildContext();
+      sandboxExecutor.executeBuy.mockResolvedValue({
+        txSignature: 'BUYTX',
+        expectedOutAmount: 1n,
+        actualOutUiAmount: 1,
+        actualInputUiAmount: 99.8,
+        slippageBps: 12,
+      });
+
+      await handleCupseyLaneSignal(buildSignal(), candleBuilder, ctx);
+      await updateCupseyPositions(ctx, candleBuilder);
+
+      // entry = 99.8, legitimate 10x rally 998 (max 1497 미만)
+      tradeStore.updateHighWaterMark.mockClear();
+      currentPrice = 998;
+      await updateCupseyPositions(ctx, candleBuilder);
+
+      const positions = [...getActiveCupseyPositions().values()];
+      expect(positions[0].peakPrice).toBeCloseTo(998, 8);
+      expect(tradeStore.updateHighWaterMark).toHaveBeenCalledWith('db-trade-1', 998);
+    });
+
+    it('clamps oxidized HWM to entry on recovery (prevents false WINNER classification)', async () => {
+      const { ctx, tradeStore } = buildContext();
+      // DB 오염 상태 시뮬: entry=100, HWM=2000 (20x, max=15x 초과)
+      tradeStore.getOpenTrades.mockResolvedValue([
+        buildOpenCupseyTrade({ id: 'oxidized-1', highWaterMark: 2000 }),
+      ]);
+
+      await recoverCupseyOpenPositions(ctx);
+
+      const positions = [...getActiveCupseyPositions().values()];
+      expect(positions).toHaveLength(1);
+      expect(positions[0].peakPrice).toBeCloseTo(100, 8); // clamped to entry
+      // oxidized HWM 2000이 그대로 왔으면 PROBE→WINNER threshold(+2%) 압도적 초과해서
+      // 잘못된 WINNER 상태로 복구될 뻔함. 그러나 sanitized → PROBE 유지.
+      expect(positions[0].state).toBe('PROBE');
+    });
+
+    it('keeps HWM as-is when recovered value is within cupseyMaxPeakMultiplier', async () => {
+      const { ctx, tradeStore } = buildContext();
+      // entry=100, HWM=103 (MFE threshold +2% 이상 → WINNER). 정상 범위.
+      tradeStore.getOpenTrades.mockResolvedValue([
+        buildOpenCupseyTrade({ id: 'legitimate-winner-1', highWaterMark: 103 }),
+      ]);
+
+      await recoverCupseyOpenPositions(ctx);
+
+      const positions = [...getActiveCupseyPositions().values()];
+      expect(positions[0].peakPrice).toBeCloseTo(103, 8);
+      expect(positions[0].state).toBe('WINNER');
+    });
+  });
+
   it('does not double-count identical recent candles while CUSUM warmup is incomplete', async () => {
     const originalGateEnabled = config.cupseyGateEnabled;
     const originalLookbackBars = config.cupseyGateLookbackBars;

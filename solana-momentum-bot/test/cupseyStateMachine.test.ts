@@ -30,7 +30,7 @@ describe('cupseyStateMachine', () => {
     it('returns valid config from tradingParams', () => {
       const config = defaultCupseyReplayConfig();
       expect(config.stalkWindowSec).toBe(60);
-      expect(config.stalkDropPct).toBe(0.001);
+      expect(config.stalkDropPct).toBe(0.005); // 0.001 → 0.005 (2026-04-17 variant analysis)
       expect(config.probeMfeThreshold).toBe(0.020);
       expect(config.winnerBreakevenPct).toBe(0.005);
       expect(config.winnerTrailingPct).toBe(0.040);

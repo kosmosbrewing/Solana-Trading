@@ -1,6 +1,6 @@
 # Operations Guide
 
-> Last updated: 2026-04-06
+> Last updated: 2026-04-16
 > Scope: VPS 배포 + paper 운영 점검 + risk tier demotion + live 운영 판단
 
 ---
@@ -63,7 +63,7 @@ REALTIME_MAX_SUBSCRIPTIONS=5
 REALTIME_SEED_BACKFILL_ENABLED=false
 REALTIME_DISABLE_SINGLE_TX_FALLBACK_ON_BATCH_UNSUPPORTED=true
 REALTIME_SEED_ALLOW_SINGLE_TX_FALLBACK=false
-SCANNER_REENTRY_COOLDOWN_MS=1800000
+SCANNER_REENTRY_COOLDOWN_MS=300000
 EVENT_POLLING_INTERVAL_MS=1800000
 SHADOW_RUN_MINUTES=1440
 SHADOW_SIGNAL_TARGET=100
@@ -86,7 +86,8 @@ REALTIME_BOOTSTRAP_MIN_BUY_RATIO=0.60
 
 - `MAX_WATCHLIST_SIZE=8`은 paper 안정화용 보수값이다.
 - watchlist를 늘리기 전에 `429`, `Poll failed`, `No candle received`가 먼저 안정화돼야 한다.
-- scanner churn 억제를 위해 `SCANNER_REENTRY_COOLDOWN_MS=1800000`을 유지한다.
+- scanner churn 억제를 위해 `SCANNER_REENTRY_COOLDOWN_MS=300000` (5분) 을 유지한다. (2026-04-15: 1800000 → 300000으로 단축하여 idle 토큰 빠른 순환)
+- idle 토큰 빠른 퇴출: `SCANNER_IDLE_EVICTION_MS=600000` (10분) 권장. (2026-04-15: 1800000 → 600000 복원)
 - 현재 live/paper bootstrap 기본은 Helius `Developer` tier 기준이다.
 - startup burst가 남아 있으면 `REALTIME_SEED_BACKFILL_ENABLED=false`를 유지한다.
 - `REALTIME_DISABLE_SINGLE_TX_FALLBACK_ON_BATCH_UNSUPPORTED=true`,
@@ -208,6 +209,24 @@ cron 예시:
 |---|---|---|
 | `scripts/restart-timescaledb.sh` | TimescaleDB 컨테이너 재기동 | DB 컨테이너 장애 시 수동 복구 |
 | `scripts/sync-vps-data.sh` | VPS `data/`를 로컬로 회수 | 세션/리포트 분석용 수동 동기화 |
+
+#### `sync-vps-data.sh` 동작 (2026-04-16 강화)
+
+- **DB URL 자동 해결**: `VPS_DATABASE_URL` 미설정 시 pm2 app(`momentum-bot`)에서 자동으로 `DATABASE_URL` 추출. `VPS_PM2_APP_NAME` env로 app 이름 재정의 가능.
+- **신선도 검증**: 덤프 전 `max(created_at)`를 로컬 `current-session.json`의 `startedAt`과 비교. DB가 현재 세션 시작보다 오래됐으면 에러로 중단.
+- **강제 허용**: `ALLOW_STALE_DB_DUMP=true` 설정 시 신선도 경고만 출력하고 진행.
+- **교차 검증**: 덤프 후 JSONL 내 실제 `dump_max_created`와 DB preflight 값 비교.
+
+```bash
+# 기본 사용 (DB URL 자동 해결 + 신선도 검증)
+bash scripts/sync-vps-data.sh
+
+# pm2 app 이름 재정의
+VPS_PM2_APP_NAME=my-bot bash scripts/sync-vps-data.sh
+
+# stale DB 강제 허용 (분석용)
+ALLOW_STALE_DB_DUMP=true bash scripts/sync-vps-data.sh
+```
 
 원칙:
 

@@ -249,7 +249,7 @@ per-token PnL 분해로 runner vs flat 비율 확인 필요.
 - detection timing을 더 앞당겨야 하는가
 - Strategy D를 언제 main live 후보로 올릴 것인가
 - runner hold가 실제로 다수 손실을 덮는 구조를 만드는가
-- **TP2 10.0 vs 5.0**: sweep 최적 5.0 → v5 runner-centric 10.0 확장. config.ts 기본값은 10.0이나 검증 미완. Live 50-trade 후 TP2 도달률로 판단. 도달률 < 5%면 5.0 복원 검토.
+- ~~**TP2 10.0 vs 5.0**~~ **해소 (2026-04-10)**: v5 runner-centric 10.0 확장은 BACKTEST.md 2026-04-01 sweep 수렴값(5.0)과 정합 X → 철회. 현재 `tp2Multiplier: 5.0` (tradingParams.ts). 추가 검토 불필요.
 - replay blacklist 후보가 live에서도 반복 손실 토큰인지
 - ~~live actual-cost accounting 보정 후 DB PnL과 wallet PnL 차이가 얼마나 줄어드는지~~ **해소 (2026-04-12)**: paper 모드 PnL에 roundTripCostPct 차감 도입. Live는 이미 wallet delta 방식으로 비용 반영 확인됨
 - **decision_price 계측 활성화 (04-06)**: TP2 종료인데 PnL 음수인 원인을 exitGap + rtCost로 분해 가능. Live 10건+ 수집 후 TP distance vs actual cost 점검 예정.

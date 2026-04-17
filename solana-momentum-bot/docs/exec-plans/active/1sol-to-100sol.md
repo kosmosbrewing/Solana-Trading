@@ -1,7 +1,7 @@
 # Execution Plan: 1 SOL → 100 SOL
 
 > Status: current active execution plan
-> Updated: 2026-04-08 (mission P0 trio 정렬)
+> Updated: 2026-04-16 (W1.5 부분 완료, cupsey gate soft fail-open, integrity ledger 추가)
 > Scope: 구현 완료 이후의 운영 검증, 배포, 표본 축적, live enablement gate
 > Archive: 완료된 root plan과 dated canary history는 [`PLAN_CMPL.md`](../../../PLAN_CMPL.md)에 보관한다.
 > Sub-plans: [`live-ops-integrity-2026-04-07.md`](./live-ops-integrity-2026-04-07.md) (Phase E P0~P3 fake-fill 운영 후속 트래킹), [`exit-execution-mechanism-2026-04-08.md`](./exit-execution-mechanism-2026-04-08.md) (P0-A: monitor → swap latency / winner preservation execution path), [`exit-structure-validation-2026-04-08.md`](./exit-structure-validation-2026-04-08.md) (parameter / exhaustion 가설 측정·결정, mechanism plan 과 병렬 계측)
@@ -138,7 +138,7 @@
 완료 기준:
 - paper runtime을 재기동해도 운영 경로를 다시 설명할 수 있다
 
-### W1.5. Live Freshness & Idle Eviction (신규, 04-06)
+### W1.5. Live Freshness & Idle Eviction ✅ 부분 완료 (2026-04-15)
 
 목표:
 - stale pair를 빠르게 순환시켜 **live signal 발생 → 50 canary trades 확보**
@@ -149,14 +149,16 @@
 - sparseInsuf=1이므로 replay sparse 병목은 live의 주원인이 아님
 
 액션:
-- [ ] idle/stale pair eviction 로직 추가 또는 기존 TTL 단축
-- [ ] `scannerMinimumResidencyMs` / `scannerReentryCooldownMs` 소폭 완화
-- [ ] 위 적용 후 24h live 관측 → signal 발생 확인
-- [ ] signal 발생 but trade 없으면 `volumeSurgeMultiplier` 1.8 → 1.6 검토
-- [ ] unsupported_dex 확장은 위 액션 후에도 breadth 부족 시만
+- [x] idle/stale pair eviction TTL 단축: `scannerIdleEvictionMs` 1800000 → 600000 (10분)
+- [x] `scannerReentryCooldownMs` 완화: 900000 → 300000 (5분)
+- [x] `scannerTrendingPollMs` 단축: 900000 → 300000 (5분)
+- [x] 위 적용 후 24h live 관측 → activePairs 6→9, signal/h 2.2→3.9 확인
+- [x] cupsey gate soft fail-open (2026-04-16): vol_accel 1.5→1.2, buy_ratio 0.55→0.50, price_chg 0.001→0
+- [ ] 50 canary trades 목표 달성 (현재 진행 중)
 
 완료 기준:
-- live에서 signal > 0 상태를 24h 이상 유지, 50 canary trades 목표 진입
+- live에서 signal > 0 상태 24h 이상 유지 ✅
+- 50 canary trades 목표 진입 (진행 중)
 
 ### W1.6. Sparse Bottleneck Resolution (04-05, replay path)
 

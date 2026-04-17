@@ -13,6 +13,8 @@
     "backtest": "ts-node scripts/backtest.ts",
     "paper-report": "ts-node scripts/paper-report.ts",
     "ops:check:ledger": "ts-node scripts/ledger-audit.ts",
+    "ops:reconcile:wallet": "ts-node scripts/wallet-reconcile.ts",
+    "ops:cleanup:stuck": "ts-node scripts/stuck-positions-cleanup.ts",
     "ops:check:helius": "ts-node scripts/ops-helius-check.ts",
     "realtime-shadow": "ts-node scripts/realtime-shadow-runner.ts",
     "ops:check": "ts-node scripts/ops-realtime-check.ts",

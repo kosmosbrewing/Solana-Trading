@@ -44,6 +44,28 @@ export function resetCupseyIntegrityHalt(): void {
   log.info('[CUPSEY_INTEGRITY_HALT] cleared by operator');
 }
 
+// ─── Patch B1: Close Serialization Mutex ───
+// Why: updateCupseyPositions는 index.ts:1339에서 fire-and-forget으로 호출되므로
+// 여러 position의 close가 동시에 진행되면 solBefore/solAfter 측정 구간이 겹친다.
+// A close의 solAfter가 B close의 sell SOL까지 포함 → receivedSol = (A의 SOL + B의 SOL)
+// → 양쪽 모두 과대 기록되어 pnl 허수 부풀림 (실측: 21/30 cupsey CLOSED row에서
+// stored_pnl > recomputed 일관적 양의 skew). 한 번에 한 close만 실행되도록 직렬화한다.
+let closeMutex: Promise<void> = Promise.resolve();
+async function serializeClose<T>(task: () => Promise<T>): Promise<T> {
+  const prev = closeMutex;
+  let release: () => void = () => {};
+  closeMutex = new Promise<void>((resolve) => { release = resolve; });
+  try {
+    await prev;
+    return await task();
+  } finally {
+    release();
+  }
+}
+export function resetCupseyCloseMutexForTests(): void {
+  closeMutex = Promise.resolve();
+}
+
 // ─── P1: Execution Funnel Stats ───
 // Why: "왜 한 번밖에 못 샀는가"를 수치로 즉시 답할 수 있게 함.
 interface CupseyFunnelStats {
@@ -751,6 +773,21 @@ async function closeCupseyPosition(
   reason: CloseReason,
   ctx: BotContext
 ): Promise<void> {
+  return serializeClose(() => closeCupseyPositionSerialized(id, pos, exitPrice, reason, ctx));
+}
+
+async function closeCupseyPositionSerialized(
+  id: string,
+  pos: CupseyPosition,
+  exitPrice: number,
+  reason: CloseReason,
+  ctx: BotContext
+): Promise<void> {
+  // 직렬화된 후 재검사: 대기 중 이미 다른 경로가 close를 마쳤을 수 있다.
+  if (pos.state === 'CLOSED') {
+    log.debug(`[CUPSEY_CLOSE_SKIP] ${id} already CLOSED — skip re-entry`);
+    return;
+  }
   let actualExitPrice = exitPrice;
   let executionSlippage = 0;
   let exitTxSignature = pos.entryTxSignature;

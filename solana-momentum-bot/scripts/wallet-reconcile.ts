@@ -382,6 +382,7 @@ async function main(): Promise<void> {
   // sell: FIFO queue 의 가장 오래된 unconsumed buy 에 매칭 → 해당 buy 의 strategy 로 귀속.
   const netByStrategy = new Map<string, { buySol: number; sellSol: number; buyTx: number; sellTx: number; otherTx: number }>();
   const unresolvedSell: TxDelta[] = [];
+  const unknownBuys: TxDelta[] = []; // DB tx_signature 없는 buy (진단용)
   const UNKNOWN = '<unknown>';
   const UNRESOLVED = '<unresolved_sell>';
 
@@ -392,6 +393,7 @@ async function main(): Promise<void> {
     if (d.type === 'buy') {
       const dbByTx = dbMap.get(d.signature);
       strat = dbByTx?.strategy ?? null;
+      if (!strat) unknownBuys.push(d);
     } else if (d.type === 'sell') {
       const blockTimeMs = d.blockTime != null ? d.blockTime * 1000 : null;
       const matched = matchSellToFifoBuy(d.involvedMints, blockTimeMs, buyQueueByMint);
@@ -441,6 +443,57 @@ async function main(): Promise<void> {
   console.log(`  total stuck: ${stuckCount}`);
   for (const [strat, v] of [...stuckByStrategy.entries()].sort((a, b) => b[1].count - a[1].count)) {
     console.log(`  ${strat.padEnd(22)} ${v.count} stuck buys across ${v.mints.size} unique mints`);
+  }
+
+  // ─── <unknown> Buy Diagnostics (DB tx_signature 없는 buy 의 정체 규명) ───
+  // Why: <unknown> 버킷은 wallet delta 대다수 origin 일 수 있음. 3 가지 후보:
+  //   1) Non-swap cost (rent/ATA/wrap-unwrap/Jito tip/failed swap fee) — involvedMints 비어있거나
+  //      deltaSol 이 rent 범위 (~0.002 SOL).
+  //   2) DB insertTrade 실패 (silent) — involvedMints 있는데 trades 에 저장 안 됨. data integrity 이슈.
+  //   3) bot 외부 거래 — wallet 을 다른 용도로도 사용한 흔적.
+  if (unknownBuys.length > 0) {
+    const noMint = unknownBuys.filter((d) => d.involvedMints.length === 0);
+    const withMint = unknownBuys.filter((d) => d.involvedMints.length > 0);
+    const sumNoMint = noMint.reduce((s, d) => s + d.deltaSol, 0);
+    const sumWithMint = withMint.reduce((s, d) => s + d.deltaSol, 0);
+
+    const absOutflows = unknownBuys.map((d) => -d.deltaSol).sort((a, b) => a - b); // absolute outflow, ASC
+    const n = absOutflows.length;
+    const percentile = (p: number) => absOutflows[Math.min(n - 1, Math.floor(n * p))];
+
+    console.log('\n=== <unknown> Buy Diagnostics (DB tx_signature 없는 buy 분류) ===');
+    console.log(`  total unknown buys: ${unknownBuys.length}  sum_delta=${unknownBuys.reduce((s,d)=>s+d.deltaSol,0).toFixed(6)} SOL`);
+    console.log(`  ├─ no_mint (non-swap fee/rent/wrap): ${noMint.length} tx  sum=${sumNoMint.toFixed(6)} SOL`);
+    console.log(`  └─ with_mint (token 거래 but DB 없음): ${withMint.length} tx  sum=${sumWithMint.toFixed(6)} SOL  ⚠ DB insertTrade 실패 의심`);
+    console.log(`  delta outflow distribution (absolute SOL):`);
+    console.log(`    p10=${percentile(0.10).toFixed(6)}  p50=${percentile(0.50).toFixed(6)}  p90=${percentile(0.90).toFixed(6)}  max=${percentile(0.99).toFixed(6)}`);
+
+    // Mint 있는 unknown 의 고유 mint 수 — data integrity 이슈 규모 추정.
+    if (withMint.length > 0) {
+      const mintCounts = new Map<string, { count: number; sumDelta: number }>();
+      for (const d of withMint) {
+        for (const m of d.involvedMints) {
+          const acc = mintCounts.get(m) ?? { count: 0, sumDelta: 0 };
+          acc.count++;
+          acc.sumDelta += d.deltaSol;
+          mintCounts.set(m, acc);
+        }
+      }
+      console.log(`    with_mint unique mints: ${mintCounts.size}`);
+      const topMints = [...mintCounts.entries()].sort((a, b) => a[1].sumDelta - b[1].sumDelta).slice(0, 5);
+      console.log(`    Top 5 mints by total outflow (DB 없음):`);
+      for (const [mint, v] of topMints) {
+        console.log(`      ${mint.slice(0, 16)}...  n=${v.count} sum=${v.sumDelta.toFixed(6)} SOL`);
+      }
+    }
+
+    // Top 10 largest unknown buy tx (수동 Solscan 검사용)
+    const topLargest = [...unknownBuys].sort((a, b) => a.deltaSol - b.deltaSol).slice(0, 10);
+    console.log(`  Top 10 largest unknown buy tx (수동 Solscan 검사):`);
+    for (const d of topLargest) {
+      const mintMark = d.involvedMints.length > 0 ? `mint=${d.involvedMints[0].slice(0,8)}...` : 'no_mint';
+      console.log(`    ${d.deltaSol.toFixed(6)}  ${d.signature.slice(0, 20)}  ${mintMark}`);
+    }
   }
 
   // Ranked deltas

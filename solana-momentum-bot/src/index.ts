@@ -71,6 +71,7 @@ import {
   updatePureWsPositions,
   recoverPureWsOpenPositions,
   resolvePureWsWalletLabel,
+  scanPureWsV2Burst,
 } from './orchestration/pureWsBreakoutHandler';
 import { updateMigrationPositions, onMigrationEvent, recoverMigrationOpenPositions } from './orchestration/migrationLaneHandler';
 import type { MigrationEvent } from './strategy/migrationHandoffReclaim';
@@ -1602,6 +1603,18 @@ async function main() {
         }
         if (config.pureWsLaneEnabled) {
           await updatePureWsPositions(ctx, realtimeCandleBuilder!);
+        }
+        // DEX_TRADE Phase 1.3: v2 detector 독립 scan (candle close 마다 watchlist 전체 평가)
+        // bootstrap signal 과 별개 경로. pureWsV2Enabled=true + pureWsLaneEnabled=true 일 때만 작동.
+        if (config.pureWsV2Enabled && config.pureWsLaneEnabled) {
+          const watchlistEntries = universeEngine.getWatchlist();
+          const pairs = watchlistEntries.map((e) => e.pairAddress);
+          const symByPair = new Map<string, string | undefined>(
+            watchlistEntries.map((e) => [e.pairAddress, e.symbol])
+          );
+          await scanPureWsV2Burst(ctx, realtimeCandleBuilder!, pairs, symByPair).catch((err) => {
+            log.warn(`Pure WS v2 scan failed: ${err}`);
+          });
         }
         // Tier 1 (2026-04-17): migration handoff reclaim lane. candle tick 경로만 사용 (race 예방).
         if (config.migrationLaneEnabled) {

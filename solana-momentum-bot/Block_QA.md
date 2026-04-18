@@ -1,5 +1,145 @@
 # Block QA
 
+## DEX_TRADE Phase 1-3 QA Closure (2026-04-18)
+
+- Date: 2026-04-18
+- Scope:
+  - Phase 1.1: `src/strategy/wsBurstDetector.ts`
+  - Phase 1.2: `scripts/wsBurstPaperReplay.ts`, `docs/audits/ws-burst-detector-calibration-2026-04-18.md`
+  - Phase 1.3: `src/orchestration/pureWsBreakoutHandler.ts` (scanPureWsV2Burst) + config entries + `src/index.ts` wiring
+  - Phase 2: `src/execution/bleedModel.ts`, `src/gate/probeViabilityFloor.ts`, `src/risk/dailyBleedBudget.ts`
+  - Phase 3: `src/risk/quickRejectClassifier.ts`, `src/risk/holdPhaseSentinel.ts`, `scripts/ruinProbability.ts`
+  - Handler integration: PROBE state (quickReject), RUNNER T1/T2/T3 (holdPhase), entry (viability + bleed), close (reportBleed)
+
+### Verdict
+
+- **방향 + 기본 구현 정확**
+- **2 개 HIGH/MED buy bug fix 적용**: F8 (scanner cooldown premature), F10 (quickReject over-rejection)
+- **4 개 LOW/MED finding 문서화**: F2/F4/F5/F6 — 현재 동작은 safe, 문서화로 마감
+
+## Findings
+
+### F1 — PASS: `DEGRADED_EXIT` CloseReason + notifier label 호환
+
+`src/utils/types.ts:179` 에 `DEGRADED_EXIT` 존재, `src/notifier/messageFormatter.ts:35` 에 label 존재. holdPhaseSentinel 이 close reason 으로 사용 가능.
+
+### F2 — MED (문서화): paper mode 에서 viability floor + bleed budget 이 작동
+
+- 현재 구현: `probeViabilityFloorEnabled=true` + `dailyBleedBudgetEnabled=true` 가 paper mode 에서도 활성
+- `walletStopGuard` poller 는 live 전용 → paper 에서 `lastBalanceSol=Infinity` → fallback `walletStopMinSol+0.01=0.81 SOL`
+- Paper loss 가 virtual bleed budget 소진 → 과다 paper entry 제한 가능
+- **판정**: 설계 의도 (시뮬 = 실전 조건 반영) 관점에서는 맞음. 단, wallet baseline 이 0.81 hard-coded 라 실 wallet 과 불일치 → 운영자가 paper 관측 시 "왜 entry 가 적지?" 혼동 가능
+- **조치**: 현재 동작 유지 + 문서화 (이 Block_QA 로 기록). 필요 시 paper 전용 `paperBleedBudgetDisabled` env 추가 고려
+
+### F3 — PASS: quickReject / holdPhase 가 paper-first 우회 경로에서 작동하지 않음
+
+paper-first check 는 position 생성 전 `return` → `activePositions` 에 추가 안 됨 → `updatePureWsPositions` 루프가 skip → classifier/sentinel 동작 경로 없음. 정상.
+
+### F4 — LOW (문서화): wallet baseline fallback 0.81 SOL 보수성
+
+- Viability floor + bleed budget 이 `walletStopGuard.lastBalanceSol` 의존
+- `lastBalanceSol = Number.POSITIVE_INFINITY` 초기값 → `Number.isFinite()` 체크 → fallback `walletStopMinSol + 0.01 = 0.81 SOL`
+- 현재 실 wallet (1.05 SOL) 보다 낮음 → daily cap 실질 0.05 SOL (min floor 작동) 으로 수렴
+- **실전 영향**: 첫 30초 + RPC 실패 지속 시 발생. Cap 이 운영자 기대치 보다 **작은 방향** (safer) 이지만 entry 기회 축소
+- **조치**: 현재 동작 유지. 향후 `walletDeltaComparator.baselineBalanceSol` 을 우선 사용 옵션 검토 (comparator 는 더 정확한 baseline 유지)
+
+### F5 — LOW (문서화): reverse_quote_stability placeholder 가 minPassScore tuning 에 포함됨
+
+- `wsBurstDetector`: `W_REVERSE=5`, `f_reverse_quote_stability = 1.0` (Phase 1 placeholder) → burst_score 에 항상 `+5` 자동 기여
+- Paper replay 기반 `tuned minPassScore=50` 은 이 placeholder 포함 점수 분포 기반
+- Phase 2 실 reverse quote 통합 시 placeholder → 실 값 (< 1.0 확률 많음) 로 교체되면 기존 threshold 재튜닝 필요
+- **조치**: `docs/audits/ws-burst-detector-calibration-2026-04-18.md` 에 이 dependency 명시 (아래 실행 중)
+
+### F6 — LOW (문서화): replay script 가 `DEFAULT_WS_BURST_CONFIG` 사용
+
+- `scripts/wsBurstPaperReplay.ts` 는 hard-coded `DEFAULT_WS_BURST_CONFIG` 로 돌림
+- 현재 live runtime 은 `config.ts::pureWsV2*` tuned values 사용 (이미 Phase 1.3 에서 주입)
+- 재 replay 하면 원본 threshold 로 다시 돌아감 → tuned 재검증 불가
+- **조치**: 현재 intended (historical baseline calibration 용도). 필요 시 `--config-env` CLI flag 추가 후보
+
+### F7 — PASS: close path invariants 단일 소스
+
+`closePureWsPositionSerialized` 함수 내부에서 `reportCanaryClose(LANE_STRATEGY, pnl)` + `releaseCanarySlot(LANE_STRATEGY)` + `reportBleed(...)` 모두 호출됨 (line 898-911). 모든 close trigger (hardcut, quickReject, timeout, trail, T1/T2/T3 trail, holdPhase) 가 동일 함수 경유 → 일관성.
+
+### F8 — MED (FIXED): v2 scanner cooldown premature
+
+**Before (bug)**:
+```ts
+log.info(`[PUREWS_V2_PASS] ...`);
+v2LastTriggerSecByPair.set(pair, nowSec);  // ← cooldown here
+await handlePureWsSignal(syntheticSignal, candleBuilder, ctx);
+```
+
+handler 가 viability / paper-first / concurrency reject 해도 cooldown 5분간 작동 → 같은 pair 에서 추가 burst 놓침. 특히 budget 부족 시 cascade.
+
+**Fix (`pureWsBreakoutHandler.ts:1032`)**:
+```ts
+const activeCountBefore = activePositions.size;
+await handlePureWsSignal(syntheticSignal, candleBuilder, ctx);
+if (activePositions.size > activeCountBefore) {
+  v2LastTriggerSecByPair.set(pair, nowSec);  // ← 성공 시에만
+}
+```
+
+Test: `test/pureWsV2Scanner.test.ts` "QA F8 fix: viability rejection does NOT set per-pair cooldown" 추가.
+
+### F9 — N/A
+
+(생략 — F8 에 포괄)
+
+### F10 — HIGH (FIXED): quickReject `weak_mfe` auto-counts as degrade factor
+
+**Before (bug)**:
+```ts
+if (degradeFactors.length >= config.degradeCountForExit) {   // default 2
+  action = 'exit';
+}
+```
+
+`weak_mfe` + 1 microstructure factor → `degradeCountForExit=2` 만족 → **exit**. 그런데 초반 30초 내 MFE < 0.5% 는 healthy pair 에서도 흔함. Microstructure 가 briefly 흔들리면 즉시 exit → over-rejection.
+
+**Fix (`src/risk/quickRejectClassifier.ts`)**:
+```ts
+const microFactors = degradeFactors.filter((f) => f !== 'weak_mfe');
+if (microFactors.length >= config.degradeCountForExit) {
+  action = 'exit';
+} else if (!mfeOk && microFactors.length >= 1) {
+  action = 'reduce';
+}
+```
+
+- `weak_mfe` 는 **counted in `degradeFactors`** (observability 유지) 하지만 exit count 에는 미포함
+- exit 는 **microstructure factors 만**: `buy_ratio_decay` + `tx_density_drop` 2 개 모두 triggered 시
+- `reduce` 는 `weak_mfe + 1 microstructure` 시 (future partial exit candidate)
+
+Tests 업데이트 — 3 새 케이스 추가: 2+ micro → exit, weak+1 micro → reduce, weak only → hold.
+
+## Completion Criteria
+
+- ✅ F8 (HIGH/MED): cooldown premature → fixed + test
+- ✅ F10 (HIGH): weak_mfe auto-factor → fixed + test  
+- ✅ F2/F4/F5/F6: LOW/MED documented
+- ✅ F1/F3/F7: PASS verified
+
+## Verification
+
+- `npx tsc --noEmit` (main + scripts) — 0 errors
+- `npx jest` — 802 pass + 2 QA-fix tests (test/pureWsV2Scanner.test.ts F8, test/quickRejectClassifier.test.ts F10 revisions) / 1 pre-existing riskManager fail 유지
+
+## Recommended follow-ups (not blocking deploy)
+
+- Paper-mode bleed budget bypass env (F2)
+- walletDeltaComparator baseline 을 bleed budget 에서 우선 사용 (F4)
+- Replay script `--config-env` CLI (F6)
+- Reverse quote placeholder replacement 시 minPassScore 재튜닝 plan (F5)
+
+## Notes
+
+- 이번 QA 는 코드 기반 팩트체크 위주. 실거래 관측 (48h+) 후에야 drift / over-rejection rate 실측 가능.
+- Block_QA pattern 유지: integration 검증 + config 일관성 + 문서 drift 체크.
+
+---
+
 ## QA Closure Report (2026-04-18)
 
 All Block 0-4 QA findings 대응 완료. 상세 기록은 `project_block_qa_closure_2026_04_18.md` 메모리.

@@ -10,6 +10,8 @@
 | **Mission Pivot — Convexity Over Explainability** | `mission-pivot-2026-04-18.md` | ✅ 상위 권위 | 2026-04-18 |
 | Top-Down Mission Bottleneck Analysis | `top-down-mission-bottleneck-analysis-2026-04-18.md` | ✅ 분석 프레임 (pivot 근거) | 2026-04-18 |
 | Pure WS Breakout Lane | `pure-ws-breakout-lane-2026-04-18.md` | ✅ 구현 완료 (Block 3, paper-first gate) | 2026-04-18 |
+| Pure WS Breakout V2 — Detector Math Spec | `pure-ws-breakout-v2-detector-2026-04-18.md` | ✅ Phase 1.1-1.3 완료 (pure function + scanner + handler wiring) | 2026-04-18 |
+| DEX_TRADE Phase 3 (Quick Reject + Hold Sentinel + Ruin Sim) | — | ✅ 구현 완료 (modules + script + tests) | 2026-04-18 |
 
 ## Pre-Pivot (historical — 현재 판정 근거로 사용 금지)
 

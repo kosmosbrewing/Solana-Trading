@@ -34,6 +34,13 @@ import { Order, Signal, Trade, CloseReason } from '../utils/types';
 import { config } from '../utils/config';
 import { MicroCandleBuilder } from '../realtime';
 import { evaluateCupseySignalGate, CupseySignalGateConfig } from '../strategy/cupseySignalGate';
+import { evaluateWsBurst } from '../strategy/wsBurstDetector';
+import type { WsBurstDetectorConfig } from '../strategy/wsBurstDetector';
+import { checkProbeViabilityFloor } from '../gate/probeViabilityFloor';
+import { remainingDailyBudget, reportBleed } from '../risk/dailyBleedBudget';
+import { getWalletStopGuardState } from '../risk/walletStopGuard';
+import { evaluateQuickReject } from '../risk/quickRejectClassifier';
+import { evaluateHoldPhaseSentinel } from '../risk/holdPhaseSentinel';
 import { BotContext } from './types';
 import { bpsToDecimal } from '../utils/units';
 import { isWalletStopActive } from '../risk/walletStopGuard';
@@ -72,6 +79,9 @@ interface PureWsPosition {
   lastCloseFailureAtSec?: number;
   /** T2 도달 시 캐시 — 이후 close 하한선 (never close below entry × breakeven_lock) */
   t2BreakevenLockPrice?: number;
+  /** Phase 3 snapshot — entry 시점 microstructure (quickReject / holdPhase 분석용) */
+  buyRatioAtEntry?: number;
+  txCountAtEntry?: number;
 }
 
 const activePositions = new Map<string, PureWsPosition>();
@@ -131,8 +141,13 @@ export function resolvePureWsWalletLabel(ctx: BotContext): 'main' | 'sandbox' {
 
 // ─── Test Helpers ───
 
+// ─── V2 Detector per-pair cooldown (Phase 1.3) ───
+// Why: paper replay 에서 Top pair (pippin 164 pass / 32k eval) 쏠림 관측. 같은 pair 에 연속 burst 진입 방지.
+const v2LastTriggerSecByPair = new Map<string, number>();
+
 export function resetPureWsLaneStateForTests(): void {
   activePositions.clear();
+  v2LastTriggerSecByPair.clear();
   funnelStats.signalsReceived = 0;
   funnelStats.gatePass = 0;
   funnelStats.entry = 0;
@@ -144,6 +159,30 @@ export function resetPureWsLaneStateForTests(): void {
   funnelStats.winnersT2 = 0;
   funnelStats.winnersT3 = 0;
   funnelStats.sessionStartAt = new Date();
+}
+
+function buildV2DetectorConfig(): WsBurstDetectorConfig {
+  return {
+    enabled: true,
+    nRecent: config.pureWsV2NRecent,
+    nBaseline: config.pureWsV2NBaseline,
+    minPassScore: config.pureWsV2MinPassScore,
+    wVolume: config.pureWsV2WVolume,
+    wBuy: config.pureWsV2WBuy,
+    wDensity: config.pureWsV2WDensity,
+    wPrice: config.pureWsV2WPrice,
+    wReverse: config.pureWsV2WReverse,
+    floorVol: config.pureWsV2FloorVol,
+    floorBuy: config.pureWsV2FloorBuy,
+    floorTx: config.pureWsV2FloorTx,
+    floorPrice: config.pureWsV2FloorPrice,
+    buyRatioAbsoluteFloor: config.pureWsV2BuyRatioAbsFloor,
+    txCountAbsoluteFloor: config.pureWsV2TxCountAbsFloor,
+    zVolSaturate: config.pureWsV2ZVolSaturate,
+    zBuySaturate: config.pureWsV2ZBuySaturate,
+    zTxSaturate: config.pureWsV2ZTxSaturate,
+    bpsPriceSaturate: config.pureWsV2BpsPriceSaturate,
+  };
 }
 
 export function addPureWsPositionForTests(pos: PureWsPosition): void {
@@ -186,8 +225,11 @@ export async function handlePureWsSignal(
     return;
   }
 
+  // V2 detector-sourced signal 은 v1 gate 재평가 skip (factor set 다름 → double-reject 방지).
+  const skipV1Gate = signal.sourceLabel === 'ws_burst_v2';
+
   // Loose signal gate (factor set reuse, threshold 완화)
-  if (config.pureWsGateEnabled) {
+  if (config.pureWsGateEnabled && !skipV1Gate) {
     const recentCandles = candleBuilder.getRecentCandles(
       signal.pairAddress,
       config.realtimePrimaryIntervalSec,
@@ -216,6 +258,43 @@ export async function handlePureWsSignal(
   const ticketSol = config.pureWsLaneTicketSol;
   const quantity = signal.price > 0 ? ticketSol / signal.price : 0;
   if (quantity <= 0) return;
+
+  // DEX_TRADE Phase 2: Probe Viability Floor + Daily Bleed Budget
+  // Why: RR gate retire 이후 최소 viability 체크. bleed budget 으로 시도 수 통제.
+  if (config.probeViabilityFloorEnabled) {
+    const walletState = getWalletStopGuardState();
+    const walletBaselineSol = walletState.lastBalanceSol > 0 && Number.isFinite(walletState.lastBalanceSol)
+      ? walletState.lastBalanceSol
+      : config.walletStopMinSol + 0.01;  // fallback — near halt threshold (보수적)
+    const budgetCfg = {
+      alpha: config.dailyBleedAlpha,
+      minCapSol: config.dailyBleedMinCapSol,
+      maxCapSol: config.dailyBleedMaxCapSol,
+    };
+    const remainingBudget = config.dailyBleedBudgetEnabled
+      ? remainingDailyBudget(walletBaselineSol, budgetCfg)
+      : Number.POSITIVE_INFINITY;
+    const viability = checkProbeViabilityFloor(
+      {
+        venue: undefined,  // Phase 2 초기 — venue resolver 미구현, unknown fallback 사용
+        ticketSol,
+      },
+      {
+        minTicketSol: config.probeViabilityMinTicketSol,
+        maxBleedPct: config.probeViabilityMaxBleedPct,
+        maxSellImpactPct: config.probeViabilityMaxSellImpactPct,
+        remainingDailyBudgetSol: remainingBudget,
+      }
+    );
+    if (!viability.allow) {
+      log.info(
+        `[PUREWS_VIABILITY_REJECT] ${signal.pairAddress.slice(0, 12)} reason=${viability.reason} ` +
+        `bleed=${viability.bleed.totalSol.toFixed(6)}SOL (${(viability.bleed.totalPct * 100).toFixed(2)}%) ` +
+        `budget=${remainingBudget.toFixed(6)}SOL`
+      );
+      return;
+    }
+  }
 
   const nowSec = Math.floor(Date.now() / 1000);
   const positionId = `purews-${signal.pairAddress.slice(0, 8)}-${nowSec}`;
@@ -329,6 +408,20 @@ export async function handlePureWsSignal(
       `${positionId} buy persisted FAILED after tx=${entryTxSignature}: ${err} — NEW POSITIONS HALTED.`,
   });
 
+  // Phase 3: entry 시점 microstructure snapshot (quickReject/holdPhase 기준점)
+  const entryCandles = candleBuilder.getRecentCandles(
+    signal.pairAddress,
+    config.realtimePrimaryIntervalSec,
+    1
+  );
+  const entryCandle = entryCandles[entryCandles.length - 1];
+  const entryBuyRatio = entryCandle
+    ? (entryCandle.buyVolume + entryCandle.sellVolume > 0
+      ? entryCandle.buyVolume / (entryCandle.buyVolume + entryCandle.sellVolume)
+      : 0.5)
+    : 0.5;
+  const entryTxCount = entryCandle?.tradeCount ?? 0;
+
   const position: PureWsPosition = {
     tradeId: positionId,
     dbTradeId: persistResult.dbTradeId ?? undefined,
@@ -345,6 +438,8 @@ export async function handlePureWsSignal(
     plannedEntryPrice: signal.price,
     entryTxSignature,
     entrySlippageBps,
+    buyRatioAtEntry: entryBuyRatio,
+    txCountAtEntry: entryTxCount,
   };
 
   if (persistResult.dbTradeId) {
@@ -419,6 +514,49 @@ export async function updatePureWsPositions(
           await closePureWsPosition(id, pos, currentPrice, 'REJECT_HARD_CUT', ctx);
           continue;
         }
+
+        // DEX_TRADE Phase 3: Quick Reject Classifier (microstructure-based)
+        // Why: price-only cut 금지. time-box + buy ratio decay + tx density drop 조합 판정.
+        if (config.quickRejectClassifierEnabled && elapsedSec <= config.quickRejectWindowSec) {
+          const recentCandles = candleBuilder.getRecentCandles(
+            pos.pairAddress,
+            config.realtimePrimaryIntervalSec,
+            3
+          );
+          const qr = evaluateQuickReject(
+            {
+              elapsedSec,
+              mfePct,
+              buyRatioAtEntry: pos.buyRatioAtEntry ?? 0.5,
+              txCountAtEntry: pos.txCountAtEntry ?? 0,
+              recentCandles,
+            },
+            {
+              enabled: true,
+              windowSec: config.quickRejectWindowSec,
+              minMfePct: config.quickRejectMinMfePct,
+              buyRatioDecayThreshold: config.quickRejectBuyRatioDecay,
+              txDensityDropThreshold: config.quickRejectTxDensityDrop,
+              degradeCountForExit: config.quickRejectDegradeCountForExit,
+            }
+          );
+          if (qr.action === 'exit') {
+            log.info(
+              `[PUREWS_QUICK_REJECT] ${id} microstructure degraded — factors=${qr.degradeFactors.join(',')} ` +
+              `mfe=${(mfePct * 100).toFixed(2)}% elapsed=${elapsedSec}s`
+            );
+            await closePureWsPosition(id, pos, currentPrice, 'REJECT_TIMEOUT', ctx);
+            continue;
+          }
+          // 'reduce' action 은 Phase 3 초기 — 로그만 남김 (partial exit 는 Phase 4 후보)
+          if (qr.action === 'reduce') {
+            log.debug(
+              `[PUREWS_QUICK_REJECT_WARN] ${id} reduce candidate — factors=${qr.degradeFactors.join(',')} ` +
+              `elapsed=${elapsedSec}s`
+            );
+          }
+        }
+
         // Flat timeout
         if (elapsedSec >= config.pureWsProbeWindowSec) {
           const inFlatBand = Math.abs(currentPct) <= config.pureWsProbeFlatBandPct;
@@ -466,6 +604,8 @@ export async function updatePureWsPositions(
           );
           break;
         }
+        // Phase 3: hold-phase sentinel — degraded 시 즉시 degraded exit
+        if (await checkHoldPhaseDegraded(id, pos, currentPrice, candleBuilder, ctx)) continue;
         const trailStop = pos.peakPrice * (1 - config.pureWsT1TrailingPct);
         if (currentPrice <= trailStop) {
           log.info(
@@ -487,6 +627,7 @@ export async function updatePureWsPositions(
           );
           break;
         }
+        if (await checkHoldPhaseDegraded(id, pos, currentPrice, candleBuilder, ctx)) continue;
         const trailStop = Math.max(
           pos.peakPrice * (1 - config.pureWsT2TrailingPct),
           pos.t2BreakevenLockPrice ?? pos.entryPrice * config.pureWsT2BreakevenLockMultiplier
@@ -504,6 +645,7 @@ export async function updatePureWsPositions(
       }
 
       case 'RUNNER_T3': {
+        if (await checkHoldPhaseDegraded(id, pos, currentPrice, candleBuilder, ctx)) continue;
         // No time stop — runner mode. 단일 exit = trail 25%.
         const trailStop = Math.max(
           pos.peakPrice * (1 - config.pureWsT3TrailingPct),
@@ -521,6 +663,55 @@ export async function updatePureWsPositions(
       }
     }
   }
+}
+
+/**
+ * Phase 3 helper: hold-phase sentinel 평가 + degraded 시 DEGRADED_EXIT 로 close.
+ * @returns true 면 close 수행됨 (caller 는 continue)
+ */
+async function checkHoldPhaseDegraded(
+  id: string,
+  pos: PureWsPosition,
+  currentPrice: number,
+  candleBuilder: MicroCandleBuilder,
+  ctx: BotContext
+): Promise<boolean> {
+  if (!config.holdPhaseSentinelEnabled) return false;
+  const recentCandles = candleBuilder.getRecentCandles(
+    pos.pairAddress,
+    config.realtimePrimaryIntervalSec,
+    3
+  );
+  const result = evaluateHoldPhaseSentinel(
+    {
+      buyRatioAtEntry: pos.buyRatioAtEntry ?? 0.5,
+      txCountAtEntry: pos.txCountAtEntry ?? 0,
+      peakPrice: pos.peakPrice,
+      currentPrice,
+      recentCandles,
+    },
+    {
+      enabled: true,
+      buyRatioCollapseThreshold: config.holdPhaseBuyRatioCollapse,
+      txDensityDropThreshold: config.holdPhaseTxDensityDrop,
+      peakDriftThreshold: config.holdPhasePeakDrift,
+      degradedFactorCount: config.holdPhaseDegradedFactorCount,
+    }
+  );
+  if (result.status === 'degraded') {
+    log.warn(
+      `[PUREWS_HOLD_DEGRADED] ${id} state=${pos.state} factors=${result.warnFactors.join(',')} ` +
+      `peakDrift=${(result.peakDriftPct * 100).toFixed(2)}% buyR=${result.recentBuyRatio.toFixed(2)} tx=${result.recentTxCount.toFixed(1)}`
+    );
+    await closePureWsPosition(id, pos, currentPrice, 'DEGRADED_EXIT', ctx);
+    return true;
+  }
+  if (result.status === 'warn') {
+    log.debug(
+      `[PUREWS_HOLD_WARN] ${id} state=${pos.state} factors=${result.warnFactors.join(',')}`
+    );
+  }
+  return false;
 }
 
 // ─── Close ───
@@ -707,6 +898,22 @@ async function closePureWsPositionSerialized(
   reportCanaryClose(LANE_STRATEGY, pnl);
   // Block 4 QA fix: 전역 concurrency slot 해제 (acquire 대응)
   releaseCanarySlot(LANE_STRATEGY);
+
+  // DEX_TRADE Phase 2: daily bleed budget 누적
+  // Why: close 직후 실제 발생한 loss 를 budget 에 반영. winner 는 budget 영향 없음 (spend 0).
+  if (config.dailyBleedBudgetEnabled) {
+    const walletState = getWalletStopGuardState();
+    const walletBaselineSol = walletState.lastBalanceSol > 0 && Number.isFinite(walletState.lastBalanceSol)
+      ? walletState.lastBalanceSol
+      : config.walletStopMinSol + 0.01;
+    // pnl < 0 이면 -pnl 을 소비로 집계. pnl >= 0 이면 소비 없음.
+    const bleedSol = pnl < 0 ? -pnl : 0;
+    reportBleed(bleedSol, walletBaselineSol, {
+      alpha: config.dailyBleedAlpha,
+      minCapSol: config.dailyBleedMinCapSol,
+      maxCapSol: config.dailyBleedMaxCapSol,
+    });
+  }
 }
 
 // ─── Recovery ───
@@ -760,4 +967,106 @@ export async function recoverPureWsOpenPositions(ctx: BotContext): Promise<numbe
   }
 
   return recovered;
+}
+
+// ─── Phase 1.3: V2 Independent Detector Scanner ───
+
+/**
+ * V2 detector 기반 independent burst scanner.
+ *
+ * Why: v1 은 bootstrap signal 을 그대로 소비해서 candle-close 이벤트에 의존했다. V2 는
+ * `evaluateWsBurst` 로 **독립적 burst 판정** → bootstrap 과 무관한 trigger 경로.
+ *
+ * 호출 지점: index.ts 의 candle close listener 또는 tick monitor 에서 watchlist pair 를 전달.
+ *
+ * 동작:
+ *   1) config.pureWsV2Enabled 확인 (disabled 면 no-op)
+ *   2) per-pair cooldown 체크 (default 5분)
+ *   3) evaluateWsBurst 호출
+ *   4) pass 면 synthetic Signal 생성 + handlePureWsSignal 로 일반 entry path 재사용
+ *      (sourceLabel='ws_burst_v2' 로 v1 gate bypass)
+ */
+export async function scanPureWsV2Burst(
+  ctx: BotContext,
+  candleBuilder: MicroCandleBuilder,
+  pairAddresses: Iterable<string>,
+  tokenSymbolByPair?: Map<string, string | undefined>
+): Promise<void> {
+  if (!config.pureWsLaneEnabled) return;
+  if (!config.pureWsV2Enabled) return;
+
+  const detectorCfg = buildV2DetectorConfig();
+  const requiredCandles = detectorCfg.nRecent + detectorCfg.nBaseline;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const cooldownSec = config.pureWsV2PerPairCooldownSec;
+
+  for (const pair of pairAddresses) {
+    // per-pair cooldown (Top pair 쏠림 방어 — paper replay 에서 pippin 58% 점유 관측)
+    const lastTriggerSec = v2LastTriggerSecByPair.get(pair) ?? 0;
+    if (nowSec - lastTriggerSec < cooldownSec) continue;
+
+    const candles = candleBuilder.getRecentCandles(
+      pair,
+      config.realtimePrimaryIntervalSec,
+      requiredCandles
+    );
+    if (candles.length < requiredCandles) continue;
+
+    const result = evaluateWsBurst(candles, detectorCfg);
+    if (!result.pass) {
+      log.debug(
+        `[PUREWS_V2_REJECT] ${pair.slice(0, 12)} reason=${result.rejectReason} score=${result.score}`
+      );
+      continue;
+    }
+
+    const currentPrice = candleBuilder.getCurrentPrice(pair);
+    if (currentPrice == null || currentPrice <= 0) continue;
+
+    log.info(
+      `[PUREWS_V2_PASS] ${pair.slice(0, 12)} score=${result.score} ` +
+      `vol=${result.factors.volumeAccelZ.toFixed(2)} buy=${result.factors.buyPressureZ.toFixed(2)} ` +
+      `tx=${result.factors.txDensityZ.toFixed(2)} price=${result.factors.priceAccel.toFixed(2)} ` +
+      `bps=${result.factors.rawPriceChangeBps.toFixed(1)}`
+    );
+
+    // QA fix (F8, 2026-04-18): cooldown 을 handler 성공 이후에만 설정.
+    // 이전 구현 bug: handler 가 viability / paper-first / acquire 에서 reject 해도 cooldown 활성 → 5min lockout.
+    // 수정: activePositions 크기로 성공 판정. 실패한 scan 은 다음 candle 에서 재시도 가능.
+    const activeCountBefore = activePositions.size;
+
+    // Synthesize Signal + reuse existing handler (security / concurrency / persist / PROBE 전부 재사용)
+    const syntheticSignal: Signal = {
+      action: 'BUY',
+      strategy: LANE_STRATEGY,
+      pairAddress: pair,
+      tokenSymbol: tokenSymbolByPair?.get(pair),
+      price: currentPrice,
+      timestamp: new Date(nowSec * 1000),
+      meta: {
+        burstScore: result.score,
+        volumeAccelZ: result.factors.volumeAccelZ,
+        buyPressureZ: result.factors.buyPressureZ,
+        txDensityZ: result.factors.txDensityZ,
+        priceAccel: result.factors.priceAccel,
+        rawBuyRatio: result.factors.rawBuyRatioRecent,
+        rawTxCount: result.factors.rawTxCountRecent,
+        rawPriceChangeBps: result.factors.rawPriceChangeBps,
+      },
+      sourceLabel: 'ws_burst_v2',
+      discoverySource: 'pure_ws_v2',
+    };
+    await handlePureWsSignal(syntheticSignal, candleBuilder, ctx);
+
+    // QA fix (F8): cooldown 은 실제로 position 이 생겼을 때만 설정.
+    // handler 가 viability/paper-first/concurrency 로 reject 하면 cooldown 안 함 → 다음 candle 에서 재시도.
+    if (activePositions.size > activeCountBefore) {
+      v2LastTriggerSecByPair.set(pair, nowSec);
+    }
+  }
+}
+
+/** Test helper — scanPureWsV2Burst 이후 cooldown state 초기화 */
+export function resetPureWsV2CooldownForTests(): void {
+  v2LastTriggerSecByPair.clear();
 }

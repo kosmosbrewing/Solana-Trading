@@ -69,9 +69,11 @@
 - duplicate / race 방지
 - entry integrity halt
 - wallet truth accounting
+- token program / extension compatibility
 - fixed micro-ticket
 - Wallet Stop Guard
 - RPC fail-safe
+- hold-phase exitability recheck
 
 핵심 원칙:
 
@@ -108,6 +110,19 @@
 - comparator
 - reconciliation
 
+하지만 pure DEX trading bot 에서는 `wallet delta` 하나만 보면 부족하다.
+
+따라서 최소 4개로 쪼갠다.
+
+- `wallet_cash_delta`
+  - SOL 현금 흐름 기준
+- `wallet_equity_delta`
+  - SOL + open inventory marked-to-mid
+- `realized_lane_pnl`
+  - lane 귀속 realized PnL
+- `execution_cost_breakdown`
+  - fee / priority fee / tip / slippage / venue fee
+
 운영 원칙:
 
 - DB `pnl` 단독 판정 금지
@@ -142,13 +157,15 @@ pure trading bot 에서 필수인 제어 항목:
 - max drawdown
 - max loss streak
 - ruin probability
+- venue-specific cost adapters
 
 ### 5.4 Read Layer
 
 우선순위:
 
-1. 현재 WSS / LaserStream 급
-2. 이후 필요 시 shred / sniper lane 분리
+1. private / stable WSS
+2. core lane 은 LaserStream 급으로 승격
+3. 이후 필요 시 shred / sniper lane 분리
 
 원칙:
 
@@ -159,8 +176,8 @@ pure trading bot 에서 필수인 제어 항목:
 
 우선순위:
 
-1. managed execution 안정화
-2. private / redundant RPC
+1. private / redundant RPC 기본 hygiene
+2. managed execution 안정화
 3. Sender / Jito / custom landing
 
 원칙:
@@ -218,6 +235,27 @@ pool discovered
 가 아니라
 - **independent WS burst lane**
 으로 승격해야 한다.
+
+#### Detector math must be explicit
+
+이 lane 은 철학만으로 운영하면 안 된다.
+
+최소 아래를 명세로 고정해야 한다.
+
+- `volume_accel`
+  - EWMA 또는 rolling percentile / median-MAD 기준
+- `buy_pressure`
+  - notional 기준과 tx count 기준을 분리
+- `tx_density`
+  - 최근 baseline 대비 z-score 또는 percentile
+- `price_accel`
+  - 최소 bps floor
+- `reverse_quote_stability`
+  - 고정 size quote 재측정 기준
+
+원칙:
+
+> detector 철학이 아니라 **detector 수학**이 알파를 결정한다.
 
 ### 6.3 `migration_handoff_reclaim`
 
@@ -289,6 +327,10 @@ primary input 후보:
 - tx density
 - minimal price acceleration
 - spread / reverse quote stability
+- soft-ranked discovery hints
+  - recent
+  - organic
+  - event anchor
 
 ### Explicitly Removed
 
@@ -296,6 +338,34 @@ primary input 후보:
 - pullback required entry
 - attention/context hard gate
 - TP2-based nominal RR gate
+
+보정:
+
+- attention / context 는 **hard gate** 에서 retire
+- 하지만 `watchlist priority / queue ordering / bleed cap 조정`용 soft ranker 로는 유지 가능
+
+### Detector Math Spec (minimum)
+
+아래는 v2 lane 구현 전에 고정해야 한다.
+
+```text
+burst_score =
+  w1 * volume_accel_z
+  + w2 * buy_pressure_z
+  + w3 * tx_density_z
+  + w4 * price_accel_bps
+  + w5 * reverse_quote_stability
+```
+
+권장 baseline:
+
+- `volume_accel_z`: recent 10s vs trailing 60~120s EWMA
+- `buy_pressure_z`: buy notional / total notional, recent vs trailing
+- `tx_density_z`: recent tx count vs trailing median/MAD
+- `price_accel_bps`: recent price impulse floor
+- `reverse_quote_stability`: N회 quote 중 route 유지율 + impact 안정성
+
+구체 임계값은 hard-code 전에 paper replay로 먼저 고정한다.
 
 ## 8. Probe Viability Floor
 
@@ -318,6 +388,46 @@ else -> allow PROBE
 
 - RR gate 는 버린다
 - viability floor 는 남긴다
+
+### Venue-Specific Bleed Adapters
+
+`expected round-trip bleed`는 venue별로 다르게 계산한다.
+
+- `bleed_model_cpmm()`
+- `bleed_model_clmm()`
+- `bleed_model_dlmm()`
+- `bleed_model_pumpswap_canonical()`
+
+최소 구성 요소:
+
+```text
+bleed_total =
+  base_fee
+  + priority_fee
+  + tip
+  + venue_fee
+  + expected_entry_slippage
+  + expected_quick_exit_slippage
+```
+
+원칙:
+
+- 하나의 전역 bleed 함수로 모든 venue 를 처리하지 않는다
+- venue-specific adapter 가 없으면 viability 판단도 오염된다
+
+### Daily Bleed Budget
+
+pure trading bot 에서는 시도 수를 bleed budget 으로 통제해야 한다.
+
+```text
+daily_bleed_cap = alpha * wallet_balance
+max_probes_today = floor(daily_bleed_cap / bleed_per_probe)
+```
+
+즉:
+
+- RR 대신 bleed budget 으로 시도 수를 통제한다
+- lane 확장 전 이 값이 먼저 있어야 한다
 
 ## 9. Exit Philosophy
 
@@ -351,6 +461,49 @@ RUNNER T3:
 - runner tuning 은 실제 5x+ / 10x+ winner 관측 후에만
 - 관측 없이 trail 을 만지면 과최적화 위험이 크다
 
+### Quick Reject Classifier
+
+quick reject 는 단순 시간 stop 으로 두지 않는다.
+
+최소 분류 입력:
+
+- `net_MFE_first_30s`
+- `buy_ratio_decay`
+- `tx_density_drop`
+- `reverse_quote_deterioration`
+- `sell_impact_widening`
+
+기본 규칙:
+
+```text
+if t <= 45s and
+   net_MFE < floor and
+   microstructure deteriorates
+then exit_or_reduce
+```
+
+즉:
+
+- price only cut 금지
+- time-box + microstructure classifier 로 처리
+
+### Hold-Phase Exitability Sentinel
+
+winner hold 에선 진입 전 가드만으로 부족하다.
+
+보유 중 아래를 재평가한다.
+
+- `reverse_quote_every_n_sec`
+- `route_disappeared_count`
+- `sell_impact_drift`
+- `fee_tier_change_detected`
+- `degraded_exit_trigger`
+
+원칙:
+
+- winner hold 와 hold-phase exitability recheck 는 세트다
+- route / fee / impact 가 악화되면 degraded exit 로 전환한다
+
 ## 10. Coverage Plan
 
 Coverage 확대는 pure trading bot 의 시도 수를 직접 결정한다.
@@ -374,6 +527,28 @@ Coverage 확대는 pure trading bot 의 시도 수를 직접 결정한다.
 - global fail-open 금지
 - staged / flagged expansion
 - venue support 추가 후 telemetry 필수
+- recent / organic / event anchor 는 soft ranking 에 사용
+
+### Event Resolvers
+
+coverage 는 단순 DEX 수 증가만이 아니다.
+
+resolver 후보:
+
+- Raydium LaunchLab graduation resolver
+- PumpSwap canonical pool resolver
+- Meteora DBC / DAMM migration resolver
+
+event lane 은 pure breakout 과 별도 queue 로 관리할 수 있어야 한다
+
+### Compatibility Matrix
+
+coverage 를 넓힐수록 아래를 같이 본다.
+
+- token program id
+- Token-2022 extension matrix
+- transfer-fee / mayhem-mode / unsupported extension flags
+- unsupported extension hard blocklist
 
 즉:
 
@@ -394,6 +569,7 @@ log_growth = ln(wallet_t / wallet_0)
 - max consecutive losers
 - max drawdown
 - bleed per 100 probes
+- route degradation rate during hold
 
 ### Required Additions
 
@@ -402,6 +578,8 @@ log_growth = ln(wallet_t / wallet_0)
 - max probes/day
 - lane-level attribution
 - ruin simulation
+- local fee model
+- venue-specific cost breakdown
 
 ### Promotion Logic
 
@@ -412,6 +590,7 @@ log_growth = ln(wallet_t / wallet_0)
 - guardrail 무사고
 - 5x+ winner evidence
 - drawdown survivable
+- bleed budget 준수
 
 ## 12. Implementation Order
 
@@ -433,21 +612,50 @@ log_growth = ln(wallet_t / wallet_0)
 - RR gate 제거
 - route / exitability / bleed floor 도입
 
-### Phase 3 — Coverage Expansion
-
-- DEX support staged rollout
-- resolver / pair eligibility widening
-
-### Phase 4 — Canary Math
+### Phase 3 — Canary Math
 
 - bleed budget
 - max probes/day
 - drawdown / ruin model
+- wallet cash / equity split
 
-### Phase 5 — Landing Upgrade
+### Phase 4 — Coverage Expansion
 
-- private / redundant RPC
+- DEX support staged rollout
+- resolver / pair eligibility widening
+- event resolver 추가
+
+### Phase 5 — Advanced Landing Upgrade
+
+- LaserStream for core lane
 - Sender / Jito / custom path
+
+### Phase 6 — Optionality / Sniper Split
+
+- shred / ultra-low-latency lane 분리
+- main core 와 optionality lane 분리
+
+## 13. Discovery Policy
+
+discovery 는 attention/context gate 로 돌아가지 않는다.
+
+하지만 아래는 soft ranker 로 유지 가능하다.
+
+- recent
+- organic score
+- trending
+- event anchor
+
+사용처:
+
+- queue priority
+- watchlist ranking
+- bleed cap weighting
+- tie-breaker
+
+원칙:
+
+> attention/context 는 hard gate 가 아니라 **priority signal** 이다
 
 ## 13. What We Intentionally Reuse
 
@@ -485,4 +693,4 @@ log_growth = ln(wallet_t / wallet_0)
 
 ## 15. One-Line Summary
 
-> 이 프로젝트의 다음 단계는 `설명 가능한 bot`을 더 고치는 것이 아니라, `wallet truth 위에서 immediate probe / fast loser cut / long runner / broad venue coverage`를 갖춘 순수 DEX 트레이딩봇으로 완성하는 것이다.
+> 이 프로젝트의 다음 단계는 `설명 가능한 bot`을 더 고치는 것이 아니라, `wallet truth 위에서 detector 수학 / venue별 bleed 모델 / quick reject classifier / hold-phase sentinel`을 갖춘 순수 DEX 트레이딩봇으로 완성하는 것이다.

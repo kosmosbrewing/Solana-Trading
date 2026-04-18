@@ -46,20 +46,44 @@ export type RealtimeAdmissionSkipDetail =
   | 'non_sol_quote_after_lookup'
   | 'unsupported_pool_program_after_lookup';
 
+// Block 2 (2026-04-18): canonical DEX IDs (post-normalize).
+// 실제 alias 허용은 `normalizeDexId` 에서 수행. 여기는 normalize 된 결과만 검사.
+// 2026-04-18 Block 2 QA fix: normalize 함수가 항상 `raydium/orca/pumpswap/meteora` 중 하나로 압축하므로
+// 이 set 에는 진짜 canonical 4개만 둔다. (이전: `pumpfun`, `pump-swap` 가 남아 있었음)
 export const SUPPORTED_REALTIME_DEX_IDS = new Set([
   'raydium',
   'orca',
   'pumpswap',
-  'pumpfun',
-  'pump-swap',
   'meteora',
 ]);
+
+// Block 2 (2026-04-18): Raydium 변형 태그 normalization.
+// Raydium v4 / CLMM / CPMM / Launchpad / Launchlab 등 동일 프로그램군을 같은 'raydium' 으로.
+const RAYDIUM_ALIAS_IDS = new Set([
+  'raydium',
+  'raydium-v4',
+  'raydium_v4',
+  'raydium-clmm',
+  'raydium_clmm',
+  'raydium-cpmm',
+  'raydium_cpmm',
+  'raydium-launchpad',
+  'raydium-launchlab',
+  'raydium-amm',
+  'raydium_amm',
+]);
+
+const ORCA_ALIAS_IDS = new Set([
+  'orca',
+  'orca-whirlpool',
+  'orca_whirlpool',
+  'whirlpool',
+]);
+// 2026-04-18 Block 2 QA fix: map 은 normalize 된 canonical key 만 포함 (`pumpfun`, `pump-swap` 제거 — dead entries).
 export const SUPPORTED_REALTIME_POOL_PROGRAMS = new Map<string, Set<string>>([
   ['raydium', new Set([RAYDIUM_V4_PROGRAM, RAYDIUM_CLMM_PROGRAM, RAYDIUM_CPMM_PROGRAM])],
   ['orca', new Set([ORCA_WHIRLPOOL_PROGRAM])],
   ['pumpswap', new Set([PUMP_SWAP_PROGRAM])],
-  ['pumpfun', new Set([PUMP_SWAP_PROGRAM])],
-  ['pump-swap', new Set([PUMP_SWAP_PROGRAM])],
   ['meteora', new Set([METEORA_DLMM_PROGRAM, METEORA_DAMM_V1_PROGRAM, METEORA_DAMM_V2_PROGRAM])],
 ]);
 
@@ -191,8 +215,12 @@ export function buildRealtimeAdmissionSkipDetail<T extends RealtimePairCandidate
 }
 
 function normalizeDexId(dexId: string): string {
-  if (isMeteoraDexId(dexId)) return 'meteora';
-  return isPumpSwapDexId(dexId) ? 'pumpswap' : dexId;
+  const lower = dexId.toLowerCase();
+  if (isMeteoraDexId(lower)) return 'meteora';
+  if (isPumpSwapDexId(lower)) return 'pumpswap';
+  if (RAYDIUM_ALIAS_IDS.has(lower)) return 'raydium';
+  if (ORCA_ALIAS_IDS.has(lower)) return 'orca';
+  return lower;
 }
 
 function dedupeNonEmpty(values: Array<string | undefined>): string[] {

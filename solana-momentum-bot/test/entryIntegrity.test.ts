@@ -42,7 +42,7 @@ describe('entryIntegrity', () => {
 
   describe('halt API', () => {
     it('is inactive by default for all lanes', () => {
-      for (const lane of ['cupsey', 'migration', 'main', 'strategy_d'] as const) {
+      for (const lane of ['cupsey', 'migration', 'main', 'strategy_d', 'pure_ws_breakout'] as const) {
         expect(isEntryHaltActive(lane)).toBe(false);
       }
     });

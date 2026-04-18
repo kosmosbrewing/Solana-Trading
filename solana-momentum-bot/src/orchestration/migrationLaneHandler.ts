@@ -83,7 +83,26 @@ export function resetMigrationLaneStateForTests(): void {
 }
 
 function getExecutor(ctx: BotContext) {
+  // Block 1 (2026-04-18): explicit wallet mode — wallet ownership ambiguity 해소.
+  const mode = config.migrationWalletMode;
+  if (mode === 'main') return ctx.executor;
+  if (mode === 'sandbox') {
+    if (!ctx.sandboxExecutor) {
+      throw new Error(
+        `MIGRATION_WALLET_MODE=sandbox but sandboxExecutor not initialized. ` +
+        `Check SANDBOX_WALLET_PRIVATE_KEY and STRATEGY_D_LIVE_ENABLED.`
+      );
+    }
+    return ctx.sandboxExecutor;
+  }
   return ctx.sandboxExecutor ?? ctx.executor;
+}
+
+export function resolveMigrationWalletLabel(ctx: BotContext): 'main' | 'sandbox' {
+  const mode = config.migrationWalletMode;
+  if (mode === 'main') return 'main';
+  if (mode === 'sandbox') return 'sandbox';
+  return ctx.sandboxExecutor ? 'sandbox' : 'main';
 }
 
 function makeGateConfig(): MigrationGateConfig {
@@ -461,6 +480,7 @@ async function enterMigrationProbe(
       positionId: id,
       txSignature: entryTxSignature,
       strategy: 'migration_reclaim',
+      wallet: resolveMigrationWalletLabel(ctx), // Block 1 QA fix: wallet-aware comparator
       pairAddress: pos.event.pairAddress,
       tokenSymbol: pos.event.tokenSymbol,
       plannedEntryPrice: currentPrice,

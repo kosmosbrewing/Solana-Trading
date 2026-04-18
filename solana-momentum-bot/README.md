@@ -1,25 +1,25 @@
 # Solana Momentum Bot
 
-> **Mission: 1 SOL -> 100 SOL**
+> **Mission (2026-04-18 pivot): 1 SOL → 100 SOL via convexity**
 >
-> 가격이 움직여서 사는 게 아니라, 움직일 이유가 있고, 실제로 움직이기 시작할 때 산다.
+> "왜 오르는가" 보다 "지금 실제로 폭발하는가". Wallet delta 가 유일한 truth.
 
-Solana DEX 이벤트 기반 트레이딩 봇이다.  
-`Context -> Trigger -> Gate -> Risk -> Execute -> Monitor` 경로를 일관되게 기록하고,
-backtest / realtime shadow / paper / live를 같은 measurement 프레임으로 해석하는 것을 목표로 한다.
+Solana DEX 순수 실전형 momentum / sniper 봇이다.
+Post-pivot 운영은 `signal → loose factor gate → immediate PROBE → tiered runner`.
+Pre-pivot `Context → Trigger → old gate chain` 은 [`docs/historical/pre-pivot-2026-04-18/`](./docs/historical/pre-pivot-2026-04-18/) 에 보존.
 
-## Current Status
+## Current Status (2026-04-18)
 
-- core runtime과 telemetry 경로는 구현 완료 상태다.
-- **유일한 유효 trigger**: `bootstrap_10s` (10s candle, volume+buyRatio 2-gate). Baseline: `vm=1.8 / buyRatio=0.60 / lookback=20`.
-- **5m Strategy A/C: dormant** — 밈코인 모멘텀(10-30s)에 5m(300s) 해상도가 구조적 비적합 (04-05 확인).
-- **최대 병목**: Sparse data insufficient 81% → edge 측정 자체를 차단. Feature 4(zero-volume skip) 후유증.
-- 2026-04-05 기준 signal attribution 4-feature 구현 완료 (marketCap context, crash-safe intent, strategy 분리 집계, zero-volume skip).
-- replay-loop 병렬 백테스팅 완료: 4 sessions × 2 modes = 8 parallel backtests → 04-04만 edge pass (score 78).
-- historical canary와 follow-up fix 요약은 [`PLAN_CMPL.md`](./PLAN_CMPL.md)에 모아뒀다.
-
-현재 active execution plan은 [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md)이고,
-완료된 plan/canary history는 [`PLAN_CMPL.md`](./PLAN_CMPL.md)에 모아둔다.
+- **Mission pivot 완료** — [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md)
+- **Block 0-4 code 완료** (문서화, wallet truth infra, coverage, pure_ws_breakout lane, canary guardrails + A/B eval)
+- **운영 단계**: paper 관측 → live canary opt-in → 50-trade 평가 → primary 승격 판정 ([`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md))
+- **Wallet baseline (2026-04-17 실측)**: 시작 `1.3 SOL` → 현재 `1.07 SOL` (`-0.23 SOL`)
+- **유일한 truth**: wallet delta. DB `pnl` drift `+18.34 SOL` 전력 있어 단독 판정 금지.
+- **Lane 상태**:
+  - `cupsey_flip_10s` — benchmark (건드리지 않음)
+  - `pure_ws_breakout` — Block 3 구현 완료 (paper-first, `PUREWS_LIVE_CANARY_ENABLED` gate)
+  - `bootstrap_10s` — signal-only
+  - `volume_spike` / `fib_pullback` — dormant (5m 해상도 비적합)
 
 ## Read Order
 
@@ -27,85 +27,93 @@ backtest / realtime shadow / paper / live를 같은 measurement 프레임으로 
 
 | 문서 | 역할 |
 |---|---|
-| [`AGENTS.md`](./AGENTS.md) | 에이전트 규칙과 문서 우선순위 |
-| [`ARCHITECTURE.md`](./ARCHITECTURE.md) | 모듈 책임, 의존성 방향, 데이터 흐름 |
-| [`PROJECT.md`](./PROJECT.md) | 목표, 비목표, 현재 phase |
-| [`PLAN.md`](./PLAN.md) | mission charter와 plan hierarchy |
-| [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md) | 현재 active execution plan |
-| [`STRATEGY.md`](./STRATEGY.md) | 현재 runtime quick reference |
-| [`OPERATIONS.md`](./OPERATIONS.md) | 운영 절차와 runbook |
-| [`docs/product-specs/strategy-catalog.md`](./docs/product-specs/strategy-catalog.md) | 전략/Gate/Risk 상세 명세 |
-| [`MEASUREMENT.md`](./MEASUREMENT.md) | stage score / composite score 기준 |
+| [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md) | **상위 권위** — pivot decision record |
+| [`AGENTS.md`](./AGENTS.md) | 에이전트 규칙 + 문서 우선순위 |
+| [`ARCHITECTURE.md`](./ARCHITECTURE.md) | 모듈 책임, 의존성 방향 |
+| [`PLAN.md`](./PLAN.md) | mission charter (convexity) |
+| [`PROJECT.md`](./PROJECT.md) | persona / goals / hard guardrails |
+| [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md) | 현재 active execution plan (post-pivot) |
+| [`STRATEGY.md`](./STRATEGY.md) | runtime quick reference (lane / gate / guardrail) |
+| [`OPERATIONS.md`](./OPERATIONS.md) | 운영 절차 + Block 1-4 runbook |
+| [`MEASUREMENT.md`](./MEASUREMENT.md) | wallet log growth + winner 분포 + ruin probability |
 
 ### Workflow Guides
 
 | 문서 | 역할 |
 |---|---|
-| [`BACKTEST.md`](./BACKTEST.md) | 5분봉 backtest 워크플로 |
+| [`BACKTEST.md`](./BACKTEST.md) | backtest 워크플로 |
 | [`REALTIME.md`](./REALTIME.md) | realtime shadow / replay 워크플로 |
 | [`SETUP.md`](./SETUP.md) | VPS / DB / env 초기 셋업 |
 
-### Forward / Historical Notes
+### Design Docs / QA
 
 | 문서 | 역할 |
 |---|---|
-| [`PLAN_CMPL.md`](./PLAN_CMPL.md) | 완료된 plan / canary history archive |
-| [`STRATEGY_NOTES.md`](./STRATEGY_NOTES.md) | 현재 전략의 구조적 한계와 다음 전략 질문 |
-| [`docs/exec-plans/completed/`](./docs/exec-plans/completed) | 완료된 실행 기록과 historical execution spec |
+| [`docs/design-docs/`](./docs/design-docs/) | post-pivot 설계 decision records (block별) |
+| [`Block_QA.md`](./Block_QA.md) | Block 0-4 QA findings + closure 기록 |
 
-## Runtime Shape
+### Historical
+
+| 문서 | 역할 |
+|---|---|
+| [`docs/historical/pre-pivot-2026-04-18/`](./docs/historical/pre-pivot-2026-04-18/) | pre-pivot PLAN/PROJECT/MEASUREMENT/STRATEGY snapshot (현재 판정 근거 사용 금지) |
+| [`PLAN_CMPL.md`](./PLAN_CMPL.md) | 완료된 plan / canary history archive |
+| [`STRATEGY_NOTES.md`](./STRATEGY_NOTES.md) | forward memo / 다음 가설 |
+
+## Runtime Shape (post-pivot)
 
 ```text
-Stage 1: Context
-  scanner / event / watchlist / attention score
+Stage 1: Discovery
+  scanner / DEX alias normalize / pair resolver / admission telemetry
 
-Stage 2: Trigger
-  bootstrap_10s (active) / volume_spike (dormant) / fib_pullback (dormant)
+Stage 2: Signal
+  bootstrap_10s trigger (signal-only)
 
-Stage 3: Gate
-  security -> attention -> execution viability -> quote -> safety -> exit impact
+Stage 3: Lane (parallel A/B)
+  cupsey_flip_10s (benchmark, STALK→PROBE→WINNER)
+  pure_ws_breakout (candidate, immediate PROBE → tiered runner 2x/5x/10x)
 
-Stage 4: Risk
-  risk tier / drawdown guard / daily halt / sizing
+Stage 4: Gate (loose factor-based)
+  security hard reject → liquidity / quote sanity → exitability
+  lane-specific factor gate (vol accel + buy ratio + tx density + price acceleration)
 
-Stage 5: Execute
-  Jupiter / Jito / wallet limits / paper-live split
+Stage 5: Guard (shared hard guardrails, 불변)
+  Wallet Stop Guard < 0.8 SOL
+  Wallet delta comparator (always-on drift halt)
+  entryIntegrity per-lane halt
+  canary auto-halt (consecutive losers / budget / max trades)
+  canary global concurrency (opt-in, wallet-level max 3 ticket)
+  close mutex (shared across lanes)
 
-Stage 6: Observe
-  audit log / paper metrics / realtime outcome / runtime diagnostics
+Stage 6: Execute
+  ticket 0.01 SOL fixed, Jupiter executor, lane wallet mode 명시
+
+Stage 7: Observe
+  executed-buys/sells ledger (wallet-aware) + runtime diagnostics
+  ops:canary:eval (cupsey vs pure_ws wallet-truth A/B + promotion verdict)
+  ops:reconcile:wallet (FIFO RPC 감사)
 ```
-
-## Module Map
-
-| Layer | 모듈 |
-|---|---|
-| Foundation | `utils/`, `candle/`, `state/`, `ingester/` |
-| Discovery / Data Plane | `event/`, `scanner/`, `universe/`, `realtime/` |
-| Decision Core | `strategy/`, `gate/`, `risk/` |
-| Execution / Reporting | `executor/`, `notifier/`, `audit/`, `reporting/` |
-| Top-Level Coordination | `orchestration/`, `src/index.ts` |
-
-상세 의존성 규칙은 [`ARCHITECTURE.md`](./ARCHITECTURE.md)를 우선한다.
 
 ## Main Commands
 
 ```bash
 npm run build
 npm test
-npm run dev
+npm run dev                        # local run
+npm run deploy:vps                 # VPS 배포 (pm2 + monitoring)
+
+# Operations
+npm run ops:reconcile:wallet       # FIFO wallet ↔ ledger/DB 대조
+npm run ops:canary:eval            # cupsey vs pure_ws 50-trade A/B + promotion verdict
+npm run ops:check                  # realtime runtime diagnostics
+npm run ops:check:sparse           # admission / discovery funnel
+
+# Backtest
 npm run backtest
 npm run realtime-shadow
 npm run paper-report
-npx ts-node scripts/trade-report.ts
-scripts/bootstrap-replay-report.sh --save
 ```
-
-## Notes
-
-- 현재 문서 체계는 `current source`, `workflow guide`, `forward memo`, `historical note`로 분리돼 있다.
-- 전략 상세와 파라미터 근거는 [`STRATEGY.md`](./STRATEGY.md)와 [`docs/product-specs/strategy-catalog.md`](./docs/product-specs/strategy-catalog.md)로 읽고, 구조적 한계/다음 가설은 [`STRATEGY_NOTES.md`](./STRATEGY_NOTES.md)로 읽는다.
-- 오래된 plan/handoff 문서는 현재 동작의 기준 문서로 읽지 않는다.
 
 ## One-Line Summary
 
-> 이 저장소의 현재 핵심은 sparse data insufficient 81% 병목 해소, bootstrap edge 재현성 검증, 그리고 paper 50-trade 축적을 통한 live enablement gate 통과다.
+> Convexity mission, wallet delta 가 유일한 판정 기준, cupsey 는 건드리지 않는 benchmark, `pure_ws_breakout` 은 paper-first opt-in gate 로 분리.

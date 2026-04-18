@@ -1,8 +1,10 @@
 # PLAN.md
 
-> Status: current mission charter
-> Updated: 2026-04-05
+> Status: current mission charter (post-pivot)
+> Updated: 2026-04-18
 > Purpose: 이 저장소의 장기 목표, 운영 원칙, 문서 계층을 고정한다.
+> Pivot decision: [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md)
+> Pre-pivot snapshot: [`docs/historical/pre-pivot-2026-04-18/PLAN.md`](./docs/historical/pre-pivot-2026-04-18/PLAN.md)
 > Use with: [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md) for current active execution work, [`PLAN_CMPL.md`](./PLAN_CMPL.md) for archived plans.
 
 ## Role
@@ -14,117 +16,134 @@
 2. 어떤 원칙으로 운영 판단을 내리는가
 3. 하위 plan 문서를 어떻게 읽어야 하는가
 
-즉:
+## Mission (2026-04-18 post-pivot)
 
-- 현재 active execution work는 [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md)
-- 완료된 plan / dated canary history는 [`PLAN_CMPL.md`](./PLAN_CMPL.md)
-- 이 문서는 그 둘의 상위 헌장이다
+> 수단과 방법을 가리지 않고 `1 SOL -> 100 SOL` 달성 확률을 최대화한다.
+> Wallet truth 기준 log 성장률과 winner 분포로 성과를 측정한다.
 
-## Mission
+목표 함수는 **explainability 가 아니라 convexity** 다.
 
-> 가격이 움직여서 사는 게 아니라, 움직일 이유가 있고, 실제로 움직이기 시작할 때 산다.
+### Why Pivoted (2026-04-18)
 
-최종 목표는 `1 SOL -> 100 SOL` 자체가 아니라,
-설명 가능한 진입, 보수적 리스크 관리, 반복 가능한 기대값을 가진 자동화 경로를 만드는 것이다.
+- 시작 wallet `1.30 SOL` → 현재 `1.07 SOL`
+- 같은 기간 DB pnl 합계 `+18.11 SOL`
+- drift `+18.34 SOL` — **DB pnl은 허수, wallet만 ground truth**
+- 기존 "설명 가능한 진입 + 보수적 gate + 반복 가능한 기대값" 사명은 wallet 기준으로 증명 실패
+- 상세: [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md)
 
-## Operating Principles
+## Operating Principles (post-pivot)
 
-### P1. 설명 없는 급등을 사지 않는다
+### P1. Wallet Delta is the Only Truth
 
-- 기본 경로는 `requireAttentionScore=true`를 전제로 해석한다.
-- source attribution 또는 context가 빠진 진입은 성공 사례로 세지지 않는다.
+- DB `pnl`, notifier, 내부 metric은 reconciliation evidence일 뿐이다.
+- 운영 판정은 항상 `wallet balance delta`로 내린다.
+- `DB vs wallet drift`가 감지되면 해석 전체를 재점검한다.
 
-### P2. Context와 Trigger를 분리한다
+### P2. Convexity Over Explainability
 
-- Context는 "왜 봐야 하는가"
-- Trigger는 "지금 들어가도 되는가"
-- 브레이크아웃은 알파 전체가 아니라 진입 트리거다.
+- "왜 오르는가"보다 "지금 실제로 폭발하는가"를 본다.
+- Attention / context score는 **hard reject로 사용하지 않는다**.
+- Entry throughput이 wallet expectancy에 도움이 된다면 gate를 연다.
 
-### P3. 측정 없이 승격하지 않는다
+### P3. Small Ticket, Many Shots, Long Runners
 
-- `Mission Gate`
-- `Execution Gate`
-- `Edge Gate`
+- Fixed ticket `0.01 SOL` (canary), 동시 진입 여러 개 허용.
+- Loser는 빠르게 정리, winner는 최대한 길게 보유.
+- 평균 수익률보다 5x/10x winner 빈도를 중시한다.
 
-위 3축이 충족되기 전까지 live는 bootstrap 해석으로만 본다.
+### P4. Hard Safety Never Compromised
 
-### P4. 실행 품질을 먼저 고친다
+- Security hard reject (top-holder %, mint/freeze authority, honeypot sim)
+- 최소 liquidity / quote sanity
+- Exitability 확인
+- Duplicate / race 방지 (Patch A, B1)
+- HWM / price sanity (Patch B2)
+- Wallet Stop Guard `< 0.8 SOL` halt
+- RPC fail-safe halt
 
-- quote decay
-- sell impact
-- execution viability telemetry
-- gate trace 정합성
+이 항목은 convexity 최우선 원칙보다도 위에 있다.
 
-이 경로가 불안정하면 수익성 해석도 보류한다.
+### P5. Cupsey Is the Benchmark, Not the Target
 
-### P5. 전략 수보다 검증된 경로를 우선한다
+- `cupsey_flip_10s`는 현재 유일한 live-proven lane이다.
+- Pivot 이후에도 **절대 개조하지 않는다** — A/B 비교 baseline.
+- 새 lane은 cupsey와 병렬로 paper → canary 순서로만 올린다.
 
-- 새 전략 추가보다 현재 경로의 explainability와 replayability를 우선한다.
-- 증명되지 않은 전략은 문서상 후보로 남을 수 있어도 운영 우선순위를 차지하지 않는다.
+### P6. Live Lane Promotion Needs Wallet Evidence
+
+- Paper에서 신호 재현은 필요 조건이지 충분 조건이 아니다.
+- Live canary는 `50 trades` 도달 후 wallet delta 기준으로 판정한다.
+- Single-session outlier는 edge 증거가 아니다.
 
 ## Plan Hierarchy
 
 ### Layer 1. 상위 헌장
 
-- [`PLAN.md`](./PLAN.md)
-- 변하지 않는 mission, 원칙, 판정 구조
+- [`PLAN.md`](./PLAN.md) (이 문서)
+- [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md) — pivot 결정 근거
 
 ### Layer 2. 현재 active execution plan
 
 - [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md)
-- 현재 검증 순서와 실행 우선순위를 정한다
 
-### Layer 3. completed archive
+### Layer 3. Reference
+
+- [`PROJECT.md`](./PROJECT.md) — persona / goals
+- [`MEASUREMENT.md`](./MEASUREMENT.md) — wallet 기준 KPI
+- [`STRATEGY.md`](./STRATEGY.md) — cupsey benchmark + pure_ws_breakout placeholder
+
+### Layer 4. Completed archive
 
 - [`PLAN_CMPL.md`](./PLAN_CMPL.md)
-- 완료된 plan과 dated canary history를 모은 archive다
+- [`docs/historical/pre-pivot-2026-04-18/`](./docs/historical/pre-pivot-2026-04-18/) — pre-pivot snapshot
 
-## Mission Horizons
+## Mission Horizons (post-pivot)
 
-### Horizon 1. Explainable Bootstrap
+### H1. Truth Closure
 
-목표:
-- signal -> gate -> risk -> execution -> exit trace가 일관되게 남는다.
-- `execution.preGate` / `execution.postSize` 비교가 분석 가능하다.
+- cupsey primary의 wallet ownership 명시
+- always-on wallet delta comparator 상시 작동
+- `wallet-reconcile` live-binding 표준화
 
-### Horizon 2. First Reliable Diagnosis
+### H2. Coverage Expansion
 
-목표:
-- `poor_execution_viability`가 실제 blocker인지
-- blacklist 재유입이 cadence를 죽이는지
-- data-plane noise가 해석을 얼마나 오염시키는지
+- admission `unsupported_dex` / `no_pairs` 해제 (Meteora, Orca 등)
+- Scanner poll cadence는 eligibility 이후
 
-를 분리한다.
+### H3. Pure WS Breakout Lane
 
-### Horizon 3. Gate-Proven Sample
+- 사명에 맞춘 새 lane 설계 (attention/context gate 없음)
+- Paper에서 entry rate + 시뮬 wallet growth 확인
+- cupsey handler 복사 금지, 별도 상태기계
 
-목표:
-- 충분한 trade/sample을 쌓아 Mission/Execution/Edge를 같은 프레임으로 읽는다.
+### H4. Canary with Hard Guardrails
 
-### Horizon 4. Survival Before Compounding
+- 0.01 SOL fixed, 동시 max 3 ticket
+- 50 trades 도달 시 wallet delta + winner distribution 평가
+- cupsey와 A/B 병렬
 
-목표:
-- 기대값이 있어도 파산하지 않는 구조를 먼저 증명한다.
+### H5. Tiered Runner Tuning
 
-### Horizon 5. Compound Carefully
-
-목표:
-- 검증된 경로만 천천히 키운다.
+- 실제 5x+ winner 관측 이후에만 trailing 튜닝 시작
+- 관측 없이 tuning 하지 않는다
 
 ## Decision Rules
 
 ### Do
 
-- 현재 active 판단은 항상 최신 active execution plan으로 읽는다.
-- historical 문서는 "왜 지금 이렇게 됐는가"를 이해할 때만 참고한다.
-- 파라미터 조정보다 먼저 telemetry와 표본 부족 문제를 분리한다.
+- wallet delta 기준으로 최종 판단한다.
+- 새 lane은 paper first, canary small, A/B 병렬.
+- cupsey benchmark는 건드리지 않는다.
+- 새 전략은 `docs/design-docs/`에 설계 문서 먼저.
 
 ### Do Not
 
-- 오래된 handoff를 현재 active blocker로 재승격하지 않는다.
-- 표본 없이 RR threshold, TP 구조, blacklist를 감으로 완화하지 않는다.
-- archived note를 source of truth처럼 읽지 않는다.
+- DB pnl 단독으로 전략 채택 / 폐기 결정하지 않는다.
+- attention / context score를 hard reject로 다시 도입하지 않는다.
+- cupsey handler를 개조해서 pure WS lane을 만들지 않는다.
+- 표본 `< 50`에서 Kelly / 확대 sizing 활성화 금지.
+- Wallet Stop Guard / RPC fail-safe / security hard reject를 완화하지 않는다.
 
 ## One-Line Summary
 
-> `PLAN.md`의 역할은 어떤 문서가 현재 active이고 어떤 문서가 archive인지를 고정하는 것이다.
+> 목표 함수는 convexity, 유일한 truth는 wallet delta, cupsey는 건드리지 않는 benchmark.

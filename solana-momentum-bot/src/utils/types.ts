@@ -136,7 +136,8 @@ export type StrategyName =
   | 'new_lp_sniper'        // Strategy D: sandbox LP sniper
   | 'momentum_cascade'     // Strategy E: conditional add-on
   | 'cupsey_flip_10s'      // Path A: cupsey-inspired quick-reject + winner-hold lane (sandbox)
-  | 'migration_reclaim';   // Tier 1 (2026-04-17): Pump.fun/PumpSwap/LaunchLab post-migration reclaim
+  | 'migration_reclaim'    // Tier 1 (2026-04-17): Pump.fun/PumpSwap/LaunchLab post-migration reclaim
+  | 'pure_ws_breakout';    // Block 3 (2026-04-18): mission-pivot convexity lane — immediate PROBE + tiered runner
 
 // Why: volume_spike order building logic을 bootstrap_10s, core_momentum도 공유한다.
 // 라우팅(order shape, scoring, gate)은 같지만 expectancy/reporting은 분리 집계.
@@ -157,6 +158,7 @@ export const SANDBOX_STRATEGIES: ReadonlySet<StrategyName> = new Set([
   'new_lp_sniper',
   'cupsey_flip_10s',    // Path A: sandbox lane, main core 오염 차단
   'migration_reclaim',  // Tier 1: 실험 단계, portfolio-level quality에 섞지 않음
+  'pure_ws_breakout',   // Block 3 (2026-04-18): mission-pivot convexity lane, portfolio-level 섞지 않음
 ]);
 
 export function isSandboxStrategy(s: StrategyName): boolean {

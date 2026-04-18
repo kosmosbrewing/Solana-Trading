@@ -1,7 +1,20 @@
 import { RealtimePoolMetadata } from './types';
 
 export const PUMP_SWAP_PROGRAM = 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
-export const PUMP_SWAP_DEX_IDS = ['pumpswap', 'pumpfun', 'pump-swap'] as const;
+// Block 2 (2026-04-18): coverage expansion — DexScreener 가 시점/지역별로 태깅이 다양.
+// 이전엔 `pumpswap/pumpfun/pump-swap` 만 인식 → 동일 AMM 의 다른 태그가 unsupported_dex 로 차단.
+// 같은 PUMP_SWAP_PROGRAM 을 공유하는 모든 표기를 alias 로 허용한다.
+// 2026-04-18 Block 2 QA fix: overly-generic alias (`pump`) 는 제거 — 다른 AMM / 토큰 tag 와 충돌 위험.
+export const PUMP_SWAP_DEX_IDS = [
+  'pumpswap',
+  'pumpfun',
+  'pump-swap',
+  'pump.fun',
+  'pump_swap',
+  'pumpdotfun',
+  'pumpswap-amm',
+  'pumpfun-amm',
+] as const;
 
 // Why: PumpSwap `buy(base_amount_out: u64, max_quote_amount_in: u64, ...)` 와
 //   `sell(base_amount_in: u64, min_quote_amount_out: u64, ...)` 두 함수 모두 user intent

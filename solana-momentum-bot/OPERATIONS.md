@@ -7,6 +7,108 @@
 
 ## Current Operations Note
 
+### Block 4 — Canary Guardrails + A/B Evaluation (2026-04-18)
+
+Block 3 pure_ws_breakout 의 canary 단계 운영 tooling.
+
+**자동 차단 (canary auto-halt)**:
+- `CANARY_AUTO_HALT_ENABLED=true` (default)
+- `CANARY_MAX_CONSEC_LOSERS=5` — 연속 loser 5회 → 해당 lane entry halt
+- `CANARY_MAX_BUDGET_SOL=0.5` — 누적 손실 0.5 SOL → 해당 lane entry halt
+- `CANARY_MAX_TRADES=100` — canary window 100 trade 도달 → entry pause (promotion review)
+- Halt 경로: `entryIntegrity.triggerEntryHalt(lane, reason)` 로 전파 → 운영자 `resetEntryHalt` 수동 해제 필요
+
+**50-trade A/B 평가**:
+```bash
+# 전체 ledger 기준
+npm run ops:canary:eval
+
+# 캔ary 시작 이후만
+npm run ops:canary:eval -- --since 2026-04-18T00:00:00Z --md canary-report.md
+
+# JSON dump (CI / 외부 분석용)
+npm run ops:canary:eval -- --json canary.json
+```
+
+출력:
+- cupsey_flip_10s vs pure_ws_breakout trade count / net SOL / winner distribution (2x+, 5x+, 10x+)
+- Max consecutive losers
+- Promotion verdict: `PROMOTE` / `CONTINUE` / `DEMOTE`
+  - `PROMOTE`: candidate ≥ 50 trades + net SOL > benchmark + 5x+ winner 존재 + loser streak < 10
+  - `DEMOTE`: candidate net SOL ≤ 0 OR loser streak ≥ 10
+  - `CONTINUE`: 그 외 (< 50 trades OR 조건 부분 만족)
+
+**Phase 3.2 → 3.3 체크리스트**:
+1. Paper 20+ trade 확인 (`TRADING_MODE=paper` + `PUREWS_LANE_ENABLED=true`)
+2. Wallet Stop Guard, wallet delta comparator, canary auto-halt 무사고 확인
+3. `npm run ops:canary:eval` paper 결과 검토
+4. Live 전환: `TRADING_MODE=live`, ticket 0.01 SOL, max 3 concurrent 유지
+5. 50 trade 도달 시 `npm run ops:canary:eval` + promotion verdict 확인
+6. `PROMOTE` 시 primary 후보 — `DEMOTE` 시 paper 회귀 + tier 재튜닝
+
+### Block 3 — Pure WS Breakout Lane (2026-04-18, paper-first)
+
+Mission pivot convexity 첫 구현 lane. 배포 후 **paper 20-50 trade** 로 관측. cupsey benchmark 는 그대로 유지.
+
+**배포 전 env 권장**:
+```env
+# Paper 단계 (초기)
+PUREWS_LANE_ENABLED=true
+PUREWS_WALLET_MODE=auto          # 또는 main 명시 (canary 원칙)
+TRADING_MODE=paper               # 또는 live (canary 시)
+
+# 기본값 사용 — 필요 시 override
+# PUREWS_LANE_TICKET_SOL=0.01
+# PUREWS_MAX_CONCURRENT=3
+# PUREWS_PROBE_HARD_CUT_PCT=0.03
+# PUREWS_GATE_MIN_VOLUME_ACCEL_RATIO=1.0
+# PUREWS_GATE_MIN_AVG_BUY_RATIO=0.45
+```
+
+**관측 체크리스트**:
+- 시작 로그 `[PUREWS_WALLET] mode='...' resolved='...'` 확인
+- `[PUREWS_PROBE_OPEN]` / `[PUREWS_T1]` / `[PUREWS_T2]` / `[PUREWS_T3]` / `[PUREWS_LOSER_HARDCUT]` / `[PUREWS_LOSER_TIMEOUT]` 분포 확인
+- 20 trade 도달 시 T1 conversion rate (cupsey STALK→ENTRY 6.7% 대비)
+- 50 trade 도달 시 wallet delta + winner distribution (5x+, 10x+) 측정
+
+**승격 기준 (Phase 3.3)**:
+- wallet delta cupsey 대비 positive
+- Wallet Stop Guard / comparator halt 무사고
+- 50 trade 달성
+
+### Block 2 — Coverage Telemetry (2026-04-18)
+
+배포 후 24-48h 동안 `data/realtime/admission-skips-dex.jsonl` 를 수집하여 실제 차단되는 DEX ID 분포를 파악한다. 분석 예시:
+
+```bash
+# 가장 자주 차단되는 DEX ID 상위 10
+jq -r '.dexId' data/realtime/admission-skips-dex.jsonl | sort | uniq -c | sort -rn | head -10
+
+# reason 별 분포
+jq -r '.reason' data/realtime/admission-skips-dex.jsonl | sort | uniq -c
+
+# no_pairs 가 많이 나는 discovery source
+jq -r 'select(.reason=="no_pairs") | .source' data/realtime/admission-skips-dex.jsonl | sort | uniq -c
+```
+
+수집된 empirical 분포에 따라 추가 coverage 확장 여부 결정.
+
+### Block 1 — Wallet Truth (2026-04-18)
+
+Mission pivot 이후 운영 판정은 **wallet delta 만이 유일한 truth** 다. 아래 체크리스트는 매 pm2 restart 후 필수 확인.
+
+1. **Lane wallet ownership 확인**:
+   - `.env` 에 `CUPSEY_WALLET_MODE` / `MIGRATION_WALLET_MODE` 명시 (`main` / `sandbox` / `auto`)
+   - 기본 `auto` 는 backward compat — 새 배포는 반드시 `main` 또는 `sandbox` 명시
+   - 시작 로그에 `[CUPSEY_WALLET] mode='...' resolved='...'` 출력 확인
+2. **Wallet delta comparator 작동 확인**:
+   - live 모드 시 `[WALLET_DELTA] poller started` 로그 확인
+   - 5분 간격 `[WALLET_DELTA] observed= expected= drift=` 로그 흐름 확인
+   - Drift 경고 임계: `WALLET_DELTA_DRIFT_WARN_SOL=0.05`, halt 임계: `WALLET_DELTA_DRIFT_HALT_SOL=0.20`
+3. **사후 감사 도구**:
+   - `npm run ops:reconcile:wallet -- --days 14` — `.env` 에 `WALLET_PUBLIC_KEY` 설정 권장 (read-only, private key 불필요)
+   - `WALLET_PUBLIC_KEY` 미설정 시 `WALLET_PRIVATE_KEY` derivation fallback
+
 - 현재 active execution 기준 문서는 [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md)다.
 - VPS 데이터 동기화 -> 로컬 점검 -> Codex 분석 요청 루프는 [`docs/runbooks/live-ops-loop.md`](./docs/runbooks/live-ops-loop.md) 를 따른다.
 - `bootstrap_10s` replay / outlier / runner-vs-noise 반복 검증은 [`docs/runbooks/backtest-bootstrap-replay-loop.md`](./docs/runbooks/backtest-bootstrap-replay-loop.md) 를 따른다.

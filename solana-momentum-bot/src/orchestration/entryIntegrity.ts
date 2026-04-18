@@ -32,7 +32,7 @@ import type { BotContext } from './types';
 
 const log = createModuleLogger('EntryIntegrity');
 
-export type EntryLane = 'cupsey' | 'migration' | 'main' | 'strategy_d';
+export type EntryLane = 'cupsey' | 'migration' | 'main' | 'strategy_d' | 'pure_ws_breakout';
 
 interface LaneIntegrityState {
   haltActive: boolean;
@@ -86,7 +86,7 @@ export function resetEntryHalt(lane: EntryLane, reason = 'manual'): void {
 
 export function getAllLaneIntegrityState(): Record<EntryLane, Readonly<LaneIntegrityState>> {
   const out = {} as Record<EntryLane, LaneIntegrityState>;
-  for (const lane of ['cupsey', 'migration', 'main', 'strategy_d'] as EntryLane[]) {
+  for (const lane of ['cupsey', 'migration', 'main', 'strategy_d', 'pure_ws_breakout'] as EntryLane[]) {
     out[lane] = { ...getLaneState(lane) };
   }
   return out;

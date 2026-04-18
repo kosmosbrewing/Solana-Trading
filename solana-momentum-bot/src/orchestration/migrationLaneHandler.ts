@@ -27,6 +27,7 @@ import { bpsToDecimal } from '../utils/units';
 import { isWalletStopActive } from '../risk/walletStopGuard';
 import { serializeClose } from './swapSerializer';
 import { appendEntryLedger, persistOpenTradeWithIntegrity, isEntryHaltActive } from './entryIntegrity';
+import { resolveActualEntryMetrics } from './signalProcessor';
 
 const log = createModuleLogger('MigrationLane');
 
@@ -421,12 +422,10 @@ async function enterMigrationProbe(
         timeStopMinutes: Math.ceil(config.migrationWinnerMaxHoldSec / 60),
       };
       const buyResult = await executor.executeBuy(order);
-      if (buyResult.actualOutUiAmount && buyResult.actualOutUiAmount > 0) {
-        actualQuantity = buyResult.actualOutUiAmount;
-      }
-      if (buyResult.actualInputUiAmount && buyResult.actualInputUiAmount > 0 && actualQuantity > 0) {
-        actualEntryPrice = buyResult.actualInputUiAmount / actualQuantity;
-      }
+      // 2026-04-18 drift fix: all-or-nothing guard (same root cause as cupsey/pure_ws).
+      const metrics = resolveActualEntryMetrics(order, buyResult);
+      actualEntryPrice = metrics.entryPrice;
+      actualQuantity = metrics.quantity;
       entryTxSignature = buyResult.txSignature;
       entrySlippageBps = buyResult.slippageBps;
       log.info(

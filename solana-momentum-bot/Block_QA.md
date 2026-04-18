@@ -1,5 +1,71 @@
 # Block QA
 
+## Wallet Delta Drift Root Cause — Live VPS Investigation (2026-04-18 PM)
+
+- Date: 2026-04-18
+- Trigger: VPS 에서 WALLET_DELTA_WARN 반복 알림 (drift 0.079851 SOL, warn ≥ 0.03)
+- Scope: `src/orchestration/{cupseyLaneHandler,migrationLaneHandler,pureWsBreakoutHandler}.ts` entry metrics 처리 + `src/orchestration/signalProcessor.ts` helper 분리
+
+### Root Cause
+
+`cupsey-Dfh5DzRg-1776511972` (pippin) UTC 11:33:03 BUY:
+- Executor 실제 지출 `0.009950 SOL` / 수령 `30,117,963 raw tokens` (≈ 30.12 decimals 적용)
+- Jupiter response: `actualOutUiAmount = 30.12` 있음 / **`actualInputUiAmount = undefined`** (SOL 전송량 미보고)
+- Handler 코드:
+  ```ts
+  if (actualOutUiAmount > 0) actualQuantity = 30.12;        // ✅ 업데이트
+  if (actualInputUiAmount > 0 && actualQuantity > 0) {       // ❌ 조건 실패
+    actualEntryPrice = actualInputUiAmount / actualQuantity; // ❌ signalPrice 그대로 유지
+  }
+  ```
+- 결과: `actualEntryPrice = 0.00302282` (signal price) + `actualQuantity = 30.12` (real received) → `executed-buys.jsonl` 에 `price × qty = 0.0911 SOL` 기록
+- 실제 지출 `0.00995 SOL` 과 10x 차이 → `walletDeltaComparator.computeExpectedDelta()` 가 0.08 SOL 더 큰 loss 계상
+- `CUPSEY_CLOSED pnl=-0.081129 SOL (-89.11%)` 로 DB 기록 — 같은 오류가 close path 에도 전파
+- drift = expected(-0.094217) − observed(-0.014367) = **−0.079851 SOL** (= 0.0811 과대 계상)
+
+### Impact
+
+- wallet_delta_warn 매 5분 반복 (x10+ 누적)
+- 실제 자산 손실 아님 (ledger 정합성 문제) — 봇 자체는 safe
+- cupsey / migration / pure_ws 모두 동일 코드 패턴 → 향후 동일 조건에서 반복 가능
+
+### Fix
+
+1. `src/orchestration/signalProcessor.ts` — `buildEntryExecutionSummary` 내부의 all-or-nothing guard 를 `resolveActualEntryMetrics(order, buyResult)` 로 추출 (export)
+   - 한쪽 필드라도 누락되면 둘 다 planned 로 복원 (P0-A 정합성 guard, signalProcessor 에 이미 검증된 로직 재사용)
+2. `cupseyLaneHandler.ts:613-618`, `migrationLaneHandler.ts:424-428`, `pureWsBreakoutHandler.ts:344-348` — 각각 `resolveActualEntryMetrics()` 호출로 교체
+3. `test/signalProcessor.test.ts` — 실제 pippin 케이스 regression 테스트 추가 (partial metrics → both forced to planned)
+
+### Related Finding — Entry Integrity Halt (pure_ws lane)
+
+- UTC 09:40:15 에 `[ENTRY_HALT_TRIGGERED] lane=pure_ws_breakout reason=consecutive losers 4 >= 4` 발동
+- 원인: `canaryAutoHalt.ts:84` 가 paper/live 구분 없이 close pnl 을 누적 → paper-first 모드의 pure_ws 가 4 loser 로 halt
+- 결과: Phase 1-3 기능 (v2 scanner, viability floor, quickReject, holdPhase) 이 관측 데이터 수집하지 못하는 상태
+- 해결: 봇 재시작으로 in-memory state reset (open positions=0 상태라 안전)
+- **Follow-up 후보** (이번 scope 제외): paper 모드에서 canary halt 를 count 만 하고 trigger 는 생략하는 옵션. 현재는 보수적으로 halt 유지 → 운영자 판단 후 별도 PR.
+
+### Deployment
+
+재시작 한 번으로 모든 issue 해소:
+- `baselineBalanceSol` 현재 지갑 값으로 재캡처
+- `baselineLedgerOffsets` 현재 파일 line count 로 세팅 → 과거 pippin entry 가 expected 계산에서 제외
+- pure_ws `entryHalt` reset → Phase 1-3 관측 재개
+- 새 코드가 적용되어 drift 재발 방지
+
+```bash
+ssh root@104.238.181.61 << 'EOF'
+cd ~/Solana/Solana-Trading/solana-momentum-bot
+git pull origin main
+npm run build   # 또는 npx tsc
+pm2 restart solana-bot
+pm2 logs solana-bot --lines 20 --nostream
+EOF
+```
+
+재시작 후 5분 내 `[WALLET_DELTA] drift` 가 0 근방으로 회귀되는지 확인.
+
+---
+
 ## DEX_TRADE Phase 1-3 QA Closure (2026-04-18)
 
 - Date: 2026-04-18

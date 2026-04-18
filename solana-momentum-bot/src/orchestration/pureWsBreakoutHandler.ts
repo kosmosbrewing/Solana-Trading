@@ -45,6 +45,7 @@ import { BotContext } from './types';
 import { bpsToDecimal } from '../utils/units';
 import { isWalletStopActive } from '../risk/walletStopGuard';
 import { serializeClose } from './swapSerializer';
+import { resolveActualEntryMetrics } from './signalProcessor';
 import {
   persistOpenTradeWithIntegrity,
   appendEntryLedger,
@@ -341,12 +342,10 @@ export async function handlePureWsSignal(
         timeStopMinutes: Math.ceil(config.pureWsProbeWindowSec / 60),
       };
       const buyResult = await buyExecutor.executeBuy(order);
-      if (buyResult.actualOutUiAmount && buyResult.actualOutUiAmount > 0) {
-        actualQuantity = buyResult.actualOutUiAmount;
-      }
-      if (buyResult.actualInputUiAmount && buyResult.actualInputUiAmount > 0 && actualQuantity > 0) {
-        actualEntryPrice = buyResult.actualInputUiAmount / actualQuantity;
-      }
+      // 2026-04-18 drift fix: all-or-nothing guard (same root cause as cupsey/migration).
+      const metrics = resolveActualEntryMetrics(order, buyResult);
+      actualEntryPrice = metrics.entryPrice;
+      actualQuantity = metrics.quantity;
       entryTxSignature = buyResult.txSignature;
       entrySlippageBps = buyResult.slippageBps;
       log.info(

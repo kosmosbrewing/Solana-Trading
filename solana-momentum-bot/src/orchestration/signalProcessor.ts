@@ -401,30 +401,28 @@ export async function processSignal(
 const ENTRY_PRICE_SAFE_RATIO_MIN = 0.5;
 const ENTRY_PRICE_SAFE_RATIO_MAX = 2.0;
 
-export function buildEntryExecutionSummary(
+/**
+ * buildEntryExecutionSummary 의 핵심 (entry price + notional) consistency guard 를
+ * lane handler (cupsey/migration/pure_ws) 에서도 그대로 쓸 수 있도록 분리.
+ *
+ * Why (2026-04-18 drift fix): 세 lane handler 가 `actualOutUiAmount` 만 있고
+ * `actualInputUiAmount` 가 없을 때 actualEntryPrice 를 signal.price (planned) 로
+ * 유지하는 버그 때문에 `entryPrice × quantity` 로 역산한 entry cost 가 실제 지출
+ * 과 10x 이상 어긋났음 (wallet_delta_warn `drift=+0.0799 SOL` 의 root cause).
+ * Fix: one-shot all-or-nothing guard — 한쪽만 가용하면 둘 다 planned 로 복원.
+ */
+export function resolveActualEntryMetrics(
   order: Order,
-  actualExecution: { effectiveRR: number; roundTripCost: number },
   buyResult?: SwapResult
-): EntryExecutionSummary {
+): { entryPrice: number; quantity: number; actualEntryNotionalSol: number } {
   const plannedEntryNotionalSol = order.quantity * order.price;
   const hasActualOut =
     buyResult?.actualOutUiAmount != null && buyResult.actualOutUiAmount > 0;
   const hasActualIn =
     buyResult?.actualInputUiAmount != null && buyResult.actualInputUiAmount > 0;
 
-  // Why: 한쪽만 fallback 되면 entryPrice가 ratio 왜곡된다 (CRITICAL_LIVE P0-A).
-  // 둘 다 실측 또는 둘 다 planned로 강제한다.
-  //
-  // 2026-04-10 P1-D2 fix: output quantity sanity guard.
-  // getTokenBalance() 가 wallet 의 모든 SPL token account 를 합산하므로, 이전 거래의 잔여분이
-  // 남아있으면 balance delta 에 이전 잔고가 포함된다 (RPC timing race 시 before=0 / after=old+new).
-  // GRIFFAIN 사례: 682 tokens received vs expected 27.25 = 25x 초과 → entryPrice 25x 왜곡
-  // → Phase A3 ratio 0.04 → PRICE_ANOMALY_BLOCK (per-token 80% 차단의 주요 원인 — TD-16).
-  // Fix: actualOut 이 expected 의 5x 를 초과하면 force-to-planned 으로 전환.
-  // 이러면 Phase A3 ratio = 1.0 으로 정상 통과. 실제 fill 은 Jupiter 가 정상 처리한 것이므로
-  // trade 자체는 유효하고, 단지 "얼마에 들어갔는지" 의 기록만 planned 기준으로 남는다.
   const OUTPUT_SANITY_MULTIPLIER = 5;
-  let actualQuantity: number;
+  let quantity: number;
   let actualEntryNotionalSol: number;
   if (hasActualIn && hasActualOut) {
     const expectedQty = order.price > 0 ? buyResult!.actualInputUiAmount! / order.price : 0;
@@ -434,10 +432,10 @@ export function buildEntryExecutionSummary(
         `expected ${expectedQty.toFixed(4)} (${(buyResult!.actualOutUiAmount! / expectedQty).toFixed(1)}x) ` +
         `pair=${order.pairAddress} — forcing planned to avoid ratio distortion`
       );
-      actualQuantity = order.quantity;
+      quantity = order.quantity;
       actualEntryNotionalSol = plannedEntryNotionalSol;
     } else {
-      actualQuantity = buyResult!.actualOutUiAmount!;
+      quantity = buyResult!.actualOutUiAmount!;
       actualEntryNotionalSol = buyResult!.actualInputUiAmount!;
     }
   } else {
@@ -450,12 +448,34 @@ export function buildEntryExecutionSummary(
         `forcing both to planned to avoid ratio distortion`
       );
     }
-    actualQuantity = order.quantity;
+    quantity = order.quantity;
     actualEntryNotionalSol = plannedEntryNotionalSol;
   }
 
-  const entryPrice =
-    actualQuantity > 0 ? actualEntryNotionalSol / actualQuantity : order.price;
+  const entryPrice = quantity > 0 ? actualEntryNotionalSol / quantity : order.price;
+  return { entryPrice, quantity, actualEntryNotionalSol };
+}
+
+export function buildEntryExecutionSummary(
+  order: Order,
+  actualExecution: { effectiveRR: number; roundTripCost: number },
+  buyResult?: SwapResult
+): EntryExecutionSummary {
+  // Why: 한쪽만 fallback 되면 entryPrice가 ratio 왜곡된다 (CRITICAL_LIVE P0-A).
+  // 둘 다 실측 또는 둘 다 planned로 강제한다 — 공통 helper 로 분리 (2026-04-18).
+  //
+  // 2026-04-10 P1-D2 fix: output quantity sanity guard.
+  // getTokenBalance() 가 wallet 의 모든 SPL token account 를 합산하므로, 이전 거래의 잔여분이
+  // 남아있으면 balance delta 에 이전 잔고가 포함된다 (RPC timing race 시 before=0 / after=old+new).
+  // GRIFFAIN 사례: 682 tokens received vs expected 27.25 = 25x 초과 → entryPrice 25x 왜곡
+  // → Phase A3 ratio 0.04 → PRICE_ANOMALY_BLOCK (per-token 80% 차단의 주요 원인 — TD-16).
+  // Fix: actualOut 이 expected 의 5x 를 초과하면 force-to-planned 으로 전환.
+  const { entryPrice, quantity: actualQuantity, actualEntryNotionalSol } =
+    resolveActualEntryMetrics(order, buyResult);
+  const hasActualOut =
+    buyResult?.actualOutUiAmount != null && buyResult.actualOutUiAmount > 0;
+  const hasActualIn =
+    buyResult?.actualInputUiAmount != null && buyResult.actualInputUiAmount > 0;
   const entrySlippagePct =
     order.price > 0 ? (entryPrice - order.price) / order.price : 0;
 

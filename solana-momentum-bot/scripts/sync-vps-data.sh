@@ -6,9 +6,10 @@
 # 파일 기반은 read-only · gitignore 가능 · 스키마 변화 자동 흡수.
 #
 # Usage:
-#   bash scripts/sync-vps-data.sh                    # files + trades 둘 다
-#   SKIP_TRADES=true bash scripts/sync-vps-data.sh   # rsync만
-#   SKIP_FILES=true bash scripts/sync-vps-data.sh    # trades만
+#   bash scripts/sync-vps-data.sh                    # files + logs + trades 모두
+#   SKIP_TRADES=true bash scripts/sync-vps-data.sh   # rsync (files + logs) 만
+#   SKIP_FILES=true bash scripts/sync-vps-data.sh    # logs + trades 만
+#   SKIP_LOGS=true bash scripts/sync-vps-data.sh     # files + trades 만
 #
 # Required for trades step:
 #   export VPS_DATABASE_URL='postgresql://user:pw@host:port/dbname'
@@ -18,7 +19,8 @@
 #   ssh access to $REMOTE_HOST.
 #
 # Output:
-#   data/realtime/sessions/...           (rsync from VPS)
+#   data/realtime/sessions/...           (rsync from VPS data/)
+#   logs/bot-out.log, logs/bot-error.log ... (rsync from VPS logs/)
 #   data/vps-trades-latest.jsonl         (one JSON object per row, gitignored)
 #   data/vps-trades-${STAMP}.jsonl       (timestamped snapshot)
 
@@ -28,10 +30,13 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REMOTE_HOST="${REMOTE_HOST:-root@104.238.181.61}"
 REMOTE_PATH="${REMOTE_PATH:-~/Solana/Solana-Trading/solana-momentum-bot/data/}"
 LOCAL_PATH="${LOCAL_PATH:-${ROOT_DIR}/data/}"
+REMOTE_LOGS_PATH="${REMOTE_LOGS_PATH:-~/Solana/Solana-Trading/solana-momentum-bot/logs/}"
+LOCAL_LOGS_PATH="${LOCAL_LOGS_PATH:-${ROOT_DIR}/logs/}"
 VPS_PM2_APP_NAME="${VPS_PM2_APP_NAME:-momentum-bot}"
 ALLOW_STALE_DB_DUMP="${ALLOW_STALE_DB_DUMP:-false}"
 
 SKIP_FILES="${SKIP_FILES:-false}"
+SKIP_LOGS="${SKIP_LOGS:-false}"
 SKIP_TRADES="${SKIP_TRADES:-${SKIP_DB:-false}}"  # legacy SKIP_DB 호환
 
 to_epoch() {
@@ -68,7 +73,20 @@ else
   echo "[sync-vps-data] files: SKIPPED (SKIP_FILES=true)"
 fi
 
-# ─── 2. Trades snapshot (JSONL, no local DB) ───
+# ─── 2. Logs (bot-out.log, bot-error.log, rotated bot*.log) ───
+# Why: 운영 중 issue 추적 (wallet_delta_warn, SlippageToleranceExceeded 등) 은
+# stdout/stderr 경로 (pm2 가 logs/bot-out.log 로 리다이렉트) 를 봐야 분석 가능하다.
+# data/ 동기화와 분리한 이유: 용량이 크고 (bot-out.log 수백 MB) 빈번한 갱신 대상이라
+# 필요 시 SKIP_LOGS 로 스킵 가능해야 한다.
+if [ "$SKIP_LOGS" != "true" ]; then
+  mkdir -p "${LOCAL_LOGS_PATH}"
+  echo "[sync-vps-data] logs: ${REMOTE_HOST}:${REMOTE_LOGS_PATH} -> ${LOCAL_LOGS_PATH}"
+  rsync -avz --progress --partial "${REMOTE_HOST}:${REMOTE_LOGS_PATH}" "${LOCAL_LOGS_PATH}"
+else
+  echo "[sync-vps-data] logs: SKIPPED (SKIP_LOGS=true)"
+fi
+
+# ─── 3. Trades snapshot (JSONL, no local DB) ───
 if [ "$SKIP_TRADES" = "true" ]; then
   echo "[sync-vps-data] trades: SKIPPED (SKIP_TRADES=true)"
   echo "[sync-vps-data] done"

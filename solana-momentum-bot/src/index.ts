@@ -66,10 +66,20 @@ import { scheduleDailySummary } from './orchestration/reporting';
 import { handleNewCandle } from './orchestration/candleHandler';
 import { handleRealtimeSignal } from './orchestration/realtimeHandler';
 import { handleCupseyLaneSignal, recoverCupseyOpenPositions, updateCupseyPositions } from './orchestration/cupseyLaneHandler';
+import {
+  handlePureWsSignal,
+  updatePureWsPositions,
+  recoverPureWsOpenPositions,
+  resolvePureWsWalletLabel,
+} from './orchestration/pureWsBreakoutHandler';
 import { updateMigrationPositions, onMigrationEvent, recoverMigrationOpenPositions } from './orchestration/migrationLaneHandler';
 import type { MigrationEvent } from './strategy/migrationHandoffReclaim';
 import { isPumpSwapDexId } from './realtime/pumpSwapParser';
+import { logAdmissionSkipDex } from './realtime/admissionSkipLogger';
 import { startWalletStopGuard, stopWalletStopGuardPoller } from './risk/walletStopGuard';
+import { startWalletDeltaComparator, stopWalletDeltaComparator } from './risk/walletDeltaComparator';
+import { resolveCupseyWalletLabel } from './orchestration/cupseyLaneHandler';
+import { resolveMigrationWalletLabel } from './orchestration/migrationLaneHandler';
 import { persistOpenTradeWithIntegrity, isEntryHaltActive } from './orchestration/entryIntegrity';
 import { evaluateNewLpSniper, buildNewLpOrder, prepareNewLpCandidate } from './strategy/newLpSniper';
 import { MomentumTrigger, VolumeMcapSpikeTrigger, TickTrigger } from './strategy';
@@ -847,6 +857,16 @@ async function main() {
                 dexId: bestPair?.dexId,
                 cohort: entry.cohort,
               });
+              // Block 2 (2026-04-18): coverage telemetry — 실제 어떤 DEX/mint 가 skip 되는지 persist.
+              void logAdmissionSkipDex({
+                reason: 'no_pairs',
+                detail: pairs.length === 0 ? 'resolver_miss' : 'empty_pairs',
+                tokenMint: entry.tokenMint,
+                dexId: bestPair?.dexId,
+                samplePair: bestPair?.pairAddress,
+                resolvedPairsCount: pairs.length,
+                source: entry.discoverySource,
+              });
             }
             log.warn(`No pool found for ${entry.symbol} (${entry.tokenMint}), skipping ingester`);
             continue;
@@ -943,6 +963,17 @@ async function main() {
                 source: entry.discoverySource,
                 dexId: admissionPairs[0]?.dexId ?? pairs[0]?.dexId,
                 cohort: entry.cohort,
+              });
+              // Block 2 (2026-04-18): coverage telemetry.
+              void logAdmissionSkipDex({
+                reason: realtimeEligibility.reason,
+                detail: admissionSkipDetail,
+                tokenMint: entry.tokenMint,
+                dexId: admissionPairs[0]?.dexId ?? pairs[0]?.dexId,
+                samplePair: admissionPairs[0]?.pairAddress ?? pairs[0]?.pairAddress,
+                resolvedPairsCount: pairs.length,
+                admissionPairsCount: admissionPairs.length,
+                source: entry.discoverySource,
               });
               log.info(
                 `Realtime skipped for ${entry.symbol} (${entry.tokenMint}) — ${realtimeEligibility.reason} ` +
@@ -1167,6 +1198,61 @@ async function main() {
     // 2026-04-11: Gate cache for tick mode — security/liquidity fetch 재사용 (30s TTL)
     gateCache: config.realtimeTriggerMode === 'tick' ? new GateCacheManager(30_000) : undefined,
   };
+
+  // Block 1 (2026-04-18): lane wallet mode resolution — 시작 시 명시적으로 로그 + fail-fast validate.
+  // Why: Layer 5 bottleneck 에서 cupsey wallet ownership 이 암묵적이라 확정 불가했음.
+  // Block 1 QA fix: sandbox 모드인데 sandbox executor 없으면 startup 단계에서 즉시 실패 (runtime-late failure 방지).
+  const assertSandboxAvailable = (lane: string, mode: 'auto' | 'main' | 'sandbox'): void => {
+    if (mode === 'sandbox' && !sandboxExecutor) {
+      throw new Error(
+        `${lane} wallet mode='sandbox' but sandbox executor not initialized. ` +
+        `Check SANDBOX_WALLET_PRIVATE_KEY and STRATEGY_D_LIVE_ENABLED, or switch ${lane} to mode='main'.`
+      );
+    }
+  };
+  if (config.cupseyLaneEnabled) {
+    assertSandboxAvailable('CUPSEY', config.cupseyWalletMode);
+    const cupseyLabel = resolveCupseyWalletLabel(ctx);
+    log.info(
+      `[CUPSEY_WALLET] mode='${config.cupseyWalletMode}' resolved='${cupseyLabel}' ` +
+      `(sandbox_available=${Boolean(sandboxExecutor)})`
+    );
+  }
+  if (config.migrationLaneEnabled) {
+    assertSandboxAvailable('MIGRATION', config.migrationWalletMode);
+    const migrationLabel = resolveMigrationWalletLabel(ctx);
+    log.info(
+      `[MIGRATION_WALLET] mode='${config.migrationWalletMode}' resolved='${migrationLabel}' ` +
+      `(sandbox_available=${Boolean(sandboxExecutor)})`
+    );
+  }
+  if (config.pureWsLaneEnabled) {
+    assertSandboxAvailable('PUREWS', config.pureWsLaneWalletMode);
+    const pureWsLabel = resolvePureWsWalletLabel(ctx);
+    log.info(
+      `[PUREWS_WALLET] mode='${config.pureWsLaneWalletMode}' resolved='${pureWsLabel}' ` +
+      `(sandbox_available=${Boolean(sandboxExecutor)})`
+    );
+  }
+
+  // Block 1 (2026-04-18): Always-on wallet delta comparator
+  // Why: 2026-04-17 wallet-reconcile 에서 DB pnl 허수 drift +18.34 SOL 사후 발견.
+  // 운영 중 상시 감지 경로를 추가한다. live 모드에서만 작동 (paper 는 wallet 변화 없음).
+  if (config.walletDeltaComparatorEnabled && tradingMode === 'live') {
+    void startWalletDeltaComparator(walletManager, notifier, {
+      enabled: true,
+      pollIntervalMs: config.walletDeltaPollIntervalMs,
+      driftWarnSol: config.walletDeltaDriftWarnSol,
+      driftHaltSol: config.walletDeltaDriftHaltSol,
+      minSamplesBeforeAlert: config.walletDeltaMinSamplesBeforeAlert,
+      walletName: config.walletStopWalletName,
+      realtimeDataDir: config.realtimeDataDir,
+    });
+  } else {
+    log.info(
+      `[WALLET_DELTA] comparator ${config.walletDeltaComparatorEnabled ? 'skipped (paper mode)' : 'disabled (config)'}`
+    );
+  }
 
   if (realtimeModeEnabled) {
     const realtimeIntervals = [5, config.realtimePrimaryIntervalSec, config.realtimeConfirmIntervalSec];
@@ -1418,6 +1504,12 @@ async function main() {
                 log.error(`Tick cupsey signal handling failed: ${err}`);
               });
             }
+            // Block 3 (2026-04-18): pure_ws_breakout lane — 같은 signal 소비, 별도 state machine.
+            if (config.pureWsLaneEnabled) {
+              void handlePureWsSignal(signal, realtimeCandleBuilder!, ctx).catch((err) => {
+                log.error(`Tick purews signal handling failed: ${err}`);
+              });
+            }
           }
         }
         // Tick-level position monitoring: 활성 포지션의 swap → 즉시 SL/TP 체크
@@ -1427,6 +1519,9 @@ async function main() {
         // Cupsey position update on each swap (tick mode only)
         if (config.cupseyLaneEnabled) {
           void updateCupseyPositions(ctx, realtimeCandleBuilder!).catch(() => {});
+        }
+        if (config.pureWsLaneEnabled) {
+          void updatePureWsPositions(ctx, realtimeCandleBuilder!).catch(() => {});
         }
       }
     });
@@ -1495,11 +1590,18 @@ async function main() {
             if (config.cupseyLaneEnabled) {
               await handleCupseyLaneSignal(signal, realtimeCandleBuilder!, ctx);
             }
+            // Block 3 (2026-04-18): pure_ws_breakout lane — convexity-aligned separate state machine.
+            if (config.pureWsLaneEnabled) {
+              await handlePureWsSignal(signal, realtimeCandleBuilder!, ctx);
+            }
           }
         }
         // Path A: cupsey position monitoring (매 candle tick 마다)
         if (config.cupseyLaneEnabled) {
           await updateCupseyPositions(ctx, realtimeCandleBuilder!);
+        }
+        if (config.pureWsLaneEnabled) {
+          await updatePureWsPositions(ctx, realtimeCandleBuilder!);
         }
         // Tier 1 (2026-04-17): migration handoff reclaim lane. candle tick 경로만 사용 (race 예방).
         if (config.migrationLaneEnabled) {
@@ -1585,6 +1687,17 @@ async function main() {
     if (recoveredMigrationCount > 0) {
       await notifier.sendInfo(
         `Migration recovery: ${recoveredMigrationCount} OPEN trades rehydrated from ledger`,
+        'recovery'
+      ).catch(() => {});
+    }
+  }
+
+  // Block 3 (2026-04-18): pure_ws_breakout lane recovery
+  if (config.pureWsLaneEnabled) {
+    const recoveredPureWsCount = await recoverPureWsOpenPositions(ctx);
+    if (recoveredPureWsCount > 0) {
+      await notifier.sendInfo(
+        `Pure WS recovery: ${recoveredPureWsCount} OPEN trades rehydrated`,
         'recovery'
       ).catch(() => {});
     }
@@ -1763,6 +1876,7 @@ async function main() {
     executionLock.destroy();
     healthMonitor.stop();
     stopWalletStopGuardPoller();
+    stopWalletDeltaComparator();
     await dbPool.end();
     log.info('Shutdown complete');
     process.exit(0);

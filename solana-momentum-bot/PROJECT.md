@@ -1,4 +1,8 @@
-# Project Goals & Persona
+# Project Goals & Persona (post-pivot)
+
+> Updated: 2026-04-18
+> Pivot decision: [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md)
+> Pre-pivot snapshot: [`docs/historical/pre-pivot-2026-04-18/PROJECT.md`](./docs/historical/pre-pivot-2026-04-18/PROJECT.md)
 
 ## Persona
 
@@ -6,95 +10,108 @@
 - 1인 개발자, 자동화 수익 파이프라인을 축적하는 CTO
 - Solana 트레이딩 봇은 여러 자동화 시스템 중 하나
 - 24/7 무인 운영 전제, 수동 개입 최소화
-- 리스크 성향: 보수적, 자본 보존 우선
+- 리스크 성향: convexity 추구 + wallet 기준 하한선 고정 (hard stop `0.8 SOL`)
 
 ### 봇
 - 이름: Solana Momentum Bot
-- 역할: Solana DEX meme/event 토큰의 모멘텀 진입/청산 자동화
-- 운영 원칙: 이유 없이 추격하지 않는다
+- 역할: Solana DEX meme/event 토큰의 **순수 실전형 momentum/sniper** 자동화
+- 운영 원칙: 설명 가능성보다 convexity, 그러나 security 절대 타협 없음
 
 ## 목표
 
 ### 최종 목표
-이벤트 기반 선행 컨텍스트 + 온체인 트리거 2단계 진입 봇
 
-> 가격이 움직여서 사는 게 아니라, 움직일 이유가 있고, 실제로 움직이기 시작할 때 산다.
+> 수단과 방법을 가리지 않고 `1 SOL -> 100 SOL` 달성 확률을 최대화한다.
 
 ### 구체적 목표
-1. 설명되지 않은 급등을 추격하지 않는다.
-2. 이벤트/내러티브가 확인된 코인만 감시한다.
-3. 온체인 확인 후에만 진입한다.
-4. 스캠/조작 리스크를 사전 차단한다.
-5. 모든 트레이드를 추적 가능하게 기록한다.
 
-### 비목표
-- 고빈도 매매
+1. Pool coverage를 최대한 넓힌다 (DEX / pair eligibility 우선).
+2. WS 초봉 / 마이크로캔들에서 거래량 급증 + buy pressure + tx density + 최소 price acceleration 으로 진입 판단한다.
+3. Loser는 빠르게 정리, winner는 최대한 길게 보유한다.
+4. 평균 수익률보다 5x/10x winner 빈도를 중시한다.
+5. Wallet truth 기준으로만 측정하고, DB pnl 단독 판정은 하지 않는다.
+
+### 비목표 (post-pivot)
+
+- 설명 가능한 진입 비율 최대화
+- attention / context score 정교화
+- 5분봉 확인형 전략 (`volume_spike`, `fib_pullback`)
+- backtest edge score 최적화
 - 마켓 메이킹
-- 전 DEX 스나이핑 경쟁
 - 실전 괴리를 무시한 백테스트 최적화
 
-## 전략 모델
+## 전략 모델 (post-pivot)
 
-### 2단계 진입
+### 진입 철학
+
 ```text
-Stage 1: Context
-  Event Catch / AttentionScore / Discovery
-
-Stage 2: Trigger
-  Onchain breakout confirmation + sequential gates + risk sizing
+pool coverage 확장
+  -> WS 초봉 / 마이크로캔들 burst 감지
+     (volume accel + buy ratio + tx density + price accel)
+  -> hard safety check (security / liquidity / exitability)
+  -> immediate PROBE entry
 ```
 
-### 게이트 시스템
-- Gate 0: Security
-- Gate 1: AttentionScore / Context
-- Gate 2: Execution Viability + Quote
-- Gate 3: Strategy Score
-- Gate 4: Safety
-- Exit Gate: Sell-side Impact
+"왜 오르는가"보다 "지금 실제로 폭발하는가"를 본다.
+Attention / context score는 hard reject로 **사용하지 않는다**.
 
-## 현재 상태 스냅샷
+### 보유 / 청산 철학
+
+```text
+loser   : quick cut (fast hard-stop + short time-boxed expiration)
+winner  : tiered runner (2x / 5x / 10x 별 trailing 완화 + long hold)
+baseline: cupsey_flip_10s는 기존 구조 그대로 유지 (benchmark)
+```
+
+## 유지 항목 (hard safety — 사명 변경 불가)
+
+- Security hard reject (top-holder %, mint/freeze authority, honeypot sim)
+- 최소 liquidity / quote sanity
+- Exitability 확인
+- Duplicate / race 방지 (Patch A: STALK→PROBE reentrancy guard, Patch B1: close mutex)
+- HWM / price sanity bound (Patch B2: cupseyMaxPeakMultiplier = 15x)
+- Wallet Stop Guard `< 0.8 SOL` halt
+- RPC fail-safe halt (연속 RPC 실패 → lane halt)
+- Entry integrity (`persistOpenTradeWithIntegrity` 모든 lane 필수)
+- Wallet truth accounting (executed-buys/sells.jsonl + FIFO reconcile)
+
+## 현재 상태 스냅샷 (2026-04-18)
 
 ### 확인된 것
-- live 파이프라인은 `signal -> gate -> risk -> execute -> manage exit`까지 end-to-end로 동작한다.
-- Bootstrap trigger `bootstrap_10s`가 유일한 유효 trigger (10s candle, volume+buyRatio 2-gate).
-- 5m Strategy A/C는 밈코인 모멘텀(10-30s)에 구조적 비적합 → **dormant** (04-05 확인).
-- Signal attribution 기록 체계 강화 완료: marketCap context, crash-safe signal-intent, strategy별 분리 집계, zero-volume skip.
-- 운영 baseline 안정: `vm=1.8 / buyRatio=0.60 / lookback=20`.
+
+- **Wallet ground truth**: 시작 `1.30 SOL` → 현재 `1.07 SOL` (`-0.23 SOL`)
+- **DB drift**: DB pnl 합계 `+18.11 SOL` vs wallet `-0.23 SOL`, drift `+18.34 SOL`
+- **유일한 live-proven lane**: `cupsey_flip_10s` (benchmark 유지)
+- **Signal source**: `bootstrap_10s` (signal-only, `executionRrReject=99.0`)
+- **Dormant**: `volume_spike`, `fib_pullback` (5m 해상도, 밈코인 비적합)
 
 ### 아직 미증명인 것
-- 양의 기대값 (4/4 세션 1건만 pass, 나머지 reject)
-- 안정적인 cadence
-- Sparse data insufficient 81% 해소 → edge 재현성
 
-### 2026-04-05 해결한 것
-- **Signal attribution 4-feature 구현** (commit 076e1f4):
-  1. MarketCap/FDV in signal context
-  2. Signal-intent 즉시 기록 (crash-safe persistence)
-  3. Strategy별 분리 집계 (summarizeRealtimeSignalsByStrategy)
-  4. Zero-volume candle skip (persist 90% 감소)
-- **Replay-loop 병렬 백테스팅**: 4 sessions × 2 modes = 8 parallel backtests → 리포트 생성
-- **핵심 발견**: sparse data insufficient 81% 차단 → 이것이 edge 측정 자체를 불가능하게 만드는 최대 병목
+- Pure WS breakout lane의 실제 wallet expectancy
+- Coverage 확장 (DEX eligibility) 후의 signal density
+- 5x / 10x winner 빈도 (관측 자체가 부족)
+- cupsey primary의 wallet ownership 구조 (main vs sandbox executor)
 
-### 현재 해석
-- Bootstrap edge가 **1/4 세션에서만 확인** (04-04 edgeScore 78, +6.89%)
-- 나머지 3 세션은 edgeScore 8로 reject — sparse 81% 차단이 평가 모수를 제한
-- 5m Strategy A/C는 87 pairs × 3 strategies = 261 combination 중 **3건만 trade** → 사실상 사망
-- **Critical Path**: Sparse 해소 → 평가 모수 확대 → edge 재현성 확인 → paper 50-trade → live enablement
+## 로드맵 (post-pivot)
 
-## 로드맵
+| Block | 목표 | 현재 상태 |
+|---|---|---|
+| Block 0 | Mission Pivot 문서화 | **진행 중 (2026-04-18)** |
+| Block 1 | Wallet ownership + always-on comparator (P0) | 미시작 |
+| Block 2 | Coverage expansion (DEX / pair eligibility 먼저) | 미시작 |
+| Block 3 | `pure_ws_breakout` lane 신설 (paper first) | 미시작 |
+| Block 4 | Live canary with guardrails | 미시작 |
+| Block 5 | Tiered runner tuning | 미시작 (조건부) |
 
-| Phase | 목표 | 현재 상태 |
-|-------|------|----------|
-| Phase 0 | 기존 봇 안정화 | 완료 |
-| Phase 1 | Live Bootstrap 해석 가능 상태 확보 | **진행 중 — sparse 병목 해소 필요** |
-| Phase 2 | 첫 공식 Mission / Execution / Edge 판정 | 미도달 |
-| Phase 3 | 양의 기대값 반복 확인 후 소규모 복리화 | 미시작 |
+### Hard Guardrails (pivot 불변)
 
-### Phase 1의 현재 우선순위
-1. **P0: Sparse Insufficient 81% 병목 해소** — edge 측정 자체를 가능하게 만들기
-2. 04-04 세션 edge (score 78)의 재현성 검증 — runner outlier vs 구조적 edge 판별
-3. Legacy 세션 OOM 해결 후 재검증 (113 stored signals)
-4. bootstrap 50 trades 확보 → Gate-Proven Sample 도달
+| 가드 | 값 |
+|---|---|
+| Wallet Stop Guard | `< 0.8 SOL` 전 lane halt |
+| Fixed ticket | `0.01 SOL` canary |
+| Max concurrent ticket | `3` (canary) |
+| RPC fail-safe | 연속 RPC 실패 → lane halt |
+| Security hard reject | 불변 |
 
 ## 인프라
 
@@ -102,8 +119,13 @@ Stage 2: Trigger
 |------|------|
 | VPS | Vultr (US East) |
 | OS | Ubuntu 22.04 LTS |
-| RPC | Helius |
+| RPC | Helius (Developer tier — sniper 경쟁 시 재검토 필요) |
 | DB | TimescaleDB |
 | DEX execution | Jupiter |
 | 알림 | Telegram |
 | 프로세스 관리 | pm2 |
+
+## 측정 프레임
+
+[`MEASUREMENT.md`](./MEASUREMENT.md) 참조.
+기존 `Mission / Execution / Edge Score`는 retire 되었고, wallet log growth + winner distribution + ruin probability 로 교체되었다.

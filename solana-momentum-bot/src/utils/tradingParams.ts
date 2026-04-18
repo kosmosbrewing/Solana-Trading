@@ -315,6 +315,39 @@ export const tradingParams = {
   // Why: Pump.fun graduation / PumpSwap canonical pool / Raydium LaunchLab 이벤트 직후
   // first overshoot 통과 → reclaim pullback 진입. cupsey와 독립 lane.
   // 설계: docs/design-docs/migration-handoff-reclaim-2026-04-17.md
+  // ─── Pure WS Breakout Lane (Block 3, 2026-04-18) ───
+  // Why: Mission pivot convexity — cupsey benchmark 는 그대로 유지하고 loose-gate + tiered runner 로
+  // 별도 lane 운영. 설계 근거: docs/design-docs/pure-ws-breakout-lane-2026-04-18.md
+  pureWsLane: {
+    pureWsLaneTicketSol: 0.01,              // fixed micro-ticket (risk 대비 절대 ticket)
+    pureWsMaxConcurrent: 3,                 // canary 동시 max 3
+    pureWsProbeWindowSec: 30,               // immediate PROBE 관찰 창
+    pureWsProbeHardCutPct: 0.03,            // MAE -3% → 즉시 loser cut
+    pureWsProbeFlatBandPct: 0.10,           // ±10% 이내 = flat, 30s flat 시 close
+    pureWsProbeTrailingPct: 0.03,           // PROBE trail 3%
+    // tiered runner
+    pureWsT1MfeThreshold: 1.0,              // +100% (2x) → T1 승격
+    pureWsT1TrailingPct: 0.07,              // T1 trail 7%
+    pureWsT2MfeThreshold: 4.0,              // +400% (5x) → T2 승격
+    pureWsT2TrailingPct: 0.15,              // T2 trail 15%
+    pureWsT2BreakevenLockMultiplier: 3.0,   // T2 진입 시 entry × 3 lock (never close below 3x)
+    pureWsT3MfeThreshold: 9.0,              // +900% (10x) → T3 승격
+    pureWsT3TrailingPct: 0.25,              // T3 trail 25%, no time stop
+    pureWsMaxPeakMultiplier: 15,            // HWM sanity (Patch B2 동일 철학)
+    pureWsSourceLabel: 'pure_ws_breakout',
+  },
+
+  // ─── Pure WS Breakout Gate (Block 3, looser than cupsey) ───
+  pureWsGate: {
+    pureWsGateEnabled: true,
+    pureWsGateLookbackBars: 13,             // cupsey 와 동일 구조
+    pureWsGateRecentBars: 3,
+    pureWsGateMinVolumeAccelRatio: 1.0,     // cupsey 1.2 → 1.0
+    pureWsGateMinPriceChangePct: -0.005,    // cupsey 0 → -0.005 (하락 중 reclaim 허용)
+    pureWsGateMinAvgBuyRatio: 0.45,         // cupsey 0.50 → 0.45
+    pureWsGateMinTradeCountRatio: 0.8,      // cupsey 1.0 → 0.8
+  },
+
   migrationLane: {
     migrationLaneTicketSol: 0.01,           // hard guardrail (override 조건)
     migrationMaxConcurrent: 1,              // Phase 2 초기 — 관측 우선

@@ -26,6 +26,8 @@ import { BotContext } from './types';
 import { bpsToDecimal } from '../utils/units';
 import { isWalletStopActive } from '../risk/walletStopGuard';
 import { serializeClose, resetSharedCloseMutexForTests } from './swapSerializer';
+import { reportCanaryClose } from '../risk/canaryAutoHalt';
+import { acquireCanarySlot, releaseCanarySlot } from '../risk/canaryConcurrencyGuard';
 
 const log = createModuleLogger('CupseyLane');
 
@@ -260,7 +262,27 @@ export function getActiveCupseyPositions(): ReadonlyMap<string, CupseyPosition> 
 }
 
 function getCupseyExecutor(ctx: BotContext) {
+  // Block 1 (2026-04-18): explicit wallet mode — wallet ownership ambiguity 해소.
+  // 'auto' 는 backward compat (기존 `sandbox ?? main`). 새 배포는 main/sandbox 명시 권장.
+  const mode = config.cupseyWalletMode;
+  if (mode === 'main') return ctx.executor;
+  if (mode === 'sandbox') {
+    if (!ctx.sandboxExecutor) {
+      throw new Error(
+        `CUPSEY_WALLET_MODE=sandbox but sandboxExecutor not initialized. ` +
+        `Check SANDBOX_WALLET_PRIVATE_KEY and STRATEGY_D_LIVE_ENABLED.`
+      );
+    }
+    return ctx.sandboxExecutor;
+  }
   return ctx.sandboxExecutor ?? ctx.executor;
+}
+
+export function resolveCupseyWalletLabel(ctx: BotContext): 'main' | 'sandbox' {
+  const mode = config.cupseyWalletMode;
+  if (mode === 'main') return 'main';
+  if (mode === 'sandbox') return 'sandbox';
+  return ctx.sandboxExecutor ? 'sandbox' : 'main';
 }
 
 function inferRecoveredCupseyState(trade: Trade): CupseyTradeState {
@@ -474,6 +496,12 @@ export async function handleCupseyLaneSignal(
     sourceLabel: signal.sourceLabel,
     discoverySource: signal.discoverySource,
   };
+  // Block 4 QA fix: wallet-level 전역 canary concurrency guard (opt-in, paper+live 공통)
+  // STALK 생성 시점부터 slot 소비 — 60초 대기 중인 STALK 도 concurrent 로 집계.
+  if (!acquireCanarySlot('cupsey')) {
+    log.debug(`[CUPSEY_SKIP] global canary slot full`);
+    return;
+  }
   activePositions.set(positionId, position);
   funnelStats.stalkCreated++;
   recordCupseyFunnelSnapshot(ctx);
@@ -515,6 +543,7 @@ export async function updateCupseyPositions(
           `drop=${(dropFromSignal * 100).toFixed(2)}%`
         );
         activePositions.delete(id);
+        releaseCanarySlot('cupsey'); // QA fix — STALK 소비한 slot 해제
         continue;
       }
 
@@ -525,6 +554,7 @@ export async function updateCupseyPositions(
           `max ${(config.cupseyStalkMaxDropPct * 100).toFixed(1)}% — skipping`
         );
         activePositions.delete(id);
+        releaseCanarySlot('cupsey'); // QA fix
         continue;
       }
 
@@ -544,6 +574,7 @@ export async function updateCupseyPositions(
         if (isWalletStopActive()) {
           log.info(`[CUPSEY_STALK_WALLET_STOP] ${id} skipping entry — wallet stop active. dropping STALK.`);
           activePositions.delete(id);
+          releaseCanarySlot('cupsey'); // QA fix
           continue;
         }
 
@@ -600,6 +631,7 @@ export async function updateCupseyPositions(
               positionId: id,
               txSignature: entryTxSignature,
               strategy: 'cupsey_flip_10s',
+              wallet: resolveCupseyWalletLabel(ctx), // Block 1 QA fix: wallet-aware comparator 지원
               pairAddress: pos.pairAddress,
               tokenSymbol: pos.tokenSymbol,
               plannedEntryPrice: currentPrice,
@@ -612,6 +644,7 @@ export async function updateCupseyPositions(
           } catch (buyErr) {
             log.warn(`[CUPSEY_LIVE_BUY] ${id} pullback buy failed: ${buyErr}`);
             activePositions.delete(id);
+            releaseCanarySlot('cupsey'); // QA fix
             continue;
           }
         }
@@ -850,6 +883,7 @@ async function closeCupseyPositionSerialized(
           txSignature: exitTxSignature,
           entryTxSignature: pos.entryTxSignature,
           strategy: 'cupsey_flip_10s',
+          wallet: resolveCupseyWalletLabel(ctx), // Block 1 QA fix
           pairAddress: pos.pairAddress,
           tokenSymbol: pos.tokenSymbol,
           exitReason: reason,
@@ -879,6 +913,8 @@ async function closeCupseyPositionSerialized(
   pos.state = 'CLOSED';
 
   const rawPnl = (actualExitPrice - pos.entryPrice) * pos.quantity;
+  // Block 4 (2026-04-18): canary auto-halt feed. pnl 계산 직후 보고 (paperCost 차감 후 값과 동일 단위).
+  // Note: paper 모드도 canary state 를 공유 — paper 에서 ruin 시뮬도 유효해야 함.
   // Why: paper 모드는 wallet delta 없이 시장가로 PnL 계산 → AMM/MEV 비용 누락
   const paperCost = ctx.tradingMode === 'paper'
     ? pos.entryPrice * pos.quantity * (config.defaultAmmFeePct + config.defaultMevMarginPct)
@@ -984,6 +1020,11 @@ async function closeCupseyPositionSerialized(
   if (funnelStats.closedTrades % 10 === 0) {
     logCupseyFunnelStats();
   }
+
+  // Block 4: canary auto-halt feed (per-lane circuit breaker)
+  reportCanaryClose('cupsey', pnl);
+  // Block 4 QA fix: 전역 concurrency slot 해제 (acquire 대응)
+  releaseCanarySlot('cupsey');
 
   // Cleanup
   activePositions.delete(id);

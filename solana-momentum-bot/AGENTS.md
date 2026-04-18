@@ -1,12 +1,19 @@
 # AGENTS.md — Solana Momentum Bot
 
 ## 프로젝트 개요
-- 한 줄 설명: Event-aware Solana DEX trading bot (`1 SOL -> 100 SOL`)
+- 한 줄 설명: Convexity-first Solana momentum/sniper bot (`1 SOL -> 100 SOL`, 2026-04-18 pivot)
 - 스택: TypeScript, `@solana/web3.js`, Jupiter, TimescaleDB, Winston, pm2
 - 모드: `paper` / `live` (`TRADING_MODE`)
 - 아키텍처 기준: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
+- Pivot 결정: [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md)
 
 ## 현재 우선 문서
+
+### Mission / Pivot 헌장
+| 문서 | 설명 |
+|---|---|
+| [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md) | **pivot decision record (상위 권위)** |
+| [`PLAN.md`](./PLAN.md) | mission charter (convexity) |
 
 ### 운영 기준
 | 문서 | 설명 |
@@ -18,8 +25,8 @@
 | 문서 | 설명 |
 |---|---|
 | [`ARCHITECTURE.md`](./ARCHITECTURE.md) | 모듈 책임, 의존성 방향, 데이터 흐름 |
-| [`PROJECT.md`](./PROJECT.md) | 목표, 비목표, 현재 phase 정의 |
-| [`MEASUREMENT.md`](./MEASUREMENT.md) | Mission / Execution / Edge 기준 |
+| [`PROJECT.md`](./PROJECT.md) | persona, 목표, 비목표 (post-pivot) |
+| [`MEASUREMENT.md`](./MEASUREMENT.md) | wallet log growth + winner 분포 + ruin probability |
 | [`docs/product-specs/strategy-catalog.md`](./docs/product-specs/strategy-catalog.md) | 전략/Gate/Risk 제품 명세 |
 | [`OPERATIONS.md`](./OPERATIONS.md) | VPS/pm2 운영 가이드와 live 점검 체크포인트 |
 
@@ -38,6 +45,7 @@
 | 문서 | 설명 |
 |---|---|
 | [`PLAN_CMPL.md`](./PLAN_CMPL.md) | 완료된 plan / canary history archive |
+| [`docs/historical/pre-pivot-2026-04-18/`](./docs/historical/pre-pivot-2026-04-18/) | 2026-04-18 pivot 이전 PLAN/PROJECT/MEASUREMENT/STRATEGY snapshot |
 
 ## 에이전트 작업 규칙
 
@@ -51,8 +59,9 @@
 
 ## 문서 정리 원칙
 
-- 현재 동작의 기준은 `PLAN.md`, `docs/exec-plans/active/1sol-to-100sol.md`, `STRATEGY.md`, `OPERATIONS.md`를 우선한다.
+- 현재 동작의 기준은 `docs/design-docs/mission-pivot-2026-04-18.md`, `PLAN.md`, `docs/exec-plans/active/1sol-to-100sol.md`, `STRATEGY.md`, `OPERATIONS.md` 순서로 우선한다.
 - 완료된 root plan/handoff는 `PLAN_CMPL.md`로 이관하고, 원본 파일은 필요 없으면 삭제한다.
 - dated handoff는 historical note로만 유지하고, 현재 판단과 충돌하면 최신 plan 문서를 따른다.
 - 중복 메모는 남기지 않는다. 새로운 운영 해석은 기존 handoff를 덧붙이기보다 기준 문서에 흡수한다.
 - root stub 파일은 `README.md`나 active 문서 목록에 개별 나열하지 않는다.
+- Pre-pivot 문서(2026-04-18 이전)는 `docs/historical/pre-pivot-2026-04-18/`에 보존한다 — 현재 판정 근거로 사용 금지.

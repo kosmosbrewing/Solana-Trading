@@ -28,6 +28,7 @@ const STRATEGY_LABELS: Record<StrategyName, string> = {
   momentum_cascade: 'Momentum Cascade',
   cupsey_flip_10s: 'Cupsey Flip 10s',
   migration_reclaim: 'Migration Reclaim',
+  pure_ws_breakout: 'Pure WS Breakout',
 };
 
 const CLOSE_REASON_LABELS: Record<CloseReason, string> = {

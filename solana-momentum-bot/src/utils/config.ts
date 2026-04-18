@@ -114,6 +114,58 @@ export const config = {
   // 운영자가 paper 관측 후 명시적으로 canary 를 켜야 live buy 허용.
   pureWsLiveCanaryEnabled: boolOptional('PUREWS_LIVE_CANARY_ENABLED', false),
 
+  // 2026-04-18: DEX_TRADE Phase 1.3 — v2 detector (독립 WS burst detector)
+  // Why: v1 은 bootstrap signal 재사용. v2 는 independent detector (`src/strategy/wsBurstDetector.ts`).
+  // default off — 운영자가 paper replay 검증 후 opt-in.
+  // Paper replay (2026-04-18, 2.26M eval): vol_floor reject 97% → tuned defaults 아래 주입.
+  pureWsV2Enabled: boolOptional('PUREWS_V2_ENABLED', false),
+  pureWsV2MinPassScore: Number(process.env.PUREWS_V2_MIN_PASS_SCORE ?? '50'),   // tuned: 60 → 50 (sweep 0.617%)
+  pureWsV2FloorVol: Number(process.env.PUREWS_V2_FLOOR_VOL ?? '0.15'),           // tuned: 0.33 → 0.15 (p95 근처)
+  pureWsV2FloorBuy: Number(process.env.PUREWS_V2_FLOOR_BUY ?? '0.25'),
+  pureWsV2FloorTx: Number(process.env.PUREWS_V2_FLOOR_TX ?? '0.33'),
+  pureWsV2FloorPrice: Number(process.env.PUREWS_V2_FLOOR_PRICE ?? '0.1'),
+  pureWsV2BuyRatioAbsFloor: Number(process.env.PUREWS_V2_BUY_RATIO_ABS_FLOOR ?? '0.55'),
+  pureWsV2TxCountAbsFloor: Number(process.env.PUREWS_V2_TX_COUNT_ABS_FLOOR ?? '3'),
+  pureWsV2WVolume: Number(process.env.PUREWS_V2_W_VOLUME ?? '30'),
+  pureWsV2WBuy: Number(process.env.PUREWS_V2_W_BUY ?? '25'),
+  pureWsV2WDensity: Number(process.env.PUREWS_V2_W_DENSITY ?? '20'),
+  pureWsV2WPrice: Number(process.env.PUREWS_V2_W_PRICE ?? '20'),
+  pureWsV2WReverse: Number(process.env.PUREWS_V2_W_REVERSE ?? '5'),
+  pureWsV2NRecent: Number(process.env.PUREWS_V2_N_RECENT ?? '3'),
+  pureWsV2NBaseline: Number(process.env.PUREWS_V2_N_BASELINE ?? '6'),             // tuned: 12 → 6 (60s, instant burst 성격)
+  pureWsV2ZVolSaturate: Number(process.env.PUREWS_V2_Z_VOL_SATURATE ?? '2.0'),    // tuned: 3.0 → 2.0
+  pureWsV2ZBuySaturate: Number(process.env.PUREWS_V2_Z_BUY_SATURATE ?? '2.0'),
+  pureWsV2ZTxSaturate: Number(process.env.PUREWS_V2_Z_TX_SATURATE ?? '3.0'),
+  pureWsV2BpsPriceSaturate: Number(process.env.PUREWS_V2_BPS_PRICE_SATURATE ?? '1000'),  // tuned: 300 → 1000 (p90 saturate 완화)
+  // per-pair cooldown (같은 pair 반복 entry 방지). Top pair 쏠림 방어.
+  pureWsV2PerPairCooldownSec: Number(process.env.PUREWS_V2_PER_PAIR_COOLDOWN_SEC ?? '300'),  // 5분
+
+  // 2026-04-18: DEX_TRADE Phase 2 — Probe Viability Floor + Daily Bleed Budget
+  // Why: RR gate retire 대체. viability 하한만 유지 + bleed budget 으로 시도 수 통제.
+  probeViabilityFloorEnabled: boolOptional('PROBE_VIABILITY_FLOOR_ENABLED', true),
+  probeViabilityMinTicketSol: Number(process.env.PROBE_VIABILITY_MIN_TICKET_SOL ?? '0.005'),
+  probeViabilityMaxBleedPct: Number(process.env.PROBE_VIABILITY_MAX_BLEED_PCT ?? '0.06'),  // 6% round-trip cap
+  probeViabilityMaxSellImpactPct: Number(process.env.PROBE_VIABILITY_MAX_SELL_IMPACT_PCT ?? '0'), // 0 = disabled 기본
+  dailyBleedBudgetEnabled: boolOptional('DAILY_BLEED_BUDGET_ENABLED', true),
+  dailyBleedAlpha: Number(process.env.DAILY_BLEED_ALPHA ?? '0.05'),  // wallet 5%
+  dailyBleedMinCapSol: Number(process.env.DAILY_BLEED_MIN_CAP_SOL ?? '0.05'),
+  dailyBleedMaxCapSol: Number(process.env.DAILY_BLEED_MAX_CAP_SOL ?? '0'),  // 0 = unlimited
+
+  // 2026-04-18: DEX_TRADE Phase 3 — Quick Reject Classifier (microstructure-based PROBE exit)
+  quickRejectClassifierEnabled: boolOptional('QUICK_REJECT_CLASSIFIER_ENABLED', true),
+  quickRejectWindowSec: Number(process.env.QUICK_REJECT_WINDOW_SEC ?? '45'),
+  quickRejectMinMfePct: Number(process.env.QUICK_REJECT_MIN_MFE_PCT ?? '0.005'),
+  quickRejectBuyRatioDecay: Number(process.env.QUICK_REJECT_BUY_RATIO_DECAY ?? '0.15'),
+  quickRejectTxDensityDrop: Number(process.env.QUICK_REJECT_TX_DENSITY_DROP ?? '0.5'),
+  quickRejectDegradeCountForExit: Number(process.env.QUICK_REJECT_DEGRADE_COUNT_FOR_EXIT ?? '2'),
+
+  // 2026-04-18: DEX_TRADE Phase 3 — Hold-Phase Exitability Sentinel (RUNNER degraded exit)
+  holdPhaseSentinelEnabled: boolOptional('HOLD_PHASE_SENTINEL_ENABLED', true),
+  holdPhaseBuyRatioCollapse: Number(process.env.HOLD_PHASE_BUY_RATIO_COLLAPSE ?? '0.2'),
+  holdPhaseTxDensityDrop: Number(process.env.HOLD_PHASE_TX_DENSITY_DROP ?? '0.6'),
+  holdPhasePeakDrift: Number(process.env.HOLD_PHASE_PEAK_DRIFT ?? '0.35'),
+  holdPhaseDegradedFactorCount: Number(process.env.HOLD_PHASE_DEGRADED_FACTOR_COUNT ?? '2'),
+
   // 2026-04-18: Block 4 — canary auto-halt (per-lane circuit-breaker)
   // Why: Block 3 pure_ws_breakout 은 loose gate 라 연속 entry 에서 loser streak 위험. per-lane auto-halt.
   canaryAutoHaltEnabled: boolOptional('CANARY_AUTO_HALT_ENABLED', true),

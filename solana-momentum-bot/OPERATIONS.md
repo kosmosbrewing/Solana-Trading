@@ -7,6 +7,91 @@
 
 ## Current Operations Note
 
+### DEX_TRADE Phase 3 — Quick Reject + Hold Sentinel + Ruin Sim (2026-04-18)
+
+**기본 활성** — pure_ws lane 에 자동 적용. 기존 lane (cupsey / migration) 미연결 (handler별 wiring 필요).
+
+**Env defaults (운영자 조정 가능)**:
+```env
+QUICK_REJECT_CLASSIFIER_ENABLED=true
+HOLD_PHASE_SENTINEL_ENABLED=true
+# 필요 시 threshold 튜닝:
+# QUICK_REJECT_WINDOW_SEC=45 / QUICK_REJECT_MIN_MFE_PCT=0.005
+# HOLD_PHASE_PEAK_DRIFT=0.35 / HOLD_PHASE_DEGRADED_FACTOR_COUNT=2
+```
+
+**관측 로그**:
+- `[PUREWS_QUICK_REJECT]` — PROBE 구간 microstructure 기반 exit
+- `[PUREWS_QUICK_REJECT_WARN]` — 1 factor + weak MFE (reduce candidate)
+- `[PUREWS_HOLD_DEGRADED]` — RUNNER tier degraded exit trigger
+- `[PUREWS_HOLD_WARN]` — 단일 warn factor
+
+**승격 판정 (50-trade 축적 후)**:
+```bash
+# paired PnL → ruin probability (DEX_TRADE Section 11 승격 기준 <5%)
+npm run ops:ruin:simulate -- --strategy pure_ws_breakout \
+  --start-sol <current-wallet> --ruin-threshold 0.3 \
+  --since <canary-start-ISO> --md docs/audits/ruin-sim-<date>.md
+```
+
+**판정 기준**:
+- **`< 5%`**: 승격 후보 (DEX_TRADE.md Section 11)
+- **`5-10%`**: paper 회귀 또는 threshold 재튜닝
+- **`> 10%`**: canary 중단, strategy 재검토
+
+### DEX_TRADE Phase 2 — Viability Floor + Bleed Budget (2026-04-18)
+
+Pure DEX trading bot 전환의 viability 하한 인프라. **기본 활성** — 배포 시 기존 wallet runtime 에 자동 적용.
+
+**기본 env (명시 없으면 default)**:
+```env
+PROBE_VIABILITY_FLOOR_ENABLED=true         # default
+PROBE_VIABILITY_MIN_TICKET_SOL=0.005
+PROBE_VIABILITY_MAX_BLEED_PCT=0.06         # round-trip 6% cap
+# PROBE_VIABILITY_MAX_SELL_IMPACT_PCT=0    # 0 = disabled until Phase 3 reverse quote
+DAILY_BLEED_BUDGET_ENABLED=true            # default
+DAILY_BLEED_ALPHA=0.05                     # wallet 5%
+DAILY_BLEED_MIN_CAP_SOL=0.05
+# DAILY_BLEED_MAX_CAP_SOL=0                # 0 = unlimited
+```
+
+**관측 할 로그**:
+- `[PUREWS_VIABILITY_REJECT]` — pair/reason/bleed/budget 표시. 빈도로 floor 적정성 판단
+- `[BLEED_BUDGET] rolled` — 매 UTC day 시작 + 초기 wallet 기준 cap 계산
+- `[BLEED_BUDGET_EXHAUSTED]` — 예산 소진 (추가 entry 자동 halt)
+
+**조정 포인트**:
+- `viability_reject` 대량 발생 (>50% rate) → `MAX_BLEED_PCT` 상향 또는 `MIN_TICKET_SOL` 점검
+- 예산 소진 너무 빠름 → `alpha` 상향 OR 전략 미검증 → canary 재조정
+
+### DEX_TRADE Phase 1.3 — V2 Detector Scan (2026-04-18)
+
+Bootstrap signal 과 독립된 WS burst detector. **default off** — paper replay 검증 완료 후 opt-in.
+
+```env
+# Stage B+ (signal 관측만) 또는 Stage C (live canary with v2 detector):
+PUREWS_V2_ENABLED=true                     # opt-in
+# 이하 전부 default 사용 권장 (audit 기반 tuned):
+# PUREWS_V2_MIN_PASS_SCORE=50
+# PUREWS_V2_FLOOR_VOL=0.15
+# PUREWS_V2_N_BASELINE=6
+# PUREWS_V2_BPS_PRICE_SATURATE=1000
+# PUREWS_V2_PER_PAIR_COOLDOWN_SEC=300
+```
+
+**효과**: 매 candle close 에서 watchlist 전체를 detector 로 평가. pass 시 synthetic signal 생성 → `handlePureWsSignal` 로 PROBE 진입 (v1 cupseyGate 건너뜀).
+
+**운영 흐름**:
+1. `PUREWS_V2_ENABLED=true` + (기존 `PUREWS_LIVE_CANARY_ENABLED=true`) 로 배포
+2. 24h 관측: `[PUREWS_V2_PASS]` / `[PUREWS_V2_REJECT]` 빈도 → paper replay 예측과 비교
+3. pass rate mismatch 시 threshold 조정 (audit doc 참조)
+4. 50 trade 축적 후 `ops:canary:eval` 로 승격 판정
+
+**paper replay 재실행 (threshold tuning 전)**:
+```bash
+npm run ops:burst:replay -- --all --json results/ws-burst-<date>.json --md docs/audits/ws-burst-detector-calibration-<date>.md
+```
+
 ### Block 4 — Canary Guardrails + A/B Evaluation (2026-04-18)
 
 Block 3 pure_ws_breakout 의 canary 단계 운영 tooling.

@@ -70,6 +70,115 @@ Trade Count Density   ≥ 1.0x
 cupsey benchmark 유지 방침에 따라 이 threshold 역시 변경 금지.
 새 lane 에서는 같은 factor set 을 재사용하되, threshold 만 사명에 맞춰 재조정.
 
+## DEX_TRADE Phase 3 — Quick Reject + Hold Sentinel + Ruin Sim (2026-04-18)
+
+### Quick Reject Classifier ([src/risk/quickRejectClassifier.ts](./src/risk/quickRejectClassifier.ts))
+
+PROBE 구간 내 price-only cut 보완. MFE decay + buy ratio drop + tx density drop 조합 판정.
+
+- `action = 'exit'`: 2+ factors degraded → 즉시 close (`REJECT_TIMEOUT`)
+- `action = 'reduce'`: 1 factor + weak MFE → warn log만 (partial exit 는 Phase 4 후보)
+- `action = 'hold'`: 정상
+
+Env: `QUICK_REJECT_CLASSIFIER_ENABLED=true`, `QUICK_REJECT_WINDOW_SEC=45`, `QUICK_REJECT_MIN_MFE_PCT=0.005`, `QUICK_REJECT_BUY_RATIO_DECAY=0.15`, `QUICK_REJECT_TX_DENSITY_DROP=0.5`, `QUICK_REJECT_DEGRADE_COUNT_FOR_EXIT=2`.
+
+### Hold-Phase Exitability Sentinel ([src/risk/holdPhaseSentinel.ts](./src/risk/holdPhaseSentinel.ts))
+
+RUNNER T1/T2/T3 보유 중 microstructure 악화 감지 → `DEGRADED_EXIT` 로 조기 전환.
+
+- 3 factor: buy pressure collapse / tx density drop / peak drift
+- 2+ factors → `degraded` status → close. 1 factor → warn.
+
+Env: `HOLD_PHASE_SENTINEL_ENABLED=true`, `HOLD_PHASE_BUY_RATIO_COLLAPSE=0.2`, `HOLD_PHASE_TX_DENSITY_DROP=0.6`, `HOLD_PHASE_PEAK_DRIFT=0.35`, `HOLD_PHASE_DEGRADED_FACTOR_COUNT=2`.
+
+### Ruin Probability ([scripts/ruinProbability.ts](./scripts/ruinProbability.ts))
+
+FIFO paired PnL 분포 → **block bootstrap** monte carlo. 승격 판정 기준 `< 5%` (DEX_TRADE Section 11).
+
+```bash
+npm run ops:ruin:simulate -- --start-sol 1.07 --ruin-threshold 0.3 \
+  --runs 10000 --trades-per-run 200 --strategy pure_ws_breakout \
+  --md docs/audits/ruin-sim-<date>.md
+```
+
+출력: ruin probability / median ending wallet / p5·p95 / max drawdown p95.
+
+### Max Probes Today (extension to [dailyBleedBudget.ts](./src/risk/dailyBleedBudget.ts))
+
+```ts
+maxProbesToday(expectedBleedPerProbe, walletBaseline, cfg)
+= floor(remainingBudget / expectedBleedPerProbe)
+```
+
+현재는 reporting/script 용도. Runtime 통합은 Phase 4 후보.
+
+## DEX_TRADE Phase 2 — Probe Viability Floor + Daily Bleed Budget (2026-04-18)
+
+**Status**: 구현 완료. handler 에 통합 (PROBE 직전 체크).
+
+### Probe Viability Floor ([src/gate/probeViabilityFloor.ts](./src/gate/probeViabilityFloor.ts))
+
+RR gate 를 retire 하고 **최소 viability** 만 유지하는 fail-closed floor.
+
+Check 순서:
+1. ticket >= `PROBE_VIABILITY_MIN_TICKET_SOL` (default 0.005 SOL)
+2. estimated round-trip bleed pct <= `PROBE_VIABILITY_MAX_BLEED_PCT` (default 6%)
+3. `dailyBleedBudget.remainingBudget() > 0` + >= estimated bleed
+4. (optional) sell impact <= `PROBE_VIABILITY_MAX_SELL_IMPACT_PCT` (default 0 = disabled)
+
+Env: `PROBE_VIABILITY_FLOOR_ENABLED=true` (default on), 위 threshold env 전부 override 가능.
+
+### Venue-Specific Bleed Model ([src/execution/bleedModel.ts](./src/execution/bleedModel.ts))
+
+```
+bleed_total = base_fee + priority_fee + tip + venue_fee
+            + entry_slippage + quick_exit_slippage
+```
+
+| Venue | Per-side fee | 비고 |
+|---|---:|---|
+| raydium | 0.25% | V4/CLMM/CPMM 평균 |
+| pumpswap | 1.0% | canonical pool (graduated pump.fun) |
+| meteora | 0.3% | DLMM/DAMM 평균 |
+| orca | 0.3% | Whirlpool |
+| unknown | 0.5% | conservative fallback |
+
+기본 priority fee: `0.0001 SOL/tx` (실 운영 관측 기반). Phase 2 초기 integration 은 venue=undefined → unknown fallback.
+
+### Daily Bleed Budget ([src/risk/dailyBleedBudget.ts](./src/risk/dailyBleedBudget.ts))
+
+```
+daily_cap = max(alpha × wallet_baseline, min_cap)
+```
+
+Env:
+- `DAILY_BLEED_BUDGET_ENABLED=true`
+- `DAILY_BLEED_ALPHA=0.05` (wallet 5%)
+- `DAILY_BLEED_MIN_CAP_SOL=0.05`
+- `DAILY_BLEED_MAX_CAP_SOL=0` (0 = unlimited)
+
+Wallet baseline: `walletStopGuard.getWalletStopGuardState().lastBalanceSol` (30s 주기 갱신). Close 마다 loss 누적 → remaining < expected bleed 이면 entry halt.
+
+## Pure WS Breakout V2 Detector (DEX_TRADE Phase 1.1, 2026-04-18)
+
+**Status**: pure function 구현 완료. Handler wiring 은 Phase 1.3 (flag 전환). 설계: [`docs/design-docs/pure-ws-breakout-v2-detector-2026-04-18.md`](./docs/design-docs/pure-ws-breakout-v2-detector-2026-04-18.md)
+
+`burst_score = Σ w_i × f_i` (0-100 weighted, 각 factor [0,1] 정규화).
+
+| Factor | Weight | Normalization |
+|---|---:|---|
+| volume_accel_z | 30 | recent 30s vs baseline 120s, z / 3.0 saturate |
+| buy_pressure_z | 25 | buy ratio z / 2.0 saturate + 절대 0.55 floor |
+| tx_density_z | 20 | MAD-robust z / 3.0 saturate + 절대 3 tx floor |
+| price_accel | 20 | bps / 300 saturate + 30 bps floor |
+| reverse_quote_stability | 5 | Phase 1 placeholder 1.0, Phase 2 에서 Jupiter reverse quote 통합 |
+
+Pass 조건: 모든 floor 통과 + weighted score ≥ 60 (tunable).
+
+Env overrides: `PUREWS_V2_ENABLED` (default false), `PUREWS_V2_MIN_PASS_SCORE`, `PUREWS_V2_FLOOR_*`, `PUREWS_V2_W_*`, `PUREWS_V2_N_RECENT`, `PUREWS_V2_N_BASELINE`.
+
+Phase 1.2 대기: paper replay 로 weight/threshold tuning → `docs/audits/ws-burst-detector-calibration-<date>.md` 기록.
+
 ## Pure WS Breakout Lane (Block 3, 2026-04-18 구현 완료, paper-first)
 
 Convexity 사명 첫 구현 lane. 설계: [`docs/design-docs/pure-ws-breakout-lane-2026-04-18.md`](./docs/design-docs/pure-ws-breakout-lane-2026-04-18.md)

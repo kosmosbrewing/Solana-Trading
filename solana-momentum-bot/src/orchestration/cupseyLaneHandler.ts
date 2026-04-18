@@ -28,6 +28,7 @@ import { isWalletStopActive } from '../risk/walletStopGuard';
 import { serializeClose, resetSharedCloseMutexForTests } from './swapSerializer';
 import { reportCanaryClose } from '../risk/canaryAutoHalt';
 import { acquireCanarySlot, releaseCanarySlot } from '../risk/canaryConcurrencyGuard';
+import { resolveActualEntryMetrics } from './signalProcessor';
 
 const log = createModuleLogger('CupseyLane');
 
@@ -610,12 +611,13 @@ export async function updateCupseyPositions(
               timeStopMinutes: Math.ceil(config.cupseyWinnerMaxHoldSec / 60),
             };
             const buyResult = await buyExecutor.executeBuy(order);
-            if (buyResult.actualOutUiAmount && buyResult.actualOutUiAmount > 0) {
-              actualQuantity = buyResult.actualOutUiAmount;
-            }
-            if (buyResult.actualInputUiAmount && buyResult.actualInputUiAmount > 0 && actualQuantity > 0) {
-              actualEntryPrice = buyResult.actualInputUiAmount / actualQuantity;
-            }
+            // 2026-04-18 drift fix: all-or-nothing guard.
+            // Why: actualOutUiAmount 만 있고 actualInputUiAmount 가 없으면 actualEntryPrice
+            // 가 signalPrice(planned) 로 남아 entryPrice × quantity 역산이 실제 지출의 10x+
+            // 로 튄다 (wallet_delta_warn drift=+0.0799 SOL root cause, 2026-04-18).
+            const metrics = resolveActualEntryMetrics(order, buyResult);
+            actualEntryPrice = metrics.entryPrice;
+            actualQuantity = metrics.quantity;
             entryTxSignature = buyResult.txSignature;
             entrySlippageBps = buyResult.slippageBps;
             log.info(

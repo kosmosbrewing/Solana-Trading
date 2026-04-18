@@ -1,4 +1,8 @@
-import { processSignal, buildEntryExecutionSummary } from '../src/orchestration/signalProcessor';
+import {
+  processSignal,
+  buildEntryExecutionSummary,
+  resolveActualEntryMetrics,
+} from '../src/orchestration/signalProcessor';
 import type { BotContext } from '../src/orchestration/types';
 import type { Candle, Order, Signal } from '../src/utils/types';
 
@@ -130,6 +134,39 @@ describe('buildEntryExecutionSummary (Phase A2 guard)', () => {
     expect(summary.entryPrice).toBeCloseTo(1.0, 8);
     expect(summary.quantity).toBe(10);
     expect(summary.entrySlippageBps).toBe(0);
+  });
+
+  it('[2026-04-18 drift regression] cupsey pippin case — actualOut only must NOT keep signalPrice×actualOut as entry cost', () => {
+    // Real VPS event: cupsey-Dfh5DzRg-1776511972 (pippin) at UTC 11:33:05.
+    // order.price = 0.00302282 (pullback entry signal), order.quantity = 3.2915 (ticketSol/price).
+    // buyResult.actualOutUiAmount = 30.12 (actual tokens received, 9.15x expected), actualInputUiAmount = undefined.
+    // BEFORE fix: entryPrice stayed at 0.00302282, quantity became 30.12 → entryPrice×quantity = 0.0911 SOL
+    //            recorded as BUY cost, but real spend = 0.00995 SOL → closeCupseyPosition calc loss 0.081 SOL
+    //            → WALLET_DELTA_WARN drift=+0.0799 SOL every 5 min.
+    // AFTER fix: resolveActualEntryMetrics detects partial metrics → both forced to planned.
+    const pippinOrder: Order = {
+      pairAddress: 'Dfh5DzRgSvvCFDoYc2ciTkMrbDfRKybA4SoFbPmApump',
+      strategy: 'cupsey_flip_10s',
+      side: 'BUY',
+      price: 0.00302282,
+      quantity: 3.2915,
+      stopLoss: 0,
+      takeProfit1: 0,
+      takeProfit2: 0,
+      timeStopMinutes: 5,
+    };
+    const m = resolveActualEntryMetrics(pippinOrder, {
+      actualInputUiAmount: undefined,
+      actualOutUiAmount: 30.12,
+      outputDecimals: 6,
+      slippageBps: 3,
+      txSignature: 'TX_PIPPIN',
+    } as any);
+    expect(m.entryPrice).toBeCloseTo(0.00302282, 8);
+    expect(m.quantity).toBeCloseTo(3.2915, 6);
+    expect(m.actualEntryNotionalSol).toBeCloseTo(0.00302282 * 3.2915, 8);
+    const recordedEntryCost = m.entryPrice * m.quantity;
+    expect(recordedEntryCost).toBeCloseTo(m.actualEntryNotionalSol, 8);
   });
 
   it('forces planned when actualOut is 5x+ larger than expected (multi-account guard)', () => {

@@ -311,3 +311,9 @@ export { evaluateSecurityGate } from './securityGate';
 export type { SecurityGateResult, SecurityGateConfig } from './securityGate';
 export { evaluateQuoteGate } from './quoteGate';
 export type { QuoteGateResult, QuoteGateConfig } from './quoteGate';
+export { evaluateEntryDriftGuard } from './entryDriftGuard';
+export type {
+  EntryDriftGuardResult,
+  EntryDriftGuardConfig,
+  EntryDriftGuardInput,
+} from './entryDriftGuard';

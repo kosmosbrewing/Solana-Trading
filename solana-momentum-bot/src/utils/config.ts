@@ -114,11 +114,29 @@ export const config = {
   // 운영자가 paper 관측 후 명시적으로 canary 를 켜야 live buy 허용.
   pureWsLiveCanaryEnabled: boolOptional('PUREWS_LIVE_CANARY_ENABLED', false),
 
+  // 2026-04-19: Entry drift guard — Jupiter probe quote 로 expected fill price vs signal price
+  // gap 측정, threshold 초과 시 진입 차단.
+  // Why: 2026-04-18 VPS 관측에서 4 trades 전부 +20~51% drift 에서 체결됨 (Token-2022 / low-liq route).
+  // Hard-cut 이 entry price 기준이라 체결 직후 즉시 -20% MAE 로 찍혀 rug 없이도 loser_hardcut 발동.
+  pureWsEntryDriftGuardEnabled: boolOptional('PUREWS_ENTRY_DRIFT_GUARD_ENABLED', true),
+  pureWsMaxEntryDriftPct: Number(process.env.PUREWS_MAX_ENTRY_DRIFT_PCT ?? '0.02'),  // 2%
+
+  // 2026-04-19: Dual price tracker — market reference (signal) vs Jupiter fill (entry) 분리.
+  // Why: hard-cut / MAE / MFE 는 signal price 기준 (실제 market movement), pnl 은 Jupiter fill 기준.
+  // 기존처럼 entryPrice 단일로 쓰면 bad fill entry 가 "시장 손실" 로 오해되어 과도 차단.
+  pureWsUseMarketReferencePrice: boolOptional('PUREWS_USE_MARKET_REFERENCE_PRICE', true),
+
+  // 2026-04-19 (QA Q2): Peak warmup — 진입 직후 N초 동안 봇 자신의 BUY tx 가 low-liquidity
+  // pool 에서 price 를 일시 띄우는 영향을 배제하기 위해 peakPrice update 유예.
+  // marketReferencePrice × (1 + peakWarmupMaxDeviationPct) 이내만 peak 로 인정.
+  pureWsPeakWarmupSec: Number(process.env.PUREWS_PEAK_WARMUP_SEC ?? '3'),
+  pureWsPeakWarmupMaxDeviationPct: Number(process.env.PUREWS_PEAK_WARMUP_MAX_DEVIATION_PCT ?? '0.05'),
+
   // 2026-04-18: DEX_TRADE Phase 1.3 — v2 detector (독립 WS burst detector)
   // Why: v1 은 bootstrap signal 재사용. v2 는 independent detector (`src/strategy/wsBurstDetector.ts`).
-  // default off — 운영자가 paper replay 검증 후 opt-in.
+  // 2026-04-19: default on — bootstrap 의존 탈피. Phase 1-3 관측 데이터 수집 활성화.
   // Paper replay (2026-04-18, 2.26M eval): vol_floor reject 97% → tuned defaults 아래 주입.
-  pureWsV2Enabled: boolOptional('PUREWS_V2_ENABLED', false),
+  pureWsV2Enabled: boolOptional('PUREWS_V2_ENABLED', true),
   pureWsV2MinPassScore: Number(process.env.PUREWS_V2_MIN_PASS_SCORE ?? '50'),   // tuned: 60 → 50 (sweep 0.617%)
   pureWsV2FloorVol: Number(process.env.PUREWS_V2_FLOOR_VOL ?? '0.15'),           // tuned: 0.33 → 0.15 (p95 근처)
   pureWsV2FloorBuy: Number(process.env.PUREWS_V2_FLOOR_BUY ?? '0.25'),

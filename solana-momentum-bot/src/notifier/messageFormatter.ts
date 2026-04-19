@@ -10,10 +10,11 @@ import {
 } from '../utils/types';
 import {
   escapeHtml,
-  formatDuration,
   formatPercent,
+  formatShortDuration,
   formatSignedPercent,
   formatSignedSol,
+  koreanRoParticle,
   shortenAddress,
 } from './formatting';
 import { buildSignalDetailLines, buildSignalSummaryLines } from './signalMessageHelpers';
@@ -62,6 +63,10 @@ const EDGE_STATE_LABELS: Record<string, string> = {
   Proven: '장기 검증 통과',
 };
 
+// Why: Entry/Exit gap의 부동소수점 노이즈로 "0.00%" 같은 무의미한 gap이
+//      표시되는 것을 방지. 1bp 미만은 실질적 의미 없음.
+const GAP_EPSILON_PCT = 0.01;
+
 export function buildAlertMessage(level: AlertLevel, context: string, message: string): string {
   const title = level === 'CRITICAL' ? 'Critical Alert' : 'Warning Alert';
   return [
@@ -95,84 +100,125 @@ export function buildSignalMessage(signal: Signal): string {
 
 export function buildTradeOpenMessage(order: Order, txSignature?: string): string {
   const entryNotionalSol = order.price * order.quantity;
-  const planSummary = buildPlanSummaryLine(order.price, order.stopLoss, order.takeProfit1, order.takeProfit2, order.quantity);
   const shortTradeId = order.tradeId ? order.tradeId.slice(0, 8) : undefined;
-  const entryGapLine = buildEntryGapLine(order);
+  const headline = buildOpenHeadline(order.tokenSymbol, order.pairAddress, shortTradeId);
+  const entryLine = buildEntryLine(order, entryNotionalSol);
+  const gapLine = buildEntryGapLine(order);
+  const stopLine = buildExitLevelLine('손절', order.price, order.stopLoss, order.quantity, 'stop');
+  const tp1Line = buildExitLevelLine('TP1', order.price, order.takeProfit1, order.quantity, 'take_profit');
+  const tp2Line = buildExitLevelLine('TP2', order.price, order.takeProfit2, order.quantity, 'take_profit');
+  const qualityLine = order.breakoutScore != null
+    ? `- 시그널 품질: ${order.breakoutScore}점 (${escapeHtml(formatGrade(order.breakoutGrade ?? 'N/A'))})`
+    : '';
+  const sizeLine = formatSizeConstraint(order.sizeConstraint);
+
   return [
-    `🟢 <b>포지션 진입 완료</b>${shortTradeId ? ` <code>${escapeHtml(shortTradeId)}</code>` : ''}`,
-    buildInstrumentLine(order.tokenSymbol, order.pairAddress),
+    headline,
     `- 전략: ${escapeHtml(formatStrategy(order.strategy))}`,
+    entryLine,
+    stopLine,
+    tp1Line,
+    tp2Line,
+    sizeLine ? `- 포지션 제한: ${escapeHtml(sizeLine)}` : '',
+    qualityLine,
+    gapLine,
     `- 컨트랙트: <code>${escapeHtml(order.pairAddress)}</code>`,
-    `- 진입 가격: ${order.price.toFixed(8)}`,
-    entryGapLine,
-    `- 진입 금액: ${entryNotionalSol.toFixed(6)} SOL`,
-    `- 수량: ${order.quantity.toFixed(6)}${order.tokenSymbol ? ` ${escapeHtml(order.tokenSymbol)}` : ''}`,
-    planSummary,
-    buildExitLevelLine('손절', order.price, order.stopLoss, order.quantity, 'stop'),
-    buildExitLevelLine('1차 익절', order.price, order.takeProfit1, order.quantity, 'take_profit'),
-    buildExitLevelLine('2차 익절', order.price, order.takeProfit2, order.quantity, 'take_profit'),
-    `- 포지션 제한: ${escapeHtml(formatSizeConstraint(order.sizeConstraint))}`,
-    order.breakoutScore != null
-      ? `- 시그널 품질: ${order.breakoutScore}점 (${escapeHtml(formatGrade(order.breakoutGrade ?? 'N/A'))})`
-      : '',
-    txSignature ? `- 트랜잭션: <code>${escapeHtml(txSignature)}</code>` : '',
+    txSignature ? `- tx: <code>${escapeHtml(txSignature)}</code>` : '',
   ].filter(Boolean).join('\n');
+}
+
+function buildOpenHeadline(
+  symbol: string | undefined,
+  pairAddress: string,
+  shortTradeId: string | undefined
+): string {
+  const label = symbol ? `<b>${escapeHtml(symbol)}</b>` : `<b>${escapeHtml(shortenAddress(pairAddress))}</b> (ticker 미확인)`;
+  const id = shortTradeId ? ` <code>${escapeHtml(shortTradeId)}</code>` : '';
+  return `🟢 <b>포지션 진입</b> ${label}${id}`;
+}
+
+function buildEntryLine(order: Order, entryNotionalSol: number): string {
+  const symbol = order.tokenSymbol ? ` ${escapeHtml(order.tokenSymbol)}` : '';
+  return `- 진입: ${entryNotionalSol.toFixed(6)} SOL @ ${order.price.toFixed(8)} (수량 ${order.quantity.toFixed(6)}${symbol})`;
 }
 
 function buildEntryGapLine(order: Order): string {
   if (order.plannedEntryPrice == null || order.plannedEntryPrice <= 0) return '';
-  if (order.plannedEntryPrice === order.price) return '';
   const gapPct = ((order.price - order.plannedEntryPrice) / order.plannedEntryPrice) * 100;
-  return `- Entry gap: planned=${order.plannedEntryPrice.toFixed(8)} → fill=${order.price.toFixed(8)} (${gapPct >= 0 ? '+' : ''}${gapPct.toFixed(2)}%)`;
+  if (Math.abs(gapPct) < GAP_EPSILON_PCT) return '';
+  return `- Entry gap: ${gapPct >= 0 ? '+' : ''}${gapPct.toFixed(2)}% (planned=${order.plannedEntryPrice.toFixed(8)} → fill=${order.price.toFixed(8)})`;
 }
 
 export function buildTradeCloseMessage(trade: Trade): string {
   const pnl = trade.pnl;
   const pnlPct = calculatePnlPct(trade);
-  const duration = trade.closedAt ? formatDuration(trade.closedAt.getTime() - trade.createdAt.getTime()) : '';
+  const duration = trade.closedAt ? formatShortDuration(trade.closedAt.getTime() - trade.createdAt.getTime()) : '';
   const resultLabel = pnl == null ? '결과 미정' : pnl >= 0 ? '이익 실현' : '손실 확정';
-  const closeSummary = buildCloseSummaryLine(trade, duration);
   const shortId = trade.id.slice(0, 8);
-
-  // exit gap: decision price vs fill price (live에서만 유의미)
-  const exitGapLine = buildExitGapLine(trade);
-  // cost summary: entry + exit slippage + price impact
+  const reasonText = formatCloseReason(trade.exitReason);
+  const particle = koreanRoParticle(reasonText);
+  const reasonLine = [
+    `${reasonText}${particle} 종료`,
+    duration ? `보유 ${duration}` : '',
+  ].filter(Boolean).join(' · ');
+  const pnlLine = buildCloseProfitLine(trade, pnl, pnlPct);
+  const priceLine = buildClosePriceLine(trade);
+  const gapLine = buildExitGapLine(trade);
   const costLine = buildCostSummaryLine(trade);
+  const headline = buildCloseHeadline(trade, pnl, resultLabel, shortId);
 
   return [
-    `${pnl != null && pnl >= 0 ? '✅' : '❌'} <b>포지션 종료</b> <code>${escapeHtml(shortId)}</code>`,
-    buildInstrumentLine(trade.tokenSymbol, trade.pairAddress),
+    headline,
     `- 전략: ${escapeHtml(formatStrategy(trade.strategy))}`,
-    `- 컨트랙트: <code>${escapeHtml(trade.pairAddress)}</code>`,
-    `- 종료 사유: ${escapeHtml(formatCloseReason(trade.exitReason))}`,
-    `- 결과: ${resultLabel}`,
-    closeSummary,
-    `- 가격: ${trade.entryPrice.toFixed(8)} → ${trade.exitPrice?.toFixed(8) ?? 'N/A'}`,
-    exitGapLine,
-    `- 실현 손익: ${formatSignedSol(pnl)}${pnlPct != null ? ` (${formatSignedPercent(pnlPct)})` : ''}`,
-    trade.slippage != null ? `- 슬리피지: ${formatPercent(trade.slippage)}` : '',
+    `- 사유: ${escapeHtml(reasonLine)}`,
+    pnlLine,
+    priceLine,
     costLine,
-    duration ? `- 보유 시간: ${duration}` : '',
-    trade.txSignature ? `- 트랜잭션: <code>${escapeHtml(trade.txSignature)}</code>` : '',
+    gapLine,
+    `- 컨트랙트: <code>${escapeHtml(trade.pairAddress)}</code>`,
+    trade.txSignature ? `- tx: <code>${escapeHtml(trade.txSignature)}</code>` : '',
   ].filter(Boolean).join('\n');
+}
+
+function buildCloseHeadline(
+  trade: Trade,
+  pnl: number | undefined,
+  resultLabel: string,
+  shortId: string
+): string {
+  const icon = pnl != null && pnl >= 0 ? '✅' : '❌';
+  const label = trade.tokenSymbol
+    ? `<b>${escapeHtml(trade.tokenSymbol)}</b>`
+    : `<b>${escapeHtml(shortenAddress(trade.pairAddress))}</b> (ticker 미확인)`;
+  return `${icon} <b>포지션 종료</b> ${label} <code>${escapeHtml(shortId)}</code> · ${resultLabel}`;
+}
+
+function buildCloseProfitLine(trade: Trade, pnl: number | undefined, pnlPct: number | null): string {
+  const pnlText = `${formatSignedSol(pnl)}${pnlPct != null ? ` (${formatSignedPercent(pnlPct)})` : ''}`;
+  const slippageText = trade.slippage != null ? ` · 슬리피지 ${formatPercent(trade.slippage)}` : '';
+  return `- 실현 손익: ${pnlText}${slippageText}`;
+}
+
+function buildClosePriceLine(trade: Trade): string {
+  const exit = trade.exitPrice != null ? trade.exitPrice.toFixed(8) : 'N/A';
+  return `- 가격: ${trade.entryPrice.toFixed(8)} → ${exit}`;
 }
 
 function buildExitGapLine(trade: Trade): string {
   if (trade.decisionPrice == null || trade.exitPrice == null || trade.decisionPrice <= 0) return '';
-  // Paper mode: decision == fill (gap=0), 표시 불필요
-  if (trade.decisionPrice === trade.exitPrice) return '';
   const gapPct = ((trade.exitPrice - trade.decisionPrice) / trade.decisionPrice) * 100;
-  return `- Exit gap: decision=${trade.decisionPrice.toFixed(8)} → fill=${trade.exitPrice.toFixed(8)} (${gapPct >= 0 ? '+' : ''}${gapPct.toFixed(2)}%)`;
+  if (Math.abs(gapPct) < GAP_EPSILON_PCT) return '';
+  return `- Exit gap: ${gapPct >= 0 ? '+' : ''}${gapPct.toFixed(2)}% (decision=${trade.decisionPrice.toFixed(8)} → fill=${trade.exitPrice.toFixed(8)})`;
 }
 
 function buildCostSummaryLine(trade: Trade): string {
   const parts: string[] = [];
-  if (trade.entrySlippageBps != null) parts.push(`entry=${trade.entrySlippageBps}bps`);
-  if (trade.exitSlippageBps != null) parts.push(`exit=${trade.exitSlippageBps}bps`);
-  if (trade.entryPriceImpactPct != null) parts.push(`impact=${trade.entryPriceImpactPct.toFixed(2)}%`);
-  if (trade.roundTripCostPct != null) parts.push(`rtCost=${trade.roundTripCostPct.toFixed(2)}%`);
+  if (trade.entrySlippageBps != null) parts.push(`entry ${trade.entrySlippageBps}bps`);
+  if (trade.exitSlippageBps != null) parts.push(`exit ${trade.exitSlippageBps}bps`);
+  if (trade.entryPriceImpactPct != null) parts.push(`impact ${trade.entryPriceImpactPct.toFixed(2)}%`);
+  if (trade.roundTripCostPct != null) parts.push(`rtCost ${trade.roundTripCostPct.toFixed(2)}%`);
   if (parts.length === 0) return '';
-  return `- 비용 분해: ${parts.join(' | ')}`;
+  return `- 비용: ${parts.join(' · ')}`;
 }
 
 export function buildRecoveryReportMessage(details: string[]): string {
@@ -200,7 +246,7 @@ function formatGrade(grade: BreakoutGrade | 'N/A'): string {
 }
 
 function formatSizeConstraint(value?: SizeConstraint): string {
-  if (!value) return '제한 정보 없음';
+  if (!value) return '';
   return SIZE_CONSTRAINT_LABELS[value] ?? value;
 }
 
@@ -239,69 +285,16 @@ function buildExitLevelLine(
   const reviewNeeded = kind === 'stop'
     ? !(targetPrice > 0 && targetPrice < entryPrice)
     : !(targetPrice > entryPrice);
+  // Why: percentage를 앞에 두면 "손익 방향"이 한 눈에 들어옴 (price는 부가 정보).
   return [
-    `- ${label}: ${targetPrice.toFixed(8)} `,
-    `(${formatSignedSolDetailed(pnlSol)}`,
-    pnlPct != null ? ` / ${formatSignedPercent(pnlPct)}` : '',
-    reviewNeeded ? ' / 재검토 필요' : '',
-    ')',
+    `- ${label}: `,
+    pnlPct != null ? formatSignedPercent(pnlPct) : '—',
+    ` · ${formatSignedSolDetailed(pnlSol)}`,
+    ` @ ${targetPrice.toFixed(8)}`,
+    reviewNeeded ? ' · 재검토 필요' : '',
   ].join('');
 }
 
 function formatSignedSolDetailed(value: number): string {
   return `${value >= 0 ? '+' : ''}${value.toFixed(6)} SOL`;
-}
-
-function buildPlanSummaryLine(
-  entryPrice: number,
-  stopLoss: number,
-  takeProfit1: number,
-  takeProfit2: number,
-  quantity: number
-): string {
-  const stop = formatTargetPnl(entryPrice, stopLoss, quantity, 'stop');
-  const tp1 = formatTargetPnl(entryPrice, takeProfit1, quantity, 'take_profit');
-  const tp2 = formatTargetPnl(entryPrice, takeProfit2, quantity, 'take_profit');
-  const parts = [
-    stop ? `최대 손실 ${stop}` : '',
-    tp1 ? `TP1 ${tp1}` : '',
-    tp2 ? `TP2 ${tp2}` : '',
-  ].filter(Boolean);
-  const needsReview = !stop || !tp1 || !tp2;
-  if (parts.length === 0) {
-    return '- 한눈에 보기: 손절/익절 기준 재검토 필요';
-  }
-  return `- 한눈에 보기: ${parts.join(' | ')}${needsReview ? ' | 손절/익절 재검토 필요' : ''}`;
-}
-
-function buildCloseSummaryLine(trade: Trade, duration: string): string {
-  const pnl = trade.pnl != null ? formatSignedSol(trade.pnl) : 'N/A';
-  const parts = [
-    trade.exitReason ? `${formatCloseReason(trade.exitReason)}로 종료` : '',
-    trade.pnl != null ? pnl : '',
-    duration ? `보유 ${duration}` : '',
-  ].filter(Boolean);
-  return parts.length > 0 ? `- 한눈에 보기: ${parts.join(' | ')}` : '';
-}
-
-function formatTargetPnl(
-  entryPrice: number,
-  targetPrice: number,
-  quantity: number,
-  kind: 'stop' | 'take_profit'
-): string | null {
-  if (
-    !Number.isFinite(entryPrice) || entryPrice <= 0 ||
-    !Number.isFinite(targetPrice) || targetPrice <= 0 ||
-    !Number.isFinite(quantity) || quantity <= 0
-  ) {
-    return null;
-  }
-  if (kind === 'stop' && targetPrice >= entryPrice) {
-    return null;
-  }
-  if (kind === 'take_profit' && targetPrice <= entryPrice) {
-    return null;
-  }
-  return formatSignedSolDetailed((targetPrice - entryPrice) * quantity);
 }

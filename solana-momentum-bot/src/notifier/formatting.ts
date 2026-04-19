@@ -32,6 +32,29 @@ export function formatDuration(ms: number): string {
   return `${hours}h ${minutes}m`;
 }
 
+// Why: 초기 하드컷·관찰 종료 등 초단위 청산 시 "0h 0m"은 0분처럼 읽혀 혼동을 유발.
+//      60s 미만은 "1분 미만", <1h는 "Xm", 이상은 "Xh Ym"으로 사용자 친화적으로 표시.
+//      "<1분" 같은 표기는 HTML 이스케이프 후 "&lt;1분"으로 깨지므로 사용 금지.
+export function formatShortDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  if (ms < 60_000) return '1분 미만';
+  const hours = Math.floor(ms / 3_600_000);
+  const minutes = Math.floor((ms % 3_600_000) / 60_000);
+  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}분`;
+}
+
+// Why: "초기 하드컷로" 같은 한국어 조사 오류 방지.
+//      받침 없음 또는 ㄹ받침이면 "로", 그 외에는 "으로".
+//      비한글 토큰(숫자/영문 접미사)은 안전하게 "로"로 폴백.
+export function koreanRoParticle(word: string): '로' | '으로' {
+  if (!word) return '로';
+  const last = word[word.length - 1];
+  const code = last.charCodeAt(0);
+  if (code < 0xAC00 || code > 0xD7A3) return '로';
+  const jongseong = (code - 0xAC00) % 28;
+  return jongseong === 0 || jongseong === 8 ? '로' : '으로';
+}
+
 export function formatKstDate(value: Date | string): string {
   const date = typeof value === 'string' ? new Date(value) : value;
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) {

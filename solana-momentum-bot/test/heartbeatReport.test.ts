@@ -17,9 +17,9 @@ describe('heartbeat reporting helpers', () => {
       openTrades: 2,
     });
 
-    expect(text).toContain('📊 Paper · 4h');
-    expect(text).toContain('잔액 1.0321 SOL | 손익 +0.0214 SOL');
-    expect(text).toContain('최근 4h 진입 7건 | 종료 5건 | 오픈 2건');
+    expect(text).toContain('📊 Paper · 최근 4h');
+    expect(text).toContain('잔액 1.0321 SOL (손익 +0.0214 SOL)');
+    expect(text).toContain('진입 7 · 종료 5 · 오픈 2');
   });
 
   it('omits performance block when there are no closed trades', () => {
@@ -61,12 +61,12 @@ describe('heartbeat reporting helpers', () => {
 
     const text = buildHeartbeatPerformanceSummary(summary);
     expect(text).toContain('전적 1W 1L (50%)');
-    expect(text).toContain('오진 50% | TP1 50%');
+    expect(text).toContain('오진 50% · TP1 50%');
     expect(text).not.toContain('역행');
     expect(text).not.toContain('순행');
   });
 
-  it('formats regime summary in the existing compact style', () => {
+  it('formats regime summary in localized Korean labels', () => {
     const text = buildHeartbeatRegimeSummary({
       regime: 'risk_on',
       sizeMultiplier: 1,
@@ -76,7 +76,30 @@ describe('heartbeat reporting helpers', () => {
       updatedAt: new Date('2026-04-04T00:00:00.000Z'),
     });
 
-    expect(text).toContain('🔍 시장: 🟢 risk_on (1x)');
-    expect(text).toContain('SOL 🔴약세 | 확산 50% | 후속 50%');
+    expect(text).toContain('🔍 시장: 🟢 위험선호 (1x)');
+    expect(text).toContain('SOL 🔴약세 · 확산 50% · 후속 50%');
+  });
+
+  it('uses Korean labels for risk_off and neutral regimes', () => {
+    const riskOff = buildHeartbeatRegimeSummary({
+      regime: 'risk_off',
+      sizeMultiplier: 0.5,
+      solTrendBullish: true,
+      breadthPct: 0.1,
+      followThroughPct: 0.2,
+      updatedAt: new Date(),
+    });
+    expect(riskOff).toContain('🔴 위험회피');
+    expect(riskOff).toContain('SOL 🟢강세');
+
+    const neutral = buildHeartbeatRegimeSummary({
+      regime: 'neutral',
+      sizeMultiplier: 0.7,
+      solTrendBullish: true,
+      breadthPct: 0.3,
+      followThroughPct: 0.3,
+      updatedAt: new Date(),
+    });
+    expect(neutral).toContain('🟡 중립');
   });
 });

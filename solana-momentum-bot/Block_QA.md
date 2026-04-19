@@ -1,5 +1,115 @@
 # Block QA
 
+## Pure_ws Entry Drift + Dual Price Tracker (2026-04-19)
+
+- Date: 2026-04-19
+- Trigger: VPS 2026-04-18 재배포 이후 12h 동안 pure_ws lane 4 trades 전부 `REJECT_HARD_CUT` → `consecutive losers 4 >= 4` → entry halt 재발. 관측 데이터 축적 불가.
+- Scope: `src/gate/entryDriftGuard.ts` (신규), `src/orchestration/pureWsBreakoutHandler.ts`, `src/utils/config.ts`
+
+### Root Cause — Signal price vs Jupiter fill price 갭
+
+VPS 관측 4 trades 전부 Jupiter 체결가가 signal price 대비 **+20~51% 높게 fill**:
+
+| Trade (UTC) | signal | Jupiter entry | drift |
+|-------------|--------|--------------|-------|
+| 15:58 ACtfUWtg | 0.00008701 | 0.00011099 | **+27.6%** |
+| 16:10 ACtfUWtg | 0.00008757 | 0.00011177 | **+27.6%** |
+| 16:33 ACtfUWtg | 0.00008701 | 0.00013169 | **+51.4%** |
+| 16:39 AmPgMs7Y | 0.00002573 | 0.00003104 | **+20.6%** |
+
+기존 `pureWsBreakoutHandler` 는 hard-cut/MAE/MFE 를 **entry price 기준**으로 계산 → 체결 순간 이미 MAE −20~−50% → `pureWsProbeHardCutPct=0.04` 즉시 발동 → 실제 시장 이동 없이 hardcut → 4 연패 → halt.
+
+**공통 조건**: `Token-2022 pump.fun` migration token, Jupiter `impact=0.001~0.003%` 보고 (하지만 실제 fill 은 크게 벗어남, routes=1 의 low-liquidity pool).
+
+### Fix — 3가지 변경
+
+1. **Entry Drift Guard** (신규 `src/gate/entryDriftGuard.ts`)
+   - Jupiter 에 probe-sized quote 를 미리 요청 → expected fill price 계산 → signal price 와 비교
+   - drift 가 `PUREWS_MAX_ENTRY_DRIFT_PCT` (default 2%) 초과 시 **entry 차단**
+   - quote 실패 / decimals 미확인 시 gate 통과 (observability only, trade 차단 금지)
+   - 양방향 symmetric check — 과도 유리 fill 도 suspicious 로 판정
+
+2. **Dual Price Tracker** (pureWsBreakoutHandler)
+   - `PureWsPosition.marketReferencePrice` 필드 추가 — signal price 저장
+   - `peakPrice`, `troughPrice` 초기값 = `marketReferencePrice`
+   - `MAE/MFE/currentPct` 계산을 market reference 기준으로 변경
+   - `maxPeak`, `t2BreakevenLockPrice` 도 market reference domain 으로 통일
+   - `pnl` 계산은 `entryPrice` (Jupiter fill) 기준 유지 — 실제 지출 대비 정확성
+   - Recovery 경로: DB 에 marketRef 없음 → `plannedEntryPrice` (signal price) fallback, 없으면 `entryPrice` fallback
+
+3. **V2 scanner default on**
+   - `PUREWS_V2_ENABLED` default `false` → **`true`** 로 전환
+   - bootstrap_10s 의존 완화 → Phase 1-3 의 wsBurstDetector + quickReject + holdPhase 가 실제 signal 에 대해 동작
+   - tuned thresholds (minPassScore=50, floorVol=0.15 등) 이미 2026-04-18 paper replay 로 캘리브레이션 완료
+
+### Config 추가
+
+```
+PUREWS_ENTRY_DRIFT_GUARD_ENABLED=true  # default on
+PUREWS_MAX_ENTRY_DRIFT_PCT=0.02        # 2%
+PUREWS_USE_MARKET_REFERENCE_PRICE=true # default on
+PUREWS_V2_ENABLED=true                 # default flipped: false → true
+```
+
+### 검증
+
+- `tsc --noEmit` 0 errors
+- `jest` 813 pass (기존 803 + entryDriftGuard 8 tests + dual tracker 2 regression tests) / 1 pre-existing riskManager fail 무관
+- 신규 regression test: `test/entryDriftGuard.test.ts` — VPS 2026-04-18 16:10 pippin 케이스 재현 (signal=0.0000876, Jupiter out=89M raw/decimals=6 → drift +27.5% → reject)
+- 신규 regression test: `test/pureWsBreakoutHandler.test.ts` — market ref 기준 MAE=0% 면 hardcut 발동 안 함 + 실제 시장 -5% 이동 시 여전히 hardcut 정상 작동
+
+### 예상 효과
+
+- 4 trades 모두 **entryDriftGuard 에서 reject 됐을 것** → −0.0122 SOL 회피
+- bad fill 이 진입되더라도 market-ref MAE 로 전환 → 시장이 움직이지 않으면 hardcut 안 발동 → sample size 확보 가능
+- v2 scanner 로 bootstrap_10s 의존 탈피 → Phase 1-3 관측 목적 달성
+
+### Deployment Runbook
+
+```bash
+ssh root@104.238.181.61 << 'EOF'
+cd ~/Solana/Solana-Trading/solana-momentum-bot
+git pull origin main
+npm run build
+pm2 restart solana-bot
+pm2 logs solana-bot --lines 30 --nostream
+EOF
+```
+
+### 관측 체크리스트 (재배포 후 24h)
+
+1. `[PUREWS_ENTRY_DRIFT]` 로그 빈도 — signal-fill gap 분포 확인
+2. `[PUREWS_ENTRY_DRIFT_REJECT]` 빈도 — 얼마나 많은 bad fill 을 차단했는가
+3. `[PUREWS_V2_PASS]` 빈도 — v2 detector signal 생성 빈도
+4. `[PUREWS_LOSER_HARDCUT]` 원인 — market ref 기준 real rug 만 카운트
+5. `[CANARY_HALT]` lane=pure_ws_breakout 재발 여부 — 발동 안 하면 Phase 1-3 관측 활성
+
+### Follow-up 후보 (이번 scope 외)
+
+- Token-2022 policy: transfer fee 체크 / reject rule 추가 (F5 유사 패턴)
+- market reference 값을 DB 에 저장 (recovery 시 정합성 유지)
+- v2 scanner 활성화 이후 v1 (bootstrap signal-path) disable 여부 결정 (중복 signal 완화)
+
+### QA Pass (2026-04-19)
+
+구현 직후 self-QA 로 4 개 finding 발견 및 모두 수정:
+
+- **Q1 (HIGH fixed)**: Jupiter `/quote` response 에 `outputDecimals` 없어 hint 없으면 drift guard 가 `decimals_unknown` 으로 항상 pass. Fix: `Executor.getMintDecimals` public 화 + handler 가 사전 resolve 해 hint 전달 (cache 적용, 반복 호출 비용 0).
+- **Q2 (MED fixed)**: 진입 직후 봇 자신의 BUY tx 가 low-liquidity pool price 를 띄우면 첫 tick `currentPrice` 가 fill level 로 튐 → `peakPrice` 가 그 수준까지 올라감 → 시장이 signal 로 복귀 시 trail stop hit. Fix: `PUREWS_PEAK_WARMUP_SEC` (3s) + `PUREWS_PEAK_WARMUP_MAX_DEVIATION_PCT` (5%) — warmup 중 peak 업데이트는 marketRef × 1.05 이내만 허용.
+- **Q3 (MED fixed)**: symmetric drift check 가 convexity 원칙과 모순 — 유리 fill 도 reject 하면 convex payoff 놓침. Fix: asymmetric — positive drift 만 reject, negative drift 는 `[ENTRY_DRIFT_FAVORABLE]` loud warn 로 logging 하되 entry 허용.
+- **Q4 (LOW fixed)**: recovery 시 `troughPrice = trade.entryPrice` (fill) 로 세팅되어 marketRef 와 domain mismatch — 초기 MAE 가 음수로 안 찍힘. Fix: `troughPrice = marketReferencePrice`.
+
+신규 테스트:
+- `test/entryDriftGuard.test.ts` — asymmetric favorable fill 허용 검증
+- `test/pureWsBreakoutHandler.test.ts` — peak warmup 중 봇 자신의 BUY impact 반영 억제 검증
+
+### 검증 (QA Pass 후)
+
+- `tsc --noEmit` 0 errors
+- `jest` 814 pass (기존 803 + Q1~Q4 fix 로 신규 11) / 1 pre-existing riskManager fail 무관
+
+---
+
 ## Wallet Delta Drift Root Cause — Live VPS Investigation (2026-04-18 PM)
 
 - Date: 2026-04-18

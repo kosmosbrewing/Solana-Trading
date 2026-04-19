@@ -43,8 +43,10 @@ to_epoch() {
   local ts="${1%%.*}"  # 소수점 이하 제거
   ts="${ts%+*}"        # +00:00 제거
   ts="${ts%Z}"         # Z 제거
+  # macOS (BSD) / Linux (GNU) 양쪽 모두 + 'T' 와 ' ' 두 구분자 모두 지원.
   date -d "${ts}" +%s 2>/dev/null || \
-  date -jf "%Y-%m-%dT%H:%M:%S" "${ts}" +%s 2>/dev/null || echo 0
+  date -jf "%Y-%m-%dT%H:%M:%S" "${ts}" +%s 2>/dev/null || \
+  date -jf "%Y-%m-%d %H:%M:%S" "${ts}" +%s 2>/dev/null || echo 0
 }
 
 resolve_remote_database_url() {
@@ -120,8 +122,10 @@ DB_META="$(ssh "${REMOTE_HOST}" "psql '${VPS_DATABASE_URL}' -tA -c \
 
 DB_NAME="$(echo "${DB_META}" | cut -d'|' -f1 | tr -d ' \n')"
 DB_HOST="$(echo "${DB_META}" | cut -d'|' -f2 | tr -d ' \n')"
-MAX_CREATED="$(echo "${DB_META}" | cut -d'|' -f3 | tr -d ' \n')"
-MAX_CLOSED="$(echo "${DB_META}" | cut -d'|' -f4 | tr -d ' \n')"
+# Why: timestamp 필드는 공백 보존 (postgres '2026-04-18 19:36:32.164514+00' vs ISO 'T' 구분).
+# 공백을 지우면 dump_max_created 와 preflight 비교가 포맷 차이로 false-positive 반환.
+MAX_CREATED="$(echo "${DB_META}" | cut -d'|' -f3 | tr -d '\n')"
+MAX_CLOSED="$(echo "${DB_META}" | cut -d'|' -f4 | tr -d '\n')"
 DB_ROWS="$(echo "${DB_META}" | cut -d'|' -f5 | tr -d ' \n')"
 
 if [ -z "${DB_NAME}" ] || [ "${DB_ROWS}" = "ERROR" ]; then
@@ -176,11 +180,17 @@ if [ "${SNAPSHOT_LINES}" -lt 1 ]; then
 fi
 
 # 2-4. dump 최대 시각 교차 검증 (jq 가 있으면 수행)
+# Why: 포맷이 다른 두 timestamp (postgres 'YYYY-MM-DD HH:MM:SS+00' vs ISO 'YYYY-MM-DDTHH:MM:SS+00:00')
+# 를 문자열로 비교하면 같은 시각인데 다르다고 나온다 — epoch 으로 변환 후 수치 비교.
 if [ "${SNAPSHOT_LINES}" -gt 0 ] && command -v jq >/dev/null 2>&1; then
   DUMP_MAX_CREATED="$(jq -r '.created_at // empty' "${SNAPSHOT_FILE}" | sort | tail -1)"
   echo "[sync-vps-data] trades: dump_max_created=${DUMP_MAX_CREATED}"
-  if [ -n "${DUMP_MAX_CREATED}" ] && [ "${MAX_CREATED}" != "EMPTY" ] && [ "${DUMP_MAX_CREATED}" != "${MAX_CREATED}" ]; then
-    handle_stale_db "dump_max_created (${DUMP_MAX_CREATED}) != preflight max_created (${MAX_CREATED})"
+  if [ -n "${DUMP_MAX_CREATED}" ] && [ "${MAX_CREATED}" != "EMPTY" ]; then
+    DUMP_TS="$(to_epoch "${DUMP_MAX_CREATED}")"
+    PREFLIGHT_TS="$(to_epoch "${MAX_CREATED}")"
+    if [ "${DUMP_TS}" -gt 0 ] && [ "${PREFLIGHT_TS}" -gt 0 ] && [ "${DUMP_TS}" -ne "${PREFLIGHT_TS}" ]; then
+      handle_stale_db "dump_max_created (${DUMP_MAX_CREATED}) != preflight max_created (${MAX_CREATED})"
+    fi
   fi
 fi
 

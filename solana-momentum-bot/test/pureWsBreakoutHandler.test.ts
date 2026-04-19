@@ -52,12 +52,19 @@ function makeCtx(): { ctx: BotContext; notifier: { sendCritical: jest.Mock; send
 }
 
 function seedProbePosition(pair: string, entryPrice: number, entryTimeSec: number, state: 'PROBE' | 'RUNNER_T1' | 'RUNNER_T2' | 'RUNNER_T3' = 'PROBE'): void {
+  // 2026-04-19 (QA Q2): peak warmup 회피 — seed 는 "warmup 이미 지난 상태" 로 간주.
+  // caller 가 `nowSec()` 넘기면 warmup 초 만큼 더 과거로 보정. Timeout 케이스에서 과거를
+  // 명시한 경우에도 일관되게 적용 — warmup 영향 없는 순수한 state machine 테스트 지원.
+  const warmupAdjusted = entryTimeSec - (config.pureWsPeakWarmupSec + 1);
   addPureWsPositionForTests({
     tradeId: `purews-${pair.slice(0, 8)}-${entryTimeSec}`,
     dbTradeId: 'db-1',
     pairAddress: pair,
     entryPrice,
-    entryTimeSec,
+    // 2026-04-19: 기본 seed 는 signal=entry 동등 (legacy 동작). market reference 분리 테스트
+    // 는 별도 케이스에서 명시적으로 override.
+    marketReferencePrice: entryPrice,
+    entryTimeSec: warmupAdjusted,
     quantity: 100,
     state,
     peakPrice: entryPrice,
@@ -222,6 +229,96 @@ describe('pureWsBreakoutHandler — tiered runner', () => {
     await updatePureWsPositions(ctx, builder);
 
     // hardcut 정상 작동 확인 (halt 는 entry 만 차단, exit 는 영향 없음)
+    expect(tradeStore.closeTrade).toHaveBeenCalled();
+  });
+
+  it('[2026-04-19 dual price tracker] PROBE does NOT hardcut when market ref flat but entry gap 27%', async () => {
+    // Regression: VPS 2026-04-18 16:10:33 pippin 재현.
+    // signal=0.0000876, Jupiter fill entryPrice=0.0001117 (+27.5% drift), market tick=signal
+    // Before fix: MAE=(tick-entry)/entry = -21.6% → hardcut 즉시 발동
+    // After fix: MAE=(tick-marketRef)/marketRef = 0% → flat, hardcut 안 걸림
+    const pair = 'PAIR_DRIFT';
+    const signalPrice = 0.0000876;
+    const entryPriceWithDrift = 0.0001117;
+    addPureWsPositionForTests({
+      tradeId: `purews-${pair.slice(0, 8)}-${nowSec()}`,
+      dbTradeId: 'db-drift',
+      pairAddress: pair,
+      entryPrice: entryPriceWithDrift,
+      marketReferencePrice: signalPrice,
+      entryTimeSec: nowSec(),
+      quantity: 89.51,
+      state: 'PROBE',
+      peakPrice: signalPrice,
+      troughPrice: signalPrice,
+    });
+    // 시장 가격은 signal 수준 유지 (실제로 시장은 움직이지 않음)
+    const builder = makeBuilder(new Map([[pair, signalPrice]]));
+    const { ctx, tradeStore } = makeCtx();
+
+    await updatePureWsPositions(ctx, builder);
+
+    // hardcut 발동 안 함 — market reference 기준으로는 flat
+    expect(tradeStore.closeTrade).not.toHaveBeenCalled();
+    const state = [...getActivePureWsPositions().values()][0];
+    expect(state.state).toBe('PROBE');
+  });
+
+  it('[2026-04-19 QA Q2] peak warmup — bot\'s own BUY impact does NOT update peak during warmup', async () => {
+    // 봇 BUY 가 low-liquidity pool price 를 일시 띄운 시나리오.
+    // currentPrice = marketRef × 1.3 (warmupMaxDeviation 0.05 초과)
+    // elapsed=0s < pureWsPeakWarmupSec → peak update 억제
+    const pair = 'PAIR_WARMUP';
+    const signalPrice = 0.0001;
+    addPureWsPositionForTests({
+      tradeId: `purews-${pair.slice(0, 8)}-${nowSec()}`,
+      dbTradeId: 'db-warmup',
+      pairAddress: pair,
+      entryPrice: 0.00013, // +30% fill drift
+      marketReferencePrice: signalPrice,
+      entryTimeSec: nowSec(), // 지금 막 진입
+      quantity: 100,
+      state: 'PROBE',
+      peakPrice: signalPrice,
+      troughPrice: signalPrice,
+    });
+    // 첫 tick 이 fill level 로 튀는 시나리오
+    const builder = makeBuilder(new Map([[pair, 0.00013]]));
+    const { ctx } = makeCtx();
+
+    await updatePureWsPositions(ctx, builder);
+
+    const state = [...getActivePureWsPositions().values()][0];
+    // peak 는 signalPrice × (1+deviation) 이내만 인정 — 0.00013 은 +30% 이므로 거부
+    expect(state.peakPrice).toBeLessThanOrEqual(signalPrice * (1 + config.pureWsPeakWarmupMaxDeviationPct) + 1e-12);
+    expect(state.state).toBe('PROBE'); // hardcut 도 안 걸림 (currentPct 양수)
+  });
+
+  it('[2026-04-19 dual price tracker] market ref MAE still triggers hardcut when real drop occurs', async () => {
+    // 실제 시장이 market ref 대비 -4% 이상 떨어지면 hardcut 은 여전히 작동해야 함.
+    const pair = 'PAIR_REAL_DROP';
+    const signalPrice = 0.0001;
+    const entryPriceWithDrift = 0.00013; // +30% fill drift
+    addPureWsPositionForTests({
+      tradeId: `purews-${pair.slice(0, 8)}-${nowSec()}`,
+      dbTradeId: 'db-real-drop',
+      pairAddress: pair,
+      entryPrice: entryPriceWithDrift,
+      marketReferencePrice: signalPrice,
+      entryTimeSec: nowSec(),
+      quantity: 100,
+      state: 'PROBE',
+      peakPrice: signalPrice,
+      troughPrice: signalPrice,
+    });
+    // 시장 가격이 signal 대비 -5% 하락 (실제 시장 이동)
+    const marketDrop = signalPrice * 0.95;
+    const builder = makeBuilder(new Map([[pair, marketDrop]]));
+    const { ctx, tradeStore } = makeCtx();
+
+    await updatePureWsPositions(ctx, builder);
+
+    // hardcut 발동 — market reference 기준 -5%
     expect(tradeStore.closeTrade).toHaveBeenCalled();
   });
 

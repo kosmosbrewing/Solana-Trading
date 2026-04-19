@@ -93,19 +93,22 @@ describe('messageFormatter', () => {
 
     const openMessage = buildTradeOpenMessage(order, 'TX123');
 
-    expect(openMessage).toContain('🟢 <b>포지션 진입 완료</b>');
-    expect(openMessage).toContain('<code>trade-op</code>');
-    expect(openMessage).toContain('- 종목: <b>PAIR</b>');
+    expect(openMessage).toContain('🟢 <b>포지션 진입</b> <b>PAIR</b> <code>trade-op</code>');
     expect(openMessage).toContain('- 전략: Fib Pullback');
-    expect(openMessage).toContain('- Entry gap: planned=0.00120000 → fill=0.00123456 (+2.88%)');
-    expect(openMessage).toContain('- 진입 금액: 0.002469 SOL');
-    expect(openMessage).toContain('- 수량: 2.000000 PAIR');
-    expect(openMessage).toContain('- 한눈에 보기: 최대 손실 -0.000269 SOL | TP1 +0.000331 SOL | TP2 +0.000731 SOL');
-    expect(openMessage).toContain('- 손절: 0.00110000 (-0.000269 SOL / -10.9%)');
-    expect(openMessage).toContain('- 1차 익절: 0.00140000 (+0.000331 SOL / +13.4%)');
-    expect(openMessage).toContain('- 2차 익절: 0.00160000 (+0.000731 SOL / +29.6%)');
+    expect(openMessage).toContain('- 진입: 0.002469 SOL @ 0.00123456 (수량 2.000000 PAIR)');
+    expect(openMessage).toContain('- 손절: -10.9% · -0.000269 SOL @ 0.00110000');
+    expect(openMessage).toContain('- TP1: +13.4% · +0.000331 SOL @ 0.00140000');
+    expect(openMessage).toContain('- TP2: +29.6% · +0.000731 SOL @ 0.00160000');
+    // pnl 0.0003 / notional (0.00123456*2=0.00246912) = 12.15% → "+12.1%"
     expect(openMessage).toContain('- 포지션 제한: 리스크 한도 기준');
     expect(openMessage).toContain('- 시그널 품질: 58점 (B등급)');
+    expect(openMessage).toContain('- Entry gap: +2.88% (planned=0.00120000 → fill=0.00123456)');
+    expect(openMessage).toContain('- 컨트랙트: <code>PAIR1234567890</code>');
+    expect(openMessage).toContain('- tx: <code>TX123</code>');
+    // 한눈에 보기 / 진입 가격 / 진입 금액 중복 제거 검증
+    expect(openMessage).not.toContain('한눈에 보기');
+    expect(openMessage).not.toContain('진입 가격');
+    expect(openMessage).not.toContain('진입 금액');
 
     const trade: Trade = {
       id: 'trade-1',
@@ -130,19 +133,102 @@ describe('messageFormatter', () => {
       takeProfit2: 0.0016,
       timeStopAt: new Date('2026-03-22T03:00:00Z'),
       exitReason: 'TAKE_PROFIT_1',
+      tokenSymbol: 'PAIR',
     };
 
     const closeMessage = buildTradeCloseMessage(trade);
 
-    expect(closeMessage).toContain('✅ <b>포지션 종료</b>');
-    expect(closeMessage).toContain('<code>trade-1</code>');
-    expect(closeMessage).toContain('- 종료 사유: 1차 익절');
-    expect(closeMessage).toContain('- 결과: 이익 실현');
-    expect(closeMessage).toContain('- 한눈에 보기: 1차 익절로 종료 | +0.0003 SOL | 보유 2h 30m');
-    expect(closeMessage).toContain('- Exit gap: decision=0.00142000 → fill=0.00140000 (-1.41%)');
-    expect(closeMessage).toContain('- 비용 분해: entry=25bps | exit=40bps | rtCost=0.90%');
-    expect(closeMessage).toContain('- 보유 시간: 2h 30m');
-    expect(closeMessage).toContain('+0.0003 SOL');
+    expect(closeMessage).toContain('✅ <b>포지션 종료</b> <b>PAIR</b> <code>trade-1</code> · 이익 실현');
+    expect(closeMessage).toContain('- 전략: Fib Pullback');
+    // 1차 익절 → ㄹ받침 → "로"
+    expect(closeMessage).toContain('- 사유: 1차 익절로 종료 · 보유 2h 30m');
+    expect(closeMessage).toContain('- 실현 손익: +0.0003 SOL (+12.2%) · 슬리피지 1.1%');
+    expect(closeMessage).toContain('- 가격: 0.00123456 → 0.00140000');
+    expect(closeMessage).toContain('- 비용: entry 25bps · exit 40bps · rtCost 0.90%');
+    expect(closeMessage).toContain('- Exit gap: -1.41% (decision=0.00142000 → fill=0.00140000)');
+    expect(closeMessage).toContain('- 컨트랙트: <code>PAIR1234567890</code>');
+    expect(closeMessage).toContain('- tx: <code>TX456</code>');
+    // 중복 제거 검증
+    expect(closeMessage).not.toContain('한눈에 보기');
+    expect(closeMessage).not.toContain('종료 사유:');
+    expect(closeMessage).not.toContain('결과:');
+  });
+
+  it('uses "으로" particle for close reasons without 받침-ㄹ', () => {
+    const trade: Trade = {
+      id: 'trade-hc',
+      pairAddress: 'PAIR1234567890ABCDEFG',
+      strategy: 'cupsey_flip_10s',
+      side: 'SELL',
+      entryPrice: 0.23872236,
+      exitPrice: 0.23740977,
+      quantity: 0.041504,
+      pnl: -0.0001,
+      status: 'CLOSED',
+      createdAt: new Date('2026-03-22T00:00:00Z'),
+      closedAt: new Date('2026-03-22T00:00:30Z'),
+      stopLoss: 0.236,
+      takeProfit1: 0.24,
+      takeProfit2: 0.25,
+      timeStopAt: new Date('2026-03-22T00:30:00Z'),
+      exitReason: 'REJECT_HARD_CUT',
+      tokenSymbol: 'ASTR',
+    };
+
+    const message = buildTradeCloseMessage(trade);
+    // 초기 하드컷 → ㅅ받침 → "으로"
+    expect(message).toContain('- 사유: 초기 하드컷으로 종료 · 보유 1분 미만');
+    expect(message).toContain('❌ <b>포지션 종료</b> <b>ASTR</b>');
+    expect(message).not.toContain('하드컷로');
+    // HTML 이스케이프 후에도 꼬이지 않아야 함
+    expect(message).not.toContain('&lt;');
+  });
+
+  it('hides entry gap line when price noise is sub-basis-point', () => {
+    const order: Order = {
+      tradeId: 'trade-noise',
+      pairAddress: 'PAIR1234567890',
+      strategy: 'cupsey_flip_10s',
+      side: 'BUY',
+      tokenSymbol: 'PAIR',
+      price: 0.23872236,
+      plannedEntryPrice: 0.23872236001, // 1e-11 level noise
+      quantity: 0.04,
+      stopLoss: 0.235,
+      takeProfit1: 0.24,
+      takeProfit2: 0.25,
+      timeStopMinutes: 30,
+    };
+
+    const message = buildTradeOpenMessage(order);
+    expect(message).not.toContain('Entry gap');
+    expect(message).not.toContain('-0.00%');
+  });
+
+  it('hides cost line when all cost fields are missing', () => {
+    const trade: Trade = {
+      id: 'trade-nocost',
+      pairAddress: 'PAIR1234567890',
+      strategy: 'cupsey_flip_10s',
+      side: 'SELL',
+      entryPrice: 0.1,
+      exitPrice: 0.11,
+      quantity: 1,
+      pnl: 0.01,
+      status: 'CLOSED',
+      createdAt: new Date('2026-03-22T00:00:00Z'),
+      closedAt: new Date('2026-03-22T01:00:00Z'),
+      stopLoss: 0.09,
+      takeProfit1: 0.11,
+      takeProfit2: 0.12,
+      timeStopAt: new Date('2026-03-22T01:30:00Z'),
+      exitReason: 'TAKE_PROFIT_1',
+      tokenSymbol: 'PAIR',
+    };
+
+    const message = buildTradeCloseMessage(trade);
+    expect(message).not.toContain('- 비용:');
+    expect(message).not.toContain('Exit gap');
   });
 
   it('falls back to contract label and hides invalid stop-loss math in alerts', () => {
@@ -159,9 +245,10 @@ describe('messageFormatter', () => {
     };
 
     const openMessage = buildTradeOpenMessage(order);
-    expect(openMessage).toContain('- 종목: <b>PAIR1234...DEFG</b> (ticker 미확인)');
-    expect(openMessage).toContain('- 한눈에 보기: TP1 +0.000553 SOL | TP2 +0.001153 SOL | 손절/익절 재검토 필요');
+    expect(openMessage).toContain('<b>PAIR1234...DEFG</b> (ticker 미확인)');
     expect(openMessage).toContain('- 손절: 미설정 (유효한 손절가 없음 / 재검토 필요)');
+    expect(openMessage).toContain('- TP1: +8.0% · +0.000553 SOL @ 0.00750000');
+    expect(openMessage).toContain('- TP2: +16.6% · +0.001153 SOL @ 0.00810000');
     expect(openMessage).not.toContain('-100.0%');
 
     const trade: Trade = {
@@ -184,8 +271,9 @@ describe('messageFormatter', () => {
     };
 
     const closeMessage = buildTradeCloseMessage(trade);
-    expect(closeMessage).toContain('- 종목: <b>PAIR1234...DEFG</b> (ticker 미확인)');
-    expect(closeMessage).toContain('- 종료 사유: 손절');
+    expect(closeMessage).toContain('<b>PAIR1234...DEFG</b> (ticker 미확인)');
+    // 손절 → ㄹ받침 → "로"
+    expect(closeMessage).toContain('- 사유: 손절로 종료 · 보유 5분');
   });
 
   it('formats daily summary with risk and strategy sections', () => {

@@ -58,7 +58,12 @@ export function scheduleDailySummary(ctx: BotContext): void {
   }, 60_000);
 }
 
-/** 2시간 간격 간략 리포트: 운영 스냅샷 + Paper 전적 + 시장 체제 */
+/**
+ * 2시간 간격 간략 리포트.
+ * Why: 사용자 알림(잔액/전적/시장)과 운영 텔레메트리(희박/Freshness/Cohort funnel)를
+ *      하나의 메시지에 섞으면 사용자가 노이즈에 묻혀 계좌 상태를 놓친다.
+ *      별도 카테고리로 분리 발송해 throttle 키도 독립화한다.
+ */
 async function sendHeartbeatReport(ctx: BotContext): Promise<void> {
   const recentTrades = await ctx.tradeStore.getTradesCreatedWithinHours(HEARTBEAT_WINDOW_HOURS);
   const closedRecentTrades = recentTrades.filter(
@@ -69,7 +74,8 @@ async function sendHeartbeatReport(ctx: BotContext): Promise<void> {
     ? ctx.paperBalance
     : await ctx.executor.getBalance();
   const portfolio = await ctx.riskManager.getPortfolioState(balance);
-  const lines: string[] = [
+
+  const userLines: string[] = [
     buildHeartbeatTradingSummary({
       tradingMode: ctx.tradingMode,
       windowHours: HEARTBEAT_WINDOW_HOURS,
@@ -86,23 +92,23 @@ async function sendHeartbeatReport(ctx: BotContext): Promise<void> {
       ctx.paperMetrics.getSummary(HEARTBEAT_WINDOW_HOURS)
     );
     if (performanceSummary) {
-      lines.push(performanceSummary);
+      userLines.push(performanceSummary);
     }
+  }
+
+  if (ctx.regimeFilter) {
+    userLines.push(buildHeartbeatRegimeSummary(ctx.regimeFilter.getState()));
+  }
+
+  if (userLines.length > 0) {
+    await ctx.notifier.sendInfo(userLines.join('\n\n'), 'heartbeat');
   }
 
   const sparseSummary = buildSparseOpsSummaryMessage(
     loadSparseOpsSummary(config.realtimeDataDir, HEARTBEAT_WINDOW_HOURS, 3)
   );
   if (sparseSummary) {
-    lines.push(sparseSummary);
-  }
-
-  if (ctx.regimeFilter) {
-    lines.push(buildHeartbeatRegimeSummary(ctx.regimeFilter.getState()));
-  }
-
-  if (lines.length > 0) {
-    await ctx.notifier.sendInfo(lines.join('\n\n'), 'heartbeat');
+    await ctx.notifier.sendInfo(sparseSummary, 'heartbeat_ops');
   }
 }
 
@@ -222,13 +228,8 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
     await ctx.notifier.sendInfo(paperText, 'paper_metrics');
   }
   if (ctx.regimeFilter) {
-    const regime = ctx.regimeFilter.getState();
-    const regimeIcon = regime.regime === 'risk_on' ? '🟢' : regime.regime === 'risk_off' ? '🔴' : '🟡';
-    const solIcon = regime.solTrendBullish ? '🟢' : '🔴';
-    const solLabel = regime.solTrendBullish ? '강세' : '약세';
     await ctx.notifier.sendInfo(
-      `🔍 시장: ${regimeIcon} ${regime.regime} (${regime.sizeMultiplier}x)\n` +
-      `SOL ${solIcon}${solLabel} | 확산 ${(regime.breadthPct * 100).toFixed(0)}% | 후속 ${(regime.followThroughPct * 100).toFixed(0)}%`,
+      buildHeartbeatRegimeSummary(ctx.regimeFilter.getState()),
       'regime'
     );
   }

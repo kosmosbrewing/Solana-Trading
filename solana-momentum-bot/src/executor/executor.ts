@@ -481,7 +481,13 @@ export class Executor {
     };
   }
 
-  private async getMintDecimals(mint: string): Promise<number | undefined> {
+  /**
+   * Mint decimals 조회 (cached). SOL 은 9 고정, SPL/Token-2022 는 RPC `getParsedAccountInfo`.
+   * 2026-04-19 (QA Q1): entryDriftGuard 가 Jupiter quote response 에 없는 decimals 를
+   * 외부에서 hint 받아야 실질 동작하므로 public 으로 노출.
+   */
+  async getMintDecimals(mint: string): Promise<number | undefined> {
+    if (mint === SOL_MINT) return 9;
     const cached = this.mintDecimals.get(mint);
     if (cached != null) return cached;
     try {

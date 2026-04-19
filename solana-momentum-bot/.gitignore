@@ -23,6 +23,7 @@ data/data/
 data/vps-trades-*.jsonl
 data/vps-trades-*.sql
 data/local-trades-backup-*.jsonl
+logs/*
 
 # Patch 백업
 *.bak

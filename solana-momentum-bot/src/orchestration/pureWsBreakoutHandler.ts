@@ -37,6 +37,7 @@ import { evaluateCupseySignalGate, CupseySignalGateConfig } from '../strategy/cu
 import { evaluateWsBurst } from '../strategy/wsBurstDetector';
 import type { WsBurstDetectorConfig } from '../strategy/wsBurstDetector';
 import { checkProbeViabilityFloor } from '../gate/probeViabilityFloor';
+import { evaluateEntryDriftGuard } from '../gate/entryDriftGuard';
 import { remainingDailyBudget, reportBleed } from '../risk/dailyBleedBudget';
 import { getWalletStopGuardState } from '../risk/walletStopGuard';
 import { evaluateQuickReject } from '../risk/quickRejectClassifier';
@@ -65,7 +66,15 @@ interface PureWsPosition {
   tradeId: string;                // in-memory positionId
   dbTradeId?: string;
   pairAddress: string;
+  /** Jupiter fill 가격 — pnl 계산 기준 (실제 지출 / 수령 토큰). */
   entryPrice: number;
+  /**
+   * 2026-04-19: Signal price (WS feed) — MAE/MFE hard-cut 판정 기준.
+   * Why: Jupiter fill 이 signal 대비 +20-50% 드리프트 되는 경우 (Token-2022 / low-liq route)
+   * entry 기준 MAE 는 시장이 수평인데도 -20% 로 찍혀 즉시 hardcut → bad fill 을 rug 로 오인.
+   * market reference 기준 MAE/MFE 는 실제 가격 움직임만 측정.
+   */
+  marketReferencePrice: number;
   entryTimeSec: number;
   quantity: number;
   state: PureWsTradeState;
@@ -297,6 +306,53 @@ export async function handlePureWsSignal(
     }
   }
 
+  // 2026-04-19: Entry drift guard — Jupiter probe quote 로 expected fill price 를
+  // 미리 계산, signal price 와 drift 가 maxEntryDriftPct 초과면 entry 차단.
+  // Why: 2026-04-18 관측 4 trades 전부 +20~51% fill drift → 체결 즉시 MAE −20% → hard cut
+  // → canary halt. market-ref MAE 로 전환해도 "실제 지출 대비 pnl" 은 항상 음수 시작이므로
+  // bad fill 자체를 차단해야 convexity 목표 부합.
+  // quote 실패 / decimals 미확인은 gate 통과 (observability only).
+  //
+  // 2026-04-19 (QA Q1): Jupiter API response 에 outputDecimals 없음 → executor.getMintDecimals
+  // 로 사전 해결해서 hint 전달해야 guard 가 실질 동작. cache 내부 적용 — 반복 호출 시 0 RPC.
+  if (config.pureWsEntryDriftGuardEnabled && ctx.tradingMode === 'live') {
+    const probeSolAmount = ticketSol;
+    let tokenDecimals: number | undefined;
+    try {
+      const buyExecutor = getPureWsExecutor(ctx);
+      tokenDecimals = await buyExecutor.getMintDecimals(signal.pairAddress);
+    } catch (err) {
+      log.debug(`[PUREWS_ENTRY_DRIFT] ${signal.pairAddress.slice(0, 12)} decimals resolve failed: ${err}`);
+    }
+    const driftResult = await evaluateEntryDriftGuard(
+      {
+        tokenMint: signal.pairAddress,
+        signalPrice: signal.price,
+        probeSolAmount,
+        tokenDecimals,
+      },
+      {
+        jupiterApiUrl: config.jupiterApiUrl,
+        jupiterApiKey: config.jupiterApiKey,
+        maxDriftPct: config.pureWsMaxEntryDriftPct,
+      }
+    );
+    if (driftResult.routeFound && !driftResult.quoteFailed) {
+      log.info(
+        `[PUREWS_ENTRY_DRIFT] ${signal.pairAddress.slice(0, 12)} ` +
+        `signal=${driftResult.signalPrice.toFixed(8)} ` +
+        `expectedFill=${(driftResult.expectedFillPrice ?? 0).toFixed(8)} ` +
+        `drift=${(driftResult.observedDriftPct * 100).toFixed(2)}%`
+      );
+    }
+    if (!driftResult.approved) {
+      log.info(
+        `[PUREWS_ENTRY_DRIFT_REJECT] ${signal.pairAddress.slice(0, 12)} ${driftResult.reason ?? 'drift'}`
+      );
+      return;
+    }
+  }
+
   const nowSec = Math.floor(Date.now() / 1000);
   const positionId = `purews-${signal.pairAddress.slice(0, 8)}-${nowSec}`;
 
@@ -421,16 +477,24 @@ export async function handlePureWsSignal(
     : 0.5;
   const entryTxCount = entryCandle?.tradeCount ?? 0;
 
+  // 2026-04-19: market reference = signal price (MAE/MFE hard-cut 기준).
+  // peakPrice/troughPrice 도 signal price 로 초기화 — 첫 tick 에서 신호 가격 대비
+  // 이동만 반영 (bad fill 의 entry-to-fill gap 은 배제).
+  const marketReferencePrice = config.pureWsUseMarketReferencePrice
+    ? signal.price
+    : actualEntryPrice;
+
   const position: PureWsPosition = {
     tradeId: positionId,
     dbTradeId: persistResult.dbTradeId ?? undefined,
     pairAddress: signal.pairAddress,
     entryPrice: actualEntryPrice,
+    marketReferencePrice,
     entryTimeSec: nowSec,
     quantity: actualQuantity,
     state: 'PROBE',
-    peakPrice: actualEntryPrice,
-    troughPrice: actualEntryPrice,
+    peakPrice: marketReferencePrice,
+    troughPrice: marketReferencePrice,
     tokenSymbol: signal.tokenSymbol,
     sourceLabel: signal.sourceLabel,
     discoverySource: signal.discoverySource,
@@ -489,18 +553,30 @@ export async function updatePureWsPositions(
     const currentPrice = candleBuilder.getCurrentPrice(pos.pairAddress);
     if (currentPrice == null || currentPrice <= 0) continue;
 
-    // HWM peak sanity (Patch B2 동일 원칙)
-    const maxPeak = pos.entryPrice * config.pureWsMaxPeakMultiplier;
-    if (currentPrice > pos.peakPrice && currentPrice <= maxPeak) {
+    // HWM peak sanity (Patch B2 동일 원칙) — max 기준은 market reference price.
+    const referencePrice = pos.marketReferencePrice;
+    const maxPeak = referencePrice * config.pureWsMaxPeakMultiplier;
+    const elapsedForPeak = nowSec - pos.entryTimeSec;
+    // 2026-04-19 (QA Q2): Peak warmup — 진입 직후 pureWsPeakWarmupSec 동안은 봇 자신의
+    // BUY tx 가 pool price 를 띄운 영향이 candleBuilder currentPrice 에 반영될 수 있음.
+    // 따라서 market ref 대비 peakWarmupMaxDeviationPct 이내만 peak 로 인정.
+    const peakCeilingInWarmup =
+      elapsedForPeak < config.pureWsPeakWarmupSec
+        ? referencePrice * (1 + config.pureWsPeakWarmupMaxDeviationPct)
+        : maxPeak;
+    if (currentPrice > pos.peakPrice && currentPrice <= peakCeilingInWarmup) {
       pos.peakPrice = currentPrice;
     }
     if (currentPrice < pos.troughPrice) {
       pos.troughPrice = currentPrice;
     }
 
-    const mfePct = (pos.peakPrice - pos.entryPrice) / pos.entryPrice;
-    const maePct = (pos.troughPrice - pos.entryPrice) / pos.entryPrice;
-    const currentPct = (currentPrice - pos.entryPrice) / pos.entryPrice;
+    // 2026-04-19: MAE/MFE/currentPct 는 market reference (signal price) 기준.
+    // Jupiter bad-fill 의 entry-to-fill gap 이 시장 이동으로 잡히지 않도록 분리.
+    // Pnl 계산은 아래 closePureWsPosition 에서 entryPrice (Jupiter fill) 기준 유지.
+    const mfePct = (pos.peakPrice - referencePrice) / referencePrice;
+    const maePct = (pos.troughPrice - referencePrice) / referencePrice;
+    const currentPct = (currentPrice - referencePrice) / referencePrice;
     const elapsedSec = nowSec - pos.entryTimeSec;
 
     switch (pos.state) {
@@ -595,7 +671,10 @@ export async function updatePureWsPositions(
       case 'RUNNER_T1': {
         if (mfePct >= config.pureWsT2MfeThreshold) {
           pos.state = 'RUNNER_T2';
-          pos.t2BreakevenLockPrice = pos.entryPrice * config.pureWsT2BreakevenLockMultiplier;
+          // 2026-04-19: T2 breakeven lock 는 peakPrice/trailStop 과 같은 domain 이어야
+          // 한다 (market reference 기반). Pnl break-even 은 closePureWsPosition 에서
+          // entry (Jupiter fill) 기준으로 별도 계산.
+          pos.t2BreakevenLockPrice = referencePrice * config.pureWsT2BreakevenLockMultiplier;
           funnelStats.winnersT2++;
           log.info(
             `[PUREWS_T2] ${id} promoted RUNNER_T2 MFE=${(mfePct * 100).toFixed(2)}% ` +
@@ -629,7 +708,7 @@ export async function updatePureWsPositions(
         if (await checkHoldPhaseDegraded(id, pos, currentPrice, candleBuilder, ctx)) continue;
         const trailStop = Math.max(
           pos.peakPrice * (1 - config.pureWsT2TrailingPct),
-          pos.t2BreakevenLockPrice ?? pos.entryPrice * config.pureWsT2BreakevenLockMultiplier
+          pos.t2BreakevenLockPrice ?? referencePrice * config.pureWsT2BreakevenLockMultiplier
         );
         if (currentPrice <= trailStop) {
           log.info(
@@ -648,7 +727,7 @@ export async function updatePureWsPositions(
         // No time stop — runner mode. 단일 exit = trail 25%.
         const trailStop = Math.max(
           pos.peakPrice * (1 - config.pureWsT3TrailingPct),
-          pos.t2BreakevenLockPrice ?? pos.entryPrice * config.pureWsT2BreakevenLockMultiplier
+          pos.t2BreakevenLockPrice ?? referencePrice * config.pureWsT2BreakevenLockMultiplier
         );
         if (currentPrice <= trailStop) {
           log.info(
@@ -858,7 +937,7 @@ async function closePureWsPositionSerialized(
   log.info(
     `[PUREWS_CLOSED] ${id} ${sym} reason=${reason} state=${previousState} ` +
     `pnl=${pnl >= 0 ? '+' : ''}${pnl.toFixed(6)} SOL (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%) ` +
-    `hold=${holdSec}s peak=${((pos.peakPrice - pos.entryPrice) / pos.entryPrice * 100).toFixed(2)}%`
+    `hold=${holdSec}s peak=${((pos.peakPrice - pos.marketReferencePrice) / pos.marketReferencePrice * 100).toFixed(2)}%`
   );
 
   if (tradeId && dbCloseSucceeded) {
@@ -940,16 +1019,24 @@ export async function recoverPureWsOpenPositions(ctx: BotContext): Promise<numbe
       ? trade.entryPrice * config.pureWsT2BreakevenLockMultiplier
       : undefined;
 
+    // 2026-04-19: DB 에 marketReferencePrice 저장 안 됨 → plannedEntryPrice (= signal price)
+    // fallback, 없으면 entryPrice. 재시작 이후 새 tick 부터 market ref 기준 적용.
+    const marketReferencePrice =
+      trade.plannedEntryPrice ?? trade.entryPrice;
+    // 2026-04-19 (QA Q4): troughPrice 도 marketReferencePrice domain 이어야 MAE 계산 정합.
+    // 기존처럼 entryPrice (fill) 기준으로 두면 trough 가 marketRef 보다 높아 초기 MAE 가
+    // 음수로 안 찍힘 → real market drop 반영 지연.
     activePositions.set(positionId, {
       tradeId: positionId,
       dbTradeId: trade.id,
       pairAddress: trade.pairAddress,
       entryPrice: trade.entryPrice,
+      marketReferencePrice,
       entryTimeSec,
       quantity: trade.quantity,
       state: inferredState,
       peakPrice: safePeak,
-      troughPrice: trade.entryPrice,
+      troughPrice: marketReferencePrice,
       tokenSymbol: trade.tokenSymbol,
       sourceLabel: trade.sourceLabel,
       discoverySource: trade.discoverySource,

@@ -25,11 +25,12 @@ jest.mock('axios', () => ({
   get: mockAxiosGet,
 }));
 
-import { evaluateEntryDriftGuard } from '../src/gate/entryDriftGuard';
+import { evaluateEntryDriftGuard, resetEntryDriftGuardState } from '../src/gate/entryDriftGuard';
 
 describe('entryDriftGuard', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    resetEntryDriftGuardState();
   });
 
   it('rejects when Jupiter expected fill > signal price by threshold — 2026-04-18 pippin regression', () => {
@@ -179,5 +180,98 @@ describe('entryDriftGuard', () => {
     expect(r.approved).toBe(true); // gate 는 통과하지만
     expect(r.reason).toBe('invalid_input');
     expect(mockAxiosGet).not.toHaveBeenCalled();
+  });
+
+  // ─── P0-2 Jupiter 429 방어 회귀 ───
+  // Why: 2026-04-19 8h 관측 3,998건 quote 429 — sub-ms burst 의 동일 pair 반복 호출이 원인.
+
+  it('[P0-2] collapses concurrent burst on same pair into a single Jupiter call', async () => {
+    // 단일 Promise 를 직접 제어하여 "pending 중 128 call" burst 를 재현.
+    let resolveQuote: (value: unknown) => void = () => {};
+    const pending = new Promise((resolve) => {
+      resolveQuote = resolve;
+    });
+    mockAxiosGet.mockReturnValueOnce(pending);
+
+    const input = {
+      tokenMint: 'BurstToken111111111111111111111111111111111',
+      signalPrice: 0.00011, // 90M tokens → 0.01/90 = 0.000111 → drift +1%
+      probeSolAmount: 0.01,
+    };
+    // 128 concurrent call — 실제 04:09:42.144-.153 window 재현.
+    const promises = Array.from({ length: 128 }, () =>
+      evaluateEntryDriftGuard(input, { maxDriftPct: 0.02 })
+    );
+    resolveQuote({ data: { outAmount: '90000000', outputDecimals: 6 } });
+    const results = await Promise.all(promises);
+
+    // In-flight dedup + result cache 로 axios call 은 1 회.
+    expect(mockAxiosGet).toHaveBeenCalledTimes(1);
+    // 모두 approve (drift +1% < 2%)
+    expect(results.every((r) => r.approved === true)).toBe(true);
+    // 첫 번째만 miss, 나머지는 in_flight_join 또는 result_hit
+    const joined = results.filter(
+      (r) => r.cacheStatus === 'in_flight_join' || r.cacheStatus === 'result_hit'
+    );
+    expect(joined.length).toBe(127);
+  });
+
+  it('[P0-2] trips rate-limit circuit breaker on 429 and short-circuits subsequent calls', async () => {
+    // 1st call: 429 throw. 2nd call: cooldown 기간 내 — axios 호출 자체 skip.
+    const err: Error & { response?: { status: number } } = new Error('Request failed with status code 429');
+    err.response = { status: 429 };
+    mockAxiosGet.mockRejectedValueOnce(err);
+
+    const input = {
+      tokenMint: 'RateLimitToken222222222222222222222222222222',
+      signalPrice: 0.0001,
+      probeSolAmount: 0.01,
+    };
+    const first = await evaluateEntryDriftGuard(input, {
+      maxDriftPct: 0.02,
+      rateLimitCooldownMs: 5_000,
+      resultCacheTtlMs: 0, // result cache 영향 제거 — circuit breaker 단독 검증.
+    });
+    expect(first.quoteFailed).toBe(true);
+    expect(first.reason).toMatch(/quote_error/);
+
+    const second = await evaluateEntryDriftGuard(
+      {
+        tokenMint: 'DifferentToken3333333333333333333333333333333',
+        signalPrice: 0.0001,
+        probeSolAmount: 0.01,
+      },
+      { maxDriftPct: 0.02, rateLimitCooldownMs: 5_000, resultCacheTtlMs: 0 }
+    );
+    expect(mockAxiosGet).toHaveBeenCalledTimes(1); // 2nd call 은 axios 건드리지 않음
+    expect(second.quoteFailed).toBe(true);
+    expect(second.reason).toBe('rate_limited_cooldown');
+    expect(second.cacheStatus).toBe('rate_limited');
+    expect(second.approved).toBe(true); // fail-open — entry 차단 금지 (observability only)
+  });
+
+  it('[P0-2] caches successful quote for TTL window, skipping repeat Jupiter calls', async () => {
+    mockAxiosGet.mockResolvedValueOnce({
+      data: { outAmount: '90000000', outputDecimals: 6 },
+    });
+
+    const input = {
+      tokenMint: 'CachedToken4444444444444444444444444444444444',
+      signalPrice: 0.00011,
+      probeSolAmount: 0.01,
+    };
+    const first = await evaluateEntryDriftGuard(input, {
+      maxDriftPct: 0.02,
+      resultCacheTtlMs: 5_000,
+    });
+    const second = await evaluateEntryDriftGuard(input, {
+      maxDriftPct: 0.02,
+      resultCacheTtlMs: 5_000,
+    });
+
+    expect(mockAxiosGet).toHaveBeenCalledTimes(1);
+    expect(first.cacheStatus).toBe('miss');
+    expect(second.cacheStatus).toBe('result_hit');
+    expect(second.approved).toBe(true);
   });
 });

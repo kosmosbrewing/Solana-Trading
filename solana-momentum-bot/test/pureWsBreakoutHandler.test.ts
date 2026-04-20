@@ -332,6 +332,68 @@ describe('pureWsBreakoutHandler — tiered runner', () => {
     await updatePureWsPositions(ctx, builder);
     expect(tradeStore.closeTrade).not.toHaveBeenCalled();
   });
+
+  it('[2026-04-20 P0 fix] orphan close — tokenBalance==0 in live mode force-closes instead of infinite retry', async () => {
+    // Regression anchor: VPS 4/20 08:19 BOME(ukHH6c7m) 관측 — tokenBalance=0 이지만 position
+    // DB OPEN → close 시 throw → previousState 복원 → 매 tick 재시도 → 3,982 spam.
+    // Fix: live 경로에서 tokenBalance=0 감지 시 orphan close 로 처리 (pnl=0, reason=ORPHAN_NO_BALANCE).
+    const pair = 'PAIR_ORPHAN';
+    const entryPrice = 1.0;
+    addPureWsPositionForTests({
+      tradeId: `purews-${pair.slice(0, 8)}-${nowSec()}`,
+      dbTradeId: 'db-orphan',
+      pairAddress: pair,
+      entryPrice,
+      marketReferencePrice: entryPrice,
+      entryTimeSec: nowSec() - 60, // warmup 이후
+      quantity: 100,
+      state: 'PROBE',
+      peakPrice: entryPrice,
+      troughPrice: entryPrice * 0.9, // MAE -10% → hardcut 트리거
+    });
+
+    const executor = {
+      getBalance: jest.fn(async () => 1.0),
+      getTokenBalance: jest.fn(async () => 0n), // 지갑에 토큰 없음 — orphan
+      executeSell: jest.fn(),
+    };
+    const notifier = {
+      sendCritical: jest.fn(async () => {}),
+      sendTradeClose: jest.fn(async () => {}),
+      sendInfo: jest.fn(async () => {}),
+    };
+    const tradeStore = {
+      insertTrade: jest.fn(async () => 'db-trade-id'),
+      closeTrade: jest.fn(async () => {}),
+      getOpenTrades: jest.fn(async () => []),
+    };
+    const ctx = {
+      tradingMode: 'live', // live 모드에서만 sell 시도 경로 활성화
+      notifier,
+      tradeStore,
+      executor,
+    } as unknown as BotContext;
+
+    const builder = makeBuilder(new Map([[pair, 0.9]])); // hardcut 트리거 가격
+    await updatePureWsPositions(ctx, builder);
+
+    // Fix 검증:
+    // 1. executeSell 호출되지 않음 (tokenBalance=0 이므로 실제 sell skip)
+    expect(executor.executeSell).not.toHaveBeenCalled();
+    // 2. DB close 수행됨 (orphan 정리)
+    expect(tradeStore.closeTrade).toHaveBeenCalledTimes(1);
+    const closeCalls = tradeStore.closeTrade.mock.calls as unknown as any[][];
+    const closeCall = closeCalls[0][0];
+    expect(closeCall.exitReason).toBe('ORPHAN_NO_BALANCE');
+    expect(closeCall.pnl).toBe(0);
+    // 3. position 이 CLOSED 상태로 전환 → 다음 tick 재시도 없음
+    const state = [...getActivePureWsPositions().values()][0];
+    expect(state.state).toBe('CLOSED');
+    // 4. notifier 1회 (spam 방지)
+    expect(notifier.sendCritical).toHaveBeenCalledTimes(1);
+    const notifierCalls = notifier.sendCritical.mock.calls as unknown as any[][];
+    expect(notifierCalls[0][0]).toBe('purews_orphan_close');
+  });
 });
 
 describe('pureWsBreakoutHandler — wallet mode resolution', () => {

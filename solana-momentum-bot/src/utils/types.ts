@@ -190,7 +190,12 @@ export type CloseReason =
   | 'WINNER_BREAKEVEN'
   | 'EMERGENCY'
   | 'MANUAL'
-  | 'RECOVERED_CLOSED';
+  | 'RECOVERED_CLOSED'
+  // 2026-04-20: 지갑에 해당 토큰이 없어서 sell 불가 — orphan 상태를 정상 close 로 마감.
+  // Why: 외부 sell / rug / DB OPEN 상태로 남은 이전 세션 trade 등으로 recovery 시 또는 close
+  // 시점에 tokenBalance==0 이 관측됨. 기존 동작은 throw → previousState 복원 → 무한 loop.
+  // pnl=0 으로 closed 처리하여 loop 종료 + canary streak 리셋.
+  | 'ORPHAN_NO_BALANCE';
 export type SizeConstraint = 'RISK' | 'LIQUIDITY' | 'EMERGENCY';
 
 export interface Order {

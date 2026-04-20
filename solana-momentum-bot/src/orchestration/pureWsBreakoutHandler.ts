@@ -857,7 +857,23 @@ async function closePureWsPositionSerialized(
           holdSec,
         });
       } else {
-        throw new Error('no token balance for purews close');
+        // 2026-04-20 P0 fix: orphan position (지갑에 토큰 없음) — 기존 `throw Error` 는
+        // previousState 복원 → 매 tick sell 재시도 → 무한 loop (VPS 4/20 관측 3,982회/8분).
+        // 원인: 외부 sell / rug / DB OPEN 으로 남은 이전 세션 trade recovery.
+        // Fix: tokenBalance==0 을 정상 close 로 마감 — pnl=0, reason=ORPHAN_NO_BALANCE,
+        // sellCompleted=true 로 DB close 진행. 1회 critical notifier.
+        log.warn(
+          `[PUREWS_ORPHAN_CLOSE] ${id} ${pos.pairAddress.slice(0, 12)} zero token balance — ` +
+          `force closing (previousReason=${reason} entry=${pos.entryPrice.toFixed(8)} qty=${pos.quantity})`
+        );
+        reason = 'ORPHAN_NO_BALANCE';
+        actualExitPrice = pos.entryPrice;  // pnl = 0
+        sellCompleted = true;
+        exitTxSignature = pos.entryTxSignature ?? 'ORPHAN_NO_TX';
+        await ctx.notifier.sendCritical(
+          'purews_orphan_close',
+          `${id} ${pos.pairAddress} zero token balance at close — force closing with 0 pnl`
+        ).catch(() => {});
       }
     } catch (sellErr) {
       log.warn(`[PUREWS_LIVE_SELL] ${id} sell failed: ${sellErr}`);
@@ -1004,6 +1020,44 @@ export async function recoverPureWsOpenPositions(ctx: BotContext): Promise<numbe
   let recovered = 0;
 
   for (const trade of pureWsOpenTrades) {
+    // 2026-04-20 P0 fix: 선제 orphan 검사 — live 모드에서만 수행.
+    // Why: DB OPEN 인데 지갑에 토큰이 없는 trade 를 in-memory 로 로드하면 tick 마다 close 시도
+    // → getTokenBalance==0 → 3,982 회 sell 재시도 spam (4/20 BOME ukHH6c7m 관측).
+    // 해결: balance==0 이면 DB 를 직접 orphan close 로 업데이트하고 in-memory load 건너뛴다.
+    // balance check 실패 (RPC 문제 등) 시 기존 recovery 로 load (보수적 fallback).
+    if (ctx.tradingMode === 'live') {
+      try {
+        const probeExecutor = getPureWsExecutor(ctx);
+        const onchainBalance = await probeExecutor.getTokenBalance(trade.pairAddress);
+        if (onchainBalance === 0n) {
+          log.warn(
+            `[PUREWS_RECOVERY_ORPHAN] trade=${trade.id.slice(0, 8)} pair=${trade.pairAddress.slice(0, 12)} ` +
+            `zero token balance — closing DB with 0 pnl, skipping in-memory load`
+          );
+          await ctx.tradeStore.closeTrade({
+            id: trade.id,
+            exitPrice: trade.entryPrice,
+            pnl: 0,
+            slippage: 0,
+            exitReason: 'ORPHAN_NO_BALANCE',
+            exitSlippageBps: undefined,
+            decisionPrice: trade.entryPrice,
+          }).catch((err) => log.error(`[PUREWS_RECOVERY_ORPHAN] DB close failed for ${trade.id}: ${err}`));
+          await ctx.notifier.sendCritical(
+            'purews_recovery_orphan',
+            `recovery: ${trade.id.slice(0, 8)} ${trade.pairAddress} zero balance — DB closed, not loaded`
+          ).catch(() => {});
+          continue;
+        }
+      } catch (balanceErr) {
+        // RPC 실패 시 보수적으로 기존 recovery 로 진행 (close loop fix 가 안전망 역할).
+        log.warn(
+          `[PUREWS_RECOVERY_ORPHAN] balance check failed for ${trade.pairAddress.slice(0, 12)}: ` +
+          `${balanceErr} — falling back to in-memory load`
+        );
+      }
+    }
+
     // Sanitize HWM (Patch B2 pattern)
     const highWaterMark = trade.highWaterMark ?? trade.entryPrice;
     const safePeak = Math.min(highWaterMark, trade.entryPrice * config.pureWsMaxPeakMultiplier);
@@ -1080,6 +1134,12 @@ export async function scanPureWsV2Burst(
 ): Promise<void> {
   if (!config.pureWsLaneEnabled) return;
   if (!config.pureWsV2Enabled) return;
+  // 2026-04-20 P2 fix: lane halt 활성화 상태면 scan 자체를 skip.
+  // Why: 기존 동작은 v2 evaluateWsBurst + PUREWS_V2_PASS 로그를 매번 찍은 뒤 handler 에서
+  // `PUREWS_ENTRY_HALT` 로 return → position 안 만들어짐 → cooldown 설정 안 됨 →
+  // 다음 scan 에서 다시 pass → 무한 loop (4/20 관측 GEr3mp 567 반복 pass).
+  // halt 가 풀리기 전까지는 scan 의미 없음 — 로그 spam + Jupiter rate-limit 유발.
+  if (isEntryHaltActive(LANE_STRATEGY)) return;
 
   const detectorCfg = buildV2DetectorConfig();
   const requiredCandles = detectorCfg.nRecent + detectorCfg.nBaseline;

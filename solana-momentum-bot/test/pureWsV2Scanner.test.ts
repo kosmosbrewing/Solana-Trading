@@ -234,6 +234,25 @@ describe('Phase 1.3 — scanPureWsV2Burst', () => {
     expect(tradeStore.insertTrade).not.toHaveBeenCalled();
   });
 
+  it('[2026-04-20 P2 fix] entry halt active → scan returns early, no detector eval, no V2_PASS log', async () => {
+    // 4/20 관측: GEr3mp 567 V2_PASS burst 가 canary halt 상태에서도 계속 찍힘.
+    // 원인: halt 시 handler 가 PUREWS_ENTRY_HALT 로 return → position 안 만들어짐 →
+    // cooldown 설정 안 됨 → 다음 scan 에서 다시 pass 로그 → 무한 loop.
+    // Fix: scanPureWsV2Burst 진입 시 halt 활성화되어 있으면 no-op.
+    const { triggerEntryHalt } = await import('../src/orchestration/entryIntegrity');
+    triggerEntryHalt('pure_ws_breakout', 'test P2 halt');
+
+    const pair = 'PAIR_HALT';
+    const candles = buildBurstyCandles(pair);
+    const builder = makeBuilder(new Map([[pair, candles]]), new Map([[pair, 1.10]]));
+    const { ctx, tradeStore } = makeCtx('paper');
+    // scan — halt 상태라 detector 호출 자체 skip
+    await scanPureWsV2Burst(ctx, builder, [pair]);
+
+    expect(tradeStore.insertTrade).not.toHaveBeenCalled();
+    expect(getActivePureWsPositions().size).toBe(0);
+  });
+
   it('QA F8 fix: viability rejection does NOT set per-pair cooldown', async () => {
     // 이전 bug: scanner 가 handler call 전에 cooldown 설정 → 어떤 이유로든 handler reject 해도 5min 락업.
     // 수정 후: handler 가 position 을 실제로 만들 때만 cooldown 설정. reject 시 다음 candle 에서 재시도 가능.

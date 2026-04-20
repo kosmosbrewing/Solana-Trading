@@ -1,5 +1,80 @@
 # Block QA
 
+## Orphan Close Loop + V2 Scanner Halt Gate (2026-04-20)
+
+- Date: 2026-04-20
+- Trigger: VPS 24h 관측에서 `purews-ukHH6c7m-1776644353` (BOME) 포지션이 **3,982회/8분** sell 재시도 spam + V2 scanner 가 halt 상태에서도 `GEr3mp` pair 에 대해 567회 PASS 로그 스팸
+- Scope: `src/orchestration/pureWsBreakoutHandler.ts`, `src/utils/types.ts`, `src/notifier/messageFormatter.ts`
+
+### Findings & Fix
+
+**P0a — Orphan position 무한 close 루프** (`closePureWsPositionSerialized`):
+- 증상: live 모드에서 `getTokenBalance==0n` 시 `throw new Error('no token balance')` → catch 가 `pos.state = previousState` 복원 → 매 tick 마다 재시도 → 초당 ~8회 spam
+- 원인: 외부 sell / rug / DB OPEN 상태로 남은 이전 세션 trade 가 recovery 로 인-메모리 로드
+- Fix: `tokenBalance==0n` 을 orphan 정상 close 경로로 분기 — `reason='ORPHAN_NO_BALANCE'`, `actualExitPrice=pos.entryPrice` (pnl=0), `sellCompleted=true`, DB close 수행, critical notifier 1회
+
+**P0b — Recovery 시 선제 orphan 검사** (`recoverPureWsOpenPositions`):
+- 증상: 재시작 직후 orphan 이 in-memory 로 로드되어 close loop 트리거
+- Fix: live 모드에서 recovery 전 `getTokenBalance` 검사 → 0 이면 **DB 직접 close** (reason=ORPHAN_NO_BALANCE, pnl=0) + in-memory load 건너뜀
+- Balance check 실패 시 기존 recovery 로 진행 (close loop fix 가 안전망)
+
+**P2 — V2 scanner halt 상태에서도 detector 실행 + V2_PASS 로그 spam** (`scanPureWsV2Burst`):
+- 증상: `GEr3mp` pair 에 대해 halt 상태에서도 567회 PASS 로그, Jupiter quote spam
+- 원인: halt 시 handler 가 `PUREWS_ENTRY_HALT` 로 return → position 생성 실패 → cooldown 설정 안 됨 → 다음 scan 에서 다시 pass → 무한 loop
+- Fix: scan 진입 시점에 `isEntryHaltActive(LANE_STRATEGY)` 체크 → halt 활성화되어 있으면 **scan 자체 no-op**
+
+### 새 타입
+
+```ts
+export type CloseReason =
+  | ...
+  | 'ORPHAN_NO_BALANCE';  // 2026-04-20 신규
+```
+
+notifier label: `ORPHAN_NO_BALANCE: '잔고 없음 (고아 포지션 정리)'`
+
+### 신규 테스트
+
+- `test/pureWsBreakoutHandler.test.ts` — **[2026-04-20 P0 fix] orphan close**: live 모드 + tokenBalance=0 → executeSell 미호출 / DB close ORPHAN_NO_BALANCE / state=CLOSED / notifier 1회
+- `test/pureWsV2Scanner.test.ts` — **[2026-04-20 P2 fix] entry halt active → scan returns early**: halt 상태에서 scan 호출 시 insertTrade 0회 / 포지션 생성 0건
+
+### 검증
+
+- `tsc --noEmit` 0 errors
+- `jest` 823 pass (기존 813 + P0/P2 fix 로 신규 10) / 1 pre-existing riskManager fail 무관
+
+### 배포 효과
+
+- 24h 관측 3,982 sell 재시도 spam 제거 → RPC / Jupiter API 낭비 해소
+- V2 scanner halt 시 detector/log no-op → Jupiter rate-limit 부담 경감 (P0-2 방어와 결합)
+- Orphan position 이 DB 에 OPEN 유지되는 상태 방지 → 재시작 후 clean state
+
+### Deployment Runbook
+
+```bash
+ssh root@104.238.181.61 << 'EOF'
+cd ~/Solana/Solana-Trading/solana-momentum-bot
+git pull origin main
+npm run build
+pm2 restart solana-bot
+pm2 logs solana-bot --lines 30 --nostream
+EOF
+```
+
+재시작 직후 관측:
+1. `[PUREWS_RECOVERY_ORPHAN]` 로그 — 기존 orphan 이 자동 DB close 되어 in-memory 미로드 확인
+2. `[PUREWS_ORPHAN_CLOSE]` 로그 — runtime orphan 감지 시 1회만 발생
+3. `[PUREWS_V2_PASS]` 로그 — halt 풀린 상태에서만 찍힘 (spam 종료)
+4. `[PUREWS_LIVE_SELL] sell failed` 반복 로그 — 더 이상 없음
+
+### Follow-up
+
+- V1 경로 (`handlePureWsSignal`) 에도 per-pair cooldown 추가 여부 (bootstrap 자체가 10s 주기라 우선순위 낮음)
+- `marketReferencePrice` DB 저장 (recovery 정합성 향상)
+- 토큰 잔고 이상 감지 주기적 reconciler (외부 sell 감지)
+
+---
+
 ## Pure_ws Entry Drift + Dual Price Tracker (2026-04-19)
 
 - Date: 2026-04-19

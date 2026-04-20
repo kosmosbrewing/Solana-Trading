@@ -48,6 +48,7 @@ const CLOSE_REASON_LABELS: Record<CloseReason, string> = {
   EMERGENCY: '긴급 종료',
   MANUAL: '수동 종료',
   RECOVERED_CLOSED: '복구 후 정리',
+  ORPHAN_NO_BALANCE: '잔고 없음 (고아 포지션 정리)',
 };
 
 const SIZE_CONSTRAINT_LABELS: Record<SizeConstraint, string> = {

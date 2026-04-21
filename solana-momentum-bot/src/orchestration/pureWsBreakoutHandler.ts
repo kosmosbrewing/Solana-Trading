@@ -38,6 +38,8 @@ import { evaluateWsBurst } from '../strategy/wsBurstDetector';
 import type { WsBurstDetectorConfig } from '../strategy/wsBurstDetector';
 import { checkProbeViabilityFloor } from '../gate/probeViabilityFloor';
 import { evaluateEntryDriftGuard } from '../gate/entryDriftGuard';
+import { evaluateSellQuoteProbe } from '../gate/sellQuoteProbe';
+import { evaluateSecurityGate } from '../gate/securityGate';
 import { remainingDailyBudget, reportBleed } from '../risk/dailyBleedBudget';
 import { getWalletStopGuardState } from '../risk/walletStopGuard';
 import { evaluateQuickReject } from '../risk/quickRejectClassifier';
@@ -155,9 +157,81 @@ export function resolvePureWsWalletLabel(ctx: BotContext): 'main' | 'sandbox' {
 // Why: paper replay 에서 Top pair (pippin 164 pass / 32k eval) 쏠림 관측. 같은 pair 에 연속 burst 진입 방지.
 const v2LastTriggerSecByPair = new Map<string, number>();
 
+// 2026-04-21 P1: v1 (bootstrap) 경로 per-pair cooldown.
+// Why: VPS 4/20-21 관측 — bootstrap_10s 가 BOME(ukHH6c7m) 한 토큰에 반복 signal → duplicate
+// guard 는 "이미 holding" 상태만 차단하므로 close 직후 재signal 이 들어오면 또 진입 →
+// 4 consecutive losers → canary halt 조기 유발. v2 와 동일 메커니즘으로 close 이후에도
+// pair-level cooldown 적용하여 pair diversity 확보.
+const v1LastEntrySecByPair = new Map<string, number>();
+
+// 2026-04-21 P0 (observability): v2 scanner 가 production 에서 24h 동안 PASS 0건 관측됨.
+// reject 는 log.debug 라 INFO 레벨 운영 로그에 안 찍혀 진단 불가.
+// counter 기반 누적 telemetry 를 주기적으로 info log 출력 — threshold 튜닝 근거 확보.
+interface PureWsV2TelemetryState {
+  scansCalled: number;
+  pairsEvaluated: number;
+  candlesInsufficient: number;
+  detectorRejects: Record<string, number>;
+  noCurrentPrice: number;
+  cooldownSkipped: number;
+  haltSkipped: number;
+  passed: number;
+  sessionStartMs: number;
+}
+
+const v2Telemetry: PureWsV2TelemetryState = {
+  scansCalled: 0,
+  pairsEvaluated: 0,
+  candlesInsufficient: 0,
+  detectorRejects: {},
+  noCurrentPrice: 0,
+  cooldownSkipped: 0,
+  haltSkipped: 0,
+  passed: 0,
+  sessionStartMs: Date.now(),
+};
+
+export function getPureWsV2Telemetry(): Readonly<PureWsV2TelemetryState> {
+  return v2Telemetry;
+}
+
+export function resetPureWsV2TelemetryForTests(): void {
+  v2Telemetry.scansCalled = 0;
+  v2Telemetry.pairsEvaluated = 0;
+  v2Telemetry.candlesInsufficient = 0;
+  v2Telemetry.detectorRejects = {};
+  v2Telemetry.noCurrentPrice = 0;
+  v2Telemetry.cooldownSkipped = 0;
+  v2Telemetry.haltSkipped = 0;
+  v2Telemetry.passed = 0;
+  v2Telemetry.sessionStartMs = Date.now();
+}
+
+/**
+ * 주기적으로 (caller: HealthMonitor tick) 호출되어 v2 scan 누적 통계를 info 로그로 출력.
+ * counter 는 reset 하지 않고 누적 유지 — 운영자가 lifetime 추이도 관찰 가능.
+ * detectorRejects 는 top 3 reason 만 inline 으로, 나머지는 'other' 로 집계.
+ */
+export function logPureWsV2TelemetrySummary(): void {
+  if (!config.pureWsLaneEnabled || !config.pureWsV2Enabled) return;
+  const t = v2Telemetry;
+  const rejectEntries = Object.entries(t.detectorRejects).sort((a, b) => b[1] - a[1]);
+  const top3 = rejectEntries.slice(0, 3).map(([k, v]) => `${k}=${v}`).join(',');
+  const rest = rejectEntries.slice(3).reduce((sum, [, v]) => sum + v, 0);
+  const rejectSummary = top3 + (rest > 0 ? `,other=${rest}` : '');
+  const uptimeMin = Math.round((Date.now() - t.sessionStartMs) / 60000);
+  log.info(
+    `[PUREWS_V2_SUMMARY] uptime=${uptimeMin}m scans=${t.scansCalled} ` +
+    `eval=${t.pairsEvaluated} insuf=${t.candlesInsufficient} ` +
+    `rejects=[${rejectSummary || 'none'}] noPrice=${t.noCurrentPrice} ` +
+    `cooldown=${t.cooldownSkipped} halt=${t.haltSkipped} PASS=${t.passed}`
+  );
+}
+
 export function resetPureWsLaneStateForTests(): void {
   activePositions.clear();
   v2LastTriggerSecByPair.clear();
+  v1LastEntrySecByPair.clear();
   funnelStats.signalsReceived = 0;
   funnelStats.gatePass = 0;
   funnelStats.entry = 0;
@@ -169,6 +243,73 @@ export function resetPureWsLaneStateForTests(): void {
   funnelStats.winnersT2 = 0;
   funnelStats.winnersT3 = 0;
   funnelStats.sessionStartAt = new Date();
+}
+
+/**
+ * 2026-04-21 Survival Layer (P0 mission-refinement-2026-04-21):
+ * pure_ws 진입 전 security + exit liquidity 체크.
+ *
+ * 반환 형태는 evaluateSecurityGate 와 유사하지만 sizing multiplier 는 제거 (pure_ws fixed ticket).
+ * gateCache 재사용 — bootstrap path 에서 이미 populate 된 pair 는 즉시 hit.
+ *
+ * 데이터 resolve 실패 (RPC 간헐 / onchainSecurityClient 미구성) 시 config 로 제어:
+ *  - `pureWsSurvivalAllowDataMissing=true`  → 진입 허용 (observability flag `NO_SECURITY_DATA`)
+ *  - `pureWsSurvivalAllowDataMissing=false` → 보수적 reject
+ */
+async function checkPureWsSurvival(
+  tokenMint: string,
+  ctx: BotContext
+): Promise<{ approved: boolean; reason?: string; flags: string[] }> {
+  // 1) gateCache hit: bootstrap path 에서 populate 된 data 재사용
+  const cached = ctx.gateCache?.get(tokenMint);
+  let tokenSecurityData = cached?.tokenSecurityData ?? null;
+  let exitLiquidityData = cached?.exitLiquidityData ?? null;
+
+  // 2) cache miss — onchainSecurityClient 직접 조회
+  if (!cached && ctx.onchainSecurityClient) {
+    try {
+      const [secData, exitData] = await Promise.all([
+        ctx.onchainSecurityClient.getTokenSecurityDetailed(tokenMint),
+        ctx.onchainSecurityClient.getExitLiquidity(tokenMint),
+      ]);
+      tokenSecurityData = secData;
+      exitLiquidityData = exitData;
+      // cache populate 하여 같은 signal 반복 시 RPC 절약
+      ctx.gateCache?.set(tokenMint, {
+        tokenSecurityData: secData,
+        exitLiquidityData: exitData,
+      });
+    } catch (err) {
+      log.warn(`[PUREWS_SURVIVAL] ${tokenMint.slice(0, 12)} security fetch failed: ${err}`);
+    }
+  }
+
+  // 3) 데이터 자체 없음 (client 미구성 or 조회 실패)
+  if (!tokenSecurityData) {
+    if (config.pureWsSurvivalAllowDataMissing) {
+      return { approved: true, flags: ['NO_SECURITY_DATA'] };
+    }
+    return {
+      approved: false,
+      reason: 'security_data_unavailable',
+      flags: ['NO_SECURITY_DATA'],
+    };
+  }
+
+  // 4) evaluateSecurityGate 재사용 — 공유 로직 단일화.
+  //    exit liquidity 값은 null 이어도 gate 가 soft handling (reduced sizing).
+  //    pure_ws 는 fixed ticket 이므로 sizing 은 무시, approved flag 만 본다.
+  const gateResult = evaluateSecurityGate(tokenSecurityData, exitLiquidityData, {
+    minExitLiquidityUsd: config.pureWsSurvivalMinExitLiquidityUsd,
+    maxTop10HolderPct: config.pureWsSurvivalMaxTop10HolderPct,
+    // pure_ws 는 mintable reject 유지 (allowMintableWithReduction=false default).
+  });
+
+  return {
+    approved: gateResult.approved,
+    reason: gateResult.reason,
+    flags: gateResult.flags,
+  };
 }
 
 function buildV2DetectorConfig(): WsBurstDetectorConfig {
@@ -228,6 +369,23 @@ export async function handlePureWsSignal(
     }
   }
 
+  // 2026-04-21 P1: v1 (bootstrap) 경로 per-pair cooldown.
+  // v2 sourced signal (ws_burst_v2) 은 scanner 가 cooldown 관리하므로 여기선 v1 만 적용.
+  // BOME 같이 같은 pair 반복 진입 → consecutive losers 누적 → canary halt 조기 유발.
+  if (signal.sourceLabel !== 'ws_burst_v2') {
+    const nowSecForCooldown = Math.floor(Date.now() / 1000);
+    const lastEntrySec = v1LastEntrySecByPair.get(signal.pairAddress) ?? 0;
+    const cooldown = config.pureWsV1PerPairCooldownSec;
+    if (nowSecForCooldown - lastEntrySec < cooldown) {
+      const remaining = cooldown - (nowSecForCooldown - lastEntrySec);
+      log.debug(
+        `[PUREWS_V1_COOLDOWN] ${signal.pairAddress.slice(0, 12)} active ` +
+        `(${remaining}s remaining, cooldown=${cooldown}s)`
+      );
+      return;
+    }
+  }
+
   // Concurrency cap — lane-level
   const activeCount = [...activePositions.values()].filter((p) => p.state !== 'CLOSED').length;
   if (activeCount >= config.pureWsMaxConcurrent) {
@@ -268,6 +426,31 @@ export async function handlePureWsSignal(
   const ticketSol = config.pureWsLaneTicketSol;
   const quantity = signal.price > 0 ? ticketSol / signal.price : 0;
   if (quantity <= 0) return;
+
+  // 2026-04-21 Survival Layer (P0 mission-refinement): rug / honeypot / Token-2022 dangerous ext /
+  // top-holder / exit liquidity 검사. 이전까지 pure_ws 는 securityGate 를 우회 중이어서
+  // 위험 token (Token-2022 transferHook, 80%+ holder concentration 등) 도 무비판적 진입.
+  //
+  // 설계:
+  //  - gateCache 재사용 (bootstrap candleHandler 와 공유)
+  //  - 데이터 resolve 실패 시 config 로 제어 (allow/reject)
+  //  - sizing multiplier 는 무시 (pure_ws 는 fixed ticket 정책)
+  //  - paper 모드도 동일하게 체크 (관측 data 정합성 유지)
+  if (config.pureWsSurvivalCheckEnabled) {
+    const survival = await checkPureWsSurvival(signal.pairAddress, ctx);
+    if (!survival.approved) {
+      log.info(
+        `[PUREWS_SURVIVAL_REJECT] ${signal.pairAddress.slice(0, 12)} ` +
+        `reason=${survival.reason ?? 'unknown'} flags=[${survival.flags.join(',')}]`
+      );
+      return;
+    }
+    if (survival.flags.length > 0) {
+      log.debug(
+        `[PUREWS_SURVIVAL_PASS] ${signal.pairAddress.slice(0, 12)} flags=[${survival.flags.join(',')}]`
+      );
+    }
+  }
 
   // DEX_TRADE Phase 2: Probe Viability Floor + Daily Bleed Budget
   // Why: RR gate retire 이후 최소 viability 체크. bleed budget 으로 시도 수 통제.
@@ -350,6 +533,61 @@ export async function handlePureWsSignal(
         `[PUREWS_ENTRY_DRIFT_REJECT] ${signal.pairAddress.slice(0, 12)} ${driftResult.reason ?? 'drift'}`
       );
       return;
+    }
+  }
+
+  // 2026-04-21 Survival Layer Tier B-1: Active Sell Quote Probe (exitability).
+  // Jupiter 에 tokenMint→SOL quote 요청 → "팔릴 수 있는가" 직접 검증.
+  // securityGate 는 static properties (freeze/mint authority, Token-2022 ext) 만 보고,
+  // entryDriftGuard 는 buy fill 정합성만 본다. "honeypot by liquidity" (route 없음 /
+  // sell impact 폭증) 는 오직 sell quote 로만 드러남.
+  //
+  // quote 실패는 entry 차단 금지 (observability only) — false positive 비용 ↑.
+  // no_sell_route 는 진입 차단 — honeypot 신호.
+  if (config.pureWsSellQuoteProbeEnabled && ctx.tradingMode === 'live') {
+    try {
+      const buyExecutor = getPureWsExecutor(ctx);
+      const tokenDecimals = await buyExecutor.getMintDecimals(signal.pairAddress);
+      if (tokenDecimals != null && tokenDecimals >= 0 && tokenDecimals <= 18) {
+        // probeTokenAmountRaw = 예상 받을 토큰 수 (raw).
+        // quantity (UI amount) × 10^decimals 로 raw 변환.
+        const probeTokenAmountRaw = BigInt(
+          Math.floor(quantity * Math.pow(10, tokenDecimals))
+        );
+        if (probeTokenAmountRaw > 0n) {
+          const sellProbe = await evaluateSellQuoteProbe(
+            {
+              tokenMint: signal.pairAddress,
+              probeTokenAmountRaw,
+              expectedSolReceive: ticketSol,
+              tokenDecimals,
+            },
+            {
+              jupiterApiUrl: config.jupiterApiUrl,
+              jupiterApiKey: config.jupiterApiKey,
+              maxImpactPct: config.pureWsSellQuoteMaxImpactPct,
+              minRoundTripPct: config.pureWsSellQuoteMinRoundTripPct,
+            }
+          );
+          if (sellProbe.routeFound && !sellProbe.quoteFailed) {
+            log.info(
+              `[PUREWS_SELL_PROBE] ${signal.pairAddress.slice(0, 12)} ` +
+              `outSol=${sellProbe.observedOutSol.toFixed(6)} ` +
+              `impact=${(sellProbe.observedImpactPct * 100).toFixed(2)}% ` +
+              `roundTrip=${isFinite(sellProbe.roundTripPct) ? (sellProbe.roundTripPct * 100).toFixed(1) + '%' : 'n/a'}`
+            );
+          }
+          if (!sellProbe.approved) {
+            log.info(
+              `[PUREWS_SELL_PROBE_REJECT] ${signal.pairAddress.slice(0, 12)} ${sellProbe.reason ?? 'sell_probe'}`
+            );
+            return;
+          }
+        }
+      }
+    } catch (err) {
+      log.debug(`[PUREWS_SELL_PROBE] ${signal.pairAddress.slice(0, 12)} probe skipped: ${err}`);
+      // skip → 진입 계속 (observability only)
     }
   }
 
@@ -531,6 +769,11 @@ export async function handlePureWsSignal(
   }
 
   activePositions.set(positionId, position);
+  // 2026-04-21 P1: v1 (bootstrap) 경로 entry 성공 시 pair cooldown 기록.
+  // v2 sourced signal 은 scanner 가 cooldown 관리하므로 제외.
+  if (signal.sourceLabel !== 'ws_burst_v2') {
+    v1LastEntrySecByPair.set(signal.pairAddress, Math.floor(Date.now() / 1000));
+  }
   log.info(
     `[PUREWS_PROBE_OPEN] ${positionId} ${signal.pairAddress.slice(0, 12)} ` +
     `entry=${actualEntryPrice.toFixed(8)} qty=${actualQuantity.toFixed(4)}`
@@ -1139,8 +1382,12 @@ export async function scanPureWsV2Burst(
   // `PUREWS_ENTRY_HALT` 로 return → position 안 만들어짐 → cooldown 설정 안 됨 →
   // 다음 scan 에서 다시 pass → 무한 loop (4/20 관측 GEr3mp 567 반복 pass).
   // halt 가 풀리기 전까지는 scan 의미 없음 — 로그 spam + Jupiter rate-limit 유발.
-  if (isEntryHaltActive(LANE_STRATEGY)) return;
+  if (isEntryHaltActive(LANE_STRATEGY)) {
+    v2Telemetry.haltSkipped++;
+    return;
+  }
 
+  v2Telemetry.scansCalled++;
   const detectorCfg = buildV2DetectorConfig();
   const requiredCandles = detectorCfg.nRecent + detectorCfg.nBaseline;
   const nowSec = Math.floor(Date.now() / 1000);
@@ -1149,26 +1396,40 @@ export async function scanPureWsV2Burst(
   for (const pair of pairAddresses) {
     // per-pair cooldown (Top pair 쏠림 방어 — paper replay 에서 pippin 58% 점유 관측)
     const lastTriggerSec = v2LastTriggerSecByPair.get(pair) ?? 0;
-    if (nowSec - lastTriggerSec < cooldownSec) continue;
+    if (nowSec - lastTriggerSec < cooldownSec) {
+      v2Telemetry.cooldownSkipped++;
+      continue;
+    }
+
+    v2Telemetry.pairsEvaluated++;
 
     const candles = candleBuilder.getRecentCandles(
       pair,
       config.realtimePrimaryIntervalSec,
       requiredCandles
     );
-    if (candles.length < requiredCandles) continue;
+    if (candles.length < requiredCandles) {
+      v2Telemetry.candlesInsufficient++;
+      continue;
+    }
 
     const result = evaluateWsBurst(candles, detectorCfg);
     if (!result.pass) {
+      const reasonKey = result.rejectReason ?? 'unknown';
+      v2Telemetry.detectorRejects[reasonKey] = (v2Telemetry.detectorRejects[reasonKey] ?? 0) + 1;
       log.debug(
-        `[PUREWS_V2_REJECT] ${pair.slice(0, 12)} reason=${result.rejectReason} score=${result.score}`
+        `[PUREWS_V2_REJECT] ${pair.slice(0, 12)} reason=${reasonKey} score=${result.score}`
       );
       continue;
     }
 
     const currentPrice = candleBuilder.getCurrentPrice(pair);
-    if (currentPrice == null || currentPrice <= 0) continue;
+    if (currentPrice == null || currentPrice <= 0) {
+      v2Telemetry.noCurrentPrice++;
+      continue;
+    }
 
+    v2Telemetry.passed++;
     log.info(
       `[PUREWS_V2_PASS] ${pair.slice(0, 12)} score=${result.score} ` +
       `vol=${result.factors.volumeAccelZ.toFixed(2)} buy=${result.factors.buyPressureZ.toFixed(2)} ` +

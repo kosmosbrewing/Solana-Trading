@@ -17,7 +17,12 @@
  *   - close 이벤트에서 호출 (handler 의 closePosition 후에 `reportCanaryClose(lane, pnl)`)
  */
 import { createModuleLogger } from '../utils/logger';
-import { triggerEntryHalt, type EntryLane } from '../orchestration/entryIntegrity';
+import {
+  triggerEntryHalt,
+  resetEntryHalt,
+  getAllLaneIntegrityState,
+  type EntryLane,
+} from '../orchestration/entryIntegrity';
 import { config } from '../utils/config';
 
 const log = createModuleLogger('CanaryAutoHalt');
@@ -26,7 +31,7 @@ export interface CanaryAutoHaltConfig {
   enabled: boolean;
   maxConsecutiveLosers: number;      // default 5
   maxCanaryBudgetSol: number;        // default 0.5 (10 trades × 0.05 loss 대비)
-  maxTradesPerCanary: number;        // default 100 (canary 평가 윈도 = 50 기준, 여유 2x)
+  maxTradesPerCanary: number;        // default 200 = Stage 4 scale/retire decision gate (2026-04-21 refinement)
   minLossToCountSol: number;         // default 0 — 모든 음수 close 가 loss 로 카운트 (작은 flat close 도 포함)
 }
 
@@ -121,6 +126,52 @@ export function getAllCanaryStates(): Record<EntryLane, Readonly<LaneCanaryState
     out[lane] = { ...getLane(lane) };
   }
   return out;
+}
+
+/**
+ * 2026-04-21 P2: halt 자동 해제 — halt 이후 일정 시간 경과시 consecutiveLosers 만 0 으로 리셋.
+ * budget cap (cumulativePnlSol 기반) 과 tradeCount 는 유지 — 실제 위험 guard 는 그대로.
+ *
+ * Why: 기존 halt 는 운영자 수동 `resetEntryHalt` 만으로 해제되어 Phase 1-3 관측 데이터 축적이
+ * 운영자 부재 시 무한 지연. 4-consec-loser streak 은 표본 부족 (uniform random 이어도 빈번).
+ * 시간 경과 + pair diversity 확보 후 재시도는 convexity mission 과 부합.
+ *
+ * Caller: HealthMonitor interval (60s 주기).
+ */
+export function checkAndAutoResetHalt(lane: EntryLane, nowMs: number = Date.now()): boolean {
+  if (!config.canaryAutoResetEnabled) return false;
+  const haltStates = getAllLaneIntegrityState();
+  const lst = haltStates[lane];
+  if (!lst?.haltActive || !lst.triggeredAt) return false;
+
+  const elapsedSec = (nowMs - lst.triggeredAt.getTime()) / 1000;
+  if (elapsedSec < config.canaryAutoResetMinSec) return false;
+
+  const st = getLane(lane);
+  // budget 초과로 halt 된 경우는 auto-reset 금지 — 실제 자산 보호 유지.
+  if (config.canaryAutoHaltEnabled && st.cumulativePnlSol <= -config.canaryMaxBudgetSol) {
+    log.info(
+      `[CANARY_AUTO_RESET] lane=${lane} skipped — budget exhausted ` +
+      `(cumulative=${st.cumulativePnlSol.toFixed(4)} <= -${config.canaryMaxBudgetSol})`
+    );
+    return false;
+  }
+
+  log.info(
+    `[CANARY_AUTO_RESET] lane=${lane} halt cleared after ${Math.round(elapsedSec)}s ` +
+    `(consecutiveLosers ${st.consecutiveLosers} → 0, budget/tradeCount 유지)`
+  );
+  st.consecutiveLosers = 0;
+  st.lastHaltReason = null;
+  resetEntryHalt(lane, 'auto_after_cooldown');
+  return true;
+}
+
+/** 전체 lane 에 대해 auto reset 체크 — HealthMonitor interval 에서 호출. */
+export function checkAllLanesAutoResetHalt(): void {
+  for (const lane of DEFAULT_LANES) {
+    checkAndAutoResetHalt(lane);
+  }
 }
 
 /** 운영자 수동 reset — entryIntegrity halt 는 resetEntryHalt 로 별도 해제. */

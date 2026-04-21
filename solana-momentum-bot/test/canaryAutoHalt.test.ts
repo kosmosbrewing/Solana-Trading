@@ -7,6 +7,7 @@ import {
   getCanaryState,
   resetCanaryLaneState,
   resetAllCanaryStatesForTests,
+  checkAndAutoResetHalt,
 } from '../src/risk/canaryAutoHalt';
 import {
   isEntryHaltActive,
@@ -20,6 +21,8 @@ function setCfg(overrides: Partial<{
   canaryMaxBudgetSol: number;
   canaryMaxTrades: number;
   canaryMinLossToCountSol: number;
+  canaryAutoResetEnabled: boolean;
+  canaryAutoResetMinSec: number;
 }>): void {
   for (const [k, v] of Object.entries(overrides)) {
     Object.defineProperty(config, k, { value: v, writable: true, configurable: true });
@@ -107,6 +110,65 @@ describe('canaryAutoHalt', () => {
     expect(getCanaryState('pure_ws_breakout').consecutiveLosers).toBe(0);
     expect(getCanaryState('pure_ws_breakout').tradeCount).toBe(0);
     // Note: entryIntegrity halt 는 별도 — operator 가 resetEntryHalt 로 해제해야 함
+  });
+
+  it('[2026-04-21 P2] auto-reset halt after canaryAutoResetMinSec elapsed', () => {
+    setCfg({
+      canaryMaxConsecutiveLosers: 3,
+      canaryAutoResetEnabled: true,
+      canaryAutoResetMinSec: 1800,
+    });
+    // 3 consecutive losers → halt (triggeredAt = now 기록)
+    reportCanaryClose('pure_ws_breakout', -0.002);
+    reportCanaryClose('pure_ws_breakout', -0.002);
+    reportCanaryClose('pure_ws_breakout', -0.002);
+    expect(isEntryHaltActive('pure_ws_breakout')).toBe(true);
+    const nowMs = Date.now();
+
+    // 10분 경과 — 아직 cooldown 미달
+    expect(checkAndAutoResetHalt('pure_ws_breakout', nowMs + 10 * 60_000)).toBe(false);
+    expect(isEntryHaltActive('pure_ws_breakout')).toBe(true);
+
+    // 31분 경과 — auto reset 발동
+    expect(checkAndAutoResetHalt('pure_ws_breakout', nowMs + 31 * 60_000)).toBe(true);
+    expect(isEntryHaltActive('pure_ws_breakout')).toBe(false);
+    expect(getCanaryState('pure_ws_breakout').consecutiveLosers).toBe(0);
+    // budget/tradeCount 은 유지 — 실 자산 guard
+    expect(getCanaryState('pure_ws_breakout').tradeCount).toBe(3);
+  });
+
+  it('[2026-04-21 P2] auto-reset skipped when budget exhausted (real asset guard)', () => {
+    setCfg({
+      canaryMaxConsecutiveLosers: 3,
+      canaryMaxBudgetSol: 0.1,
+      canaryAutoResetEnabled: true,
+      canaryAutoResetMinSec: 1800,
+    });
+    // 큰 loss 로 budget 소진 + halt
+    reportCanaryClose('pure_ws_breakout', -0.05);
+    reportCanaryClose('pure_ws_breakout', -0.05);
+    reportCanaryClose('pure_ws_breakout', -0.05);
+    expect(isEntryHaltActive('pure_ws_breakout')).toBe(true);
+    const nowMs = Date.now();
+
+    // 31분 경과하더라도 budget 초과 → auto-reset skip
+    expect(checkAndAutoResetHalt('pure_ws_breakout', nowMs + 31 * 60_000)).toBe(false);
+    expect(isEntryHaltActive('pure_ws_breakout')).toBe(true);
+  });
+
+  it('[2026-04-21 P2] auto-reset disabled via config (no-op)', () => {
+    setCfg({
+      canaryMaxConsecutiveLosers: 3,
+      canaryAutoResetEnabled: false,
+      canaryAutoResetMinSec: 1800,
+    });
+    reportCanaryClose('pure_ws_breakout', -0.002);
+    reportCanaryClose('pure_ws_breakout', -0.002);
+    reportCanaryClose('pure_ws_breakout', -0.002);
+    expect(isEntryHaltActive('pure_ws_breakout')).toBe(true);
+    // 긴 시간 경과해도 reset 안 됨
+    expect(checkAndAutoResetHalt('pure_ws_breakout', Date.now() + 365 * 24 * 3600_000)).toBe(false);
+    expect(isEntryHaltActive('pure_ws_breakout')).toBe(true);
   });
 
   it('minLossToCount filters flat closes from streak', () => {

@@ -85,4 +85,79 @@ describe('evaluateSecurityGate', () => {
     expect(result.approved).toBe(false);
     expect(result.flags).toContain('NO_SECURITY_DATA');
   });
+
+  // ─── 2026-04-21 Survival Layer — dangerous Token-2022 extensions ───
+
+  it('[2026-04-21 survival] rejects transferHook extension as dangerous', () => {
+    const security: TokenSecurityData = {
+      ...BASE_SECURITY,
+      tokenProgram: 'spl-token-2022',
+      extensions: ['transferHook', 'metadataPointer'],
+    };
+    const result = evaluateSecurityGate(security, null);
+
+    expect(result.approved).toBe(false);
+    expect(result.flags).toContain('DANGEROUS_EXT');
+    expect(result.flags).toContain('DANGEROUS_TRANSFERHOOK');
+    expect(result.reason).toMatch(/Dangerous Token-2022 extension/);
+  });
+
+  it('[2026-04-21 survival] rejects permanentDelegate (authority 토큰 임의 회수 가능)', () => {
+    const security: TokenSecurityData = {
+      ...BASE_SECURITY,
+      tokenProgram: 'spl-token-2022',
+      extensions: ['permanentDelegate'],
+    };
+    const result = evaluateSecurityGate(security, null);
+
+    expect(result.approved).toBe(false);
+    expect(result.flags).toContain('DANGEROUS_EXT');
+  });
+
+  it('[2026-04-21 survival] rejects nonTransferable (soul-bound)', () => {
+    const security: TokenSecurityData = {
+      ...BASE_SECURITY,
+      tokenProgram: 'spl-token-2022',
+      extensions: ['nonTransferable'],
+    };
+    const result = evaluateSecurityGate(security, null);
+    expect(result.approved).toBe(false);
+    expect(result.flags).toContain('DANGEROUS_EXT');
+  });
+
+  it('[2026-04-21 survival] rejects defaultAccountState (기본 Frozen 가능)', () => {
+    const security: TokenSecurityData = {
+      ...BASE_SECURITY,
+      tokenProgram: 'spl-token-2022',
+      extensions: ['defaultAccountState'],
+    };
+    const result = evaluateSecurityGate(security, null);
+    expect(result.approved).toBe(false);
+    expect(result.flags).toContain('DANGEROUS_EXT');
+  });
+
+  it('[2026-04-21 survival] allows benign Token-2022 extensions (metadataPointer/tokenMetadata)', () => {
+    const security: TokenSecurityData = {
+      ...BASE_SECURITY,
+      tokenProgram: 'spl-token-2022',
+      extensions: ['metadataPointer', 'tokenMetadata', 'mintCloseAuthority'],
+    };
+    const result = evaluateSecurityGate(security, null);
+
+    expect(result.approved).toBe(true);
+    expect(result.flags).not.toContain('DANGEROUS_EXT');
+  });
+
+  it('[2026-04-21 survival] top10HolderPct threshold respects config override (60% cap)', () => {
+    const security: TokenSecurityData = {
+      ...BASE_SECURITY,
+      top10HolderPct: 0.65, // 65% — default 80% 하에선 통과, 60% override 하에선 reject
+    };
+    const loose = evaluateSecurityGate(security, null);
+    expect(loose.approved).toBe(true);
+
+    const strict = evaluateSecurityGate(security, null, { maxTop10HolderPct: 0.60 });
+    expect(strict.approved).toBe(false);
+    expect(strict.flags).toContain('HIGH_CONCENTRATION');
+  });
 });

@@ -2,6 +2,7 @@ import { Pool } from 'pg';
 import { config } from './utils/config';
 import { createModuleLogger } from './utils/logger';
 import { HealthMonitor } from './utils/healthMonitor';
+import { checkAllLanesAutoResetHalt } from './risk/canaryAutoHalt';
 import { Candle, Signal } from './utils/types';
 
 import {
@@ -72,6 +73,7 @@ import {
   recoverPureWsOpenPositions,
   resolvePureWsWalletLabel,
   scanPureWsV2Burst,
+  logPureWsV2TelemetrySummary,
 } from './orchestration/pureWsBreakoutHandler';
 import { updateMigrationPositions, onMigrationEvent, recoverMigrationOpenPositions } from './orchestration/migrationLaneHandler';
 import type { MigrationEvent } from './strategy/migrationHandoffReclaim';
@@ -515,6 +517,40 @@ async function main() {
   const healthMonitor = new HealthMonitor();
   healthMonitor.setDbConnected(true);
   healthMonitor.start();
+
+  // 2026-04-21 mission refinement: 실행 시 Real Asset Guard effective 값 한 줄 로그.
+  // Why: 정책값과 env override 간 괴리 발생해도 startup log 에서 즉시 확인 가능하게.
+  // 이 로그는 판단/관측 guard 가 아닌 실 자산 보호 guard 의 한정된 집합만 출력.
+  log.info(
+    `[REAL_ASSET_GUARD] walletFloor=${config.walletStopMinSol} ` +
+    `canaryLossCap=-${config.canaryMaxBudgetSol} ` +
+    `canaryMaxTrades=${config.canaryMaxTrades} ` +
+    `maxConcurrent=${config.pureWsMaxConcurrent} ` +
+    `ticketSol=${config.pureWsLaneTicketSol} ` +
+    `mode=${tradingMode}${config.pureWsLiveCanaryEnabled ? '_canary' : ''}`
+  );
+
+  // 2026-04-21 P0 (observability): v2 scanner 누적 telemetry 주기 출력.
+  // Why: VPS 24h 관측에서 PUREWS_V2_PASS 0건이지만 REJECT 는 log.debug 라 원인 진단 불가.
+  // HealthMonitor 와 같은 1분 주기로 v2 scan 통계 (insuf/rejects/halt/PASS) 를 info 로 출력.
+  if (config.pureWsLaneEnabled && config.pureWsV2Enabled) {
+    setInterval(() => {
+      try { logPureWsV2TelemetrySummary(); } catch (err) {
+        log.warn(`Pure WS v2 telemetry log failed: ${err}`);
+      }
+    }, 60_000);
+  }
+
+  // 2026-04-21 P2: canary halt 자동 해제 tick.
+  // Why: 4-streak consecutive loss 는 표본 부족. 시간 경과 + budget 여유 시 자동 해제하여
+  // Phase 1-3 관측 재개. budget 초과 halt 는 skip (실 자산 보호 유지).
+  if (config.canaryAutoResetEnabled) {
+    setInterval(() => {
+      try { checkAllLanesAutoResetHalt(); } catch (err) {
+        log.warn(`Canary auto-reset tick failed: ${err}`);
+      }
+    }, 60_000);
+  }
 
   // 2026-04-17: Wallet Stop Guard (override 가드레일 #2)
   // live 모드에서만 poller 시작. paper 에서는 wallet balance 의미 없음.

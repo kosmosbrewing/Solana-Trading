@@ -1,7 +1,7 @@
-# Project Goals & Persona (post-pivot)
+# Project Goals & Persona (post-pivot, refined 2026-04-21)
 
-> Updated: 2026-04-18
-> Pivot decision: [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md)
+> Updated: 2026-04-21
+> Authority chain: [`mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md) (최상위) → [`mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md) → 본 문서
 > Pre-pivot snapshot: [`docs/historical/pre-pivot-2026-04-18/PROJECT.md`](./docs/historical/pre-pivot-2026-04-18/PROJECT.md)
 
 ## Persona
@@ -19,17 +19,31 @@
 
 ## 목표
 
-### 최종 목표
+### 최종 성공 기준 (2026-04-21 refined)
 
-> 수단과 방법을 가리지 않고 `1 SOL -> 100 SOL` 달성 확률을 최대화한다.
+> **0.8 SOL floor 를 깨지 않고 200 live trades 를 통과하며, 5x+ winner 분포를 실측했다.**
 
-### 구체적 목표
+100 SOL 도달은 **tail outcome — 관찰 변수이지 KPI 가 아님**. 100 SOL 을 달성 못해도 Stage 4 통과하면 프로젝트는 **기술적 성공**.
+
+상세: [`mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md)
+
+### 4단계 Maturity Gate
+
+| Stage | 통과 기준 |
+|-------|----------|
+| 1. Safety Pass | 48h drift < 0.01 / survival filter pass >= 90% / 0.8 floor 무위반 |
+| 2. Sample Accumulation | 100 live trades / max DD < 30% / wallet stop 0회 |
+| 3. Winner Distribution | 5x+ winner >= 1건 실측 |
+| 4. Scale Decision | 200+ trades / lane log growth > 0 / ruin probability < 5% |
+
+### 구체적 목표 (Stage 진행 중 행동 원칙)
 
 1. Pool coverage를 최대한 넓힌다 (DEX / pair eligibility 우선).
 2. WS 초봉 / 마이크로캔들에서 거래량 급증 + buy pressure + tx density + 최소 price acceleration 으로 진입 판단한다.
 3. Loser는 빠르게 정리, winner는 최대한 길게 보유한다.
 4. 평균 수익률보다 5x/10x winner 빈도를 중시한다.
 5. Wallet truth 기준으로만 측정하고, DB pnl 단독 판정은 하지 않는다.
+6. **Survival Layer (rug / honeypot / Token-2022 / top-holder) 가 모든 다른 edge 보다 선행** (2026-04-21).
 
 ### 비목표 (post-pivot)
 
@@ -92,26 +106,42 @@ baseline: cupsey_flip_10s는 기존 구조 그대로 유지 (benchmark)
 - 5x / 10x winner 빈도 (관측 자체가 부족)
 - cupsey primary의 wallet ownership 구조 (main vs sandbox executor)
 
-## 로드맵 (post-pivot)
+## 로드맵 (post-pivot, 2026-04-21 현재 상태)
 
 | Block | 목표 | 현재 상태 |
 |---|---|---|
-| Block 0 | Mission Pivot 문서화 | **진행 중 (2026-04-18)** |
-| Block 1 | Wallet ownership + always-on comparator (P0) | 미시작 |
-| Block 2 | Coverage expansion (DEX / pair eligibility 먼저) | 미시작 |
-| Block 3 | `pure_ws_breakout` lane 신설 (paper first) | 미시작 |
-| Block 4 | Live canary with guardrails | 미시작 |
-| Block 5 | Tiered runner tuning | 미시작 (조건부) |
+| Block 0 | Mission Pivot 문서화 | **완료 (2026-04-18)** + refinement 반영 (2026-04-21) |
+| Block 1 | Wallet ownership + always-on comparator (P0) | **완료 (2026-04-18)** |
+| Block 2 | Coverage expansion (DEX / pair eligibility) | **완료 (2026-04-18)** |
+| Block 3 | `pure_ws_breakout` lane 신설 (paper first) | **완료 (2026-04-18)** |
+| Block 4 | Live canary with guardrails | **완료 (2026-04-18)** |
+| DEX_TRADE Phase 1-3 | v2 burst detector + viability floor + quickReject / holdPhase sentinel | **완료 (2026-04-18)** |
+| Post-deploy fix 1 | wallet delta drift (cupsey/migration/pureWs entry metrics), orphan close loop | **완료 (2026-04-18~20)** |
+| Post-deploy fix 2 | entry drift guard / dual price tracker / V2 telemetry / v1 cooldown / canary auto-reset | **완료 (2026-04-19~21)** |
+| Block 5 — Survival Layer (P0 다음) | rug / honeypot / Token-2022 / top-holder / LP lock gate | **다음 P0 (2026-04-21 refinement 지정)** |
+| Block 6 | Tiered runner tuning | 미시작 (Stage 3 의 5x+ winner 실측 이후 조건부) |
 
-### Hard Guardrails (pivot 불변)
+### 4단계 Maturity Gate 현황
+
+| Stage | 통과 기준 | 현 상태 |
+|-------|---------|--------|
+| 1. Safety Pass | 48h 운영 / drift 정상 / survival filter pass / 0.8 floor 무위반 | **진행 중** — survival filter 가 아직 비어 있어 불완전 통과 |
+| 2. Sample Accumulation | 100 live trades / max DD < 30% / wallet stop 0회 | 미진입 — Stage 1 통과 후 |
+| 3. Winner Distribution | 5x+ winner >= 1건 실측 | 미진입 |
+| 4. Scale Decision | 200+ live trades / lane log growth > 0 / ruin probability < 5% | 미진입 |
+
+### Hard Guardrails (pivot 불변 — Real Asset Guard)
 
 | 가드 | 값 |
 |---|---|
-| Wallet Stop Guard | `< 0.8 SOL` 전 lane halt |
+| Wallet Stop Guard | `wallet_sol < 0.8` 전 lane halt |
+| Canary cumulative loss cap | `-0.3 SOL` (lane별) |
 | Fixed ticket | `0.01 SOL` canary |
-| Max concurrent ticket | `3` (canary) |
+| Max concurrent ticket | `3` (pure_ws lane) |
 | RPC fail-safe | 연속 RPC 실패 → lane halt |
-| Security hard reject | 불변 |
+| Security hard reject | mint/freeze authority, honeypot sim (Survival Layer 구현 시 확장) |
+
+`50 trades` 는 가드가 아니라 **safety checkpoint (관측 전용)**. `100 trades` = preliminary check, `200 trades` = scale/retire decision gate. 상세: [`MEASUREMENT.md`](./MEASUREMENT.md).
 
 ## 인프라
 

@@ -114,6 +114,26 @@ export const config = {
   // 운영자가 paper 관측 후 명시적으로 canary 를 켜야 live buy 허용.
   pureWsLiveCanaryEnabled: boolOptional('PUREWS_LIVE_CANARY_ENABLED', false),
 
+  // 2026-04-21 Survival Layer (P0 mission-refinement-2026-04-21): rug / honeypot / Token-2022
+  // dangerous extension / top-holder 검사를 pure_ws 에도 강제 적용. 기존 security gate 는
+  // bootstrap path (candleHandler) 에만 연결돼 있어 pure_ws 는 우회 상태 — 이번에 연결.
+  pureWsSurvivalCheckEnabled: boolOptional('PUREWS_SURVIVAL_CHECK_ENABLED', true),
+  // 보안 데이터 resolve 실패 시 허용 여부.
+  // true: 데이터 없어도 진입 (observability only — Helius RPC 간헐 실패 시 signal 놓치지 않기 위함)
+  // false: 데이터 없으면 reject (보수적 — Stage 1 통과 전에는 더 엄격하게 쓸 수 있음)
+  pureWsSurvivalAllowDataMissing: boolOptional('PUREWS_SURVIVAL_ALLOW_DATA_MISSING', true),
+  pureWsSurvivalMinExitLiquidityUsd: Number(process.env.PUREWS_SURVIVAL_MIN_EXIT_LIQUIDITY_USD ?? '5000'),
+  pureWsSurvivalMaxTop10HolderPct: Number(process.env.PUREWS_SURVIVAL_MAX_TOP10_HOLDER_PCT ?? '0.80'),
+
+  // 2026-04-21 Survival Layer Tier B-1: Active Sell Quote Probe (exitability).
+  // Jupiter 에 tokenMint→SOL quote 요청 → "팔릴 수 있는가" 직접 검증.
+  // securityGate 는 static properties (mint/freeze authority, Token-2022 ext) 를 보지만,
+  // liquidity 고갈 / AMM 라우팅 실패 등 honeypot-by-liquidity 는 sell quote 로만 드러남.
+  pureWsSellQuoteProbeEnabled: boolOptional('PUREWS_SELL_QUOTE_PROBE_ENABLED', true),
+  pureWsSellQuoteMaxImpactPct: Number(process.env.PUREWS_SELL_QUOTE_MAX_IMPACT_PCT ?? '0.10'),
+  // round-trip 최소 복구 비율 (0 = disabled). 실제 운영 관측 전 0 으로 두고 impact 판정에 의존.
+  pureWsSellQuoteMinRoundTripPct: Number(process.env.PUREWS_SELL_QUOTE_MIN_ROUND_TRIP_PCT ?? '0'),
+
   // 2026-04-19: Entry drift guard — Jupiter probe quote 로 expected fill price vs signal price
   // gap 측정, threshold 초과 시 진입 차단.
   // Why: 2026-04-18 VPS 관측에서 4 trades 전부 +20~51% drift 에서 체결됨 (Token-2022 / low-liq route).
@@ -157,6 +177,9 @@ export const config = {
   pureWsV2BpsPriceSaturate: Number(process.env.PUREWS_V2_BPS_PRICE_SATURATE ?? '1000'),  // tuned: 300 → 1000 (p90 saturate 완화)
   // per-pair cooldown (같은 pair 반복 entry 방지). Top pair 쏠림 방어.
   pureWsV2PerPairCooldownSec: Number(process.env.PUREWS_V2_PER_PAIR_COOLDOWN_SEC ?? '300'),  // 5분
+  // 2026-04-21 P1: v1 (bootstrap) 경로에도 per-pair cooldown. BOME ukHH6c7m 관측에서
+  // 4 trades 연속 같은 pair 진입 → canary halt 유발. v2 와 같은 default (5분).
+  pureWsV1PerPairCooldownSec: Number(process.env.PUREWS_V1_PER_PAIR_COOLDOWN_SEC ?? '300'),
 
   // 2026-04-18: DEX_TRADE Phase 2 — Probe Viability Floor + Daily Bleed Budget
   // Why: RR gate retire 대체. viability 하한만 유지 + bleed budget 으로 시도 수 통제.
@@ -187,11 +210,25 @@ export const config = {
   // 2026-04-18: Block 4 — canary auto-halt (per-lane circuit-breaker)
   // Why: Block 3 pure_ws_breakout 은 loose gate 라 연속 entry 에서 loser streak 위험. per-lane auto-halt.
   canaryAutoHaltEnabled: boolOptional('CANARY_AUTO_HALT_ENABLED', true),
-  canaryMaxConsecutiveLosers: Number(process.env.CANARY_MAX_CONSEC_LOSERS ?? '5'),
-  canaryMaxBudgetSol: Number(process.env.CANARY_MAX_BUDGET_SOL ?? '0.5'),
-  // 50 = mission-pivot 기준 canary 평가 윈도(ops:canary:eval PROMOTE 판정 trigger).
-  // 코드 halt 는 이 값 도달 시 entry pause 하여 운영자가 평가 수행하게 함.
-  canaryMaxTrades: Number(process.env.CANARY_MAX_TRADES ?? '50'),
+  // 2026-04-21 P2: 4 → 8 완화. convexity mission 관점에서 4-streak 은 표본 부족 (일반적인
+  // 우월 전략도 4 streak loss 는 빈번). budget cap 이 실제 자산 보호, consecutive counter 는
+  // 관측 circuit breaker 역할로 재정의. 실제 halt 에는 budgetCap 이 더 중요.
+  canaryMaxConsecutiveLosers: Number(process.env.CANARY_MAX_CONSEC_LOSERS ?? '8'),
+  // 2026-04-21 mission refinement (cumulative loss cap): Real Asset Guard 정책값 `-0.3 SOL`.
+  // 이전 default 0.5 는 pivot 당시 loose. refinement 이후 -0.3 SOL 로 통일 (1 SOL 중 30% 한도).
+  canaryMaxBudgetSol: Number(process.env.CANARY_MAX_BUDGET_SOL ?? '0.3'),
+  // 2026-04-21 P2: halt 자동 해제 — halt 이후 일정 시간 경과 + 오픈 포지션 없음 → 자동 reset.
+  // Why: 기존 동작은 halt 후 운영자 수동 개입까지 무한 유지 → Phase 1-3 관측 데이터 축적 지연.
+  // 자동 reset 은 consecutiveLosers 만 0 으로 리셋, budget/cumulativePnl 은 유지 (진짜 가드).
+  canaryAutoResetEnabled: boolOptional('CANARY_AUTO_RESET_ENABLED', true),
+  canaryAutoResetMinSec: Number(process.env.CANARY_AUTO_RESET_MIN_SEC ?? '1800'),  // 30분
+  // 2026-04-21 mission refinement: 200 = scale/retire decision gate (Stage 4).
+  // 이전 default 50 은 promotion gate 처럼 사용됐으나 refinement 에서 safety checkpoint 로 재분류.
+  // 코드 halt 는 200 도달 시 entry pause — 운영자가 Stage 4 판정 (scale/retire/hold) 수행.
+  canaryMaxTrades: Number(process.env.CANARY_MAX_TRADES ?? '200'),
+  // 관측 전용 체크포인트 — halt/승격 결정 없음, telemetry summary 로그에서만 표시.
+  canarySafetyCheckpointTrades: Number(process.env.CANARY_SAFETY_CHECKPOINT_TRADES ?? '50'),    // Stage 2 내 초기 safety 점검 시점
+  canaryPreliminaryReviewTrades: Number(process.env.CANARY_PRELIMINARY_REVIEW_TRADES ?? '100'), // Stage 2 완료 시 preliminary edge/bleed/quickReject 검토
   canaryMinLossToCountSol: Number(process.env.CANARY_MIN_LOSS_TO_COUNT_SOL ?? '0'),
 
   // 2026-04-18: Block 4 QA fix — wallet-level 전역 concurrency guard

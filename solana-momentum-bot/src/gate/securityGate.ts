@@ -17,13 +17,47 @@ export interface SecurityGateConfig {
   minSellBuyRatio: number;
   /** Allow mintable tokens with reduced sizing */
   allowMintableWithReduction: boolean;
+  /** Top 10 holder concentration hard reject threshold */
+  maxTop10HolderPct: number;
 }
 
 const DEFAULT_CONFIG: SecurityGateConfig = {
   minExitLiquidityUsd: 10_000,
   minSellBuyRatio: 0.1,
   allowMintableWithReduction: false,
+  maxTop10HolderPct: 0.80,
 };
+
+/**
+ * 2026-04-21 Survival Layer: Token-2022 extension 중 hard reject 해야 하는 종류.
+ * - `transferHook`: 매도/전송 시 외부 프로그램 호출 가능 → 임의 차단 위험
+ * - `permanentDelegate`: authority 가 임의 토큰 이전 가능 → 보유량 회수 위험
+ * - `nonTransferable`: 매도 불가 (soul-bound token)
+ * - `defaultAccountState`: 기본 account state 가 Frozen 이면 매도 차단
+ *
+ * 대소문자 insensitive + 일부 extension 은 config 객체로 표현될 수 있어 이름 부분 일치 매치.
+ */
+const DANGEROUS_TOKEN_2022_EXTENSIONS = [
+  'transferhook',
+  'permanentdelegate',
+  'nontransferable',
+  'defaultaccountstate',
+] as const;
+
+function findDangerousExtensions(extensions: string[] | undefined): string[] {
+  if (!extensions || extensions.length === 0) return [];
+  const found: string[] = [];
+  for (const ext of extensions) {
+    const lower = ext.toLowerCase();
+    for (const needle of DANGEROUS_TOKEN_2022_EXTENSIONS) {
+      if (lower.includes(needle)) {
+        found.push(ext);
+        break;
+      }
+    }
+  }
+  return found;
+}
 
 /**
  * Gate 0: Security Gate — 최우선 검사.
@@ -88,6 +122,23 @@ export function evaluateSecurityGate(
     return { approved: false, reason: 'Transfer fee token (Token-2022)', sizeMultiplier: 0, flags };
   }
 
+  // 2026-04-21 Survival Layer: Token-2022 dangerous extension hard reject.
+  // transferHook / permanentDelegate / nonTransferable / defaultAccountState(Frozen).
+  // 기존 `hasTransferFee` 는 transferFee 만 커버 — 매도 차단이 가능한 다른 extension 보호.
+  const dangerousExts = findDangerousExtensions(security.extensions);
+  if (dangerousExts.length > 0) {
+    const extSummary = dangerousExts.join(',');
+    log.warn(`REJECTED: dangerous Token-2022 extension(s): ${extSummary}`);
+    flags.push('DANGEROUS_EXT');
+    for (const ext of dangerousExts) flags.push(`DANGEROUS_${ext.toUpperCase()}`);
+    return {
+      approved: false,
+      reason: `Dangerous Token-2022 extension(s): ${extSummary}`,
+      sizeMultiplier: 0,
+      flags,
+    };
+  }
+
   // ─── Soft checks ───
 
   if (security.isMintable) {
@@ -102,8 +153,11 @@ export function evaluateSecurityGate(
     }
   }
 
-  if (security.top10HolderPct > 0.80) {
-    log.warn(`REJECTED: holder concentration ${(security.top10HolderPct * 100).toFixed(1)}%`);
+  if (security.top10HolderPct > cfg.maxTop10HolderPct) {
+    log.warn(
+      `REJECTED: holder concentration ${(security.top10HolderPct * 100).toFixed(1)}% ` +
+      `> ${(cfg.maxTop10HolderPct * 100).toFixed(1)}%`
+    );
     flags.push('HIGH_CONCENTRATION');
     return {
       approved: false,

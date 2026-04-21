@@ -1,9 +1,9 @@
 # PLAN.md
 
-> Status: current mission charter (post-pivot)
-> Updated: 2026-04-18
+> Status: current mission charter (post-pivot, refined 2026-04-21)
+> Updated: 2026-04-21
 > Purpose: 이 저장소의 장기 목표, 운영 원칙, 문서 계층을 고정한다.
-> Pivot decision: [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md)
+> **Authority chain**: [`mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md) (최상위) → [`mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md) → 본 문서
 > Pre-pivot snapshot: [`docs/historical/pre-pivot-2026-04-18/PLAN.md`](./docs/historical/pre-pivot-2026-04-18/PLAN.md)
 > Use with: [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md) for current active execution work, [`PLAN_CMPL.md`](./PLAN_CMPL.md) for archived plans.
 
@@ -16,12 +16,20 @@
 2. 어떤 원칙으로 운영 판단을 내리는가
 3. 하위 plan 문서를 어떻게 읽어야 하는가
 
-## Mission (2026-04-18 post-pivot)
+## Mission (2026-04-21 refined)
 
-> 수단과 방법을 가리지 않고 `1 SOL -> 100 SOL` 달성 확률을 최대화한다.
-> Wallet truth 기준 log 성장률과 winner 분포로 성과를 측정한다.
+> **1 SOL → 100 SOL 은 기대 가능한 계획이 아니다. 낮은 확률의 convex tail outcome 이다.**
+> **우리가 만들 수 있는 것은 그 outcome 을 잡을 확률을 높이되, 그 전까지 wallet 이 죽지 않게 하는 시스템이다.**
 
-목표 함수는 **explainability 가 아니라 convexity** 다.
+목표 함수는 **explainability 가 아니라 convexity**. 100 SOL 은 **tail outcome 으로 관찰**하되, 운영 판단의 KPI 로 쓰지 않는다.
+
+### 성공 기준 (기술적 성공)
+
+> **0.8 SOL floor 를 깨지 않고 200 live trades 를 통과하며, 5x+ winner 분포를 실측했다** 면 성공.
+
+그 이후 tail outcome (10x / 50x / 100x) 은 운 — 실패해도 학습.
+
+상세: [`mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md)
 
 ### Why Pivoted (2026-04-18)
 
@@ -72,15 +80,19 @@
 ### P6. Live Lane Promotion Needs Wallet Evidence
 
 - Paper에서 신호 재현은 필요 조건이지 충분 조건이 아니다.
-- Live canary는 `50 trades` 도달 후 wallet delta 기준으로 판정한다.
+- Live canary 판단은 trade-count 구간별로 성격이 다르다 (2026-04-21 refinement):
+  - **50 trades**: safety checkpoint 전용 — 승격 결정 없음. bleed/quickReject/halt 빈도 점검만.
+  - **100 trades**: preliminary edge / bleed / quickReject 검토 — live friction, max DD, winner 조짐 확인.
+  - **200 trades**: scale / retire decision gate — lane log growth, ruin probability, 최종 판단.
 - Single-session outlier는 edge 증거가 아니다.
 
 ## Plan Hierarchy
 
-### Layer 1. 상위 헌장
+### Layer 1. 상위 헌장 (authority chain)
 
+- [`docs/design-docs/mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md) — **최상위 authority** (tail outcome 재정의, 4단계 Stage gate, Real vs Observability Guard)
+- [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md) — pivot 결정 근거 (explainability → convexity)
 - [`PLAN.md`](./PLAN.md) (이 문서)
-- [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md) — pivot 결정 근거
 
 ### Layer 2. 현재 active execution plan
 
@@ -118,8 +130,10 @@
 
 ### H4. Canary with Hard Guardrails
 
-- 0.01 SOL fixed, 동시 max 3 ticket
-- 50 trades 도달 시 wallet delta + winner distribution 평가
+- 0.01 SOL fixed, 동시 max 3 ticket, canary cumulative loss cap `-0.3 SOL`
+- **50 trades** = safety checkpoint (관측 전용, 승격 결정 없음)
+- **100 trades** = preliminary edge/bleed/quickReject 검토 (Stage 2)
+- **200 trades** = scale / retire decision gate (Stage 4, 최종 판단)
 - cupsey와 A/B 병렬
 
 ### H5. Tiered Runner Tuning

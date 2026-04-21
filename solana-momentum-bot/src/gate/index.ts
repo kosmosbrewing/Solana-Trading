@@ -317,3 +317,9 @@ export type {
   EntryDriftGuardConfig,
   EntryDriftGuardInput,
 } from './entryDriftGuard';
+export { evaluateSellQuoteProbe } from './sellQuoteProbe';
+export type {
+  SellQuoteProbeResult,
+  SellQuoteProbeConfig,
+  SellQuoteProbeInput,
+} from './sellQuoteProbe';

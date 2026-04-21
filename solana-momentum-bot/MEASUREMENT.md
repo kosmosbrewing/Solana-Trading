@@ -1,8 +1,8 @@
-# Measurement Framework (post-pivot)
+# Measurement Framework (post-pivot, refined 2026-04-21)
 
-> Updated: 2026-04-18
+> Updated: 2026-04-21
 > Goal: convexity 사명 하에서 전략 채택 / 승격 / 폐기 판정을 wallet truth 기준으로 내린다.
-> Pivot decision: [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md)
+> Authority chain: [`mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md) (최상위 authority) → [`mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md) → 본 문서
 > Pre-pivot snapshot: [`docs/historical/pre-pivot-2026-04-18/MEASUREMENT.md`](./docs/historical/pre-pivot-2026-04-18/MEASUREMENT.md)
 > Document type: reference policy
 
@@ -47,9 +47,62 @@ SELL = dbTradeId or entryTxSignature
 
 ---
 
-## KPI Set (post-pivot)
+## KPI 4단계 Maturity Gate (2026-04-21 refinement)
 
-### KPI 1. Wallet Log Growth Rate (Primary)
+> **운영 판단은 이 4단계 외의 숫자를 보지 않는다.**
+> 자세한 근거: [`mission-refinement-2026-04-21.md §5`](./docs/design-docs/mission-refinement-2026-04-21.md)
+
+100 SOL 은 **tail outcome — 판단 변수 아님**. 진행 방향은 다음 Stage 통과 여부로 본다.
+
+### Stage 1 — Safety Pass (현재)
+
+| 체크 | 기준 |
+|------|------|
+| Wallet truth 정합 | 48h drift `< 0.01 SOL` |
+| Survival filter 통과율 | 진입 pair 중 `>= 90%` safe |
+| 0.8 SOL floor 유지 | 절대 위반 없음 |
+| 0.01 SOL ticket | 고정 |
+| RPC fail-safe | 무사고 |
+
+통과 시 → Stage 2.
+
+### Stage 2 — Sample Accumulation
+
+| 체크 | 기준 |
+|------|------|
+| Live trade 누적 | `>= 100 trades` |
+| Wallet max DD | `< 30%` |
+| Paper vs live pnl gap | 측정 완료 (분포 기록) |
+| Wallet stop halt | 0회 |
+
+통과 시 → Stage 3.
+
+### Stage 3 — Winner Distribution
+
+| 체크 | 기준 |
+|------|------|
+| 5x+ winner | `>= 1건` 실측 |
+| 10x+ winner | 분포 관측 (0건 가능) |
+| Runner coverage | loser + bleed 를 덮는 trend 관측 |
+
+통과 시 → Stage 4.
+
+### Stage 4 — Scale Decision
+
+| 체크 | 기준 |
+|------|------|
+| Trade 누적 | `>= 200 trades` |
+| Wallet log growth | lane 별 `> 0` (primary) |
+| Ruin probability | `< 5%` (block bootstrap) |
+| Winner distribution | 5x+ rate, 10x+ rate 확정 |
+
+이 단계에서 처음으로 ticket size 증가 / infra 확장 / lane 추가 결정.
+
+---
+
+## Detailed KPI (Stage 평가용)
+
+### KPI 1. Wallet Log Growth Rate
 
 ```text
 log_growth = ln(wallet_sol(t) / wallet_sol(t0)) / days
@@ -61,7 +114,7 @@ log_growth = ln(wallet_sol(t) / wallet_sol(t0)) / days
 | `= 0` | 정체 — 비용에 의해 잠식 중일 가능성 |
 | `< 0` | 축소 — 즉시 원인 분석 |
 
-100 SOL 도달까지 약 `ln(100) ≈ 4.6` 의 log-growth 가 필요하다. 비율, 속도, drawdown 을 함께 본다.
+**주의**: `ln(100) ≈ 4.6` 도달까지의 속도는 **관찰 대상이지 판단 기준이 아님**. "언제까지 도달?" 계산 금지 (2026-04-21 refinement).
 
 ### KPI 2. Winner Distribution
 
@@ -109,14 +162,73 @@ Pre-pivot 프레임에서 유지하지 않는 항목:
 
 ---
 
-## Per-Stage Usage
+## Per-Stage Usage (2026-04-21 refined — trade count 구간별 목적 분리)
 
-| 단계 | 주 KPI | 보조 KPI |
-|---|---|---|
-| Backtest | Wallet log growth (시뮬) | 5x+ rate, ruin probability (시뮬) |
-| Paper | Entry rate, simulated wallet growth | 가상 5x+ rate, max consecutive loss |
-| Live canary (`< 50 trades`) | Wallet delta 방향 (양수/음수), hard guardrail 무사고 | bleed per trade |
-| Live full (`≥ 50 trades`) | Wallet log growth rate (primary), winner distribution, ruin probability | max DD, loss streak |
+> **중요**: 50 / 100 / 200 trades 는 각각 다른 목적의 체크포인트이다. 아래 표의 `판단 성격` 컬럼을 반드시 확인한다. 50 trades 는 **승격 gate 아님** — safety 점검 목적 체크포인트일 뿐.
+
+| 단계 | 주 KPI | 보조 KPI | 판단 성격 |
+|---|---|---|---|
+| Backtest | Wallet log growth (시뮬) | 5x+ rate, ruin probability (시뮬) | 설계 검증 |
+| Paper | Entry rate, simulated wallet growth | 가상 5x+ rate, max consecutive loss | 코드 검증 |
+| Live canary — Stage 1 (Safety Pass, 48h) | Wallet truth drift, survival pass rate, 0.8 floor 무위반 | hard guardrail 무사고 | stage gate |
+| Live canary — **50-trade safety checkpoint** | bleed per probe, quick-reject 동작 여부, halt 빈도 | wallet delta 방향 | **관측 전용 — 승격 결정 없음** |
+| Live canary — Stage 2 (100 trades preliminary check) | Live friction (paper vs live gap), max DD (< 30%), wallet stop 0회 | 5x+ winner 조짐 | preliminary edge/bleed/quickReject 검토 |
+| Live canary — Stage 3 (Winner Distribution) | 5x+ winner 발생 여부, runner coverage | 10x+ winner 빈도 관측 | stage gate |
+| Live canary — **Stage 4 scale/retire decision (200 trades)** | Wallet log growth rate (primary), lane log growth > 0, winner distribution, ruin probability | max DD, loss streak | **scale / retire / hold 최종 결정** |
+
+---
+
+## Real Asset Guard vs Observability Guard (2026-04-21)
+
+모든 guard/halt 조건은 **2범주**로 분류한다. 운영 태도가 다르다.
+
+### Real Asset Guard (타협 불가)
+
+실제 자산을 보호한다. 발동 시 **운영자 개입 필수**. 이 범주는 절대 완화하지 않는다.
+
+| Guard | 현 값 | 역할 |
+|-------|-------|------|
+| Wallet Stop | `wallet_sol < 0.8` | 전 lane halt |
+| Canary Budget Cap | `cumulativePnlSol <= -0.3` (lane별) | 해당 lane halt |
+| Security Hard Reject | mint/freeze authority, honeypot sim | 진입 차단 |
+| Wallet Delta HALT | drift `>= 0.2 SOL` | 전 lane halt |
+| Daily Bleed Budget | `wallet × 0.05` | 해당 lane probe 중단 |
+
+### Observability Guard (튜닝 대상)
+
+실험의 trade distribution 을 관찰하기 위한 circuit breaker. 발동이 반복되면 **guard 자체를 재평가** 한다.
+
+| Guard | 현 값 | 역할 |
+|-------|-------|------|
+| Consecutive Losers | `>= 8` | canary halt trigger |
+| Canary Auto-Reset | 30분 경과 시 자동 해제 | observability halt 해제 |
+| V2 detector minPassScore | 50 | signal 빈도 조절 |
+| V2 per-pair cooldown | 300s | pair diversity |
+| V1 bootstrap per-pair cooldown | 300s | pair diversity |
+| Entry drift guard | `> +2%` (asymmetric) | bad fill 차단 |
+
+### 운영 태도 규칙
+
+- 운영자가 "halt 가 자주 걸린다" 고 느끼면 → **먼저 observability guard 완화 검토**
+- real asset guard 는 **절대 건드리지 않음**
+- observability guard 완화는 운영 데이터 근거 필요 ([`PUREWS_V2_SUMMARY`] 로그 등)
+
+---
+
+## Daily / Weekly Review Questions (2026-04-21)
+
+매일/주 리뷰는 **오직 아래 4개 질문에만 답한다**. 수익률 %, 100 SOL 도달 예상일 등은 금지.
+
+1. **Wallet delta 와 DB pnl 의 drift 가 허용 범위 내인가?** (> 0.03 SOL = warn, > 0.2 SOL = halt)
+2. **Survival filter 통과율은?** (진입 pair 중 Layer 1 safe 비율)
+3. **Trade count 진행률은?**
+   - 현재 어느 Stage 인가 (1 Safety / 2 Sample / 3 Winner / 4 Scale)
+   - 50 trades 도달 시: safety checkpoint 만 수행 (승격 결정 없음)
+   - 100 trades 도달 시: preliminary edge/bleed/quickReject 검토
+   - 200 trades 도달 시: scale / retire / hold 최종 결정
+4. **Bleed per probe 추이는?** (비용 구조 개선 중인가)
+
+이 4개에 대한 답이 나오지 않으면 운영 로그/텔레메트리에 문제가 있는 것 — 코드 fix 대상.
 
 ---
 
@@ -130,7 +242,7 @@ Pre-pivot 프레임에서 유지하지 않는 항목:
 ### R2. Single-Session Outlier 금지
 
 - 1개 세션 또는 1개 토큰에서 나온 outlier 결과는 edge 증거 아님.
-- 최소 `50 trades` + 복수 세션 + 복수 토큰에서 재현되어야 승격 후보.
+- 최소 `100 live trades` (preliminary check) + 복수 세션 + 복수 토큰에서 재현돼야 관찰 가치가 있으며, 최종 scale/retire 판정은 `200 trades` (Stage 4) 에서만 내린다.
 
 ### R3. Paper-Only Success 승격 금지
 
@@ -163,18 +275,36 @@ Pre-pivot 프레임에서 유지하지 않는 항목:
 - Entry rate, simulated wallet growth, 가상 5x+ 빈도, loss streak 측정.
 - cupsey benchmark 와 paper-paper A/B 비교.
 
-### 3. Live Canary 단계 (0 ~ 49 trades)
+### 3. Live Canary 단계 (Stage 1 Safety Pass, 0 ~ 48h)
 
 - Ticket: 0.01 SOL, 동시 max 3.
 - Wallet Stop Guard 0.8 SOL 작동 확인 필수.
 - 매 10 trades 마다 wallet reconcile 실행.
 
-### 4. Live Full 단계 (≥ 50 trades)
+### 4. Live Canary — 50-trade safety checkpoint (관측 전용)
 
-- Wallet log growth rate (primary)
-- Winner distribution baseline 설정
-- Ruin probability 시뮬
-- Max DD 확인
+- **승격 결정 없음**. bleed per probe, quick-reject 동작, halt 빈도 점검만.
+- 여기서 나온 결과로 ticket 확대 / lane 추가 결정 금지.
+- 이슈 발견 시 Observability Guard 튜닝 (Real Asset Guard 는 건드리지 않음).
+
+### 5. Live Canary — 100-trade preliminary check (Stage 2)
+
+- Live friction (paper vs live pnl gap) 분포 기록.
+- Max DD `< 30%` 확인.
+- Wallet stop halt 0회 확인.
+- 5x+ winner 조짐 유무 관찰 (Stage 3 통과 여부 판단 근거).
+
+### 6. Live Canary — Stage 3 (Winner Distribution)
+
+- 5x+ winner `>= 1건` 실측 여부.
+- Runner 가 누적 loser + bleed 를 덮는 방향 관측.
+
+### 7. Live Canary — 200-trade scale/retire decision (Stage 4)
+
+- Wallet log growth rate (primary), lane 별 `> 0` 여부.
+- Ruin probability `< 5%` (block bootstrap) 재확인.
+- Winner distribution 5x+ / 10x+ rate 확정.
+- **처음으로** ticket size 증가 / infra 확장 / lane 추가 / retire 여부 판정.
 
 ---
 

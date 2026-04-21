@@ -274,6 +274,198 @@ describe('Phase 1.3 — scanPureWsV2Burst', () => {
     expect(tradeStore.insertTrade).toHaveBeenCalledTimes(1); // 재시도 성공
   });
 
+  it('[2026-04-21 P1] v1 per-pair cooldown blocks repeated bootstrap signal on same pair', async () => {
+    // 4/20-21 관측: BOME(ukHH6c7m) 한 pair 에 bootstrap_10s signal 4회 연속 진입 → halt.
+    // Fix: v1 경로에서 entry 성공 시 v1LastEntrySecByPair 기록, cooldown 내 재-signal skip.
+    override('pureWsGateEnabled', false);
+    override('pureWsV1PerPairCooldownSec', 300);
+    const pair = 'PAIR_V1_COOLDOWN';
+    const builder = makeBuilder(new Map([[pair, []]]), new Map([[pair, 1.0]]));
+    const { ctx, tradeStore } = makeCtx('paper');
+
+    const bootstrapSignal: Signal = {
+      action: 'BUY',
+      strategy: 'pure_ws_breakout',
+      pairAddress: pair,
+      price: 1.0,
+      timestamp: new Date(),
+      meta: {},
+      sourceLabel: 'bootstrap_10s',
+    };
+
+    // 첫 signal → entry 성공
+    await handlePureWsSignal(bootstrapSignal, builder, ctx);
+    expect(tradeStore.insertTrade).toHaveBeenCalledTimes(1);
+    const activeBefore = getActivePureWsPositions().size;
+
+    // position 을 close 한 상태로 가정 — activePositions 에서 제거해서 duplicate guard 회피.
+    // (실제 운영에선 close 경로 거쳐 map 에서 제거됨)
+    resetPureWsLaneStateForTests(); // cooldown map 까지 리셋되므로 별도 방식 필요.
+
+    // 다시 setup (cooldown 만 살아남게)
+    const { ctx: ctx2, tradeStore: ts2 } = makeCtx('paper');
+    // 첫 진입 재시도 (cooldown 없음)
+    await handlePureWsSignal(bootstrapSignal, builder, ctx2);
+    expect(ts2.insertTrade).toHaveBeenCalledTimes(1);
+
+    // duplicate guard 우회 위해 activePositions 제거
+    (getActivePureWsPositions() as Map<string, unknown>).clear();
+
+    // 두 번째 signal (cooldown 활성)
+    await handlePureWsSignal(bootstrapSignal, builder, ctx2);
+    // cooldown 으로 차단 — insertTrade 추가 호출 없음
+    expect(ts2.insertTrade).toHaveBeenCalledTimes(1);
+  });
+
+  it('[2026-04-21 P1] v2 sourced signal bypasses v1 cooldown (separate path)', async () => {
+    // v2 signal 은 scanner 의 자체 cooldown 사용 — handler 내 v1 cooldown 검사 skip.
+    override('pureWsV1PerPairCooldownSec', 300);
+    const pair = 'PAIR_V2_BYPASS';
+    const builder = makeBuilder(new Map([[pair, []]]), new Map([[pair, 1.0]]));
+    const { ctx, tradeStore } = makeCtx('paper');
+
+    const v2Signal: Signal = {
+      action: 'BUY',
+      strategy: 'pure_ws_breakout',
+      pairAddress: pair,
+      price: 1.0,
+      timestamp: new Date(),
+      meta: { burstScore: 75 },
+      sourceLabel: 'ws_burst_v2',
+    };
+
+    // 첫 signal (v1 cooldown 은 v1 만 기록, v2 signal 은 기록 안 함)
+    await handlePureWsSignal(v2Signal, builder, ctx);
+    expect(tradeStore.insertTrade).toHaveBeenCalledTimes(1);
+
+    // activePositions 제거 (close 가정)
+    (getActivePureWsPositions() as Map<string, unknown>).clear();
+
+    // 두 번째 v2 signal — v1 cooldown 이 없으므로 통과
+    await handlePureWsSignal(v2Signal, builder, ctx);
+    expect(tradeStore.insertTrade).toHaveBeenCalledTimes(2);
+  });
+
+  // ─── 2026-04-21 Survival Layer regression ───
+
+  it('[2026-04-21 survival] rejects entry when Token-2022 transferHook extension detected', async () => {
+    override('pureWsSurvivalCheckEnabled', true);
+    override('pureWsGateEnabled', false);
+    const pair = 'PAIR_SURVIVAL_HOOK';
+    const builder = makeBuilder(new Map([[pair, []]]), new Map([[pair, 1.0]]));
+    const { ctx, tradeStore } = makeCtx('paper');
+    (ctx as any).onchainSecurityClient = {
+      getTokenSecurityDetailed: jest.fn(async () => ({
+        isHoneypot: false,
+        isFreezable: false,
+        isMintable: false,
+        hasTransferFee: false,
+        freezeAuthorityPresent: false,
+        top10HolderPct: 0.3,
+        creatorPct: 0,
+        tokenProgram: 'spl-token-2022',
+        extensions: ['transferHook', 'metadataPointer'],
+      })),
+      getExitLiquidity: jest.fn(async () => null),
+    };
+
+    const bootstrapSignal: Signal = {
+      action: 'BUY',
+      strategy: 'pure_ws_breakout',
+      pairAddress: pair,
+      price: 1.0,
+      timestamp: new Date(),
+      meta: {},
+      sourceLabel: 'bootstrap_10s',
+    };
+    await handlePureWsSignal(bootstrapSignal, builder, ctx);
+
+    expect(tradeStore.insertTrade).not.toHaveBeenCalled();
+    expect(getActivePureWsPositions().size).toBe(0);
+  });
+
+  it('[2026-04-21 survival] allows entry when survival data missing + allowDataMissing=true (observability)', async () => {
+    override('pureWsSurvivalCheckEnabled', true);
+    override('pureWsSurvivalAllowDataMissing', true);
+    override('pureWsGateEnabled', false);
+    const pair = 'PAIR_SURVIVAL_MISSING_ALLOW';
+    const builder = makeBuilder(new Map([[pair, []]]), new Map([[pair, 1.0]]));
+    const { ctx, tradeStore } = makeCtx('paper');
+    // onchainSecurityClient 미구성 → 데이터 없음
+
+    const bootstrapSignal: Signal = {
+      action: 'BUY',
+      strategy: 'pure_ws_breakout',
+      pairAddress: pair,
+      price: 1.0,
+      timestamp: new Date(),
+      meta: {},
+      sourceLabel: 'bootstrap_10s',
+    };
+    await handlePureWsSignal(bootstrapSignal, builder, ctx);
+
+    expect(tradeStore.insertTrade).toHaveBeenCalledTimes(1);
+  });
+
+  it('[2026-04-21 survival] rejects entry when survival data missing + allowDataMissing=false (strict)', async () => {
+    override('pureWsSurvivalCheckEnabled', true);
+    override('pureWsSurvivalAllowDataMissing', false);
+    override('pureWsGateEnabled', false);
+    const pair = 'PAIR_SURVIVAL_MISSING_DENY';
+    const builder = makeBuilder(new Map([[pair, []]]), new Map([[pair, 1.0]]));
+    const { ctx, tradeStore } = makeCtx('paper');
+
+    const bootstrapSignal: Signal = {
+      action: 'BUY',
+      strategy: 'pure_ws_breakout',
+      pairAddress: pair,
+      price: 1.0,
+      timestamp: new Date(),
+      meta: {},
+      sourceLabel: 'bootstrap_10s',
+    };
+    await handlePureWsSignal(bootstrapSignal, builder, ctx);
+
+    expect(tradeStore.insertTrade).not.toHaveBeenCalled();
+    // cleanup for subsequent tests
+    override('pureWsSurvivalAllowDataMissing', true);
+  });
+
+  it('[2026-04-21 survival] rejects entry when top-holder concentration > config threshold', async () => {
+    override('pureWsSurvivalCheckEnabled', true);
+    override('pureWsSurvivalMaxTop10HolderPct', 0.80);
+    override('pureWsGateEnabled', false);
+    const pair = 'PAIR_SURVIVAL_HOLDER';
+    const builder = makeBuilder(new Map([[pair, []]]), new Map([[pair, 1.0]]));
+    const { ctx, tradeStore } = makeCtx('paper');
+    (ctx as any).onchainSecurityClient = {
+      getTokenSecurityDetailed: jest.fn(async () => ({
+        isHoneypot: false,
+        isFreezable: false,
+        isMintable: false,
+        hasTransferFee: false,
+        freezeAuthorityPresent: false,
+        top10HolderPct: 0.95, // 95% > 80%
+        creatorPct: 0,
+        tokenProgram: 'spl-token',
+      })),
+      getExitLiquidity: jest.fn(async () => null),
+    };
+
+    const bootstrapSignal: Signal = {
+      action: 'BUY',
+      strategy: 'pure_ws_breakout',
+      pairAddress: pair,
+      price: 1.0,
+      timestamp: new Date(),
+      meta: {},
+      sourceLabel: 'bootstrap_10s',
+    };
+    await handlePureWsSignal(bootstrapSignal, builder, ctx);
+
+    expect(tradeStore.insertTrade).not.toHaveBeenCalled();
+  });
+
   it('handlePureWsSignal bypasses v1 gate for ws_burst_v2 sourced signal', async () => {
     // v1 gate 활성 + 까다로운 factors → handlePureWsSignal 에 직접 버스트 signal 넣으면 gate 건너뜀
     override('pureWsGateEnabled', true); // v1 gate ON

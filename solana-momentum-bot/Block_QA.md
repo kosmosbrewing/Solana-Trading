@@ -1,5 +1,258 @@
 # Block QA
 
+## Survival Layer Tier B-1 + Tier B-2/3/4 설계 (2026-04-21 2nd)
+
+- Date: 2026-04-21
+- Scope: `src/gate/sellQuoteProbe.ts` (신규) + `src/orchestration/pureWsBreakoutHandler.ts` (통합) + `docs/design-docs/survival-layer-tier-b-2026-04-21.md` (follow-up 설계)
+
+### B-1 Active Sell Quote Probe 구현
+
+**Why**:
+- `securityGate` 는 static properties (freeze/mint authority, Token-2022 ext) 만 검증
+- `entryDriftGuard` 는 buy fill 정합성만 검증
+- "honeypot by liquidity" (매도 route 없음 / sell impact 폭증 / AMM 라우팅 실패) 는 **실제 매도 quote** 로만 드러남
+
+**구현**:
+- `evaluateSellQuoteProbe({ tokenMint, probeTokenAmountRaw, expectedSolReceive, tokenDecimals }, config)` 공개 함수
+- Jupiter `tokenMint → SOL_MINT` 방향 quote 요청
+- 검증 기준 3단계:
+  1. Route found — Jupiter 가 매도 경로 찾는가 (`no_sell_route` 시 **reject** — honeypot 신호)
+  2. `observedImpactPct > maxImpactPct` (default 10%) → reject
+  3. (optional) round-trip 복구 비율 `< minRoundTripPct` → reject (default 0 = disabled)
+- `entryDriftGuard` 와 동일 패턴: result cache (3s TTL) + 429 회로 차단기 (2s cooldown)
+- Quote 실패 / 429 → approved=true + quoteFailed=true (observability only, false positive 비용 ↑)
+
+**pure_ws handler 통합**:
+- 위치: `entryDriftGuard` 직후, `nowSec` 계산 전
+- live 모드에서만 활성 (`ctx.tradingMode === 'live'`)
+- `executor.getMintDecimals` 로 token decimals resolve 후 probeTokenAmountRaw 계산
+- reject 시 `[PUREWS_SELL_PROBE_REJECT]` info 로그
+- pass 시 `[PUREWS_SELL_PROBE] outSol=... impact=... roundTrip=...` info
+
+### 신규 Config
+
+```
+PUREWS_SELL_QUOTE_PROBE_ENABLED=true
+PUREWS_SELL_QUOTE_MAX_IMPACT_PCT=0.10        # 10%
+PUREWS_SELL_QUOTE_MIN_ROUND_TRIP_PCT=0       # disabled (관측 전 보수적)
+```
+
+### 신규 테스트 (`test/sellQuoteProbe.test.ts`, 9 cases)
+
+1. normal quote within threshold → approved
+2. no_sell_route → reject (honeypot-by-liquidity)
+3. impact > maxImpactPct → reject (slippage bomb)
+4. minRoundTripPct 초과 reject
+5. minRoundTripPct=0 → skip check
+6. Jupiter throws → quoteFailed=true, approved=true
+7. invalid input (0 amount) → approved=true + reason=invalid_input
+8. result cache hit → 2nd call axios skip
+9. 429 circuit breaker → subsequent call rate_limited without axios
+
+### 검증
+
+- `tsc --noEmit` 0 errors
+- `jest` 847 pass (이전 838 + 9 신규) / 1 pre-existing riskManager fail 무관
+
+### B-2 / B-3 / B-4 설계 문서 (구현 미실시)
+
+`docs/design-docs/survival-layer-tier-b-2026-04-21.md` 신규. 각 항목별:
+
+- **B-2 LP Lock**: Raydium/Orca LP token supply 중 burn + lock 합산 비율 확인. Threshold 초안 `>= 0.80`. Helius pool registry 또는 Jupiter route metadata 에서 lpMint resolve 필요. Streamflow/GoFundMeme lock program 목록 수집 필요.
+- **B-3 Bundler Detection**: 최근 M slot 내 BUY tx 의 signer diversity / funding source clustering. Helius geyser stream infra 필요. Latency vs 정확도 trade-off.
+- **B-4 Dev Wallet DB**: 90일 backfill + rug 판정 태깅 + per-wallet reputation. 가장 큰 인프라 투자. Stage 2 통과 후 병렬 구축 권장.
+
+**전제**: B-2/3/4 모두 Real Asset Guard 아님 — Survival Layer 확장. 없어도 Tier A + B-1 으로 Stage 1 Safety Pass 달성 가능.
+
+### Mission Refinement 정합성
+
+- Layer 1 Survival 커버리지: `rug/honeypot/Token-2022/top-holder/exit-quote` 중 **exit-quote 가 이번 B-1 으로 채워짐**
+- Stage 1 Safety Pass 통과 기준 `survival filter pass rate >= 90%` 의 "filter pass" 범주가 실제로 exitability 까지 포함
+- 향후 B-2/3/4 는 별도 sprint 에서 Stage 2/3 관측 데이터 기반으로 우선순위 조정
+
+### Deployment runbook
+
+```bash
+ssh root@104.238.181.61 << 'EOF'
+cd ~/Solana/Solana-Trading/solana-momentum-bot
+git pull origin main
+npm run build
+pm2 restart solana-bot
+pm2 logs solana-bot --lines 30 --nostream
+EOF
+```
+
+startup `[REAL_ASSET_GUARD]` + `[PUREWS_SELL_PROBE]` / `[PUREWS_SELL_PROBE_REJECT]` 로그 주시.
+
+### 관측 체크리스트
+
+1. `[PUREWS_SELL_PROBE_REJECT]` reason 분포 — `no_sell_route` (honeypot) vs `sell_impact` (low-liq) 비율
+2. Sell probe 추가로 overall survival pass rate 이 내려가면 Stage 1 통과 지연 가능 — 필요 시 `PUREWS_SELL_QUOTE_MAX_IMPACT_PCT` 완화 검토
+3. Jupiter API 호출 빈도 — buy drift guard + sell probe 로 signal 당 2 quote. 429 회로 차단기 동작 확인
+
+---
+
+## Survival Layer P0 — pure_ws 에 Security Gate 연결 (2026-04-21)
+
+- Date: 2026-04-21
+- Trigger: mission refinement 의 P0 (Survival Layer) 지정. pure_ws lane 이 `evaluateSecurityGate` 를 완전히 우회 중이어서 pump.fun Token-2022 / 80%+ holder concentration token 도 무비판적 진입.
+- Scope: `src/gate/securityGate.ts`, `src/orchestration/pureWsBreakoutHandler.ts`, `src/utils/config.ts`, `test/securityGate.test.ts`, `test/pureWsV2Scanner.test.ts`
+
+### Findings & Fix
+
+**Finding 1 — pure_ws 의 security gate 우회**:
+- 증상: pure_ws handler (`handlePureWsSignal`) 에 `evaluateSecurityGate` / `onchainSecurityClient` 호출 없음. bootstrap path (`candleHandler.ts`) 에만 연결돼 있음.
+- 결과: pump.fun (Token-2022) / 80%+ holder concentration token 도 survival 검사 없이 진입.
+- Fix: `checkPureWsSurvival(tokenMint, ctx)` helper 추가 — gateCache 재사용, 필요 시 `onchainSecurityClient.getTokenSecurityDetailed` 직접 조회. viability floor 직전에 호출.
+
+**Finding 2 — 기존 security gate 가 dangerous Token-2022 extension 미검출**:
+- 증상: `hasTransferFee` 만 hard reject. `transferHook` / `permanentDelegate` / `nonTransferable` / `defaultAccountState` 는 log flag 만 찍고 통과.
+- 각각의 위험:
+  - `transferHook`: 외부 program 호출로 매도/전송 임의 차단 가능
+  - `permanentDelegate`: authority 가 토큰 강제 회수 가능
+  - `nonTransferable`: soul-bound (매도 불가)
+  - `defaultAccountState`: 기본 Frozen → 매도 차단 가능
+- Fix: `DANGEROUS_TOKEN_2022_EXTENSIONS` 상수 + `findDangerousExtensions` helper. `evaluateSecurityGate` 에서 transferFee reject 직후 hard reject 추가. 유일한 Token-2022 reject 경로에 확장.
+
+**Finding 3 — top10 holder threshold 가 hard-coded (0.80)**:
+- Fix: `SecurityGateConfig.maxTop10HolderPct` (default 0.80) 로 추출해 pure_ws 는 별도 threshold 운영 가능.
+
+### 신규 Config
+
+```
+PUREWS_SURVIVAL_CHECK_ENABLED=true
+PUREWS_SURVIVAL_ALLOW_DATA_MISSING=true        # RPC 간헐 실패 허용 (observability only)
+PUREWS_SURVIVAL_MIN_EXIT_LIQUIDITY_USD=5000
+PUREWS_SURVIVAL_MAX_TOP10_HOLDER_PCT=0.80
+```
+
+`pureWsSurvivalAllowDataMissing=true` default 근거: RPC 간헐 실패로 signal 을 놓치는 쪽이 더 위험. Stage 2 통과 후 엄격화 재검토.
+
+### 신규 테스트
+
+- `test/securityGate.test.ts` (+6): transferHook / permanentDelegate / nonTransferable / defaultAccountState reject + benign Token-2022 (metadataPointer) 허용 + top10 threshold config override
+- `test/pureWsV2Scanner.test.ts` (+4): transferHook 진입 차단 / data missing + allow/deny / top-holder 진입 차단
+
+### 검증
+
+- `tsc --noEmit` 0 errors
+- `jest` 838 pass (이전 828 + 10 신규) / 1 pre-existing riskManager fail 무관
+
+### 예상 효과
+
+- pure_ws 의 진입 대상 pair 중 rug-prone Token-2022 + high-concentration token 자동 차단
+- Mission refinement 의 Stage 1 Safety Pass 기준 (`survival filter pass rate >= 90%`) 이 실제 측정 가능
+- pump.fun 의 일부 전송 제한 토큰도 사전 차단 가능
+
+### Deployment Runbook
+
+```bash
+ssh root@104.238.181.61 << 'EOF'
+cd ~/Solana/Solana-Trading/solana-momentum-bot
+git pull origin main
+npm run build
+pm2 restart solana-bot
+pm2 logs solana-bot --lines 30 --nostream
+EOF
+```
+
+startup `[REAL_ASSET_GUARD]` 로그 + `[PUREWS_SURVIVAL_REJECT]` 로그 주시.
+
+### 관측 체크리스트 (24h)
+
+1. `[PUREWS_SURVIVAL_REJECT]` 빈도 + reason 분포 — transferHook / HIGH_CONCENTRATION / FREEZABLE / NO_SECURITY_DATA 중 어떤 reason 이 dominant 인지
+2. 진입 대상 pair 의 `survival filter pass rate` (Daily 4질문 #2) — Stage 1 통과 기준 >= 90% 여부
+3. `NO_SECURITY_DATA` 비율이 높으면 `pureWsSurvivalAllowDataMissing=false` 로 엄격화 검토 (다만 signal 손실 이슈 재평가)
+
+### Follow-up (Tier B Survival items)
+
+- LP lock / unlock (Raydium/Orca LP token authority 확인)
+- Dev wallet behavior pattern DB
+- Bundler analysis (same-slot transaction cluster)
+- Honeypot simulation (Jupiter sell quote probe) — 이미 entryDriftGuard 에 부분 구현
+
+---
+
+## V2 Telemetry + V1 Cooldown + Canary Auto-Reset (2026-04-21)
+
+- Date: 2026-04-21
+- Trigger: VPS 24h 관측에서 `PUREWS_V2_PASS=0` + BOME 한 pair 에 4 연속 진입 → canary halt 재발 → 21h 관측 중단
+- Scope: v2 observability, v1 per-pair cooldown, canary halt auto-reset
+
+### Findings & Fix
+
+**P0 — V2 scanner PASS 0건 (진단 불가)**:
+- 증상: 24h 동안 `PUREWS_V2_PASS` 0건. `PUREWS_V2_REJECT` 는 `log.debug` 라 INFO 레벨 운영 로그에 안 찍혀 원인 분석 불가.
+- Fix: scan 누적 counter (`v2Telemetry`) 추가 + `logPureWsV2TelemetrySummary()` 를 1분 주기로 호출.
+  카운트: scansCalled / pairsEvaluated / candlesInsufficient / detectorRejects(reason별 top3) / noCurrentPrice / cooldownSkipped / haltSkipped / passed
+- 관측 시 `[PUREWS_V2_SUMMARY]` 로그로 볼륨/bp/score 어떤 factor 에서 reject 되는지 즉시 진단 가능.
+
+**P1 — V1 (bootstrap) 경로 per-pair cooldown 부재**:
+- 증상: BOME (ukHH6c7m) 한 pair 에 `bootstrap_10s` signal 이 close 직후 반복 fire → 4 연속 진입 → canary halt.
+- 원인: duplicate guard 는 "이미 holding" 만 차단. close 후 재 signal 은 통과.
+- Fix: `v1LastEntrySecByPair` Map 추가 + `PUREWS_V1_PER_PAIR_COOLDOWN_SEC` (default 300s) 체크. v2 signal (`sourceLabel === 'ws_burst_v2'`) 은 scanner 자체 cooldown 사용하므로 v1 check bypass.
+
+**P2 — Canary halt threshold 보수적 + 수동 해제 전용**:
+- 증상: `consecutive losers 4 >= 4` 로 조기 halt → 운영자 수동 개입까지 21h 관측 중단
+- Fix:
+  - `CANARY_MAX_CONSEC_LOSERS` default `4 → 8` 완화 (표본 부족 원칙, budget cap 이 실 자산 guard)
+  - `checkAndAutoResetHalt(lane, nowMs)` 추가 — halt 후 `canaryAutoResetMinSec` (default 1800s=30분) 경과 + budget 여유 있으면 자동 reset
+  - `canaryAutoResetEnabled` (default true) / `canaryAutoResetMinSec` env 노출
+  - budget 초과 halt 는 auto-reset 금지 — 실 자산 guard 유지
+  - index.ts 에서 1분 주기 `checkAllLanesAutoResetHalt()` 호출
+
+### 새 Config
+
+```
+PUREWS_V1_PER_PAIR_COOLDOWN_SEC=300         # v1 cooldown (v2 와 동일 default)
+CANARY_MAX_CONSEC_LOSERS=8                  # 4 → 8 완화
+CANARY_AUTO_RESET_ENABLED=true              # default true
+CANARY_AUTO_RESET_MIN_SEC=1800              # 30분
+```
+
+### 신규 테스트
+
+- `test/canaryAutoHalt.test.ts` — auto-reset after cooldown / budget exhausted skip / disabled flag no-op (3 cases)
+- `test/pureWsV2Scanner.test.ts` — v1 cooldown blocks repeated bootstrap / v2 bypass (2 cases)
+
+### 검증
+
+- `tsc --noEmit` 0 errors
+- `jest` 828 pass (기존 823 + 5 신규) / 1 pre-existing riskManager fail 무관
+
+### 예상 효과
+
+- V2 scanner 왜 0 PASS 인지 1분 주기로 명확히 보임 (운영 중 threshold 튜닝 가능)
+- BOME 류 반복 진입 → pair diversity 확보 → canary halt 조기 발동 방지
+- halt 후 30분 시간 경과 + 실 자산 여유 있으면 자동 해제 → 관측 재개
+
+### Deployment Runbook
+
+```bash
+ssh root@104.238.181.61 << 'EOF'
+cd ~/Solana/Solana-Trading/solana-momentum-bot
+git pull origin main
+npm run build
+pm2 restart solana-bot
+pm2 logs solana-bot --lines 30 --nostream
+EOF
+```
+
+### 관측 체크리스트 (재배포 후 2h)
+
+1. `[PUREWS_V2_SUMMARY]` 로그 — 매 1분 출력. eval/reject/insuf/PASS 빈도 분석
+2. `[PUREWS_V1_COOLDOWN]` — 같은 pair 반복 signal 차단 빈도
+3. `[CANARY_AUTO_RESET]` — halt 자동 해제 발생 여부 (30분 경과 후)
+4. pair diversity — 하루 진입 pair 수 (BOME 만 4건 → 다양화 목표)
+
+### Follow-up
+
+- `[PUREWS_V2_SUMMARY]` 누적 데이터 기반으로 threshold 튜닝 (2-3일 관측 후)
+- V1 cooldown 을 환경별 조정 가능하게 (예: meme pair 는 짧게, blue chip 은 길게)
+- Budget 자동 리셋도 고려 (일별 UTC day rollover)
+
+---
+
 ## Orphan Close Loop + V2 Scanner Halt Gate (2026-04-20)
 
 - Date: 2026-04-20

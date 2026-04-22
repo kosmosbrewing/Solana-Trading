@@ -82,6 +82,10 @@ import { isPumpSwapDexId } from './realtime/pumpSwapParser';
 import { logAdmissionSkipDex } from './realtime/admissionSkipLogger';
 import { startWalletStopGuard, stopWalletStopGuardPoller } from './risk/walletStopGuard';
 import { startWalletDeltaComparator, stopWalletDeltaComparator } from './risk/walletDeltaComparator';
+import {
+  startJupiter429SummaryLoop,
+  stopJupiter429SummaryLoop,
+} from './observability/jupiterRateLimitMetric';
 import { resolveCupseyWalletLabel } from './orchestration/cupseyLaneHandler';
 import { resolveMigrationWalletLabel } from './orchestration/migrationLaneHandler';
 import { persistOpenTradeWithIntegrity, isEntryHaltActive } from './orchestration/entryIntegrity';
@@ -1340,6 +1344,11 @@ async function main() {
     );
   }
 
+  // 2026-04-22 P1-1: Jupiter 429 metric summary loop (5분 주기).
+  // Why: 2026-04-22 9h 운영 중 429 cluster 로 유일 live buy 전멸. silent loss 추적 metric.
+  startJupiter429SummaryLoop(5 * 60 * 1000);
+  log.info('[JUPITER_429] summary loop started (5min interval)');
+
   if (realtimeModeEnabled) {
     const realtimeIntervals = [5, config.realtimePrimaryIntervalSec, config.realtimeConfirmIntervalSec];
     heliusIngester = new HeliusWSIngester({
@@ -1977,6 +1986,7 @@ async function main() {
     healthMonitor.stop();
     stopWalletStopGuardPoller();
     stopWalletDeltaComparator();
+    stopJupiter429SummaryLoop();
     await dbPool.end();
     log.info('Shutdown complete');
     process.exit(0);

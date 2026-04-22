@@ -53,6 +53,15 @@ interface LedgerSell {
   entryPrice?: number;
   holdSec?: number;
   recordedAt?: string;
+  // 2026-04-22 P2-4 — optional (legacy ledger 에는 없음). pureWs handler 가 기록.
+  mfePctPeak?: number;
+  peakPrice?: number;
+  troughPrice?: number;
+  marketReferencePrice?: number;
+  t1VisitAtSec?: number | null;
+  t2VisitAtSec?: number | null;
+  t3VisitAtSec?: number | null;
+  closeState?: string;
 }
 
 interface PairedTrade {
@@ -72,6 +81,13 @@ interface PairedTrade {
   netSol: number;          // solReceived - solSpent
   netPct: number;          // (exitPrice - entryPrice) / entryPrice × 100
   exitReason?: string;
+  // 2026-04-22 P2-4 — MFE peak + tier visit timestamps.
+  // `winners5x` (netPct ≥ 400) 는 close 시 net 기준이라 "T2 visit 후 trail 반납" 을 구분 못 한다.
+  // 아래 필드로 visit 기반 집계 추가 (`winners5xByVisit = t2VisitAtSec != null`).
+  mfePctPeak?: number;
+  t1VisitAtSec?: number | null;
+  t2VisitAtSec?: number | null;
+  t3VisitAtSec?: number | null;
 }
 
 interface StrategyReport {
@@ -85,6 +101,10 @@ interface StrategyReport {
   winners2x: number;
   winners5x: number;
   winners10x: number;
+  // 2026-04-22 P2-4: MFE visit 기반 집계. net 기준 winners 와 별도 — T2/T3 방문했으나 trail 로
+  // 반납한 case 를 구분해서 "기술적으로 5x+ 는 맞췄지만 반납" 을 측정 가능.
+  winners5xByVisit: number;
+  winners10xByVisit: number;
   losers: number;
   maxConsecutiveLosers: number;
   medianHoldSec: number | null;
@@ -241,6 +261,11 @@ function pairTrades(buys: LedgerBuy[], sells: LedgerSell[], since: Date | undefi
       netSol,
       netPct,
       exitReason: s.exitReason,
+      // 2026-04-22 P2-4 — legacy sell ledger 는 필드 없음 → undefined/null fallback
+      mfePctPeak: typeof s.mfePctPeak === 'number' ? s.mfePctPeak : undefined,
+      t1VisitAtSec: s.t1VisitAtSec ?? null,
+      t2VisitAtSec: s.t2VisitAtSec ?? null,
+      t3VisitAtSec: s.t3VisitAtSec ?? null,
     });
   }
 
@@ -357,6 +382,9 @@ function buildReport(
   const winners2x = trades.filter((t) => t.netPct >= 100).length;
   const winners5x = trades.filter((t) => t.netPct >= 400).length;
   const winners10x = trades.filter((t) => t.netPct >= 900).length;
+  // 2026-04-22 P2-4: visit 기반 — "실제 T2/T3 도달했는가" 측정. net 기반과 별개.
+  const winners5xByVisit = trades.filter((t) => t.t2VisitAtSec != null).length;
+  const winners10xByVisit = trades.filter((t) => t.t3VisitAtSec != null).length;
   const losers = trades.filter((t) => t.netSol < 0).length;
   const maxLoserStreak = maxStreak(trades, (t) => t.netSol < 0);
 
@@ -388,6 +416,8 @@ function buildReport(
     winners2x,
     winners5x,
     winners10x,
+    winners5xByVisit,
+    winners10xByVisit,
     losers,
     maxConsecutiveLosers: maxLoserStreak,
     medianHoldSec: holdSecs.length ? median(holdSecs) : null,
@@ -455,8 +485,10 @@ function toMarkdown(benchmark: StrategyReport, candidate: StrategyReport, args: 
     `| median net % | ${r.medianNetPct.toFixed(2)}% |`,
     `| mean net % | ${r.meanNetPct.toFixed(2)}% |`,
     `| winners 2x+ | ${r.winners2x} |`,
-    `| winners 5x+ | ${r.winners5x} |`,
-    `| winners 10x+ | ${r.winners10x} |`,
+    `| winners 5x+ (net) | ${r.winners5x} |`,
+    `| winners 10x+ (net) | ${r.winners10x} |`,
+    `| winners 5x+ (visit) | ${r.winners5xByVisit} |`,
+    `| winners 10x+ (visit) | ${r.winners10xByVisit} |`,
     `| losers | ${r.losers} |`,
     `| max consecutive losers | ${r.maxConsecutiveLosers} |`,
     `| median hold sec | ${r.medianHoldSec ?? 'N/A'} |`,

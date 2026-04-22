@@ -56,6 +56,12 @@ import {
 } from './entryIntegrity';
 import { reportCanaryClose } from '../risk/canaryAutoHalt';
 import { acquireCanarySlot, releaseCanarySlot } from '../risk/canaryConcurrencyGuard';
+import {
+  trackRejectForMissedAlpha,
+  type MissedAlphaEvent,
+  type MissedAlphaObserverConfig,
+} from '../observability/missedAlphaObserver';
+import path from 'path';
 
 const log = createModuleLogger('PureWsBreakout');
 const LANE_STRATEGY: 'pure_ws_breakout' = 'pure_ws_breakout';
@@ -94,6 +100,14 @@ interface PureWsPosition {
   /** Phase 3 snapshot — entry 시점 microstructure (quickReject / holdPhase 분석용) */
   buyRatioAtEntry?: number;
   txCountAtEntry?: number;
+  /**
+   * 2026-04-22 P2-4 (MFE peak ledger): `winners5x` 는 net return 기준이라 "T2 방문했으나
+   * trail 로 반납" 케이스를 구분 못 한다. 아래 visit timestamp 로 MFE peak 기반 winner 분포
+   * 보강 — canary-eval 이 `winners5x_by_visit = (t2VisitAtSec != null)` 로 집계 가능.
+   */
+  t1VisitAtSec?: number;
+  t2VisitAtSec?: number;
+  t3VisitAtSec?: number;
 }
 
 const activePositions = new Map<string, PureWsPosition>();
@@ -152,6 +166,75 @@ export function resolvePureWsWalletLabel(ctx: BotContext): 'main' | 'sandbox' {
 }
 
 // ─── Test Helpers ───
+
+// ─── Missed Alpha Observer helper (2026-04-22) ───
+// Why: reject site 여러 곳에서 같은 config 를 조립. 한 곳으로 모아서 호출 부담 최소화.
+//      observer 자체가 fire-and-forget 이지만, 이 helper 도 sync — ticket/signal path 에 무영향.
+
+function buildMissedAlphaConfig(): Partial<MissedAlphaObserverConfig> {
+  return {
+    enabled: config.missedAlphaObserverEnabled,
+    offsetsSec: config.missedAlphaObserverOffsetsSec,
+    jitterPct: config.missedAlphaObserverJitterPct,
+    maxInflight: config.missedAlphaObserverMaxInflight,
+    dedupWindowSec: config.missedAlphaObserverDedupWindowSec,
+    outputFile: path.join(config.realtimeDataDir, 'missed-alpha.jsonl'),
+    jupiterApiUrl: config.jupiterApiUrl,
+    jupiterApiKey: config.jupiterApiKey,
+  };
+}
+
+function trackPureWsReject(partial: Omit<MissedAlphaEvent, 'lane'>): void {
+  trackRejectForMissedAlpha({ ...partial, lane: LANE_STRATEGY }, buildMissedAlphaConfig());
+}
+
+/**
+ * Close-site observer hook (2026-04-22 P2-1b).
+ * Why: reject-side 훅은 entry 전 signal 의 post-reject trajectory 만 본다. Phase 3 miss 가설
+ *      (진입 → 30s flat cut → Phase 3 에서 breakout) 은 **이미 진입한 position 의 post-close
+ *      trajectory** 가 필요. close site 5개 (probe_hard_cut / probe_reject_timeout / probe_flat_cut /
+ *      quick_reject_classifier_exit / hold_phase_sentinel_degraded_exit) 에서 호출.
+ *
+ * signalPrice 는 pos.marketReferencePrice (entry 시점 시장 기준) 를 쓴다. observer 가 probe
+ * 시점 Jupiter price 와 비교 → deltaPct > 0 이면 "cut 이후 price 상승 = 미실현 winner miss".
+ */
+function trackPureWsClose(
+  pos: PureWsPosition,
+  category: MissedAlphaEvent['rejectCategory'],
+  closeReason: string,
+  nowSec: number,
+  mfePct: number,
+  maePct: number,
+  exitPrice: number
+): void {
+  trackRejectForMissedAlpha(
+    {
+      rejectCategory: category,
+      rejectReason: closeReason,
+      tokenMint: pos.pairAddress,
+      lane: LANE_STRATEGY,
+      signalPrice: pos.marketReferencePrice,
+      probeSolAmount: config.pureWsLaneTicketSol,
+      signalSource: pos.sourceLabel,
+      extras: {
+        closeState: pos.state,
+        elapsedSecAtClose: nowSec - pos.entryTimeSec,
+        mfePctAtClose: mfePct,
+        maePctAtClose: maePct,
+        entryPrice: pos.entryPrice,
+        exitPrice,
+        peakPrice: pos.peakPrice,
+        troughPrice: pos.troughPrice,
+        // 2026-04-22 P2-4: tier visit timestamps — observer 가 "T2 방문했다가 cut 된 position"
+        // 의 post-close trajectory 를 구분 분석할 수 있게 한다.
+        t1VisitAtSec: pos.t1VisitAtSec ?? null,
+        t2VisitAtSec: pos.t2VisitAtSec ?? null,
+        t3VisitAtSec: pos.t3VisitAtSec ?? null,
+      },
+    },
+    buildMissedAlphaConfig()
+  );
+}
 
 // ─── V2 Detector per-pair cooldown (Phase 1.3) ───
 // Why: paper replay 에서 Top pair (pippin 164 pass / 32k eval) 쏠림 관측. 같은 pair 에 연속 burst 진입 방지.
@@ -466,6 +549,15 @@ export async function handlePureWsSignal(
         `[PUREWS_SURVIVAL_REJECT] ${signal.pairAddress.slice(0, 12)} ` +
         `reason=${survival.reason ?? 'unknown'} flags=[${survival.flags.join(',')}]`
       );
+      trackPureWsReject({
+        rejectCategory: 'survival',
+        rejectReason: survival.reason ?? 'unknown',
+        tokenMint: signal.pairAddress,
+        signalPrice: signal.price,
+        probeSolAmount: ticketSol,
+        signalSource: signal.sourceLabel,
+        extras: { flags: survival.flags },
+      });
       return;
     }
     if (survival.flags.length > 0) {
@@ -508,6 +600,19 @@ export async function handlePureWsSignal(
         `bleed=${viability.bleed.totalSol.toFixed(6)}SOL (${(viability.bleed.totalPct * 100).toFixed(2)}%) ` +
         `budget=${remainingBudget.toFixed(6)}SOL`
       );
+      trackPureWsReject({
+        rejectCategory: 'viability',
+        rejectReason: viability.reason ?? 'viability',
+        tokenMint: signal.pairAddress,
+        signalPrice: signal.price,
+        probeSolAmount: ticketSol,
+        signalSource: signal.sourceLabel,
+        extras: {
+          bleedSol: viability.bleed.totalSol,
+          bleedPct: viability.bleed.totalPct,
+          remainingBudgetSol: remainingBudget,
+        },
+      });
       return;
     }
   }
@@ -556,6 +661,20 @@ export async function handlePureWsSignal(
       log.info(
         `[PUREWS_ENTRY_DRIFT_REJECT] ${signal.pairAddress.slice(0, 12)} ${driftResult.reason ?? 'drift'}`
       );
+      trackPureWsReject({
+        rejectCategory: 'entry_drift',
+        rejectReason: driftResult.reason ?? 'drift',
+        tokenMint: signal.pairAddress,
+        signalPrice: signal.price,
+        probeSolAmount,
+        tokenDecimals,
+        signalSource: signal.sourceLabel,
+        extras: {
+          expectedFillPrice: driftResult.expectedFillPrice,
+          observedDriftPct: driftResult.observedDriftPct,
+          routeFound: driftResult.routeFound,
+        },
+      });
       return;
     }
   }
@@ -606,6 +725,21 @@ export async function handlePureWsSignal(
             log.info(
               `[PUREWS_SELL_PROBE_REJECT] ${signal.pairAddress.slice(0, 12)} ${sellProbe.reason ?? 'sell_probe'}`
             );
+            trackPureWsReject({
+              rejectCategory: 'sell_quote_probe',
+              rejectReason: sellProbe.reason ?? 'sell_probe',
+              tokenMint: signal.pairAddress,
+              signalPrice: signal.price,
+              probeSolAmount: ticketSol,
+              tokenDecimals,
+              signalSource: signal.sourceLabel,
+              extras: {
+                observedOutSol: sellProbe.observedOutSol,
+                observedImpactPct: sellProbe.observedImpactPct,
+                roundTripPct: sellProbe.roundTripPct,
+                routeFound: sellProbe.routeFound,
+              },
+            });
             return;
           }
         }
@@ -854,6 +988,7 @@ export async function updatePureWsPositions(
           log.info(
             `[PUREWS_LOSER_HARDCUT] ${id} MAE=${(maePct * 100).toFixed(2)}% elapsed=${elapsedSec}s`
           );
+          trackPureWsClose(pos, 'probe_hard_cut', 'REJECT_HARD_CUT', nowSec, mfePct, maePct, currentPrice);
           await closePureWsPosition(id, pos, currentPrice, 'REJECT_HARD_CUT', ctx);
           continue;
         }
@@ -888,6 +1023,7 @@ export async function updatePureWsPositions(
               `[PUREWS_QUICK_REJECT] ${id} microstructure degraded — factors=${qr.degradeFactors.join(',')} ` +
               `mfe=${(mfePct * 100).toFixed(2)}% elapsed=${elapsedSec}s`
             );
+            trackPureWsClose(pos, 'quick_reject_classifier_exit', `quick_reject:${qr.degradeFactors.join(',')}`, nowSec, mfePct, maePct, currentPrice);
             await closePureWsPosition(id, pos, currentPrice, 'REJECT_TIMEOUT', ctx);
             continue;
           }
@@ -908,12 +1044,13 @@ export async function updatePureWsPositions(
               `[PUREWS_LOSER_TIMEOUT] ${id} flat band currentPct=${(currentPct * 100).toFixed(2)}% ` +
               `MFE=${(mfePct * 100).toFixed(2)}%`
             );
+            trackPureWsClose(pos, 'probe_reject_timeout', `flat_timeout@${elapsedSec}s`, nowSec, mfePct, maePct, currentPrice);
             await closePureWsPosition(id, pos, currentPrice, 'REJECT_TIMEOUT', ctx);
             continue;
           }
           // 창 넘겼지만 flat 아님 → 추가 관찰 (trailing 로직으로 처리)
         }
-        // PROBE trail
+        // PROBE trail (flat band 벗어난 후 peak 에서 pullback → trail stop 발동)
         if (pos.peakPrice > pos.entryPrice) {
           const trailStop = pos.peakPrice * (1 - config.pureWsProbeTrailingPct);
           if (currentPrice <= trailStop) {
@@ -921,6 +1058,7 @@ export async function updatePureWsPositions(
               `[PUREWS_PROBE_TRAIL] ${id} peak=${pos.peakPrice.toFixed(8)} ` +
               `trail=${trailStop.toFixed(8)} currentPct=${(currentPct * 100).toFixed(2)}%`
             );
+            trackPureWsClose(pos, 'probe_flat_cut', `probe_trail_stop@${elapsedSec}s`, nowSec, mfePct, maePct, currentPrice);
             await closePureWsPosition(id, pos, currentPrice, 'WINNER_TRAILING', ctx);
             continue;
           }
@@ -928,6 +1066,7 @@ export async function updatePureWsPositions(
         // Promote to T1
         if (mfePct >= config.pureWsT1MfeThreshold) {
           pos.state = 'RUNNER_T1';
+          pos.t1VisitAtSec = nowSec;
           funnelStats.winnersT1++;
           log.info(
             `[PUREWS_T1] ${id} promoted RUNNER_T1 MFE=${(mfePct * 100).toFixed(2)}%`
@@ -939,6 +1078,7 @@ export async function updatePureWsPositions(
       case 'RUNNER_T1': {
         if (mfePct >= config.pureWsT2MfeThreshold) {
           pos.state = 'RUNNER_T2';
+          pos.t2VisitAtSec = nowSec;
           // 2026-04-19: T2 breakeven lock 는 peakPrice/trailStop 과 같은 domain 이어야
           // 한다 (market reference 기반). Pnl break-even 은 closePureWsPosition 에서
           // entry (Jupiter fill) 기준으로 별도 계산.
@@ -967,6 +1107,7 @@ export async function updatePureWsPositions(
       case 'RUNNER_T2': {
         if (mfePct >= config.pureWsT3MfeThreshold) {
           pos.state = 'RUNNER_T3';
+          pos.t3VisitAtSec = nowSec;
           funnelStats.winnersT3++;
           log.info(
             `[PUREWS_T3] ${id} promoted RUNNER_T3 MFE=${(mfePct * 100).toFixed(2)}%`
@@ -1049,6 +1190,20 @@ async function checkHoldPhaseDegraded(
       `[PUREWS_HOLD_DEGRADED] ${id} state=${pos.state} factors=${result.warnFactors.join(',')} ` +
       `peakDrift=${(result.peakDriftPct * 100).toFixed(2)}% buyR=${result.recentBuyRatio.toFixed(2)} tx=${result.recentTxCount.toFixed(1)}`
     );
+    // Observer: hold-phase sentinel 에 의한 cut — post-close trajectory 관측 (Phase 3 miss 정량 평가)
+    const nowSecHold = Math.floor(Date.now() / 1000);
+    const refPrice = pos.marketReferencePrice;
+    const mfePctHold = (pos.peakPrice - refPrice) / refPrice;
+    const maePctHold = (pos.troughPrice - refPrice) / refPrice;
+    trackPureWsClose(
+      pos,
+      'hold_phase_sentinel_degraded_exit',
+      `hold_degraded:${result.warnFactors.join(',')}`,
+      nowSecHold,
+      mfePctHold,
+      maePctHold,
+      currentPrice
+    );
     await closePureWsPosition(id, pos, currentPrice, 'DEGRADED_EXIT', ctx);
     return true;
   }
@@ -1108,6 +1263,13 @@ async function closePureWsPositionSerialized(
           `[PUREWS_LIVE_SELL] ${id} sig=${sellResult.txSignature.slice(0, 12)} ` +
           `received=${receivedSol.toFixed(6)} SOL slip=${sellResult.slippageBps}bps`
         );
+        // 2026-04-22 P2-4: MFE peak + tier visit timestamp 기록 — canary-eval 이 net return
+        // 기반 `winners5x` 외에 **visit 기반 winner 분포** 도 집계할 수 있게 한다.
+        // `mfePctPeak` = (peakPrice - marketReferencePrice) / marketReferencePrice.
+        const mfePctPeak =
+          pos.marketReferencePrice > 0
+            ? (pos.peakPrice - pos.marketReferencePrice) / pos.marketReferencePrice
+            : 0;
         await appendEntryLedger('sell', {
           positionId: id,
           dbTradeId: pos.dbTradeId,
@@ -1123,6 +1285,14 @@ async function closePureWsPositionSerialized(
           slippageBps: sellResult.slippageBps,
           entryPrice: pos.entryPrice,
           holdSec,
+          mfePctPeak,
+          peakPrice: pos.peakPrice,
+          troughPrice: pos.troughPrice,
+          marketReferencePrice: pos.marketReferencePrice,
+          t1VisitAtSec: pos.t1VisitAtSec ?? null,
+          t2VisitAtSec: pos.t2VisitAtSec ?? null,
+          t3VisitAtSec: pos.t3VisitAtSec ?? null,
+          closeState: pos.state,
         });
       } else {
         // 2026-04-20 P0 fix: orphan position (지갑에 토큰 없음) — 기존 `throw Error` 는

@@ -144,6 +144,17 @@ export const config = {
   // 소규모 favorable (<5%) 은 기회 허용, 대규모 (>20%) 는 signal quality 문제로 판단.
   pureWsMaxFavorableDriftPct: Number(process.env.PUREWS_MAX_FAVORABLE_DRIFT_PCT ?? '0.20'),
 
+  // 2026-04-22 P0+P2 (mission-refinement): Missed Alpha Observer.
+  // reject 이후 T+N초 Jupiter price 를 비동기로 기록해서 "reject 이 옳았는지 틀렸는지"
+  // 분포로 판정 가능하게 한다. observer 는 trade 결정에 간섭하지 않는다 — 순수 관측.
+  // 출력: `${realtimeDataDir}/missed-alpha.jsonl` (crash-safe append).
+  missedAlphaObserverEnabled: boolOptional('MISSED_ALPHA_OBSERVER_ENABLED', true),
+  missedAlphaObserverOffsetsSec: (process.env.MISSED_ALPHA_OBSERVER_OFFSETS_SEC ?? '60,300,1800')
+    .split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0),
+  missedAlphaObserverJitterPct: Number(process.env.MISSED_ALPHA_OBSERVER_JITTER_PCT ?? '0.1'),
+  missedAlphaObserverMaxInflight: Number(process.env.MISSED_ALPHA_OBSERVER_MAX_INFLIGHT ?? '50'),
+  missedAlphaObserverDedupWindowSec: Number(process.env.MISSED_ALPHA_OBSERVER_DEDUP_WINDOW_SEC ?? '30'),
+
   // 2026-04-19: Dual price tracker — market reference (signal) vs Jupiter fill (entry) 분리.
   // Why: hard-cut / MAE / MFE 는 signal price 기준 (실제 market movement), pnl 은 Jupiter fill 기준.
   // 기존처럼 entryPrice 단일로 쓰면 bad fill entry 가 "시장 손실" 로 오해되어 과도 차단.

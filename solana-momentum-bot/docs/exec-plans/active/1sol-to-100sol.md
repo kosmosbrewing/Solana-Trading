@@ -87,6 +87,8 @@ Trigger: live canary 운영 중 50 trades 누적 (halt 발생하지 않음)
 - Quick-reject classifier 실제 동작 여부 (`[PUREWS_LOSER_HARDCUT]` / `[PUREWS_LOSER_TIMEOUT]` 분포)
 - halt 빈도 (observability guard 튜닝 필요한지)
 - wallet reconcile drift 이상 여부
+- **Missed Alpha Observer** (`data/realtime/missed-alpha.jsonl`, 2026-04-22) — reject 이후 pair trajectory 가 쌓이는지 확인. PASS 대비 reject 비율 + reject 후 T+60/300/1800s `deltaPct` 분포 (p50/p90/p95).
+- **(P2-1b 확장 후)** close-site trajectory — `probe_reject_timeout` / `probe_hard_cut` / `probe_flat_cut` / `quick_reject_classifier_exit` / `hold_phase_sentinel_degraded_exit` 카테고리 분포. Phase 3 miss 가설 정량 평가 기반.
 
 여기서 "promote / demote" 판정을 절대 내리지 않는다. 이슈가 있으면 **Observability Guard 완화** 검토 (Real Asset Guard 는 건드리지 않음).
 

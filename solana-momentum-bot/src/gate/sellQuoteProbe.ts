@@ -29,6 +29,7 @@ import {
   JUPITER_KEYLESS_SWAP_API_URL,
   normalizeJupiterSwapApiUrl,
 } from '../utils/jupiterApi';
+import { recordJupiter429 } from '../observability/jupiterRateLimitMetric';
 
 const log = createModuleLogger('SellQuoteProbe');
 
@@ -202,9 +203,12 @@ export async function evaluateSellQuoteProbe(
     const msg = err instanceof Error ? err.message : String(err);
     const errWithResp = err as { response?: { status: number } };
     const is429 = errWithResp.response?.status === 429 || msg.includes('429');
-    if (is429 && cfg.rateLimitCooldownMs > 0) {
-      rateLimitedUntilMs = now + cfg.rateLimitCooldownMs;
-      log.warn(`[SELL_QUOTE_PROBE] 429 → cooldown ${cfg.rateLimitCooldownMs}ms`);
+    if (is429) {
+      recordJupiter429('sell_quote_probe');
+      if (cfg.rateLimitCooldownMs > 0) {
+        rateLimitedUntilMs = now + cfg.rateLimitCooldownMs;
+        log.warn(`[SELL_QUOTE_PROBE] 429 → cooldown ${cfg.rateLimitCooldownMs}ms`);
+      }
     } else {
       log.warn(`[SELL_QUOTE_PROBE] ${input.tokenMint.slice(0, 12)} quote failed: ${msg}`);
     }

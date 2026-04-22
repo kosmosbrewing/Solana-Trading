@@ -44,6 +44,7 @@ import {
   JUPITER_KEYLESS_SWAP_API_URL,
   normalizeJupiterSwapApiUrl,
 } from '../utils/jupiterApi';
+import { recordJupiter429 } from '../observability/jupiterRateLimitMetric';
 
 const log = createModuleLogger('EntryDriftGuard');
 
@@ -263,8 +264,11 @@ async function fetchJupiterQuote(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     // 429 감지 시 회로 차단기 트립. 이후 호출은 rate_limited 분기로 즉시 fail-open.
-    if (cfg.rateLimitCooldownMs > 0 && is429Error(err)) {
-      rateLimitedUntilMs = Date.now() + cfg.rateLimitCooldownMs;
+    if (is429Error(err)) {
+      recordJupiter429('entry_drift_guard');
+      if (cfg.rateLimitCooldownMs > 0) {
+        rateLimitedUntilMs = Date.now() + cfg.rateLimitCooldownMs;
+      }
     }
     throw new Error(msg);
   }

@@ -196,6 +196,38 @@ describe('sellQuoteProbe', () => {
     expect(mockAxiosGet).toHaveBeenCalledTimes(1);
   });
 
+  it('[2026-04-21 M1] in-flight dedup — concurrent burst on same key collapses into single axios call', async () => {
+    // 단일 Promise 를 직접 제어하여 "pending 중 64 call" burst 재현.
+    let resolveQuote: (value: unknown) => void = () => {};
+    const pending = new Promise((resolve) => {
+      resolveQuote = resolve;
+    });
+    mockAxiosGet.mockReturnValueOnce(pending);
+
+    const input = {
+      tokenMint: 'BurstToken_SellDedup_111111111111111111111',
+      probeTokenAmountRaw: 100_000_000n,
+      expectedSolReceive: 0.01,
+    };
+    // 64 concurrent call
+    const promises = Array.from({ length: 64 }, () =>
+      evaluateSellQuoteProbe(input, { maxImpactPct: 0.10 })
+    );
+    resolveQuote({
+      data: { outAmount: String(9_500_000), priceImpactPct: '2.0' },
+    });
+    const results = await Promise.all(promises);
+
+    // axios 는 단 1회만 호출됨 (in-flight dedup + result cache)
+    expect(mockAxiosGet).toHaveBeenCalledTimes(1);
+    expect(results.every((r) => r.approved === true)).toBe(true);
+    // 첫 번째만 miss, 나머지는 in_flight_join 또는 result_hit
+    const joined = results.filter(
+      (r) => r.cacheStatus === 'in_flight_join' || r.cacheStatus === 'result_hit'
+    );
+    expect(joined.length).toBe(63);
+  });
+
   it('[rate-limit circuit breaker] skips axios call during 429 cooldown', async () => {
     const err: Error & { response?: { status: number } } = new Error('Request failed with status code 429');
     err.response = { status: 429 };

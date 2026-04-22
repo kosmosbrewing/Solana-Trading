@@ -148,6 +148,22 @@ describe('evaluateSecurityGate', () => {
     expect(result.flags).not.toContain('DANGEROUS_EXT');
   });
 
+  it('[2026-04-21 T1] dangerous extension match is case-insensitive', () => {
+    // 운영 환경에서 Token-2022 extension 이 CamelCase 로 올 수도 있음 (e.g. TransferHook).
+    // findDangerousExtensions 는 lowercase 후 includes 매치 — case-insensitive 보장.
+    const variants = ['TransferHook', 'PERMANENTDELEGATE', 'nonTransferable', 'DefaultAccountState'];
+    for (const ext of variants) {
+      const security: TokenSecurityData = {
+        ...BASE_SECURITY,
+        tokenProgram: 'spl-token-2022',
+        extensions: [ext],
+      };
+      const result = evaluateSecurityGate(security, null);
+      expect(result.approved).toBe(false);
+      expect(result.flags).toContain('DANGEROUS_EXT');
+    }
+  });
+
   it('[2026-04-21 survival] top10HolderPct threshold respects config override (60% cap)', () => {
     const security: TokenSecurityData = {
       ...BASE_SECURITY,

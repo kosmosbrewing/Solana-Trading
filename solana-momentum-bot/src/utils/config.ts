@@ -139,7 +139,10 @@ export const config = {
   // Why: 2026-04-18 VPS 관측에서 4 trades 전부 +20~51% drift 에서 체결됨 (Token-2022 / low-liq route).
   // Hard-cut 이 entry price 기준이라 체결 직후 즉시 -20% MAE 로 찍혀 rug 없이도 loser_hardcut 발동.
   pureWsEntryDriftGuardEnabled: boolOptional('PUREWS_ENTRY_DRIFT_GUARD_ENABLED', true),
-  pureWsMaxEntryDriftPct: Number(process.env.PUREWS_MAX_ENTRY_DRIFT_PCT ?? '0.02'),  // 2%
+  pureWsMaxEntryDriftPct: Number(process.env.PUREWS_MAX_ENTRY_DRIFT_PCT ?? '0.02'),  // 2% (positive drift)
+  // 2026-04-22 P2: large negative drift (signal price bug / pool stale) reject threshold.
+  // 소규모 favorable (<5%) 은 기회 허용, 대규모 (>20%) 는 signal quality 문제로 판단.
+  pureWsMaxFavorableDriftPct: Number(process.env.PUREWS_MAX_FAVORABLE_DRIFT_PCT ?? '0.20'),
 
   // 2026-04-19: Dual price tracker — market reference (signal) vs Jupiter fill (entry) 분리.
   // Why: hard-cut / MAE / MFE 는 signal price 기준 (실제 market movement), pnl 은 Jupiter fill 기준.
@@ -178,8 +181,10 @@ export const config = {
   // per-pair cooldown (같은 pair 반복 entry 방지). Top pair 쏠림 방어.
   pureWsV2PerPairCooldownSec: Number(process.env.PUREWS_V2_PER_PAIR_COOLDOWN_SEC ?? '300'),  // 5분
   // 2026-04-21 P1: v1 (bootstrap) 경로에도 per-pair cooldown. BOME ukHH6c7m 관측에서
-  // 4 trades 연속 같은 pair 진입 → canary halt 유발. v2 와 같은 default (5분).
-  pureWsV1PerPairCooldownSec: Number(process.env.PUREWS_V1_PER_PAIR_COOLDOWN_SEC ?? '300'),
+  // 4 trades 연속 같은 pair 진입 → canary halt 유발.
+  // 2026-04-22 강화: 300s(5분) → 1800s(30분). 14h 관측에서 pippin(Dfh5DzRg) 한 pair 에
+  // 32회 진입 (평균 18분 간격) — 5분 cooldown 이 실질 차단 안 함. pair diversity 강제 필요.
+  pureWsV1PerPairCooldownSec: Number(process.env.PUREWS_V1_PER_PAIR_COOLDOWN_SEC ?? '1800'),
 
   // 2026-04-18: DEX_TRADE Phase 2 — Probe Viability Floor + Daily Bleed Budget
   // Why: RR gate retire 대체. viability 하한만 유지 + bleed budget 으로 시도 수 통제.
@@ -290,6 +295,14 @@ export const config = {
     : {}),
   ...tradingParams.realtime,
   ...tradingParams.tickTrigger,
+  // 2026-04-21 (QA M2): Helius WS watchdog + reconnect cooldown env override.
+  // Why: 운영 관측 기반으로 tune 가능해야 함 (idle watchlist churn vs real dead WS 복구).
+  ...(process.env.HELIUS_WATCHDOG_INTERVAL_MS
+    ? { heliusWatchdogIntervalMs: Number(process.env.HELIUS_WATCHDOG_INTERVAL_MS) }
+    : {}),
+  ...(process.env.HELIUS_RECONNECT_COOLDOWN_MS
+    ? { heliusReconnectCooldownMs: Number(process.env.HELIUS_RECONNECT_COOLDOWN_MS) }
+    : {}),
   ...tradingParams.event,
   ...tradingParams.social,
   ...tradingParams.jito,

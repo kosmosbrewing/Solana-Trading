@@ -50,8 +50,17 @@ const log = createModuleLogger('EntryDriftGuard');
 export interface EntryDriftGuardConfig {
   jupiterApiUrl: string;
   jupiterApiKey?: string;
-  /** max allowed drift (decimal, 0.02 = 2%) */
+  /** max allowed positive drift (decimal, 0.02 = 2%) — bad fill 방어 */
   maxDriftPct: number;
+  /**
+   * 2026-04-22 추가: negative drift (favorable fill) 의 최대 허용치.
+   * 소규모 favorable fill (< 5%) 은 normal market activity — 통과.
+   * 대규모 negative drift (e.g. −90%) 는 signal price 자체 오류 / stale pool subscription 징후 —
+   * "honeypot by liquidity" 못지 않게 위험. 실측 2026-04-21 pippin 48 trades 에서 drift=−91.67%
+   * 고정 관측 (signal price 계산 버그) — wallet 손상 방지 위해 reject.
+   * 기본 0.20 (−20% 이상 favorable drift 면 suspicious signal 로 reject).
+   */
+  maxFavorableDriftPct: number;
   /** slippage hint for Jupiter quote (bps) */
   slippageBps: number;
   timeoutMs: number;
@@ -79,6 +88,7 @@ export interface EntryDriftGuardResult {
 const DEFAULT_CONFIG: EntryDriftGuardConfig = {
   jupiterApiUrl: JUPITER_KEYLESS_SWAP_API_URL,
   maxDriftPct: 0.02,
+  maxFavorableDriftPct: 0.20,
   slippageBps: 100,
   timeoutMs: 5_000,
   resultCacheTtlMs: 3_000,
@@ -331,18 +341,30 @@ function materializeResult(
   };
 
   // 2026-04-19 (QA Q3): Asymmetric drift — positive drift (fill 가격이 signal 보다 높음,
-  // bad fill) 만 reject. Negative drift (유리 fill) 는 convexity mission 관점에서 오히려
-  // 기회 — reject 하면 convex payoff 를 놓침. 의심스러우면 loud warn 만 남기고 entry 허용.
+  // bad fill) 만 reject. 소규모 Negative drift (유리 fill) 는 convexity mission 관점에서 기회.
+  //
+  // 2026-04-22 보강: large negative drift (기본 −20% 초과) 는 signal price 계산 버그 /
+  // pool stale / multi-pool mismatch 징후. 실측 2026-04-21 pippin 48 trades 에서 drift=−91.67%
+  // 고정 관측 — wallet 손해는 적지만 dual tracker market reference 오염 → MAE/MFE 무의미.
   if (observedDriftPct > cfg.maxDriftPct) {
     result.approved = false;
     result.reason =
       `entry_drift +${(observedDriftPct * 100).toFixed(2)}% ` +
       `> ${(cfg.maxDriftPct * 100).toFixed(2)}% ` +
       `(signal=${input.signalPrice.toFixed(8)} expected=${expectedFillPrice.toFixed(8)})`;
+  } else if (observedDriftPct < -cfg.maxFavorableDriftPct) {
+    // 대규모 favorable drift — signal bug / pool mismatch 의심. reject.
+    result.approved = false;
+    result.reason =
+      `suspicious_favorable_drift ${(observedDriftPct * 100).toFixed(2)}% ` +
+      `< −${(cfg.maxFavorableDriftPct * 100).toFixed(2)}% ` +
+      `(signal=${input.signalPrice.toFixed(8)} expected=${expectedFillPrice.toFixed(8)}) — ` +
+      `signal price bug / pool stale 의심`;
   } else if (observedDriftPct < -cfg.maxDriftPct) {
+    // 소규모 negative drift — true favorable fill 가능 (entry 허용, 관측만)
     log.warn(
       `[ENTRY_DRIFT_FAVORABLE] ${input.tokenMint.slice(0, 12)} ` +
-      `drift ${(observedDriftPct * 100).toFixed(2)}% — suspicious favorable fill, entry allowed ` +
+      `drift ${(observedDriftPct * 100).toFixed(2)}% — favorable fill, entry allowed ` +
       `(signal=${input.signalPrice.toFixed(8)} expected=${expectedFillPrice.toFixed(8)})`
     );
   }

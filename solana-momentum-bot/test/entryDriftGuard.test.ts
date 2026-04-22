@@ -147,10 +147,10 @@ describe('entryDriftGuard', () => {
     expect(r.reason).toMatch(/quote_error/);
   });
 
-  it('[2026-04-19 QA Q3] asymmetric — negative drift (favorable fill) is ALLOWED, warn only', async () => {
-    // Convexity 원칙: 유리 fill 은 기회 — reject 하면 convex payoff 를 놓침.
-    // outAmount 200M / 10^6 = 200 UI, 0.01 SOL / 200 = 0.00005 fill vs signal 0.0001
-    // drift = -50%, but approved=true (warn only).
+  it('[2026-04-19 QA Q3 → 2026-04-22 보강] negative drift > maxFavorableDriftPct → reject (signal bug)', async () => {
+    // 2026-04-22 pippin 실측 signal bug 재현: drift −50% 이면 reject.
+    // 이전에는 "favorable fill" 로 warn 만 했지만, 2026-04-21 pippin 48 trades drift=−91%
+    // 고정 관측 후 large negative drift 는 signal 계산 버그로 판정.
     mockAxiosGet.mockResolvedValue({
       data: {
         outAmount: '200000000',
@@ -159,14 +159,60 @@ describe('entryDriftGuard', () => {
     });
     const r = await evaluateEntryDriftGuard(
       {
-        tokenMint: 'TokenMintFavorable66666666666666666666666666',
+        tokenMint: 'TokenMintLargeFavorable6666666666666666666',
         signalPrice: 0.0001,
         probeSolAmount: 0.01,
       },
-      { maxDriftPct: 0.02 }
+      { maxDriftPct: 0.02, maxFavorableDriftPct: 0.20 }
+    );
+    expect(r.approved).toBe(false);
+    expect(r.reason).toMatch(/suspicious_favorable_drift/);
+    expect(r.observedDriftPct).toBeLessThan(-0.4);
+  });
+
+  it('[2026-04-22 P2] small negative drift (< maxFavorableDriftPct) still allowed (true favorable fill)', async () => {
+    // drift −10% — 자연스러운 favorable fill 범위. 진입 허용, warn only.
+    // outAmount 111M / 10^6 = 111 UI, fill = 0.01/111 = 9.0e-5 vs signal 1e-4
+    // drift = (9e-5 - 1e-4) / 1e-4 = -10%
+    mockAxiosGet.mockResolvedValue({
+      data: {
+        outAmount: '111111111',
+        outputDecimals: 6,
+      },
+    });
+    const r = await evaluateEntryDriftGuard(
+      {
+        tokenMint: 'TokenMintSmallFavorable777777777777777777',
+        signalPrice: 0.0001,
+        probeSolAmount: 0.01,
+      },
+      { maxDriftPct: 0.02, maxFavorableDriftPct: 0.20 }
     );
     expect(r.approved).toBe(true);
-    expect(r.observedDriftPct).toBeLessThan(-0.4);
+    expect(r.observedDriftPct).toBeCloseTo(-0.10, 2);
+  });
+
+  it('[2026-04-22 P2 regression] pippin-like signal bug (drift −91%) blocked', async () => {
+    // 2026-04-21 실측 재현: signal 0.00346776, Jupiter returns ~12x more tokens
+    // outAmount 34.72M × 10^6 = 34,720,000 raw
+    mockAxiosGet.mockResolvedValue({
+      data: {
+        outAmount: '34720000',
+        outputDecimals: 6,
+      },
+    });
+    const r = await evaluateEntryDriftGuard(
+      {
+        tokenMint: 'Dfh5DzRgSvvCFDoYc2ciTkMrbDfRKybA4SoFbPmApump',
+        signalPrice: 0.00346776,
+        probeSolAmount: 0.01,
+      },
+      { maxDriftPct: 0.02, maxFavorableDriftPct: 0.20 }
+    );
+    expect(r.approved).toBe(false);
+    expect(r.reason).toMatch(/suspicious_favorable_drift/);
+    // 실측 drift ≈ -91.67%
+    expect(r.observedDriftPct).toBeLessThan(-0.9);
   });
 
   it('rejects invalid input (zero signal price)', async () => {

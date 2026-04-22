@@ -183,6 +183,11 @@ export const tradingParams = {
     realtimeFallbackBatchSize: 1,         // runtime_canary: 1 (code_default: 5)
     realtimeMaxFallbackQueue: 1000,
     realtimeDisableSingleTxFallbackOnBatchUnsupported: true,
+    // 2026-04-21 (QA M2): Helius WS watchdog + reconnect cooldown env 노출.
+    // watchdog 이 너무 민감하면 idle watchlist 에서 reconnect 루프 발생 (14→5 감소 관측).
+    // 너무 관대하면 진짜 dead WS 복구 지연. 관측 기반 튜닝 가능하도록 env 노출.
+    heliusWatchdogIntervalMs: 300_000,    // 5분 (이전 default 60s 에서 완화)
+    heliusReconnectCooldownMs: 300_000,   // 5분 (back-to-back reconnect 방지)
     realtimeSeedAllowSingleTxFallback: false,
     realtimeSlMode: 'atr',
     realtimeSlAtrMultiplier: 1.25,        // 1.5 → 1.25 (Option β-B 2026-04-10): backtest 수렴값 직접 적용. ATR floor 0.8% 가 noise 이미 흡수, RR 4.0 유지

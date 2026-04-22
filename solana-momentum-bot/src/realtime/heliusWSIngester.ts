@@ -24,8 +24,11 @@ export class HeliusWSIngester extends EventEmitter {
   private readonly maxFallbackQueue: number;
   private readonly disableSingleTxFallbackOnBatchUnsupported: boolean;
   private readonly watchdogIntervalMs: number;
+  private readonly reconnectCooldownMs: number;
   private readonly fallbackMaxRetries: number;
   private readonly subscriptions = new Map<string, number>();
+  private lastReconnectAt = 0;
+  private reconnectInFlight = false;
   private readonly poolMetadata = new Map<string, RealtimePoolMetadata>();
   private readonly mintDecimals = new Map<string, number>();
   private readonly swapSanitizer = new RealtimeSwapSanitizer();
@@ -53,7 +56,12 @@ export class HeliusWSIngester extends EventEmitter {
     this.maxFallbackQueue = config.maxFallbackQueue ?? 200;
     this.disableSingleTxFallbackOnBatchUnsupported =
       config.disableSingleTxFallbackOnBatchUnsupported ?? true;
-    this.watchdogIntervalMs = config.watchdogIntervalMs ?? 60_000;
+    // 2026-04-21 (P0 subscription churn fix): default 60s → 300s (5분).
+    // Why: 60s 는 watchlist 전체 idle 시 과도 민감 → 매 1분 reconnect 루프.
+    // reconnect 자체가 subscription 을 점차 손상시키는 증거 확인 (14→5 in 37m).
+    this.watchdogIntervalMs = config.watchdogIntervalMs ?? 300_000;
+    // reconnect cooldown — watchdog 이 발화해도 이 기간 내에는 실행 skip.
+    this.reconnectCooldownMs = config.reconnectCooldownMs ?? 300_000;
     this.fallbackMaxRetries = config.fallbackMaxRetries ?? 3;
   }
 
@@ -146,15 +154,37 @@ export class HeliusWSIngester extends EventEmitter {
 
     this.watchdogTimer = setTimeout(() => {
       this.watchdogTimer = undefined;
-      const silentMs = Date.now() - this.lastNotificationAt;
-      if (silentMs >= this.watchdogIntervalMs && this.subscriptions.size > 0) {
-        log.warn(`WS silent for ${Math.round(silentMs / 1000)}s — re-subscribing`);
+      const now = Date.now();
+      const silentMs = now - this.lastNotificationAt;
+      const sinceLastReconnectMs = now - this.lastReconnectAt;
+
+      // 2026-04-21 (P0 fix): reconnect cooldown 존중 + in-flight 중복 방지.
+      // Why: 24h 운영 로그에서 active=14 → 5 로 subscription 이 서서히 감소하는 패턴 관측.
+      // 원인 1 — watchdog 이 매 interval 마다 전체 재구독 수행 (watchlist 전체 idle 시 영원 반복).
+      // 원인 2 — reconnect 직후 재구독이 Helius server-side ack 되기 전 다음 watchdog 이 또 reconnect.
+      // 보수적 backoff 로 churn 완화.
+      if (
+        silentMs >= this.watchdogIntervalMs &&
+        this.subscriptions.size > 0 &&
+        !this.reconnectInFlight &&
+        sinceLastReconnectMs >= this.reconnectCooldownMs
+      ) {
+        log.warn(
+          `WS silent for ${Math.round(silentMs / 1000)}s — re-subscribing ` +
+          `(last reconnect ${Math.round(sinceLastReconnectMs / 1000)}s ago)`
+        );
         this.emit('stale', { silentMs });
-        // 현재 구독 목록을 실제로 재연결해야 silent socket을 복구할 수 있음
-        void this.reconnectSubscriptions().catch((error) => {
-          log.warn(`Watchdog re-subscribe failed: ${error}`);
-          this.emit('error', { pool: 'watchdog', error });
-        });
+        this.reconnectInFlight = true;
+        this.lastReconnectAt = now;
+        void this.reconnectSubscriptions()
+          .catch((error) => {
+            log.warn(`Watchdog re-subscribe failed: ${error}`);
+            this.emit('error', { pool: 'watchdog', error });
+          })
+          .finally(() => {
+            this.reconnectInFlight = false;
+            this.startWatchdog();
+          });
       } else {
         this.startWatchdog();
       }
@@ -403,8 +433,21 @@ export class HeliusWSIngester extends EventEmitter {
     const pools = [...this.subscriptions.keys()];
     if (pools.length === 0) return;
 
+    // 2026-04-21 (P0 subscription race fix):
+    // 1) lastNotificationAt 을 미리 업데이트 — 재구독 중 watchdog 이 다시 발화하지 않게.
+    // 2) subscription map 을 snapshot + 즉시 비우기 — 새 구독이 기존 ID 를 덮어쓰는 race 차단.
+    //    이전 코드: await unsubscribePools() 가 순차 이므로 도중에 new onLogs() 가 같은 pool 에
+    //    대해 호출되면 map 에 두 개의 ID 가 섞일 수 있었음.
+    // 3) 기존 ID cleanup 은 fire-and-forget — "Ignored unsubscribe" 에러는 무시 (이미 처리됨).
     this.lastNotificationAt = Date.now();
-    await this.unsubscribePools(pools);
+    const oldIds = [...this.subscriptions.values()];
+    this.subscriptions.clear();
+
+    for (const id of oldIds) {
+      // Helius 쪽에 ID 가 없으면 "Ignored unsubscribe" 로그만 남고 무해 — catch 해서 silence.
+      this.connection.removeOnLogsListener(id).catch(() => {});
+    }
+
     await this.subscribePools(pools);
   }
 

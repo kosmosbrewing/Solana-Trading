@@ -1,5 +1,355 @@
 # Block QA
 
+## Signal Quality Reinforcement — Favorable Drift Reject + v1 Cooldown 30m (2026-04-22)
+
+- Date: 2026-04-22
+- Trigger: 2026-04-21 14h 운영 분석에서 pippin (Dfh5DzRg) 48 trades drift=−91.67% 고정 관측. signal price 계산 버그 의심 + pair 편중 (67% Dfh5DzRg).
+- Scope: `src/gate/entryDriftGuard.ts`, `src/utils/config.ts`, `src/orchestration/pureWsBreakoutHandler.ts`, `test/entryDriftGuard.test.ts`, `docs/design-docs/signal-price-bug-investigation-2026-04-22.md`
+
+### Findings & Fix
+
+**P0 — Signal price 12배 부풀림 (infra-level, Tier C follow-up)**:
+- 증상: signal=0.00346776, Jupiter expectedFill=0.00028901 (정확히 12배)
+- 원인 가설: pool stale / multi-pool routing mismatch / candle staleness — 확정 전
+- Root fix scope: 2-3 업무일 (pool resolution / signal freshness / validation)
+- 설계 문서: `docs/design-docs/signal-price-bug-investigation-2026-04-22.md`
+
+**P2 — Entry Drift Guard 강화 (즉시 mitigation)**:
+- 기존 asymmetric 설계: positive drift 만 reject, negative drift 는 warn only (convexity 원칙)
+- 문제: −91% drift 같은 pathological negative drift 는 signal bug 징후인데 통과
+- Fix: `maxFavorableDriftPct` 추가 (default 0.20 = 20%). 소규모 (<5%) favorable 은 여전히 허용, 대규모 (>20%) 는 reject
+- 양방향 threshold 가 아니라 **asymmetric with outer limit** — convexity 정신 유지하면서 edge case 차단
+
+**P1 — v1 per-pair cooldown 300s → 1800s**:
+- 증상: 14h 동안 Dfh5DzRg 한 pair 에 32번 진입 (평균 18분 간격). 5분 cooldown 실질 차단 못함.
+- Fix: cooldown 300s → 1800s (30분). pair diversity 강제.
+- Budget 손상 없이 sample 품질 ↑.
+
+### 신규 Config
+
+```bash
+# P2 - 대규모 favorable drift 차단 (signal bug 의심)
+PUREWS_MAX_FAVORABLE_DRIFT_PCT=0.20
+
+# P1 - v1 per-pair cooldown 연장
+PUREWS_V1_PER_PAIR_COOLDOWN_SEC=1800
+```
+
+### 신규 테스트
+
+`test/entryDriftGuard.test.ts` +2 cases:
+- **small negative drift (< threshold) 허용** — 10% favorable fill 통과
+- **large negative drift (> threshold) reject** — −50% 차단
+- **pippin signal bug 재현** — drift=−91.67% reject, reason=suspicious_favorable_drift
+
+기존 "asymmetric favorable allowed" 테스트는 regression 테스트로 변경 (−50% 는 이제 reject).
+
+### 검증
+
+- `tsc --noEmit` 0 errors
+- `jest` 876 pass (기존 874 + 2 신규) / 1 pre-existing riskManager fail 무관
+
+### 예상 효과 (재배포 후)
+
+1. **Pippin 같은 signal bug 진입 0건** — drift guard 에서 reject. wallet 손실 + 오염된 데이터 축적 방지
+2. **Pair diversity 강화** — 30분 cooldown 으로 한 pair 반복 진입 제한. Stage 2 sample 의 pair distribution 이 다양해짐
+3. **Stage 1 통과 기준 유지** — Real Asset Guard 무변경, Observability Guard 강화
+
+### Mission Refinement 와의 정합성
+
+- Convexity 원칙 유지: positive drift only reject (기존) + asymmetric 정신 보존
+- `maxFavorableDriftPct` 는 "outlier favorable" 만 차단 — 실제 convex opportunity 는 여전히 포착 가능
+- Signal quality 가 확보돼야 Stage 2-4 관측 데이터 의미 있음. 이게 정책 refinement 의 Layer 3 Detection 강화
+
+### Tier C Follow-up (scope 외)
+
+Root cause fix 는 `docs/design-docs/signal-price-bug-investigation-2026-04-22.md` 에 3-phase 설계:
+- Phase 1 — 진단 (pool subscription / candle staleness / decimals 로그)
+- Phase 2 — Active pool tracking + signal freshness check
+- Phase 3 — Pool quality tier 분류 + 낮은 tier 제외
+
+Stage 2 진입 후 또는 rejection rate > 50% 시 트리거.
+
+### 배포 runbook
+
+```bash
+ssh root@104.238.181.61 << 'EOF'
+cd ~/Solana/Solana-Trading/solana-momentum-bot
+git pull origin main
+npm run build
+pm2 restart momentum-bot
+pm2 logs momentum-bot --lines 30 --nostream | grep -E '(REAL_ASSET_GUARD|POLICY_|ENTRY_DRIFT)'
+EOF
+```
+
+### 관측 체크리스트 (24h)
+
+1. `[PUREWS_ENTRY_DRIFT_REJECT] ... suspicious_favorable_drift` 빈도 — 이전 14h 의 48 trades 중 얼마나 차단됐는지
+2. `[PUREWS_V1_COOLDOWN]` debug 로그 (INFO 레벨에서는 안 보일 수 있음) — 30분 cooldown 실효성
+3. Pair diversity — 24h 내 unique pair 수 (이전 14h 4개 → 목표 10+)
+4. Stage 1 Safety Pass 기준 (drift / survival pass / 0.8 floor / RPC) 무사고
+
+---
+
+## External Feedback F5 — Ticket Size Hard Lock (2026-04-21 5th)
+
+- Date: 2026-04-21
+- Trigger: 외부 트레이더 피드백 5가지 findings 중 **F5: behavioral drift 방지 장치가 시스템 로직이 아닌 본인 규율에 의존** 지적.
+- Scope: `src/utils/policyGuards.ts` (신규), `src/index.ts`, `test/policyGuards.test.ts`
+
+### Why F5 was chosen
+
+피드백 5개 중 **F5만 즉시 코드 반영 가치** 가 있었음:
+
+- F1 (200 trades 산수): Stage 2/3 관측 데이터 쌓이면서 자연 검증 — 지금 조치 불가
+- F2 (경제성): 실측 round-trip 1.5-2.5% 로 피드백 10-20% 과장 교정. Stage 4 에서 재평가
+- F3 (Signal edge): Stage 2 preliminary check 의 목적 자체 — 관측으로 답
+- F4 (reactive vs predictive): Tier B-2/3/4 설계 문서 존재, 구현은 별도 sprint
+- **F5 (drift hard lock): 지금 없으면 bleeding 중 "한 번만" 유혹 → convexity 파괴** — **구조적으로 해결 가능**
+
+### Mechanism
+
+**정책 상수 (env override 불가)**:
+```ts
+export const POLICY_TICKET_MAX_SOL = 0.01;
+```
+
+**Ack 문법 엄격**:
+```
+PATTERN: /^stage4_approved_\d{4}_\d{2}_\d{2}$/
+예시: stage4_approved_2026_05_15
+```
+
+의도적으로 **"stage4_approved_"** prefix 포함 — Stage 4 도달 전 override 시도 자체가 정책 위반임을 물리적으로 자각하게 함.
+
+**Startup 흐름**:
+1. pure_ws / cupsey / migration lane 각각 `configuredTicketSol` vs `POLICY_TICKET_MAX_SOL` 비교
+2. 초과 && ack 없거나 invalid format → **강제 0.01 복원** + Telegram critical notifier
+3. 초과 && valid ack → loud warn 로그 + 통과
+4. 이후 `[REAL_ASSET_GUARD]` 로그는 policy-enforced effective 값 출력
+
+**3 lane 모두 적용**: pure_ws / cupsey / migration. cupsey 는 benchmark 유지 (개조 금지) 원칙과 별개 — ticket 은 전체 시스템 정책.
+
+### 심리적 마찰 설계
+
+- env 값 바꾸기만 해서는 적용 안 됨 — ack 필수
+- ack 는 특정 format 필수 — 즉흥적 "approved=true" 같은 값 거부
+- `stage4_approved_` 명시 — Stage 4 미도달 시 override 의도 자체가 drift 임을 자각
+- 날짜 포맷 강제 — 언제 결정했는지 기록 (stale ack 방지 향후 확장 여지)
+- Telegram critical notifier — 숨겨서 바꿀 수 없음
+
+### 신규 env (optional, Stage 4 도달 후에만 사용)
+
+```bash
+# 정상 운영 시 모두 세팅 불필요 (default 0.01 유지)
+# Stage 4 통과 후 정식 확대 결정 시에만 ack 세팅:
+PUREWS_TICKET_OVERRIDE_ACK=stage4_approved_YYYY_MM_DD
+CUPSEY_TICKET_OVERRIDE_ACK=stage4_approved_YYYY_MM_DD
+MIGRATION_TICKET_OVERRIDE_ACK=stage4_approved_YYYY_MM_DD
+```
+
+### 신규 테스트
+
+`test/policyGuards.test.ts` — 17 cases:
+- POLICY_TICKET_MAX_SOL 상수 locked 검증
+- Ack validation: correct format / null / wrong prefix / loose bypass 시도 / whitespace trim
+- Policy check: within / floating edge / violation without ack / violation with invalid ack / valid ack override
+- Lane-level enforcement: no violation / single lane violation isolated / valid ack bypass / invalid ack reject
+
+### 검증
+
+- `tsc --noEmit` 0 errors
+- `jest` 874 pass (기존 857 + 17 신규) / 1 pre-existing riskManager fail 무관
+
+### 예상 동작 (VPS 배포 후)
+
+현재 env 에는 `PUREWS_LANE_TICKET_SOL` override 없음 → default 0.01 → **violation 없음**. Policy check 통과. Startup log 에 기존 `[REAL_ASSET_GUARD]` 만 출력.
+
+만약 누군가 (또는 본인이) `PUREWS_LANE_TICKET_SOL=0.05` 로 .env 변경하면:
+1. Startup 에 `[POLICY_VIOLATION] lane=pure_ws ticket=0.05 SOL exceeds policy max 0.01 SOL. Force-reverting to 0.01` ERROR
+2. Telegram critical: `policy_violation_ticket_pure_ws ... Force-reverted. To override: PUREWS_TICKET_OVERRIDE_ACK=stage4_approved_YYYY_MM_DD`
+3. Effective ticket = 0.01 (runtime config 갱신)
+4. `[REAL_ASSET_GUARD]` 로그의 ticketSol=0.01 로 출력
+
+즉 **ticket size 변경을 해도 시스템이 무시**. 우회하려면 ack env 를 **stage4_approved_** prefix 로 명시 세팅 필요 — 문자 그대로 "Stage 4 에 도달했다고 선언"하는 행위.
+
+### Mission Refinement 와의 정합성
+
+- Real Asset Guard 의 `fixed ticket=0.01 SOL` 을 **코드 레벨로 강제** — 더 이상 env 로만 관리되지 않음
+- Stage 4 Scale Decision gate 와 직접 연결 — 운영자가 ack 로 "Stage 4 판정 완료" 를 명시해야 확대
+- Daily 4 질문과 연동 — trade count 진행률 답 없이 ticket 확대 불가
+
+### Follow-up (scope 외)
+
+- F1, F2, F3, F4 는 관측/설계로 이미 대응 중. 추가 조치 없음.
+- 향후 확장: ack 의 날짜가 30일 이상 된 경우 "stale ack" 로 재승인 요구 (time-based expiry)
+- 외부 피드백 전문은 `feedback_external_trader_critique_2026_04_21.md` (memory) 에 보관
+
+---
+
+## Self-QA Sweep — 오늘 수정 내용 품질 점검 (2026-04-21 4th)
+
+- Date: 2026-04-21
+- Scope: 오늘 수정한 5개 sprint (mission refinement / Survival P0 / Tier B-1 / Tier B 설계 / WS churn fix) 에 대한 self-QA
+- Result: 4 findings 수정 (M1, M2, L2, L4) — critical 없음
+
+### Findings 수정
+
+**M1 — `sellQuoteProbe` in-flight dedup 누락 → 추가**
+- 증상: `entryDriftGuard` 는 in-flight Promise 공유 (`quoteInFlight` Map) 있지만 `sellQuoteProbe` 는 없어서 V2 burst 시 중복 Jupiter 호출 가능성
+- Fix: `quoteInFlight` Map + `fetchSellQuote` helper 분리 + caller 에서 in-flight join + result cache 공통 처리
+- 일관성: entryDriftGuard 와 동일 패턴 (result cache / 429 cooldown / in-flight dedup 3종 세트)
+- `cacheStatus` 타입에 `'in_flight_join'` 추가
+
+**M2 — Helius WS `watchdogIntervalMs` / `reconnectCooldownMs` env 노출**
+- 증상: 방금 fix 한 300s default 는 관측 기반 결정. 운영 중 튜닝 필요 시 재배포 없이 조정할 수단 없음
+- Fix: `src/utils/tradingParams.ts` 에 `heliusWatchdogIntervalMs`, `heliusReconnectCooldownMs` 추가 + config.ts 에 `HELIUS_WATCHDOG_INTERVAL_MS` / `HELIUS_RECONNECT_COOLDOWN_MS` env override + index.ts 에서 HeliusWSIngester 에 전달
+
+**L2 — `probeTokenAmountRaw` BigInt 안전 변환**
+- 증상: `Math.floor(quantity * Math.pow(10, tokenDecimals))` 는 decimals=18 + large quantity 에서 2^53 초과 → 정밀 손실
+- Fix: `uiAmountToRaw(ui, decimals)` helper — toFixed + string 분리 + BigInt 생성 (export 하여 테스트 가능)
+- pure_ws handler 의 sell probe 호출 시 이 helper 사용
+
+**L4 — 테스트 gap 3개 보완**
+- T1: `securityGate` dangerous extension case-insensitive 매치 (`TransferHook` / `PERMANENTDELEGATE` / `nonTransferable` / `DefaultAccountState` 모두 reject)
+- T2: `uiAmountToRaw` unit 테스트 7 cases (decimals=6/9/18 정밀도, 극단값, invalid input)
+- T3: `sellQuoteProbe` in-flight dedup regression — 64 concurrent burst → axios 1 회 호출 확인
+
+### 파일 변경
+
+- MODIFIED: `src/gate/sellQuoteProbe.ts` — in-flight Map + fetchSellQuote helper 분리 + materialize cacheStatus 확장
+- MODIFIED: `src/utils/tradingParams.ts` — heliusWatchdogIntervalMs / heliusReconnectCooldownMs 신규
+- MODIFIED: `src/utils/config.ts` — 2 env override
+- MODIFIED: `src/index.ts` — HeliusWSIngester 생성 시 두 값 전달
+- MODIFIED: `src/orchestration/pureWsBreakoutHandler.ts` — `uiAmountToRaw` helper 신규 export + sell probe 사용처 교체
+- MODIFIED: `test/securityGate.test.ts` (+1: T1)
+- ADDED: `test/uiAmountToRaw.test.ts` (+7: T2)
+- MODIFIED: `test/sellQuoteProbe.test.ts` (+1: T3)
+
+### 검증
+
+- `tsc --noEmit` 0 errors
+- `jest` 857 pass (기존 849 + 8 신규) / 1 pre-existing riskManager fail 무관
+
+### 통과 영역 (변경 없음)
+
+- HIGH severity finding 없음
+- 기존 로직 behavior 보존 (모든 변경이 기존 경로 위에 추가 또는 helper 추출)
+- CLAUDE.md cupsey 개조 금지 원칙 준수 (pure_ws / gate / infra 레벨만 변경)
+- Real Asset Guard 정책값 변경 없음 (여전히 0.8/0.3/3/0.01)
+
+### 잔여 Follow-up (현 scope 외)
+
+- `DANGEROUS_TOKEN_2022_EXTENSIONS` 의 false positive 가능성 (실무 사례 관측 전 수정 X)
+- `checkPureWsSurvival` 의 gateCache hit path integration 테스트 (mock 복잡도 높아 별도)
+- pure_ws handler 의 HTTP quote 2회 latency (survival-first 철학 부합, Stage 3 winner 관측 후 재평가)
+
+### 신규 env (.env 추가 불필요 — 모두 default 작동)
+
+```bash
+HELIUS_WATCHDOG_INTERVAL_MS=300000        # default 300_000 (5분)
+HELIUS_RECONNECT_COOLDOWN_MS=300000       # default 300_000 (5분)
+```
+
+---
+
+## Helius WS Subscription Churn Fix (2026-04-21 3rd)
+
+- Date: 2026-04-21
+- Trigger: 배포 후 42분 관측에서 Helius WS `subscriptions active` 가 14→5 로 감소 (37분 사이). `real-time pipeline connected` 로그 71회 (평균 35초마다 재연결). bootstrap/cupsey/pure_ws 전 lane signal 0건.
+- Scope: `src/realtime/heliusWSIngester.ts`, `src/realtime/types.ts`, `test/heliusWSIngester.test.ts`
+
+### Findings
+
+**Finding 1 — Watchdog 60s interval 이 과도 민감**
+- 기본 `watchdogIntervalMs = 60_000` — 60초 동안 알림 없으면 전체 재구독
+- Watchlist 전체가 idle 이면 매 60초마다 reconnect → 무한 루프
+- 24h 운영 중 `Ignored unsubscribe` 다수 발생 (subscription ID desync)
+
+**Finding 2 — Reconnect 중 state race**
+- `reconnectSubscriptions()` 가 `await unsubscribePools(pools)` → `await subscribePools(pools)` 순차 실행
+- `connection.onLogs` 는 ID 를 sync 반환하지만 server-side ack 는 async
+- unsubscribe ↔ subscribe 사이에 race 발생하면 Helius 쪽에 ID mismatch
+
+**Finding 3 — Back-to-back reconnect 금지 로직 부재**
+- reconnect 실패 후 다음 watchdog 이 즉시 또 reconnect 시도
+- 반복 reconnect 가 subscription 을 더 손상시키는 악순환
+
+### Fix
+
+1. **Watchdog interval default 60s → 300s (5분)** — `HeliusWSConfig.watchdogIntervalMs`
+   - 과도 민감도 완화. 5분 간 전체 idle 이어도 개별 pool notification 하나만 오면 reset.
+2. **Reconnect cooldown 도입** — `reconnectCooldownMs` default 300s
+   - 마지막 reconnect 이후 5분 내에는 watchdog 발화해도 실행 skip.
+3. **Reconnect in-flight 가드** — `reconnectInFlight: boolean`
+   - reconnect 진행 중 watchdog 이 또 발화해도 중복 실행 방지.
+4. **Reconnect race 해소** — `reconnectSubscriptions()` 리팩터링
+   - map snapshot → 즉시 clear → fire-and-forget cleanup → new subscribe
+   - 이전 ID 와 새 ID 가 map 에 섞이는 window 차단
+   - `removeOnLogsListener` 실패는 `.catch(() => {})` 로 silence (Helius 측 "Ignored unsubscribe" 는 무해)
+
+### 신규 config (HeliusWSConfig)
+
+```ts
+watchdogIntervalMs?: number;   // default 300_000 (60s → 5분)
+reconnectCooldownMs?: number;  // default 300_000 (신규)
+```
+
+index.ts 의 `HeliusWSIngester` 생성 시 이미 `config` 객체 전달 중 — env 노출은 필요 시 추후.
+
+### 신규 테스트
+
+- `test/heliusWSIngester.test.ts` (+2 regression)
+  - reconnect cooldown: watchdog 두 번째 발화도 skip → onLogs 호출 증가 없음 검증
+  - subscription race: `removeOnLogsListener` pending 중에도 new `onLogs` 정상 진행 검증
+
+### 검증
+
+- `tsc --noEmit` 0 errors
+- `jest` 849 pass (기존 847 + 2 신규) / 1 pre-existing riskManager fail 무관
+
+### 예상 효과 (VPS 24h 기준)
+
+- `real-time pipeline connected` 로그 **71회 → 12회 이하** (5분 주기 × 24h ≈ 288 → reconnect 실제 발생은 cooldown 으로 대부분 skip)
+- `Ignored unsubscribe request` 로그 0건 수렴
+- `subscriptions active` 감소 패턴 (14→5) 제거 → 안정화
+
+### 배포 runbook
+
+```bash
+ssh root@104.238.181.61 << 'EOF'
+cd ~/Solana/Solana-Trading/solana-momentum-bot
+git pull origin main
+npm run build
+pm2 restart momentum-bot
+pm2 logs momentum-bot --lines 30 --nostream
+EOF
+```
+
+### 관측 체크리스트 (24h)
+
+1. `subscriptions active` 값 추이 — 24h 동안 안정 유지 (초기값 근처)
+2. `real-time pipeline connected` 로그 빈도 — 이전 대비 크게 감소
+3. `Ignored unsubscribe` 로그 수렴
+4. `VolumeMcapSpike RejectStats` 의 `activePairs` 증가 — 실제 signal feed 회복
+5. `[PUREWS_V2_SUMMARY]` 의 `insuf` 비율 감소 (candle 축적 가능 pair 증가)
+
+### Root-cause 분석 Note
+
+이 churn 은 2026-04-19 부터 로그에 흔적 (`Ignored unsubscribe id N`) 이 있었으나 다른 증상에 가려져 있었음:
+- 그동안 관측된 "Jupiter 429" / "orphan close loop" / "signal 0" 증상의 **공통 배경**
+- 즉 **pure_ws 가 signal 을 못 잡은 이유의 일부는 이 subscription churn 때문**
+- Mission refinement 의 Stage 2 (100 trades) 진입이 subscription 복구 속도에 의존했던 건 infra bug 를 가리고 있었던 것
+
+### Follow-up (scope 외)
+
+- Helius plan upgrade 검토 (Developer → Business, subscription cap 증가)
+- LaserStream / Geyser 전환 (sniper-grade, WS cap 완화)
+- Dead pool eviction 로직 — idle pair 는 subscription 유지보다 교체가 더 효율적
+- `heliusIngester` 생성 시 `watchdogIntervalMs` / `reconnectCooldownMs` env 노출
+
+---
+
 ## Survival Layer Tier B-1 + Tier B-2/3/4 설계 (2026-04-21 2nd)
 
 - Date: 2026-04-21

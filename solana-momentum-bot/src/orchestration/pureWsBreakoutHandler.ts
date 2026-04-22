@@ -228,6 +228,29 @@ export function logPureWsV2TelemetrySummary(): void {
   );
 }
 
+/**
+ * 2026-04-21 (QA L2): UI amount → raw BigInt 변환. JS number 정밀도 한계 (2^53) 방어.
+ * `Math.floor(ui * 10^decimals)` 는 decimals=18 + large ui 에서 정밀 손실 가능.
+ * toFixed 로 string 변환 후 소수점 이동하여 BigInt 화.
+ *
+ * 주의: ui 가 매우 크면 (1e21+) `.toFixed()` 가 과학 표기 반환 — 그 범위는 invalid input 취급.
+ */
+export function uiAmountToRaw(ui: number, decimals: number): bigint {
+  if (!isFinite(ui) || ui <= 0) return 0n;
+  if (decimals < 0 || decimals > 18) return 0n;
+  // 과학 표기 방어: ui >= 1e21 또는 너무 작으면 reject (실무 범위 밖)
+  if (ui >= 1e21) return 0n;
+  const fixed = ui.toFixed(decimals);
+  const [intStr, fracStrRaw = ''] = fixed.split('.');
+  const fracStr = fracStrRaw.padEnd(decimals, '0').slice(0, decimals);
+  const combined = (intStr + fracStr).replace(/^0+/, '') || '0';
+  try {
+    return BigInt(combined);
+  } catch {
+    return 0n;
+  }
+}
+
 export function resetPureWsLaneStateForTests(): void {
   activePositions.clear();
   v2LastTriggerSecByPair.clear();
@@ -518,6 +541,7 @@ export async function handlePureWsSignal(
         jupiterApiUrl: config.jupiterApiUrl,
         jupiterApiKey: config.jupiterApiKey,
         maxDriftPct: config.pureWsMaxEntryDriftPct,
+        maxFavorableDriftPct: config.pureWsMaxFavorableDriftPct,
       }
     );
     if (driftResult.routeFound && !driftResult.quoteFailed) {
@@ -550,10 +574,11 @@ export async function handlePureWsSignal(
       const tokenDecimals = await buyExecutor.getMintDecimals(signal.pairAddress);
       if (tokenDecimals != null && tokenDecimals >= 0 && tokenDecimals <= 18) {
         // probeTokenAmountRaw = 예상 받을 토큰 수 (raw).
-        // quantity (UI amount) × 10^decimals 로 raw 변환.
-        const probeTokenAmountRaw = BigInt(
-          Math.floor(quantity * Math.pow(10, tokenDecimals))
-        );
+        // 2026-04-21 (QA L2): JS number 정밀도 edge 방어.
+        // `quantity × 10^decimals` 이 Number.MAX_SAFE_INTEGER(2^53) 초과하면 정밀도 손실.
+        // 극단적 decimals=18 + very small signal price 조합에서 발생 가능.
+        // Fix: integer 정수부와 소수부를 분리해 정수부는 BigInt 로 계산, 소수부는 정수에 병합.
+        const probeTokenAmountRaw = uiAmountToRaw(quantity, tokenDecimals);
         if (probeTokenAmountRaw > 0n) {
           const sellProbe = await evaluateSellQuoteProbe(
             {

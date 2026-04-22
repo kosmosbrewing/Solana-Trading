@@ -72,7 +72,7 @@ export interface SellQuoteProbeResult {
   /** round-trip 복구 비율 (0~1). expectedSolReceive 가 0 이면 NaN */
   roundTripPct: number;
   quoteFailed: boolean;
-  cacheStatus?: 'miss' | 'result_hit' | 'rate_limited';
+  cacheStatus?: 'miss' | 'result_hit' | 'in_flight_join' | 'rate_limited';
 }
 
 const DEFAULT_CONFIG: SellQuoteProbeConfig = {
@@ -94,10 +94,15 @@ interface CachedQuote {
 }
 
 const quoteResultCache = new Map<string, CachedQuote>();
+// 2026-04-21 (QA M1): in-flight dedup — 같은 key 동시 요청을 하나의 Promise 로 공유.
+// Why: V2 scanner 의 burst (동일 pair 에 sub-ms 연속 signal) 시 중복 Jupiter 호출 방지.
+// entryDriftGuard 와 동일 패턴 (일관성).
+const quoteInFlight = new Map<string, Promise<CachedQuote>>();
 let rateLimitedUntilMs = 0;
 
 export function resetSellQuoteProbeStateForTests(): void {
   quoteResultCache.clear();
+  quoteInFlight.clear();
   rateLimitedUntilMs = 0;
 }
 
@@ -164,56 +169,35 @@ export async function evaluateSellQuoteProbe(
     }
   }
 
-  try {
-    const headers: Record<string, string> = {};
-    if (cfg.jupiterApiKey) {
-      headers['X-API-Key'] = cfg.jupiterApiKey;
+  // 2026-04-21 (QA M1): in-flight dedup — 동일 key 의 concurrent 호출을 Promise 공유.
+  // V2 scanner burst 같은 상황에서 Jupiter 중복 호출 방지. entryDriftGuard 와 동일 패턴.
+  const pending = quoteInFlight.get(quoteKey);
+  if (pending) {
+    const joined = await pending.catch(() => null);
+    if (joined) {
+      return materialize(input, cfg, joined.outAmountSolRaw, joined.priceImpactPct, joined.reason, 'in_flight_join');
     }
+    // pending 실패 → fall-through 해서 신규 시도 (그 사이 cooldown 걸렸으면 위에서 이미 차단)
+  }
 
-    const response = await axios.get(`${cfg.jupiterApiUrl}/quote`, {
-      params: {
-        inputMint: input.tokenMint,
-        outputMint: SOL_MINT,
-        amount: input.probeTokenAmountRaw.toString(),
-        slippageBps: cfg.slippageBps,
-      },
-      headers,
-      timeout: cfg.timeoutMs,
-    });
-
-    const quote = response.data;
-    if (!quote || !quote.outAmount) {
-      const result: SellQuoteProbeResult = {
-        ...baseResult,
-        quoteFailed: true,
-        reason: 'no_sell_route',
-        cacheStatus: 'miss',
-      };
-      if (cfg.resultCacheTtlMs > 0) {
-        quoteResultCache.set(quoteKey, {
-          outAmountSolRaw: 0n,
-          priceImpactPct: 0,
-          reason: 'no_sell_route',
-          expiresAtMs: now + cfg.resultCacheTtlMs,
-        });
-      }
-      // no_sell_route 는 honeypot 신호 — reject 로 전환.
-      result.approved = false;
-      return result;
-    }
-
-    const outAmountSolRaw = BigInt(quote.outAmount);
-    const priceImpactPct = parsePriceImpact(quote);
-
+  const fetchPromise = fetchSellQuote(input, cfg, now).then((fetched) => {
     if (cfg.resultCacheTtlMs > 0) {
       quoteResultCache.set(quoteKey, {
-        outAmountSolRaw,
-        priceImpactPct,
-        expiresAtMs: now + cfg.resultCacheTtlMs,
+        outAmountSolRaw: fetched.outAmountSolRaw,
+        priceImpactPct: fetched.priceImpactPct,
+        reason: fetched.reason,
+        expiresAtMs: Date.now() + cfg.resultCacheTtlMs,
       });
     }
+    return fetched;
+  }).finally(() => {
+    quoteInFlight.delete(quoteKey);
+  });
+  quoteInFlight.set(quoteKey, fetchPromise);
 
-    return materialize(input, cfg, outAmountSolRaw, priceImpactPct, undefined, 'miss');
+  let fetched: CachedQuote;
+  try {
+    fetched = await fetchPromise;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     const errWithResp = err as { response?: { status: number } };
@@ -232,6 +216,50 @@ export async function evaluateSellQuoteProbe(
       cacheStatus: 'miss',
     };
   }
+
+  return materialize(input, cfg, fetched.outAmountSolRaw, fetched.priceImpactPct, fetched.reason, 'miss');
+}
+
+/**
+ * Jupiter sell quote 요청 (no cache). in-flight dedup 은 caller 가 관리.
+ * no_sell_route 도 에러 아닌 정상 결과로 (reason 필드) 반환하여 cache 가능하게 함.
+ */
+async function fetchSellQuote(
+  input: SellQuoteProbeInput,
+  cfg: SellQuoteProbeConfig,
+  _requestStartMs: number
+): Promise<CachedQuote> {
+  const headers: Record<string, string> = {};
+  if (cfg.jupiterApiKey) {
+    headers['X-API-Key'] = cfg.jupiterApiKey;
+  }
+
+  const response = await axios.get(`${cfg.jupiterApiUrl}/quote`, {
+    params: {
+      inputMint: input.tokenMint,
+      outputMint: SOL_MINT,
+      amount: input.probeTokenAmountRaw.toString(),
+      slippageBps: cfg.slippageBps,
+    },
+    headers,
+    timeout: cfg.timeoutMs,
+  });
+
+  const quote = response.data;
+  if (!quote || !quote.outAmount) {
+    return {
+      outAmountSolRaw: 0n,
+      priceImpactPct: 0,
+      reason: 'no_sell_route',
+      expiresAtMs: 0, // caller 가 cache 저장 시 갱신
+    };
+  }
+
+  return {
+    outAmountSolRaw: BigInt(quote.outAmount),
+    priceImpactPct: parsePriceImpact(quote),
+    expiresAtMs: 0, // caller 가 cache 저장 시 갱신
+  };
 }
 
 function materialize(
@@ -240,7 +268,7 @@ function materialize(
   outAmountSolRaw: bigint,
   priceImpactPct: number,
   reason: string | undefined,
-  cacheStatus: 'miss' | 'result_hit'
+  cacheStatus: 'miss' | 'result_hit' | 'in_flight_join'
 ): SellQuoteProbeResult {
   const base: SellQuoteProbeResult = {
     approved: true,

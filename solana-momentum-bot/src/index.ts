@@ -3,6 +3,7 @@ import { config } from './utils/config';
 import { createModuleLogger } from './utils/logger';
 import { HealthMonitor } from './utils/healthMonitor';
 import { checkAllLanesAutoResetHalt } from './risk/canaryAutoHalt';
+import { enforceTicketPolicyForAllLanes } from './utils/policyGuards';
 import { Candle, Signal } from './utils/types';
 
 import {
@@ -518,9 +519,57 @@ async function main() {
   healthMonitor.setDbConnected(true);
   healthMonitor.start();
 
+  // 2026-04-21 (QA F5) — Ticket size policy enforcement.
+  // Why: behavioral drift 방지. Mission refinement 의 Real Asset Guard 정책값 `0.01 SOL`
+  // 을 env override 만으로 쉽게 바꿀 수 있으면, bleeding 중에 "한 번만" 키우고 싶은
+  // 심리에 굴복 → convexity 파괴. 의도적 마찰 추가:
+  //   - POLICY_TICKET_MAX_SOL 초과 + ack 없음 → 강제 0.01 로 복원 + Telegram critical
+  //   - 정당한 Stage 4 확대 시 {LANE}_TICKET_OVERRIDE_ACK=stage4_approved_YYYY_MM_DD 필요
+  const ticketPolicyResults = enforceTicketPolicyForAllLanes([
+    {
+      lane: 'pure_ws',
+      configuredTicketSol: config.pureWsLaneTicketSol,
+      ackEnvName: 'PUREWS_TICKET_OVERRIDE_ACK',
+      ackEnvValue: process.env.PUREWS_TICKET_OVERRIDE_ACK,
+    },
+    {
+      lane: 'cupsey',
+      configuredTicketSol: config.cupseyLaneTicketSol,
+      ackEnvName: 'CUPSEY_TICKET_OVERRIDE_ACK',
+      ackEnvValue: process.env.CUPSEY_TICKET_OVERRIDE_ACK,
+    },
+    {
+      lane: 'migration',
+      configuredTicketSol: config.migrationLaneTicketSol,
+      ackEnvName: 'MIGRATION_TICKET_OVERRIDE_ACK',
+      ackEnvValue: process.env.MIGRATION_TICKET_OVERRIDE_ACK,
+    },
+  ]);
+
+  // 정책 위반 시 config 값 강제 복원 + Telegram critical alert 1회.
+  // config 는 readonly 가 아니라 runtime mutation 가능. 이후 모든 사용처가 갱신값 참조.
+  for (const result of ticketPolicyResults) {
+    if (result.violation) {
+      if (result.lane === 'pure_ws') {
+        (config as { pureWsLaneTicketSol: number }).pureWsLaneTicketSol = result.effectiveTicketSol;
+      } else if (result.lane === 'cupsey') {
+        (config as { cupseyLaneTicketSol: number }).cupseyLaneTicketSol = result.effectiveTicketSol;
+      } else if (result.lane === 'migration') {
+        (config as { migrationLaneTicketSol: number }).migrationLaneTicketSol = result.effectiveTicketSol;
+      }
+      if (result.criticalMessage) {
+        notifier.sendCritical(
+          `policy_violation_ticket_${result.lane}`,
+          result.criticalMessage
+        ).catch(() => {});
+      }
+    }
+  }
+
   // 2026-04-21 mission refinement: 실행 시 Real Asset Guard effective 값 한 줄 로그.
   // Why: 정책값과 env override 간 괴리 발생해도 startup log 에서 즉시 확인 가능하게.
   // 이 로그는 판단/관측 guard 가 아닌 실 자산 보호 guard 의 한정된 집합만 출력.
+  // 위 F5 policy enforcement 이후이므로 effective 값 반영.
   log.info(
     `[REAL_ASSET_GUARD] walletFloor=${config.walletStopMinSol} ` +
     `canaryLossCap=-${config.canaryMaxBudgetSol} ` +
@@ -1303,6 +1352,8 @@ async function main() {
       maxFallbackQueue: config.realtimeMaxFallbackQueue,
       disableSingleTxFallbackOnBatchUnsupported:
         config.realtimeDisableSingleTxFallbackOnBatchUnsupported,
+      watchdogIntervalMs: config.heliusWatchdogIntervalMs,
+      reconnectCooldownMs: config.heliusReconnectCooldownMs,
     });
     if (config.realtimePoolDiscoveryEnabled) {
       heliusPoolDiscovery = new HeliusPoolDiscovery({

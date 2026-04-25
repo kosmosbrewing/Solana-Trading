@@ -36,6 +36,8 @@ interface LedgerBuy {
   signalTimeSec?: number;
   signalPrice?: number;
   recordedAt?: string;
+  // 2026-04-25 Phase 1 P0-3: 데이터 품질 flag — 한쪽만 actualIn/Out 가용 시 true.
+  partialFillDataMissing?: boolean;
 }
 
 interface LedgerSell {
@@ -62,6 +64,13 @@ interface LedgerSell {
   t2VisitAtSec?: number | null;
   t3VisitAtSec?: number | null;
   closeState?: string;
+  // 2026-04-25 Phase 1 P0-4 — close 시점 DB pnl vs wallet delta 비교 snapshot.
+  dbPnlSol?: number;
+  walletDeltaSol?: number;
+  dbPnlDriftSol?: number;
+  solSpentNominal?: number;
+  // 2026-04-25 Phase 2 P1-3 — T1 promotion 이 quote-based 신호로 발동됐는지.
+  t1ViaQuote?: boolean;
 }
 
 interface PairedTrade {
@@ -88,6 +97,8 @@ interface PairedTrade {
   t1VisitAtSec?: number | null;
   t2VisitAtSec?: number | null;
   t3VisitAtSec?: number | null;
+  // 2026-04-25 Phase 1 P0-3: buy ledger 의 partial fill flag 그대로 전파.
+  partialFillDataMissing?: boolean;
 }
 
 interface StrategyReport {
@@ -116,6 +127,10 @@ interface StrategyReport {
   maxDrawdownSol: number;           // peak-to-trough SOL
   recoveryTradeCount: number | null; // drawdown trough 이후 peak 회복까지 trade 수 (null = not recovered)
   equityCurveSol: number[];         // cumulative net SOL (chronological trade order)
+  // 2026-04-25 Phase 1 P0-3: 데이터 품질 분리 집계.
+  // partial fill data missing trades (actualIn/Out 한쪽 null → planned 강제) 는 entry price 가
+  // 실측이 아니라 ratio 왜곡 가능성이 있다. 정상 표본과 별도로 카운트해 expectancy 해석 시 분리.
+  partialFillDataMissingTrades: number;
 }
 
 interface CliArgs {
@@ -266,6 +281,8 @@ function pairTrades(buys: LedgerBuy[], sells: LedgerSell[], since: Date | undefi
       t1VisitAtSec: s.t1VisitAtSec ?? null,
       t2VisitAtSec: s.t2VisitAtSec ?? null,
       t3VisitAtSec: s.t3VisitAtSec ?? null,
+      // Phase 1 P0-3: buy 측 flag 를 paired record 까지 전파.
+      partialFillDataMissing: matchedBuy.partialFillDataMissing === true,
     });
   }
 
@@ -387,6 +404,8 @@ function buildReport(
   const winners10xByVisit = trades.filter((t) => t.t3VisitAtSec != null).length;
   const losers = trades.filter((t) => t.netSol < 0).length;
   const maxLoserStreak = maxStreak(trades, (t) => t.netSol < 0);
+  // Phase 1 P0-3: 데이터 품질 의심 trade 카운트.
+  const partialFillDataMissingTrades = trades.filter((t) => t.partialFillDataMissing).length;
 
   const chronoTrades = [...trades].sort((a, b) => (a.entryTimeSec ?? 0) - (b.entryTimeSec ?? 0));
   const walletMetrics = computeWalletMetrics(chronoTrades, walletStartSol);
@@ -428,6 +447,7 @@ function buildReport(
     maxDrawdownSol: walletMetrics.maxDrawdownSol,
     recoveryTradeCount: walletMetrics.recoveryTradeCount,
     equityCurveSol: walletMetrics.equityCurveSol,
+    partialFillDataMissingTrades,
   };
 }
 

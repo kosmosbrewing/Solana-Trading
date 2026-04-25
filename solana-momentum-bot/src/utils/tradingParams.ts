@@ -7,6 +7,14 @@
 //   runtime_canary — VPS 운영에서 의도적으로 변경한 canary 값 (이 파일의 현재 값)
 //   operator_cap   — OPERATIONS.md에서 보수적으로 제한한 cap 값 (env override)
 
+/**
+ * 2026-04-26 H2-followup: tradingParams.ts 는 process.env 를 **직접 참조하지 않는다**.
+ * AGENTS.md §env: 모든 env 는 src/utils/config.ts 에 일원화 — env catalog drift 검사 대상.
+ * Sweep override 는 config.ts 의 selective spread 패턴으로 적용 (PUREWS_T1_MFE_THRESHOLD 등).
+ *
+ * 본 파일은 default 값만 보유. 운영자가 env 로 override 하려면 config.ts 의 후행 spread 가 덮어씀.
+ */
+
 export const tradingParams = {
   // ─── Universe ───
   universe: {
@@ -329,15 +337,15 @@ export const tradingParams = {
     pureWsProbeWindowSec: 30,               // immediate PROBE 관찰 창
     pureWsProbeHardCutPct: 0.03,            // MAE -3% → 즉시 loser cut
     pureWsProbeFlatBandPct: 0.10,           // ±10% 이내 = flat, 30s flat 시 close
-    pureWsProbeTrailingPct: 0.03,           // PROBE trail 3%
-    // tiered runner
-    pureWsT1MfeThreshold: 1.0,              // +100% (2x) → T1 승격
-    pureWsT1TrailingPct: 0.07,              // T1 trail 7%
-    pureWsT2MfeThreshold: 4.0,              // +400% (5x) → T2 승격
-    pureWsT2TrailingPct: 0.15,              // T2 trail 15%
-    pureWsT2BreakevenLockMultiplier: 3.0,   // T2 진입 시 entry × 3 lock (never close below 3x)
-    pureWsT3MfeThreshold: 9.0,              // +900% (10x) → T3 승격
-    pureWsT3TrailingPct: 0.25,              // T3 trail 25%, no time stop
+    pureWsProbeTrailingPct: 0.03,
+    // tiered runner — Phase 2 P1-4 sweep override 는 config.ts 에서 PUREWS_*_THRESHOLD env 로.
+    pureWsT1MfeThreshold: 1.0,                  // +100% (2x) → T1 승격
+    pureWsT1TrailingPct: 0.07,
+    pureWsT2MfeThreshold: 4.0,                  // +400% (5x) → T2 승격
+    pureWsT2TrailingPct: 0.15,
+    pureWsT2BreakevenLockMultiplier: 3.0,
+    pureWsT3MfeThreshold: 9.0,                  // +900% (10x) → T3 승격
+    pureWsT3TrailingPct: 0.25,
     pureWsMaxPeakMultiplier: 15,            // HWM sanity (Patch B2 동일 철학)
     pureWsSourceLabel: 'pure_ws_breakout',
   },

@@ -85,6 +85,7 @@ jest.mock('../src/utils/config', () => ({
     kolHunterSurvivalMinExitLiquidityUsd: 5000,
     kolHunterSurvivalMaxTop10HolderPct: 0.80,
     kolHunterRunSellQuoteProbe: false,
+    kolHunterLiveCanaryEnabled: false,
     kolScoringWindowMs: 24 * 60 * 60 * 1000,
     kolAntiCorrelationMs: 60_000,
     realtimeDataDir: '/tmp/kol-test',

@@ -234,6 +234,12 @@ export interface EntryExecutionSummary {
   outputDecimals?: number;
   effectiveRR: number;
   roundTripCost: number;
+  /**
+   * 2026-04-25 Phase 1 P0-3 — buyResult 의 actualIn / actualOut 한쪽이 null 이라
+   * planned 로 강제된 경우 true. canary-eval / equity-decomposition 가 이 trade 를
+   * "데이터 품질 의심" 으로 분리해 집계할 수 있도록 ledger 까지 전파.
+   */
+  partialFillDataMissing?: boolean;
 }
 
 /** trade.id → DegradedState (실제 트리거된 거래만 포함) */

@@ -72,7 +72,8 @@ describe('GateCacheManager', () => {
   });
 
   it('should prune expired entries', () => {
-    cache = new GateCacheManager(50);
+    // Phase 6 P2-6 (2026-04-25): prune 기준은 staleFallbackMs — fresh + stale 둘 다 짧게.
+    cache = new GateCacheManager(50, 50);
     cache.set('TOKEN_D', makeCacheResult());
     cache.set('TOKEN_E', makeCacheResult());
 
@@ -111,5 +112,23 @@ describe('GateCacheManager', () => {
     expect(result).not.toBeNull();
     expect(result!.tokenSecurityData).toBeNull();
     expect(result!.exitLiquidityData).toBeNull();
+  });
+
+  // Phase 6 P2-6 (2026-04-25): stale fallback regression.
+  it('getStaleFallback returns expired data within stale TTL window', async () => {
+    cache = new GateCacheManager(50, 5_000); // fresh 50ms / stale 5s
+    cache.set('TOKEN_STALE', makeCacheResult());
+    await new Promise((r) => setTimeout(r, 100)); // expire fresh
+    expect(cache.get('TOKEN_STALE')).toBeNull(); // fresh miss
+    const stale = cache.getStaleFallback('TOKEN_STALE');
+    expect(stale).not.toBeNull();
+    expect(cache.getStats().staleFallbacks).toBe(1);
+  });
+
+  it('getStaleFallback returns null after stale TTL window', async () => {
+    cache = new GateCacheManager(50, 100); // fresh 50ms / stale 100ms
+    cache.set('TOKEN_GONE', makeCacheResult());
+    await new Promise((r) => setTimeout(r, 200));
+    expect(cache.getStaleFallback('TOKEN_GONE')).toBeNull();
   });
 });

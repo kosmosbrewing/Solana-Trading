@@ -1,11 +1,40 @@
 # AGENTS.md — Solana Momentum Bot
 
+## 🚀 새 세션 진입 순서 (Codex / Cursor / Claude Code 모두 동일)
+
+> 본 프로젝트는 **paradigm 이 여러 번 진화**했습니다 (pre-pivot → mission-pivot 2026-04-18 → mission-refinement 2026-04-21 → **Option 5 KOL Discovery 2026-04-23**).
+> 새 세션이 정확한 active paradigm 을 빠르게 파악하려면 **이 순서로** 읽으세요.
+
+### Stage 0 (1-2분)
+1. **[`SESSION_START.md`](./SESSION_START.md)** — 1 페이지 hand-off (Lane 표 + Real Asset Guard + 1줄 신뢰 명령)
+
+### Stage 1 (5분) — Paradigm authority
+2. **[`MISSION_CONTROL.md`](./MISSION_CONTROL.md)** — 6 control framework (survival/universe/payoff/execution/experiment/discipline)
+3. **[`docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md`](./docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md)** — **현 active paradigm**
+4. **[`docs/design-docs/mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md)** — 사명 정의 (0.8 SOL floor + 200 trades + 5x+ winner)
+
+### Stage 2 (10분) — 현재 작업
+5. **[`REFACTORING_v1.0.md`](./REFACTORING_v1.0.md)** — Option 5 Phase 0-5 진행 상태
+6. **[`INCIDENT.md`](./INCIDENT.md)** — 최근 운영 관측 + 결정 연표
+
+### Stage 3 (필요 시)
+7. **[`ARCHITECTURE.md`](./ARCHITECTURE.md)** — 모듈 구조
+8. **[`docs/debates/`](./docs/debates/)** — 의사결정 history
+
+### 코드 작업 시작 전
+- 1줄 신뢰 명령: `npm run check:fast` (typecheck + jest + env drift)
+- Real Asset Guard (ticket 0.01 / floor 0.8 / canary -0.3 / drift halt 0.2 / max concurrent 3) **변경 금지**
+- `npm run check:strict` (lint + structure 포함) 빨강은 **Phase H2-H4 에서 점진 해소 deferred**, 의도
+
+---
+
 ## 프로젝트 개요
-- 한 줄 설명: Convexity-first Solana momentum/sniper bot (`1 SOL -> 100 SOL`, 2026-04-18 pivot)
+- 한 줄 설명: Convexity-first Solana momentum/sniper bot (Option 5: KOL Discovery + 자체 Execution)
 - 스택: TypeScript, `@solana/web3.js`, Jupiter, TimescaleDB, Winston, pm2
 - 모드: `paper` / `live` (`TRADING_MODE`)
 - 아키텍처 기준: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
-- Pivot 결정: [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md)
+- 현 active paradigm: [`docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md`](./docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md)
+- 이전 pivot (하위 권위): [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md)
 
 ## 현재 우선 문서
 

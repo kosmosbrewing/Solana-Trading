@@ -1,8 +1,36 @@
 # Solana Momentum Bot — Agent Instructions
 
-작업 시작 전 [`AGENTS.md`](./AGENTS.md)를 읽고, 현재 태스크에 필요한 문서만 Progressive Disclosure로 참조하라.
+## 🚀 새 세션 진입 순서 (이 순서로 읽으세요)
 
-## Quick Reference
+새 AI/사람 세션이 별도 지시 없이도 paradigm 을 자동 파악할 수 있도록 **이 순서로** 문서를 읽으세요.
+Stage 1-2 만 읽으면 (5-10분) 코드 변경 가능. Stage 3+ 는 필요 시.
+
+### Stage 0 — 즉시 진입 (1-2분)
+1. **[`SESSION_START.md`](./SESSION_START.md)** — 1 페이지 hand-off. 1줄 신뢰 명령 / Lane 표 / Real Asset Guard / 금지 사항.
+
+### Stage 1 — Paradigm authority (5분)
+2. **[`MISSION_CONTROL.md`](./MISSION_CONTROL.md)** — 6 control framework (survival/universe/payoff/execution/experiment/discipline)
+3. **[`docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md`](./docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md)** — 현 active paradigm
+4. **[`docs/design-docs/mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md)** — 사명 정의 (0.8 SOL floor + 200 trades + 5x+ winner)
+
+### Stage 2 — 현재 active 작업 (10분)
+5. **[`REFACTORING_v1.0.md`](./REFACTORING_v1.0.md)** — Option 5 Phase 0-5 진행 상태 (어디까지 왔나)
+6. **[`INCIDENT.md`](./INCIDENT.md)** — 최근 운영 관측 + 결정 연표 (왜 이 상태인가)
+
+### Stage 3 — 깊이 들어갈 때 (필요 시)
+7. **[`ARCHITECTURE.md`](./ARCHITECTURE.md)** — 모듈 구조 / 의존성 방향
+8. **[`docs/debates/`](./docs/debates/)** — 의사결정 history (대담 기록)
+
+### Stage 4 — 작업 종류별 참조
+- 코드 변경 전: [`docs/CONVENTIONS.md`](./docs/CONVENTIONS.md), [`docs/SECURITY.md`](./docs/SECURITY.md)
+- 트러블슈팅: [`OPERATIONS.md`](./OPERATIONS.md), [`INCIDENT.md`](./INCIDENT.md)
+- 측정 / KPI: [`MEASUREMENT.md`](./MEASUREMENT.md)
+- 사명 roadmap: [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md)
+- 작업 시작 전 에이전트 규칙: [`AGENTS.md`](./AGENTS.md)
+
+---
+
+## Quick Reference (legacy, Stage 1-2 의 alias)
 - **2026-04-25 Mission Control Framework (control-plane policy)**: [`MISSION_CONTROL.md`](./MISSION_CONTROL.md) — survival/universe/payoff/execution/experiment/discipline 6 controls. mission-refinement 의 운영 항목화. 모든 변경의 4-layer reporting + adaptive change log 의무.
 - **2026-04-23 Option 5 Adoption (현 active paradigm)**: [`docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md`](./docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md) — KOL Wallet = 1st-class Discovery, 자체 Execution 구조 유지 + Lane T 파라미터 재조정. Real Asset Guard 불변. Phase 2 shadow eval = go/no-go first filter.
 - **대담 기록 (append-only)**: [`docs/debates/kol-discovery-debate-2026-04-23.md`](./docs/debates/kol-discovery-debate-2026-04-23.md)

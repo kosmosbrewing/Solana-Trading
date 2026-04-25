@@ -129,6 +129,28 @@ export const config = {
   // Jupiter 에 tokenMint→SOL quote 요청 → "팔릴 수 있는가" 직접 검증.
   // securityGate 는 static properties (mint/freeze authority, Token-2022 ext) 를 보지만,
   // liquidity 고갈 / AMM 라우팅 실패 등 honeypot-by-liquidity 는 sell quote 로만 드러남.
+  // Phase 2 P1-1/P1-2 (2026-04-25): live reverse-quote tracker — quote-based T1 promotion 보강.
+  // Why: 6h 운영에서 CATCOIN PROBE close peak=0% 인데 Jupiter sell quote 는 +99.9%.
+  // candle MFE 가 burst 를 놓치는 케이스를 token→SOL quote 로 보강.
+  pureWsLivePriceTrackerEnabled: boolOptional('PUREWS_LIVE_PRICE_TRACKER_ENABLED', false),
+  pureWsLivePriceTrackerPollMs: Number(process.env.PUREWS_LIVE_PRICE_TRACKER_POLL_MS ?? '12000'),
+  pureWsT1PromoteByQuote: boolOptional('PUREWS_T1_PROMOTE_BY_QUOTE', false),
+  // Phase 4 P2-3 (2026-04-25): Pair quarantine — pippin 류 stale price 자동 격리.
+  pairQuarantineEnabled: boolOptional('PAIR_QUARANTINE_ENABLED', true),
+  pairQuarantineDriftRejectThreshold: Number(process.env.PAIR_QUARANTINE_DRIFT_REJECT_THRESHOLD ?? '20'),
+  pairQuarantineFavorableDriftThreshold: Number(process.env.PAIR_QUARANTINE_FAVORABLE_THRESHOLD ?? '5'),
+  pairQuarantineWindowMin: Number(process.env.PAIR_QUARANTINE_WINDOW_MIN ?? '10'),
+  pairQuarantineDurationMin: Number(process.env.PAIR_QUARANTINE_DURATION_MIN ?? '60'),
+  // Phase 3 P1-8 (2026-04-25): Token session continuation guard.
+  // Why: BZtgGZqx 같이 winner 후 5번 sliced 재진입 패턴 차단 — winner ≥ threshold 가 lookback
+  // 내면 "continuation mode" 로 진입 (정상 PROBE 대신 더 긴 window + 낮은 T1).
+  tokenSessionTrackerEnabled: boolOptional('TOKEN_SESSION_TRACKER_ENABLED', true),
+  tokenSessionTtlMin: Number(process.env.TOKEN_SESSION_TTL_MIN ?? '30'),
+  tokenSessionWinnerThresholdPct: Number(process.env.TOKEN_SESSION_WINNER_THRESHOLD_PCT ?? '0.50'),
+  tokenSessionWinnerLookbackMin: Number(process.env.TOKEN_SESSION_WINNER_LOOKBACK_MIN ?? '15'),
+  tokenSessionContinuationT1Pct: Number(process.env.TOKEN_SESSION_CONTINUATION_T1_PCT ?? '0.30'),
+  tokenSessionContinuationProbeWindowSec: Number(process.env.TOKEN_SESSION_CONTINUATION_PROBE_WINDOW_SEC ?? '60'),
+  tokenSessionBlockOpenPositionEntries: boolOptional('TOKEN_SESSION_BLOCK_OPEN_POSITION_ENTRIES', true),
   pureWsSellQuoteProbeEnabled: boolOptional('PUREWS_SELL_QUOTE_PROBE_ENABLED', true),
   pureWsSellQuoteMaxImpactPct: Number(process.env.PUREWS_SELL_QUOTE_MAX_IMPACT_PCT ?? '0.10'),
   // round-trip 최소 복구 비율 (0 = disabled). 실제 운영 관측 전 0 으로 두고 impact 판정에 의존.
@@ -189,6 +211,9 @@ export const config = {
   kolHunterSurvivalMaxTop10HolderPct: Number(process.env.KOL_HUNTER_SURVIVAL_MAX_TOP10_HOLDER_PCT ?? '0.80'),
   // 운영 환경에서 sellQuoteProbe 동시 호출 폭주 방지 위한 throttle (paper 에선 unused, 환경별 override).
   kolHunterRunSellQuoteProbe: boolOptional('KOL_HUNTER_RUN_SELL_QUOTE_PROBE', true),
+  // Phase 5 P1-15 (2026-04-25): KOL live canary 명시적 opt-in.
+  // KOL_HUNTER_PAPER_ONLY=false 만으로는 live 안 돔 (review feedback P0). 별도 flag 필요.
+  kolHunterLiveCanaryEnabled: boolOptional('KOL_HUNTER_LIVE_CANARY_ENABLED', false),
   // MISSION_CONTROL §Control 5 — arm identity / detector version. env 직접 접근 금지 (utils/config.ts 일원화).
   kolHunterParameterVersion: process.env.KOL_HUNTER_PARAMETER_VERSION ?? 'v1.0.0',
   kolHunterDetectorVersion: process.env.KOL_HUNTER_DETECTOR_VERSION ?? 'kol_discovery_v1',
@@ -413,6 +438,32 @@ export const config = {
     : {}),
   ...(process.env.PUREWS_PROBE_HARD_CUT_PCT
     ? { pureWsProbeHardCutPct: Number(process.env.PUREWS_PROBE_HARD_CUT_PCT) }
+    : {}),
+  // 2026-04-26 (H2-followup): tradingParams.ts 의 env 직접 참조 제거 → config.ts 일원화.
+  // Phase 2 P1-4 sweep override (parameter-change-log.ts 와 같이 사용).
+  ...(process.env.PUREWS_PROBE_TRAILING_PCT
+    ? { pureWsProbeTrailingPct: Number(process.env.PUREWS_PROBE_TRAILING_PCT) }
+    : {}),
+  ...(process.env.PUREWS_T1_MFE_THRESHOLD
+    ? { pureWsT1MfeThreshold: Number(process.env.PUREWS_T1_MFE_THRESHOLD) }
+    : {}),
+  ...(process.env.PUREWS_T1_TRAIL_PCT
+    ? { pureWsT1TrailingPct: Number(process.env.PUREWS_T1_TRAIL_PCT) }
+    : {}),
+  ...(process.env.PUREWS_T2_MFE_THRESHOLD
+    ? { pureWsT2MfeThreshold: Number(process.env.PUREWS_T2_MFE_THRESHOLD) }
+    : {}),
+  ...(process.env.PUREWS_T2_TRAIL_PCT
+    ? { pureWsT2TrailingPct: Number(process.env.PUREWS_T2_TRAIL_PCT) }
+    : {}),
+  ...(process.env.PUREWS_T2_LOCK_MULT
+    ? { pureWsT2BreakevenLockMultiplier: Number(process.env.PUREWS_T2_LOCK_MULT) }
+    : {}),
+  ...(process.env.PUREWS_T3_MFE_THRESHOLD
+    ? { pureWsT3MfeThreshold: Number(process.env.PUREWS_T3_MFE_THRESHOLD) }
+    : {}),
+  ...(process.env.PUREWS_T3_TRAIL_PCT
+    ? { pureWsT3TrailingPct: Number(process.env.PUREWS_T3_TRAIL_PCT) }
     : {}),
   ...(process.env.PUREWS_GATE_ENABLED !== undefined
     ? { pureWsGateEnabled: process.env.PUREWS_GATE_ENABLED !== 'false' }

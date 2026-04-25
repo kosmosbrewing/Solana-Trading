@@ -2,7 +2,13 @@
  * Block 3 QA fix (2026-04-18): paper-first enforcement test.
  * PUREWS_LIVE_CANARY_ENABLED=false 면 TRADING_MODE=live 여도 live buy 차단.
  * timeStopAt 단위 버그 (seconds * 60) 수정 회귀 방어.
+ *
+ * 2026-04-25 H1.3: Jupiter / network DNS leak 차단. 테스트가 entryDriftGuard / sellQuoteProbe 를
+ * 거치며 axios 가 외부 호출 시도하는 것을 명시 mock 으로 차단.
  */
+import { createBlockedAxiosMock } from './__helpers__/network';
+jest.mock('axios', () => createBlockedAxiosMock());
+
 import {
   handlePureWsSignal,
   resetPureWsLaneStateForTests,

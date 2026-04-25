@@ -32,7 +32,12 @@
     "lint": "eslint src/ --ext .ts",
     "typecheck": "tsc --noEmit",
     "typecheck:scripts": "tsc --noEmit -p tsconfig.scripts.json",
-    "test": "jest --config jest.config.cjs"
+    "test": "jest --config jest.config.cjs",
+    "env:generate": "ts-node scripts/env-catalog.ts --write",
+    "env:check": "ts-node scripts/env-catalog.ts --check",
+    "check:fast": "npm run typecheck && npm run typecheck:scripts && npm run env:check && jest --config jest.config.cjs --silent",
+    "check": "npm run typecheck && npm run typecheck:scripts && npm run env:check && npm run test",
+    "check:strict": "npm run check && npm run lint && npm run docs:lint"
   },
   "dependencies": {
     "@solana/web3.js": "^1.95.0",

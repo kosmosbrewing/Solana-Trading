@@ -155,6 +155,105 @@
       "is_active": true
     },
     {
+      "id": "decu",
+      "addresses": [
+        "4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9"
+      ],
+      "tier": "S",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "decu. Added from 2026-04-25 KOL research: high-priority active discovery wallet; public Kolscan/OKX cross-check indicates profitable low-cap, small-ticket behavior. Use as signal source, not blind copy.",
+      "is_active": true
+    },
+    {
+      "id": "clukz",
+      "addresses": [
+        "G6fUXjMKPJzCY1rveAE6Qm7wy5U3vZgKDJmN1VPAdiZC"
+      ],
+      "tier": "S",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "clukz. Added from 2026-04-25 KOL research: selective low-cap tail-catcher; public OKX/Kolscan evidence includes recent multi-bagger closed position. High-value discovery signal.",
+      "is_active": true
+    },
+    {
+      "id": "west_ratwizardx",
+      "addresses": [
+        "JDd3hy3gQn2V982mi1zqhNqUw1GfV2UL6g76STojCJPN"
+      ],
+      "tier": "A",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "West @ratwizardx. Added from 2026-04-25 KOL research: active low-cap grinder/discovery wallet. Address existence cross-checked; keep active but monitor per-wallet precision before tier S.",
+      "is_active": true
+    },
+    {
+      "id": "theo",
+      "addresses": [
+        "Bi4rd5FH5bYEN8scZ7wevxNZyNmKHdaBcvewdPFxYdLt"
+      ],
+      "tier": "A",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "theo. Added from 2026-04-25 KOL research: strong discovery wallet with lower win-rate / high-tail profile. Latency-sensitive; use primarily for token discovery and multi-KOL confirmation.",
+      "is_active": true
+    },
+    {
+      "id": "scharo",
+      "addresses": [
+        "4sAUSQFdvWRBxR8UoLBYbw8CcXuwXWxnN8pXa4mtm5nU"
+      ],
+      "tier": "A",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "Scharo. Added from 2026-04-25 KOL research: medium-speed low-cap wallet with reported multi-bagger history. Public performance cross-check weaker than decu/clukz; monitor precision.",
+      "is_active": true
+    },
+    {
+      "id": "cupsey_benchmark",
+      "addresses": [
+        "2fg5QD1eD7rzNNCsvnhmXFm5hqNgwTTG8p7kQ6f3rx6f"
+      ],
+      "tier": "S",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "Cupsey benchmark. High-frequency reference wallet; kept inactive in Option 5 DB to avoid noisy direct KOL hunter triggers. Existing cupsey lane remains separate benchmark.",
+      "is_active": false
+    },
+    {
+      "id": "cented_benchmark",
+      "addresses": [
+        "CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o"
+      ],
+      "tier": "S",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "Cented benchmark. Public sources describe high-frequency/bot-like launch behavior; useful as reference, not active canary signal until a benchmark-only observer exists.",
+      "is_active": false
+    },
+    {
+      "id": "domy_watch",
+      "addresses": [
+        "3LUfv2u5yzsDtUzPdsSJ7ygPBuqwfycMkjpNreRR2Yww"
+      ],
+      "tier": "B",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "Domy @domyxbt. Inactive watch candidate from 2026-04-25 KOL research; Orb confirms individual address, but keep inactive until 30d realized PnL / tail evidence is reverified.",
+      "is_active": false
+    },
+    {
+      "id": "sheep_watch",
+      "addresses": [
+        "78N177fzNJpp8pG49xDv1efYcTMSzo9tPTKEA9mAVkh2"
+      ],
+      "tier": "B",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "Sheep. Inactive watch candidate from 2026-04-25 KOL research; tail-winner potential but role/longer-term verification is weaker. Activate only after next monthly review.",
+      "is_active": false
+    },
+    {
       "id": "believe_buyback",
       "addresses": [
         "GHXV4xsQjKETxeKFSAQuGLBDni5zZvMyM8EEmRDETWKH"

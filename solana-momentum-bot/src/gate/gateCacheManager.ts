@@ -21,11 +21,15 @@ interface CacheEntry {
 export class GateCacheManager {
   private readonly cache = new Map<string, CacheEntry>();
   private readonly defaultTtlMs: number;
+  /** Phase 6 P2-5/P2-6 (2026-04-25): stale fallback TTL — fresh expire 후에도 이 시간까지는
+   * RPC 실패 시 stale 값 반환 가능. RPC pressure 방어 + KOL DB 확장 전제 인프라. */
+  private readonly staleFallbackMs: number;
   private pruneTimer: ReturnType<typeof setInterval> | null = null;
-  private stats = { hits: 0, misses: 0 };
+  private stats = { hits: 0, misses: 0, staleFallbacks: 0 };
 
-  constructor(ttlMs = 30_000) {
+  constructor(ttlMs = 30_000, staleFallbackMs = 24 * 60 * 60 * 1000) {
     this.defaultTtlMs = ttlMs;
+    this.staleFallbackMs = staleFallbackMs;
     // Why: 1분 주기로 만료 entry 정리 — memory leak 방지
     this.pruneTimer = setInterval(() => this.pruneExpired(), 60_000);
   }
@@ -37,11 +41,27 @@ export class GateCacheManager {
       return null;
     }
     if (Date.now() - entry.cachedAt > this.defaultTtlMs) {
-      this.cache.delete(tokenMint);
+      // Phase 6 P2-6: fresh TTL 만료 — stale fallback 호출자가 의도적으로 요청해야 함.
+      // 일반 get 은 null 반환해 caller 가 fresh fetch 시도하게 함.
       this.stats.misses++;
       return null;
     }
     this.stats.hits++;
+    return entry.data;
+  }
+
+  /**
+   * Phase 6 P2-6: RPC fetch 실패 시 stale 값 fallback.
+   * fresh TTL 만료됐어도 staleFallbackMs 내라면 마지막 cache 반환.
+   */
+  getStaleFallback(tokenMint: string): CachedGateResult | null {
+    const entry = this.cache.get(tokenMint);
+    if (!entry) return null;
+    if (Date.now() - entry.cachedAt > this.staleFallbackMs) {
+      this.cache.delete(tokenMint);
+      return null;
+    }
+    this.stats.staleFallbacks++;
     return entry.data;
   }
 
@@ -56,8 +76,9 @@ export class GateCacheManager {
   pruneExpired(): void {
     const now = Date.now();
     let pruned = 0;
+    // Phase 6 P2-6: prune 기준은 stale fallback TTL — fresh 만료된 entry 도 stale 까지는 보존.
     for (const [key, entry] of this.cache) {
-      if (now - entry.cachedAt > this.defaultTtlMs) {
+      if (now - entry.cachedAt > this.staleFallbackMs) {
         this.cache.delete(key);
         pruned++;
       }
@@ -67,11 +88,12 @@ export class GateCacheManager {
     }
   }
 
-  getStats(): { hits: number; misses: number; size: number; hitRate: string } {
+  getStats(): { hits: number; misses: number; staleFallbacks: number; size: number; hitRate: string } {
     const total = this.stats.hits + this.stats.misses;
     return {
       hits: this.stats.hits,
       misses: this.stats.misses,
+      staleFallbacks: this.stats.staleFallbacks,
       size: this.cache.size,
       hitRate: total > 0 ? `${((this.stats.hits / total) * 100).toFixed(1)}%` : '0%',
     };

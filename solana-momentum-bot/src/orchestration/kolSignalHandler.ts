@@ -304,10 +304,20 @@ async function resolveStalk(tokenMint: string): Promise<void> {
     return;
   }
 
-  // 진입 준비 — paper mode 강제. sell-quote sizing 은 enterPaperPosition 내부에서
-  // entry price 가 확정된 후 별도로 수행 (planned quantity = ticketSol / entryPrice).
-  if (!config.kolHunterPaperOnly) {
-    log.warn(`[KOL_HUNTER] paper-only 강제 해제 감지 — Phase 4 canary 단계에서만 허용`);
+  // Phase 5 P1-15 (2026-04-25): live canary 명시적 opt-in.
+  // KOL_HUNTER_PAPER_ONLY=false 만으로는 live 안 됨 (review feedback P0). 별도 flag 필요.
+  // 본 sprint 에서는 enterLivePosition 의 Jupiter swap path 가 미구현 — flag 가 켜져 있어도
+  // 안전하게 paper 로 fallback + critical alert. P1-9~14 후속 sprint 에서 enterLivePosition 구현.
+  if (config.kolHunterLiveCanaryEnabled && !config.kolHunterPaperOnly) {
+    log.error(
+      `[KOL_HUNTER_LIVE_NOT_IMPLEMENTED] ${tokenMint.slice(0, 8)} ` +
+      `KOL_HUNTER_LIVE_CANARY_ENABLED=true 이지만 enterLivePosition 미구현 — paper 로 fallback`
+    );
+    // paperOnly 강제 false 로 들어왔어도 실제 wallet 에는 buy 안 함 (paper path).
+  } else if (!config.kolHunterPaperOnly) {
+    log.warn(
+      `[KOL_HUNTER] PAPER_ONLY=false 인데 LIVE_CANARY_ENABLED=false — paper 로만 동작`
+    );
   }
   await enterPaperPosition(tokenMint, cand, score, preEntry.flags);
 }
@@ -353,6 +363,15 @@ async function checkKolSurvivalPreEntry(
       });
     } catch (err) {
       log.warn(`[KOL_HUNTER_SURVIVAL] ${tokenMint.slice(0, 12)} security fetch failed: ${err}`);
+      // Phase 6 P2-6: stale fallback — RPC pressure 방어.
+      const stale = gateCache?.getStaleFallback(tokenMint);
+      if (stale) {
+        tokenSecurityData = stale.tokenSecurityData;
+        exitLiquidityData = stale.exitLiquidityData;
+        log.info(
+          `[KOL_HUNTER_SURVIVAL_STALE_FALLBACK] ${tokenMint.slice(0, 12)} RPC fail, using stale cache`
+        );
+      }
     }
   }
 

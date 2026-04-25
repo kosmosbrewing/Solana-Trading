@@ -139,4 +139,24 @@ describe('Block 3 QA — paper-first enforcement', () => {
     expect(diffSec).toBeLessThanOrEqual(config.pureWsProbeWindowSec + 2);
     expect(diffSec).toBeGreaterThanOrEqual(config.pureWsProbeWindowSec - 2);
   });
+
+  // Phase 1 P0-1 (2026-04-25): in-flight mutex regression.
+  // 6h 운영 로그에서 BZtgGZqx 가 09:28:53.097 + 09:28:53.191 (94ms) 두 번 PROBE_OPEN.
+  // 같은 pair 의 두 동시 signal 이 첫 signal 의 async Jupiter 사이에 통과되면 안 됨.
+  it('Phase 1 P0-1: in-flight mutex prevents same-pair double entry within ms', async () => {
+    override('pureWsLiveCanaryEnabled', true);
+    const { ctx, executor, tradeStore } = makeCtx('live');
+    const builder = makeBuilder();
+
+    const signal = { pairAddress: 'PAIR_DUP', strategy: 'bootstrap_10s', price: 1.0 } as any;
+    // 두 signal 을 await 없이 동시 fire — race window 시뮬.
+    const a = handlePureWsSignal(signal, builder, ctx);
+    const b = handlePureWsSignal(signal, builder, ctx);
+    await Promise.all([a, b]);
+
+    // 한 번만 진입해야 함 — 두 번째 signal 은 INFLIGHT_DEDUP 으로 차단.
+    expect(executor.executeBuy).toHaveBeenCalledTimes(1);
+    expect(tradeStore.insertTrade).toHaveBeenCalledTimes(1);
+    expect(getActivePureWsPositions().size).toBe(1);
+  });
 });

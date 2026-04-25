@@ -45,7 +45,7 @@ import { getWalletStopGuardState } from '../risk/walletStopGuard';
 import { evaluateQuickReject } from '../risk/quickRejectClassifier';
 import { evaluateHoldPhaseSentinel } from '../risk/holdPhaseSentinel';
 import { BotContext } from './types';
-import { bpsToDecimal } from '../utils/units';
+import { bpsToDecimal, uiAmountToRaw } from '../utils/units';
 import { isWalletStopActive } from '../risk/walletStopGuard';
 import { serializeClose } from './swapSerializer';
 import { resolveActualEntryMetrics } from './signalProcessor';
@@ -108,6 +108,14 @@ interface PureWsPosition {
   t1VisitAtSec?: number;
   t2VisitAtSec?: number;
   t3VisitAtSec?: number;
+  // Phase 2 P1-3 (2026-04-25): T1 promotion 이 quote-based MFE 신호로 발동됐는지 기록.
+  // candle peak vs quote peak 발산 측정 — ledger 까지 전파해 sweep 가능.
+  t1ViaQuote?: boolean;
+  // Phase 3 P1-6 (2026-04-25): continuation mode override (winner 직후 재진입).
+  // 정상 PROBE 대신 더 긴 window + 낮은 T1 threshold 적용.
+  continuationMode?: boolean;
+  continuationT1Threshold?: number;
+  continuationProbeWindowSec?: number;
 }
 
 const activePositions = new Map<string, PureWsPosition>();
@@ -247,6 +255,106 @@ const v2LastTriggerSecByPair = new Map<string, number>();
 // pair-level cooldown 적용하여 pair diversity 확보.
 const v1LastEntrySecByPair = new Map<string, number>();
 
+// 2026-04-25 Phase 4 P2-1/P2-2: pair quarantine — drift_reject burst 자동 격리.
+import {
+  recordDriftReject as pairQuarantineRecordDriftReject,
+  recordFavorableDrift as pairQuarantineRecordFavorableDrift,
+  isQuarantined as pairQuarantineIsQuarantined,
+  configurePairQuarantine,
+  resetPairQuarantineForTests,
+} from '../risk/pairQuarantineTracker';
+import { appendFile as appendFileFs, mkdir as mkdirFs } from 'fs/promises';
+
+let pairQuarantineLedgerDirEnsured = false;
+async function appendPairQuarantineLedger(entry: Record<string, unknown>): Promise<void> {
+  try {
+    const dir = config.realtimeDataDir;
+    if (!pairQuarantineLedgerDirEnsured) {
+      await mkdirFs(dir, { recursive: true });
+      pairQuarantineLedgerDirEnsured = true;
+    }
+    await appendFileFs(
+      path.join(dir, 'pair-quarantine.jsonl'),
+      JSON.stringify(entry) + '\n',
+      'utf8'
+    );
+  } catch {
+    // best-effort — observability 만, trade path 차단 금지
+  }
+}
+
+let pairQuarantineConfigured = false;
+function ensurePairQuarantineConfigured(): void {
+  if (pairQuarantineConfigured) return;
+  pairQuarantineConfigured = true;
+  configurePairQuarantine({
+    enabled: config.pairQuarantineEnabled,
+    driftRejectThreshold: config.pairQuarantineDriftRejectThreshold,
+    favorableDriftThreshold: config.pairQuarantineFavorableDriftThreshold,
+    windowMs: config.pairQuarantineWindowMin * 60 * 1000,
+    durationMs: config.pairQuarantineDurationMin * 60 * 1000,
+  });
+}
+
+// 2026-04-25 Phase 3 P1-5/P1-6/P1-7: token session tracker — sliced 재진입 방지 + continuation 분기.
+import {
+  recordEntry as recordTokenSessionEntry,
+  recordClose as recordTokenSessionClose,
+  evaluateContinuation as evaluateTokenSessionContinuation,
+  configureTokenSessionTracker,
+  hasOpenPosition as tokenSessionHasOpenPosition,
+  resetTokenSessionTrackerForTests,
+} from './tokenSessionTracker';
+
+// Lazy bootstrap config (idempotent).
+let tokenSessionConfigured = false;
+function ensureTokenSessionConfigured(): void {
+  if (tokenSessionConfigured) return;
+  tokenSessionConfigured = true;
+  configureTokenSessionTracker({
+    ttlMs: config.tokenSessionTtlMin * 60 * 1000,
+    winnerThresholdPct: config.tokenSessionWinnerThresholdPct,
+    winnerLookbackMs: config.tokenSessionWinnerLookbackMin * 60 * 1000,
+  });
+}
+
+// 2026-04-25 Phase 2 P1-1/P1-2: live reverse-quote tracker singleton (lazy init).
+// Why: candle MFE 가 burst pump 를 못 잡는 케이스 (CATCOIN +99% peak=0%). Jupiter token→SOL
+// quote 로 보조 MFE 측정 → T1 promotion 판단 보강. config.pureWsLivePriceTrackerEnabled 로 gate.
+import { LivePriceTracker } from '../observability/livePriceTracker';
+let livePriceTracker: LivePriceTracker | null = null;
+
+function getOrInitLivePriceTracker(): LivePriceTracker {
+  if (!livePriceTracker) {
+    livePriceTracker = new LivePriceTracker({
+      jupiterApiUrl: config.jupiterApiUrl,
+      jupiterApiKey: config.jupiterApiKey,
+      pollIntervalMs: config.pureWsLivePriceTrackerPollMs ?? 12_000,
+    });
+  }
+  return livePriceTracker;
+}
+
+export function getPureWsLivePriceTracker(): LivePriceTracker | null {
+  return livePriceTracker;
+}
+
+export function resetPureWsLivePriceTrackerForTests(): void {
+  livePriceTracker?.stopAll();
+  livePriceTracker = null;
+}
+
+// 2026-04-25 Phase 1 P0-1: in-flight entry mutex (Set of pairAddress).
+// Why: 6h 운영 로그에서 BZtgGZqx (CATCOIN) 가 09:28:53.097 + 09:28:53.191 (94ms) 두 번 PROBE_OPEN.
+// 기존 duplicate guard (line 470) 는 activePositions 만 본다 — async Jupiter quote 시작 후
+// activePositions.set 사이의 race window 에 두 번째 signal 이 통과 가능. 이 Set 은 handler
+// 진입 직후 sync 추가, 모든 exit path (성공/실패/early return) 에서 해제. ms-level race 차단.
+const inflightEntryByPair = new Set<string>();
+
+export function resetInflightEntryForTests(): void {
+  inflightEntryByPair.clear();
+}
+
 // 2026-04-21 P0 (observability): v2 scanner 가 production 에서 24h 동안 PASS 0건 관측됨.
 // reject 는 log.debug 라 INFO 레벨 운영 로그에 안 찍혀 진단 불가.
 // counter 기반 누적 telemetry 를 주기적으로 info log 출력 — threshold 튜닝 근거 확보.
@@ -312,32 +420,22 @@ export function logPureWsV2TelemetrySummary(): void {
 }
 
 /**
- * 2026-04-21 (QA L2): UI amount → raw BigInt 변환. JS number 정밀도 한계 (2^53) 방어.
- * `Math.floor(ui * 10^decimals)` 는 decimals=18 + large ui 에서 정밀 손실 가능.
- * toFixed 로 string 변환 후 소수점 이동하여 BigInt 화.
- *
- * 주의: ui 가 매우 크면 (1e21+) `.toFixed()` 가 과학 표기 반환 — 그 범위는 invalid input 취급.
+ * 2026-04-21 (QA L2) → 2026-04-26 H2-followup: utils/units.ts 로 이동.
+ * 본 re-export 는 backward compat — 외부에서 본 모듈로 import 하던 코드 보호.
  */
-export function uiAmountToRaw(ui: number, decimals: number): bigint {
-  if (!isFinite(ui) || ui <= 0) return 0n;
-  if (decimals < 0 || decimals > 18) return 0n;
-  // 과학 표기 방어: ui >= 1e21 또는 너무 작으면 reject (실무 범위 밖)
-  if (ui >= 1e21) return 0n;
-  const fixed = ui.toFixed(decimals);
-  const [intStr, fracStrRaw = ''] = fixed.split('.');
-  const fracStr = fracStrRaw.padEnd(decimals, '0').slice(0, decimals);
-  const combined = (intStr + fracStr).replace(/^0+/, '') || '0';
-  try {
-    return BigInt(combined);
-  } catch {
-    return 0n;
-  }
-}
+export { uiAmountToRaw };
 
 export function resetPureWsLaneStateForTests(): void {
   activePositions.clear();
   v2LastTriggerSecByPair.clear();
   v1LastEntrySecByPair.clear();
+  inflightEntryByPair.clear();
+  // Phase 3 — token session in-memory state 도 초기화.
+  tokenSessionConfigured = false;
+  resetTokenSessionTrackerForTests();
+  // Phase 4 — pair quarantine state 초기화.
+  pairQuarantineConfigured = false;
+  resetPairQuarantineForTests();
   funnelStats.signalsReceived = 0;
   funnelStats.gatePass = 0;
   funnelStats.entry = 0;
@@ -387,6 +485,15 @@ async function checkPureWsSurvival(
       });
     } catch (err) {
       log.warn(`[PUREWS_SURVIVAL] ${tokenMint.slice(0, 12)} security fetch failed: ${err}`);
+      // Phase 6 P2-6: RPC fail 시 stale fallback (≤24h 이내 cached). RPC pressure 방어.
+      const stale = ctx.gateCache?.getStaleFallback(tokenMint);
+      if (stale) {
+        tokenSecurityData = stale.tokenSecurityData;
+        exitLiquidityData = stale.exitLiquidityData;
+        log.info(
+          `[PUREWS_SURVIVAL_STALE_FALLBACK] ${tokenMint.slice(0, 12)} RPC fail, using stale cache`
+        );
+      }
     }
   }
 
@@ -474,6 +581,49 @@ export async function handlePureWsSignal(
       return;
     }
   }
+
+  // 2026-04-25 Phase 1 P0-1: in-flight mutex.
+  // 동일 pair 의 두 번째 signal 이 첫 signal 의 async Jupiter quote 사이에 통과하지 못하도록
+  // sync 단계에서 차단. 모든 exit path 는 finally 절에서 해제.
+  if (inflightEntryByPair.has(signal.pairAddress)) {
+    log.debug(
+      `[PUREWS_INFLIGHT_DEDUP] ${signal.pairAddress.slice(0, 12)} entry in-flight — second signal dropped`
+    );
+    return;
+  }
+  inflightEntryByPair.add(signal.pairAddress);
+
+  // 2026-04-25 Phase 3 P1-7: open DB row 가 같은 pair 에 있으면 신규 entry 차단.
+  // tracker singleton 의 openTradeId 도 같이 본다 (in-memory + jsonl ledger 동기화).
+  let continuationDecision: ReturnType<typeof evaluateTokenSessionContinuation> | null = null;
+  if (config.tokenSessionTrackerEnabled) {
+    ensureTokenSessionConfigured();
+    // Phase 3 P1-7: tokenSession openTradeId + activePositions 둘 다 검증해야 false halt 방지.
+    // (in-memory cleared but tokenSession stale 인 test/recovery 케이스 회피)
+    if (config.tokenSessionBlockOpenPositionEntries && tokenSessionHasOpenPosition(signal.pairAddress)) {
+      const liveOpen = [...activePositions.values()].some(
+        (p) => p.pairAddress === signal.pairAddress && p.state !== 'CLOSED'
+      );
+      if (liveOpen) {
+        log.info(
+          `[PUREWS_OPEN_POSITION_GUARD] ${signal.pairAddress.slice(0, 12)} ` +
+          `existing open position in token session — entry blocked`
+        );
+        inflightEntryByPair.delete(signal.pairAddress);
+        return;
+      }
+    }
+    // Phase 3 P1-6: continuation evaluation — 직전 winner 가 lookback 내면 분기.
+    continuationDecision = evaluateTokenSessionContinuation(signal.pairAddress);
+    if (continuationDecision.isContinuation) {
+      log.info(
+        `[PUREWS_CONTINUATION] ${signal.pairAddress.slice(0, 12)} ${continuationDecision.reason} ` +
+        `→ probe window ${config.tokenSessionContinuationProbeWindowSec}s, T1 +${(config.tokenSessionContinuationT1Pct * 100).toFixed(0)}%`
+      );
+    }
+  }
+
+  try {
 
   // 2026-04-21 P1: v1 (bootstrap) 경로 per-pair cooldown.
   // v2 sourced signal (ws_burst_v2) 은 scanner 가 cooldown 관리하므로 여기선 v1 만 적용.
@@ -635,6 +785,15 @@ export async function handlePureWsSignal(
     } catch (err) {
       log.debug(`[PUREWS_ENTRY_DRIFT] ${signal.pairAddress.slice(0, 12)} decimals resolve failed: ${err}`);
     }
+    // Phase 4 P2-1: pair quarantine pre-check — 이미 quarantine 된 pair 면 Jupiter quote skip.
+    ensurePairQuarantineConfigured();
+    if (config.pairQuarantineEnabled && pairQuarantineIsQuarantined(signal.pairAddress)) {
+      log.info(
+        `[PUREWS_PAIR_QUARANTINED] ${signal.pairAddress.slice(0, 12)} ` +
+        `entry skipped — pair quarantined by drift_reject burst`
+      );
+      return;
+    }
     const driftResult = await evaluateEntryDriftGuard(
       {
         tokenMint: signal.pairAddress,
@@ -661,6 +820,30 @@ export async function handlePureWsSignal(
       log.info(
         `[PUREWS_ENTRY_DRIFT_REJECT] ${signal.pairAddress.slice(0, 12)} ${driftResult.reason ?? 'drift'}`
       );
+      // Phase 4 P2-1: drift reject burst counter — threshold 도달 시 60분 quarantine.
+      if (config.pairQuarantineEnabled) {
+        const isFavorable = (driftResult.reason ?? '').includes('favorable');
+        const result = isFavorable
+          ? pairQuarantineRecordFavorableDrift({ pair: signal.pairAddress })
+          : pairQuarantineRecordDriftReject({ pair: signal.pairAddress });
+        if (result.triggered) {
+          log.warn(
+            `[PUREWS_PAIR_QUARANTINE_FIRED] ${signal.pairAddress.slice(0, 12)} ` +
+            `→ quarantined for ${Math.round((result.quarantinedUntilMs - Date.now()) / 60_000)}min ` +
+            `(reason=${isFavorable ? 'favorable_drift' : 'drift_reject'} burst)`
+          );
+          // Phase 4 P2-4: telemetry append (best-effort, fire-and-forget).
+          appendPairQuarantineLedger({
+            firedAt: new Date().toISOString(),
+            pair: signal.pairAddress,
+            reason: isFavorable ? 'favorable_drift_burst' : 'drift_reject_burst',
+            quarantinedUntilMs: result.quarantinedUntilMs,
+            durationMin: config.pairQuarantineDurationMin,
+            triggerReason: driftResult.reason ?? null,
+            observedDriftPct: driftResult.observedDriftPct ?? null,
+          }).catch(() => {});
+        }
+      }
       trackPureWsReject({
         rejectCategory: 'entry_drift',
         rejectReason: driftResult.reason ?? 'drift',
@@ -758,6 +941,8 @@ export async function handlePureWsSignal(
   let actualQuantity = quantity;
   let entryTxSignature = 'PAPER_TRADE';
   let entrySlippageBps = 0;
+  // Phase 1 P0-3 (2026-04-25): true 면 actualIn/actualOut 한쪽만 가용 → planned 강제 복원됨.
+  let partialFillDataMissing = false;
 
   if (ctx.tradingMode === 'live') {
     // Block 3 paper-first enforcement (2026-04-18 QA fix):
@@ -801,6 +986,8 @@ export async function handlePureWsSignal(
       actualQuantity = metrics.quantity;
       entryTxSignature = buyResult.txSignature;
       entrySlippageBps = buyResult.slippageBps;
+      // Phase 1 P0-3: partial fill data missing flag for downstream ledger.
+      partialFillDataMissing = metrics.partialFillDataMissing;
       log.info(
         `[PUREWS_LIVE_BUY] ${positionId} immediate PROBE sig=${entryTxSignature.slice(0, 12)} ` +
         `slip=${entrySlippageBps}bps`
@@ -854,6 +1041,8 @@ export async function handlePureWsSignal(
       slippageBps: entrySlippageBps,
       signalTimeSec: nowSec,
       signalPrice: signal.price,
+      // Phase 1 P0-3: 데이터 품질 flag 를 ledger 까지 전파.
+      partialFillDataMissing,
     },
     notifierKey: 'purews_open_persist',
     buildNotifierMessage: (err) =>
@@ -900,6 +1089,14 @@ export async function handlePureWsSignal(
     entrySlippageBps,
     buyRatioAtEntry: entryBuyRatio,
     txCountAtEntry: entryTxCount,
+    // Phase 3 P1-6: continuation override — winner 직후 재진입은 더 길게 보고, T1 낮춰서 잡는다.
+    continuationMode: continuationDecision?.isContinuation === true,
+    continuationT1Threshold: continuationDecision?.isContinuation
+      ? config.tokenSessionContinuationT1Pct
+      : undefined,
+    continuationProbeWindowSec: continuationDecision?.isContinuation
+      ? config.tokenSessionContinuationProbeWindowSec
+      : undefined,
   };
 
   if (persistResult.dbTradeId) {
@@ -928,15 +1125,42 @@ export async function handlePureWsSignal(
   }
 
   activePositions.set(positionId, position);
+  // Phase 3 P1-5: token session entry 기록.
+  if (config.tokenSessionTrackerEnabled) {
+    recordTokenSessionEntry({ tokenMint: signal.pairAddress, tradeId: positionId });
+  }
   // 2026-04-21 P1: v1 (bootstrap) 경로 entry 성공 시 pair cooldown 기록.
   // v2 sourced signal 은 scanner 가 cooldown 관리하므로 제외.
   if (signal.sourceLabel !== 'ws_burst_v2') {
     v1LastEntrySecByPair.set(signal.pairAddress, Math.floor(Date.now() / 1000));
   }
+  // Phase 2 P1-1/P1-2: live 모드에서 reverse-quote tracker subscribe — quote-based MFE 측정.
+  // tracker 는 lazy init (config 가 켜져 있을 때만). Decimals 는 RPC fetch (실패 시 fallback 6).
+  if (config.pureWsLivePriceTrackerEnabled && ctx.tradingMode === 'live') {
+    try {
+      let decimals: number | null = null;
+      if (ctx.onchainSecurityClient && typeof ctx.onchainSecurityClient.getMintDecimals === 'function') {
+        decimals = await ctx.onchainSecurityClient.getMintDecimals(signal.pairAddress);
+      }
+      const tracker = getOrInitLivePriceTracker();
+      tracker.subscribe({
+        tokenMint: signal.pairAddress,
+        quantityUi: actualQuantity,
+        decimals: decimals ?? 6,
+        entryNotionalSol: actualEntryPrice * actualQuantity,
+      });
+    } catch (err) {
+      log.debug(`[PUREWS_LIVE_TRACKER] subscribe failed ${signal.pairAddress.slice(0, 12)}: ${err}`);
+    }
+  }
   log.info(
     `[PUREWS_PROBE_OPEN] ${positionId} ${signal.pairAddress.slice(0, 12)} ` +
     `entry=${actualEntryPrice.toFixed(8)} qty=${actualQuantity.toFixed(4)}`
   );
+  } finally {
+    // 2026-04-25 Phase 1 P0-1: in-flight mutex 해제 — 모든 exit path 에서 보장.
+    inflightEntryByPair.delete(signal.pairAddress);
+  }
 }
 
 // ─── Tick Monitor ───
@@ -1036,8 +1260,9 @@ export async function updatePureWsPositions(
           }
         }
 
-        // Flat timeout
-        if (elapsedSec >= config.pureWsProbeWindowSec) {
+        // Flat timeout — Phase 3 P1-6: continuation mode 시 더 긴 window 사용.
+        const probeWindow = pos.continuationProbeWindowSec ?? config.pureWsProbeWindowSec;
+        if (elapsedSec >= probeWindow) {
           const inFlatBand = Math.abs(currentPct) <= config.pureWsProbeFlatBandPct;
           if (inFlatBand) {
             log.info(
@@ -1063,14 +1288,42 @@ export async function updatePureWsPositions(
             continue;
           }
         }
-        // Promote to T1
-        if (mfePct >= config.pureWsT1MfeThreshold) {
+        // Promote to T1 — candle MFE 기준 (Phase 3 P1-6 continuation 시 낮춘 threshold).
+        const t1Threshold = pos.continuationT1Threshold ?? config.pureWsT1MfeThreshold;
+        if (mfePct >= t1Threshold) {
           pos.state = 'RUNNER_T1';
           pos.t1VisitAtSec = nowSec;
+          pos.t1ViaQuote = false;
           funnelStats.winnersT1++;
           log.info(
-            `[PUREWS_T1] ${id} promoted RUNNER_T1 MFE=${(mfePct * 100).toFixed(2)}%`
+            `[PUREWS_T1] ${id} promoted RUNNER_T1 MFE=${(mfePct * 100).toFixed(2)}% ` +
+            `threshold=${(t1Threshold * 100).toFixed(0)}%${pos.continuationMode ? ' (continuation)' : ''}`
           );
+          break;
+        }
+        // Phase 2 P1-2: quote-based T1 promotion 보강.
+        // candle MFE 가 아직 threshold 미만이지만 Jupiter reverse-quote MFE 가 threshold 이상이면
+        // 같은 효과로 RUNNER_T1 승격. CATCOIN +99.91% peak=0% 케이스를 잡기 위함.
+        if (
+          config.pureWsT1PromoteByQuote &&
+          ctx.tradingMode === 'live' &&
+          livePriceTracker
+        ) {
+          const tick = livePriceTracker.getLastTick(pos.pairAddress);
+          // 2026-04-26 fix: continuationT1Threshold 가 있으면 candle 경로와 동일한 threshold 사용.
+          // 이전 버그: quote 경로가 항상 default config.pureWsT1MfeThreshold 만 봐서
+          // continuation 모드의 낮춘 T1 (예: 30%) 가 적용 안 됨.
+          if (tick && tick.mfeVsEntry >= t1Threshold) {
+            pos.state = 'RUNNER_T1';
+            pos.t1VisitAtSec = nowSec;
+            pos.t1ViaQuote = true;
+            funnelStats.winnersT1++;
+            log.info(
+              `[PUREWS_T1_VIA_QUOTE] ${id} promoted RUNNER_T1 candleMFE=${(mfePct * 100).toFixed(2)}% ` +
+              `quoteMFE=${(tick.mfeVsEntry * 100).toFixed(2)}% threshold=${(t1Threshold * 100).toFixed(0)}%` +
+              `${pos.continuationMode ? ' (continuation)' : ''} solOut=${tick.solOut.toFixed(6)}`
+            );
+          }
         }
         break;
       }
@@ -1243,6 +1496,8 @@ async function closePureWsPositionSerialized(
   const previousState = pos.state;
   let sellCompleted = ctx.tradingMode !== 'live';
   let dbCloseSucceeded = false;
+  // Phase 1 P0-4 (2026-04-25): wallet truth — live sell 시 receivedSol 을 outer 에 보존.
+  let liveReceivedSol = 0;
 
   if (ctx.tradingMode === 'live') {
     try {
@@ -1253,6 +1508,7 @@ async function closePureWsPositionSerialized(
         const sellResult = await sellExecutor.executeSell(pos.pairAddress, tokenBalance);
         const solAfter = await sellExecutor.getBalance();
         const receivedSol = solAfter - solBefore;
+        liveReceivedSol = receivedSol;
         if (receivedSol > 0 && pos.quantity > 0) {
           actualExitPrice = receivedSol / pos.quantity;
         }
@@ -1270,6 +1526,17 @@ async function closePureWsPositionSerialized(
           pos.marketReferencePrice > 0
             ? (pos.peakPrice - pos.marketReferencePrice) / pos.marketReferencePrice
             : 0;
+        // Phase 1 P0-4: DB pnl ↔ wallet delta drift — sell 직후 즉시 측정 (price-based vs wallet-based).
+        const solSpentNominalLocal = pos.entryPrice * pos.quantity;
+        const dbPnlLocal = (actualExitPrice - pos.entryPrice) * pos.quantity;
+        const walletDeltaLocal = receivedSol - solSpentNominalLocal;
+        const dbPnlDriftLocal = dbPnlLocal - walletDeltaLocal;
+        if (Math.abs(dbPnlDriftLocal) > 0.001) {
+          log.warn(
+            `[PUREWS_PNL_DRIFT] ${id} dbPnl=${dbPnlLocal.toFixed(6)} ` +
+            `walletDelta=${walletDeltaLocal.toFixed(6)} drift=${dbPnlDriftLocal.toFixed(6)} SOL`
+          );
+        }
         await appendEntryLedger('sell', {
           positionId: id,
           dbTradeId: pos.dbTradeId,
@@ -1293,6 +1560,13 @@ async function closePureWsPositionSerialized(
           t2VisitAtSec: pos.t2VisitAtSec ?? null,
           t3VisitAtSec: pos.t3VisitAtSec ?? null,
           closeState: pos.state,
+          // Phase 1 P0-4 — DB pnl ↔ wallet delta reconciliation snapshot.
+          dbPnlSol: dbPnlLocal,
+          walletDeltaSol: walletDeltaLocal,
+          dbPnlDriftSol: dbPnlDriftLocal,
+          solSpentNominal: solSpentNominalLocal,
+          // Phase 2 P1-3 — T1 promotion 이 quote-based 신호로 발동됐는지.
+          t1ViaQuote: pos.t1ViaQuote === true,
         });
       } else {
         // 2026-04-20 P0 fix: orphan position (지갑에 토큰 없음) — 기존 `throw Error` 는
@@ -1330,12 +1604,23 @@ async function closePureWsPositionSerialized(
 
   pos.state = 'CLOSED';
   funnelStats.closedTrades++;
+  // Phase 2 P1-1: live tracker unsubscribe — 닫힌 position 의 reverse quote 폴 중단.
+  livePriceTracker?.unsubscribe(pos.pairAddress);
+  // Phase 3 P1-5: token session close 기록 (winner/loser 분류는 lastNetPct 기준).
+  if (config.tokenSessionTrackerEnabled) {
+    const closingNetPct = pos.entryPrice > 0
+      ? (actualExitPrice - pos.entryPrice) / pos.entryPrice
+      : 0;
+    recordTokenSessionClose({ tokenMint: pos.pairAddress, netPct: closingNetPct });
+  }
 
   const rawPnl = (actualExitPrice - pos.entryPrice) * pos.quantity;
   const paperCost = ctx.tradingMode === 'paper'
     ? pos.entryPrice * pos.quantity * (config.defaultAmmFeePct + config.defaultMevMarginPct)
     : 0;
   const pnl = rawPnl - paperCost;
+  // Phase 1 P0-4 — `liveReceivedSol` 은 sell 직후 set. paper 에서는 0 → drift 0.
+  void liveReceivedSol; // referenced via ledger snapshot (no further use here, suppress unused warn)
   const pnlPct = pos.entryPrice > 0
     ? ((actualExitPrice - pos.entryPrice) / pos.entryPrice) * 100
     : 0;
@@ -1486,6 +1771,32 @@ export async function recoverPureWsOpenPositions(ctx: BotContext): Promise<numbe
             `recovery: ${trade.id.slice(0, 8)} ${trade.pairAddress} zero balance — DB closed, not loaded`
           ).catch(() => {});
           continue;
+        }
+
+        // 2026-04-25 Phase 1 P0-2: dust orphan — DB qty 의 5% 미만 잔량.
+        // 일부 swap 이 partial 로 들어가서 매도 못 하는 상태. ratio 매우 작으면 cleanup.
+        // dbQuantity 는 UI amount, onchainBalance 는 raw — decimals 모르므로 비율 비교만 안전.
+        const dbQty = trade.quantity ?? 0;
+        if (dbQty > 0 && onchainBalance > 0n) {
+          // raw ↔ ui 비교는 decimals 의존이라 보수적: dbQuantity 로부터 expected raw 추정 어려움 →
+          // ratio 검사 대신 "onchain balance < 1000 raw units" 절대 임계로만 dust 정의.
+          // 1000 raw < 0.001 token at decimals=6 (ui amount). 매도 economic 가치 없음.
+          if (onchainBalance < 1000n) {
+            log.warn(
+              `[PUREWS_RECOVERY_DUST] trade=${trade.id.slice(0, 8)} pair=${trade.pairAddress.slice(0, 12)} ` +
+              `dust balance ${onchainBalance.toString()} < 1000 raw — closing DB with 0 pnl`
+            );
+            await ctx.tradeStore.closeTrade({
+              id: trade.id,
+              exitPrice: trade.entryPrice,
+              pnl: 0,
+              slippage: 0,
+              exitReason: 'ORPHAN_DUST_BALANCE',
+              exitSlippageBps: undefined,
+              decisionPrice: trade.entryPrice,
+            }).catch((err) => log.error(`[PUREWS_RECOVERY_DUST] DB close failed for ${trade.id}: ${err}`));
+            continue;
+          }
         }
       } catch (balanceErr) {
         // RPC 실패 시 보수적으로 기존 recovery 로 진행 (close loop fix 가 안전망 역할).

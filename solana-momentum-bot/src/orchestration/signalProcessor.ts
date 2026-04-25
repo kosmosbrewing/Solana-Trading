@@ -414,7 +414,7 @@ const ENTRY_PRICE_SAFE_RATIO_MAX = 2.0;
 export function resolveActualEntryMetrics(
   order: Order,
   buyResult?: SwapResult
-): { entryPrice: number; quantity: number; actualEntryNotionalSol: number } {
+): { entryPrice: number; quantity: number; actualEntryNotionalSol: number; partialFillDataMissing: boolean } {
   const plannedEntryNotionalSol = order.quantity * order.price;
   const hasActualOut =
     buyResult?.actualOutUiAmount != null && buyResult.actualOutUiAmount > 0;
@@ -424,6 +424,9 @@ export function resolveActualEntryMetrics(
   const OUTPUT_SANITY_MULTIPLIER = 5;
   let quantity: number;
   let actualEntryNotionalSol: number;
+  // 2026-04-25 Phase 1 P0-3 — partial fill data missing flag.
+  // 한쪽만 가용한 swap 결과를 planned 로 강제 복원했음을 ledger 에 명시한다.
+  let partialFillDataMissing = false;
   if (hasActualIn && hasActualOut) {
     const expectedQty = order.price > 0 ? buyResult!.actualInputUiAmount! / order.price : 0;
     if (expectedQty > 0 && buyResult!.actualOutUiAmount! > expectedQty * OUTPUT_SANITY_MULTIPLIER) {
@@ -434,6 +437,7 @@ export function resolveActualEntryMetrics(
       );
       quantity = order.quantity;
       actualEntryNotionalSol = plannedEntryNotionalSol;
+      partialFillDataMissing = true; // sanity reject 도 데이터 품질 이슈
     } else {
       quantity = buyResult!.actualOutUiAmount!;
       actualEntryNotionalSol = buyResult!.actualInputUiAmount!;
@@ -447,13 +451,14 @@ export function resolveActualEntryMetrics(
         `outputDecimals=${buyResult.outputDecimals ?? 'null'} — ` +
         `forcing both to planned to avoid ratio distortion`
       );
+      partialFillDataMissing = true;
     }
     quantity = order.quantity;
     actualEntryNotionalSol = plannedEntryNotionalSol;
   }
 
   const entryPrice = quantity > 0 ? actualEntryNotionalSol / quantity : order.price;
-  return { entryPrice, quantity, actualEntryNotionalSol };
+  return { entryPrice, quantity, actualEntryNotionalSol, partialFillDataMissing };
 }
 
 export function buildEntryExecutionSummary(
@@ -470,7 +475,7 @@ export function buildEntryExecutionSummary(
   // GRIFFAIN 사례: 682 tokens received vs expected 27.25 = 25x 초과 → entryPrice 25x 왜곡
   // → Phase A3 ratio 0.04 → PRICE_ANOMALY_BLOCK (per-token 80% 차단의 주요 원인 — TD-16).
   // Fix: actualOut 이 expected 의 5x 를 초과하면 force-to-planned 으로 전환.
-  const { entryPrice, quantity: actualQuantity, actualEntryNotionalSol } =
+  const { entryPrice, quantity: actualQuantity, actualEntryNotionalSol, partialFillDataMissing } =
     resolveActualEntryMetrics(order, buyResult);
   const hasActualOut =
     buyResult?.actualOutUiAmount != null && buyResult.actualOutUiAmount > 0;
@@ -526,6 +531,7 @@ export function buildEntryExecutionSummary(
     outputDecimals: buyResult?.outputDecimals,
     effectiveRR: actualExecution.effectiveRR,
     roundTripCost: actualExecution.roundTripCost,
+    partialFillDataMissing,
   };
 }
 

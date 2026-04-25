@@ -1,12 +1,35 @@
 # Solana Momentum Bot
 
-> **Mission (2026-04-18 pivot): 1 SOL → 100 SOL via convexity**
->
-> "왜 오르는가" 보다 "지금 실제로 폭발하는가". Wallet delta 가 유일한 truth.
+> **Mission (2026-04-21 refined)**: `0.8 SOL floor + 200 live trades + 5x+ winner 실측` 이 성공 기준. 100 SOL 은 tail outcome (관찰 변수).
+> **Active paradigm (2026-04-23)**: **Option 5 — KOL Wallet Discovery + 자체 Execution**.
 
 Solana DEX 순수 실전형 momentum / sniper 봇이다.
-Post-pivot 운영은 `signal → loose factor gate → immediate PROBE → tiered runner`.
-Pre-pivot `Context → Trigger → old gate chain` 은 [`docs/historical/pre-pivot-2026-04-18/`](./docs/historical/pre-pivot-2026-04-18/) 에 보존.
+
+---
+
+## 🚀 새로 합류하셨나요? — 5분 paradigm 파악
+
+> 새 AI 세션은 [`CLAUDE.md`](./CLAUDE.md) 또는 [`AGENTS.md`](./AGENTS.md) 의 진입 순서를 자동으로 따라갑니다.
+> 사람 세션도 **이 순서로** 읽으면 코드 변경 가능 상태에 도달.
+
+1. **[`SESSION_START.md`](./SESSION_START.md)** — 1 페이지 hand-off (Lane 표 + Real Asset Guard + 1줄 신뢰 명령)
+2. **[`MISSION_CONTROL.md`](./MISSION_CONTROL.md)** — 6 control framework
+3. **[`docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md`](./docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md)** — 현 active paradigm
+4. **[`REFACTORING_v1.0.md`](./REFACTORING_v1.0.md)** — Phase 진행 상태
+5. **[`INCIDENT.md`](./INCIDENT.md)** — 최근 결정 연표
+
+빠른 검증 명령: `npm run check:fast` (typecheck + jest + env drift)
+
+---
+
+## Paradigm 진화
+
+| 시기 | Paradigm | 문서 |
+|------|---------|------|
+| Pre-2026-04-18 | Context → Trigger → old gate chain | [`docs/historical/pre-pivot-2026-04-18/`](./docs/historical/pre-pivot-2026-04-18/) |
+| 2026-04-18 | Mission pivot — explainability → convexity | [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md) |
+| 2026-04-21 | Mission refinement — 100 SOL = tail outcome, 5x+ winner 실측 = 성공 | [`docs/design-docs/mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md) |
+| **2026-04-23 (현재)** | **Option 5 — KOL Discovery + 자체 Execution** | [`docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md`](./docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md) |
 
 ## Current Status (2026-04-18)
 

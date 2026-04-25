@@ -26,3 +26,31 @@ export function decimalToBps(decimal: number): number {
 export function bpsToDecimal(bps: number): number {
   return bps / BPS_DENOMINATOR;
 }
+
+/**
+ * UI amount → raw BigInt 변환 (decimals 적용).
+ *
+ * 2026-04-21 (QA L2): JS number 정밀도 한계 (2^53) 방어.
+ * `Math.floor(ui * 10^decimals)` 는 decimals=18 + large ui 에서 정밀 손실 가능.
+ * `toFixed` 로 string 변환 후 소수점 이동하여 BigInt 화.
+ *
+ * 2026-04-26 H2-followup: pureWsBreakoutHandler 에서 utils 로 격상.
+ * livePriceTracker 등 lower layer 모듈도 같은 helper 를 사용하도록.
+ *
+ * 주의: ui 가 매우 크면 (1e21+) `.toFixed()` 가 과학 표기 반환 — 그 범위는 invalid input 취급.
+ */
+export function uiAmountToRaw(ui: number, decimals: number): bigint {
+  if (!isFinite(ui) || ui <= 0) return 0n;
+  if (decimals < 0 || decimals > 18) return 0n;
+  // 과학 표기 방어: ui >= 1e21 또는 너무 작으면 reject (실무 범위 밖)
+  if (ui >= 1e21) return 0n;
+  const fixed = ui.toFixed(decimals);
+  const [intStr, fracStrRaw = ''] = fixed.split('.');
+  const fracStr = fracStrRaw.padEnd(decimals, '0').slice(0, decimals);
+  const combined = (intStr + fracStr).replace(/^0+/, '') || '0';
+  try {
+    return BigInt(combined);
+  } catch {
+    return 0n;
+  }
+}

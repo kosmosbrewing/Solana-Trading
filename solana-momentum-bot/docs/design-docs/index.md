@@ -1,6 +1,6 @@
 # Design Docs 카탈로그
 
-> Updated: 2026-04-18 (post-pivot)
+> Updated: 2026-04-25 (post-pivot)
 > Authority: [`mission-pivot-2026-04-18.md`](./mission-pivot-2026-04-18.md) 최상위
 
 ## Post-Pivot Authority (2026-04-18)
@@ -11,6 +11,7 @@
 | Top-Down Mission Bottleneck Analysis | `top-down-mission-bottleneck-analysis-2026-04-18.md` | ✅ 분석 프레임 (pivot 근거) | 2026-04-18 |
 | Pure WS Breakout Lane | `pure-ws-breakout-lane-2026-04-18.md` | ✅ 구현 완료 (Block 3, paper-first gate) | 2026-04-18 |
 | Pure WS Breakout V2 — Detector Math Spec | `pure-ws-breakout-v2-detector-2026-04-18.md` | ✅ Phase 1.1-1.3 완료 (pure function + scanner + handler wiring) | 2026-04-18 |
+| Lane Edge Controller — Conservative Kelly / Payoff Control | `lane-edge-controller-kelly-2026-04-25.md` | 🟡 제안 — Kelly를 sizing이 아닌 lane/cohort throttle로 사용 | 2026-04-25 |
 | DEX_TRADE Phase 3 (Quick Reject + Hold Sentinel + Ruin Sim) | — | ✅ 구현 완료 (modules + script + tests) | 2026-04-18 |
 
 ## Pre-Pivot (historical — 현재 판정 근거로 사용 금지)

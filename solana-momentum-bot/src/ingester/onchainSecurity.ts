@@ -37,6 +37,7 @@ interface ParsedMintInfo {
   mintAuthority?: string | null;
   freezeAuthority?: string | null;
   supply?: string;
+  decimals?: number;
   extensions?: unknown[];
 }
 
@@ -92,6 +93,25 @@ export class OnchainSecurityClient {
 
   async getExitLiquidity(_tokenMint: string): Promise<ExitLiquidityData | null> {
     return null;
+  }
+
+  /**
+   * Mint decimals — `getTokenSecurityDetailed` 에서 이미 read 한 mint account 의 decimals 를 노출.
+   * KOL handler 의 size-aware sell-quote probe (2026-04-25 review fix) 에서 사용. 캐시 없음 — 호출자가
+   * 필요 시 캐시. 실패 시 null.
+   */
+  async getMintDecimals(tokenMint: string): Promise<number | null> {
+    try {
+      const mint = new PublicKey(tokenMint);
+      const parsed = await this.connection.getParsedAccountInfo(mint, this.commitment);
+      const data = parsed.value?.data as ParsedAccountData | undefined;
+      const info = extractMintInfo(data);
+      const decimals = info?.decimals as number | undefined;
+      return typeof decimals === 'number' && Number.isFinite(decimals) ? decimals : null;
+    } catch (err) {
+      log.warn(`Mint decimals fetch failed for ${tokenMint}: ${err}`);
+      return null;
+    }
   }
 }
 

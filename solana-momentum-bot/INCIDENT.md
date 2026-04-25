@@ -6,6 +6,58 @@
 
 ---
 
+## 2026-04-23 — Option 5 채택 (KOL Discovery + 자체 Execution)
+
+사명 §2.3 "5x+ winner 분포 실측" 이 현 pure_ws paradigm 으로 **구조적 불가** 확정. 운영자 판단으로 **전략 전면 교체** 결정.
+
+### 관측 근거 (2026-04-22 12h + 7d ledger)
+- V2 PASS 3180 / 고유 pair 2 / survival 통과율 2%
+- `deltaPct p50 = −92%` (missed-alpha.jsonl, 53 records) — signal price bug 또는 dead pool 지표
+- pure_ws 7d 83 trades / net 5x+ = **0**
+- ASTEROID / MAGA / BELIEF / BULL 등 시장 기회 V2 PASS 0건 (detection 구조적 miss)
+
+### 결정 (옵션 5 B형)
+- **KOL Wallet Activity = 1st-class Discovery Trigger** (Scanner 우회)
+- **Execution state machine 구조는 유지**하되 **Lane T (kol_hunter) 파라미터 재조정**
+- **Real Asset Guard 전부 불변** (ticket 0.01 / floor 0.8 / canary -0.3 / drift halt / survival)
+- **cupsey_flip_10s 동결** (benchmark), **pure_ws 는 Lane S (scalping baseline)** 로 존속
+- 거절: KOL Signal Layer v1.0 §4.1 (Scanner 뒤 5번째 Gate 방식)
+- 거절: 옵션 4 (full-stack 재설계) — Phase 3 성공 후 확장 여지만 남김
+
+### 문서화 (3 분리 구조)
+
+| 문서 | 경로 | 성격 |
+|------|------|------|
+| **ADR** (영구 결정 근거) | `docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md` | 결정 본문 수정 금지 |
+| **Debate** (대담 기록) | `docs/debates/kol-discovery-debate-2026-04-23.md` | append-only, Phase 2 결과 Round 2 추가 예정 |
+| **Refactoring** (실행) | `REFACTORING_v1.0.md` | Phase 0-5 checkbox, paradigm 교체 시 v2.0 |
+
+### Phase Roadmap
+- Phase 0 (1-2일): KOL DB 정제 (50-80 wallet)
+- Phase 1 (1주): KOL Wallet Tracker + passive logging
+- Phase 2 (1주): Shadow Eval → **go/no-go first filter**
+- Phase 3 (2주): kol_hunter paper lane
+- Phase 4 (2주): Live canary 50 trades
+- Phase 5 (4주): Live 200 → Stage 4 gate
+
+### Go/No-go Gates (ADR §6)
+- **Gate 1 (Phase 2)**: KOL 진입 후 T+5min/+30min median > 0 AND multi-KOL median > single-KOL AND active KOL ≥ 70% AND KOL avg hold ≥ 10분
+- **Gate 2 (Phase 3)**: Paper net 5x+ ≥ 1건 OR T2 visit ≥ 2건
+- **Gate 3 (Phase 4)**: Live net 5x+ OR T2 visit ≥ 1건
+- **Gate 4 (Phase 5)**: mission-refinement §5 Stage 4 SCALE / RETIRE / HOLD
+
+### 기존 backlog supersede
+- 기존 Decision Fork Path A/B/C/D (`LANE_20260422.md §8`) → 본 결정으로 대체
+- `20260423.md` Trending-gated scalping → Lane S (pure_ws) 로 격하, 살아있음
+- Task #13 (사명 재해석) → **옵션 C (hybrid)** 로 해결: Lane S = positive growth / Lane T = 5x+ winner
+
+### 변경 파일 (신규 3개)
+- `docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md`
+- `docs/debates/kol-discovery-debate-2026-04-23.md`
+- `REFACTORING_v1.0.md`
+
+---
+
 ## 2026-04-22 (저녁, ralph-loop sprint 완료)
 
 본 loop 에서 P0-3 follow-up / P1-1 / P1-2 / P2-1b / P2-4 총 5건 처리.

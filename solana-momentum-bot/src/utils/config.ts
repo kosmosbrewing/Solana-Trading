@@ -144,6 +144,55 @@ export const config = {
   // 소규모 favorable (<5%) 은 기회 허용, 대규모 (>20%) 는 signal quality 문제로 판단.
   pureWsMaxFavorableDriftPct: Number(process.env.PUREWS_MAX_FAVORABLE_DRIFT_PCT ?? '0.20'),
 
+  // 2026-04-23 Option 5: KOL Discovery + 자체 Execution.
+  // ADR: docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md
+  // REFACTORING_v1.0.md §6.5 / §8.2 env 규칙.
+  //
+  // KOL Wallet Tracker (Phase 1 passive logging).
+  kolTrackerEnabled: boolOptional('KOL_TRACKER_ENABLED', false),
+  kolDbPath: optional('KOL_DB_PATH', path.resolve(process.cwd(), 'data/kol/wallets.json')),
+  kolHotReloadIntervalMs: Number(process.env.KOL_HOT_RELOAD_INTERVAL_MS ?? '60000'),
+  kolTxFetchTimeoutMs: Number(process.env.KOL_TX_FETCH_TIMEOUT_MS ?? '5000'),
+  kolTxLogFileName: optional('KOL_TX_LOG_FILE_NAME', 'kol-tx.jsonl'),
+
+  // KOL Scoring (Discovery trigger 용, Gate 가산 아님).
+  kolScoringWindowMs: Number(process.env.KOL_SCORING_WINDOW_MS ?? String(24 * 60 * 60 * 1000)),
+  kolAntiCorrelationMs: Number(process.env.KOL_ANTI_CORRELATION_MS ?? '60000'),
+
+  // kol_hunter Lane T (Phase 3 paper-first). Real Asset Guard 는 pureWs 와 동일값 재사용.
+  kolHunterEnabled: boolOptional('KOL_HUNTER_ENABLED', false),
+  kolHunterPaperOnly: boolOptional('KOL_HUNTER_PAPER_ONLY', true),
+  kolHunterTicketSol: Number(process.env.KOL_HUNTER_TICKET_SOL ?? '0.01'),
+  kolHunterMaxConcurrent: Number(process.env.KOL_HUNTER_MAX_CONCURRENT ?? '3'),
+  // Lane T 파라미터 (Phase 3 paper 에서 iterate)
+  kolHunterStalkWindowSec: Number(process.env.KOL_HUNTER_STALK_WINDOW_SEC ?? '180'),
+  kolHunterHardcutPct: Number(process.env.KOL_HUNTER_HARDCUT_PCT ?? '0.10'),
+  kolHunterT1Mfe: Number(process.env.KOL_HUNTER_T1_MFE ?? '0.50'),
+  kolHunterT1TrailPct: Number(process.env.KOL_HUNTER_T1_TRAIL_PCT ?? '0.15'),
+  kolHunterT2Mfe: Number(process.env.KOL_HUNTER_T2_MFE ?? '4.00'),
+  kolHunterT2TrailPct: Number(process.env.KOL_HUNTER_T2_TRAIL_PCT ?? '0.20'),
+  kolHunterT2BreakevenLockMult: Number(process.env.KOL_HUNTER_T2_BREAKEVEN_LOCK_MULT ?? '3.0'),
+  kolHunterT3Mfe: Number(process.env.KOL_HUNTER_T3_MFE ?? '9.00'),
+  kolHunterT3TrailPct: Number(process.env.KOL_HUNTER_T3_TRAIL_PCT ?? '0.25'),
+  kolHunterQuickRejectWindowSec: Number(process.env.KOL_HUNTER_QUICK_REJECT_WINDOW_SEC ?? '180'),
+  kolHunterQuickRejectFactorCount: Number(process.env.KOL_HUNTER_QUICK_REJECT_FACTOR_COUNT ?? '3'),
+  // Paper 모드 round-trip 비용 추정 (Jupiter platform fee + MEV + AMM fee 합)
+  // 현 Jupiter 관측 기준 ≈ 0.5% (ticket 0.01 SOL × 0.005 = 0.00005 SOL round-trip cost).
+  // Phase 4 live 전환 시 실제 wallet delta 에서 직접 차감되므로 무관.
+  kolHunterPaperRoundTripCostPct: Number(process.env.KOL_HUNTER_PAPER_ROUND_TRIP_COST_PCT ?? '0.005'),
+  // 2026-04-25 MISSION_CONTROL §KOL Control survival 통합. pure_ws 와 동일 임계값.
+  // 기본값 review: paper-mode 는 securityClient 미주입 환경 (test) 에서 KOL flow 검증 필요 → true.
+  // Live canary 단계에서는 운영자가 명시적으로 KOL_HUNTER_SURVIVAL_ALLOW_DATA_MISSING=false 로 닫아야
+  // "live 와 같은 gate 분포" 가 보장됨 (review feedback 2026-04-25 Open Question 2).
+  kolHunterSurvivalAllowDataMissing: boolOptional('KOL_HUNTER_SURVIVAL_ALLOW_DATA_MISSING', true),
+  kolHunterSurvivalMinExitLiquidityUsd: Number(process.env.KOL_HUNTER_SURVIVAL_MIN_EXIT_LIQUIDITY_USD ?? '5000'),
+  kolHunterSurvivalMaxTop10HolderPct: Number(process.env.KOL_HUNTER_SURVIVAL_MAX_TOP10_HOLDER_PCT ?? '0.80'),
+  // 운영 환경에서 sellQuoteProbe 동시 호출 폭주 방지 위한 throttle (paper 에선 unused, 환경별 override).
+  kolHunterRunSellQuoteProbe: boolOptional('KOL_HUNTER_RUN_SELL_QUOTE_PROBE', true),
+  // MISSION_CONTROL §Control 5 — arm identity / detector version. env 직접 접근 금지 (utils/config.ts 일원화).
+  kolHunterParameterVersion: process.env.KOL_HUNTER_PARAMETER_VERSION ?? 'v1.0.0',
+  kolHunterDetectorVersion: process.env.KOL_HUNTER_DETECTOR_VERSION ?? 'kol_discovery_v1',
+
   // 2026-04-22 P0+P2 (mission-refinement): Missed Alpha Observer.
   // reject 이후 T+N초 Jupiter price 를 비동기로 기록해서 "reject 이 옳았는지 틀렸는지"
   // 분포로 판정 가능하게 한다. observer 는 trade 결정에 간섭하지 않는다 — 순수 관측.

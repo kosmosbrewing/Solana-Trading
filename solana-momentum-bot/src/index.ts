@@ -86,6 +86,12 @@ import {
   startJupiter429SummaryLoop,
   stopJupiter429SummaryLoop,
 } from './observability/jupiterRateLimitMetric';
+// 2026-04-23 Option 5: KOL Discovery
+import { Connection } from '@solana/web3.js';
+import { initKolDb, stopKolDbWatcher, getKolDbStats } from './kol/db';
+import { KolWalletTracker } from './ingester/kolWalletTracker';
+import { initKolHunter, stopKolHunter, handleKolSwap } from './orchestration/kolSignalHandler';
+import type { KolTx } from './kol/types';
 import { resolveCupseyWalletLabel } from './orchestration/cupseyLaneHandler';
 import { resolveMigrationWalletLabel } from './orchestration/migrationLaneHandler';
 import { persistOpenTradeWithIntegrity, isEntryHaltActive } from './orchestration/entryIntegrity';
@@ -1349,6 +1355,54 @@ async function main() {
   startJupiter429SummaryLoop(5 * 60 * 1000);
   log.info('[JUPITER_429] summary loop started (5min interval)');
 
+  // 2026-04-23 Option 5: KOL Discovery Layer (Phase 1 passive logging)
+  // ADR: docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md
+  // env gate: KOL_TRACKER_ENABLED=true 일 때만 활성. Phase 0 DB 정제 완료 후 켤 것.
+  let kolTracker: KolWalletTracker | null = null;
+  if (config.kolTrackerEnabled) {
+    await initKolDb({
+      path: config.kolDbPath,
+      hotReloadIntervalMs: config.kolHotReloadIntervalMs,
+    });
+    const stats = getKolDbStats();
+    if (stats.activeKols > 0) {
+      // Dedicated Connection — executor 의 private connection 과 격리 (rate limit 상호 영향 방지)
+      const kolConnection = new Connection(config.solanaRpcUrl, 'confirmed');
+      kolTracker = new KolWalletTracker({
+        connection: kolConnection,
+        realtimeDataDir: config.realtimeDataDir,
+        logFileName: config.kolTxLogFileName,
+        txFetchTimeoutMs: config.kolTxFetchTimeoutMs,
+        enabled: true,
+      });
+      await kolTracker.start();
+      log.info(`[KOL_DISCOVERY] Option 5 Phase 1 — tracker started (${stats.activeKols} active KOLs)`);
+
+      // Phase 3: kol_hunter paper lane 활성화 여부
+      if (config.kolHunterEnabled) {
+        // MISSION_CONTROL §KOL Control survival 체크가 실 운영 path 에서 동작하려면
+        // securityClient + gateCache 를 명시적으로 주입해야 한다 (2026-04-25 review fix).
+        initKolHunter({
+          securityClient: ctx.onchainSecurityClient,
+          gateCache: ctx.gateCache,
+        });
+        kolTracker.on('kol_swap', (tx: KolTx) => {
+          handleKolSwap(tx).catch((err) => {
+            log.warn(`[KOL_HUNTER] handleKolSwap error: ${String(err)}`);
+          });
+        });
+        log.info(
+          `[KOL_HUNTER] Option 5 Phase 3 — paper lane started (paperOnly=${config.kolHunterPaperOnly}, ` +
+          `survival=${ctx.onchainSecurityClient ? 'wired' : 'no-client'})`
+        );
+      }
+    } else {
+      log.warn(`[KOL_DISCOVERY] KOL DB empty — tracker NOT started. data/kol/wallets.json 채우기`);
+    }
+  } else {
+    log.info(`[KOL_DISCOVERY] disabled (KOL_TRACKER_ENABLED=false) — Option 5 Phase 0-5 대기 중`);
+  }
+
   if (realtimeModeEnabled) {
     const realtimeIntervals = [5, config.realtimePrimaryIntervalSec, config.realtimeConfirmIntervalSec];
     heliusIngester = new HeliusWSIngester({
@@ -1987,6 +2041,9 @@ async function main() {
     stopWalletStopGuardPoller();
     stopWalletDeltaComparator();
     stopJupiter429SummaryLoop();
+    stopKolHunter();
+    if (kolTracker) await kolTracker.stop();
+    stopKolDbWatcher();
     await dbPool.end();
     log.info('Shutdown complete');
     process.exit(0);

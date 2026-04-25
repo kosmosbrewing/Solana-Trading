@@ -3,6 +3,10 @@
 작업 시작 전 [`AGENTS.md`](./AGENTS.md)를 읽고, 현재 태스크에 필요한 문서만 Progressive Disclosure로 참조하라.
 
 ## Quick Reference
+- **2026-04-25 Mission Control Framework (control-plane policy)**: [`MISSION_CONTROL.md`](./MISSION_CONTROL.md) — survival/universe/payoff/execution/experiment/discipline 6 controls. mission-refinement 의 운영 항목화. 모든 변경의 4-layer reporting + adaptive change log 의무.
+- **2026-04-23 Option 5 Adoption (현 active paradigm)**: [`docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md`](./docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md) — KOL Wallet = 1st-class Discovery, 자체 Execution 구조 유지 + Lane T 파라미터 재조정. Real Asset Guard 불변. Phase 2 shadow eval = go/no-go first filter.
+- **대담 기록 (append-only)**: [`docs/debates/kol-discovery-debate-2026-04-23.md`](./docs/debates/kol-discovery-debate-2026-04-23.md)
+- **현 active refactoring plan**: [`REFACTORING_v1.0.md`](./REFACTORING_v1.0.md) — Phase 0-5 checkbox
 - **2026-04-21 Mission Refinement (최상위 authority)**: [`docs/design-docs/mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md) — 100 SOL 은 tail outcome, 판단 KPI 아님. 성공 기준 = 0.8 SOL floor + 200 trades + 5x+ winner 실측. Stage 1-4 maturity gate. Real Asset Guard vs Observability Guard 구분.
 - **2026-04-18 Mission Pivot** (하위): [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md) — explainability → convexity. Cupsey는 benchmark로 유지(개조 금지), `pure_ws_breakout` 새 primary 후보.
 - 아키텍처/의존성 방향: [`ARCHITECTURE.md`](./ARCHITECTURE.md)

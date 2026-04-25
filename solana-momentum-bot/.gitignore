@@ -2,6 +2,9 @@ node_modules/
 dist/
 .env
 .env.*
+# Phase H1.4 (2026-04-25): generated env catalog 은 commit 대상 — drift CI gate 의 비교 기준.
+!.env.example
+!.env.example.generated
 *.log
 .DS_Store
 coverage/

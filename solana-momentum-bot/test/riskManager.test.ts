@@ -2,6 +2,12 @@ import { TradeStore } from '../src/candle/tradeStore';
 import { RiskManager } from '../src/risk';
 import type { PortfolioState } from '../src/utils/types';
 import { config } from '../src/utils/config';
+import { createFakeClock } from '../src/utils/clock';
+
+// 2026-04-25 H1.2: 시계 의존을 FakeClock 으로 격리.
+// fixture 시간 (2026-04-16) 과 실 시계가 다르면 dailyPnl 집계가 0 으로 떨어져 false fail.
+// 모든 RiskManager 인스턴스는 fixture 와 같은 날 (2026-04-16T12:00:00Z) 의 FakeClock 사용.
+const FIXTURE_NOW = '2026-04-16T12:00:00Z';
 
 describe('RiskManager unrealized drawdown', () => {
   it('excludes sandbox strategies from portfolio open trades and realized risk state', async () => {
@@ -121,7 +127,7 @@ describe('RiskManager unrealized drawdown', () => {
       minPoolLiquidity: 50_000,
       minTokenAgeHours: 24,
       maxHolderConcentration: 0.8,
-    }, tradeStore);
+    }, tradeStore, createFakeClock(FIXTURE_NOW));
 
     const portfolio = await manager.getPortfolioState(5);
 
@@ -165,7 +171,7 @@ describe('RiskManager unrealized drawdown', () => {
       minPoolLiquidity: 50_000,
       minTokenAgeHours: 24,
       maxHolderConcentration: 0.8,
-    }, tradeStore);
+    }, tradeStore, createFakeClock(FIXTURE_NOW));
 
     const portfolio = await manager.getPortfolioState(1.0);
 
@@ -186,7 +192,7 @@ describe('RiskManager unrealized drawdown', () => {
       minPoolLiquidity: 50_000,
       minTokenAgeHours: 24,
       maxHolderConcentration: 0.8,
-    }, {} as unknown as TradeStore);
+    }, {} as unknown as TradeStore, createFakeClock(FIXTURE_NOW));
 
     const portfolio: PortfolioState = {
       balanceSol: 2,
@@ -261,7 +267,7 @@ describe('RiskManager unrealized drawdown', () => {
       minPoolLiquidity: 50_000,
       minTokenAgeHours: 24,
       maxHolderConcentration: 0.8,
-    }, tradeStore);
+    }, tradeStore, createFakeClock(FIXTURE_NOW));
     const portfolio: PortfolioState = {
       balanceSol: 10,
       equitySol: 10,
@@ -332,7 +338,7 @@ describe('RiskManager unrealized drawdown', () => {
       minPoolLiquidity: 50_000,
       minTokenAgeHours: 24,
       maxHolderConcentration: 0.8,
-    }, tradeStore);
+    }, tradeStore, createFakeClock(FIXTURE_NOW));
     const portfolio: PortfolioState = {
       balanceSol: 10,
       equitySol: 10,
@@ -407,7 +413,7 @@ describe('RiskManager unrealized drawdown', () => {
         minPoolLiquidity: 50_000,
         minTokenAgeHours: 24,
         maxHolderConcentration: 0.8,
-      }, tradeStore);
+      }, tradeStore, createFakeClock(FIXTURE_NOW));
     }
 
     const portfolio: PortfolioState = {

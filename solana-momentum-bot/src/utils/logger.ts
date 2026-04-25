@@ -18,8 +18,13 @@ const maskFormat = winston.format((info) => {
   return info;
 });
 
+// Phase H1.3 (2026-04-25): test 환경에서는 LOG_SILENT=true 로 console 전부 차단.
+// LOG_LEVEL=error 만으로는 expect-error 테스트의 의도된 ERROR 가 stdout 에 노출됨.
+const isSilent = process.env.LOG_SILENT === 'true';
+
 export const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || 'info',
+  silent: isSilent,
   format: winston.format.combine(
     maskFormat(),
     winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss.SSS' }),

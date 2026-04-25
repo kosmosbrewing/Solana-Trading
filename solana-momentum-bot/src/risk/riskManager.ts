@@ -1,5 +1,6 @@
 import { createModuleLogger } from '../utils/logger';
 import { config } from '../utils/config';
+import { type Clock, realClock } from '../utils/clock';
 import {
   RiskCheckResult, TokenSafety, PortfolioState, SizeConstraint, BreakoutGrade, DrawdownGuardState, StrategyName,
   Trade, isSandboxStrategy,
@@ -85,15 +86,23 @@ export class RiskManager {
   private tradeStore: TradeStore;
   private liquidityParams: LiquidityParams;
   private diagnosticsTracker?: RuntimeDiagnosticsTracker;
+  /**
+   * Phase H1.2 (2026-04-25): Clock 주입.
+   * Why: dailyPnl 집계가 "오늘 00:00 UTC 이후 closed trade" 기준 — 시스템 시계에 의존.
+   *      테스트 fixture (e.g. 2026-04-16) 와 실 시계가 다르면 dailyPnl=0 이 되어 false fail.
+   *      Clock 주입으로 production 은 realClock, test 는 FakeClock 사용해 결정적 보장.
+   */
+  private clock: Clock;
 
   // Why: cooldown/cap reject 후에도 trigger eval이 계속 소모되는 문제 해소
   // suppress된 pair를 등록하면 index.ts에서 trigger.onCandle() 전에 skip
   private suppressedPairs = new Map<string, number>(); // pairAddress → suppressUntilMs
 
-  constructor(riskConfig: RiskConfig, tradeStore: TradeStore) {
+  constructor(riskConfig: RiskConfig, tradeStore: TradeStore, clock: Clock = realClock) {
     this.riskConfig = riskConfig;
     this.tradeStore = tradeStore;
     this.liquidityParams = { ...DEFAULT_LIQUIDITY_PARAMS, ...riskConfig.liquidityParams };
+    this.clock = clock;
   }
 
   setDiagnosticsTracker(tracker: RuntimeDiagnosticsTracker): void {
@@ -104,7 +113,7 @@ export class RiskManager {
   isCapSuppressed(pairAddress: string): boolean {
     const suppressUntilMs = this.suppressedPairs.get(pairAddress);
     if (suppressUntilMs == null) return false;
-    if (Date.now() >= suppressUntilMs) {
+    if (this.clock.now() >= suppressUntilMs) {
       this.suppressedPairs.delete(pairAddress);
       return false;
     }
@@ -490,7 +499,7 @@ export class RiskManager {
     const cooldownEnd = new Date(
       portfolio.lastLossTime.getTime() + this.riskConfig.cooldownMinutes * 60 * 1000
     );
-    return new Date() < cooldownEnd;
+    return this.clock.nowDate() < cooldownEnd;
   }
 
   private hasOpenTradeForPair(pairAddress: string, portfolio: PortfolioState): boolean {
@@ -532,7 +541,7 @@ export class RiskManager {
 
     const cooldownEnd = new Date(latestLossTime.getTime() + cooldownMinutes * 60 * 1000);
     return {
-      active: new Date() < cooldownEnd,
+      active: this.clock.nowDate() < cooldownEnd,
       losses: consecutiveLosses,
       until: cooldownEnd,
     };
@@ -572,7 +581,7 @@ export class RiskManager {
     const openTrades = allOpenTrades.filter((trade) => !isSandboxStrategy(trade.strategy));
     const recentClosed = recentClosedAll.filter((trade) => !isSandboxStrategy(trade.strategy));
     const closedTrades = closedTradesAll.filter((trade) => !isSandboxStrategy(trade.strategy));
-    const todayStart = new Date();
+    const todayStart = this.clock.nowDate();
     todayStart.setUTCHours(0, 0, 0, 0);
     const dailyPnl = closedTrades
       .filter((trade) => trade.status === 'CLOSED' && trade.closedAt && trade.closedAt >= todayStart)

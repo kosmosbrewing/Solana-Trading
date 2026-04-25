@@ -1,0 +1,212 @@
+{
+  "//": "KOL Discovery DB — Option 5 (2026-04-23). 수동 편집 only. 자동 추가 금지.",
+  "//schema": "kols[].id = 인물 식별자 (lowercase, unique). addresses = 해당 인물의 모든 지갑 (본/부/벡터). tier = S/A/B. is_active=false 는 비활성.",
+  "//workflow": "월 1회 재검증 — recent_30d_pnl_sol / recent_30d_5x_count 업데이트. PnL 음수 3개월 연속 시 is_active=false 제안.",
+  "//phase0_note": "2026-04-25 initial import from operator-provided wallet lists. Unnamed/old/project wallets are preserved inactive to avoid KOL signal pollution.",
+  "version": 1,
+  "last_updated": "2026-04-25",
+  "kols": [
+    {
+      "id": "josim",
+      "addresses": [
+        "5rkP7bqEUqwURvqFmKwLSxT5YkoHEyJLehmXUpUiFHQh"
+      ],
+      "tier": "A",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "조심. Imported from Main tracked wallet list.",
+      "is_active": true
+    },
+    {
+      "id": "pow",
+      "addresses": [
+        "8zFZHuSRuDpuAR7J6FzwyF3vKNx4CVW3DFHJerQhc7Zd",
+        "98W9eaX28YNW25A2GreFnSZ48avhf7oFyd674M5Q83sY",
+        "H1gJR25VXi5Ape1gAU7fTWzZFWaCpuP3rzRtKun8Dwo2"
+      ],
+      "tier": "A",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "포우 본지갑/부지갑 grouped by operator labels.",
+      "is_active": true
+    },
+    {
+      "id": "dunpa_gake",
+      "addresses": [
+        "DNfuF1L62WWyW3pNakVkyGGFzVVhj4Yr52jSmdTyeBHm",
+        "CNudZYFgpbT26fidsiNrWfHeGTBMMeVWqruZXsEkcUPc",
+        "EwTNPYTuwxMzrvL19nzBsSLXdAoEmVBKkisN87csKgtt"
+      ],
+      "tier": "A",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "던파/Gake 본지갑, 부지갑, 벡터지갑. Duplicate addresses from second list deduped here.",
+      "is_active": true
+    },
+    {
+      "id": "frank",
+      "addresses": [
+        "CRVidEDtEUTYZisCxBZkpELzhQc9eauMLR3FWg74tReL",
+        "HA2KtZGZrNTFpKLTQsV82RwG3DpYUdDLJ5JqCrMHbm7t"
+      ],
+      "tier": "A",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "프랭크 본지갑/부지갑 grouped by operator labels.",
+      "is_active": true
+    },
+    {
+      "id": "oxsun",
+      "addresses": [
+        "HUpPyLU8KWisCAr3mzWy2FKT6uuxQ2qGgJQxyTpDoes5"
+      ],
+      "tier": "A",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "OxSun. Imported from Main tracked wallet list.",
+      "is_active": true
+    },
+    {
+      "id": "lexapro",
+      "addresses": [
+        "8yJFWmVTQq69p6VJxGwpzW7ii7c5J9GRAtHCNMMQPydj"
+      ],
+      "tier": "A",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "LexaPro. Imported from Main tracked wallet list.",
+      "is_active": true
+    },
+    {
+      "id": "euris",
+      "addresses": [
+        "DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj"
+      ],
+      "tier": "A",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "Euris. Imported from Main tracked wallet list.",
+      "is_active": true
+    },
+    {
+      "id": "crypto_d",
+      "addresses": [
+        "G1pRtSyKuWSjTqRDcazzKBDzqEF96i1xSURpiXj3yFcc"
+      ],
+      "tier": "A",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "Crypto D. Imported from Main tracked wallet list.",
+      "is_active": true
+    },
+    {
+      "id": "lebron",
+      "addresses": [
+        "ATmKENkRrL1JQQnoUNAQvkiwgjiHKUkzyncxTGxyzQL1"
+      ],
+      "tier": "A",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "르브론 본지갑. Imported from Main tracked wallet list.",
+      "is_active": true
+    },
+    {
+      "id": "pain",
+      "addresses": [
+        "HAN61KQbgzjDBC4RpZJ1ET8v32S4zdKAjoD7EApJ96q6"
+      ],
+      "tier": "A",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "Pain. Imported from Main tracked wallet list.",
+      "is_active": true
+    },
+    {
+      "id": "gorapandeok",
+      "addresses": [
+        "6mdNNjGPARKVRUKEQ3DkYtFF1FcY7WrZGsd1kYoTozRm"
+      ],
+      "tier": "B",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "gorapandeok. Imported from secondary list.",
+      "is_active": true
+    },
+    {
+      "id": "him",
+      "addresses": [
+        "A1ECE86o3tz6UWmwMWicrqZmwRZ7RCRzmYYa9okNQRBw"
+      ],
+      "tier": "B",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "him. Imported from secondary list.",
+      "is_active": true
+    },
+    {
+      "id": "pasternak",
+      "addresses": [
+        "DjAfkjAV7qD6U2qjjU5RdcuzXwdk1gF3CtiWwGZc8pxJ"
+      ],
+      "tier": "B",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "pasternak. Imported from secondary list.",
+      "is_active": true
+    },
+    {
+      "id": "believe_buyback",
+      "addresses": [
+        "GHXV4xsQjKETxeKFSAQuGLBDni5zZvMyM8EEmRDETWKH"
+      ],
+      "tier": "B",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "Project/treasury-like wallet, not a KOL. Preserved inactive until operator confirms use as event wallet.",
+      "is_active": false
+    },
+    {
+      "id": "believe_foundation",
+      "addresses": [
+        "4mC4CWyKDqUdShmUiYS4FvB8gZEKh4GD7SnmdKTpWM1k"
+      ],
+      "tier": "B",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "Project/foundation wallet from old group. Preserved inactive.",
+      "is_active": false
+    },
+    {
+      "id": "solhana_old",
+      "addresses": [
+        "9dHzzDRHmBzuT7hJ3Es9YktAKow4VKGpbvDRKYi3jvnC"
+      ],
+      "tier": "B",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "솔하나 from old group. Inactive until reverified.",
+      "is_active": false
+    },
+    {
+      "id": "secondary_unverified_pool",
+      "addresses": [
+        "215nhcAHjQQGgwpQSJQ7zR26etbjjtVdW74NLzwEgQjP",
+        "AnsazR3Rf7LK2P6dKmwdyr6bzknaw8WyaVKzh5s8LXqM",
+        "9ydzS7dEvpQjzErnXGDbmgSRYGzFDFkWV3bkfrJWDKDE",
+        "H4JnKMWvzuuF9YR79Y9Yvpe8ATE8mBunxFx8kq3XM3zB",
+        "4kce1EvUHwHyWxur8ApZDifHS3W17yPXddNxoLatHwnT",
+        "FTg1gqW7vPm4kdU1LPM7JJnizbgPdRDy2PitKw6mY27j",
+        "7jPTpyAtPXZ3uFduPyiHFqrWvq3wcJq3XmHgykidQJUD",
+        "FVk1Fw2wgBo9S77ydKphGpWnDgsBw5Jkqx2rYSACo737",
+        "Gdaqp3ND6r3HVAWXpawkQU18EuQqwNxpaeeio8ASVAYd",
+        "5M8ACGKEXG1ojKDTMH3sMqhTihTgHYMSsZc6W8i7QW3Y",
+        "AVAZvHLR2PcWpDf8BXY4rVxNHYRBytycHkcB5z5QNXYm"
+      ],
+      "tier": "B",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-25",
+      "notes": "Unnamed/unverified secondary-list wallets. Kept inactive to avoid polluting KOL discovery.",
+      "is_active": false
+    }
+  ]
+}

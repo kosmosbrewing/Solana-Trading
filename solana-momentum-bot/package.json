@@ -15,6 +15,7 @@
     "ops:check:ledger": "ts-node scripts/ledger-audit.ts",
     "ops:reconcile:wallet": "ts-node scripts/wallet-reconcile.ts",
     "ops:canary:eval": "ts-node scripts/canary-eval.ts",
+    "kol:shadow-eval": "ts-node scripts/kol-shadow-eval.ts",
     "ops:burst:replay": "ts-node scripts/wsBurstPaperReplay.ts",
     "ops:ruin:simulate": "ts-node scripts/ruinProbability.ts",
     "ops:cleanup:stuck": "ts-node scripts/stuck-positions-cleanup.ts",

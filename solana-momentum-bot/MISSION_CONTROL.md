@@ -108,6 +108,19 @@ close reason,
 post-close missed-alpha trajectory.
 ```
 
+### 3.1 Lane Edge Controller (Kelly) — Cohort allocator, NOT sizing tool
+
+Conservative Kelly 는 **사이즈 확대 도구 아님**. 어떤 lane/cohort 에 entry 시도를 더/덜 보낼지 allocator.
+
+- **상세 설계**: [`docs/design-docs/lane-edge-controller-kelly-2026-04-25.md`](./docs/design-docs/lane-edge-controller-kelly-2026-04-25.md)
+- **Phase gate** (해당 ADR §10):
+  - **P0 (Accounting Eligibility)** — 즉시 착수 가능. DB ↔ executed-ledger reconcile + `kelly_eligible / reconcile_status / matched_buy_id / matched_sell_id / wallet_truth_source` 필드 도입.
+  - **P1 (report-only)** — Option 5 Phase 2 shadow eval `GO` 후
+  - **P2 (active throttle)** — Option 5 Phase 4 live 50 trades 후 + 별도 ADR
+  - **P3 (sizing unlock)** — Mission-refinement Stage 4 `SCALE` + 별도 ADR + 운영자 명시 ack
+- **Cohort 차원** (P0/P1 시작): `laneName × armName × (kolCluster or discoverySource)` 만. 차원 확장 시 ADR 필수.
+- **Real Asset Guard 정합**: Kelly 가 양수여도 ticket cap 자동 증가 없음. `cap = 0.03` 은 Stage 4 SCALE + ADR + Telegram critical ack 후만 unlock.
+
 ## Control 4: Execution Quality
 
 Execution is part of alpha. A correct signal can lose if it lands badly.
@@ -289,3 +302,62 @@ survival breach -> HALT and reconcile
 ## One-Line Rule
 
 The mission is won by preserving survival while repeatedly buying cheap optionality in the few universes where right-tail winners actually appear.
+
+---
+
+## Appendix A: Mission Control × Option 5 매핑 (2026-04-26 H2.3)
+
+본 6 control framework 가 **현 active paradigm (Option 5: KOL Discovery + 자체 Execution)** 의 어느 코드 / Phase 와 매핑되는지 정리. Authority chain 위반 검출 시 본 표 참조.
+
+### A.1 6 Control × Option 5 Lane 매핑
+
+| Control | Option 5 Lane | 코드 모듈 | Phase 시점 |
+|---------|--------------|-----------|-----------|
+| **C1 Survival Budget** | 모든 lane (전역) | `src/risk/walletStopGuard.ts`, `src/risk/canaryAutoHalt.ts`, `src/state/entryHaltState.ts` | 즉시 (Real Asset Guard, 불변) |
+| **C2 Tail Universe Selection** | `kol_hunter` (Lane T) | `src/ingester/kolWalletTracker.ts`, `src/kol/db.ts`, `src/kol/scoring.ts` | Phase 1 (passive logging) |
+| **C3 Payoff Architecture** | `pure_ws_breakout` (Lane S, baseline) + `kol_hunter` (Lane T) | `src/orchestration/pureWsBreakoutHandler.ts`, `src/orchestration/kolSignalHandler.ts` | Phase 3 (paper) → Phase 4 (live) |
+| **C3.1 Lane Edge Controller (Kelly)** | 전 lane × cohort | `src/risk/laneOutcomeReconciler.ts` (P0), `src/risk/laneEdgeController.ts` (P1) | P0 완료 / P1 완료 / P2 Phase 4 후 / P3 Stage 4 후 |
+| **C4 Execution Quality** | 모든 lane | `src/gate/securityGate.ts`, `src/gate/sellQuoteProbe.ts`, `src/gate/entryDriftGuard.ts`, `src/observability/jupiterRateLimitMetric.ts` | 즉시 (Real Asset Guard) |
+| **C5 200-Trade Experiment** | Lane S + Lane T 합산 | `scripts/canary-eval.ts`, `scripts/lane-edge-report.ts`, `data/realtime/lane-outcomes-reconciled.jsonl` | Phase 5 (200 trades 누적 후) |
+| **C6 Operational Discipline** | Daily 4 questions × `MISSION_CONTROL.md §discipline` | `INCIDENT.md` 갱신, `npm run check:fast`, `SESSION_START.md` | 매일 |
+| **KOL Control** | `kol_hunter` 전용 | `data/kol/wallets.json` + `src/kol/*` + `kolSignalHandler.ts` | Phase 0-3 |
+
+### A.2 Real Asset Guard 불변값 (모든 control 공통)
+
+| Control | Real Asset Guard 항목 | 변경 절차 |
+|---------|----------------------|----------|
+| C1 Survival Budget | wallet floor 0.8 / canary -0.3 / drift halt 0.2 | 별도 ADR + 48h cooldown + 운영자 ack + 단계적 |
+| C3 Payoff | ticket 0.01 / max concurrent 3 | 동일 |
+| C4 Execution | security gate / sell probe / drift guard | 정책 완화 절대 금지 (Stage 4 SCALE 후만 검토) |
+
+→ **Phase H2 ARCHITECTURE.md §0 의 Layer A (Real Asset Guard)** 가 본 매핑의 코드적 enforcement.
+
+### A.3 Phase Gate × Control 의존성
+
+각 Option 5 / Kelly Phase 전환은 특정 control 만족 필요:
+
+| Phase 전환 | 만족해야 할 control |
+|-----------|---------------------|
+| Phase 1 → 2 (passive → shadow eval) | C2 (active KOL ≥ 70%, hold ≥ 10분), C6 (daily drift 정합) |
+| Phase 2 → 3 (shadow → paper) | C2 (median > 0), C5 (cohort 분리 가능) |
+| Phase 3 → 4 (paper → live canary) | C3 (paper 5x+ ≥ 1건 OR T2 visit ≥ 2건), C1 (floor 무위반), C6 (운영자 명시 ack) |
+| Phase 4 → 5 (canary 50 → 200) | C3 (live 5x+ OR T2 visit ≥ 1건), C5 (cohort report 검토) |
+| Stage 4 SCALE 판정 | C5 (200+ trades), C3 (wallet log growth > 0), C1 (ruin prob < 5%) |
+| Kelly P2 (active throttle) 진입 | Phase 4 완주 + C3.1 ADR + C1 floor 무위반 |
+| Kelly P3 (sizing unlock) 진입 | Stage 4 SCALE + C1 ADR + C6 Telegram critical ack |
+
+### A.4 Authority Chain 위반 검출
+
+다음 상황 발생 시 본 6 control 또는 매핑이 깨짐. 즉시 paradigm 재검토:
+
+- ❌ Real Asset Guard 항목 변경이 ADR 없이 commit (C1/C3/C4 위반)
+- ❌ paperOnly outcome 이 Kelly eligible 로 분류 (C3.1 위반 — laneEdgeController 의 자동 제외 로직 작동 확인)
+- ❌ ticket cap 자동 증가 (C3 Real Asset Guard 위반)
+- ❌ Cohort 차원 P0/P1 에서 3 차원 초과 (lane-edge-controller-kelly-2026-04-25 §5.1 위반)
+- ❌ Phase gate 미통과 후 다음 Phase 코드 머지 (C6 discipline 위반)
+
+본 항목은 [`SESSION_START.md`](./SESSION_START.md) §3 의 "절대 하지 말 것" 과 cross-reference.
+
+---
+
+*2026-04-26 H2.3: Mission Control × Option 5 매핑 추가. ARCHITECTURE.md §0 (3-layer) + lane-edge-controller-kelly ADR §10 와 cross-reference.*

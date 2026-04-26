@@ -35,7 +35,7 @@ import { createModuleLogger } from '../utils/logger';
 import { Notifier } from '../notifier/notifier';
 import { WalletManager } from '../executor/walletManager';
 import { config } from '../utils/config';
-import { triggerEntryHalt, type EntryLane } from '../orchestration/entryIntegrity';
+import { triggerEntryHalt, type EntryLane } from '../state/entryHaltState';
 
 const log = createModuleLogger('WalletDeltaComparator');
 

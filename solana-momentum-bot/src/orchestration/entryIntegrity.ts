@@ -29,71 +29,31 @@ import { createModuleLogger } from '../utils/logger';
 import { config } from '../utils/config';
 import type { Trade } from '../utils/types';
 import type { BotContext } from './types';
+// Phase H2.2 (2026-04-26): halt state 는 src/state/ 로 이동.
+// 본 파일에서는 backward compat 위해 re-export. 신규 코드는 직접 src/state/entryHaltState 사용 권장.
+import {
+  type EntryLane,
+  triggerEntryHalt,
+  resetAllEntryHaltsForTests as resetAllEntryHaltStateForTests,
+} from '../state/entryHaltState';
 
 const log = createModuleLogger('EntryIntegrity');
 
-export type EntryLane = 'cupsey' | 'migration' | 'main' | 'strategy_d' | 'pure_ws_breakout';
-
-interface LaneIntegrityState {
-  haltActive: boolean;
-  triggeredAt: Date | null;
-  triggerReason: string | null;
-  failCount: number;
-}
-
-const laneState: Map<EntryLane, LaneIntegrityState> = new Map();
-function getLaneState(lane: EntryLane): LaneIntegrityState {
-  let st = laneState.get(lane);
-  if (!st) {
-    st = { haltActive: false, triggeredAt: null, triggerReason: null, failCount: 0 };
-    laneState.set(lane, st);
-  }
-  return st;
-}
+export {
+  type EntryLane,
+  isEntryHaltActive,
+  triggerEntryHalt,
+  resetEntryHalt,
+  getAllLaneIntegrityState,
+} from '../state/entryHaltState';
 
 // Fallback ledger dedup — `${type}:${txSignature}` 기준 24h TTL
 const ledgerDedupTimestamps = new Map<string, number>();
 const LEDGER_DEDUP_TTL_MS = 24 * 60 * 60 * 1000;
 let ledgerDirEnsured = false;
 
-// ─── Halt API ───
-
-export function isEntryHaltActive(lane: EntryLane): boolean {
-  return getLaneState(lane).haltActive;
-}
-
-export function triggerEntryHalt(lane: EntryLane, reason: string): void {
-  const st = getLaneState(lane);
-  if (st.haltActive) return; // 이미 halt — 중복 트리거 noop
-  st.haltActive = true;
-  st.triggeredAt = new Date();
-  st.triggerReason = reason;
-  st.failCount++;
-  log.warn(`[ENTRY_HALT_TRIGGERED] lane=${lane} reason=${reason} — NEW ENTRIES BLOCKED`);
-}
-
-export function resetEntryHalt(lane: EntryLane, reason = 'manual'): void {
-  const st = getLaneState(lane);
-  if (!st.haltActive) {
-    log.info(`[ENTRY_HALT_RESET] lane=${lane} not active — noop (${reason})`);
-    return;
-  }
-  log.info(`[ENTRY_HALT_RESET] lane=${lane} cleared by ${reason}`);
-  st.haltActive = false;
-  st.triggeredAt = null;
-  st.triggerReason = null;
-}
-
-export function getAllLaneIntegrityState(): Record<EntryLane, Readonly<LaneIntegrityState>> {
-  const out = {} as Record<EntryLane, LaneIntegrityState>;
-  for (const lane of ['cupsey', 'migration', 'main', 'strategy_d', 'pure_ws_breakout'] as EntryLane[]) {
-    out[lane] = { ...getLaneState(lane) };
-  }
-  return out;
-}
-
 export function resetAllEntryHaltsForTests(): void {
-  laneState.clear();
+  resetAllEntryHaltStateForTests();
   ledgerDedupTimestamps.clear();
   ledgerDirEnsured = false;
 }

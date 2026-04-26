@@ -52,7 +52,7 @@ export interface PriceTick {
   tokenMint: string;
   price: number; // SOL / token (UI)
   outAmountUi: number;
-  outputDecimals: number;
+  outputDecimals: number | null;
   probeSolAmount: number;
   timestamp: number;
 }
@@ -62,6 +62,8 @@ interface Subscription {
   timer: NodeJS.Timeout;
   lastPrice: number | null;
   lastTimestamp: number;
+  /** 2026-04-26 P1 fix: first poll 의 known decimals 보존. unknown 은 null 로 유지. */
+  lastOutputDecimals: number | null;
   inFlight: Promise<void> | null;
 }
 
@@ -86,6 +88,7 @@ export class PaperPriceFeed extends EventEmitter {
       timer: setInterval(() => this.poll(tokenMint), this.cfg.pollIntervalMs),
       lastPrice: null,
       lastTimestamp: 0,
+      lastOutputDecimals: null,
       inFlight: null,
     };
     if (sub.timer.unref) sub.timer.unref();
@@ -106,6 +109,20 @@ export class PaperPriceFeed extends EventEmitter {
     const sub = this.subscriptions.get(tokenMint);
     if (!sub || sub.lastPrice === null) return null;
     return { price: sub.lastPrice, timestamp: sub.lastTimestamp };
+  }
+
+  /**
+   * 2026-04-26 P1 fix: 첫 tick 의 known decimals 까지 cached 반환.
+   * Jupiter 가 decimals 를 안 주면 fallback 값을 숨기고 null 을 반환한다.
+   */
+  getLastTick(tokenMint: string): { price: number; timestamp: number; outputDecimals: number | null } | null {
+    const sub = this.subscriptions.get(tokenMint);
+    if (!sub || sub.lastPrice === null) return null;
+    return {
+      price: sub.lastPrice,
+      timestamp: sub.lastTimestamp,
+      outputDecimals: sub.lastOutputDecimals,
+    };
   }
 
   getActiveSubscriptionCount(): number {
@@ -155,8 +172,18 @@ export class PaperPriceFeed extends EventEmitter {
       if (!quote || !quote.outAmount) return;
       const outAmountRaw = BigInt(quote.outAmount);
       if (outAmountRaw <= 0n) return;
-      const outputDecimals = typeof quote.outputDecimals === 'number' ? quote.outputDecimals : 6;
-      const outAmountUi = Number(outAmountRaw) / Math.pow(10, outputDecimals);
+      const outputDecimals =
+        typeof quote.outputDecimals === 'number' &&
+        Number.isFinite(quote.outputDecimals) &&
+        quote.outputDecimals >= 0 &&
+        quote.outputDecimals <= 18
+          ? quote.outputDecimals
+          : null;
+      // Price tracking keeps the legacy fallback so paper state machine does not stall when
+      // Jupiter omits decimals. The nullable outputDecimals is kept separate and is never used
+      // as a trusted observer hint unless Jupiter/security provided an actual value.
+      const priceDecimals = outputDecimals ?? 6;
+      const outAmountUi = Number(outAmountRaw) / Math.pow(10, priceDecimals);
       if (outAmountUi <= 0) return;
       const price = this.cfg.probeSolAmount / outAmountUi;
       const now = Date.now();
@@ -164,6 +191,7 @@ export class PaperPriceFeed extends EventEmitter {
       if (sub) {
         sub.lastPrice = price;
         sub.lastTimestamp = now;
+        sub.lastOutputDecimals = outputDecimals;
       }
       const tick: PriceTick = {
         tokenMint,

@@ -90,6 +90,10 @@ interface PairedTrade {
   netSol: number;          // solReceived - solSpent
   netPct: number;          // (exitPrice - entryPrice) / entryPrice × 100
   exitReason?: string;
+  // 2026-04-26 Kelly Controller P0 — reconciled outcome 입력 시 propagate.
+  kellyEligible?: boolean;
+  reconcileStatus?: string;
+  walletTruthSource?: string;
   // 2026-04-22 P2-4 — MFE peak + tier visit timestamps.
   // `winners5x` (netPct ≥ 400) 는 close 시 net 기준이라 "T2 visit 후 trail 반납" 을 구분 못 한다.
   // 아래 필드로 visit 기반 집계 추가 (`winners5xByVisit = t2VisitAtSec != null`).
@@ -139,6 +143,12 @@ interface CliArgs {
   json?: string;
   md?: string;
   walletStartSol: number;
+  /**
+   * QA 2026-04-26: --reconciled 시 lane-outcomes-reconciled.jsonl 의 kellyEligible=true 만 사용.
+   * INCIDENT.md 2026-04-26 entry 의 P0 종료 조건 (canary-eval 가 reconciled outcome 만 사용) 충족.
+   * default false — 기존 raw ledger 동작 보존 (legacy run 호환).
+   */
+  reconciled: boolean;
 }
 
 function parseArgs(): CliArgs {
@@ -155,6 +165,7 @@ function parseArgs(): CliArgs {
     json: get('--json'),
     md: get('--md'),
     walletStartSol: startSolRaw ? Number(startSolRaw) : 1.0,
+    reconciled: argv.includes('--reconciled'),
   };
 }
 
@@ -552,10 +563,29 @@ async function main(): Promise<void> {
   const args = parseArgs();
 
   const buys = await readJsonlMaybe<LedgerBuy>(path.join(args.ledgerDir, 'executed-buys.jsonl'));
-  const sells = await readJsonlMaybe<LedgerSell>(path.join(args.ledgerDir, 'executed-sells.jsonl'));
+  const sellsAll = await readJsonlMaybe<LedgerSell>(path.join(args.ledgerDir, 'executed-sells.jsonl'));
 
-  console.log(`[canary-eval] loaded ${buys.length} buys + ${sells.length} sells from ${args.ledgerDir}`);
+  console.log(`[canary-eval] loaded ${buys.length} buys + ${sellsAll.length} sells from ${args.ledgerDir}`);
   if (args.since) console.log(`[canary-eval] filter since ${args.since.toISOString()}`);
+
+  // QA 2026-04-26: --reconciled 모드 — lane-outcomes-reconciled.jsonl 의 kellyEligible=true 만 사용.
+  // INCIDENT.md 2026-04-26 P0 종료 조건 충족.
+  let sells = sellsAll;
+  if (args.reconciled) {
+    const reconciledPath = path.join(args.ledgerDir, 'lane-outcomes-reconciled.jsonl');
+    const reconciled = await readJsonlMaybe<{ exitTxSignature?: string; kellyEligible: boolean }>(reconciledPath);
+    if (reconciled.length === 0) {
+      console.error(`[canary-eval] --reconciled 옵션 사용했으나 ${reconciledPath} 가 없음. \`npm run lane:reconcile -- --overwrite\` 먼저 실행.`);
+      process.exit(2);
+    }
+    const eligibleExitTx = new Set<string>();
+    for (const r of reconciled) {
+      if (r.kellyEligible && r.exitTxSignature) eligibleExitTx.add(r.exitTxSignature);
+    }
+    const before = sellsAll.length;
+    sells = sellsAll.filter((s) => s.txSignature && eligibleExitTx.has(s.txSignature));
+    console.log(`[canary-eval] --reconciled: ${before} → ${sells.length} sells (kelly-eligible only)`);
+  }
 
   const { byStrategy, orphanSells: totalOrphanSells } = pairTrades(buys, sells, args.since);
 

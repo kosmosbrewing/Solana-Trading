@@ -218,6 +218,56 @@ export const config = {
   kolHunterParameterVersion: process.env.KOL_HUNTER_PARAMETER_VERSION ?? 'v1.0.0',
   kolHunterDetectorVersion: process.env.KOL_HUNTER_DETECTOR_VERSION ?? 'kol_discovery_v1',
 
+  // ─── 2026-04-26: kol_hunter_swing_v2 paper-only A/B arm ───
+  // 외부 review feedback (decimals_unknown 차단 후 swing 검증 필요).
+  // **Paper-only**. v1 main 변경 없음. 같은 KOL entry 에 대해 v1 close 와 swing-v2 hypothetical close
+  // 동시 기록 → A/B (netSol / T2 visit / post-close delta / throughput cost) 비교.
+  //
+  // 진입 조건 (3 모두 만족 시 v1 primary + swing-v2 shadow 를 동시 기록, 아니면 v1 그대로):
+  //   - KOL_HUNTER_SWING_V2_ENABLED=true
+  //   - independentKolCount ≥ KOL_HUNTER_SWING_V2_MIN_KOL_COUNT (default 2)
+  //   - kolScore ≥ KOL_HUNTER_SWING_V2_MIN_SCORE (default 5.0)
+  // (liquidity clean 은 향후 추가 — survivalFlags 확장 시)
+  //
+  // Real Asset Guard 그대로: ticket 0.01, hardcut -10%, survival gate, max concurrent 3.
+  // shadow arm 은 paper-only 비교용이며 max concurrent slot 을 추가 소비하지 않는다.
+  // 변경 항목: PROBE flat timeout, T1 trail %, T1 profit floor.
+  kolHunterSwingV2Enabled: boolOptional('KOL_HUNTER_SWING_V2_ENABLED', false),
+  kolHunterSwingV2MinKolCount: Number(process.env.KOL_HUNTER_SWING_V2_MIN_KOL_COUNT ?? '2'),
+  kolHunterSwingV2MinScore: Number(process.env.KOL_HUNTER_SWING_V2_MIN_SCORE ?? '5.0'),
+  // PROBE stalk window — 외부 review 권장: 600s (10분), 옵셔널 900s 까지.
+  kolHunterSwingV2StalkWindowSec: Number(process.env.KOL_HUNTER_SWING_V2_STALK_WINDOW_SEC ?? '600'),
+  // T1 trail — 15% → 25% 로 winner 보존
+  kolHunterSwingV2T1TrailPct: Number(process.env.KOL_HUNTER_SWING_V2_T1_TRAIL_PCT ?? '0.25'),
+  // T1 profit floor — T1 trail stop 의 하한선 (T1 winner 수익 반납 방지)
+  kolHunterSwingV2T1ProfitFloorMult: Number(process.env.KOL_HUNTER_SWING_V2_T1_PROFIT_FLOOR_MULT ?? '1.10'),
+  // arm identity — paper ledger 비교 시 식별
+  kolHunterSwingV2ParameterVersion: process.env.KOL_HUNTER_SWING_V2_PARAMETER_VERSION ?? 'swing-v2.0.0',
+
+  // ─── 2026-04-26: kol_hunter_smart_v3 main paper entry logic ───
+  // 운영자 결정: 돈을 번 적 없는 v1 single-KOL wait entry 대신 smart-v3 trigger 를 main 으로 사용.
+  // KOL_HUNTER_ENABLED=false 기본값과 paper-only guard 는 그대로라 실제 wallet risk 는 없다.
+  kolHunterSmartV3Enabled: boolOptional('KOL_HUNTER_SMART_V3_ENABLED', true),
+  // observe window 는 anti-correlation 60s 와 충돌하지 않도록 120s default. 60s 는 env override 가능.
+  kolHunterSmartV3ObserveWindowSec: Number(process.env.KOL_HUNTER_SMART_V3_OBSERVE_WINDOW_SEC ?? '120'),
+  kolHunterSmartV3MinPullbackPct: Number(process.env.KOL_HUNTER_SMART_V3_MIN_PULLBACK_PCT ?? '0.10'),
+  kolHunterSmartV3MaxDrawdownFromKolEntryPct: Number(process.env.KOL_HUNTER_SMART_V3_MAX_DRAWDOWN_FROM_KOL_ENTRY_PCT ?? '0.15'),
+  kolHunterSmartV3VelocityScoreThreshold: Number(process.env.KOL_HUNTER_SMART_V3_VELOCITY_SCORE_THRESHOLD ?? '6.0'),
+  kolHunterSmartV3VelocityMinIndependentKol: Number(process.env.KOL_HUNTER_SMART_V3_VELOCITY_MIN_INDEPENDENT_KOL ?? '2'),
+  kolHunterSmartV3T1ThresholdHigh: Number(process.env.KOL_HUNTER_SMART_V3_T1_THRESHOLD_HIGH ?? '0.40'),
+  kolHunterSmartV3T1TrailBoth: Number(process.env.KOL_HUNTER_SMART_V3_T1_TRAIL_BOTH ?? '0.25'),
+  kolHunterSmartV3T1TrailPullback: Number(process.env.KOL_HUNTER_SMART_V3_T1_TRAIL_PULLBACK ?? '0.22'),
+  kolHunterSmartV3T1TrailVelocity: Number(process.env.KOL_HUNTER_SMART_V3_T1_TRAIL_VELOCITY ?? '0.20'),
+  kolHunterSmartV3ProfitFloorBoth: Number(process.env.KOL_HUNTER_SMART_V3_PROFIT_FLOOR_BOTH ?? '1.05'),
+  kolHunterSmartV3ProfitFloorPullback: Number(process.env.KOL_HUNTER_SMART_V3_PROFIT_FLOOR_PULLBACK ?? '1.08'),
+  kolHunterSmartV3ProfitFloorVelocity: Number(process.env.KOL_HUNTER_SMART_V3_PROFIT_FLOOR_VELOCITY ?? '1.10'),
+  kolHunterSmartV3ProbeTimeoutBothSec: Number(process.env.KOL_HUNTER_SMART_V3_PROBE_TIMEOUT_BOTH_SEC ?? '600'),
+  kolHunterSmartV3ProbeTimeoutPullbackSec: Number(process.env.KOL_HUNTER_SMART_V3_PROBE_TIMEOUT_PULLBACK_SEC ?? '300'),
+  kolHunterSmartV3ProbeTimeoutVelocitySec: Number(process.env.KOL_HUNTER_SMART_V3_PROBE_TIMEOUT_VELOCITY_SEC ?? '300'),
+  kolHunterSmartV3ReinforcementTrailInc: Number(process.env.KOL_HUNTER_SMART_V3_REINFORCEMENT_TRAIL_INC ?? '0.01'),
+  kolHunterSmartV3ReinforcementTrailMax: Number(process.env.KOL_HUNTER_SMART_V3_REINFORCEMENT_TRAIL_MAX ?? '0.25'),
+  kolHunterSmartV3ParameterVersion: process.env.KOL_HUNTER_SMART_V3_PARAMETER_VERSION ?? 'smart-v3.0.0',
+
   // 2026-04-22 P0+P2 (mission-refinement): Missed Alpha Observer.
   // reject 이후 T+N초 Jupiter price 를 비동기로 기록해서 "reject 이 옳았는지 틀렸는지"
   // 분포로 판정 가능하게 한다. observer 는 trade 결정에 간섭하지 않는다 — 순수 관측.

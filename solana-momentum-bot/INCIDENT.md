@@ -132,8 +132,8 @@ ADR: `docs/design-docs/lane-edge-controller-kelly-2026-04-25.md` 검토 완료. 
 - **Gate 4 (Phase 5)**: mission-refinement §5 Stage 4 SCALE / RETIRE / HOLD
 
 ### 기존 backlog supersede
-- 기존 Decision Fork Path A/B/C/D (`LANE_20260422.md §8`) → 본 결정으로 대체
-- `20260423.md` Trending-gated scalping → Lane S (pure_ws) 로 격하, 살아있음
+- 기존 Decision Fork Path A/B/C/D (LANE_20260422 §8 — 2026-04-26 cleanup 시 삭제) → 본 결정으로 대체
+- 외부 KOL piece (20260423 메모 — 2026-04-26 cleanup 시 삭제, Option 5 ADR 에 흡수됨) Trending-gated scalping → Lane S (pure_ws) 로 격하, 살아있음
 - Task #13 (사명 재해석) → **옵션 C (hybrid)** 로 해결: Lane S = positive growth / Lane T = 5x+ winner
 
 ### 변경 파일 (신규 3개)
@@ -172,11 +172,11 @@ ADR: `docs/design-docs/lane-edge-controller-kelly-2026-04-25.md` 검토 완료. 
 
 ---
 
-## 2026-04-22 (오후, LANE_20260422.md 대조 addendum)
+## 2026-04-22 (오후, LANE_20260422 대조 addendum — 원본 문서 2026-04-26 cleanup 시 삭제, 핵심 내용은 본 섹션에 흡수)
 
 ### 프레이밍 정정 — "Trade 누적 0" 은 9h slice 만의 상태
 
-앞 섹션에서 binding constraint 를 "trade 가 안 쌓이는 상태" 로 규정했으나, `LANE_20260422.md` 의 7일 ledger (2026-04-16 → 04-22) 는 다른 그림을 보여준다.
+앞 섹션에서 binding constraint 를 "trade 가 안 쌓이는 상태" 로 규정했으나, 7일 ledger (2026-04-16 → 04-22) 는 다른 그림을 보여준다.
 
 | Lane | closed | net SOL | maxDD | winners5x (net) | winners10x (net) |
 |------|--------|---------|-------|-----------------|------------------|
@@ -217,7 +217,7 @@ ADR: `docs/design-docs/lane-edge-controller-kelly-2026-04-25.md` 검토 완료. 
 
 ### P2-1b 구체화 — close-site 5 카테고리 명시
 
-이전 문서에 "close site 훅 추가" 만 적었으나 `LANE_20260422.md §6.1` 에 구체 카테고리 5개 명시됨:
+이전 문서에 "close site 훅 추가" 만 적었으나 LANE_20260422 §6.1 (cleanup 전 메모) 에 구체 카테고리 5개 명시됨:
 
 | category (신설) | 발생 조건 | pure_ws 에서 비중 |
 |-----------------|-----------|-------------------|
@@ -231,7 +231,7 @@ ADR: `docs/design-docs/lane-edge-controller-kelly-2026-04-25.md` 검토 완료. 
 
 ### Stage 2 진입 전 Decision Fork — 4개 Path
 
-`LANE_20260422.md §8` 에서 제시된 4-way 선택지. **현재 미결정**, 관측 축적 후 판단 필요.
+LANE_20260422 §8 (cleanup 전 메모) 에서 제시된 4-way 선택지. **현재 미결정**, 관측 축적 후 판단 필요.
 
 | Path | 내용 | 작업량 | 리스크 | 권장도 |
 |------|------|--------|--------|--------|

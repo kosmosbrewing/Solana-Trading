@@ -35,7 +35,7 @@ npm run ops:ruin:simulate -- --strategy pure_ws_breakout \
 ```
 
 **판정 기준**:
-- **`< 5%`**: 승격 후보 (DEX_TRADE.md Section 11)
+- **`< 5%`**: 승격 후보 (`docs/historical/pre-pivot-2026-04-18/DEX_TRADE.md` §11 — pre-pivot archive)
 - **`5-10%`**: paper 회귀 또는 threshold 재튜닝
 - **`> 10%`**: canary 중단, strategy 재검토
 

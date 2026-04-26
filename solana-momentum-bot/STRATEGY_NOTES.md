@@ -62,7 +62,7 @@ Codex의 exit 구조 진단(2026-04-08)에서 다음이 확인됐다.
 
 ## 2026-04-07 — 가격 정합성 회복 메모
 
-CRITICAL_LIVE(`CRITICAL_LIVE.md` §7)의 Phase A/B/C1이 배포됐다. 전략 관점에서의 파급:
+CRITICAL_LIVE (`docs/historical/pre-pivot-2026-04-18/CRITICAL_LIVE.md` §7 — pre-pivot archive)의 Phase A/B/C1이 배포됐다. 전략 관점에서의 파급:
 
 - **Pre-guard ledger는 전략 근거로 쓰지 말 것.** `buildEntryExecutionSummary` fallback mix, `alignOrderToExecutedEntry` 광적 증폭, `closeTrade` decision/fill 축 혼재가 복합 작용했을 가능성이 확인됐다. 2026-04-07 이전 closed trade의 `entryPrice / exitPrice / pnl`은 "축이 섞인 값"으로 간주하고, 전략 튜닝·edge 가설 평가에서 제외한다.
 - **EdgeTracker 입력이 이제 sanitizer를 통과한다.** `planned/actual ratio [0.5, 2.0]` 밖이면 drop, `TP + 음수 PnL`도 drop. 기존에 `Pair blacklisted by edge tracker`로 막혔던 pair 중 일부는 sanitize 후 blacklist에서 빠질 가능성이 있다. 따라서 "blacklist가 옳다"는 판단을 재평가해야 한다. `ledger-audit --full-history`로 FLIPPED 목록을 먼저 확인한다.

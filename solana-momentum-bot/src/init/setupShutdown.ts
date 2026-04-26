@@ -7,7 +7,6 @@
 import { Pool } from 'pg';
 import type { Notifier } from '../notifier';
 import type { Ingester } from '../ingester';
-import type { BirdeyeWSClient } from '../ingester/birdeyeWSClient';
 import type { EventMonitor } from '../event';
 import type { UniverseEngine } from '../universe';
 import type { ScannerEngine } from '../scanner';
@@ -43,7 +42,6 @@ export interface ShutdownContext {
   eventMonitor: EventMonitor;
   universeEngine: UniverseEngine;
   scanner: ScannerEngine | null;
-  birdeyeWS: BirdeyeWSClient | null;
   replayWarmSync: ReplayWarmSync | null;
   realtimeCandleBuilder: MicroCandleBuilder | null;
   heliusPoolDiscovery: HeliusPoolDiscovery | null;
@@ -81,7 +79,6 @@ export function setupShutdown(c: ShutdownContext): void {
     c.eventMonitor.stop();
     c.universeEngine.stop();
     if (c.scanner) c.scanner.stop();
-    if (c.birdeyeWS) c.birdeyeWS.stop();
     c.replayWarmSync?.stop();
     if (c.realtimeCandleBuilder) c.realtimeCandleBuilder.stop();
     if (c.heliusPoolDiscovery) await c.heliusPoolDiscovery.stop();

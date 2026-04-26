@@ -70,6 +70,13 @@ describe('Block 3 QA — paper-first enforcement', () => {
     override('pureWsLaneEnabled', true);
     override('pureWsGateEnabled', false); // gate 건너뛰기 (MicroCandleBuilder mock 최소화)
     override('pureWsLaneWalletMode', 'main');
+    // 2026-04-26 cleanup: 운영 .env 의 survival/probe/drift gate 가 jest 에 로드되어
+    // ctx.onchainSecurityClient mock 부재 시 reject. 테스트는 명시 비활성화.
+    override('pureWsSurvivalCheckEnabled', false);
+    override('pureWsSurvivalAllowDataMissing', true);
+    override('pureWsRunSellQuoteProbe', false);
+    override('pureWsEntryDriftGuardEnabled', false);
+    override('pureWsSellQuoteProbeEnabled', false);
   });
 
   it('live mode + PUREWS_LIVE_CANARY_ENABLED=false: live buy suppressed, no position opened', async () => {

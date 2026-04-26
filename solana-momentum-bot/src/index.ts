@@ -67,30 +67,26 @@ import { SignalAuditLogger } from './audit';
 import { scheduleDailySummary } from './orchestration/reporting';
 import { handleNewCandle } from './orchestration/candleHandler';
 import { handleRealtimeSignal } from './orchestration/realtimeHandler';
-import { handleCupseyLaneSignal, recoverCupseyOpenPositions, updateCupseyPositions } from './orchestration/cupseyLaneHandler';
+import { handleCupseyLaneSignal, updateCupseyPositions } from './orchestration/cupseyLaneHandler';
 import {
   handlePureWsSignal,
   updatePureWsPositions,
-  recoverPureWsOpenPositions,
   resolvePureWsWalletLabel,
   scanPureWsV2Burst,
   logPureWsV2TelemetrySummary,
 } from './orchestration/pureWsBreakoutHandler';
-import { updateMigrationPositions, onMigrationEvent, recoverMigrationOpenPositions } from './orchestration/migrationLaneHandler';
+import { updateMigrationPositions, onMigrationEvent } from './orchestration/migrationLaneHandler';
 import type { MigrationEvent } from './strategy/migrationHandoffReclaim';
 import { isPumpSwapDexId } from './realtime/pumpSwapParser';
 import { logAdmissionSkipDex } from './realtime/admissionSkipLogger';
-import { startWalletStopGuard, stopWalletStopGuardPoller } from './risk/walletStopGuard';
-import { startWalletDeltaComparator, stopWalletDeltaComparator } from './risk/walletDeltaComparator';
-import {
-  startJupiter429SummaryLoop,
-  stopJupiter429SummaryLoop,
-} from './observability/jupiterRateLimitMetric';
+import { startWalletStopGuard } from './risk/walletStopGuard';
+import { startWalletDeltaComparator } from './risk/walletDeltaComparator';
+import { startJupiter429SummaryLoop } from './observability/jupiterRateLimitMetric';
 // 2026-04-23 Option 5: KOL Discovery
 import { Connection } from '@solana/web3.js';
-import { initKolDb, stopKolDbWatcher, getKolDbStats } from './kol/db';
+import { initKolDb, getKolDbStats } from './kol/db';
 import { KolWalletTracker } from './ingester/kolWalletTracker';
-import { initKolHunter, stopKolHunter, handleKolSwap } from './orchestration/kolSignalHandler';
+import { initKolHunter, handleKolSwap } from './orchestration/kolSignalHandler';
 import type { KolTx } from './kol/types';
 import { resolveCupseyWalletLabel } from './orchestration/cupseyLaneHandler';
 import { resolveMigrationWalletLabel } from './orchestration/migrationLaneHandler';
@@ -110,53 +106,20 @@ import path from 'path';
 import { prepareRealtimePersistenceLayout } from './realtime/persistenceLayout';
 import { initStores } from './init/initStores';
 import { startMonitoringLoops, type MonitoringHandles } from './init/monitoringLoops';
+import {
+  SCANNER_INGESTER_QUEUE_GAP_MS,
+  REGIME_SOL_CACHE_TTL_MS,
+  REALTIME_ADMISSION_MIN_OBSERVED,
+  REALTIME_ADMISSION_MIN_PARSE_RATE_PCT,
+  REALTIME_ADMISSION_MIN_SKIPPED_RATE_PCT,
+  buildHeliusWsUrl,
+  getRealtimeSeedLookbackSec,
+  formatRealtimeEligibilityContext,
+} from './init/mainConstants';
+import { runLaneRecoveries } from './init/runLaneRecoveries';
+import { setupShutdown } from './init/setupShutdown';
 
 const log = createModuleLogger('Main');
-const SCANNER_INGESTER_QUEUE_GAP_MS = 10_000;
-const REGIME_SOL_CACHE_TTL_MS = 60 * 60 * 1000;
-const REALTIME_ADMISSION_MIN_OBSERVED = 50;
-const REALTIME_ADMISSION_MIN_PARSE_RATE_PCT = 1;
-const REALTIME_ADMISSION_MIN_SKIPPED_RATE_PCT = 90;
-const REALTIME_TRIGGER_SEED_BUFFER_BARS = 4;
-function buildHeliusWsUrl(): string {
-  if (config.heliusWsUrl) return config.heliusWsUrl;
-  if (config.solanaRpcUrl.startsWith('https://')) {
-    return `wss://${config.solanaRpcUrl.slice('https://'.length)}`;
-  }
-  if (config.solanaRpcUrl.startsWith('http://')) {
-    return `ws://${config.solanaRpcUrl.slice('http://'.length)}`;
-  }
-  return config.solanaRpcUrl;
-}
-
-function getRealtimeSeedLookbackSec(): number {
-  const primaryLookbackBars = Math.max(
-    config.realtimeVolumeSurgeLookback,
-    config.realtimePriceBreakoutLookback
-  ) + 1;
-  const primaryLookbackSec =
-    (primaryLookbackBars + REALTIME_TRIGGER_SEED_BUFFER_BARS) * config.realtimePrimaryIntervalSec;
-  const confirmLookbackSec =
-    (config.realtimeConfirmMinBars + 1) * config.realtimeConfirmIntervalSec;
-  return Math.max(primaryLookbackSec, confirmLookbackSec);
-}
-
-function formatRealtimeEligibilityContext(
-  pairs: Array<{ dexId: string; quoteToken?: { address: string; symbol?: string } }>
-): string {
-  const dexIds = [...new Set(pairs.map((pair) => pair.dexId).filter(Boolean))].slice(0, 3);
-  const quoteSymbols = [
-    ...new Set(
-      pairs
-        .map((pair) => pair.quoteToken?.symbol ?? pair.quoteToken?.address)
-        .filter((value): value is string => Boolean(value))
-    ),
-  ].slice(0, 3);
-  const parts = [];
-  if (dexIds.length > 0) parts.push(`dexId=${dexIds.join('|')}`);
-  if (quoteSymbols.length > 0) parts.push(`quote=${quoteSymbols.join('|')}`);
-  return parts.join(' ');
-}
 
 async function main() {
   const tradingMode = config.tradingMode;
@@ -1835,36 +1798,7 @@ async function main() {
     await notifier.sendRecoveryReport(recoveryResult.details);
   }
 
-  if (config.cupseyLaneEnabled) {
-    const recoveredCupseyCount = await recoverCupseyOpenPositions(ctx);
-    if (recoveredCupseyCount > 0) {
-      await notifier.sendInfo(
-        `Cupsey recovery: ${recoveredCupseyCount} OPEN trades rehydrated from ledger`,
-        'recovery'
-      ).catch(() => {});
-    }
-  }
-
-  if (config.migrationLaneEnabled) {
-    const recoveredMigrationCount = await recoverMigrationOpenPositions(ctx);
-    if (recoveredMigrationCount > 0) {
-      await notifier.sendInfo(
-        `Migration recovery: ${recoveredMigrationCount} OPEN trades rehydrated from ledger`,
-        'recovery'
-      ).catch(() => {});
-    }
-  }
-
-  // Block 3 (2026-04-18): pure_ws_breakout lane recovery
-  if (config.pureWsLaneEnabled) {
-    const recoveredPureWsCount = await recoverPureWsOpenPositions(ctx);
-    if (recoveredPureWsCount > 0) {
-      await notifier.sendInfo(
-        `Pure WS recovery: ${recoveredPureWsCount} OPEN trades rehydrated`,
-        'recovery'
-      ).catch(() => {});
-    }
-  }
+  await runLaneRecoveries(ctx, notifier);
 
   // ─── Configure ingester ─────────────────────────────
   const ingesterConfigs: IngesterConfig[] = [];
@@ -2009,48 +1943,27 @@ async function main() {
   scheduleDailySummary(ctx);
 
   // ─── Graceful shutdown ──────────────────────────────
-  const shutdown = async () => {
-    log.info('Shutting down...');
-    clearInterval(monitoringHandles.positionCheckInterval);
-    clearInterval(monitoringHandles.regimeInterval);
-    clearInterval(monitoringHandles.pruneInterval);
-    // Why: grace period timer가 shutdown 후 발동하면 stopped ingester 호출 → 에러 방지
-    for (const { timer } of pendingAliasCleanups.values()) {
-      clearTimeout(timer);
-    }
-    pendingAliasCleanups.clear();
-    if (realtimeAdmissionTracker && realtimeAdmissionStore) {
-      await realtimeAdmissionStore.save(realtimeAdmissionTracker.exportSnapshot()).catch((error) => {
-        log.warn(`Failed to persist realtime admission snapshot: ${error}`);
-      });
-    }
-    await runtimeDiagnosticsTracker.flush().catch((error) => {
-      log.warn(`Failed to persist runtime diagnostics snapshot: ${error}`);
-    });
-    await ingester.stop();
-    eventMonitor.stop();
-    universeEngine.stop();
-    if (scanner) scanner.stop();
-    if (birdeyeWS) birdeyeWS.stop();
-    replayWarmSync?.stop();
-    if (realtimeCandleBuilder) realtimeCandleBuilder.stop();
-    if (heliusPoolDiscovery) await heliusPoolDiscovery.stop();
-    if (heliusIngester) await heliusIngester.stop();
-    executionLock.destroy();
-    healthMonitor.stop();
-    stopWalletStopGuardPoller();
-    stopWalletDeltaComparator();
-    stopJupiter429SummaryLoop();
-    stopKolHunter();
-    if (kolTracker) await kolTracker.stop();
-    stopKolDbWatcher();
-    await dbPool.end();
-    log.info('Shutdown complete');
-    process.exit(0);
-  };
-
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  setupShutdown({
+    monitoringHandles,
+    pendingAliasCleanups,
+    realtimeAdmissionTracker,
+    realtimeAdmissionStore,
+    runtimeDiagnosticsTracker,
+    ingester,
+    eventMonitor,
+    universeEngine,
+    scanner,
+    birdeyeWS,
+    replayWarmSync,
+    realtimeCandleBuilder,
+    heliusPoolDiscovery,
+    heliusIngester,
+    executionLock,
+    healthMonitor,
+    kolTracker,
+    dbPool,
+    notifier,
+  });
 }
 
 // ─── Entry Point ─────────────────────────────────────────

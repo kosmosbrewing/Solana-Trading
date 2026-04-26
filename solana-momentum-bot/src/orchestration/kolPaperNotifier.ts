@@ -33,6 +33,10 @@ const TOP_MOVER_COUNT = 5;
  *  T2 visit (5x MFE) 도달은 사명 검증 milestone — 희귀 이벤트라 spam 위험 없음. */
 const ANOMALY_MFE_THRESHOLD = 5.0;
 
+/** 2026-04-26 QA fix F: topMovers 누적 cap. 1h × N closes 시 unbounded array growth 방지.
+ *  TOP_MOVER_COUNT (5) 보다 충분히 크면 정확도 유지 — sort 후 top 5 슬라이스 결과는 동일. */
+const TOP_MOVERS_CAP = 50;
+
 // ─── Accumulator state ──────────────────────────────────────────────────────
 
 interface ArmCounters {
@@ -137,6 +141,12 @@ function onPaperClose(payload: {
     holdSec,
     closedAtMs: Date.now(),
   });
+  // QA fix F: cap unbounded growth — 50 초과 시 peak MFE 기준 sort + 상위 50 만 유지.
+  // TOP_MOVER_COUNT (5) 보다 10배 여유라 buildHourlyDigestMessage 의 top-5 결과는 동일.
+  if (digest.topMovers.length > TOP_MOVERS_CAP) {
+    digest.topMovers.sort((a, b) => b.mfePctPeak - a.mfePctPeak);
+    digest.topMovers.length = TOP_MOVERS_CAP;
+  }
 
   // L2 anomaly — peak MFE 가 임계 (5.0 = 500%) 이상이면 즉시 알림
   if (mfePctPeak >= ANOMALY_MFE_THRESHOLD && notifierRef) {

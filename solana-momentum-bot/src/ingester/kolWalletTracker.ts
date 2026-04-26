@@ -185,6 +185,10 @@ export class KolWalletTracker extends EventEmitter {
   // ─── Subscription ─────────────────────────────────────
 
   private async subscribeAddress(address: string): Promise<void> {
+    // 2026-04-26 QA fix D: idempotency guard — 동일 address 가 이미 구독돼 있으면 skip.
+    // Why: 정상 flow 에서는 watchdog 의 `missing.filter` 가 막아주지만, 향후 다른 진입점이 생기거나
+    // start/watchdog race 시 onLogs 가 새 subId 발급 + Map overwrite → 이전 sub 영구 leak.
+    if (this.subscriptions.has(address)) return;
     try {
       const pubkey = new PublicKey(address);
       const subId = this.config.connection.onLogs(

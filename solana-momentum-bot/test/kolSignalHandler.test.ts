@@ -37,15 +37,37 @@ import type { KolTx } from '../src/kol/types';
 // 최소 Stub PaperPriceFeed — subscribe/unsubscribe + getLastPrice + on/off 지원
 class StubPaperPriceFeed extends EventEmitter {
   public prices = new Map<string, number>();
+  public decimals = new Map<string, number | null>();
   subscribe(mint: string) { /* noop */ void mint; }
   unsubscribe(mint: string) { this.prices.delete(mint); }
   getLastPrice(mint: string): { price: number; timestamp: number } | null {
     const p = this.prices.get(mint);
     return p != null ? { price: p, timestamp: Date.now() } : null;
   }
+  // 2026-04-26 P1 fix: tokenDecimals stash — test 도 PaperPriceFeed 인터페이스 준수.
+  getLastTick(mint: string): { price: number; timestamp: number; outputDecimals: number | null } | null {
+    const p = this.prices.get(mint);
+    const outputDecimals = this.decimals.has(mint) ? this.decimals.get(mint)! : 6;
+    return p != null ? { price: p, timestamp: Date.now(), outputDecimals } : null;
+  }
   getActiveSubscriptionCount() { return this.prices.size; }
-  stopAll() { this.prices.clear(); }
-  setInitialPrice(mint: string, price: number) { this.prices.set(mint, price); }
+  stopAll() { this.prices.clear(); this.decimals.clear(); }
+  setInitialPrice(mint: string, price: number, outputDecimals: number | null = 6) {
+    this.prices.set(mint, price);
+    this.decimals.set(mint, outputDecimals);
+  }
+  emitTick(mint: string, price: number, outputDecimals: number | null = 6) {
+    this.prices.set(mint, price);
+    this.decimals.set(mint, outputDecimals);
+    this.emit('price', {
+      tokenMint: mint,
+      price,
+      outAmountUi: 0.01 / price,
+      outputDecimals,
+      probeSolAmount: 0.01,
+      timestamp: Date.now(),
+    });
+  }
 }
 
 function buyTx(kolId: string, tier: 'S' | 'A' | 'B', tokenMint: string, offsetMs = 0): KolTx {
@@ -80,6 +102,36 @@ jest.mock('../src/utils/config', () => ({
     kolHunterQuickRejectWindowSec: 180,
     kolHunterQuickRejectFactorCount: 3,
     kolHunterPaperRoundTripCostPct: 0.005,
+    kolHunterParameterVersion: 'v1.0.0',
+    kolHunterDetectorVersion: 'kol_discovery_v1',
+    // 2026-04-26: swing-v2 paper-only A/B arm. default disabled in tests.
+    kolHunterSwingV2Enabled: false,
+    kolHunterSwingV2MinKolCount: 2,
+    kolHunterSwingV2MinScore: 5.0,
+    kolHunterSwingV2StalkWindowSec: 600,
+    kolHunterSwingV2T1TrailPct: 0.25,
+    kolHunterSwingV2T1ProfitFloorMult: 1.10,
+    kolHunterSwingV2ParameterVersion: 'swing-v2.0.0',
+    // 2026-04-26: smart-v3 는 production main default 이지만 기존 state-machine tests 는 v1 명시.
+    kolHunterSmartV3Enabled: false,
+    kolHunterSmartV3ObserveWindowSec: 120,
+    kolHunterSmartV3MinPullbackPct: 0.10,
+    kolHunterSmartV3MaxDrawdownFromKolEntryPct: 0.15,
+    kolHunterSmartV3VelocityScoreThreshold: 6.0,
+    kolHunterSmartV3VelocityMinIndependentKol: 2,
+    kolHunterSmartV3T1ThresholdHigh: 0.40,
+    kolHunterSmartV3T1TrailBoth: 0.25,
+    kolHunterSmartV3T1TrailPullback: 0.22,
+    kolHunterSmartV3T1TrailVelocity: 0.20,
+    kolHunterSmartV3ProfitFloorBoth: 1.05,
+    kolHunterSmartV3ProfitFloorPullback: 1.08,
+    kolHunterSmartV3ProfitFloorVelocity: 1.10,
+    kolHunterSmartV3ProbeTimeoutBothSec: 600,
+    kolHunterSmartV3ProbeTimeoutPullbackSec: 300,
+    kolHunterSmartV3ProbeTimeoutVelocitySec: 300,
+    kolHunterSmartV3ReinforcementTrailInc: 0.01,
+    kolHunterSmartV3ReinforcementTrailMax: 0.25,
+    kolHunterSmartV3ParameterVersion: 'smart-v3.0.0',
     // 2026-04-25 MISSION_CONTROL §KOL Control survival 통합. Unit tests 는 securityClient 미주입 + allowDataMissing=true 로 진입 허용.
     kolHunterSurvivalAllowDataMissing: true,
     kolHunterSurvivalMinExitLiquidityUsd: 5000,
@@ -103,6 +155,11 @@ const MINT_WINNER = 'Mint111111111111111111111111111111111111111';
 const MINT_HARDCUT = 'Mint222222222222222222222222222222222222222';
 const MINT_FLAT = 'Mint333333333333333333333333333333333333333';
 const MINT_NOCONSENSUS = 'Mint444444444444444444444444444444444444444';
+const MINT_SMART = 'Mint666666666666666666666666666666666666666';
+
+async function flushAsync(): Promise<void> {
+  await new Promise((resolve) => setImmediate(resolve));
+}
 
 describe('kolSignalHandler — state machine', () => {
   let stubFeed: StubPaperPriceFeed;
@@ -110,6 +167,11 @@ describe('kolSignalHandler — state machine', () => {
   beforeEach(() => {
     stopKolHunter();
     jest.clearAllMocks();
+    const mockedConfig = (require('../src/utils/config') as any).config;
+    mockedConfig.kolHunterSmartV3Enabled = false;
+    mockedConfig.kolHunterSwingV2Enabled = false;
+    mockedConfig.kolHunterSwingV2T1TrailPct = 0.25;
+    mockedConfig.kolHunterSwingV2T1ProfitFloorMult = 1.10;
     stubFeed = new StubPaperPriceFeed();
     __testInit({ priceFeed: stubFeed as unknown as never });
   });
@@ -243,5 +305,226 @@ describe('kolSignalHandler — state machine', () => {
     const sellTx: KolTx = { ...buyTx('pain', 'S', MINT_FLAT), action: 'sell' };
     await handleKolSwap(sellTx);
     expect(__testGetActive()).toHaveLength(0);
+  });
+
+  // ─── smart-v3 main paper logic (2026-04-26) ───────────
+  describe('smart-v3 main logic', () => {
+    const mockedConfig = (require('../src/utils/config') as any).config;
+
+    beforeEach(() => {
+      mockedConfig.kolHunterSmartV3Enabled = true;
+    });
+
+    afterEach(() => {
+      mockedConfig.kolHunterSmartV3Enabled = false;
+    });
+
+    it('pullback trigger 진입 시 smart-v3 main arm 과 HIGH confidence 를 기록한다', async () => {
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      expect(__testGetActive()).toHaveLength(0);
+
+      stubFeed.emitTick(MINT_SMART, 0.0013);
+      await flushAsync();
+      expect(__testGetActive()).toHaveLength(0);
+
+      stubFeed.emitTick(MINT_SMART, 0.00115);
+      await flushAsync();
+
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].parameterVersion).toBe('smart-v3.0.0');
+      expect(positions[0].armName).toBe('kol_hunter_smart_v3');
+      expect(positions[0].kolEntryReason).toBe('pullback');
+      expect(positions[0].kolConvictionLevel).toBe('HIGH');
+      expect(positions[0].t1MfeOverride).toBe(0.40);
+      expect(positions[0].t1TrailPctOverride).toBe(0.22);
+      expect(positions[0].t1ProfitFloorMult).toBe(1.08);
+    });
+
+    it('velocity trigger 는 multi-KOL S/A 독립 합의에서 smart-v3 main 으로 진입한다', async () => {
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('k1', 'S', MINT_SMART, 120_000));
+      expect(__testGetActive()).toHaveLength(0);
+
+      await handleKolSwap(buyTx('k2', 'A', MINT_SMART));
+      await flushAsync();
+
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].parameterVersion).toBe('smart-v3.0.0');
+      expect(positions[0].kolEntryReason).toBe('velocity');
+      expect(positions[0].kolConvictionLevel).toBe('MEDIUM_HIGH');
+      expect(positions[0].independentKolCount).toBe(2);
+    });
+
+    it('trigger 없이 observe 만료되면 진입하지 않는다', async () => {
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      await __testForceResolveStalk(MINT_SMART);
+      expect(__testGetActive()).toHaveLength(0);
+    });
+
+    it('observe 중 동일 KOL sell 은 pending candidate 를 취소한다', async () => {
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      await handleKolSwap({ ...buyTx('pain', 'S', MINT_SMART), action: 'sell' });
+      await __testForceResolveStalk(MINT_SMART);
+      expect(__testGetActive()).toHaveLength(0);
+    });
+
+    it('post-entry: 진입한 KOL 이 sell 하면 insider_exit_full 로 즉시 close 한다 (F10)', async () => {
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      // pullback 트리거로 진입 — pain (tier S) 는 participatingKols 에 포함됨
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      stubFeed.emitTick(MINT_SMART, 0.0013);
+      stubFeed.emitTick(MINT_SMART, 0.00115);
+      await flushAsync();
+
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      const pos = positions[0];
+      expect(pos.kolEntryReason).toBe('pullback');
+      expect(pos.participatingKols.map((k) => k.id)).toContain('pain');
+
+      // 동일 KOL sell tx 를 흘리면 handleKolSellSignal 이 active position 매칭 후 close
+      let captured: any = null;
+      kolHunterEvents.once('paper_close', (evt) => { captured = evt; });
+      await handleKolSwap({ ...buyTx('pain', 'S', MINT_SMART), action: 'sell' });
+
+      expect(captured).not.toBeNull();
+      expect(captured.reason).toBe('insider_exit_full');
+      expect(__testGetActive()).toHaveLength(0);
+    });
+
+    it('post-entry: 다른 KOL 의 sell 은 active position 을 close 하지 않는다 (F10)', async () => {
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      stubFeed.emitTick(MINT_SMART, 0.0013);
+      stubFeed.emitTick(MINT_SMART, 0.00115);
+      await flushAsync();
+
+      expect(__testGetActive()).toHaveLength(1);
+
+      // 진입에 참여하지 않은 KOL (ghost) sell — 영향 없어야 함
+      let captured: any = null;
+      kolHunterEvents.once('paper_close', (evt) => { captured = evt; });
+      await handleKolSwap({ ...buyTx('ghost', 'A', MINT_SMART), action: 'sell' });
+      await flushAsync();
+
+      expect(captured).toBeNull();
+      expect(__testGetActive()).toHaveLength(1);
+    });
+
+    it('smart-v3 T1 trail 은 entry reason 별 override 를 사용한다', async () => {
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      stubFeed.emitTick(MINT_SMART, 0.0013);
+      stubFeed.emitTick(MINT_SMART, 0.00115);
+      await flushAsync();
+
+      const pos = __testGetActive()[0];
+      __testTriggerTick(pos.positionId, 0.00115 * 1.41); // pullback arm T1 threshold +40%
+      expect(pos.state).toBe('RUNNER_T1');
+
+      let captured: any = null;
+      kolHunterEvents.once('paper_close', (evt) => { captured = evt; });
+      __testTriggerTick(pos.positionId, pos.peakPrice * 0.77); // pullback trail 22% hit
+      expect(captured?.reason).toBe('winner_trailing_t1');
+    });
+  });
+
+  // ─── Swing-v2 paper A/B arm (2026-04-26) ─────────────
+  describe('swing-v2 arm', () => {
+    const mockedConfig = (require('../src/utils/config') as any).config;
+
+    afterEach(() => {
+      mockedConfig.kolHunterSwingV2Enabled = false;
+      mockedConfig.kolHunterSwingV2T1TrailPct = 0.25;
+      mockedConfig.kolHunterSwingV2T1ProfitFloorMult = 1.10;
+    });
+
+    it('SWING_V2_ENABLED=false → 자격 충족해도 v1 arm (parameterVersion=v1)', async () => {
+      mockedConfig.kolHunterSwingV2Enabled = false;
+      stubFeed.setInitialPrice(MINT_WINNER, 0.001);
+      // multi-KOL high-score (자격은 충족)
+      await handleKolSwap(buyTx('k1', 'S', MINT_WINNER, 200_000));
+      await handleKolSwap(buyTx('k2', 'S', MINT_WINNER, 80_000));
+      await __testForceResolveStalk(MINT_WINNER);
+      const pos = __testGetActive()[0];
+      expect(pos.parameterVersion).toBe('v1.0.0');
+    });
+
+    it('SWING_V2 enabled + multi-KOL S-tier → v1 primary + swing-v2 shadow 동시 생성', async () => {
+      mockedConfig.kolHunterSwingV2Enabled = true;
+      stubFeed.setInitialPrice(MINT_WINNER, 0.001);
+      // 2 S-tier KOL → score = 3+3+3(consensus 2-4) = 9 ≥ 5
+      await handleKolSwap(buyTx('k1', 'S', MINT_WINNER, 200_000));
+      await handleKolSwap(buyTx('k2', 'S', MINT_WINNER, 80_000));
+      await __testForceResolveStalk(MINT_WINNER);
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(2);
+      const v1 = positions.find((p) => p.parameterVersion === 'v1.0.0');
+      const v2 = positions.find((p) => p.parameterVersion === 'swing-v2.0.0');
+      expect(v1?.isShadowArm).toBe(false);
+      expect(v2?.isShadowArm).toBe(true);
+      expect(v2?.parentPositionId).toBe(v1?.positionId);
+    });
+
+    it('SWING_V2 enabled + single-KOL → v1 arm (multi-KOL 미달)', async () => {
+      mockedConfig.kolHunterSwingV2Enabled = true;
+      stubFeed.setInitialPrice(MINT_WINNER, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_WINNER));
+      await __testForceResolveStalk(MINT_WINNER);
+      const pos = __testGetActive()[0];
+      expect(pos.parameterVersion).toBe('v1.0.0');
+    });
+
+    it('swing-v2: T1 trail 25% (vs v1 15%) — 17% pullback 시 v1 close 그러나 swing-v2 hold', async () => {
+      mockedConfig.kolHunterSwingV2Enabled = true;
+      stubFeed.setInitialPrice(MINT_WINNER, 0.001);
+      await handleKolSwap(buyTx('k1', 'S', MINT_WINNER, 200_000));
+      await handleKolSwap(buyTx('k2', 'S', MINT_WINNER, 80_000));
+      await __testForceResolveStalk(MINT_WINNER);
+      const v1 = __testGetActive().find((p) => p.parameterVersion === 'v1.0.0')!;
+      const swing = __testGetActive().find((p) => p.parameterVersion === 'swing-v2.0.0')!;
+      __testTriggerTick(v1.positionId, 0.0016);
+      __testTriggerTick(swing.positionId, 0.0016);
+      __testTriggerTick(v1.positionId, 0.0016 * 0.83);
+      __testTriggerTick(swing.positionId, 0.0016 * 0.83); // 17% pullback (v1: cut, v2: hold — trail 25%)
+      const remaining = __testGetActive();
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0].parameterVersion).toBe('swing-v2.0.0');
+    });
+
+    it('swing-v2: profit floor entry × 1.10 은 trail stop 하한선으로 동작', async () => {
+      mockedConfig.kolHunterSwingV2Enabled = true;
+      mockedConfig.kolHunterSwingV2T1TrailPct = 0.35; // floor 가 실제로 binding 되도록 테스트에서만 확대
+      stubFeed.setInitialPrice(MINT_WINNER, 0.001);
+      await handleKolSwap(buyTx('k1', 'S', MINT_WINNER, 200_000));
+      await handleKolSwap(buyTx('k2', 'S', MINT_WINNER, 80_000));
+      await __testForceResolveStalk(MINT_WINNER);
+      const swing = __testGetActive().find((p) => p.parameterVersion === 'swing-v2.0.0')!;
+      __testTriggerTick(swing.positionId, 0.0015); // T1 peak (정확히 +50%)
+      let swingClose: any = null;
+      kolHunterEvents.once('paper_close', (evt) => {
+        if (evt.pos.positionId === swing.positionId) swingClose = evt;
+      });
+      // raw trailStop = 0.0015 × 0.65 = 0.000975, floor = 0.0011.
+      // current 는 raw trail 위지만 floor 아래라 close 되어야 한다.
+      __testTriggerTick(swing.positionId, 0.00109);
+      expect(swingClose?.reason).toBe('winner_trailing_t1');
+      expect(__testGetActive().find((p) => p.positionId === swing.positionId)).toBeUndefined();
+    });
+
+    it('quote decimals 가 없고 security decimals 도 없으면 observer tokenDecimals 를 비워 둔다', async () => {
+      mockedConfig.kolHunterSwingV2Enabled = false;
+      stubFeed.setInitialPrice(MINT_WINNER, 0.001, null);
+      await handleKolSwap(buyTx('pain', 'S', MINT_WINNER));
+      await __testForceResolveStalk(MINT_WINNER);
+      const pos = __testGetActive()[0];
+      expect(pos.tokenDecimals).toBeUndefined();
+      expect(pos.survivalFlags).toContain('DECIMALS_UNKNOWN');
+    });
   });
 });

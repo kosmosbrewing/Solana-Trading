@@ -2,18 +2,80 @@
 
 > 이 문서는 모듈 구조, 의존성 방향, 데이터 흐름을 정의한다.
 > 새 파일 생성 전 반드시 이 문서의 의존성 규칙을 확인하라.
+>
+> **2026-04-26 H2 재구성**: 3-layer 모델 (Real Asset Guard / Lane / Observability) 도입.
+> Pre-pivot 의 단일 Context→Trigger 모델은 [`docs/historical/architecture-pre-pivot.md`](./docs/historical/architecture-pre-pivot.md) 로 격리.
 
 ---
 
-## 1. 2-Stage Entry Model
+## 0. 3-Layer Model (현 active)
+
+본 프로젝트는 **3 paradigm 시대** (Pre-pivot → Mission-pivot → Mission-refinement → Option 5) 를 거쳤다.
+신규 lane 추가 시 기존 layer 가 변하지 않도록 다음 3 layer 분리:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Layer A — Real Asset Guard (불변, 모든 paradigm 공통)             │
+│   ticket 0.01 / floor 0.8 / canary -0.3 / drift halt 0.2 /       │
+│   max concurrent 3 / security gate / sell quote probe            │
+│   → src/risk/* + src/state/entryHaltState (no orchestration 의존) │
+└─────────────────────────────────────────────────────────────────┘
+                              ↑ enforce
+┌─────────────────────────────────────────────────────────────────┐
+│ Layer B — Lane (paradigm 별 entry/exit 로직)                      │
+│   - cupsey_flip_10s   (frozen benchmark)                          │
+│   - pure_ws_breakout  (Lane S, scalping baseline)                 │
+│   - kol_hunter        (Lane T, tail hunter — Option 5)            │
+│   - migration_reclaim (backlog)                                   │
+│   → src/orchestration/* + src/strategy/* + src/gate/*             │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓ emit events
+┌─────────────────────────────────────────────────────────────────┐
+│ Layer C — Observability (read-only, lane 무관)                   │
+│   missed_alpha_observer / jupiter_rate_limit_metric /             │
+│   wallet_delta_comparator / lane_outcome_reconciler /             │
+│   lane_edge_controller (Kelly P1, report-only)                    │
+│   → src/observability/* + src/risk/laneEdge*                      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Lane 표 (현 active)
+
+| Lane | 상태 | Paradigm | 주 파일 | 동결 여부 |
+|------|------|---------|--------|-----------|
+| `cupsey_flip_10s` | live, baseline | mission-pivot | `cupseyLaneHandler.ts` | **개조 금지** (benchmark) |
+| `pure_ws_breakout` | live, opt-in | mission-pivot | `pureWsBreakoutHandler.ts` | 파라미터만 (수치) |
+| `kol_hunter` | paper-first | **Option 5 (active)** | `kolSignalHandler.ts` | Lane T 신규 |
+| `bootstrap_10s` | signal-only | legacy | `signalProcessor.ts` | 억제 (executionRrReject=99) |
+| `migration_reclaim` | backlog | option5 후속 | `migrationLaneHandler.ts` | paper 대기 |
+| `volume_spike` / `fib_pullback` | dormant | pre-pivot | — | 비활성 |
+
+### Real Asset Guard 매핑 (불변값)
+
+| Hard constraint | 코드 변수 | 모듈 | env override |
+|-----------------|-----------|------|--------------|
+| Wallet floor | `walletStopMinSol=0.8` | `src/risk/walletStopGuard.ts` | `WALLET_STOP_MIN_SOL` |
+| Canary cumulative loss cap | `canaryMaxBudgetSol=0.3` | `src/risk/canaryAutoHalt.ts` | `CANARY_MAX_BUDGET_SOL` |
+| Fixed ticket | `*LaneTicketSol=0.01` | `src/utils/tradingParams.ts` | lane 별 |
+| Max concurrent | 3 (전역) | `src/risk/canaryConcurrencyGuard.ts` | `CANARY_GLOBAL_MAX_CONCURRENT` |
+| Drift halt | `walletDeltaHaltSol=0.2` | `src/risk/walletDeltaComparator.ts` | `WALLET_DELTA_HALT_SOL` |
+| Security hard reject | mint/freeze/honeypot/Token-2022 | `src/gate/securityGate.ts` | (불변) |
+
+→ **변경하려면 별도 ADR + 48h cooldown + 운영자 명시 ack** ([`SESSION_START.md`](./SESSION_START.md) §3).
+
+---
+
+## 1. 2-Stage Entry Model (legacy paradigm 참고)
+
+> Pre-pivot 시기 단일 model. 현재는 lane 별로 다른 entry flow 가짐.
+> 자세한 history: [`docs/historical/architecture-pre-pivot.md`](./docs/historical/architecture-pre-pivot.md)
 
 ```
 Stage 1: Context — 왜 이 코인이 움직일 수 있는가?
   → EventMonitor (AttentionScore) + ScannerEngine (trending/social)
-  → "뉴스 없는 급등 = 조작 가능성" → 추격 금지
 
 Stage 2: Trigger — 지금 들어가도 되는가?
-  → Strategy (breakout/pullback 시그널) → Gate (5+1단계 필터) → Risk (사이징) → Executor (체결)
+  → Strategy → Gate → Risk → Executor
 ```
 
 ## 2. 모듈 맵 (19개)

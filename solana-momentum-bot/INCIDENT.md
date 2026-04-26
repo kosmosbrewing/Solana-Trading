@@ -6,6 +6,91 @@
 
 ---
 
+## 2026-04-26 — smart-v3 Jupiter probe 부담 모니터링 항목 (F11)
+
+`kol_hunter_smart_v3` 가 main paper 진입 경로로 활성화됨에 따라, paper price feed (`PaperPriceFeed`) 의 Jupiter quote 부담이 stalk window 길이 × active subscription 수만큼 비례 증가한다.
+
+### 부하 추정
+
+| 항목 | 값 | 출처 |
+|------|----|------|
+| Smart-v3 observe window | 120 s | `KOL_HUNTER_SMART_V3_OBSERVE_WINDOW_SEC` |
+| Pullback probe timeout | 300 s | `KOL_HUNTER_SMART_V3_PROBE_TIMEOUT_PULLBACK_SEC` |
+| Velocity probe timeout | 300 s | `KOL_HUNTER_SMART_V3_PROBE_TIMEOUT_VELOCITY_SEC` |
+| Both (pullback + velocity) timeout | 600 s | `KOL_HUNTER_SMART_V3_PROBE_TIMEOUT_BOTH_SEC` |
+| PaperPriceFeed poll interval | 3 s | `paperPriceFeed.ts:44` |
+| Subscription dedup | per-mint, in-flight skip | `paperPriceFeed.ts:144` (각 mint 의 이전 poll 진행 중이면 skip) |
+| Max concurrent paper position | 3 (Real Asset Guard 고정) | `kolHunterMaxConcurrent` |
+
+**Worst-case quote/min 추정** (active 3 + pending 3 동시):
+- 6 mint × 60 s / 3 s = **120 quote/min** (sustained, observe + hold 중)
+- 단, `PaperPriceFeed` 가 mint 단일 timer + in-flight dedup → mint 당 최대 20 quote/min.
+
+**429 cooldown 동작 시**: `rateLimitCooldownMs=10_000` 동안 모든 mint poll skip → 자체 회로차단 보유.
+
+### 모니터링 항목 (배포 후 24h 관측)
+
+- [ ] `recordJupiter429('paper_price_feed')` 카운터 → `jupiterRateLimitMetric` 일별 합계
+- [ ] active subscription 수 (`PaperPriceFeed.getActiveSubscriptionCount()`) p95
+- [ ] cooldown 발생 빈도 (10s window 의 누적 시간) → 발생 시 paper trade exit 정확도 영향 평가
+- [ ] missed-alpha observer 의 `decimals_unknown` 비율 (paper price feed 의 decimals null 응답 빈도와 연관)
+
+### 임계값 (잠정)
+
+| 메트릭 | warn | critical | 대응 |
+|--------|------|----------|------|
+| Jupiter 429 / hour (paper feed) | 5 | 20 | poll interval 5s 로 늘리거나 observe window 단축 |
+| Active subscription p95 | 6 | 10 | concurrent guard 점검 (Real Asset Guard 위반 의심) |
+| Cooldown 누적 시간 / hour | 60s | 300s | 임계값 위반 lane 의 paper exit accuracy 별도 검토 |
+
+### 후속 조치
+
+- 24h 관측 후 임계값 위반 없으면 monitoring section 을 `MEASUREMENT.md` 로 이관 (이 INCIDENT 종료).
+- 위반 발생 시 PaperPriceFeed 의 batch quote API 도입 (`/quote-batch`) 또는 poll interval 조정 ADR 작성.
+
+### 단기 회피책 (이미 구현)
+
+- `PaperPriceFeed` 의 in-flight dedup (`sub.inFlight`) → 동일 mint 동시 poll 차단
+- 429 시 `rateLimitedUntilMs` 글로벌 cooldown 10 s
+- subscriber 수 감소 시 `unsubscribePriceIfIdle` 호출 (kol-paper close 직후)
+
+---
+
+## 2026-04-26 — Lane Edge Controller (Kelly) P0 즉시 착수 후보
+
+ADR: `docs/design-docs/lane-edge-controller-kelly-2026-04-25.md` 검토 완료. 사명 적합성 ⭐⭐⭐⭐⭐.
+**P0 (Accounting Eligibility) 만** 즉시 착수 가능. P1-P3 는 명시 phase gate (Option 5 Phase 2 GO / Phase 4 50 trades / Stage 4 SCALE) 까지 deferred.
+
+### P0 산출물 (decided 2026-04-26)
+- DB trade rows ↔ executed-buys/sells.jsonl FIFO match
+- 신규 outcome record 필드 (single source of truth):
+  - `kelly_eligible: boolean`
+  - `reconcile_status: 'ok' | 'duplicate_buy' | 'orphan_sell' | 'open_row_stale' | 'wallet_drift'`
+  - `matched_buy_id / matched_sell_id: string | null`
+  - `wallet_truth_source: 'executed_ledger' | 'wallet_delta_comparator' | 'db_pnl' | 'unreconciled'`
+  - `laneName / armName` (legacy `StrategyName` enum 외)
+- 산출 파일: `data/realtime/lane-outcomes-reconciled.jsonl`
+- canary-eval.ts 가 reconciled outcome 만 사용
+
+### 진입 게이트 (P0 종료 → P1 시작 전 만족 필요)
+- 최근 7일 trade 의 `kelly_eligible=true` ≥ 95%
+- duplicate buy / open-row stale 0건
+- Option 5 Phase 2 shadow eval GO 판정 (별도)
+
+### Cohort 차원 (P0/P1 한정)
+`laneName × armName × (kolCluster or discoverySource)` — 3 차원 only. 추가 차원은 ADR 필수.
+
+### Hard constraint 재확인
+- Kelly 가 양수여도 ticket cap 자동 증가 **없음**
+- `cap = 0.03` unlock 은 Stage 4 SCALE + 별도 ADR + Telegram critical ack 후만
+- Phase gate 위반 시 commit 거부 (`[KELLY_CONTROLLER_PHASE_VIOLATION]`)
+
+### 관련 문서 변경 (2026-04-26)
+- `docs/design-docs/lane-edge-controller-kelly-2026-04-25.md` §5/§7/§10/§11 강화 (phase gate / cohort 축소 / Real Asset Guard 정합)
+- `MISSION_CONTROL.md` Control 3 §3.1 cross-reference 추가
+
+---
+
 ## 2026-04-23 — Option 5 채택 (KOL Discovery + 자체 Execution)
 
 사명 §2.3 "5x+ winner 분포 실측" 이 현 pure_ws paradigm 으로 **구조적 불가** 확정. 운영자 판단으로 **전략 전면 교체** 결정.

@@ -4,7 +4,7 @@
   "//workflow": "월 1회 재검증 — recent_30d_pnl_sol / recent_30d_5x_count 업데이트. PnL 음수 3개월 연속 시 is_active=false 제안.",
   "//phase0_note": "2026-04-25 initial import from operator-provided wallet lists. Unnamed/old/project wallets are preserved inactive to avoid KOL signal pollution.",
   "version": 1,
-  "last_updated": "2026-04-25",
+  "last_updated": "2026-04-26",
   "kols": [
     {
       "id": "josim",
@@ -210,6 +210,53 @@
       "is_active": true
     },
     {
+      "id": "gdaqp3",
+      "addresses": [
+        "Gdaqp3ND6r3HVAWXpawkQU18EuQqwNxpaeeio8ASVAYd"
+      ],
+      "tier": "A",
+      "added_at": "2026-04-26",
+      "last_verified_at": "2026-04-26",
+      "notes": "Gdaqp3. Reactivated from secondary_unverified_pool after 2026-04-26 research: public OKX/GMGN-style sources indicate large total PnL and active short-horizon low/mid-cap rotation. Keep active but monitor precision; high-turnover profile may be signal source more than blind copy.",
+      "is_active": true
+    },
+    {
+      "id": "bflg",
+      "addresses": [
+        "BfLgBboMdNZLJFMkm3g89RK5sZ6VPGFQg5xUSoM6bJV8"
+      ],
+      "tier": "S",
+      "added_at": "2026-04-26",
+      "last_verified_at": "2026-04-26",
+      "recent_30d_pnl_sol": 201.13,
+      "notes": "BfLg. Added from 2026-04-26 KOL research: reported 30d +201.13 SOL, 90d +204.39 SOL, 84.27% win rate, avg hold ~13d, and visible 5x+ tail trades. Treat as Copy Core candidate; reverify weekly.",
+      "is_active": true
+    },
+    {
+      "id": "ekawy_2",
+      "addresses": [
+        "2Ekawy8GtvEcroUMjdhthP18fUi1ZGFRkMdwtQrGzrH2"
+      ],
+      "tier": "A",
+      "added_at": "2026-04-26",
+      "last_verified_at": "2026-04-26",
+      "recent_30d_pnl_sol": 20.57,
+      "notes": "2Ekawy. Added from 2026-04-26 KOL research: reported 30d +20.57 SOL, 90d +53.45 SOL, 70.85% win rate, 480 trades, avg hold ~13h. Copy Core candidate with moderate turnover.",
+      "is_active": true
+    },
+    {
+      "id": "dzfk",
+      "addresses": [
+        "DzFkEdqJNVQTri6gVJKvGWyaBx8QY4EuALySpsHxXuUL"
+      ],
+      "tier": "A",
+      "added_at": "2026-04-26",
+      "last_verified_at": "2026-04-26",
+      "recent_30d_pnl_sol": 11.52,
+      "notes": "DzFk. Added from 2026-04-26 KOL research: reported 30d +11.52 SOL, 90d +107.78 SOL, 72.29% win rate, 671 trades, avg hold ~9d. Copy Core candidate; monitor concentration and latency sensitivity.",
+      "is_active": true
+    },
+    {
       "id": "cupsey_benchmark",
       "addresses": [
         "2fg5QD1eD7rzNNCsvnhmXFm5hqNgwTTG8p7kQ6f3rx6f"
@@ -254,6 +301,50 @@
       "is_active": false
     },
     {
+      "id": "ftg1_watch",
+      "addresses": [
+        "FTg1gqW7vPm4kdU1LPM7JJnizbgPdRDy2PitKw6mY27j"
+      ],
+      "tier": "A",
+      "added_at": "2026-04-26",
+      "last_verified_at": "2026-04-26",
+      "notes": "FTg1. Split from secondary_unverified_pool after 2026-04-26 research. Historical smart-wallet evidence and OKX total PnL look strong, but recent activity quality is weaker; keep inactive watch until recent 30d/90d edge is reconstructed.",
+      "is_active": false
+    },
+    {
+      "id": "gwyg_watch",
+      "addresses": [
+        "GwyG5FQRNtY1faXYWdTLbcDNZTyW5d2Z63o1UiMUDQDT"
+      ],
+      "tier": "A",
+      "added_at": "2026-04-26",
+      "last_verified_at": "2026-04-26",
+      "notes": "GwyG. Inactive watch candidate from 2026-04-26 research: reported GMGN-style high net PnL with multi-week persistence. Keep inactive until bot/operator risk and copyability are verified.",
+      "is_active": false
+    },
+    {
+      "id": "btyi_2_watch",
+      "addresses": [
+        "2btYi2pqVgtgzLqeAXE122FPhN2xBJMQpE1V9CMNv4EH"
+      ],
+      "tier": "B",
+      "added_at": "2026-04-26",
+      "last_verified_at": "2026-04-26",
+      "notes": "2btYi. Inactive watch candidate from 2026-04-26 research: large reported net PnL but higher whale/operator risk. Do not activate until persistence and copyability are verified.",
+      "is_active": false
+    },
+    {
+      "id": "wallet_91e6_watch",
+      "addresses": [
+        "91e6tkWuCikpchersigVKqVtdMCBSfMNMui9LXpdz8qk"
+      ],
+      "tier": "B",
+      "added_at": "2026-04-26",
+      "last_verified_at": "2026-04-26",
+      "notes": "91e6. Inactive watch candidate from 2026-04-26 research: high reported PnL/trade count but likely high-frequency profile. Keep out of active KOL trigger set.",
+      "is_active": false
+    },
+    {
       "id": "believe_buyback",
       "addresses": [
         "GHXV4xsQjKETxeKFSAQuGLBDni5zZvMyM8EEmRDETWKH"
@@ -294,10 +385,8 @@
         "9ydzS7dEvpQjzErnXGDbmgSRYGzFDFkWV3bkfrJWDKDE",
         "H4JnKMWvzuuF9YR79Y9Yvpe8ATE8mBunxFx8kq3XM3zB",
         "4kce1EvUHwHyWxur8ApZDifHS3W17yPXddNxoLatHwnT",
-        "FTg1gqW7vPm4kdU1LPM7JJnizbgPdRDy2PitKw6mY27j",
         "7jPTpyAtPXZ3uFduPyiHFqrWvq3wcJq3XmHgykidQJUD",
         "FVk1Fw2wgBo9S77ydKphGpWnDgsBw5Jkqx2rYSACo737",
-        "Gdaqp3ND6r3HVAWXpawkQU18EuQqwNxpaeeio8ASVAYd",
         "5M8ACGKEXG1ojKDTMH3sMqhTihTgHYMSsZc6W8i7QW3Y",
         "AVAZvHLR2PcWpDf8BXY4rVxNHYRBytycHkcB5z5QNXYm"
       ],

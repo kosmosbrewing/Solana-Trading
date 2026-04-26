@@ -22,7 +22,7 @@ import {
   resetEntryHalt,
   getAllLaneIntegrityState,
   type EntryLane,
-} from '../orchestration/entryIntegrity';
+} from '../state/entryHaltState';
 import { config } from '../utils/config';
 
 const log = createModuleLogger('CanaryAutoHalt');

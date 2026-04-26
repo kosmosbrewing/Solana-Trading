@@ -13,7 +13,7 @@
  *     (paper / canary 에서만 유효, 전체 운영에 강제하지 않음)
  */
 import { createModuleLogger } from '../utils/logger';
-import type { EntryLane } from '../orchestration/entryIntegrity';
+import type { EntryLane } from '../state/entryHaltState';
 import { config } from '../utils/config';
 
 const log = createModuleLogger('CanaryConcurrencyGuard');

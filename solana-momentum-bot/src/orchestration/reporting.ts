@@ -12,6 +12,7 @@ import { EdgeTracker, sanitizeEdgeLikeTrades, summarizeTradesBySource, computeEx
 import { config } from '../utils/config';
 import { createModuleLogger } from '../utils/logger';
 import { BotContext } from './types';
+import { sendKolDailySummary } from './kolDailySummary';
 
 const log = createModuleLogger('Reporting');
 
@@ -233,6 +234,10 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
       'regime'
     );
   }
+
+  // 2026-04-26 L3: KOL paper A/B daily summary (kol-paper-trades.jsonl 기준).
+  // config.kolDailySummaryEnabled 로 gate. 24h 거래 0건이면 skip.
+  await sendKolDailySummary(ctx.notifier);
 }
 
 function buildCostSummary(trades: import('../utils/types').Trade[]): CostSummary | undefined {

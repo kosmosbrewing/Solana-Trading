@@ -471,6 +471,34 @@ describe('kolSignalHandler — state machine', () => {
       expect(v2?.parentPositionId).toBe(v1?.positionId);
     });
 
+    // 2026-04-26: smart-v3 main 일 때도 swing-v2 shadow 가 동시에 생성되어야 한다.
+    // 이전: primaryVersion === v1.0.0 제약으로 smart-v3 path 에서는 swing-v2 영구 비활성.
+    it('SMART_V3 + SWING_V2 둘 다 enabled + multi-KOL → smart-v3 primary + swing-v2 shadow 동시 생성', async () => {
+      mockedConfig.kolHunterSwingV2Enabled = true;
+      mockedConfig.kolHunterSmartV3Enabled = true;
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+
+      // multi-KOL S-tier 합의 (smart-v3 의 velocity path 통과)
+      await handleKolSwap(buyTx('k1', 'S', MINT_SMART, 120_000));
+      await handleKolSwap(buyTx('k2', 'A', MINT_SMART));
+      await flushAsync();
+
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(2);
+      const primary = positions.find((p) => p.parameterVersion === 'smart-v3.0.0');
+      const shadow = positions.find((p) => p.parameterVersion === 'swing-v2.0.0');
+      expect(primary?.isShadowArm).toBe(false);
+      expect(shadow?.isShadowArm).toBe(true);
+      expect(shadow?.parentPositionId).toBe(primary?.positionId);
+      // smart-v3 main 의 entry reason 은 trigger 결과를 그대로 사용
+      expect(primary?.kolEntryReason).toBe('velocity');
+      // shadow 는 swing-v2 의 default entry reason 사용 (재귀 차단 + 라벨 분리)
+      expect(shadow?.kolEntryReason).toBe('swing_v2');
+
+      // cleanup
+      mockedConfig.kolHunterSmartV3Enabled = false;
+    });
+
     it('SWING_V2 enabled + single-KOL → v1 arm (multi-KOL 미달)', async () => {
       mockedConfig.kolHunterSwingV2Enabled = true;
       stubFeed.setInitialPrice(MINT_WINNER, 0.001);

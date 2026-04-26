@@ -6,10 +6,12 @@
 # 파일 기반은 read-only · gitignore 가능 · 스키마 변화 자동 흡수.
 #
 # Usage:
-#   bash scripts/sync-vps-data.sh                    # files + logs + trades 모두
-#   SKIP_TRADES=true bash scripts/sync-vps-data.sh   # rsync (files + logs) 만
-#   SKIP_FILES=true bash scripts/sync-vps-data.sh    # logs + trades 만
-#   SKIP_LOGS=true bash scripts/sync-vps-data.sh     # files + trades 만
+#   bash scripts/sync-vps-data.sh                    # files + logs + trades + paper-arm-report
+#   SKIP_TRADES=true bash scripts/sync-vps-data.sh   # rsync (files + logs) + report 만
+#   SKIP_FILES=true bash scripts/sync-vps-data.sh    # logs + trades + report 만
+#   SKIP_LOGS=true bash scripts/sync-vps-data.sh     # files + trades + report 만
+#   SKIP_PAPER_REPORT=true bash scripts/sync-vps-data.sh   # paper arm report 생략
+#   RUN_SHADOW_EVAL=true bash scripts/sync-vps-data.sh     # KOL shadow eval 추가 (Jupiter API 사용)
 #
 # Required for trades step:
 #   export VPS_DATABASE_URL='postgresql://user:pw@host:port/dbname'
@@ -38,6 +40,11 @@ ALLOW_STALE_DB_DUMP="${ALLOW_STALE_DB_DUMP:-false}"
 SKIP_FILES="${SKIP_FILES:-false}"
 SKIP_LOGS="${SKIP_LOGS:-false}"
 SKIP_TRADES="${SKIP_TRADES:-${SKIP_DB:-false}}"  # legacy SKIP_DB 호환
+# 2026-04-26 — sync 직후 자동 분석 단계.
+# paper-arm-report: 파일 only (Jupiter API 0건) → default ON.
+# shadow-eval: Jupiter forward quote 호출 다수 → quota 절약을 위해 default OFF (opt-in).
+SKIP_PAPER_REPORT="${SKIP_PAPER_REPORT:-false}"
+RUN_SHADOW_EVAL="${RUN_SHADOW_EVAL:-false}"
 
 to_epoch() {
   local ts="${1%%.*}"  # 소수점 이하 제거
@@ -89,13 +96,13 @@ else
 fi
 
 # ─── 3. Trades snapshot (JSONL, no local DB) ───
+TRADES_SKIPPED=false
 if [ "$SKIP_TRADES" = "true" ]; then
   echo "[sync-vps-data] trades: SKIPPED (SKIP_TRADES=true)"
-  echo "[sync-vps-data] done"
-  exit 0
+  TRADES_SKIPPED=true
 fi
 
-if [ -z "${VPS_DATABASE_URL:-}" ]; then
+if [ "$TRADES_SKIPPED" != "true" ] && [ -z "${VPS_DATABASE_URL:-}" ]; then
   echo "[sync-vps-data] trades: VPS_DATABASE_URL not set — resolving from pm2 app '${VPS_PM2_APP_NAME}'"
   if VPS_DATABASE_URL="$(resolve_remote_database_url)"; then
     echo "[sync-vps-data] trades: resolved DATABASE_URL from pm2 app '${VPS_PM2_APP_NAME}'"
@@ -107,6 +114,8 @@ if [ -z "${VPS_DATABASE_URL:-}" ]; then
     exit 1
   fi
 fi
+
+if [ "$TRADES_SKIPPED" != "true" ]; then
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
 SNAPSHOT_FILE="${ROOT_DIR}/data/vps-trades-${STAMP}.jsonl"
@@ -205,6 +214,37 @@ if [ "${SNAPSHOT_LINES}" -gt 0 ] && command -v jq >/dev/null 2>&1; then
   jq -r '"\(.strategy)\t\(.status)"' "${LATEST_FILE}" | sort | uniq -c | sort -rn | sed 's/^/  /'
 fi
 
+echo "[sync-vps-data] trades: snapshot=${SNAPSHOT_FILE}"
+echo "[sync-vps-data] trades: latest=${LATEST_FILE}"
+
+fi  # /TRADES_SKIPPED
+
+# ─── 4. Paper arm report (file-only, 항상 안전) ───
+# Why: sync 와 같은 시점 데이터로 sub-arm 분리 통계 산출. Jupiter API 호출 0건.
+# 실패해도 sync 자체는 OK 로 종료 (분석은 보조 단계).
+if [ "$SKIP_PAPER_REPORT" != "true" ]; then
+  echo "[sync-vps-data] paper-arm-report: generating from data/realtime/kol-paper-trades.jsonl"
+  if (cd "${ROOT_DIR}" && npm run -s kol:paper-arm-report 2>&1 | tail -5); then
+    echo "[sync-vps-data] paper-arm-report: ok → reports/kol-paper-arms-$(date +%Y-%m-%d).md"
+  else
+    echo "[sync-vps-data] paper-arm-report: WARN — generation failed (sync 자체는 정상)"
+  fi
+else
+  echo "[sync-vps-data] paper-arm-report: SKIPPED (SKIP_PAPER_REPORT=true)"
+fi
+
+# ─── 5. Shadow eval (Jupiter API 호출, opt-in) ───
+# Why: KOL signal 자체의 raw alpha (smart-v3 logic 무관) 측정 — Jupiter forward quote 사용.
+# Phase 2 go/no-go 판정용. Jupiter quota 영향 있어 default OFF.
+if [ "$RUN_SHADOW_EVAL" = "true" ]; then
+  echo "[sync-vps-data] shadow-eval: running (Jupiter API 사용)"
+  if (cd "${ROOT_DIR}" && npm run -s kol:shadow-eval 2>&1 | tail -10); then
+    echo "[sync-vps-data] shadow-eval: ok"
+  else
+    echo "[sync-vps-data] shadow-eval: WARN — eval failed (sync 자체는 정상)"
+  fi
+else
+  echo "[sync-vps-data] shadow-eval: SKIPPED (set RUN_SHADOW_EVAL=true to enable — Jupiter API)"
+fi
+
 echo "[sync-vps-data] done"
-echo "[sync-vps-data]   snapshot: ${SNAPSHOT_FILE}"
-echo "[sync-vps-data]   latest:   ${LATEST_FILE}"

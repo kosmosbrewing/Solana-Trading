@@ -1,0 +1,53 @@
+{
+  "generatedAt": "2026-04-26T12:50:04.321Z",
+  "rows": 75,
+  "summaries": [
+    {
+      "armName": "kol_hunter_smart_v3/pullback/HIGH",
+      "parameterVersions": [
+        "smart-v3.0.0-paper-2026-04-26"
+      ],
+      "trades": 7,
+      "shadowTrades": 0,
+      "netSol": -0.0029962694174910003,
+      "avgNetPct": -0.03780384882129999,
+      "winRate": 0.2857142857142857,
+      "t1Visits": 1,
+      "t2Visits": 0,
+      "t3Visits": 0,
+      "avgMfePct": 0.1613491727740814,
+      "p90MfePct": 0.30649222258182546,
+      "avgMaePct": -0.08265921698336731,
+      "medianHoldSec": 18,
+      "exitReasons": {
+        "probe_hard_cut": 4,
+        "probe_flat_cut": 2,
+        "winner_trailing_t1": 1
+      }
+    },
+    {
+      "armName": "v1.0.0-paper-2026-04-25",
+      "parameterVersions": [
+        "v1.0.0-paper-2026-04-25"
+      ],
+      "trades": 68,
+      "shadowTrades": 0,
+      "netSol": -0.007807157495637021,
+      "avgNetPct": -0.00648111396417208,
+      "winRate": 0.3088235294117647,
+      "t1Visits": 7,
+      "t2Visits": 0,
+      "t3Visits": 0,
+      "avgMfePct": 0.16395552600829258,
+      "p90MfePct": 0.4432846128612333,
+      "avgMaePct": -0.08950725592035372,
+      "medianHoldSec": 54,
+      "exitReasons": {
+        "probe_hard_cut": 34,
+        "winner_trailing_t1": 7,
+        "probe_reject_timeout": 15,
+        "probe_flat_cut": 12
+      }
+    }
+  ]
+}

@@ -147,6 +147,68 @@ describe('Block 3 QA — paper-first enforcement', () => {
     expect(diffSec).toBeGreaterThanOrEqual(config.pureWsProbeWindowSec - 2);
   });
 
+  // 2026-04-26: pure_ws swing-v2 paper shadow.
+  // 같은 V2 PASS / bootstrap signal 로 primary (현행) + shadow (long hold) 동시 paper 생성.
+  // shadow 는 paper-only 강제: live executeBuy 호출 X, DB insertTrade X, isShadowArm=true.
+  it('SWING_V2 enabled + live primary → primary live + swing-v2 shadow paper 동시 생성', async () => {
+    override('pureWsLiveCanaryEnabled', true);
+    override('pureWsSwingV2Enabled', true);
+    const { ctx, executor, tradeStore } = makeCtx('live');
+    const builder = makeBuilder();
+
+    await handlePureWsSignal(
+      { pairAddress: 'PAIR_SWING', strategy: 'bootstrap_10s', price: 1.0 } as any,
+      builder,
+      ctx
+    );
+
+    // primary 는 live → executeBuy 1회 + DB insertTrade 1회
+    expect(executor.executeBuy).toHaveBeenCalledTimes(1);
+    expect(tradeStore.insertTrade).toHaveBeenCalledTimes(1);
+
+    // active position 은 primary + shadow 2건
+    const positions = [...getActivePureWsPositions().values()];
+    expect(positions).toHaveLength(2);
+
+    const primary = positions.find((p) => p.isShadowArm !== true);
+    const shadow = positions.find((p) => p.isShadowArm === true);
+
+    expect(primary?.armName).toBe('pure_ws_breakout');
+    expect(primary?.parameterVersion).toBe('pure-ws-v1.0.0');
+    expect(primary?.isShadowArm).toBe(false);
+
+    expect(shadow?.armName).toBe('pure_ws_swing_v2');
+    expect(shadow?.parameterVersion).toBe(config.pureWsSwingV2ParameterVersion);
+    expect(shadow?.parentPositionId).toBe(primary?.tradeId);
+    // shadow override 적용 확인
+    expect(shadow?.probeWindowSecOverride).toBe(config.pureWsSwingV2ProbeWindowSec);
+    expect(shadow?.t1TrailPctOverride).toBe(config.pureWsSwingV2T1TrailPct);
+    expect(shadow?.t1ProfitFloorMultOverride).toBe(config.pureWsSwingV2T1ProfitFloorMult);
+    expect(shadow?.probeHardCutPctOverride).toBe(config.pureWsSwingV2ProbeHardCutPct);
+
+    // cleanup
+    override('pureWsSwingV2Enabled', false);
+  });
+
+  it('SWING_V2 disabled → primary 만 생성, shadow 없음', async () => {
+    override('pureWsLiveCanaryEnabled', true);
+    override('pureWsSwingV2Enabled', false);
+    const { ctx, executor, tradeStore } = makeCtx('live');
+    const builder = makeBuilder();
+
+    await handlePureWsSignal(
+      { pairAddress: 'PAIR_NOSWING', strategy: 'bootstrap_10s', price: 1.0 } as any,
+      builder,
+      ctx
+    );
+
+    expect(executor.executeBuy).toHaveBeenCalledTimes(1);
+    expect(tradeStore.insertTrade).toHaveBeenCalledTimes(1);
+    const positions = [...getActivePureWsPositions().values()];
+    expect(positions).toHaveLength(1);
+    expect(positions[0].isShadowArm).toBe(false);
+  });
+
   // Phase 1 P0-1 (2026-04-25): in-flight mutex regression.
   // 6h 운영 로그에서 BZtgGZqx 가 09:28:53.097 + 09:28:53.191 (94ms) 두 번 PROBE_OPEN.
   // 같은 pair 의 두 동시 signal 이 첫 signal 의 async Jupiter 사이에 통과되면 안 됨.

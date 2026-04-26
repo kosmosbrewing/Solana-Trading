@@ -49,4 +49,17 @@ export interface PureWsPosition {
   continuationMode?: boolean;
   continuationT1Threshold?: number;
   continuationProbeWindowSec?: number;
+  // 2026-04-26: paper shadow arm — swing-v2 손익비 정책 측정용.
+  // primary 가 동일 V2 PASS 신호로 shadow 와 함께 생성. shadow 는 paper-only 강제 (DB persist X, live exec X).
+  // armName 은 ledger / paper-arm-report 에서 sub-arm 분리 통계 라벨링용.
+  parameterVersion?: string;
+  armName?: string;
+  isShadowArm?: boolean;
+  parentPositionId?: string;
+  // 아래 3 필드는 swing-v2 shadow 가 원래 config 값을 override 할 때만 사용.
+  // 정의되어 있으면 tickMonitor 가 우선 사용, 없으면 config.pureWs* default.
+  probeWindowSecOverride?: number;
+  probeHardCutPctOverride?: number;
+  t1TrailPctOverride?: number;
+  t1ProfitFloorMultOverride?: number;
 }

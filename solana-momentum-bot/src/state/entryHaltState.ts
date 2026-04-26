@@ -22,7 +22,7 @@ import { createModuleLogger } from '../utils/logger';
 
 const log = createModuleLogger('EntryHaltState');
 
-export type EntryLane = 'cupsey' | 'migration' | 'main' | 'strategy_d' | 'pure_ws_breakout';
+export type EntryLane = 'cupsey' | 'migration' | 'main' | 'strategy_d' | 'pure_ws_breakout' | 'pure_ws_swing_v2';
 
 export interface LaneIntegrityState {
   haltActive: boolean;

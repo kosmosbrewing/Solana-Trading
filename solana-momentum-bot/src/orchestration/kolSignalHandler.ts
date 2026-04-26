@@ -1028,7 +1028,12 @@ async function enterPaperPosition(
     ...sellSized.flags,
     `DECIMALS_${entryTokenDecimals.source?.toUpperCase() ?? 'UNKNOWN'}`,
   ];
-  const swingEligible = primaryVersion === config.kolHunterParameterVersion && isSwingV2Eligible(score);
+  // 2026-04-26: smart-v3 main path 에서도 swing-v2 paper shadow 측정 허용.
+  // 이전: `primaryVersion === v1.0.0` 일 때만 shadow 생성 → smart-v3 default ON 이면 swing-v2 영구 비활성.
+  // 수정: primary 가 swing-v2 자기자신이 아니면 (재귀 방지) shadow 생성. smart-v3/v1 양쪽 path 에서 동작.
+  // 이유: swing 손익비 정책 자체의 paradigm-agnostic 검증 + KOL_HUNTER_SMART_V3_ENABLED 와 SWING_V2_ENABLED 동시 ON 가능.
+  const swingEligible =
+    primaryVersion !== config.kolHunterSwingV2ParameterVersion && isSwingV2Eligible(score);
 
   const makePosition = (
     id: string,

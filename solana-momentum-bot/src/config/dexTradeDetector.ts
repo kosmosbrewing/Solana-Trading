@@ -60,4 +60,32 @@ export const dexTradeDetector = {
   holdPhaseTxDensityDrop: numEnv('HOLD_PHASE_TX_DENSITY_DROP', '0.6'),
   holdPhasePeakDrift: numEnv('HOLD_PHASE_PEAK_DRIFT', '0.35'),
   holdPhaseDegradedFactorCount: numEnv('HOLD_PHASE_DEGRADED_FACTOR_COUNT', '2'),
+
+  // ─── 2026-04-26: pure_ws swing-v2 paper shadow A/B ───
+  // KOL swing-v2 와 동일 패턴. 같은 V2 PASS signal 로 primary (현행) + shadow (long hold) 동시 paper 생성.
+  // 측정 목표: "swing 손익비 정책 (long probe + 관대한 trail + profit floor)" 가 5x+ winner 잡나?
+  // wallet risk 0 (paper-only 강제). canary slot 미소비. DB persist 안 함 (별도 paper ledger).
+  pureWsSwingV2Enabled: boolOptional('PUREWS_SWING_V2_ENABLED', false),
+  pureWsSwingV2ProbeWindowSec: numEnv('PUREWS_SWING_V2_PROBE_WINDOW_SEC', '600'),       // 10min (v1 30s 대비)
+  pureWsSwingV2T1TrailPct: numEnv('PUREWS_SWING_V2_T1_TRAIL_PCT', '0.25'),               // 25% (v1 15% 대비 관대)
+  pureWsSwingV2T1ProfitFloorMult: numEnv('PUREWS_SWING_V2_T1_PROFIT_FLOOR_MULT', '1.10'),// entry × 1.10 floor
+  pureWsSwingV2ProbeHardCutPct: numEnv('PUREWS_SWING_V2_PROBE_HARD_CUT_PCT', '0.10'),   // 10% (v1 3% 대비 관대)
+  pureWsSwingV2ParameterVersion: process.env.PUREWS_SWING_V2_PARAMETER_VERSION ?? 'pure-ws-swing-v2.0.0',
+
+  // ─── 2026-04-26: pure_ws swing-v2 LIVE canary (Stage 4 SCALE gate 후 opt-in) ───
+  // ⚠⚠⚠ 사명 §3 의 phase gate 충족 필수:
+  //   1. Paper trades ≥ 200 + 5x+ winner ≥ 1건 입증
+  //   2. 별도 ADR 작성 (`docs/design-docs/pure-ws-swing-v2-live-canary-YYYY-MM-DD.md`)
+  //   3. Telegram critical ack: `stage4_approved_YYYY_MM_DD`
+  //   4. Real Asset Guard 정합 (ticket 0.01 SOL hard lock, max concurrent 2)
+  //
+  // default=false. 코드 default 변경 절대 금지 — 운영자 명시 opt-in 만 가능.
+  pureWsSwingV2LiveCanaryEnabled: boolOptional('PUREWS_SWING_V2_LIVE_CANARY_ENABLED', false),
+  pureWsSwingV2WalletMode: (process.env.PUREWS_SWING_V2_WALLET_MODE ?? 'auto') as 'auto' | 'main' | 'sandbox',
+  pureWsSwingV2TicketSol: numEnv('PUREWS_SWING_V2_TICKET_SOL', '0.01'),                  // Real Asset Guard hard lock
+  pureWsSwingV2MaxConcurrent: numEnv('PUREWS_SWING_V2_MAX_CONCURRENT', '2'),             // 동시 보유 cap
+  // canary auto-halt (별도 lane 으로 분리, primary 와 무관)
+  canarySwingV2MaxBudgetSol: numEnv('CANARY_SWING_V2_MAX_BUDGET_SOL', '0.1'),            // -0.1 SOL 누적 시 halt
+  canarySwingV2MaxConsecLosers: numEnv('CANARY_SWING_V2_MAX_CONSEC_LOSERS', '5'),        // 연속 5 loser → halt
+  canarySwingV2MaxTrades: numEnv('CANARY_SWING_V2_MAX_TRADES', '50'),                    // 50 trade 후 promotion review
 } as const;

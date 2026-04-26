@@ -590,7 +590,36 @@ export async function handlePureWsSignal(
     }
   }
 
+  // 2026-04-26: pure_ws v1 primary 에 명시적 라벨 (paper-arm-report 의 sub-arm 분리용).
+  position.parameterVersion = 'pure-ws-v1.0.0';
+  position.armName = 'pure_ws_breakout';
+  position.isShadowArm = false;
+
   activePositions.set(positionId, position);
+
+  // 2026-04-26: pure_ws swing-v2 paper shadow 생성 (KOL swing-v2 와 동일 패턴).
+  // 같은 V2 PASS / bootstrap signal 로 long-hold 손익비 정책의 측정용 shadow.
+  // 강제 paper-only: DB persist X, live exec X, canary slot 미소비, wallet 영향 0.
+  //
+  // 자격 검증: V2 PASS 의 폭발적 빈도 (KMnDBXcP wash-trade 시간당 ~750) 는 entry path 상단의
+  // duplicate guard (`for ... if (pos.pairAddress === signal.pairAddress && state !== CLOSED)
+  // return`) 가 자동 차단. primary 가 막히면 shadow 도 자연 차단됨. 즉 shadow 가 만들어지는
+  // 시점은 동일 pair 에 active position 0 인 정상 진입 직후 — KOL swing-v2 의 multi-KOL 자격과
+  // 동일 효과 (모든 quality 신호만 측정).
+  if (config.pureWsSwingV2Enabled) {
+    await openSwingV2Arm({
+      signal,
+      ctx,
+      primaryPositionId: positionId,
+      primaryEntryPrice: actualEntryPrice,
+      primaryQuantity: actualQuantity,
+      marketReferencePrice,
+      buyRatioAtEntry: entryBuyRatio,
+      txCountAtEntry: entryTxCount,
+      nowSec,
+    });
+  }
+
   // Phase 3 P1-5: token session entry 기록.
   if (config.tokenSessionTrackerEnabled) {
     recordTokenSessionEntry({ tokenMint: signal.pairAddress, tradeId: positionId });

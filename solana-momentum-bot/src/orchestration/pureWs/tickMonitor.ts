@@ -56,10 +56,18 @@ export async function updatePureWsPositions(
     const currentPct = (currentPrice - referencePrice) / referencePrice;
     const elapsedSec = nowSec - pos.entryTimeSec;
 
+    // 2026-04-26: shadow arm override resolution.
+    // primary 는 모든 override 가 undefined → 기존 config 그대로. swing-v2 shadow 만 override 적용.
+    const effProbeWindowSec =
+      pos.probeWindowSecOverride ?? pos.continuationProbeWindowSec ?? config.pureWsProbeWindowSec;
+    const effProbeHardCutPct = pos.probeHardCutPctOverride ?? config.pureWsProbeHardCutPct;
+    const effT1TrailPct = pos.t1TrailPctOverride ?? config.pureWsT1TrailingPct;
+    const effT1ProfitFloor = pos.t1ProfitFloorMultOverride;
+
     switch (pos.state) {
       case 'PROBE': {
         // Hard cut (loser quick cut)
-        if (maePct <= -config.pureWsProbeHardCutPct) {
+        if (maePct <= -effProbeHardCutPct) {
           log.info(
             `[PUREWS_LOSER_HARDCUT] ${id} MAE=${(maePct * 100).toFixed(2)}% elapsed=${elapsedSec}s`
           );
@@ -112,8 +120,8 @@ export async function updatePureWsPositions(
         }
 
         // Flat timeout — Phase 3 P1-6: continuation mode 시 더 긴 window 사용.
-        const probeWindow = pos.continuationProbeWindowSec ?? config.pureWsProbeWindowSec;
-        if (elapsedSec >= probeWindow) {
+        // 2026-04-26: swing-v2 shadow 는 probeWindowSecOverride 사용 (effProbeWindowSec 으로 통합).
+        if (elapsedSec >= effProbeWindowSec) {
           const inFlatBand = Math.abs(currentPct) <= config.pureWsProbeFlatBandPct;
           if (inFlatBand) {
             log.info(
@@ -145,7 +153,9 @@ export async function updatePureWsPositions(
           pos.state = 'RUNNER_T1';
           pos.t1VisitAtSec = nowSec;
           pos.t1ViaQuote = false;
-          funnelStats.winnersT1++;
+          // 2026-04-26 QA: shadow arm (swing-v2 paper) 의 promotion 은 funnel stats 에 집계 X.
+          // funnelStats 는 primary (live) lane 측정값 — shadow 가 섞이면 winner ratio 왜곡.
+          if (!pos.isShadowArm) funnelStats.winnersT1++;
           log.info(
             `[PUREWS_T1] ${id} promoted RUNNER_T1 MFE=${(mfePct * 100).toFixed(2)}% ` +
             `threshold=${(t1Threshold * 100).toFixed(0)}%${pos.continuationMode ? ' (continuation)' : ''}`
@@ -169,7 +179,7 @@ export async function updatePureWsPositions(
             pos.state = 'RUNNER_T1';
             pos.t1VisitAtSec = nowSec;
             pos.t1ViaQuote = true;
-            funnelStats.winnersT1++;
+            if (!pos.isShadowArm) funnelStats.winnersT1++;  // QA: shadow exclude
             log.info(
               `[PUREWS_T1_VIA_QUOTE] ${id} promoted RUNNER_T1 candleMFE=${(mfePct * 100).toFixed(2)}% ` +
               `quoteMFE=${(tick.mfeVsEntry * 100).toFixed(2)}% threshold=${(t1Threshold * 100).toFixed(0)}%` +
@@ -188,7 +198,7 @@ export async function updatePureWsPositions(
           // 한다 (market reference 기반). Pnl break-even 은 closePureWsPosition 에서
           // entry (Jupiter fill) 기준으로 별도 계산.
           pos.t2BreakevenLockPrice = referencePrice * config.pureWsT2BreakevenLockMultiplier;
-          funnelStats.winnersT2++;
+          if (!pos.isShadowArm) funnelStats.winnersT2++;  // QA: shadow exclude
           log.info(
             `[PUREWS_T2] ${id} promoted RUNNER_T2 MFE=${(mfePct * 100).toFixed(2)}% ` +
             `lock=${pos.t2BreakevenLockPrice.toFixed(8)}`
@@ -197,11 +207,16 @@ export async function updatePureWsPositions(
         }
         // Phase 3: hold-phase sentinel — degraded 시 즉시 degraded exit
         if (await checkHoldPhaseDegraded(id, pos, currentPrice, candleBuilder, ctx)) continue;
-        const trailStop = pos.peakPrice * (1 - config.pureWsT1TrailingPct);
+        // 2026-04-26: swing-v2 shadow 는 effT1TrailPct (예: 25%) + 선택적 profit floor (entry × 1.10).
+        // primary 는 effT1TrailPct = config.pureWsT1TrailingPct (15%) + floor undefined 로 기존 동작 유지.
+        const rawTrail = pos.peakPrice * (1 - effT1TrailPct);
+        const profitFloor = effT1ProfitFloor != null ? pos.entryPrice * effT1ProfitFloor : 0;
+        const trailStop = Math.max(rawTrail, profitFloor);
         if (currentPrice <= trailStop) {
           log.info(
             `[PUREWS_T1_TRAIL] ${id} peak=${pos.peakPrice.toFixed(8)} ` +
-            `trail=${trailStop.toFixed(8)} currentPct=${(currentPct * 100).toFixed(2)}%`
+            `trail=${trailStop.toFixed(8)} currentPct=${(currentPct * 100).toFixed(2)}%` +
+            (effT1ProfitFloor != null ? ` floor=${profitFloor.toFixed(8)}` : '')
           );
           await closePureWsPosition(id, pos, currentPrice, 'WINNER_TRAILING', ctx);
           continue;
@@ -213,7 +228,7 @@ export async function updatePureWsPositions(
         if (mfePct >= config.pureWsT3MfeThreshold) {
           pos.state = 'RUNNER_T3';
           pos.t3VisitAtSec = nowSec;
-          funnelStats.winnersT3++;
+          if (!pos.isShadowArm) funnelStats.winnersT3++;  // QA: shadow exclude
           log.info(
             `[PUREWS_T3] ${id} promoted RUNNER_T3 MFE=${(mfePct * 100).toFixed(2)}%`
           );

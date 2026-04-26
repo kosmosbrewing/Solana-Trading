@@ -44,6 +44,11 @@ export function trackPureWsClose(
   maePct: number,
   exitPrice: number
 ): void {
+  // 2026-04-26: shadow arm (paper-only) 은 close 시 missedAlpha 발사 금지.
+  // 이유: KMnDBXcP 같은 wash-trade pair 가 shadow close 마다 Jupiter T+60/300/1800s quote 를
+  // fire → API 부담 + 측정 noise (post-close trajectory 는 primary close 분석으로 충분).
+  // shadow 의 결과는 pure-ws-paper-trades.jsonl 로 분리 측정.
+  if (pos.isShadowArm === true) return;
   trackRejectForMissedAlpha(
     {
       rejectCategory: category,

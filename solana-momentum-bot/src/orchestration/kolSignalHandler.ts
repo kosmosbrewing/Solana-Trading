@@ -183,7 +183,83 @@ interface PendingCandidate {
 
 const pending = new Map<string, PendingCandidate>();        // tokenMint → pending
 const active = new Map<string, PaperPosition>();            // positionId → position
+// 2026-04-26 P1 audit fix #5: O(N) `[...active.values()].filter(p => p.tokenMint === X)` 패턴이
+// 매 price tick / kol_swap 마다 hot path 에 등장. token → positionId Set 인덱스로 O(1) 화.
+// 항상 active 와 동기화 (setActivePosition / deleteActivePosition wrapper 만 사용).
+const activeByMint = new Map<string, Set<string>>();
+function setActivePosition(pos: PaperPosition): void {
+  active.set(pos.positionId, pos);
+  let set = activeByMint.get(pos.tokenMint);
+  if (!set) {
+    set = new Set();
+    activeByMint.set(pos.tokenMint, set);
+  }
+  set.add(pos.positionId);
+}
+function deleteActivePosition(positionId: string): void {
+  const pos = active.get(positionId);
+  if (!pos) return;
+  active.delete(positionId);
+  const set = activeByMint.get(pos.tokenMint);
+  if (set) {
+    set.delete(positionId);
+    if (set.size === 0) activeByMint.delete(pos.tokenMint);
+  }
+}
+function getActivePositionsByMint(tokenMint: string): PaperPosition[] {
+  const set = activeByMint.get(tokenMint);
+  if (!set || set.size === 0) return [];
+  const out: PaperPosition[] = [];
+  for (const id of set) {
+    const pos = active.get(id);
+    if (pos) out.push(pos);
+  }
+  return out;
+}
 const recentKolTxs: KolTx[] = [];                           // scoring 용 buffer (24h)
+
+// 2026-04-26 P0 audit fix #2: shift while-loop 가 O(N) per push 라 24h × N KOLs × tx-rate 누적 시
+// 매 신규 tx 마다 30k+ shift = handler latency 누적. push 마다 prune 대신 batch (1024 마다 1회).
+const RECENT_TX_PRUNE_BATCH = 1024;
+let pushesSinceLastPrune = 0;
+function pruneRecentKolTxsByCutoff(cutoffMs: number): void {
+  // 첫 retain index 찾기 → 단 1회 splice. shift while 루프보다 O(N) 한 번으로 감소.
+  let firstKeep = 0;
+  while (firstKeep < recentKolTxs.length && recentKolTxs[firstKeep].timestamp < cutoffMs) {
+    firstKeep++;
+  }
+  if (firstKeep > 0) recentKolTxs.splice(0, firstKeep);
+}
+
+// 2026-04-26 P1 audit fix #7: computeKolDiscoveryScore 가 같은 token 에 대해 5 호출 사이트
+// (handleKolSwap / registerSmartV3Pending / resolveSmartV3NoTrigger / evaluateSmartV3Triggers /
+// resolveStalk) 에서 호출됨. 매번 30k+ recentKolTxs 풀 스캔 → tx burst 시 CPU spike.
+// → 토큰별로 (recentKolTxs.length, nowMs/SCORE_CACHE_BUCKET_MS) 키로 결과 캐싱.
+// recentKolTxs 가 push/splice 될 때마다 length 가 바뀌므로 자동 invalidation.
+const SCORE_CACHE_BUCKET_MS = 1000;  // 1s bucket — 같은 second 내 중복 호출만 캐시 hit
+const scoreCache = new Map<string, { recentTxsLen: number; nowBucket: number; score: KolDiscoveryScore }>();
+function computeKolDiscoveryScoreCached(tokenMint: string, nowMs: number): KolDiscoveryScore {
+  const bucket = Math.floor(nowMs / SCORE_CACHE_BUCKET_MS);
+  const cached = scoreCache.get(tokenMint);
+  if (
+    cached &&
+    cached.recentTxsLen === recentKolTxs.length &&
+    cached.nowBucket === bucket
+  ) {
+    return cached.score;
+  }
+  const score = computeKolDiscoveryScore(tokenMint, recentKolTxs, nowMs, {
+    windowMs: config.kolScoringWindowMs,
+    antiCorrelationMs: config.kolAntiCorrelationMs,
+  });
+  scoreCache.set(tokenMint, { recentTxsLen: recentKolTxs.length, nowBucket: bucket, score });
+  // Cache size cap — 1000 token (스캐닝 token 수가 그 이상이면 LRU 효과로 oldest 제거)
+  if (scoreCache.size > 1000) {
+    const firstKey = scoreCache.keys().next().value;
+    if (firstKey) scoreCache.delete(firstKey);
+  }
+  return score;
+}
 let priceFeed: PaperPriceFeed | null = null;
 const priceListeners = new Map<string, (tick: PriceTick) => void>(); // tokenMint → fan-out handler
 
@@ -328,7 +404,10 @@ export function stopKolHunter(): void {
   for (const c of pending.values()) clearTimeout(c.timer);
   pending.clear();
   active.clear();
+  activeByMint.clear();   // P1 #5: index 동기화
   recentKolTxs.length = 0;
+  pushesSinceLastPrune = 0;
+  scoreCache.clear();     // P1 #7: score cache 동기화
 }
 
 export function getKolHunterState(): {
@@ -360,11 +439,12 @@ export async function handleKolSwap(tx: KolTx): Promise<void> {
   // 2026-04-26 paper notifier L1: discovery 카운팅 (kolPaperNotifier 가 hourly digest 에 사용)
   kolHunterEvents.emit('discovery', tx);
 
-  // recent buffer 유지 (24h)
+  // recent buffer 유지 (24h). audit fix #2: batch prune (매 1024 push 마다, splice 1회).
   recentKolTxs.push(tx);
-  const cutoff = Date.now() - config.kolScoringWindowMs;
-  while (recentKolTxs.length > 0 && recentKolTxs[0].timestamp < cutoff) {
-    recentKolTxs.shift();
+  pushesSinceLastPrune++;
+  if (pushesSinceLastPrune >= RECENT_TX_PRUNE_BATCH) {
+    pruneRecentKolTxsByCutoff(Date.now() - config.kolScoringWindowMs);
+    pushesSinceLastPrune = 0;
   }
 
   if (tx.action === 'sell') {
@@ -372,8 +452,8 @@ export async function handleKolSwap(tx: KolTx): Promise<void> {
     return;
   }
 
-  // Active 또는 pending 이미 있으면 추가 KOL 만 집계
-  const existingActive = [...active.values()].filter((p) => p.tokenMint === tx.tokenMint);
+  // Active 또는 pending 이미 있으면 추가 KOL 만 집계 (P1 #5: O(1) lookup)
+  const existingActive = getActivePositionsByMint(tx.tokenMint);
   if (existingActive.length > 0) {
     // 이미 진입한 포지션에 추가 KOL 은 정보만 누적 (sizing 변경 없음).
     // v1 + swing shadow 가 동시에 떠 있으면 두 arm 모두 동일 discovery context 를 유지한다.
@@ -420,17 +500,13 @@ function handleKolSellSignal(tx: KolTx): void {
   if (cand?.smartV3 && cand.kolTxs.some((buy) => buy.kolId === tx.kolId)) {
     cleanupPendingCandidate(cand, true);
     pending.delete(tx.tokenMint);
-    const score = computeKolDiscoveryScore(tx.tokenMint, recentKolTxs, Date.now(), {
-      windowMs: config.kolScoringWindowMs,
-      antiCorrelationMs: config.kolAntiCorrelationMs,
-    });
+    const score = computeKolDiscoveryScoreCached(tx.tokenMint, Date.now());  // P1 #7
     log.info(`[KOL_HUNTER_SMART_V3_CANCEL] ${tokenMint(tx)} kol=${tx.kolId} sell during observe`);
     fireRejectObserver(tx.tokenMint, 'smart_v3_kol_sell_cancel', cand, score);
     return;
   }
 
-  const positions = [...active.values()].filter((p) =>
-    p.tokenMint === tx.tokenMint &&
+  const positions = getActivePositionsByMint(tx.tokenMint).filter((p) =>
     p.participatingKols.some((k) => k.id === tx.kolId)
   );
   if (positions.length === 0) {
@@ -478,10 +554,7 @@ async function registerSmartV3Pending(tx: KolTx): Promise<void> {
   }
 
   const nowMs = Date.now();
-  const score = computeKolDiscoveryScore(tokenMint, recentKolTxs, nowMs, {
-    windowMs: config.kolScoringWindowMs,
-    antiCorrelationMs: config.kolAntiCorrelationMs,
-  });
+  const score = computeKolDiscoveryScoreCached(tokenMint, nowMs);  // P1 #7: 1s bucket cache
   const preEntry = await checkKolSurvivalPreEntry(tokenMint);
   if (!preEntry.approved) {
     const rejected: PendingCandidate = {
@@ -568,7 +641,7 @@ function ensurePendingPriceListener(tokenMint: string): void {
       if (tick.price > cand.smartV3.peakPrice) cand.smartV3.peakPrice = tick.price;
       void evaluateSmartV3Triggers(cand);
     }
-    const positions = [...active.values()].filter((p) => p.tokenMint === tokenMint);
+    const positions = getActivePositionsByMint(tokenMint);
     for (const pos of positions) onPriceTick(pos.positionId, tick);
   };
   priceListeners.set(tokenMint, listener);
@@ -580,10 +653,7 @@ async function resolveSmartV3NoTrigger(tokenMint: string): Promise<void> {
   if (!cand?.smartV3 || cand.smartV3.resolving) return;
   cand.smartV3.resolving = true;
   pending.delete(tokenMint);
-  const score = computeKolDiscoveryScore(tokenMint, recentKolTxs, Date.now(), {
-    windowMs: config.kolScoringWindowMs,
-    antiCorrelationMs: config.kolAntiCorrelationMs,
-  });
+  const score = computeKolDiscoveryScoreCached(tokenMint, Date.now());  // P1 #7
   cleanupPendingCandidate(cand, true);
   log.info(`[KOL_HUNTER_SMART_V3_REJECT] ${tokenMint.slice(0, 8)} no trigger`);
   fireRejectObserver(tokenMint, 'smart_v3_no_trigger', cand, score, {
@@ -601,7 +671,7 @@ function cleanupPendingCandidate(cand: PendingCandidate, unsubscribePrice: boole
 }
 
 function unsubscribePriceIfIdle(tokenMint: string): void {
-  const hasActive = [...active.values()].some((p) => p.tokenMint === tokenMint);
+  const hasActive = (activeByMint.get(tokenMint)?.size ?? 0) > 0;
   const hasPending = pending.has(tokenMint);
   if (hasActive || hasPending) return;
   const listener = priceListeners.get(tokenMint);
@@ -656,10 +726,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
   const smart = cand.smartV3;
   if (!smart || smart.resolving) return;
 
-  const score = computeKolDiscoveryScore(cand.tokenMint, recentKolTxs, Date.now(), {
-    windowMs: config.kolScoringWindowMs,
-    antiCorrelationMs: config.kolAntiCorrelationMs,
-  });
+  const score = computeKolDiscoveryScoreCached(cand.tokenMint, Date.now());  // P1 #7
   const trigger = evaluateSmartV3TriggerState(cand, score);
   if (!trigger.reason || !trigger.conviction) return;
 
@@ -686,10 +753,7 @@ async function resolveStalk(tokenMint: string): Promise<void> {
   pending.delete(tokenMint);
 
   const nowMs = Date.now();
-  const score = computeKolDiscoveryScore(tokenMint, recentKolTxs, nowMs, {
-    windowMs: config.kolScoringWindowMs,
-    antiCorrelationMs: config.kolAntiCorrelationMs,
-  });
+  const score = computeKolDiscoveryScoreCached(tokenMint, nowMs);  // P1 #7
 
   // 최소 1명의 독립 KOL 이 있어야 진입 (multi-KOL 합의 선호)
   if (score.independentKolCount === 0) {
@@ -1030,7 +1094,7 @@ async function enterPaperPosition(
   }
 
   for (const pos of positions) {
-    active.set(pos.positionId, pos);
+    setActivePosition(pos);  // P1 #5: index 동기화 (Map + activeByMint Set)
     log.info(
       `[KOL_HUNTER_PAPER_ENTER] ${pos.positionId} ${tokenMint.slice(0, 8)} ` +
       `arm=${pos.armName}${pos.isShadowArm ? ' shadow' : ''} ` +
@@ -1077,7 +1141,7 @@ function ensurePriceListener(tokenMint: string): void {
   if (!priceFeed || priceListeners.has(tokenMint)) return;
   const listener = (tick: PriceTick) => {
     if (tick.tokenMint !== tokenMint) return;
-    const positions = [...active.values()].filter((p) => p.tokenMint === tokenMint);
+    const positions = getActivePositionsByMint(tokenMint);
     for (const pos of positions) onPriceTick(pos.positionId, tick);
   };
   priceListeners.set(tokenMint, listener);
@@ -1317,7 +1381,7 @@ function closePosition(
   // Paper ledger append
   void appendPaperLedger(pos, exitPrice, reason, holdSec, mfePctAtClose, maePctAtClose, netSol, netPct);
 
-  active.delete(pos.positionId);
+  deleteActivePosition(pos.positionId);  // P1 #5: index 동기화
 
   // price feed unsubscribe — token 의 모든 A/B arm 이 닫힌 뒤에만 정리
   unsubscribePriceIfIdle(pos.tokenMint);

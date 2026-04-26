@@ -149,7 +149,18 @@ export async function sendKolDailySummary(notifier: Notifier): Promise<void> {
     const records = await loadLast24hRecords();
     const message = buildSummary(records);
     if (!message) {
-      log.debug('KOL daily summary skipped — no records in last 24h');
+      // 2026-04-26 P0 audit fix #4: 0 records 는 silent skip 이 아니라 명시적 alert.
+      // 사명 검증 데이터가 비어있는 채로 시간이 흐르는 것을 막기 위함 — tracker /
+      // priceFeed 가 dead 인지 운영자가 즉시 인지해야 한다.
+      const date = new Date().toISOString().slice(0, 10);
+      const alert =
+        `⚠ [KOL DAILY ${date}] no paper trades closed in last 24h\n` +
+        `  가능한 원인:\n` +
+        `  - KOL tracker subscriptions lost (Solana RPC churn)\n` +
+        `  - paperPriceFeed Jupiter 429 / network down\n` +
+        `  - KOL 활동 자체가 0 (구독 KOL 모두 휴면)\n` +
+        `  점검: pm2 logs | grep -E "KOL_TRACKER|PAPER_PRICE"`;
+      await notifier.sendInfo(alert, 'kol_daily');
       return;
     }
     await notifier.sendInfo(message, 'kol_daily');

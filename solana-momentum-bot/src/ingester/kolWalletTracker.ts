@@ -41,11 +41,23 @@ export interface KolWalletTrackerConfig {
   enabled: boolean;
 }
 
+/** 2026-04-26 (P0 audit fix #1): watchdog tunables — silent disconnect 시 자동 재구독.
+ *  helius_ws_churn_fix_2026_04_21 패턴 재사용 — RPC 가 onLogs 를 silently 끊으면 KOL signal
+ *  전체가 소멸하지만 알림이 없는 문제 fix. */
+const WATCHDOG_INTERVAL_MS = 5 * 60 * 1000;       // 5min — RPC churn detection
+const RESUBSCRIBE_COOLDOWN_MS = 5 * 60 * 1000;    // 5min cooldown — thundering herd 방지
+const FULL_DISCONNECT_ALERT_AFTER_MS = 15 * 60 * 1000;  // 15min: 모든 sub 사라지면 critical
+
 export class KolWalletTracker extends EventEmitter {
   private readonly subscriptions = new Map<string, number>();
   private readonly config: KolWalletTrackerConfig;
   private started = false;
   private outputDirEnsured = false;
+  private targetAddresses: string[] = [];
+  private watchdogTimer: NodeJS.Timeout | null = null;
+  private lastResubscribeMs = 0;
+  private lastNonZeroSubscriptionsMs = Date.now();
+  private fullDisconnectAlerted = false;
 
   constructor(config: KolWalletTrackerConfig) {
     super();
@@ -65,6 +77,7 @@ export class KolWalletTracker extends EventEmitter {
       log.warn(`[KOL_TRACKER] no active KOL addresses — tracker idle (DB 확인 필요)`);
       return;
     }
+    this.targetAddresses = [...addresses];
     log.info(`[KOL_TRACKER] subscribing to ${addresses.length} KOL addresses`);
 
     for (const addr of addresses) {
@@ -73,11 +86,19 @@ export class KolWalletTracker extends EventEmitter {
       });
     }
     log.info(`[KOL_TRACKER] started — active subscriptions: ${this.subscriptions.size}`);
+
+    // 2026-04-26 P0 audit fix #1: watchdog — subscription 이 소실되면 자동 재구독.
+    // RPC silent disconnect 시 KOL signal 전체가 소멸하는 문제 (audit P0 #1) 의 fail-safe.
+    this.startWatchdog();
   }
 
   async stop(): Promise<void> {
     if (!this.started) return;
     this.started = false;
+    if (this.watchdogTimer) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
     for (const [addr, subId] of this.subscriptions) {
       try {
         await this.config.connection.removeOnLogsListener(subId);
@@ -87,6 +108,73 @@ export class KolWalletTracker extends EventEmitter {
     }
     this.subscriptions.clear();
     log.info(`[KOL_TRACKER] stopped`);
+  }
+
+  // ─── Watchdog (P0 audit fix #1) ───────────────────────
+  private startWatchdog(): void {
+    if (this.watchdogTimer) return;
+    this.watchdogTimer = setInterval(() => {
+      this.runWatchdog().catch((err) =>
+        log.warn(`[KOL_TRACKER_WATCHDOG] error: ${String(err)}`)
+      );
+    }, WATCHDOG_INTERVAL_MS);
+    if (this.watchdogTimer.unref) this.watchdogTimer.unref();
+  }
+
+  private async runWatchdog(): Promise<void> {
+    if (!this.started) return;
+
+    const now = Date.now();
+    if (this.subscriptions.size > 0) {
+      this.lastNonZeroSubscriptionsMs = now;
+      this.fullDisconnectAlerted = false;
+    }
+
+    // Missing subscriptions 가 있으면 재구독 시도 (cooldown 적용).
+    const missing = this.targetAddresses.filter((addr) => !this.subscriptions.has(addr));
+    if (missing.length === 0) return;
+
+    if (now - this.lastResubscribeMs < RESUBSCRIBE_COOLDOWN_MS) {
+      log.debug(
+        `[KOL_TRACKER_WATCHDOG] ${missing.length} missing subs but cooldown active ` +
+        `(${Math.round((RESUBSCRIBE_COOLDOWN_MS - (now - this.lastResubscribeMs)) / 1000)}s remaining)`
+      );
+    } else {
+      this.lastResubscribeMs = now;
+      log.warn(
+        `[KOL_TRACKER_WATCHDOG] detected ${missing.length}/${this.targetAddresses.length} ` +
+        `subscriptions lost — attempting resubscribe`
+      );
+      let recovered = 0;
+      for (const addr of missing) {
+        try {
+          await this.subscribeAddress(addr);
+          recovered++;
+        } catch (err) {
+          log.debug(`[KOL_TRACKER_WATCHDOG] resubscribe ${addr.slice(0, 8)} failed: ${String(err)}`);
+        }
+      }
+      log.info(
+        `[KOL_TRACKER_WATCHDOG] resubscribed ${recovered}/${missing.length} — active=${this.subscriptions.size}`
+      );
+    }
+
+    // Full disconnect (15min 동안 sub 0) → critical alert. emit 한 번만.
+    if (
+      this.subscriptions.size === 0 &&
+      now - this.lastNonZeroSubscriptionsMs >= FULL_DISCONNECT_ALERT_AFTER_MS &&
+      !this.fullDisconnectAlerted
+    ) {
+      this.fullDisconnectAlerted = true;
+      this.emit('full_disconnect', {
+        targetCount: this.targetAddresses.length,
+        elapsedMs: now - this.lastNonZeroSubscriptionsMs,
+      });
+      log.error(
+        `[KOL_TRACKER_FULL_DISCONNECT] all ${this.targetAddresses.length} subs lost ` +
+        `for >${Math.round((now - this.lastNonZeroSubscriptionsMs) / 60000)}min — RPC 점검 필요`
+      );
+    }
   }
 
   /** 현재 구독 수 (헬스체크용). */

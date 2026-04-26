@@ -39,9 +39,13 @@ export interface PaperPriceFeedConfig {
   slippageBps: number;
 }
 
+// 2026-04-26 P0 audit fix #3: poll 3s → 8s. Lane T paper 는 stalk 2-5min / hold 30min+ 라
+// sub-second 가 필요 없는데, 3s × 8 token = 160 quotes/min = Jupiter free tier (600/min) 의 27%
+// 를 paper 가 점유 → live pure_ws sell-quote 와 경합 → 429 false positive halt 위험.
+// 8s 로 늘리면 60 quotes/min = 10% 점유 — live 경합 완화.
 export const DEFAULT_PAPER_PRICE_FEED_CONFIG: PaperPriceFeedConfig = {
   jupiterApiUrl: '',
-  pollIntervalMs: 3_000,
+  pollIntervalMs: 8_000,
   probeSolAmount: 0.01,
   rateLimitCooldownMs: 10_000,
   timeoutMs: 6_000,
@@ -146,11 +150,15 @@ export class PaperPriceFeed extends EventEmitter {
     const now = Date.now();
     if (now < this.rateLimitedUntilMs) return; // cooldown
 
-    sub.inFlight = this.fetchAndEmit(tokenMint).finally(() => {
-      const curr = this.subscriptions.get(tokenMint);
-      if (curr) curr.inFlight = null;
+    // 2026-04-26 P1 audit fix #9: capture sub at promise start.
+    // Why: unsubscribe→subscribe 빠른 churn 시 finally 의 `subscriptions.get(tokenMint)` 가
+    //      새 sub 을 가져와서 그 inFlight 를 잘못 null 로 리셋. 이중 poll 가능.
+    // Fix: 같은 sub 객체에만 inFlight 를 mutate (closure capture).
+    const subRef = sub;
+    subRef.inFlight = this.fetchAndEmit(tokenMint).finally(() => {
+      subRef.inFlight = null;
     });
-    await sub.inFlight;
+    await subRef.inFlight;
   }
 
   private async fetchAndEmit(tokenMint: string): Promise<void> {

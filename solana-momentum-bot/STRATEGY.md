@@ -20,19 +20,21 @@
 > 수단과 방법을 가리지 않고 `1 SOL -> 100 SOL` 달성 확률을 최대화한다.
 > "왜 오르는가"보다 "지금 실제로 폭발하는가"를 본다.
 
-## Runtime Lane Set
+## Runtime Lane Set (2026-04-26 갱신)
 
-| Lane | 상태 | 역할 |
+| Lane / arm | 상태 | 역할 |
 |---|---|---|
-| **`cupsey_flip_10s`** | **benchmark (live-proven)** | 기존 구조 그대로 유지. A/B 비교 기준선. **개조 금지.** |
-| `bootstrap_10s` | **signal-only** | cupsey trigger source. `executionRrReject=99.0` 로 실거래 100% 억제. |
-| **`pure_ws_breakout`** | **implemented (paper-first, default off)** | convexity 사명 첫 구현 lane — immediate PROBE + tiered runner. `PUREWS_LANE_ENABLED=true` 로 활성. |
-| `migration_reclaim` | backlog (code only) | Migration Handoff Reclaim lane. paper 대기. |
-| `liquidity_shock_reclaim` | backlog | 미구현 |
-| `volume_spike` | **dormant** | 5m 해상도, 밈코인 비적합 (04-05 확인) |
-| `fib_pullback` | **dormant** | 5m 해상도, 밈코인 비적합 |
-| `core_momentum` | standby | 3-AND trigger, 현재 비활성 |
-| `new_lp_sniper` (Strategy D) | sandbox (live 미연결) | sandbox executor 미구현으로 live 차단 |
+| **`cupsey_flip_10s`** | **benchmark (frozen, env disabled)** | A/B 비교 기준선. **개조 금지.** |
+| `bootstrap_10s` | **signal-only** | cupsey/pure_ws trigger source. `executionRrReject=99.0` 로 실거래 100% 억제. |
+| **`pure_ws_breakout`** | **live opt-in** (`PUREWS_LIVE_CANARY_ENABLED`) | Lane S 직접 — 30s probe + 15% trail. mission-pivot 첫 lane. |
+| **`pure_ws_swing_v2`** | **paper shadow** (`PUREWS_SWING_V2_ENABLED`) → **live canary opt-in** (`PUREWS_SWING_V2_LIVE_CANARY_ENABLED`) | Lane S long-hold A/B — 600s probe / 25% trail / 1.10 floor. 별도 canary slot + budget −0.1 SOL cap. |
+| **`kol_hunter`** | **paper-only (코드 강제)** | Option 5 active paradigm. KOL Wallet Discovery + state machine. |
+| ↳ `kol_hunter` v1 | paper legacy | 180s stalk / 15% trail / single-KOL wait |
+| ↳ **`kol_hunter` smart-v3** (main) | paper main (`KOL_HUNTER_SMART_V3_ENABLED=true` default) | pullback / velocity / both reason 별 trigger + trail/floor override (20-25% / 1.05-1.10) |
+| ↳ `kol_hunter` swing-v2 | paper shadow (`KOL_HUNTER_SWING_V2_ENABLED`) | multi-KOL S/A ≥2 + score ≥5.0 자격 시 동시 생성. 600s stalk / 25% trail / 1.10 floor. |
+| `migration_reclaim` | signal-only (env) | Migration Handoff Reclaim. paper 대기. |
+| `volume_spike` / `fib_pullback` / `core_momentum` | **dormant** | 5m 해상도, 밈코인 비적합 |
+| ~~`new_lp_sniper` (Strategy D)~~ | **retired (2026-04-26 cleanup)** | Birdeye WS + sandbox executor 영구 제거 |
 
 ## Cupsey Benchmark Lane (개조 금지)
 

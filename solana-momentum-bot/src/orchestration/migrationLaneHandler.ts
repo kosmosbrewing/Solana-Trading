@@ -25,6 +25,9 @@ import {
 import { BotContext } from './types';
 import { bpsToDecimal } from '../utils/units';
 import { isWalletStopActive } from '../risk/walletStopGuard';
+import { acquireCanarySlot, releaseCanarySlot } from '../risk/canaryConcurrencyGuard';
+import { reportCanaryClose } from '../risk/canaryAutoHalt';
+import { checkPureWsSurvival } from './pureWs/survivalCheck';
 import { serializeClose } from './swapSerializer';
 import { appendEntryLedger, persistOpenTradeWithIntegrity, isEntryHaltActive } from './entryIntegrity';
 import { resolveActualEntryMetrics } from './signalProcessor';
@@ -402,6 +405,32 @@ async function enterMigrationProbe(
     return;
   }
 
+  // 2026-04-26 Real Asset Guard 정합 fix: security hard reject (§6).
+  // 이전: migration 은 stage 평가만 — honeypot/Token-2022 transferHook 무방어.
+  // live 모드에서 survival check 호출 (pureWs/checkPureWsSurvival 재사용, gateCache 공유).
+  if (config.securityGateEnabled && ctx.tradingMode === 'live') {
+    const survival = await checkPureWsSurvival(pos.event.pairAddress, ctx);
+    if (!survival.approved) {
+      log.warn(
+        `[MIG_SURVIVAL_REJECT] ${id} ${pos.event.pairAddress.slice(0, 12)} ` +
+        `reason=${survival.reason} flags=[${survival.flags.join(',')}]`
+      );
+      pos.stage = 'REJECT';
+      activePositions.delete(id);
+      return;
+    }
+  }
+
+  // 2026-04-26 Real Asset Guard 정합 fix:
+  // Migration lane 이 canary slot acquire 미사용 → cupsey/pure_ws 와 합산 시 전역 cap 우회됨.
+  // primary canary lane 으로 등록 — release 는 close path 에서.
+  if (!acquireCanarySlot('migration')) {
+    log.info(`[MIG_ENTRY_SKIP] ${id} global canary slot full`);
+    pos.stage = 'REJECT';
+    activePositions.delete(id);
+    return;
+  }
+
   let actualEntryPrice = currentPrice;
   let actualQuantity = quantity;
   let entryTxSignature = 'PAPER_TRADE';
@@ -435,6 +464,7 @@ async function enterMigrationProbe(
       log.warn(`[MIG_LIVE_BUY] ${id} buy failed: ${buyErr}`);
       pos.stage = 'REJECT';
       activePositions.delete(id);
+      releaseCanarySlot('migration');  // 2026-04-26 Real Asset Guard: 누수 방지
       return;
     }
   }
@@ -633,6 +663,11 @@ async function closeMigrationPositionSerialized(
     };
     await ctx.notifier.sendTradeClose(closedTrade).catch(() => {});
   }
+
+  // 2026-04-26 Real Asset Guard fix: per-lane auto-halt feed + global slot release.
+  // migration 은 이전까지 reportCanaryClose 호출 부재 → consec losers / budget cap 추적 안 됐음.
+  reportCanaryClose('migration', pnl);
+  releaseCanarySlot('migration');
 
   activePositions.delete(id);
 }

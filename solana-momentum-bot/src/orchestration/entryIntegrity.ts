@@ -132,10 +132,14 @@ export async function persistOpenTradeWithIntegrity(
         : 'unknown';
       triggerEntryHalt(opts.lane, `insertTrade failed after tx=${txSig}: ${err}`);
     }
+    // 2026-04-26 quality fix: notifier 실패도 log 로 추적 (이전 silent catch).
+    // 운영자가 critical alert 미수신 시 노드 health 추적에 도움.
     await opts.ctx.notifier.sendCritical(
       opts.notifierKey,
       opts.buildNotifierMessage(err)
-    ).catch(() => {});
+    ).catch((notifyErr) =>
+      log.warn(`[ENTRY_INTEGRITY_NOTIFY_FAIL] lane=${opts.lane} key=${opts.notifierKey}: ${notifyErr}`)
+    );
     return { dbTradeId: null, halted: shouldHalt };
   }
 }

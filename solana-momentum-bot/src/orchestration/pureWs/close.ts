@@ -18,7 +18,7 @@ import { releaseCanarySlot } from '../../risk/canaryConcurrencyGuard';
 import { reportBleed } from '../../risk/dailyBleedBudget';
 import { getWalletStopGuardState } from '../../risk/walletStopGuard';
 import { recordClose as recordTokenSessionClose } from '../tokenSessionTracker';
-import { appendEntryLedger } from '../entryIntegrity';
+import { appendEntryLedger, triggerEntryHalt } from '../entryIntegrity';
 import { serializeClose } from '../swapSerializer';
 import type { BotContext } from '../types';
 import { LANE_STRATEGY, log } from './constants';
@@ -230,9 +230,15 @@ async function closePureWsPositionSerialized(
     dbCloseSucceeded = true;
   } catch (error) {
     log.warn(`Failed to record purews trade ${id}: ${error}`);
+    // 2026-04-26 Real Asset Guard fix: live sell 성공했는데 DB close 실패 →
+    // wallet ↔ DB drift 누적 가능. cupsey 패턴 (`integrityHaltActive`) 동일 적용:
+    // live 모드에서 entry halt 트리거 → 운영자 reconciliation 후 reset 필요.
+    if (ctx.tradingMode === 'live') {
+      triggerEntryHalt(LANE_STRATEGY, `close persist failed for ${id}: ${error}`);
+    }
     await ctx.notifier.sendCritical(
       'purews_close_persist',
-      `${id} ${pos.pairAddress} reason=${reason} sell ok but DB close failed`
+      `${id} ${pos.pairAddress} reason=${reason} sell ok but DB close failed — NEW POSITIONS HALTED`
     ).catch(() => {});
   }
 
@@ -292,7 +298,7 @@ async function closePureWsPositionSerialized(
     const walletState = getWalletStopGuardState();
     const walletBaselineSol = walletState.lastBalanceSol > 0 && Number.isFinite(walletState.lastBalanceSol)
       ? walletState.lastBalanceSol
-      : config.walletStopMinSol + 0.01;
+      : config.walletStopMinSol;  // 2026-04-26 fix: floor 자체를 baseline 으로 (보수적)
     // pnl < 0 이면 -pnl 을 소비로 집계. pnl >= 0 이면 소비 없음.
     const bleedSol = pnl < 0 ? -pnl : 0;
     reportBleed(bleedSol, walletBaselineSol, {

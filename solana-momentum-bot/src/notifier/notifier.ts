@@ -94,10 +94,26 @@ export class Notifier {
     this.chatId = chatId;
     this.enabled = !!(botToken && chatId);
 
+    // 2026-04-26 security fix: bot token 을 baseURL 에 직접 넣지 않음.
+    // 이전: `https://api.telegram.org/bot${botToken}` → axios error log / interceptor /
+    //   network capture 에서 token 노출 가능 (Telegram bot 전체 장악 reusable credential).
+    // 수정: baseURL 은 host 까지만, request interceptor 가 path prefix 에 token 동적 주입.
+    //   error log 의 `config.url` 은 token 없이 path 만 (`/sendMessage` 등).
     this.client = axios.create({
-      baseURL: `https://api.telegram.org/bot${botToken}`,
+      baseURL: 'https://api.telegram.org',
       timeout: 10000,
     });
+
+    if (botToken && this.client.interceptors?.request?.use) {
+      // path 가 `/` 로 시작하면 절대 경로로 prefix. 빈 token / mock client 면 skip.
+      const tokenPath = `/bot${botToken}`;
+      this.client.interceptors.request.use((cfg) => {
+        if (cfg.url && cfg.url.startsWith('/') && !cfg.url.startsWith(tokenPath)) {
+          cfg.url = `${tokenPath}${cfg.url}`;
+        }
+        return cfg;
+      });
+    }
 
     if (!this.enabled) {
       log.warn('Telegram notifier disabled — missing BOT_TOKEN or CHAT_ID');

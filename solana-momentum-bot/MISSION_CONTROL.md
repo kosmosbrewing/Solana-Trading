@@ -65,10 +65,13 @@ All tokens are not one universe. Arms must be separated by tail structure.
 
 | Arm | Role | Status |
 |---|---|---|
-| Lane C: `cupsey_flip_10s` | benchmark | frozen |
-| Lane S: `pure_ws_breakout` | Helius/WS scalping baseline | implemented |
-| Lane T: `kol_hunter` | KOL discovery + our execution | paper-first |
-| Lane M: `migration_handoff` | graduation / canonical pool reclaim | candidate |
+| Lane C: `cupsey_flip_10s` | benchmark | **frozen** (env disabled) |
+| Lane S primary: `pure_ws_breakout` | Helius/WS scalping baseline (30s probe + 15% trail) | implemented (live opt-in) |
+| Lane S A/B: `pure_ws_swing_v2` | swing 손익비 A/B (600s probe + 25% trail + 1.10 floor) | paper shadow + live canary 코드 (Stage 4 SCALE 후 opt-in) |
+| Lane T main: `kol_hunter` smart-v3 | pullback / velocity / both trigger + reason 별 trail/floor | paper-only (코드 강제) |
+| Lane T A/B: `kol_hunter` swing-v2 | multi-KOL S/A ≥2 + score ≥5.0 자격 시 long-hold shadow | paper shadow |
+| Lane T legacy: `kol_hunter` v1 | single-KOL wait entry | paper fallback |
+| Lane M: `migration_handoff` | graduation / canonical pool reclaim | signal-only |
 | Lane L: `pump_live_lotto` | tiny-ticket new launch optionality | candidate only |
 
 Rules:
@@ -315,7 +318,7 @@ The mission is won by preserving survival while repeatedly buying cheap optional
 |---------|--------------|-----------|-----------|
 | **C1 Survival Budget** | 모든 lane (전역) | `src/risk/walletStopGuard.ts`, `src/risk/canaryAutoHalt.ts`, `src/state/entryHaltState.ts` | 즉시 (Real Asset Guard, 불변) |
 | **C2 Tail Universe Selection** | `kol_hunter` (Lane T) | `src/ingester/kolWalletTracker.ts`, `src/kol/db.ts`, `src/kol/scoring.ts` | Phase 1 (passive logging) |
-| **C3 Payoff Architecture** | `pure_ws_breakout` (Lane S, baseline) + `kol_hunter` (Lane T) | `src/orchestration/pureWsBreakoutHandler.ts`, `src/orchestration/kolSignalHandler.ts` | Phase 3 (paper) → Phase 4 (live) |
+| **C3 Payoff Architecture** | `pure_ws_breakout` + `pure_ws_swing_v2` (Lane S A/B) + `kol_hunter` v1/smart-v3/swing-v2 (Lane T multi-arm) | `src/orchestration/pureWs/`, `src/orchestration/kolSignalHandler.ts` | Phase 3.5/3.6 완료 (paper A/B) → Phase 4 (live) |
 | **C3.1 Lane Edge Controller (Kelly)** | 전 lane × cohort | `src/risk/laneOutcomeReconciler.ts` (P0), `src/risk/laneEdgeController.ts` (P1) | P0 완료 / P1 완료 / P2 Phase 4 후 / P3 Stage 4 후 |
 | **C4 Execution Quality** | 모든 lane | `src/gate/securityGate.ts`, `src/gate/sellQuoteProbe.ts`, `src/gate/entryDriftGuard.ts`, `src/observability/jupiterRateLimitMetric.ts` | 즉시 (Real Asset Guard) |
 | **C5 200-Trade Experiment** | Lane S + Lane T 합산 | `scripts/canary-eval.ts`, `scripts/lane-edge-report.ts`, `data/realtime/lane-outcomes-reconciled.jsonl` | Phase 5 (200 trades 누적 후) |

@@ -1,10 +1,11 @@
 # REFACTORING v1.0 — Option 5: KOL Discovery + 자체 Execution
 
-> **Status**: Phase 0 착수 예정 (2026-04-23 ~ )
+> **Status**: Phase 0-3 완료 (paper 측정 단계). Phase 4 (Live Canary) 게이트 대기 중.
+> **Updated**: 2026-04-26 — Phase 3 + smart-v3 + swing-v2 (KOL/pure_ws) 코드 완료. Phase 4 gate 미충족 (200 trades + 5x+ winner 입증).
 > **Authority**: `docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md` (ADR)
 > **Debate log**: `docs/debates/kol-discovery-debate-2026-04-23.md`
 > **Paradigm**: KOL Wallet Activity = 1st-class Discovery, 자체 Execution = 구조 유지 + 파라미터 재조정
-> **Timeline**: Phase 0-3 Helius 현재 월 내, Phase 4-5 다음 월
+> **Timeline**: Phase 0-3 완료 / Phase 4-5 paper 데이터 누적 후
 
 ---
 
@@ -18,12 +19,24 @@
 
 ## 1. Phase Status
 
-- [x] **Phase 0**: KOL DB 정제 — scaffold 완료 (2026-04-23). 운영자 수동 입력 대기.
-- [x] **Phase 1**: KOL Wallet Tracker + passive logging — **코드 구현 완료 (2026-04-23)**. `KOL_TRACKER_ENABLED=true` + DB 채움 시 활성.
-- [x] **Phase 2**: Shadow Eval 스크립트 — **완료 (2026-04-23)**. Phase 1 데이터 축적 후 실행.
-- [x] **Phase 3**: kol_hunter Paper Lane — **full 구현 완료 (2026-04-23)**. 상태기계 PROBE→T1→T2→T3 + price feed + observer hooks + paper ledger.
-- [ ] **Phase 4**: Live Canary 50 trades (2주)
+- [x] **Phase 0**: KOL DB 정제 — scaffold 완료 (2026-04-23). 22 active KOL.
+- [x] **Phase 1**: KOL Wallet Tracker + passive logging — 코드 구현 완료 (2026-04-23). 운영 환경 활성.
+- [x] **Phase 2**: Shadow Eval 스크립트 — 완료 (2026-04-23). `npm run kol:shadow-eval`.
+- [x] **Phase 3**: kol_hunter Paper Lane — full 구현 완료 (2026-04-23). PROBE→T1→T2→T3 + price feed + observer hooks + paper ledger.
+- [x] **Phase 3.5** (2026-04-26): smart-v3 main + swing-v2 paper shadow — 손익비 정책 A/B. KOL `kol_hunter_smart_v3` (pullback/velocity/both) + `kol_hunter_swing_v2` (multi-KOL long hold).
+- [x] **Phase 3.6** (2026-04-26): pure_ws swing-v2 paper shadow + live canary 코드 — `pure_ws_swing_v2` arm. paper-first → opt-in live (별도 lane / canary slot / budget).
+- [ ] **Phase 4**: Live Canary 50 trades (2주) — **게이트 대기**: paper 200 trades + 5x+ winner ≥ 1건 입증 필요.
 - [ ] **Phase 5**: Live 200 trades → Stage 4 gate (4주)
+
+### Phase 3.5/3.6 산출물 (2026-04-26)
+
+| 변경 | 위치 | 영향 |
+|------|------|------|
+| KOL smart-v3 main (pullback/velocity/both) | `kolSignalHandler.ts` | smart-v3 default ON, kolEntryReason 별 trail/floor override |
+| KOL swing-v2 shadow (smart-v3 + dual) | `kolSignalHandler.ts:1031` | `primaryVersion !== swingV2ParameterVersion && isSwingV2Eligible(score)` 로 smart-v3 path 와 dual |
+| pure_ws swing-v2 shadow + live canary | `pureWs/swingV2Entry.ts` (신규 모듈) | EntryLane `pure_ws_swing_v2`, paper ledger (`pure-ws-paper-trades.jsonl`) 또는 live canary (별도 slot/budget) |
+| Real Asset Guard 정합 | `policyGuards`, `canaryAutoHalt` | swing-v2 ticket 0.01 / max budget 0.1 / max consec 5 별도 cap |
+| sync 자동 paper-arm-report | `scripts/sync-vps-data.sh` | `bash sync-vps-data.sh` 1회로 sync + report 자동 |
 
 ---
 

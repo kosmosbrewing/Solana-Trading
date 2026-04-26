@@ -264,9 +264,7 @@ REALTIME_VOLUME_SURGE_MULTIPLIER=1.8
 REALTIME_VOLUME_SURGE_LOOKBACK=20
 REALTIME_BOOTSTRAP_MIN_BUY_RATIO=0.60
 # ↑ 운영 baseline (code default는 vm=3.0/buyRatio=0.55이나, replay 검증 결과 위 값을 명시 설정)
-# WS/Strategy D는 기본 false — 설정 불필요
-# BIRDEYE_WS_ENABLED=false (기본값)
-# STRATEGY_D_ENABLED=false (기본값)
+# 2026-04-26 cleanup: Strategy D / Birdeye WS 영구 retire — env key 자체 미존재.
 ```
 
 ### 현재 권장 운영 메모
@@ -630,7 +628,7 @@ pm2 restart momentum-bot
 
 - 손실 회복을 위해 티켓 사이즈를 임의 상향하지 말 것.
 - 최근 손실 몇 건만 보고 파라미터를 즉시 과최적화하지 말 것.
-- Strategy D/E 같은 비핵심 전략으로 손실 복구를 시도하지 말 것.
+- 비핵심 lane (dormant / signal-only) 으로 손실 복구를 시도하지 말 것. (참고: Strategy D 는 2026-04-26 cleanup 시 영구 retire)
 
 ### 복구 판단
 

@@ -22,6 +22,10 @@ describe('cupseyLaneHandler persistence', () => {
     // 테스트가 main executor 를 쓰며 mock executor 호출 카운트가 0 이 된다.
     // 테스트는 sandbox 경로를 명시 주입.
     cupseyWalletMode: 'sandbox',
+    // 2026-04-26 Real Asset Guard fix: cupsey 가 entry 전 checkPureWsSurvival 호출.
+    // test ctx 에 onchainSecurityClient 미주입 → 운영 .env 의 SURVIVAL_ALLOW_DATA_MISSING=false
+    // 가 적용되어 reject. 테스트는 명시적 비활성화.
+    securityGateEnabled: false,
     cupseyLaneTicketSol: 0.01,
     cupseyStalkDropPct: 0.001,
     cupseyStalkMaxDropPct: 0.015,

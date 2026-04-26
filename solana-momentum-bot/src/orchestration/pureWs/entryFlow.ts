@@ -206,7 +206,7 @@ export async function handlePureWsSignal(
     const walletState = getWalletStopGuardState();
     const walletBaselineSol = walletState.lastBalanceSol > 0 && Number.isFinite(walletState.lastBalanceSol)
       ? walletState.lastBalanceSol
-      : config.walletStopMinSol + 0.01;  // fallback — near halt threshold (보수적)
+      : config.walletStopMinSol;  // 2026-04-26 fix: floor 자체를 baseline 으로 (보수적, daily budget 작아짐)
     const budgetCfg = {
       alpha: config.dailyBleedAlpha,
       minCapSol: config.dailyBleedMinCapSol,
@@ -262,7 +262,9 @@ export async function handlePureWsSignal(
       const buyExecutor = getPureWsExecutor(ctx);
       tokenDecimals = await buyExecutor.getMintDecimals(signal.pairAddress);
     } catch (err) {
-      log.debug(`[PUREWS_ENTRY_DRIFT] ${signal.pairAddress.slice(0, 12)} decimals resolve failed: ${err}`);
+      // 2026-04-26 quality fix: debug → warn. decimals 부재 시 sell quote probe 의
+      // probeTokenAmountRaw 계산이 부정확 (decimals 6 가정 fallback). 운영자가 빈도 추적 가능.
+      log.warn(`[PUREWS_DECIMALS_RESOLVE_FAIL] ${signal.pairAddress.slice(0, 12)} decimals resolve failed: ${err}`);
     }
     // Phase 4 P2-1: pair quarantine pre-check — 이미 quarantine 된 pair 면 Jupiter quote skip.
     ensurePairQuarantineConfigured();
@@ -402,8 +404,10 @@ export async function handlePureWsSignal(
         }
       }
     } catch (err) {
-      log.debug(`[PUREWS_SELL_PROBE] ${signal.pairAddress.slice(0, 12)} probe skipped: ${err}`);
-      // skip → 진입 계속 (observability only)
+      // 2026-04-26 quality fix: 이전 debug only → warn 으로 상향.
+      // probe 실패 (네트워크 / Jupiter 429 / 토큰 위험) 는 sell-side liquidity 미검증 상태로 진입 의미.
+      // 운영자가 빈도 추세를 감지할 수 있게 warn level. 단 진입 자체 차단은 아님 (observability only).
+      log.warn(`[PUREWS_SELL_PROBE_FAIL] ${signal.pairAddress.slice(0, 12)} probe error (skipped): ${err}`);
     }
   }
 

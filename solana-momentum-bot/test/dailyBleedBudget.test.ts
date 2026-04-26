@@ -99,8 +99,11 @@ describe('dailyBleedBudget', () => {
     expect(maxProbesToday(0.001, 1.0, cfg)).toBe(0);
   });
 
-  it('maxProbesToday returns Infinity for zero expected bleed (degenerate)', () => {
+  // 2026-04-26 fix: 이전엔 expectedBleedPerProbeSol=0 이면 Infinity 반환 → 사명 §3 "시도 수 통제"
+  // 위반 위험. caller 가 무한값 인지 안 하면 무한 루프 가능. 0 으로 보수 fail-safe + error log.
+  it('maxProbesToday returns 0 (fail-safe) for zero/negative expected bleed (misconfig)', () => {
     rollDailyBleedBudget(1.0, cfg);
-    expect(maxProbesToday(0, 1.0, cfg)).toBe(Number.POSITIVE_INFINITY);
+    expect(maxProbesToday(0, 1.0, cfg)).toBe(0);
+    expect(maxProbesToday(-0.001, 1.0, cfg)).toBe(0);
   });
 });

@@ -559,6 +559,25 @@ async function main() {
     `mode=${tradingMode}${config.pureWsLiveCanaryEnabled ? '_canary' : ''}`
   );
 
+  // 2026-04-26 사명 §3 phase gate 인지 알림.
+  // Live canary flag 가 켜져 있으면 운영자에게 경고 — Stage 4 SCALE 충족 (200 paper trades + 5x+ winner) 의무.
+  // 코드는 운영자 판단을 신뢰 (auto-block 안 함) 하지만 startup log 로 명시 알림.
+  if (tradingMode === 'live') {
+    const liveLanesEnabled: string[] = [];
+    if (config.pureWsLiveCanaryEnabled) liveLanesEnabled.push('PUREWS_LIVE_CANARY');
+    if (config.pureWsSwingV2LiveCanaryEnabled) liveLanesEnabled.push('PUREWS_SWING_V2_LIVE_CANARY');
+    if (config.cupseyLaneEnabled) liveLanesEnabled.push('CUPSEY_LANE');
+    if (config.migrationLaneEnabled && !config.migrationLaneSignalOnly) liveLanesEnabled.push('MIGRATION_LANE');
+    if (liveLanesEnabled.length > 0) {
+      log.warn(
+        `[STAGE_GATE_REMINDER] live canary flags=[${liveLanesEnabled.join(',')}]. ` +
+        `사명 §3 phase gate 의무: paper trades ≥ 200 + 5x+ winner ≥ 1건 입증 + 별도 ADR + ` +
+        `Telegram critical ack (stage4_approved_YYYY_MM_DD) 충족 후만 활성화. ` +
+        `미달 상태에서 활성 시 운영자가 자발적 책임 인지로 간주.`
+      );
+    }
+  }
+
   // 2026-04-21 P0 (observability): v2 scanner 누적 telemetry 주기 출력.
   // Why: VPS 24h 관측에서 PUREWS_V2_PASS 0건이지만 REJECT 는 log.debug 라 원인 진단 불가.
   // HealthMonitor 와 같은 1분 주기로 v2 scan 통계 (insuf/rejects/halt/PASS) 를 info 로 출력.

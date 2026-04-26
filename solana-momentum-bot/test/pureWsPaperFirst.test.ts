@@ -190,6 +190,69 @@ describe('Block 3 QA — paper-first enforcement', () => {
     override('pureWsSwingV2Enabled', false);
   });
 
+  // 2026-04-26: swing-v2 LIVE canary mode (Stage 4 SCALE 후 opt-in).
+  // PUREWS_SWING_V2_LIVE_CANARY_ENABLED=true + tradingMode=live + max concurrent 통과 시:
+  //   - 별도 lane 'pure_ws_swing_v2' 으로 acquire (primary 와 무관)
+  //   - swing-v2 ticket (0.01 SOL hard lock) 로 추가 live executeBuy
+  //   - DB persist (별도 strategy 라벨)
+  //   - isShadowArm=false (정상 close path 통과)
+  it('SWING_V2 live canary enabled → primary live + swing-v2 live (별도 executor 호출 2회 + DB persist 2회)', async () => {
+    override('pureWsLiveCanaryEnabled', true);
+    override('pureWsSwingV2Enabled', true);
+    override('pureWsSwingV2LiveCanaryEnabled', true);
+    const { ctx, executor, tradeStore } = makeCtx('live');
+    const builder = makeBuilder();
+
+    await handlePureWsSignal(
+      { pairAddress: 'PAIR_LIVE_SWING', strategy: 'bootstrap_10s', price: 1.0 } as any,
+      builder,
+      ctx
+    );
+
+    // primary live + swing-v2 live → executor 2회, insertTrade 2회
+    expect(executor.executeBuy).toHaveBeenCalledTimes(2);
+    expect(tradeStore.insertTrade).toHaveBeenCalledTimes(2);
+
+    const positions = [...getActivePureWsPositions().values()];
+    expect(positions).toHaveLength(2);
+
+    const swingLive = positions.find((p) => p.armName === 'pure_ws_swing_v2');
+    expect(swingLive?.isShadowArm).toBe(false);                  // ← live canary 라 shadow 아님
+    expect(swingLive?.tradeId.startsWith('purews-swingv2-')).toBe(true);
+    expect(swingLive?.t1TrailPctOverride).toBe(config.pureWsSwingV2T1TrailPct);
+
+    // cleanup
+    override('pureWsSwingV2LiveCanaryEnabled', false);
+    override('pureWsSwingV2Enabled', false);
+  });
+
+  it('SWING_V2 live canary + paper mode → live 차단, paper shadow 만 생성', async () => {
+    override('pureWsLiveCanaryEnabled', false);
+    override('pureWsSwingV2Enabled', true);
+    override('pureWsSwingV2LiveCanaryEnabled', true);
+    const { ctx, executor, tradeStore } = makeCtx('paper');
+    const builder = makeBuilder();
+
+    await handlePureWsSignal(
+      { pairAddress: 'PAIR_PAPER_SWING', strategy: 'bootstrap_10s', price: 1.0 } as any,
+      builder,
+      ctx
+    );
+
+    // paper mode → live executeBuy 호출 없음 (primary 도 paper)
+    expect(executor.executeBuy).not.toHaveBeenCalled();
+    // primary paper insertTrade 1회 (paper 도 DB persist)
+    expect(tradeStore.insertTrade).toHaveBeenCalledTimes(1);
+
+    const positions = [...getActivePureWsPositions().values()];
+    expect(positions).toHaveLength(2);
+    const shadow = positions.find((p) => p.armName === 'pure_ws_swing_v2');
+    expect(shadow?.isShadowArm).toBe(true); // paper mode 에선 항상 shadow path
+
+    override('pureWsSwingV2LiveCanaryEnabled', false);
+    override('pureWsSwingV2Enabled', false);
+  });
+
   it('SWING_V2 disabled → primary 만 생성, shadow 없음', async () => {
     override('pureWsLiveCanaryEnabled', true);
     override('pureWsSwingV2Enabled', false);

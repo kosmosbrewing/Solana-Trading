@@ -32,13 +32,14 @@ npm run check:fast
 3. **`docs/design-docs/mission-refinement-2026-04-21.md`** — 사명: 0.8 SOL floor + 200 trades + 5x+ winner 실측. 100 SOL 은 tail outcome.
 4. **`REFACTORING_v1.0.md`** — Option 5 의 Phase 0-5 실행 가이드 (현 active sprint).
 
-### Lane 표
+### Lane 표 (2026-04-26 갱신 — swing-v2 추가)
 
-| Lane | 역할 | 코드 | 파라미터 |
-|------|------|------|----------|
-| `cupsey_flip_10s` | **Benchmark (frozen)** — 개조 금지 | `cupseyLaneHandler.ts` | 변경 0 |
-| `pure_ws_breakout` | Lane S (scalping baseline) | `pureWsBreakoutHandler.ts` | 변경 0 |
-| `kol_hunter` | **Lane T (사명 직결, paper-first)** | `kolSignalHandler.ts` | 재조정 (Lane T) |
+| Lane | arm | 모드 | 역할 | 코드 | 파라미터 |
+|------|------|------|------|------|----------|
+| `cupsey_flip_10s` | — | (disabled) | **Benchmark (frozen)** — 개조 금지 | `cupseyLaneHandler.ts` | 변경 0 |
+| `pure_ws_breakout` | primary (v1) | live opt-in | Lane S (scalping baseline) | `pureWsBreakoutHandler.ts` | 30s probe / 15% trail |
+| `pure_ws_swing_v2` | shadow / live canary | paper-first → opt-in live | swing 손익비 A/B | `pureWs/swingV2Entry.ts` | 600s probe / 25% trail / 1.10 floor |
+| `kol_hunter` | v1 / smart-v3 / swing-v2 | paper-only (코드 강제) | **Lane T (사명 직결)** | `kolSignalHandler.ts` | smart-v3 main + swing-v2 shadow |
 
 ---
 
@@ -59,21 +60,23 @@ npm run check:fast
 
 ## 4. 5 분 안에 알아야 할 것
 
-### 어제 (전 세션) 무엇을 했나
+### 최근 무엇을 했나
+- **2026-04-26 (오늘)** — pure_ws swing-v2 paper shadow + live canary 구현, KOL smart-v3 + swing-v2 dual shadow, sync 스크립트 자동 paper-arm-report, scripts archive (25개), Strategy D 영구 retire (~2200 LOC 감소).
 - **2026-04-25 H1 Foundation** — Clock interface / network mock helper / env-catalog / `npm run check`. 새 세션 hand-off 비용 영구 감소.
 - **2026-04-23 Option 5 Phase 0-3 full** — KOL DB scaffold + tracker + state machine + paper ledger.
 
 ### 다음 운영 액션 (운영자)
-1. `data/kol/wallets.json` 추가 KOL 입력 (현재 16건, 50-80 목표)
-2. `KOL_TRACKER_ENABLED=true` + `KOL_HUNTER_ENABLED=true` (paper-only) 로 재배포
-3. 1-2주 Phase 1 passive logging
-4. `npm run kol:shadow-eval` → Phase 2 go/no-go
+1. `data/kol/wallets.json` 추가 KOL 입력 (현재 22 active, 50-80 목표)
+2. 매일 1회 `bash scripts/sync-vps-data.sh` (자동 paper-arm-report 갱신)
+3. 1-2주 paper 누적 (KOL smart-v3 + swing-v2 + pure_ws swing-v2 shadow)
+4. 200 trade + 5x+ winner 입증 시 swing-v2 live canary opt-in 검토 (별도 ADR)
 
 ### 절대 하지 말 것
 - ❌ `cupsey_flip_10s` 코드 수정 (frozen benchmark)
 - ❌ Real Asset Guard 어떤 항목도 완화
 - ❌ V2 detector / probe window / ticket size 튜닝 (관측 데이터 없이)
 - ❌ KOL DB 자동 추가 (수동 편집 only)
+- ❌ swing-v2 live canary 활성화를 200 paper trades + 5x+ winner 입증 전에 (사명 §3 위반)
 - ❌ ESLint disable / `STRUCTURE_BASELINE freeze` 같은 임시방편 (Phase H2-H4 에서 근본 refactor 예정)
 - ❌ `npm run check:fast` 가 빨강인 채로 commit
 

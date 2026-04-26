@@ -6,6 +6,40 @@
 
 ---
 
+## 2026-04-26 — Phase 3.5/3.6: 손익비 정책 A/B + pure_ws swing-v2 live canary 코드 완성
+
+### 산출물
+
+1. **KOL smart-v3 main** (`KOL_HUNTER_SMART_V3_ENABLED=true` default) — Pullback / Velocity / Both trigger, reason 별 trail/floor override. Paper-only 강제.
+2. **KOL swing-v2 shadow** — `primaryVersion === v1` 제약 제거 → smart-v3 main + swing-v2 shadow dual 측정. 자격: multi-KOL S/A ≥2 + score ≥5.0.
+3. **pure_ws swing-v2 paper shadow** — V2 PASS 신호마다 primary live + shadow paper 동시 생성. `pureWs/swingV2Entry.ts` 신규 (~300 LOC). 별도 ledger (`pure-ws-paper-trades.jsonl`).
+4. **pure_ws swing-v2 live canary** (`PUREWS_SWING_V2_LIVE_CANARY_ENABLED=true`, opt-in) — 별도 EntryLane / canary slot / budget −0.1 SOL cap. 3 mode (dual live / swing-only live / paper shadow).
+
+### 사명 §3 phase gate (Stage 4 SCALE)
+
+Live canary 활성화 전 충족 필요:
+- ⏳ Paper trades ≥ 200 (현재 75 = smart-v3 7 + v1 fallback 68)
+- ⏳ Paper 5x+ winner ≥ 1건 입증 (현재 0)
+- ⏳ 별도 ADR (`docs/design-docs/pure-ws-swing-v2-live-canary-YYYY-MM-DD.md`)
+- ⏳ Telegram critical ack `stage4_approved_YYYY_MM_DD`
+
+→ 활성화는 운영자 책임. 코드는 paper-first 강제.
+
+---
+
+## 2026-04-26 — Doc / scripts cleanup
+
+| 변경 | 효과 |
+|------|------|
+| 6 stale 루트 doc archive 또는 삭제 | `Block_QA / CRITICAL_LIVE / DEX_TRADE / REFACTORING (구) / LANE_20260422 / 20260423` |
+| 25 pre-pivot scripts → `scripts/archive/pre-pivot-2026-04-18/` | 65 → 40 active |
+| Strategy D (`new_lp_sniper`) 영구 retire | `BirdeyeWSClient / listingSourceAdapter × 2 / newLpSniper` 모듈 5개 삭제 (~1991 LOC 감소) |
+| Path B2 KOL tracker (`src/discovery/kolWalletTracker.ts`) 제거 | Option 5 의 `src/ingester/kolWalletTracker.ts` 만 남음 |
+| sync-vps-data 자동 paper-arm-report 추가 | 매일 1 명령으로 sync + sub-arm 통계 |
+| 3 test suite isolation fix (cupseyWalletMode + survival/probe gate override) | 16 fail → 3 fail (남은 3 cupsey state coupling 은 별도 sprint) |
+
+---
+
 ## 2026-04-26 — smart-v3 Jupiter probe 부담 모니터링 항목 (F11)
 
 `kol_hunter_smart_v3` 가 main paper 진입 경로로 활성화됨에 따라, paper price feed (`PaperPriceFeed`) 의 Jupiter quote 부담이 stalk window 길이 × active subscription 수만큼 비례 증가한다.

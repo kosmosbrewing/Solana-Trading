@@ -25,6 +25,7 @@ import { initCusumState, updateCusum, CusumState, CusumConfig } from '../strateg
 import { BotContext } from './types';
 import { bpsToDecimal } from '../utils/units';
 import { isWalletStopActive } from '../risk/walletStopGuard';
+import { checkPureWsSurvival } from './pureWs/survivalCheck';
 import { serializeClose, resetSharedCloseMutexForTests } from './swapSerializer';
 import { reportCanaryClose } from '../risk/canaryAutoHalt';
 import { acquireCanarySlot, releaseCanarySlot } from '../risk/canaryConcurrencyGuard';
@@ -399,6 +400,21 @@ export async function handleCupseyLaneSignal(
   if (activeCount >= config.cupseyMaxConcurrent) {
     log.debug(`Cupsey lane skip: max concurrent (${activeCount})`);
     return;
+  }
+
+  // 2026-04-26 Real Asset Guard 정합 fix: security hard reject (§6).
+  // 이전: cupsey 는 cupseySignalGate (factor 점수) 만 — honeypot/Token-2022 dangerous ext 무방어.
+  // 수정: live 모드에서 Token-2022 transferHook / freezable 등 honeypot 차단을 위해 survival check 호출.
+  // checkPureWsSurvival 를 재사용 (gateCache 공유 → bootstrap path 와 RPC 중복 회피).
+  if (config.securityGateEnabled && ctx.tradingMode === 'live') {
+    const survival = await checkPureWsSurvival(signal.pairAddress, ctx);
+    if (!survival.approved) {
+      log.warn(
+        `[CUPSEY_SURVIVAL_REJECT] ${signal.pairAddress.slice(0, 12)} ` +
+        `reason=${survival.reason} flags=[${survival.flags.join(',')}]`
+      );
+      return;
+    }
   }
 
   // ─── CUSUM Volume Regime Change Detection (Phase 0: observation-only) ───

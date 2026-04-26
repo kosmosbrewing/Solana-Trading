@@ -1153,6 +1153,17 @@ function ensurePriceListener(tokenMint: string): void {
   priceFeed.on('price', listener);
 }
 
+// ─── Paper-only 휴리스틱 named constants ─────────────────
+// 2026-04-26: hardcode magic number 를 named constant 로 추출 (의도 명시 + 향후 config 화 후보).
+// Paper-only 휴리스틱 — Phase 4+ live 에서는 실 candle / buy ratio / tx density 기반으로 대체 예정.
+const KOL_PAPER_PROBE_FLAT_BAND_PCT = 0.10;                  // stalk 만료 시 ±10% 범위 내면 timeout reject
+const KOL_PAPER_PROBE_TRAIL_PCT = 0.15;                      // PROBE 의 peak-pullback trail (15%)
+const KOL_PAPER_QUICK_REJECT_MFE_LOW_THRESHOLD = 0.02;       // (a) MFE 2% 미만 + 30s 경과 시 factor +1
+const KOL_PAPER_QUICK_REJECT_MFE_LOW_ELAPSED_SEC = 30;
+const KOL_PAPER_QUICK_REJECT_PRICE_DROP_THRESHOLD = -0.05;   // (b) 현 price -5% 이하 시 factor +1
+const KOL_PAPER_QUICK_REJECT_PULLBACK_THRESHOLD = 0.20;      // (c) peak 로부터 20% pullback 시 factor +1
+const KOL_PAPER_HOLD_PHASE_PEAK_DRIFT_THRESHOLD = 0.30;      // RUNNER tier degraded 판정 (peak 30% 이탈)
+
 // ─── State Machine ───────────────────────────────────────
 
 function onPriceTick(positionId: string, tick: PriceTick): void {
@@ -1195,7 +1206,8 @@ function onPriceTick(positionId: string, tick: PriceTick): void {
       const armStalkSec = pos.probeFlatTimeoutSec
         ?? (isSwingV2Position(pos) ? config.kolHunterSwingV2StalkWindowSec : config.kolHunterStalkWindowSec);
       if (elapsedSec >= armStalkSec) {
-        const inFlatBand = Math.abs(currentPct) <= 0.10;
+        // 2026-04-26: hardcode 0.10 → KOL_PAPER_PROBE_FLAT_BAND_PCT (paper 휴리스틱 named const)
+        const inFlatBand = Math.abs(currentPct) <= KOL_PAPER_PROBE_FLAT_BAND_PCT;
         if (inFlatBand) {
           closePosition(pos, currentPrice, 'probe_reject_timeout', nowSec, mfePct, maePct);
           return;
@@ -1203,7 +1215,7 @@ function onPriceTick(positionId: string, tick: PriceTick): void {
       }
       // 4. Probe trail (flat band 벗어난 후 pullback)
       if (pos.peakPrice > pos.entryPrice) {
-        const trailStop = pos.peakPrice * (1 - 0.15);
+        const trailStop = pos.peakPrice * (1 - KOL_PAPER_PROBE_TRAIL_PCT);
         if (currentPrice <= trailStop) {
           closePosition(pos, currentPrice, 'probe_flat_cut', nowSec, mfePct, maePct);
           return;
@@ -1285,28 +1297,25 @@ function onPriceTick(positionId: string, tick: PriceTick): void {
   }
 }
 
-// ─── Quick Reject / Hold Phase (paper 용 단순 휴리스틱) ───
-
 function countQuickRejectFactors(pos: PaperPosition, currentPrice: number, elapsedSec: number): number {
   // Paper 모드에서는 candle microstructure 데이터 없음 → price-based 휴리스틱
-  // Phase 4+ live 에서는 실 candle / buy ratio / tx density 사용 예정
   let factors = 0;
   const mfeSoFar = (pos.peakPrice - pos.marketReferencePrice) / pos.marketReferencePrice;
   const currentPct = (currentPrice - pos.marketReferencePrice) / pos.marketReferencePrice;
-  // (a) mfe 낮음
-  if (mfeSoFar < 0.02 && elapsedSec > 30) factors += 1;
-  // (b) 가격 감소 중
-  if (currentPct < -0.05) factors += 1;
-  // (c) peak 로부터 deep pullback
+  if (
+    mfeSoFar < KOL_PAPER_QUICK_REJECT_MFE_LOW_THRESHOLD &&
+    elapsedSec > KOL_PAPER_QUICK_REJECT_MFE_LOW_ELAPSED_SEC
+  ) factors += 1;
+  if (currentPct < KOL_PAPER_QUICK_REJECT_PRICE_DROP_THRESHOLD) factors += 1;
   const pullback = (pos.peakPrice - currentPrice) / Math.max(pos.peakPrice, 1e-12);
-  if (pullback > 0.20) factors += 1;
+  if (pullback > KOL_PAPER_QUICK_REJECT_PULLBACK_THRESHOLD) factors += 1;
   return factors;
 }
 
 function detectHoldPhaseDegraded(pos: PaperPosition, currentPrice: number): boolean {
   // Paper: peak 로부터 큰 drop + price 감소 지속 시 degraded 판정
   const peakDrift = (pos.peakPrice - currentPrice) / Math.max(pos.peakPrice, 1e-12);
-  return peakDrift > 0.30;
+  return peakDrift > KOL_PAPER_HOLD_PHASE_PEAK_DRIFT_THRESHOLD;
 }
 
 // ─── Close ───────────────────────────────────────────────

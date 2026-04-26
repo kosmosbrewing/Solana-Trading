@@ -23,10 +23,14 @@
                               ↑ enforce
 ┌─────────────────────────────────────────────────────────────────┐
 │ Layer B — Lane (paradigm 별 entry/exit 로직)                      │
-│   - cupsey_flip_10s   (frozen benchmark)                          │
-│   - pure_ws_breakout  (Lane S, scalping baseline)                 │
-│   - kol_hunter        (Lane T, tail hunter — Option 5)            │
-│   - migration_reclaim (backlog)                                   │
+│   - cupsey_flip_10s    (frozen benchmark, disabled)               │
+│   - pure_ws_breakout   (Lane S, scalping baseline)                │
+│   - pure_ws_swing_v2   (Lane S long-hold A/B, paper-first)        │
+│   - kol_hunter         (Lane T, tail hunter — Option 5)           │
+│     ├ v1 (legacy single-KOL wait)                                  │
+│     ├ smart-v3 (pullback + velocity, main paper)                   │
+│     └ swing-v2 (multi-KOL long hold shadow)                        │
+│   - migration_reclaim (backlog, signal-only)                      │
 │   → src/orchestration/* + src/strategy/* + src/gate/*             │
 └─────────────────────────────────────────────────────────────────┘
                               ↓ emit events
@@ -39,15 +43,18 @@
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Lane 표 (현 active)
+### Lane 표 (현 active, 2026-04-26 갱신)
 
-| Lane | 상태 | Paradigm | 주 파일 | 동결 여부 |
-|------|------|---------|--------|-----------|
-| `cupsey_flip_10s` | live, baseline | mission-pivot | `cupseyLaneHandler.ts` | **개조 금지** (benchmark) |
-| `pure_ws_breakout` | live, opt-in | mission-pivot | `pureWsBreakoutHandler.ts` | 파라미터만 (수치) |
-| `kol_hunter` | paper-first | **Option 5 (active)** | `kolSignalHandler.ts` | Lane T 신규 |
+| Lane / arm | 상태 | Paradigm | 주 파일 | 손익비 정책 |
+|------|------|---------|--------|------------|
+| `cupsey_flip_10s` | disabled (env) | benchmark frozen | `cupseyLaneHandler.ts` | **개조 금지** |
+| `pure_ws_breakout` | live, opt-in | mission-pivot Lane S | `pureWs/entryFlow.ts` | 30s probe / 15% trail |
+| `pure_ws_swing_v2` | paper shadow / live canary opt-in | mission-pivot Lane S A/B | `pureWs/swingV2Entry.ts` | 600s probe / 25% trail / 1.10 floor |
+| `kol_hunter` v1 | paper-only | Option 5 legacy | `kolSignalHandler.ts` | 180s stalk / 15% trail |
+| `kol_hunter` smart-v3 | paper-only (main) | Option 5 main | `kolSignalHandler.ts` | pullback/velocity/both, reason 별 trail (20-25%) + floor (1.05-1.10) |
+| `kol_hunter` swing-v2 | paper-only (shadow) | Option 5 shadow A/B | `kolSignalHandler.ts` | 600s stalk / 25% trail / 1.10 floor |
 | `bootstrap_10s` | signal-only | legacy | `signalProcessor.ts` | 억제 (executionRrReject=99) |
-| `migration_reclaim` | backlog | option5 후속 | `migrationLaneHandler.ts` | paper 대기 |
+| `migration_reclaim` | signal-only (env) | option5 후속 | `migrationLaneHandler.ts` | paper 대기 |
 | `volume_spike` / `fib_pullback` | dormant | pre-pivot | — | 비활성 |
 
 ### Real Asset Guard 매핑 (불변값)
@@ -55,9 +62,12 @@
 | Hard constraint | 코드 변수 | 모듈 | env override |
 |-----------------|-----------|------|--------------|
 | Wallet floor | `walletStopMinSol=0.8` | `src/risk/walletStopGuard.ts` | `WALLET_STOP_MIN_SOL` |
-| Canary cumulative loss cap | `canaryMaxBudgetSol=0.3` | `src/risk/canaryAutoHalt.ts` | `CANARY_MAX_BUDGET_SOL` |
-| Fixed ticket | `*LaneTicketSol=0.01` | `src/utils/tradingParams.ts` | lane 별 |
-| Max concurrent | 3 (전역) | `src/risk/canaryConcurrencyGuard.ts` | `CANARY_GLOBAL_MAX_CONCURRENT` |
+| Canary cumulative loss cap (primary lanes) | `canaryMaxBudgetSol=0.3` | `src/risk/canaryAutoHalt.ts` | `CANARY_MAX_BUDGET_SOL` |
+| Canary loss cap (swing-v2 lane 별도) | `canarySwingV2MaxBudgetSol=0.1` | `src/risk/canaryAutoHalt.ts` | `CANARY_SWING_V2_MAX_BUDGET_SOL` |
+| Fixed ticket (primary lanes) | `*LaneTicketSol=0.01` | `src/utils/tradingParams.ts` | lane 별 |
+| Fixed ticket (swing-v2) | `pureWsSwingV2TicketSol=0.01` | `src/config/dexTradeDetector.ts` | `PUREWS_SWING_V2_TICKET_SOL` |
+| Max concurrent (전역) | 3 | `src/risk/canaryConcurrencyGuard.ts` | `CANARY_GLOBAL_MAX_CONCURRENT` |
+| Max concurrent (swing-v2 자체) | 2 | `src/orchestration/pureWs/swingV2Entry.ts` | `PUREWS_SWING_V2_MAX_CONCURRENT` |
 | Drift halt | `walletDeltaHaltSol=0.2` | `src/risk/walletDeltaComparator.ts` | `WALLET_DELTA_HALT_SOL` |
 | Security hard reject | mint/freeze/honeypot/Token-2022 | `src/gate/securityGate.ts` | (불변) |
 

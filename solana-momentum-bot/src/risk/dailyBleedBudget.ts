@@ -125,7 +125,16 @@ export function maxProbesToday(
   walletBaselineSol: number,
   cfg: DailyBleedBudgetConfig
 ): number {
-  if (expectedBleedPerProbeSol <= 0) return Number.POSITIVE_INFINITY;
+  // 2026-04-26 fail-safe fix: misconfig (expectedBleedPerProbeSol <= 0) → 무한 probe 반환은
+  // 사명 §3 "시도 수 통제" 위반 위험. caller 가 무한값 인지 안 하면 while 루프 탈진.
+  // POSITIVE_INFINITY 대신 0 으로 보수 fallback + error log.
+  if (expectedBleedPerProbeSol <= 0) {
+    log.error(
+      `[BLEED_BUDGET_MISCONFIG] expectedBleedPerProbeSol=${expectedBleedPerProbeSol} ` +
+      `(<=0) — returning 0 (no probes allowed). caller 가 cost 계산 점검 필요.`
+    );
+    return 0;
+  }
   const remaining = remainingDailyBudget(walletBaselineSol, cfg);
   return Math.floor(remaining / expectedBleedPerProbeSol);
 }

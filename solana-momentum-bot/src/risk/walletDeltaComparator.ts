@@ -220,6 +220,18 @@ export async function startWalletDeltaComparator(
 
       if (absDrift < cfg.driftWarnSol) {
         state.consecutiveDriftBreaches = 0;
+        // 2026-04-26 fix: drift 복구 시 haltTriggered flag 도 reset.
+        // 이전: state.haltTriggered 가 한 번 true 되면 영구 → 운영자 수동 reset 후 재halt 불가.
+        // 수정: drift 가 warn threshold 미만으로 복구되면 자동 reset → 다음 breach 감지 가능.
+        // 단 lane entry halt 자체는 별도 (haltAllLanes 가 entryHaltState 를 trigger 했으므로
+        // 그 reset 은 운영자 책임 — canaryAutoResetEnabled 가 처리).
+        if (state.haltTriggered) {
+          state.haltTriggered = false;
+          log.info(
+            `[WALLET_DELTA_HALT_FLAG_RESET] drift recovered to ${drift.toFixed(6)} SOL ` +
+            `(< warn ${cfg.driftWarnSol}) — comparator 가 다음 breach 재감지 가능`
+          );
+        }
         return;
       }
 

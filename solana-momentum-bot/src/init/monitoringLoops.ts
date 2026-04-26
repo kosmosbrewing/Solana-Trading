@@ -148,9 +148,9 @@ export async function startMonitoringLoops(deps: MonitoringDeps): Promise<Monito
     }
   }, 24 * 3600_000);
 
-  // ─── KOL paper hourly digest (L1) — config gated
+  // ─── KOL paper hourly digest (L1) — kol_hunter 켜져 있을 때만
   let kolHourlyDigestInterval: ReturnType<typeof setInterval> | null = null;
-  if (config.kolHunterEnabled && config.kolHourlyDigestEnabled) {
+  if (config.kolHunterEnabled) {
     kolHourlyDigestInterval = setInterval(async () => {
       try {
         await flushKolHourlyDigest(deps.notifier);
@@ -158,10 +158,7 @@ export async function startMonitoringLoops(deps: MonitoringDeps): Promise<Monito
         log.warn(`KOL hourly digest failed: ${error}`);
       }
     }, KOL_HOURLY_DIGEST_INTERVAL_MS);
-    log.info(
-      `KOL hourly digest scheduled — interval=${KOL_HOURLY_DIGEST_INTERVAL_MS / 60000}min ` +
-      `anomalyMfe=${config.kolAnomalyMfeThreshold}x`
-    );
+    log.info(`KOL hourly digest scheduled — interval=${KOL_HOURLY_DIGEST_INTERVAL_MS / 60000}min`);
   }
 
   return { positionCheckInterval, regimeInterval, pruneInterval, kolHourlyDigestInterval };

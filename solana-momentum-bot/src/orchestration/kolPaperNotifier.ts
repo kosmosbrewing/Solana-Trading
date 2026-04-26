@@ -15,13 +15,23 @@
  * 한 곳에서 유지하는 게 단순.
  */
 import type { Notifier } from '../notifier';
-import { config } from '../utils/config';
 import { createModuleLogger } from '../utils/logger';
 import { kolHunterEvents } from './kolSignalHandler';
 import type { PaperPosition, CloseReason } from './kolSignalHandler';
 import type { KolTx } from '../kol/types';
 
 const log = createModuleLogger('KolPaperNotifier');
+
+// ─── Tunables (constants, no env override) ──────────────────────────────────
+// Why hardcoded: 텔레그램 알림용 cosmetic. 운영 중 변경 의미 없는 임계값들 → env catalog
+// 노이즈 회피. 진짜 의미 있는 변경 필요 시 PR 로 상수 수정 (= behavior 변경 review 강제).
+
+/** Top peak movers 표시 개수 (hourly digest). */
+const TOP_MOVER_COUNT = 5;
+
+/** L2 anomaly threshold — peak MFE ≥ 5x (= 500%) 면 즉시 알림.
+ *  T2 visit (5x MFE) 도달은 사명 검증 milestone — 희귀 이벤트라 spam 위험 없음. */
+const ANOMALY_MFE_THRESHOLD = 5.0;
 
 // ─── Accumulator state ──────────────────────────────────────────────────────
 
@@ -128,8 +138,8 @@ function onPaperClose(payload: {
     closedAtMs: Date.now(),
   });
 
-  // L2 anomaly — peak MFE 가 임계 (default 5.0 = 500%) 이상이면 즉시 알림
-  if (mfePctPeak >= config.kolAnomalyMfeThreshold && notifierRef) {
+  // L2 anomaly — peak MFE 가 임계 (5.0 = 500%) 이상이면 즉시 알림
+  if (mfePctPeak >= ANOMALY_MFE_THRESHOLD && notifierRef) {
     const message =
       `🔥 [KOL_5X_WINNER] ${pos.armName} / ${pos.tokenMint.slice(0, 12)}\n` +
       `  MFE peak: +${(mfePctPeak * 100).toFixed(0)}%\n` +
@@ -172,7 +182,7 @@ function buildHourlyDigestMessage(): string | null {
   // Top movers (peak MFE 기준 desc)
   const top = [...digest.topMovers]
     .sort((a, b) => b.mfePctPeak - a.mfePctPeak)
-    .slice(0, config.kolDigestTopMoverCount);
+    .slice(0, TOP_MOVER_COUNT);
   if (top.length > 0) {
     lines.push(`  top peak movers (${top.length}):`);
     for (const m of top) {
@@ -204,7 +214,6 @@ function buildHourlyDigestMessage(): string | null {
 
 /** scheduler 가 1h 마다 호출. accumulator reset 후 다음 윈도우 시작. */
 export async function flushKolHourlyDigest(notifier: Notifier): Promise<void> {
-  if (!config.kolHourlyDigestEnabled) return;
   const message = buildHourlyDigestMessage();
   if (!message) {
     digest = emptyDigest();
@@ -228,8 +237,7 @@ export function initKolPaperNotifier(notifier: Notifier): void {
   kolHunterEvents.on('paper_close', onPaperClose);
   initialized = true;
   log.info(
-    `KOL paper notifier initialized — hourly=${config.kolHourlyDigestEnabled} ` +
-    `anomalyMfe=${config.kolAnomalyMfeThreshold}x daily=${config.kolDailySummaryEnabled}`
+    `KOL paper notifier initialized — hourly digest + ${ANOMALY_MFE_THRESHOLD}x anomaly + daily A/B`
   );
 }
 

@@ -6,8 +6,7 @@
  * sent via `notifier.sendInfo(msg, 'kol_daily')`.
  *
  * 호출 지점: src/orchestration/reporting.ts 의 sendDailySummaryReport 끝부분에서
- * paperMetrics / regimeFilter sendInfo 같이 sequential 로 호출. config.kolDailySummaryEnabled
- * 로 gate.
+ * paperMetrics / regimeFilter sendInfo 같이 sequential 로 호출. 24h 거래 0건이면 skip.
  */
 import { readFile } from 'fs/promises';
 import path from 'path';
@@ -146,7 +145,6 @@ function buildSummary(records: PaperLedgerRecord[]): string | null {
 }
 
 export async function sendKolDailySummary(notifier: Notifier): Promise<void> {
-  if (!config.kolDailySummaryEnabled) return;
   try {
     const records = await loadLast24hRecords();
     const message = buildSummary(records);

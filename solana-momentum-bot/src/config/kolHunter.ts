@@ -88,13 +88,4 @@ export const kolHunter = {
   kolHunterSmartV3ReinforcementTrailInc: numEnv('KOL_HUNTER_SMART_V3_REINFORCEMENT_TRAIL_INC', '0.01'),
   kolHunterSmartV3ReinforcementTrailMax: numEnv('KOL_HUNTER_SMART_V3_REINFORCEMENT_TRAIL_MAX', '0.25'),
   kolHunterSmartV3ParameterVersion: process.env.KOL_HUNTER_SMART_V3_PARAMETER_VERSION ?? 'smart-v3.0.0',
-
-  // ─── Paper notifier (2026-04-26): operator visibility for KOL paper arms ───
-  // L1 hourly digest: per-hour discoveries / entries by arm / top movers / arm bleed.
-  // L2 anomaly: 즉시 알림 (5x+ peak MFE 등) — 희귀 이벤트만, spam 방지.
-  // L3 daily summary: kol-paper-trades.jsonl 기반 A/B 비교 (v1 vs smart-v3 vs swing-v2).
-  kolHourlyDigestEnabled: boolOptional('KOL_HOURLY_DIGEST_ENABLED', true),
-  kolDigestTopMoverCount: numEnv('KOL_DIGEST_TOP_MOVER_COUNT', '5'),
-  kolAnomalyMfeThreshold: numEnv('KOL_ANOMALY_MFE_THRESHOLD', '5.0'),  // 5.0 = 500% peak
-  kolDailySummaryEnabled: boolOptional('KOL_DAILY_SUMMARY_ENABLED', true),
 } as const;

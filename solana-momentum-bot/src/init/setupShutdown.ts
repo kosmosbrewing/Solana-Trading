@@ -26,6 +26,7 @@ import { stopWalletStopGuardPoller } from '../risk/walletStopGuard';
 import { stopWalletDeltaComparator } from '../risk/walletDeltaComparator';
 import { stopJupiter429SummaryLoop } from '../observability/jupiterRateLimitMetric';
 import { stopKolHunter } from '../orchestration/kolSignalHandler';
+import { stopKolPaperNotifier } from '../orchestration/kolPaperNotifier';
 import { stopKolDbWatcher } from '../kol/db';
 import { createModuleLogger } from '../utils/logger';
 import type { MonitoringHandles } from './monitoringLoops';
@@ -91,6 +92,7 @@ export function setupShutdown(c: ShutdownContext): void {
     stopWalletDeltaComparator();
     stopJupiter429SummaryLoop();
     stopKolHunter();
+    stopKolPaperNotifier();  // QA fix E: kolHunterEvents listener 해제 (test env hygiene)
     if (c.kolTracker) await c.kolTracker.stop();
     stopKolDbWatcher();
     await c.dbPool.end();

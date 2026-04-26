@@ -87,6 +87,7 @@ import { Connection } from '@solana/web3.js';
 import { initKolDb, getKolDbStats } from './kol/db';
 import { KolWalletTracker } from './ingester/kolWalletTracker';
 import { initKolHunter, handleKolSwap } from './orchestration/kolSignalHandler';
+import { initKolPaperNotifier } from './orchestration/kolPaperNotifier';
 import type { KolTx } from './kol/types';
 import { resolveCupseyWalletLabel } from './orchestration/cupseyLaneHandler';
 import { resolveMigrationWalletLabel } from './orchestration/migrationLaneHandler';
@@ -1354,6 +1355,9 @@ async function main() {
             log.warn(`[KOL_HUNTER] handleKolSwap error: ${String(err)}`);
           });
         });
+        // 2026-04-26: paper notifier (L1 hourly digest + L2 5x anomaly alert).
+        // L3 daily summary 는 reporting.ts 의 sendDailySummaryReport 에서 호출.
+        initKolPaperNotifier(notifier);
         log.info(
           `[KOL_HUNTER] Option 5 Phase 3 — paper lane started (paperOnly=${config.kolHunterPaperOnly}, ` +
           `survival=${ctx.onchainSecurityClient ? 'wired' : 'no-client'})`

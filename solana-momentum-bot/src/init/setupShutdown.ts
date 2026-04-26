@@ -60,6 +60,9 @@ export function setupShutdown(c: ShutdownContext): void {
     clearInterval(c.monitoringHandles.positionCheckInterval);
     clearInterval(c.monitoringHandles.regimeInterval);
     clearInterval(c.monitoringHandles.pruneInterval);
+    if (c.monitoringHandles.kolHourlyDigestInterval) {
+      clearInterval(c.monitoringHandles.kolHourlyDigestInterval);
+    }
     // Why: grace period timer가 shutdown 후 발동하면 stopped ingester 호출 → 에러 방지
     for (const { timer } of c.pendingAliasCleanups.values()) {
       clearTimeout(timer);

@@ -357,6 +357,9 @@ export function getKolHunterState(): {
 export async function handleKolSwap(tx: KolTx): Promise<void> {
   if (!config.kolHunterEnabled) return;
 
+  // 2026-04-26 paper notifier L1: discovery 카운팅 (kolPaperNotifier 가 hourly digest 에 사용)
+  kolHunterEvents.emit('discovery', tx);
+
   // recent buffer 유지 (24h)
   recentKolTxs.push(tx);
   const cutoff = Date.now() - config.kolScoringWindowMs;
@@ -1319,7 +1322,11 @@ function closePosition(
   // price feed unsubscribe — token 의 모든 A/B arm 이 닫힌 뒤에만 정리
   unsubscribePriceIfIdle(pos.tokenMint);
 
-  kolHunterEvents.emit('paper_close', { pos, reason, exitPrice, netSol, netPct });
+  // 2026-04-26 paper notifier L2: peak MFE 같이 전달 → anomaly 알림 (5x+ winner) 판정 가능
+  const mfePctPeak = pos.marketReferencePrice > 0
+    ? (pos.peakPrice - pos.marketReferencePrice) / pos.marketReferencePrice
+    : 0;
+  kolHunterEvents.emit('paper_close', { pos, reason, exitPrice, netSol, netPct, mfePctPeak, holdSec });
 }
 
 /**

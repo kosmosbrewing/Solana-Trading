@@ -8,10 +8,12 @@ import { type PaperMetricsSummary } from '../reporting/paperMetrics';
 import { EventScoreStore } from '../event';
 import { SOL_MINT } from '../utils/constants';
 import { Candle, CandleInterval } from '../utils/types';
+import { flushKolHourlyDigest } from '../orchestration/kolPaperNotifier';
 
 const log = createModuleLogger('MonitoringLoops');
 
 const REGIME_UPDATE_INTERVAL_MS = 15 * 60 * 1000;
+const KOL_HOURLY_DIGEST_INTERVAL_MS = 60 * 60 * 1000;
 
 export interface MonitoringDeps {
   ctx: BotContext;
@@ -35,6 +37,7 @@ export interface MonitoringHandles {
   positionCheckInterval: ReturnType<typeof setInterval>;
   regimeInterval: ReturnType<typeof setInterval>;
   pruneInterval: ReturnType<typeof setInterval>;
+  kolHourlyDigestInterval: ReturnType<typeof setInterval> | null;
 }
 
 // Phase E1 (2026-04-08): exit mechanism mode 별 position check 주기.
@@ -145,5 +148,21 @@ export async function startMonitoringLoops(deps: MonitoringDeps): Promise<Monito
     }
   }, 24 * 3600_000);
 
-  return { positionCheckInterval, regimeInterval, pruneInterval };
+  // ─── KOL paper hourly digest (L1) — config gated
+  let kolHourlyDigestInterval: ReturnType<typeof setInterval> | null = null;
+  if (config.kolHunterEnabled && config.kolHourlyDigestEnabled) {
+    kolHourlyDigestInterval = setInterval(async () => {
+      try {
+        await flushKolHourlyDigest(deps.notifier);
+      } catch (error) {
+        log.warn(`KOL hourly digest failed: ${error}`);
+      }
+    }, KOL_HOURLY_DIGEST_INTERVAL_MS);
+    log.info(
+      `KOL hourly digest scheduled — interval=${KOL_HOURLY_DIGEST_INTERVAL_MS / 60000}min ` +
+      `anomalyMfe=${config.kolAnomalyMfeThreshold}x`
+    );
+  }
+
+  return { positionCheckInterval, regimeInterval, pruneInterval, kolHourlyDigestInterval };
 }

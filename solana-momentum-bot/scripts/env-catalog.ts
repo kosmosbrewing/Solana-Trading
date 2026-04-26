@@ -17,60 +17,67 @@
  *   npm run env:generate      # .env.example.generated 갱신 후 commit
  *   npm run env:check         # CI — config.ts ↔ generated 일치 확인 (drift 시 fail)
  */
-import { readFile } from 'fs/promises';
+import { readFile, readdir } from 'fs/promises';
 import path from 'path';
 import * as ts from 'typescript';
 
-const CONFIG_PATH = path.resolve(__dirname, '../src/utils/config.ts');
+// 2026-04-26: config.ts split (surgery 1) 후 도메인 파일 디렉토리.
+// scripts/env-catalog 는 모든 src/config/*.ts 를 스캔한다 (utils/config.ts 는 5-line shim).
+const CONFIG_DIR = path.resolve(__dirname, '../src/config');
 const ENV_EXAMPLE_PATH = path.resolve(__dirname, '../.env.example');
 /** Auto-generated canonical reference. drift check 대상. */
 const ENV_GENERATED_PATH = path.resolve(__dirname, '../.env.example.generated');
 
 async function extractEnvKeysFromConfig(): Promise<Set<string>> {
-  const source = await readFile(CONFIG_PATH, 'utf8');
-  const sf = ts.createSourceFile(CONFIG_PATH, source, ts.ScriptTarget.ES2020, true);
   const keys = new Set<string>();
+  const files = (await readdir(CONFIG_DIR)).filter((f) => f.endsWith('.ts'));
 
-  function visit(node: ts.Node): void {
-    // process.env.XYZ
-    if (ts.isPropertyAccessExpression(node)) {
-      const obj = node.expression;
-      if (
-        ts.isPropertyAccessExpression(obj) &&
-        ts.isIdentifier(obj.expression) &&
-        obj.expression.text === 'process' &&
-        ts.isIdentifier(obj.name) &&
-        obj.name.text === 'env' &&
-        ts.isIdentifier(node.name)
-      ) {
-        keys.add(node.name.text);
+  for (const fname of files) {
+    const fpath = path.join(CONFIG_DIR, fname);
+    const source = await readFile(fpath, 'utf8');
+    const sf = ts.createSourceFile(fpath, source, ts.ScriptTarget.ES2020, true);
+
+    function visit(node: ts.Node): void {
+      // process.env.XYZ
+      if (ts.isPropertyAccessExpression(node)) {
+        const obj = node.expression;
+        if (
+          ts.isPropertyAccessExpression(obj) &&
+          ts.isIdentifier(obj.expression) &&
+          obj.expression.text === 'process' &&
+          ts.isIdentifier(obj.name) &&
+          obj.name.text === 'env' &&
+          ts.isIdentifier(node.name)
+        ) {
+          keys.add(node.name.text);
+        }
       }
-    }
-    // process.env['XYZ']
-    if (ts.isElementAccessExpression(node)) {
-      const obj = node.expression;
-      if (
-        ts.isPropertyAccessExpression(obj) &&
-        ts.isIdentifier(obj.expression) &&
-        obj.expression.text === 'process' &&
-        ts.isIdentifier(obj.name) &&
-        obj.name.text === 'env' &&
-        ts.isStringLiteral(node.argumentExpression)
-      ) {
-        keys.add(node.argumentExpression.text);
+      // process.env['XYZ']
+      if (ts.isElementAccessExpression(node)) {
+        const obj = node.expression;
+        if (
+          ts.isPropertyAccessExpression(obj) &&
+          ts.isIdentifier(obj.expression) &&
+          obj.expression.text === 'process' &&
+          ts.isIdentifier(obj.name) &&
+          obj.name.text === 'env' &&
+          ts.isStringLiteral(node.argumentExpression)
+        ) {
+          keys.add(node.argumentExpression.text);
+        }
       }
-    }
-    // optional('XYZ', ...) / required('XYZ') / boolOptional('XYZ', ...)
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
-      const fnName = node.expression.text;
-      if (['optional', 'required', 'boolOptional'].includes(fnName) && node.arguments[0]) {
-        const arg = node.arguments[0];
-        if (ts.isStringLiteral(arg)) keys.add(arg.text);
+      // optional('XYZ', ...) / required('XYZ') / boolOptional('XYZ', ...) / numEnv('XYZ', ...)
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+        const fnName = node.expression.text;
+        if (['optional', 'required', 'boolOptional', 'numEnv'].includes(fnName) && node.arguments[0]) {
+          const arg = node.arguments[0];
+          if (ts.isStringLiteral(arg)) keys.add(arg.text);
+        }
       }
+      ts.forEachChild(node, visit);
     }
-    ts.forEachChild(node, visit);
+    visit(sf);
   }
-  visit(sf);
   return keys;
 }
 
@@ -119,7 +126,7 @@ function buildGeneratedContent(configKeys: Set<string>): string {
   const lines: string[] = [];
   lines.push('# .env.example.generated — Auto-generated env catalog');
   lines.push('# DO NOT EDIT — Run `npm run env:generate` to regenerate.');
-  lines.push('# Source of truth: src/utils/config.ts');
+  lines.push('# Source of truth: src/config/*.ts (utils/config.ts 는 5-line shim, surgery 1 2026-04-26)');
   lines.push(`# Total keys: ${configKeys.size}`);
   lines.push('');
   lines.push('# Curated starter values: see .env.example (subset, hand-maintained)');

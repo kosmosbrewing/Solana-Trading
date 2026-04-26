@@ -60,9 +60,16 @@ export async function handlePureWsSignal(
     return;
   }
 
-  // Duplicate guard (same pair already held)
+  // Duplicate guard (same pair already held by **primary** arm).
+  // 2026-04-26: arm-aware — primary (pure_ws_breakout) 가 이미 보유 중이면 entire signal 차단.
+  // swing-v2 (paper shadow / live canary) 는 별도 arm 이므로 primary 와 같은 pair 동시 보유 가능.
+  // 단 swing-v2 자체가 같은 pair 에 active 면 swingV2Entry.ts 의 자체 dedup guard 가 차단.
   for (const pos of activePositions.values()) {
-    if (pos.pairAddress === signal.pairAddress && pos.state !== 'CLOSED') {
+    if (
+      pos.pairAddress === signal.pairAddress &&
+      pos.state !== 'CLOSED' &&
+      pos.armName !== 'pure_ws_swing_v2'
+    ) {
       log.debug(`[PUREWS_SKIP] already holding ${signal.pairAddress.slice(0, 12)}`);
       return;
     }
@@ -415,12 +422,25 @@ export async function handlePureWsSignal(
     // Block 3 paper-first enforcement (2026-04-18 QA fix):
     // PUREWS_LANE_ENABLED=true + TRADING_MODE=live 만으로는 live buy 금지.
     // 운영자가 paper 관측 후 PUREWS_LIVE_CANARY_ENABLED=true 로 명시 opt-in 해야 함.
+    //
+    // 2026-04-26: PUREWS_SWING_V2_LIVE_CANARY_ENABLED 단독 활성 시 (primary live canary 는 off)
+    // primary 는 paper 시뮬만 + swing-v2 만 live entry 하는 카나리 replacing pattern 지원.
+    // 이 경우 entire return 하지 말고 primary 는 paper-first 로 두고 swing-v2 분기에서 live 진입.
     if (!config.pureWsLiveCanaryEnabled) {
+      const swingOnlyLive =
+        config.pureWsSwingV2Enabled && config.pureWsSwingV2LiveCanaryEnabled;
+      if (!swingOnlyLive) {
+        log.info(
+          `[PUREWS_PAPER_FIRST] ${positionId} live buy suppressed — PUREWS_LIVE_CANARY_ENABLED=false. ` +
+          `signal observed, no tx submitted. signal_price=${signal.price.toFixed(8)}`
+        );
+        return;
+      }
+      // swing-v2 only live mode: primary 는 paper 처리 (effectiveMode 변경 효과 — actualEntryPrice/quantity
+      // 는 signal price 로 유지, executeBuy 호출 안 함). 함수 끝까지 진행하여 swing-v2 분기 도달.
       log.info(
-        `[PUREWS_PAPER_FIRST] ${positionId} live buy suppressed — PUREWS_LIVE_CANARY_ENABLED=false. ` +
-        `signal observed, no tx submitted. signal_price=${signal.price.toFixed(8)}`
+        `[PUREWS_SWING_V2_ONLY_LIVE] ${positionId} primary paper-first, swing-v2 만 live entry 시도`
       );
-      return;
     }
   }
 
@@ -432,7 +452,9 @@ export async function handlePureWsSignal(
     return;
   }
 
-  if (ctx.tradingMode === 'live') {
+  // 2026-04-26: primary live executeBuy 는 PUREWS_LIVE_CANARY_ENABLED=true 일 때만.
+  // swing-v2 only live mode 는 primary paper-first 로 우회 (executeBuy 호출 안 함).
+  if (ctx.tradingMode === 'live' && config.pureWsLiveCanaryEnabled) {
     try {
       const buyExecutor = getPureWsExecutor(ctx);
       const order: Order = {

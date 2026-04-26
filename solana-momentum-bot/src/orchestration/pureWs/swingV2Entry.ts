@@ -120,9 +120,24 @@ async function openSwingV2Live(input: OpenSwingV2Input): Promise<void> {
     return;
   }
 
+  // 같은 pair 의 swing-v2 live 가 이미 active 면 차단 (self-dedup, primary 와 별도)
+  for (const pos of activePositions.values()) {
+    if (
+      pos.armName === 'pure_ws_swing_v2' &&
+      pos.isShadowArm === false &&
+      pos.pairAddress === signal.pairAddress &&
+      pos.state !== 'CLOSED'
+    ) {
+      log.debug(
+        `[PUREWS_SWING_V2_LIVE_SKIP] already holding swing-v2 live ${signal.pairAddress.slice(0, 12)}`
+      );
+      return;
+    }
+  }
+
   // Max concurrent (별도 lane cap, primary 와 무관)
   const swingActive = [...activePositions.values()].filter(
-    (p) => p.armName === 'pure_ws_swing_v2' && p.isShadowArm !== true && p.state !== 'CLOSED'
+    (p) => p.armName === 'pure_ws_swing_v2' && p.isShadowArm === false && p.state !== 'CLOSED'
   ).length;
   if (swingActive >= config.pureWsSwingV2MaxConcurrent) {
     log.info(

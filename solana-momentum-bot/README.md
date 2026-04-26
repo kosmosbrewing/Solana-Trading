@@ -73,7 +73,7 @@ Solana DEX 순수 실전형 momentum / sniper 봇이다.
 | 문서 | 역할 |
 |---|---|
 | [`docs/design-docs/`](./docs/design-docs/) | post-pivot 설계 decision records (block별) |
-| [`Block_QA.md`](./Block_QA.md) | Block 0-4 QA findings + closure 기록 |
+| [`docs/historical/pre-pivot-2026-04-18/Block_QA.md`](./docs/historical/pre-pivot-2026-04-18/Block_QA.md) | Block 0-4 QA findings + closure 기록 (pre-pivot archive) |
 
 ### Historical
 

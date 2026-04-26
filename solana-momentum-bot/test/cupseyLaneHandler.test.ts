@@ -18,6 +18,10 @@ describe('cupseyLaneHandler persistence', () => {
   const configPatch = {
     cupseyLaneEnabled: true,
     cupseyGateEnabled: false,
+    // 2026-04-26: 운영 .env 가 CUPSEY_WALLET_MODE=main 으로 박혀 있어 sandbox 가정의
+    // 테스트가 main executor 를 쓰며 mock executor 호출 카운트가 0 이 된다.
+    // 테스트는 sandbox 경로를 명시 주입.
+    cupseyWalletMode: 'sandbox',
     cupseyLaneTicketSol: 0.01,
     cupseyStalkDropPct: 0.001,
     cupseyStalkMaxDropPct: 0.015,

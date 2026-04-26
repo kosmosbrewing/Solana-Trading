@@ -1,6 +1,5 @@
 export { ScannerEngine } from './scannerEngine';
 export type { WatchlistEntry, ScannerEngineConfig } from './scannerEngine';
-export { attachScannerFreshListingSource, mapScannerFreshEntry } from './listingSourceAdapter';
 export { DexScreenerClient } from './dexScreenerClient';
 export { HeliusPoolRegistry } from './heliusPoolRegistry';
 export { CompositeTokenPairResolver } from './tokenPairResolver';

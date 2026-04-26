@@ -12,7 +12,6 @@ export const operationalToggles = {
   realtimePersistenceEnabled: boolOptional('REALTIME_PERSISTENCE_ENABLED', true),
   realtimeTriggerMode: optional('REALTIME_TRIGGER_MODE', 'bootstrap') as 'bootstrap' | 'core' | 'tick',
   realtimeReplayWarmSyncEnabled: boolOptional('REALTIME_REPLAY_WARM_SYNC_ENABLED', true),
-  birdeyeWSEnabled: process.env.BIRDEYE_WS_ENABLED === 'true',
   // Why: Paper 모드에서 Birdeye Premium 미보유 시 401 → 자동 비활성화
   securityGateEnabled: process.env.SECURITY_GATE_ENABLED
     ? process.env.SECURITY_GATE_ENABLED !== 'false'
@@ -40,8 +39,6 @@ export const operationalToggles = {
   cupseyLaneEnabled: boolOptional('CUPSEY_LANE_ENABLED', false),
   // 2026-04-11: Path B1 — Strategy D live execution (sandbox wallet only)
   strategyDLiveEnabled: boolOptional('STRATEGY_D_LIVE_ENABLED', false),
-  // 2026-04-11: Path B2 — KOL wallet tracking (discovery source)
-  kolWalletTrackingEnabled: boolOptional('KOL_WALLET_TRACKING_ENABLED', false),
   // 2026-04-17: Tier 1 — Migration Handoff Reclaim lane (off by default)
   migrationLaneEnabled: boolOptional('MIGRATION_LANE_ENABLED', false),
   migrationLaneSignalOnly: boolOptional('MIGRATION_LANE_SIGNAL_ONLY', true),

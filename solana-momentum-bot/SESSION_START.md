@@ -118,7 +118,7 @@ npx jest test/utils/clock       # Clock interface
 ## 7. 문서 깊이 들어갈 때
 
 - 코드 변경 전: `MISSION_CONTROL.md` + `docs/design-docs/option5-...md`
-- Lane 추가/변경: `LANE_20260422.md` + `REFACTORING_v1.0.md`
+- Lane 추가/변경: `REFACTORING_v1.0.md` + `INCIDENT.md` 의 lane 섹션
 - 운영 트러블슈팅: `INCIDENT.md` + `OPERATIONS.md`
 - 백로그: `INCIDENT.md` + `docs/exec-plans/active/1sol-to-100sol.md`
 - 사명 토론 / 의사결정: `docs/debates/`

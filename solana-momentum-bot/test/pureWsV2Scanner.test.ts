@@ -137,6 +137,12 @@ describe('Phase 1.3 — scanPureWsV2Burst', () => {
     override('pureWsV2PerPairCooldownSec', 300);
     override('pureWsLaneWalletMode', 'main');
     override('pureWsLiveCanaryEnabled', true);
+    // 2026-04-26 cleanup: 운영 .env 의 survival/probe/drift gate isolation
+    override('pureWsSurvivalCheckEnabled', false);
+    override('pureWsSurvivalAllowDataMissing', true);
+    override('pureWsRunSellQuoteProbe', false);
+    override('pureWsEntryDriftGuardEnabled', false);
+    override('pureWsSellQuoteProbeEnabled', false);
   });
 
   it('v2 disabled (flag off) → no-op scan, no entry', async () => {

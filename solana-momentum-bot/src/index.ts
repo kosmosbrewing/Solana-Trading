@@ -12,9 +12,7 @@ import {
   Ingester,
   IngesterConfig,
   OnchainSecurityClient,
-  attachBirdeyeListingSource,
 } from './ingester';
-import { BirdeyeWSClient } from './ingester/birdeyeWSClient';
 import { EventMonitor, EventScoreStore } from './event';
 import {
   CompositeTrendingTokenProvider,
@@ -57,7 +55,6 @@ import {
   DexScreenerClient,
   HeliusPoolRegistry,
   SocialMentionTracker,
-  attachScannerFreshListingSource,
   createScannerBlacklistCheck,
   resolveCohortFromSources,
   type Cohort,
@@ -92,7 +89,6 @@ import type { KolTx } from './kol/types';
 import { resolveCupseyWalletLabel } from './orchestration/cupseyLaneHandler';
 import { resolveMigrationWalletLabel } from './orchestration/migrationLaneHandler';
 import { persistOpenTradeWithIntegrity, isEntryHaltActive } from './orchestration/entryIntegrity';
-import { evaluateNewLpSniper, buildNewLpOrder, prepareNewLpCandidate } from './strategy/newLpSniper';
 import { MomentumTrigger, VolumeMcapSpikeTrigger, TickTrigger } from './strategy';
 import { closeTrade } from './orchestration/tradeExecution';
 import { checkTickLevelExit } from './orchestration/tickPositionMonitor';
@@ -472,14 +468,15 @@ async function main() {
   };
   const executor = new Executor(executorConfig);
 
-  // 2026-04-11: Sandbox Executor (Strategy D live 전용, main wallet 격리)
+  // 2026-04-11: Sandbox Executor — main wallet 격리.
+  // 2026-04-26 cleanup: Strategy D 제거됐지만 cupseyLaneHandler 의 CUPSEY_WALLET_MODE=sandbox 에서 여전히 사용.
   let sandboxExecutor: Executor | null = null;
-  if (config.sandboxWalletKey && config.strategyDLiveEnabled) {
+  if (config.sandboxWalletKey) {
     sandboxExecutor = new Executor({
       ...executorConfig,
       walletPrivateKey: config.sandboxWalletKey,
     });
-    log.info('Sandbox executor initialized for Strategy D live');
+    log.info('Sandbox executor initialized (cupsey sandbox mode)');
   }
 
   // ─── Phase 3: Wallet Manager (main + sandbox isolation) ───
@@ -596,160 +593,9 @@ async function main() {
     await notifier.sendWarning('ExecutionLock', 'Lock timeout — auto released');
   });
 
-  // ─── Phase 1A: Birdeye WebSocket (requires API key) ──
-  let birdeyeWS: BirdeyeWSClient | null = null;
-  const handleStrategyDListingCandidate = async (
-    listingCandidate: import('./strategy/newLpSniper').NewLpListingInput,
-    sourceLabel: string
-  ): Promise<void> => {
-    if (!config.strategyDEnabled || !walletManager.hasSandboxWallet()) return;
-    if (!listingCandidate.address) return;
-
-    try {
-      const strategyDParams = {
-        ticketSizeSol: config.strategyDTicketSol,
-        minAgeMinutes: config.strategyDMinAge,
-        maxAgeMinutes: config.strategyDMaxAge,
-        takeProfitMultiplier: config.strategyDTpMultiplier,
-      };
-      const prepared = await prepareNewLpCandidate(listingCandidate, {
-        getTokenSecurityDetailed: (tokenMint) => onchainSecurityClient.getTokenSecurityDetailed(tokenMint),
-        getExitLiquidity: (tokenMint) => onchainSecurityClient.getExitLiquidity(tokenMint),
-      }, {
-        params: strategyDParams,
-        securityGate: {
-          minExitLiquidityUsd: config.minExitLiquidityUsd,
-        },
-        quoteGate: {
-          jupiterApiUrl: config.jupiterApiUrl,
-          jupiterApiKey: config.jupiterApiKey || undefined,
-        },
-      });
-
-      if (!prepared.candidate) {
-        log.debug(
-          `Strategy D skipped ${listingCandidate.symbol ?? listingCandidate.address} ` +
-          `(${sourceLabel}): ${prepared.rejectionReason ?? 'unknown'}`
-        );
-        return;
-      }
-
-      const signal = evaluateNewLpSniper(prepared.candidate, strategyDParams);
-      if (signal.action !== 'BUY') return;
-
-      const walletLimit = walletManager.checkTradeLimits('new_lp_sniper', signal.meta.ticketSizeSol * signal.price);
-      if (!walletLimit.allowed) {
-        log.info(`Strategy D blocked: ${walletLimit.reason}`);
-        return;
-      }
-
-      const order = buildNewLpOrder(signal, strategyDParams);
-      log.info(
-        `Strategy D signal (${sourceLabel}): ${prepared.candidate.tokenSymbol} ticket=${order.quantity} SOL ` +
-        `impact=${((prepared.quoteGate?.priceImpactPct ?? 0) * 100).toFixed(2)}%`
-      );
-
-      if (effectiveMode === 'paper') {
-        log.info(`[PAPER] Strategy D: ${JSON.stringify(order)}`);
-      }
-      // 2026-04-11: Strategy D live via sandbox Executor (main wallet 격리)
-      if (effectiveMode === 'live' && config.strategyDLiveEnabled && sandboxExecutor) {
-        // 2026-04-17 Block 1.5-2: halt check — integrity 실패 후 새 entry 차단
-        if (isEntryHaltActive('strategy_d')) {
-          log.warn(`[STRATEGY_D_HALT] skipping entry — entry halt active. Call resetEntryHalt('strategy_d') after reconciliation.`);
-          return;
-        }
-        try {
-          log.info(
-            `[STRATEGY_D_LIVE] Executing via sandbox: ${prepared.candidate!.tokenSymbol ?? order.pairAddress.slice(0, 12)} ` +
-            `ticket=${order.quantity.toFixed(4)} SOL`
-          );
-          const buyResult = await sandboxExecutor.executeBuy(order);
-          log.info(
-            `[STRATEGY_D_LIVE] Filled: sig=${buyResult.txSignature.slice(0, 16)} ` +
-            `slip=${buyResult.slippageBps}bps qty=${buyResult.actualOutUiAmount ?? 'unknown'}`
-          );
-          // DB record — shared integrity helper (2026-04-17)
-          const persistResult = await persistOpenTradeWithIntegrity({
-            ctx,
-            lane: 'strategy_d',
-            tradeData: {
-              pairAddress: order.pairAddress,
-              strategy: 'new_lp_sniper',
-              side: 'BUY',
-              tokenSymbol: signal.tokenSymbol,
-              entryPrice: order.price,
-              quantity: order.quantity,
-              stopLoss: order.stopLoss,
-              takeProfit1: order.takeProfit1,
-              takeProfit2: order.takeProfit2,
-              trailingStop: undefined,
-              highWaterMark: order.price,
-              timeStopAt: new Date(Date.now() + (order.timeStopMinutes ?? 15) * 60_000),
-              status: 'OPEN',
-              txSignature: buyResult.txSignature,
-              createdAt: new Date(),
-            },
-            ledgerEntry: {
-              txSignature: buyResult.txSignature,
-              strategy: 'new_lp_sniper',
-              pairAddress: order.pairAddress,
-              tokenSymbol: signal.tokenSymbol,
-              plannedEntryPrice: order.price,
-              actualEntryPrice: order.price,
-              actualQuantity: order.quantity,
-              slippageBps: buyResult.slippageBps,
-            },
-            notifierKey: 'strategy_d_open_persist',
-            buildNotifierMessage: (err) =>
-              `strategy_d entry persist FAILED after tx=${buyResult.txSignature.slice(0, 16)} ` +
-              `pair=${order.pairAddress.slice(0, 12)} — sandbox. err=${err}`,
-          });
-          if (!persistResult.dbTradeId) return;
-          walletManager.recordPnl('sandbox', 0);
-          await notifier.sendInfo(
-            `[Strategy D Live] ${prepared.candidate!.tokenSymbol ?? 'unknown'} ` +
-            `BUY ${order.quantity.toFixed(4)} SOL via sandbox`,
-            'trade'
-          ).catch(() => {});
-        } catch (execErr) {
-          log.warn(`[STRATEGY_D_LIVE] Execution failed: ${execErr}`);
-          await notifier.sendError('strategy_d_live', execErr).catch(() => {});
-        }
-      } else if (effectiveMode === 'live' && config.strategyDLiveEnabled && !sandboxExecutor) {
-        log.warn(
-          `[STRATEGY_D_LIVE] Signal detected but SANDBOX_WALLET_PRIVATE_KEY not configured. ` +
-          `Skipping. pair=${order.pairAddress.slice(0, 12)}`
-        );
-      }
-    } catch (err) {
-      log.warn(`Strategy D evaluation failed (${sourceLabel}): ${err}`);
-    }
-  };
-
-  if (config.birdeyeWSEnabled && config.birdeyeApiKey) {
-    birdeyeWS = new BirdeyeWSClient({
-      apiKey: config.birdeyeApiKey,
-    });
-    birdeyeWS.on('connected', () => {
-      log.info('Birdeye WS connected');
-      healthMonitor.setWsConnected(true);
-    });
-    birdeyeWS.on('disconnected', () => {
-      healthMonitor.setWsConnected(false);
-    });
-    birdeyeWS.on('error', (err: Error) => {
-      log.error(`Birdeye WS error: ${err.message}`);
-    });
-    // H-05: Strategy D — New LP Sniper event handler
-    if (config.strategyDEnabled && walletManager.hasSandboxWallet()) {
-      attachBirdeyeListingSource(birdeyeWS, (listingCandidate) =>
-        handleStrategyDListingCandidate(listingCandidate, 'birdeye_ws')
-      );
-    }
-
-    log.info('Birdeye WebSocket client initialized');
-  }
+  // 2026-04-26 cleanup: Strategy D (newLpSniper / Birdeye WS / sandbox-only entry)
+  // 가 영구 retire 됐다. 사명 paradigm 이 KOL Discovery + 자체 Execution (Option 5) 로
+  // 전환되며 New LP Sniper lane 은 더 이상 사용되지 않는다.
 
   // ─── DexScreener Client (free — API key optional) ─────
   const dexScreenerClient = new DexScreenerClient(
@@ -871,10 +717,7 @@ async function main() {
       },
     };
     scanner = new ScannerEngine(scannerConfig);
-    attachScannerFreshListingSource(scanner, (listingCandidate) => {
-      if (birdeyeWS) return;
-      return handleStrategyDListingCandidate(listingCandidate, listingCandidate.source);
-    });
+    // 2026-04-26 cleanup: attachScannerFreshListingSource (Strategy D New LP Sniper) 제거.
     // Bridge: Scanner → Ingester + UniverseEngine (rate limit 방지 큐)
     const ingesterQueue: import('./scanner').WatchlistEntry[] = [];
     let ingesterQueueRunning = false;
@@ -1890,36 +1733,10 @@ async function main() {
     log.info('Real-time Helius pipeline started');
   }
 
-  // Path B2 (2026-04-11): KOL wallet tracker — cupsey wallet buy 감지 → scanner watchlist 추가
-  if (config.kolWalletTrackingEnabled && config.kolWalletAddresses.length > 0 && scanner) {
-    const { KolWalletTracker } = await import('./discovery/kolWalletTracker');
-    const kolTracker = new KolWalletTracker({
-      rpcUrl: config.solanaRpcUrl,
-      walletAddresses: config.kolWalletAddresses,
-    });
-    kolTracker.on('buy', (signal: { tokenMint: string; estimatedPrice: number; walletAddress: string }) => {
-      log.info(
-        `[KOL_DISCOVERY] ${signal.walletAddress.slice(0, 8)} → ${signal.tokenMint.slice(0, 12)} ` +
-        `price=${signal.estimatedPrice.toFixed(8)} — adding to scanner`
-      );
-      scanner!.addManualEntry(
-        signal.tokenMint,
-        signal.tokenMint, // pairAddress = tokenMint (scanner 가 pair resolve)
-        `KOL:${signal.walletAddress.slice(0, 8)}`
-      );
-    });
-    kolTracker.on('error', ({ wallet, error }: { wallet: string; error: unknown }) => {
-      log.warn(`KOL tracker error for ${wallet.slice(0, 8)}: ${error}`);
-    });
-    await kolTracker.start();
-    log.info(`KOL wallet tracker started: ${config.kolWalletAddresses.length} wallets`);
-  }
+  // 2026-04-26 cleanup: Path B2 (구 KOL wallet tracker, kolWalletTrackingEnabled 플래그)
+  // 영구 retire. Option 5 (`src/ingester/kolWalletTracker.ts`) 가 대체.
 
-  // Phase 1A: Start scanner + WS
-  if (birdeyeWS) {
-    birdeyeWS.start();
-    log.info('Birdeye WebSocket started');
-  }
+  // Phase 1A: Start scanner (2026-04-26 cleanup: Birdeye WS 제거)
   if (scanner) {
     // If TARGET_PAIR_ADDRESS is set, add it as manual entry for backward compatibility
     if (targetPair) {
@@ -1957,7 +1774,6 @@ async function main() {
     eventMonitor,
     universeEngine,
     scanner,
-    birdeyeWS,
     replayWarmSync,
     realtimeCandleBuilder,
     heliusPoolDiscovery,

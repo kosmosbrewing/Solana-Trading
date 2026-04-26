@@ -515,6 +515,13 @@ async function main() {
       ackEnvName: 'MIGRATION_TICKET_OVERRIDE_ACK',
       ackEnvValue: process.env.MIGRATION_TICKET_OVERRIDE_ACK,
     },
+    {
+      // 2026-04-26: pure_ws_swing_v2 live canary 도 Real Asset Guard 정책 일괄 적용.
+      lane: 'pure_ws_swing_v2',
+      configuredTicketSol: config.pureWsSwingV2TicketSol,
+      ackEnvName: 'PUREWS_SWING_V2_TICKET_OVERRIDE_ACK',
+      ackEnvValue: process.env.PUREWS_SWING_V2_TICKET_OVERRIDE_ACK,
+    },
   ]);
 
   // 정책 위반 시 config 값 강제 복원 + Telegram critical alert 1회.
@@ -527,6 +534,8 @@ async function main() {
         (config as { cupseyLaneTicketSol: number }).cupseyLaneTicketSol = result.effectiveTicketSol;
       } else if (result.lane === 'migration') {
         (config as { migrationLaneTicketSol: number }).migrationLaneTicketSol = result.effectiveTicketSol;
+      } else if (result.lane === 'pure_ws_swing_v2') {
+        (config as { pureWsSwingV2TicketSol: number }).pureWsSwingV2TicketSol = result.effectiveTicketSol;
       }
       if (result.criticalMessage) {
         notifier.sendCritical(

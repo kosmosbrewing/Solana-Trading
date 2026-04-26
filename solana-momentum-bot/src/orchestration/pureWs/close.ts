@@ -276,9 +276,15 @@ async function closePureWsPositionSerialized(
   }
 
   // Block 4: canary auto-halt feed
-  reportCanaryClose(LANE_STRATEGY, pnl);
+  // 2026-04-26: swing-v2 live canary 는 별도 lane ('pure_ws_swing_v2') 으로 보고 — primary 와
+  // budget / consec losers 분리. shadow (paper) 는 isShadowArm=true 라 closeShadowArmPaper 에서
+  // 이미 분기되었으므로 여기 도달 안 함.
+  const closeLane = (pos.armName === 'pure_ws_swing_v2' && pos.isShadowArm === false)
+    ? 'pure_ws_swing_v2'
+    : LANE_STRATEGY;
+  reportCanaryClose(closeLane, pnl);
   // Block 4 QA fix: 전역 concurrency slot 해제 (acquire 대응)
-  releaseCanarySlot(LANE_STRATEGY);
+  releaseCanarySlot(closeLane);
 
   // DEX_TRADE Phase 2: daily bleed budget 누적
   // Why: close 직후 실제 발생한 loss 를 budget 에 반영. winner 는 budget 영향 없음 (spend 0).

@@ -38,6 +38,7 @@ import { ensurePairQuarantineConfigured, appendPairQuarantineLedger } from './pa
 import { ensureTokenSessionConfigured } from './tokenSession';
 import { trackPureWsReject } from './missedAlpha';
 import { checkPureWsSurvival } from './survivalCheck';
+import { openSwingV2Arm } from './swingV2Entry';
 import type { PureWsPosition } from './types';
 
 export async function handlePureWsSignal(

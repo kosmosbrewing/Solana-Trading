@@ -42,7 +42,7 @@ interface LaneCanaryState {
   lastHaltReason: string | null;
 }
 
-const DEFAULT_LANES: EntryLane[] = ['cupsey', 'migration', 'main', 'strategy_d', 'pure_ws_breakout'];
+const DEFAULT_LANES: EntryLane[] = ['cupsey', 'migration', 'main', 'strategy_d', 'pure_ws_breakout', 'pure_ws_swing_v2'];
 
 const laneStates: Map<EntryLane, LaneCanaryState> = new Map();
 
@@ -55,7 +55,18 @@ function getLane(lane: EntryLane): LaneCanaryState {
   return st;
 }
 
-function readConfig(): CanaryAutoHaltConfig {
+function readConfig(lane?: EntryLane): CanaryAutoHaltConfig {
+  // 2026-04-26: pure_ws_swing_v2 는 별도 cap (Stage 4 SCALE 후 opt-in canary).
+  // Real Asset Guard 정합 — swing-v2 도 ticket 0.01 / max budget 0.1 / max consec 5 등 자체 정책.
+  if (lane === 'pure_ws_swing_v2') {
+    return {
+      enabled: config.canaryAutoHaltEnabled,
+      maxConsecutiveLosers: config.canarySwingV2MaxConsecLosers,
+      maxCanaryBudgetSol: config.canarySwingV2MaxBudgetSol,
+      maxTradesPerCanary: config.canarySwingV2MaxTrades,
+      minLossToCountSol: config.canaryMinLossToCountSol,
+    };
+  }
   return {
     enabled: config.canaryAutoHaltEnabled,
     maxConsecutiveLosers: config.canaryMaxConsecutiveLosers,
@@ -67,7 +78,7 @@ function readConfig(): CanaryAutoHaltConfig {
 
 /** Close 이벤트 보고 — handler 가 매 close 마다 호출한다. */
 export function reportCanaryClose(lane: EntryLane, pnlSol: number): void {
-  const cfg = readConfig();
+  const cfg = readConfig(lane);
   if (!cfg.enabled) return;
 
   const st = getLane(lane);
@@ -149,10 +160,12 @@ export function checkAndAutoResetHalt(lane: EntryLane, nowMs: number = Date.now(
 
   const st = getLane(lane);
   // budget 초과로 halt 된 경우는 auto-reset 금지 — 실제 자산 보호 유지.
-  if (config.canaryAutoHaltEnabled && st.cumulativePnlSol <= -config.canaryMaxBudgetSol) {
+  // 2026-04-26: lane 별 budget cap 사용 (swing-v2 는 별도 cap).
+  const laneCfg = readConfig(lane);
+  if (config.canaryAutoHaltEnabled && st.cumulativePnlSol <= -laneCfg.maxCanaryBudgetSol) {
     log.info(
       `[CANARY_AUTO_RESET] lane=${lane} skipped — budget exhausted ` +
-      `(cumulative=${st.cumulativePnlSol.toFixed(4)} <= -${config.canaryMaxBudgetSol})`
+      `(cumulative=${st.cumulativePnlSol.toFixed(4)} <= -${laneCfg.maxCanaryBudgetSol})`
     );
     return false;
   }

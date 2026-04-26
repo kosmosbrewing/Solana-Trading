@@ -137,7 +137,8 @@ export type StrategyName =
   | 'momentum_cascade'     // Strategy E: conditional add-on
   | 'cupsey_flip_10s'      // Path A: cupsey-inspired quick-reject + winner-hold lane (sandbox)
   | 'migration_reclaim'    // Tier 1 (2026-04-17): Pump.fun/PumpSwap/LaunchLab post-migration reclaim
-  | 'pure_ws_breakout';    // Block 3 (2026-04-18): mission-pivot convexity lane — immediate PROBE + tiered runner
+  | 'pure_ws_breakout'     // Block 3 (2026-04-18): mission-pivot convexity lane — immediate PROBE + tiered runner
+  | 'pure_ws_swing_v2';    // 2026-04-26: pure_ws_breakout 의 long-hold canary arm (paper-first, Stage 4 SCALE 후 opt-in live)
 
 // Why: volume_spike order building logic을 bootstrap_10s, core_momentum도 공유한다.
 // 라우팅(order shape, scoring, gate)은 같지만 expectancy/reporting은 분리 집계.

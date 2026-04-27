@@ -82,6 +82,126 @@
 - KOL 별도 canary cap (현재 공용 0.3 SOL 사용)
 - enterLivePosition 직접 호출 통합 test (executor mock 필요)
 
+### 6. 5x+ winner 미달 root cause 가설 (다음 P0 분석)
+
+paper 212 trade / 5x+ winner 0 의 원인은 **3 가지 가설 중 어느 것이 binding 인지 미확정**. 다음 1-2 주 sprint 의 P0:
+
+**가설 A — trail/sentinel 의 보수적 cut**:
+- 데이터: kolh-8ipcTXum mfe 245% → net 108% (peak 의 44%), kolh-EjY599u1 mfe 230% → net 42% (peak 의 18%)
+- hold_phase_sentinel_degraded_exit 가 large winner 의 retreat 50% 에서 cut
+- 검증: trail 0.15 → 0.25 / sentinel peakDrift 0.30 → 0.45 paper A/B 측정
+- 작업: 1주 데이터 + 별도 ADR
+
+**가설 B — entry timing 늦음 (KOL fill 직후 즉시 dump)**:
+- 데이터: probe_hard_cut −16.29% × 86건 (40% of close), 3-12초 안에 −20%+ 즉시 dump 다수
+- 의심: KOL fill → tracker emit → 봇 entry 사이 1-3초 gap 동안 sniper bot front-run 가능
+- 검증: kol-tx.jsonl timestamp + raw-swaps.jsonl 가격 변동 micro-replay
+- 작업: 0.5-1일 분석 + hardcut threshold (-10% → -7%/-15%) ADR
+
+**가설 C — T2 임계 (+400% mfe) 자체가 너무 높음**:
+- 데이터: T2 도달 0건 / T1 도달 33건 / mfe 200%+ 5건 / mfe 400%+ 0건
+- 의심: 사명 §2.3 의 5x+ 임계가 KOL signal 의 자연 분포보다 한참 위
+- 검증: 동일 token 의 KOL fill 이후 4h 가격 분포 (90 percentile mfe) 측정
+- 작업: 1주 데이터 + 사명 임계 재정의 (별도 ADR + 운영자 의사결정)
+
+→ **세 가설 동시 검증 가능** (코드 변경 0, paper 데이터만 사용). 그 후 데이터 기반 trail/hardcut 조정 ADR 작성.
+
+### 7. inactive KOL 의 paper shadow 측정 부재 (사후 검증 인프라 gap)
+
+**사실**:
+- 현재 `is_active=false` KOL (26명) 은 KolWalletTracker subscribe 자체 안 함 → KOL_TX 0건
+- 4-27 reverify v2 의 5명 inactive 처리 (josim / lebron / pain / west_ratwizardx / scharo) 가 옳았는지 paper 결과로 검증 불가
+- watch-only KOL (cupsey_benchmark / cented_benchmark / domy_watch / gwyg_watch) 의 sustained signal 측정 안 됨
+- rejected_candidates (Doji / Trey) 가 noise vs trader 인지 paper 데이터 없이 판단
+
+**문제**:
+- 운영자의 정성 reverify 판단 vs 실측 paper 수익 검증 인프라 부재
+- promotion candidate / dormant 자연 분류의 데이터 근거 부재
+- 사명 §3 의 "관측 의무" 와 정합한 측정 framework 누락
+
+**제안 (3 옵션)**:
+
+(A) **Shadow Track only** (즉시, 0.5일):
+- KolWalletTracker 가 inactive 도 subscribe → `data/realtime/kol-shadow-tx.jsonl` 활동량 기록만
+- smart-v3 / paper position 영향 0
+- 활동량 분포 측정만
+
+(B) **Full Paper Shadow** (1주 누적 후 결정, ~150 LOC):
+- inactive KOL 도 v1 기본 정책 (180s stalk + 15% trail) 으로 paper trade 시뮬
+- 별도 ledger `kol-inactive-paper-trades.jsonl` + paper-arm-report 의 별도 cohort
+- PaperPriceFeed 부담 ~2배 (active 35 + inactive 26)
+
+(C) **A + 주기적 promotion candidate 알림** (Phase 2):
+- 옵션 A + 7d 활동량 ≥ 50 tx 시 운영자 promotion alert
+- DB 자동 수정 안 함 (운영자 수동 only 유지)
+
+**권장**: **옵션 A 즉시 + 옵션 B 표본 누적 후 결정**.
+- Phase 1 (0.5일): KolWalletTracker `subscribeInactive` flag + 별도 logger
+- Phase 2 (1주 후): 활동량 데이터 보고 paper shadow 가치 vs Jupiter quota 부담 trade-off 결정
+
+**사명 §3 정합**: ✅ paper-only, wallet 영향 0, DB 자동 수정 0, smart-v3 main 변경 0 — 위반 0건.
+
+### 8. Trending Sniper 신규 lane 제안 검토 (2026-04-27, 보류 권고)
+
+**제안 요지**: KOL paradigm 의 5x+ winner ceiling 입증 (212 trade / 0건) 을 근거로 4번째 lane (`trending_sniper`) 도입 — dexscreener trending API 기반 신규 listing token 의 first-200 buyer 영역 진입.
+
+**제안 내용**:
+- 새 모듈 `src/orchestration/trendingSniper/` — pure_ws 패턴 80% 재사용
+- Phase 0 (KOL 후처리, 1-2일) + Phase 1 (paper scaffold, 1주) + Phase 2 (측정 1-2주) + Phase 3 (결정)
+- T1 +100% / T2 +400% / T3 +900% / hardcut −10%
+- paper-first 강제, Helius quota 영향 0 (외부 API)
+
+**점검 결과 — 보류 권고**:
+
+(1) **"KOL ceiling 입증" 결론은 시기상조**:
+- 표본 212 → Wilson LCB 95% 의미 없음
+- mfe 200%+ winner 5건 발생 — paradigm 자체 ceiling 이 아니라 trail/sentinel 보수성 (mfe 245% → net 108% gap) 일 가능성 미검증
+- INCIDENT §6 의 root cause 가설 3개 (trail/timing/T2 임계) 검증 전에 paradigm pivot 결론은 logical leap
+
+(2) **"smart money exit zone 후행" 정의가 KOL 데이터와 부분 충돌**:
+- winner_trailing_t1 17건 평균 +66.25% — KOL exit 와 무관 자체 trail capture
+- decu/clukz max mfe 285%/242% — 봇 진입 후 가격 상승 capture, exit 후행 아님
+- KOL paradigm 은 부분 후행/부분 동행. 단정 부정확.
+
+(3) **"first 200 buyer" latency 가능성 주장 근거 부재**:
+- "memecoin 10x 는 5-30분 윈도" 데이터 출처 없음
+- "5-15s = buyer #50-200" 측정 부재
+- pure_ws V2 PASS 53,260건 / 8h = wash-trade 만 — Solana memecoin detection 자체의 어려움. trending 도 같은 문제 가질 가능성
+
+(4) **사명 §3 위반 위험**:
+- "KOL paradigm 데이터 부족 상태에서 새 paradigm 추가" = explainability paradigm 시기 함정 패턴 재현
+- Premature paradigm pivot
+
+**권장 — Phase 0 만 (KOL 후처리) + 1주 후 재검토**:
+
+1. KOL paper 표본 누적 (212 → 350-400) — root cause 가설 3 검증
+2. theo 처리: 단순 deactivate 보다 "tier B-watch" 강등 (trigger 제외 + paper shadow 유지)
+3. probe_hard_cut threshold 완화 paper A/B (-10% vs -7% / -15%) — 별도 ADR
+4. swing-v2 hurdle 완화 (multi-KOL ≥2 → ≥1 + score ≥ 4.0) paper A/B
+5. **dexscreener trending 의 24h 분포 실측** (수동 분석) — Phase 1 진입 전 데이터 근거 확보
+
+**1주 후 분기**:
+- KOL 5x+ winner 1건 입증 → KOL paradigm 충분, trending 추가 명분 약함
+- 5x+ 여전히 0 + trail 완화 후에도 ceiling 입증 → **그때 trending lane 추가 ADR** (사명 §3 정합)
+
+→ **즉시 implement 비추천**. 제안 자체는 가치 있으나 KOL root cause 검증이 선행 조건. 사명 §3 의 "데이터 없이 paradigm 변경 금지" 정합.
+
+### 9. pure_ws lane retire 결정 보류 (사명 §3 lane 분류)
+
+**사실**:
+- 8h V2 PASS 53,260건 / 거의 전부 KMnDBXcP wash-trade pair
+- Option 5 ADR §6: pure_ws 는 Lane S (scalping baseline) 로 격하, 살아있음
+- 그러나 **사명 (5x+ winner) 에 기여 가능성 0** — wash-trade pair detection
+- swing-v2 paper shadow 도 pure_ws 입력 의존 → 의미 0
+
+**결정 보류 사유**:
+- benchmark 로 운영하면서 KOL paradigm 과 비교 baseline 역할 (ADR §6)
+- 운영자가 `PUREWS_LIVE_CANARY_ENABLED=false` 로 paper 만 → bleed 0
+
+**다음 결정 시점** (아직 결정 미필요):
+- 사명 §2.3 의 5x+ winner 1건 입증 시 → KOL paradigm 우선, pure_ws retire 검토
+- 또는 24h V2 PASS 의 90% 가 dead pool 만 잡는 패턴 sustained 시 → retire ADR
+
 ### 4. 사명 §3 phase gate 평가
 
 | Gate | 임계 | 현재 | 충족? |

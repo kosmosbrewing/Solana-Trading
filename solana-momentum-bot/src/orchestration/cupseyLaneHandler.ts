@@ -139,8 +139,12 @@ async function appendExecutedLedger(
       JSON.stringify({ ...entry, recordedAt: new Date().toISOString() }) + '\n',
       'utf8'
     );
-  } catch {
-    // Why: 파일 기록 실패는 치명적이지 않음 — 로그에서 복구 가능
+  } catch (err) {
+    // Why: fallback ledger 기록 실패는 trading path 를 차단하지 않지만, DB persist 실패와
+    // 동시 발생 시 reconcile audit 가 silent 로 손실된다 (2026-04-17 wallet-reconcile <unknown>
+    // 206 buys 와 동일한 dual-failure). 최소한 surface.
+    const txSig = typeof entry.txSignature === 'string' ? entry.txSignature : 'unknown';
+    log.warn(`[CUPSEY_LEDGER_FAIL] type=${type} tx=${txSig.slice(0, 12)} ${err}`);
   }
 }
 
@@ -206,8 +210,10 @@ async function persistCupseyGateLog(
       JSON.stringify(entry) + '\n',
       'utf8'
     );
-  } catch {
-    // Why: persist 실패해도 trading path 차단하지 않음
+  } catch (err) {
+    // Why: gate log 는 Phase 1 score-outcome 상관 분석용 — persist 실패해도 trading path
+    // 차단하지 않지만 측정 데이터 손실이 누적되면 분석 신뢰도가 떨어진다.
+    log.debug(`[CUPSEY_GATE_LOG_FAIL] ${err}`);
   }
 }
 
@@ -272,7 +278,7 @@ function getCupseyExecutor(ctx: BotContext) {
     if (!ctx.sandboxExecutor) {
       throw new Error(
         `CUPSEY_WALLET_MODE=sandbox but sandboxExecutor not initialized. ` +
-        `Check SANDBOX_WALLET_PRIVATE_KEY and STRATEGY_D_LIVE_ENABLED.`
+        `Check SANDBOX_WALLET_PRIVATE_KEY.`
       );
     }
     return ctx.sandboxExecutor;

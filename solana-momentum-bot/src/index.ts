@@ -582,27 +582,9 @@ async function main() {
     }
   }
 
-  // 2026-04-21 P0 (observability): v2 scanner 누적 telemetry 주기 출력.
-  // Why: VPS 24h 관측에서 PUREWS_V2_PASS 0건이지만 REJECT 는 log.debug 라 원인 진단 불가.
-  // HealthMonitor 와 같은 1분 주기로 v2 scan 통계 (insuf/rejects/halt/PASS) 를 info 로 출력.
-  if (config.pureWsLaneEnabled && config.pureWsV2Enabled) {
-    setInterval(() => {
-      try { logPureWsV2TelemetrySummary(); } catch (err) {
-        log.warn(`Pure WS v2 telemetry log failed: ${err}`);
-      }
-    }, 60_000);
-  }
-
-  // 2026-04-21 P2: canary halt 자동 해제 tick.
-  // Why: 4-streak consecutive loss 는 표본 부족. 시간 경과 + budget 여유 시 자동 해제하여
-  // Phase 1-3 관측 재개. budget 초과 halt 는 skip (실 자산 보호 유지).
-  if (config.canaryAutoResetEnabled) {
-    setInterval(() => {
-      try { checkAllLanesAutoResetHalt(); } catch (err) {
-        log.warn(`Canary auto-reset tick failed: ${err}`);
-      }
-    }, 60_000);
-  }
+  // 2026-04-21 P0 (observability) + 2026-04-27 (handle 저장): v2 scanner / canary auto-reset
+  // 의 setInterval handle 은 monitoringHandles 가 생성된 *이후* 에 부착한다.
+  // 아래 line 1725 부근의 startMonitoringLoops 호출 다음 블록 참조.
 
   // 2026-04-17: Wallet Stop Guard (override 가드레일 #2)
   // live 모드에서만 poller 시작. paper 에서는 wallet balance 의미 없음.
@@ -1141,7 +1123,7 @@ async function main() {
     if (mode === 'sandbox' && !sandboxExecutor) {
       throw new Error(
         `${lane} wallet mode='sandbox' but sandbox executor not initialized. ` +
-        `Check SANDBOX_WALLET_PRIVATE_KEY and STRATEGY_D_LIVE_ENABLED, or switch ${lane} to mode='main'.`
+        `Check SANDBOX_WALLET_PRIVATE_KEY, or switch ${lane} to mode='main'.`
       );
     }
   };
@@ -1733,6 +1715,29 @@ async function main() {
     regimeSolCacheTtlMs: REGIME_SOL_CACHE_TTL_MS,
   });
 
+  // 2026-04-21 P0 (observability): v2 scanner 누적 telemetry 주기 출력.
+  // Why: VPS 24h 관측에서 PUREWS_V2_PASS 0건이지만 REJECT 는 log.debug 라 원인 진단 불가.
+  // HealthMonitor 와 같은 1분 주기로 v2 scan 통계 (insuf/rejects/halt/PASS) 를 info 로 출력.
+  // 2026-04-27: handle 을 monitoringHandles 에 부착해 setupShutdown 이 clearInterval 가능.
+  if (config.pureWsLaneEnabled && config.pureWsV2Enabled) {
+    monitoringHandles.pureWsV2TelemetryInterval = setInterval(() => {
+      try { logPureWsV2TelemetrySummary(); } catch (err) {
+        log.warn(`Pure WS v2 telemetry log failed: ${err}`);
+      }
+    }, 60_000);
+  }
+
+  // 2026-04-21 P2: canary halt 자동 해제 tick.
+  // Why: 4-streak consecutive loss 는 표본 부족. 시간 경과 + budget 여유 시 자동 해제하여
+  // Phase 1-3 관측 재개. budget 초과 halt 는 skip (실 자산 보호 유지).
+  if (config.canaryAutoResetEnabled) {
+    monitoringHandles.canaryAutoResetInterval = setInterval(() => {
+      try { checkAllLanesAutoResetHalt(); } catch (err) {
+        log.warn(`Canary auto-reset tick failed: ${err}`);
+      }
+    }, 60_000);
+  }
+
 
   // ─── Start services ───────────────────────────────
   await eventMonitor.start();
@@ -1797,7 +1802,8 @@ async function main() {
   await notifier.sendInfo(`Bot started (v0.5 — Phase 2 Core Live, mode: ${effectiveMode})`, 'lifecycle');
 
   // ─── Daily summary scheduler ────────────────────────
-  scheduleDailySummary(ctx);
+  // 2026-04-27: handle 저장 → setupShutdown 에서 clearInterval.
+  monitoringHandles.dailySummaryInterval = scheduleDailySummary(ctx);
 
   // ─── Graceful shutdown ──────────────────────────────
   setupShutdown({

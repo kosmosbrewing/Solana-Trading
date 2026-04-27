@@ -21,7 +21,6 @@ export const operationalToggles = {
     ? process.env.QUOTE_GATE_ENABLED !== 'false'
     : tradingMode === 'live',
   preflightEnforceGate: process.env.PREFLIGHT_ENFORCE_GATE !== 'false',
-  strategyDEnabled: process.env.STRATEGY_D_ENABLED === 'true',
   useJitoBundles: process.env.USE_JITO_BUNDLES === 'true',
   useJupiterUltra: process.env.USE_JUPITER_ULTRA === 'true',
   runnerEnabled: process.env.RUNNER_ENABLED === 'true',
@@ -37,8 +36,6 @@ export const operationalToggles = {
   realtimeSeedBackfillEnabled: boolOptional('REALTIME_SEED_BACKFILL_ENABLED', true),
   // 2026-04-11: Path A — cupsey-inspired lane (sandbox, post-entry state machine)
   cupseyLaneEnabled: boolOptional('CUPSEY_LANE_ENABLED', false),
-  // 2026-04-11: Path B1 — Strategy D live execution (sandbox wallet only)
-  strategyDLiveEnabled: boolOptional('STRATEGY_D_LIVE_ENABLED', false),
   // 2026-04-17: Tier 1 — Migration Handoff Reclaim lane (off by default)
   migrationLaneEnabled: boolOptional('MIGRATION_LANE_ENABLED', false),
   migrationLaneSignalOnly: boolOptional('MIGRATION_LANE_SIGNAL_ONLY', true),

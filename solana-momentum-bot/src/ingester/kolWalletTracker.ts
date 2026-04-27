@@ -58,6 +58,9 @@ export class KolWalletTracker extends EventEmitter {
   private lastResubscribeMs = 0;
   private lastNonZeroSubscriptionsMs = Date.now();
   private fullDisconnectAlerted = false;
+  // 2026-04-27 (B-fix QA F1): re-entry guard. setInterval 콜백은 await 안 함 → 이론적 overlap.
+  // 실제 발생 가능성 매우 낮지만 (650ms typical vs 5min interval), 미래 race 가드.
+  private syncInProgress = false;
 
   constructor(config: KolWalletTrackerConfig) {
     super();
@@ -199,6 +202,21 @@ export class KolWalletTracker extends EventEmitter {
    * Cooldown 분리: 신규 add/remove 는 missing-sub resub cooldown 무시 (운영자 변경은 즉시 적용).
    */
   private async syncActiveSet(): Promise<void> {
+    // 2026-04-27 (QA F1): re-entry guard — runWatchdog 가 cycle 보다 오래 걸려 다음 cycle 가
+    // 진입하는 race 차단. targetAddresses 갱신 reorder / 중복 RPC 호출 방어.
+    if (this.syncInProgress) {
+      log.debug('[KOL_TRACKER_SYNC] previous cycle in progress — skip');
+      return;
+    }
+    this.syncInProgress = true;
+    try {
+      await this.syncActiveSetInner();
+    } finally {
+      this.syncInProgress = false;
+    }
+  }
+
+  private async syncActiveSetInner(): Promise<void> {
     const liveActiveList = getAllActiveAddresses();
     const liveActive = new Set(liveActiveList);
 

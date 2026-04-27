@@ -1,33 +1,34 @@
 {
   "//": "KOL Discovery DB — Option 5 (2026-04-23). 수동 편집 only. 자동 추가 금지.",
   "//schema": "kols[].id = 인물 식별자 (lowercase, unique). addresses = 해당 인물의 모든 지갑 (본/부/벡터). tier = S/A/B. is_active=false 는 비활성.",
-  "//workflow": "월 1회 재검증 — recent_30d_pnl_sol / recent_30d_5x_count 업데이트. PnL 음수 3개월 연속 시 is_active=false 제안.",
-  "//workflow_rebalance_2026_04_26": "active core / active discovery / watch-benchmark / archive 4 lane 구분. active core+discovery 는 주 1회 mini reverify (월 1회 부족 — pasternak 처럼 주소 자체가 교체되거나, frank 처럼 현재 주소가 $0 되거나, oxsun/gake 처럼 최신 거래 멈추는 케이스 빈번). 기준은 '한때 잘했나'가 아니라 '지금도 지갑 생존 규칙 안 깨면서 tail winner 분포 보이나'.",
+  "//workflow": "월 1회 재검증 — recent_30d_pnl_sol / recent_30d_5x_count 업데이트. 30d realized PnL 음수 + >500% bucket=0 + buy count 0 인 active 는 즉시 trigger 제외.",
+  "//workflow_rebalance_2026_04_27": "External KOL feedback v2 applied (OKX wallet analysis + Kolscan leaderboard + GMGN aggregates + Solscan/Orb cross-check). 핵심 변화: (1) 5 active → inactive (josim, lebron, pain, west_ratwizardx, scharo — 공개 재검증 근거 약함). (2) euris A → S (저시총 + 회전 + tail 분포 검증). (3) ogantd 분리 승격 (secondary_unverified_pool 에서 split, OKX+Kolscan 양쪽 검증). (4) domy_watch → domy (Kolscan 상위권 노출, pilot 활성). (5) 8 신규 A active (chester, casino, jijo, johnson, the_doc, heyitsyolo, kadenox, kev — copy core / discovery canary 양쪽). (6) 13 신규 observe-only B (matt, naruza, nyhrox, gh0stee, gfree, earl, giann, coler, radiance, esee06257, putrick, gasp, bastille — single-source, 2차 검증 대기).",
+  "//lane_strategy": "3 lane 구분: (a) Copy Core — decu/euris/bflg/ekawy_2/dzfk/jijo/johnson/heyitsyolo (저티켓 + 저시총 + 회전 살아있음). (b) Discovery Canary — clukz/theo/chester/kadenox/kev/the_doc/gdaqp3 (먼저 본다 — latency 민감). (c) Benchmark/Observer — oxsun/lebron/cupsey_benchmark/cented_benchmark/gwyg_watch/btyi_2_watch/wallet_91e6_watch (트리거 X).",
+  "//rejected_candidates_2026_04_27": "Doji — Kolscan 랭커지만 별도 deployer 추적기에서 50회 배포 / 11 bonded 반복 배포자 노출. operator 성격 — KOL universe 부적합. Trey — realized PnL 음수 / 5x bucket 0, watch-only.",
   "//phase0_note": "2026-04-25 initial import from operator-provided wallet lists. Unnamed/old/project wallets are preserved inactive to avoid KOL signal pollution.",
-  "//rebalance_note_2026_04_26": "External KOL feedback applied — public-source cross-check (OKX/Solscan/Orb/CoinStats/GeckoTerminal). 주요 변경: pasternak/frank 는 archive (소유자 본인이 새 지갑 만들겠다 선언 / 현 주소 $0). oxsun/pow/dunpa_gake/lexapro 는 active → watch (총 PnL 크지만 최근 buy/sell 멈춤 또는 noise). ftg1 은 watch → active A (101x KIND / 174x Bagwork / total $4.6M 흔적, 현 portfolio 도 multi-bagger trace 살아있음). decu/clukz S 유지, theo/scharo/euris/crypto_d/west_ratwizardx/gdaqp3/him 은 active 유지하되 discovery-only lane 권고.",
-  "version": 2,
-  "last_updated": "2026-04-26",
+  "version": 3,
+  "last_updated": "2026-04-27",
   "kols": [
     {
       "id": "josim",
       "addresses": ["5rkP7bqEUqwURvqFmKwLSxT5YkoHEyJLehmXUpUiFHQh"],
-      "tier": "A",
+      "tier": "B",
       "added_at": "2026-04-25",
-      "last_verified_at": "2026-04-25",
-      "notes": "조심. Imported from Main tracked wallet list.",
-      "is_active": true
+      "last_verified_at": "2026-04-27",
+      "notes": "조심. 2026-04-27 reverify v2: 공개 소스에서 강한 재검증 근거 못 찾음. trigger set 제외.",
+      "is_active": false
     },
     {
       "id": "pow",
       "addresses": [
         "8zFZHuSRuDpuAR7J6FzwyF3vKNx4CVW3DFHJerQhc7Zd",
         "98W9eaX28YNW25A2GreFnSZ48avhf7oFyd674M5Q83sY",
-        "H1gJR25VXi5Ape1gAU7fTWzZFWaCpuP3rzRtKun8Dwo2"
+        "H1gJR25VXi5Ape1gAU7fTWzjFWaCpuP3rzRtKun8Dwo2"
       ],
-      "tier": "A",
+      "tier": "B",
       "added_at": "2026-04-25",
-      "last_verified_at": "2026-04-26",
-      "notes": "포우 본/부지갑 묶음. 2026-04-26 reverify: 주소 3개 상태가 분기됨 (한 주소 portfolio 큰 미실현 손실, 다른 주소 최근 0/0 또는 sparse). 한 인물로 묶어 신호화 시 risk. watch/benchmark 로 격하 — discovery 후보 시 individual 주소 단위 재평가 필요.",
+      "last_verified_at": "2026-04-27",
+      "notes": "포우 본/부지갑. 대표 주소 기준 저회전·대티켓·5x 부재. group 단위 신호화 위험 — per-address 분리 스코어링 후 재고. benchmark/watch.",
       "is_active": false
     },
     {
@@ -37,10 +38,10 @@
         "CNudZYFgpbT26fidsiNrWfHeGTBMMeVWqruZXsEkcUPc",
         "EwTNPYTuwxMzrvL19nzBsSLXdAoEmVBKkisN87csKgtt"
       ],
-      "tier": "A",
+      "tier": "B",
       "added_at": "2026-04-25",
-      "last_verified_at": "2026-04-26",
-      "notes": "던파/Gake 본/부/벡터. 2026-04-26 reverify: total PnL 매우 크지만 최근 윈도 buy/sell 1/0 ~ 1/2 수준 sparse. '유명한 지갑'이지만 active hunter signal 로는 부적합. watch/benchmark 로 격하.",
+      "last_verified_at": "2026-04-27",
+      "notes": "던파/Gake. 2026-04-27 reverify v2: 대표 주소 최근 buy 0/sell 1, 현재 포지션 90일대 보유 — 실시간 canary 부적합. watch.",
       "is_active": false
     },
     {
@@ -49,19 +50,19 @@
         "CRVidEDtEUTYZisCxBZkpELzhQc9eauMLR3FWg74tReL",
         "HA2KtZGZrNTFpKLTQsV82RwG3DpYUdDLJ5JqCrMHbm7t"
       ],
-      "tier": "A",
+      "tier": "B",
       "added_at": "2026-04-25",
-      "last_verified_at": "2026-04-26",
-      "notes": "프랭크. 과거 '3 SOL → 50만 USD' 공개 발언 있으나 2026-04-26 reverify: 현재 공개 대시보드상 본 주소 가치 $0. 인물 추적 가치는 있지만 등록된 주소가 dead. 새 주력 주소 확인 시 교체. 일단 archive.",
+      "last_verified_at": "2026-04-27",
+      "notes": "프랭크. Solscan 계정 존재만 확인. 공개 KOL edge 재확인 X. archive.",
       "is_active": false
     },
     {
       "id": "oxsun",
       "addresses": ["HUpPyLU8KWisCAr3mzWy2FKT6uuxQ2qGgJQxyTpDoes5"],
-      "tier": "A",
+      "tier": "B",
       "added_at": "2026-04-25",
-      "last_verified_at": "2026-04-26",
-      "notes": "OxSun. 2026-04-26 reverify: total PnL 수백만 USD 보유 (whale) 이지만 최근 분석 윈도 buy/sell 0/0, 승률 0%. DEX profile 거의 USDC/WSOL 1건. '아직 부자 지갑' ≠ '지금 알파 뿌리는 지갑'. watch/benchmark 로 격하.",
+      "last_verified_at": "2026-04-27",
+      "notes": "OxSun. all-time PnL 매우 큼이지만 공개 페이지상 거래 회전 0. benchmark/observer 만 유지.",
       "is_active": false
     },
     {
@@ -69,17 +70,18 @@
       "addresses": ["8yJFWmVTQq69p6VJxGwpzW7ii7c5J9GRAtHCNMMQPydj"],
       "tier": "B",
       "added_at": "2026-04-25",
-      "last_verified_at": "2026-04-26",
-      "notes": "LexaPro. 2026-04-26 reverify: 현재 공개 대시보드 총가치 약 $6.8K 수준. public evidence 가 오래된 추적 리스트 / 주소 식별 수준에 머묾. active → watch 한 단계 격하. 내부 30/90일 지표 살아나면 재승격.",
+      "last_verified_at": "2026-04-27",
+      "notes": "LexaPro. Solscan/CoinStats 주소 존재만, 실시간 KOL edge 공개 지표 약함. inactive.",
       "is_active": false
     },
     {
       "id": "euris",
       "addresses": ["DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj"],
-      "tier": "A",
+      "tier": "S",
       "added_at": "2026-04-25",
-      "last_verified_at": "2026-04-26",
-      "notes": "Euris. 2026-04-26 reverify: recent window total PnL +$11M 대, buy/sell 150+ 회, 선호 시총 거의 전부 <$100K. active 유지하되 discovery-only — blind copy 가 아니라 multi-KOL confirmation source 로 사용 권장.",
+      "last_verified_at": "2026-04-27",
+      "recent_30d_pnl_sol": 54,
+      "notes": "Euris. 2026-04-27 reverify v2: ~54 SOL 30d / 30.77% win / >500% bucket 1 / 0.1~1 mcap 선호 / avg ticket ~2 SOL / trade_count_90d ~244. tail-hunter A → S 승격.",
       "is_active": true
     },
     {
@@ -87,35 +89,35 @@
       "addresses": ["G1pRtSyKuWSjTqRDcazzKBDzqEF96i1xSURpiXj3yFcc"],
       "tier": "A",
       "added_at": "2026-04-25",
-      "last_verified_at": "2026-04-26",
-      "notes": "Crypto D. 2026-04-26 reverify: GMGN 집계 59 active days / 815 trades / net PnL $4.6M. 살아있는 알파지만 회전 빠름 — discovery-only lane 권고. blind copy 시 지갑 못 버틴다.",
+      "last_verified_at": "2026-04-27",
+      "notes": "Crypto D. 2026-04-27 reverify v2: secondary GMGN aggregate net PnL/active days 강함, primary recrawl 실패. A-watch 유지. discovery-only lane 권고.",
       "is_active": true
     },
     {
       "id": "lebron",
       "addresses": ["ATmKENkRrL1JQQnoUNAQvkiwgjiHKUkzyncxTGxyzQL1"],
-      "tier": "A",
+      "tier": "B",
       "added_at": "2026-04-25",
-      "last_verified_at": "2026-04-25",
-      "notes": "르브론 본지갑. Imported from Main tracked wallet list.",
-      "is_active": true
+      "last_verified_at": "2026-04-27",
+      "notes": "르브론. 2026-04-27 reverify v2: historical smart-money 소개에는 등장하나 최근 primary analytics 안 잡힘. trigger 제외 → benchmark/watch.",
+      "is_active": false
     },
     {
       "id": "pain",
       "addresses": ["HAN61KQbgzjDBC4RpZJ1ET8v32S4zdKAjoD7EApJ96q6"],
-      "tier": "A",
+      "tier": "B",
       "added_at": "2026-04-25",
-      "last_verified_at": "2026-04-25",
-      "notes": "Pain. Imported from Main tracked wallet list.",
-      "is_active": true
+      "last_verified_at": "2026-04-27",
+      "notes": "Pain. 2026-04-27 reverify v2: token-level 예시는 trader 흔적 보이나 개별 wallet edge 1차 소스 부족. trigger 제외.",
+      "is_active": false
     },
     {
       "id": "him",
       "addresses": ["A1ECE86o3tz6UWmwMWicrqZmwRZ7RCRzmYYa9okNQRBw"],
       "tier": "A",
       "added_at": "2026-04-25",
-      "last_verified_at": "2026-04-26",
-      "notes": "him. 2026-04-26 reverify: 과거 AI meme 구간 7d unrealized $3M / 승률 ~90%. 현재도 COPPERINU 등 최대 홀더로 사이즈 남음. 단 '대형 포지션 보유' 성격 강해 복제 가능한 저시총 entry signal 보장 약함. tier B → A 승격 + active-watch 로 두고 concentration alert 동시 관찰.",
+      "last_verified_at": "2026-04-27",
+      "notes": "him. 2026-04-27 reverify v2: primary current page 재크롤 실패, secondary evidence 강함 (AI meme 7d UPNL ~$3M / 고승률 / 특정 종목 상위 보유). A-watch 유지 + concentration alert.",
       "is_active": true
     },
     {
@@ -123,8 +125,8 @@
       "addresses": ["DjAfkjAV7qD6U2qjjU5RdcuzXwdk1gF3CtiWwGZc8pxJ"],
       "tier": "B",
       "added_at": "2026-04-25",
-      "last_verified_at": "2026-04-26",
-      "notes": "pasternak. 2026-04-26 reverify: 본인 트윗 — 본 주소는 Believe ecosystem 지원용 투명성 지갑이며 '이 지갑 버리고 새 공개 지갑 만들겠다'고 직접 발언. 즉 트레이딩용이 아닌 project/community 지원 임시 공개 지갑. archive.",
+      "last_verified_at": "2026-04-27",
+      "notes": "pasternak. 본인 트윗 — Believe ecosystem 지원용 투명성 지갑. project/support 흔적 → 성과 무관 KOL universe 제거 (workflow rule #2). archive.",
       "is_active": false
     },
     {
@@ -132,8 +134,9 @@
       "addresses": ["4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9"],
       "tier": "S",
       "added_at": "2026-04-25",
-      "last_verified_at": "2026-04-26",
-      "notes": "decu. 2026-04-26 reverify CONFIRMED: total PnL +$889.54K, 승률 64.84%, buy/sell 443/176, 평균 매수금액 $68.34, 선호 시총 <$100K. '지갑 안 죽으면서 작은 티켓으로 저시총 계속 건드림' — mission-fit 최상. active core S 유지.",
+      "last_verified_at": "2026-04-27",
+      "recent_30d_pnl_sol": 59,
+      "notes": "decu. 2026-04-27 reverify v2: ~59 SOL 30d / 61.86% win / avg ticket ~0.9 SOL / trade_count_90d ~377 / mcap <0.1 선호. 가장 균형. copy core ↔ discovery 중심축. S 유지.",
       "is_active": true
     },
     {
@@ -141,44 +144,46 @@
       "addresses": ["G6fUXjMKPJzCY1rveAE6Qm7wy5U3vZgKDJmN1VPAdiZC"],
       "tier": "S",
       "added_at": "2026-04-25",
-      "last_verified_at": "2026-04-26",
-      "notes": "clukz. 2026-04-26 reverify CONFIRMED: total PnL +$1.92M, 승률 80%, buy/sell 9/10, 평균 매수금액 ~$260, 최근 실현 +527.52% 예시 확인. mission-fit 최상. active core S 유지.",
+      "last_verified_at": "2026-04-27",
+      "recent_30d_pnl_sol": 72,
+      "notes": "clukz. 2026-04-27 reverify v2: ~72 SOL 30d / 61.11% win / avg ticket ~4.7 SOL / trade_count_90d ~138. 보유시간 초단기 — latency 민감. discovery canary S (blind copy 부적합).",
       "is_active": true
     },
     {
       "id": "west_ratwizardx",
       "addresses": ["JDd3hy3gQn2V982mi1zqhNqUw1GfV2UL6g76STojCJPN"],
-      "tier": "A",
+      "tier": "B",
       "added_at": "2026-04-25",
-      "last_verified_at": "2026-04-26",
-      "notes": "West @ratwizardx. 2026-04-26 reverify: recent window total PnL +$5.94M, buy/sell 558/121, 평균 매수금액 $64.05 — 저시총 활동형. active 유지 + discovery-only lane 권고 (회전 빠름, 복제 난도 높음).",
-      "is_active": true
+      "last_verified_at": "2026-04-27",
+      "notes": "West @ratwizardx. 2026-04-27 reverify v2: 공개 소스 충분한 재검증 못 함. watch 격하 + 다음 월간 리뷰 재검증.",
+      "is_active": false
     },
     {
       "id": "theo",
       "addresses": ["Bi4rd5FH5bYEN8scZ7wevxNZyNmKHdaBcvewdPFxYdLt"],
       "tier": "A",
       "added_at": "2026-04-25",
-      "last_verified_at": "2026-04-26",
-      "notes": "theo. 2026-04-26 reverify CONFIRMED: total PnL ~+$896K, buy/sell 560/259, 평균 매수금액 ~$105, 선호 시총 <$100K, 토큰 수익률 분포 >500% 1개 + 0~500% 41개. hit rate 자체는 매우 높지 않으나 tail 탐지 목적엔 적합. active core 유지.",
+      "last_verified_at": "2026-04-27",
+      "recent_30d_pnl_sol": 69,
+      "notes": "theo. 2026-04-27 reverify v2: ~69 SOL 30d / 55.28% win / avg ticket ~1.1 SOL / trade_count_90d ~686 / mcap <0.1. 초단기 discovery canary. copy core 는 latency 방어 필요.",
       "is_active": true
     },
     {
       "id": "scharo",
       "addresses": ["4sAUSQFdvWRBxR8UoLBYbw8CcXuwXWxnN8pXa4mtm5nU"],
-      "tier": "A",
+      "tier": "B",
       "added_at": "2026-04-25",
-      "last_verified_at": "2026-04-26",
-      "notes": "Scharo. 2026-04-26 reverify CONFIRMED: total PnL ~+$237.73K, buy/sell 160/68, 평균 매수금액 ~$154, 최근 +314.94% 실현 예시. active core 유지.",
-      "is_active": true
+      "last_verified_at": "2026-04-27",
+      "notes": "Scharo. 2026-04-27 reverify v2: 기존 note 대비 공개 재검증 근거 약함. active trigger 제외.",
+      "is_active": false
     },
     {
       "id": "gdaqp3",
       "addresses": ["Gdaqp3ND6r3HVAWXpawkQU18EuQqwNxpaeeio8ASVAYd"],
       "tier": "A",
       "added_at": "2026-04-26",
-      "last_verified_at": "2026-04-26",
-      "notes": "Gdaqp3. 2026-04-26 reverify: GMGN net PnL ~$3.74M, 1,255 trades, 최근 +103% 예시 + 손실 포지션/집중 보유 혼재. active 유지하되 discovery-only lane 권고. blind copy 시 지갑 burn 위험.",
+      "last_verified_at": "2026-04-27",
+      "notes": "Gdaqp3. 2026-04-27 reverify v2: 33.33% win / avg ticket ~6.2 SOL (큼) / trade_count primary 23 vs aggregate 1255 (회전 성격 mixed). confirmation-based discovery source 로만 유효. active 유지.",
       "is_active": true
     },
     {
@@ -188,7 +193,7 @@
       "added_at": "2026-04-26",
       "last_verified_at": "2026-04-26",
       "recent_30d_pnl_sol": 201.13,
-      "notes": "BfLg. Added from 2026-04-26 KOL research: reported 30d +201.13 SOL, 90d +204.39 SOL, 84.27% win rate, avg hold ~13d, and visible 5x+ tail trades. Treat as Copy Core candidate; reverify weekly.",
+      "notes": "BfLg. DB note 기준 30d +201.13 SOL / 90d +204.39 SOL / 84.27% win / avg hold ~13d / 5x+ tail trades. Copy Core S. 2026-04-27 reverify v2: public recrawl 실패 — 주간 재검증 필수.",
       "is_active": true
     },
     {
@@ -198,7 +203,7 @@
       "added_at": "2026-04-26",
       "last_verified_at": "2026-04-26",
       "recent_30d_pnl_sol": 20.57,
-      "notes": "2Ekawy. Added from 2026-04-26 KOL research: reported 30d +20.57 SOL, 90d +53.45 SOL, 70.85% win rate, 480 trades, avg hold ~13h. Copy Core candidate with moderate turnover.",
+      "notes": "2Ekawy. DB note 30d +20.57 SOL / 90d +53.45 SOL / 70.85% win / 480 trades / avg hold ~13h. Copy Core A (provisional — public recrawl 대기).",
       "is_active": true
     },
     {
@@ -208,7 +213,7 @@
       "added_at": "2026-04-26",
       "last_verified_at": "2026-04-26",
       "recent_30d_pnl_sol": 11.52,
-      "notes": "DzFk. Added from 2026-04-26 KOL research: reported 30d +11.52 SOL, 90d +107.78 SOL, 72.29% win rate, 671 trades, avg hold ~9d. Copy Core candidate; monitor concentration and latency sensitivity.",
+      "notes": "DzFk. DB note 30d +11.52 SOL / 90d +107.78 SOL / 72.29% win / 671 trades / avg hold ~9d. Copy Core A (provisional — public recrawl 대기). monitor concentration + latency.",
       "is_active": true
     },
     {
@@ -217,8 +222,220 @@
       "tier": "A",
       "added_at": "2026-04-26",
       "last_verified_at": "2026-04-26",
-      "notes": "FTg1. 2026-04-26 PROMOTED watch → active A. 공개 기사: KIND 101x / Bagwork 174x / total on-chain profit $4.6M. 현 portfolio: MEMECOIN +1,661% / SURGE +212% / 67 coin +5,717% all-time P/L 흔적. '역사적 우연 1회' 아님. inactive watch 유지 이유 약함 — active A 테스트 레인으로 승격하여 실전 관찰. 최근 30일 지표 내부에서 재찍어야.",
+      "notes": "FTg1. KIND 101x / Bagwork 174x / total $4.6M 흔적. portfolio MEMECOIN +1,661% / SURGE +212% / 67 coin +5,717% all-time. active A. 최근 30d 내부 재찍기 필요.",
       "is_active": true
+    },
+    {
+      "id": "ogantd",
+      "addresses": ["215nhcAHjQQGgwpQSJQ7zR26etbjjtVdW74NLzwEgQjP"],
+      "tier": "A",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "recent_30d_pnl_sol": 7.6,
+      "notes": "OGAntD. 2026-04-27 PROMOTED from secondary_unverified_pool. ~7.6 SOL 30d / 66.67% win / avg ticket ~4.9 SOL / mcap 0.5~1 / trade_count ~12. 공개 리더보드 + OKX 양쪽 검증. discovery canary.",
+      "is_active": true
+    },
+    {
+      "id": "domy",
+      "addresses": ["3LUfv2u5yzsDtUzPdsSJ7ygPBuqwfycMkjpNreRR2Yww"],
+      "tier": "A",
+      "added_at": "2026-04-25",
+      "last_verified_at": "2026-04-27",
+      "notes": "Domy @domyxbt. 2026-04-27 PILOT ACTIVATED (was domy_watch inactive). Kolscan 현재 상위권 노출. 첫 달 observe-trigger 혼합 운용 권고.",
+      "is_active": true
+    },
+    {
+      "id": "chester",
+      "addresses": ["PMJA8UQDyWTFw2Smhyp9jGA6aTaP7jKHR7BPudrgyYN"],
+      "tier": "A",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "recent_30d_pnl_sol": 52,
+      "notes": "chester. 2026-04-27 NEW: ~52 SOL 30d / 56.25% win / avg ticket ~0.6 SOL / trade_count_90d ~396 / >500% bucket 1. 신규 discovery 지갑 중 가장 강한 검증. discovery canary A.",
+      "is_active": true
+    },
+    {
+      "id": "casino",
+      "addresses": ["8rvAsDKeAcEjEkiZMug9k8v1y8mW6gQQiMobd89Uy7qR"],
+      "tier": "A",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "casino. 2026-04-27 NEW: 50% win / avg ticket ~3.9 SOL / mcap 0.1~1 / trade_count_90d ~71. low-cap 선호 + 최근 활동. discovery-confirmation A.",
+      "is_active": true
+    },
+    {
+      "id": "jijo",
+      "addresses": ["4BdKaxN8G6ka4GYtQQWk4G4dZRUTX2vQH9GcXdBREFUk"],
+      "tier": "A",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "recent_30d_pnl_sol": 6.1,
+      "notes": "jijo. 2026-04-27 NEW: ~6.1 SOL 30d / 66.67% win / avg ticket ~1.5 SOL / trade_count_90d ~62. 저시총 선호. confirmation-based copy core A.",
+      "is_active": true
+    },
+    {
+      "id": "johnson",
+      "addresses": ["J9TYAsWWidbrcZybmLSfrLzryANf4CgJBLdvwdGuC8MB"],
+      "tier": "A",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "recent_30d_pnl_sol": 18,
+      "notes": "Johnson. 2026-04-27 NEW: ~18 SOL 30d / 50% win / avg ticket ~0.7 SOL / trade_count_90d ~89. 저티켓 + 저시총 분명. copy core A.",
+      "is_active": true
+    },
+    {
+      "id": "the_doc",
+      "addresses": ["DYAn4XpAkN5mhiXkRB7dGq4Jadnx6XYgu8L5b3WGhbrt"],
+      "tier": "A",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "The Doc. 2026-04-27 NEW: 25~40% win / avg ticket ~1.6 SOL / mcap 0.5~5 / trade_count_90d ~59 / low-cap rotation + 최근 수익. 보유시간 분포 mixed — 중간형 lane.",
+      "is_active": true
+    },
+    {
+      "id": "heyitsyolo",
+      "addresses": ["Av3xWHJ5EsoLZag6pr7LKbrGgLRTaykXomDD5kBhL9YQ"],
+      "tier": "A",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "recent_30d_pnl_sol": 50,
+      "notes": "Heyitsyolo. 2026-04-27 NEW: ~50 SOL 30d / 62.04% win / avg ticket ~2.0 SOL / trade_count_90d ~397. 회전수 + 승률 양호. copy core A.",
+      "is_active": true
+    },
+    {
+      "id": "kadenox",
+      "addresses": ["B32QbbdDAyhvUQzjcaM5j6ZVKwjCxAwGH5Xgvb9SJqnC"],
+      "tier": "A",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "KADENOX. 2026-04-27 NEW: 56.25% win / avg ticket ~2.7 SOL / trade_count_90d ~158 / >500% bucket 1. discovery canary A.",
+      "is_active": true
+    },
+    {
+      "id": "kev",
+      "addresses": ["BTf4A2exGK9BCVDNzy65b9dUzXgMqB4weVkvTMFQsadd"],
+      "tier": "A",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "Kev. 2026-04-27 NEW: 48.14% win / avg ticket ~3.8 SOL / aggregate trade_count ~3800. 초고빈도 — latency 민감. signal source 로 더 가치 (직접 카피보다 신호용).",
+      "is_active": true
+    },
+    {
+      "id": "matt",
+      "addresses": ["3bzaJd5yZG73EVDz8xosQb7gfZm2LN5auFGh6wnP1n1f"],
+      "tier": "B",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "matt. 2026-04-27 NEW observe-only. Kolscan 상위권 후보, 2차 검증 전 inactive.",
+      "is_active": false
+    },
+    {
+      "id": "naruza",
+      "addresses": ["ASVzakePP6GNg9r95d4LPZHJDMXun6L6E4um4pu5ybJk"],
+      "tier": "B",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "naruza. 2026-04-27 NEW observe-only. leaderboard 후보, 성과 재검증 1회 더 필요.",
+      "is_active": false
+    },
+    {
+      "id": "nyhrox",
+      "addresses": ["6S8GezkxYUfZy9JPtYnanbcZTMB87Wjt1qx3c6ELajKC"],
+      "tier": "B",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "nyhrox. 2026-04-27 NEW observe-only. single-source discovery 단계.",
+      "is_active": false
+    },
+    {
+      "id": "gh0stee",
+      "addresses": ["2kv8X2a9bxnBM8NKLc6BBTX2z13GFNRL4oRotMUJRva9"],
+      "tier": "B",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "gh0stee. 2026-04-27 NEW observe-only. active 전환 전 1차 analytics 재확인 필요.",
+      "is_active": false
+    },
+    {
+      "id": "gfree",
+      "addresses": ["4yo9CUuTBbds9NFhZd4MzPiZZkUvveXdTnAH8qMsE8ku"],
+      "tier": "B",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "gfree. 2026-04-27 NEW observe-only. 계정 URL 확인, 상세 analytics 캐시 불안정.",
+      "is_active": false
+    },
+    {
+      "id": "earl",
+      "addresses": ["F2SuErm4MviWJ2HzKXk2nuzBC6xe883CFWUDCPz6cyWm"],
+      "tier": "B",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "earl. 2026-04-27 NEW observe-only. Kolscan 후보, OKX/GMGN 후속 확인 시 승격 여지.",
+      "is_active": false
+    },
+    {
+      "id": "giann",
+      "addresses": ["GNrmKZCxYyNiSUsjduwwPJzhed3LATjciiKVuSGrsHEC"],
+      "tier": "B",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "giann. 2026-04-27 NEW observe-only. Kolscan 후보, 수집 가치 있음.",
+      "is_active": false
+    },
+    {
+      "id": "coler",
+      "addresses": ["99xnE2zEFi8YhmKDaikc1EvH6ELTQJppnqUwMzmpLXrs"],
+      "tier": "B",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "coler. 2026-04-27 NEW observe-only. Kolscan 후보, 30일 realized 확보 시 승격 검토.",
+      "is_active": false
+    },
+    {
+      "id": "radiance",
+      "addresses": ["FAicXNV5FVqtfbpn4Zccs71XcfGeyxBSGbqLDyDJZjke"],
+      "tier": "B",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "radiance. 2026-04-27 NEW observe-only. 리더보드 발견, single-source.",
+      "is_active": false
+    },
+    {
+      "id": "esee06257",
+      "addresses": ["4uCT4g7YHH4xxfmfNfKUDenwGrRNGoZ9Ay1XFxfUGhQG"],
+      "tier": "B",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "esee06257. 2026-04-27 NEW observe-only. 리더보드 발견, 2차 검증 전 inactive (신호 오염 방지).",
+      "is_active": false
+    },
+    {
+      "id": "putrick",
+      "addresses": ["AVjEtg2ECYKXYeqdRQXvaaAZBjfTjYuSMTR4WLhKoeQN"],
+      "tier": "B",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "putrick. 2026-04-27 NEW observe-only. 리더보드 발견.",
+      "is_active": false
+    },
+    {
+      "id": "gasp",
+      "addresses": ["xyzfhxfy8NhfeNG3Um3WaUvFXzNuHkrhrZMD8dsStB6"],
+      "tier": "B",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "gasp. 2026-04-27 NEW observe-only. 리더보드 발견.",
+      "is_active": false
+    },
+    {
+      "id": "bastille",
+      "addresses": ["3kebnKw7cPdSkLRfiMEALyZJGZ4wdiSRvmoN4rD1yPzV"],
+      "tier": "B",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "bastille. 2026-04-27 NEW observe-only. 리더보드 발견.",
+      "is_active": false
     },
     {
       "id": "cupsey_benchmark",
@@ -226,7 +443,7 @@
       "tier": "S",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-25",
-      "notes": "Cupsey benchmark. High-frequency reference wallet; kept inactive in Option 5 DB to avoid noisy direct KOL hunter triggers. Existing cupsey lane remains separate benchmark.",
+      "notes": "Cupsey benchmark. High-frequency reference; inactive in Option 5 DB to avoid noisy direct triggers. cupsey lane separate.",
       "is_active": false
     },
     {
@@ -235,16 +452,7 @@
       "tier": "S",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-25",
-      "notes": "Cented benchmark. Public sources describe high-frequency/bot-like launch behavior; useful as reference, not active canary signal until a benchmark-only observer exists.",
-      "is_active": false
-    },
-    {
-      "id": "domy_watch",
-      "addresses": ["3LUfv2u5yzsDtUzPdsSJ7ygPBuqwfycMkjpNreRR2Yww"],
-      "tier": "B",
-      "added_at": "2026-04-25",
-      "last_verified_at": "2026-04-25",
-      "notes": "Domy @domyxbt. Inactive watch candidate from 2026-04-25 KOL research; Orb confirms individual address, but keep inactive until 30d realized PnL / tail evidence is reverified.",
+      "notes": "Cented benchmark. High-frequency/bot-like; reference, not active canary.",
       "is_active": false
     },
     {
@@ -253,7 +461,7 @@
       "tier": "B",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-25",
-      "notes": "Sheep. Inactive watch candidate from 2026-04-25 KOL research; tail-winner potential but role/longer-term verification is weaker. Activate only after next monthly review.",
+      "notes": "Sheep. tail-winner potential but role/longer-term verification weaker.",
       "is_active": false
     },
     {
@@ -262,7 +470,7 @@
       "tier": "A",
       "added_at": "2026-04-26",
       "last_verified_at": "2026-04-26",
-      "notes": "GwyG. 2026-04-26 reverify: GMGN 집계 trade count 624, 여러 토큰 상위 holder 반복 등장 → operator/holder noise 가능성. '돈 잘 버는 지갑'이지만 복제 가능한 canary 아님. inactive watch 유지.",
+      "notes": "GwyG. GMGN-style high net PnL with multi-week persistence. Inactive — bot/operator risk + copyability 미검증.",
       "is_active": false
     },
     {
@@ -271,7 +479,7 @@
       "tier": "B",
       "added_at": "2026-04-26",
       "last_verified_at": "2026-04-26",
-      "notes": "2btYi. 2026-04-26 reverify: GMGN trade count 702, 큰 net PnL 이지만 whale/operator risk 높음. inactive watch 유지.",
+      "notes": "2btYi. Large reported net PnL, high whale/operator risk. Inactive watch.",
       "is_active": false
     },
     {
@@ -280,7 +488,7 @@
       "tier": "B",
       "added_at": "2026-04-26",
       "last_verified_at": "2026-04-26",
-      "notes": "91e6. 2026-04-26 reverify: GMGN trade count 1,139 — high-frequency profile. '돈 잘 버는' but 복제 불가능. inactive watch 유지.",
+      "notes": "91e6. High-frequency profile (trade_count 1,139). 복제 불가능. Inactive watch.",
       "is_active": false
     },
     {
@@ -289,7 +497,7 @@
       "tier": "B",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-25",
-      "notes": "Project/treasury-like wallet, not a KOL. Preserved inactive until operator confirms use as event wallet.",
+      "notes": "Project/treasury wallet, not KOL. Inactive.",
       "is_active": false
     },
     {
@@ -298,7 +506,7 @@
       "tier": "B",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-25",
-      "notes": "Project/foundation wallet from old group. Preserved inactive.",
+      "notes": "Project/foundation wallet. Inactive.",
       "is_active": false
     },
     {
@@ -313,7 +521,6 @@
     {
       "id": "secondary_unverified_pool",
       "addresses": [
-        "215nhcAHjQQGgwpQSJQ7zR26etbjjtVdW74NLzwEgQjP",
         "AnsazR3Rf7LK2P6dKmwdyr6bzknaw8WyaVKzh5s8LXqM",
         "9ydzS7dEvpQjzErnXGDbmgSRYGzFDFkWV3bkfrJWDKDE",
         "H4JnKMWvzuuF9YR79Y9Yvpe8ATE8mBunxFx8kq3XM3zB",
@@ -325,8 +532,8 @@
       ],
       "tier": "B",
       "added_at": "2026-04-25",
-      "last_verified_at": "2026-04-26",
-      "notes": "Unnamed/unverified secondary-list wallets. 2026-04-26 reverify: AVAZvHLR... = Ansem (@blknoiz06) Orb 라벨 확인되나 현 가치 ~$501, 마지막 활동 2025-07-31 → 활성 추가 안 함 ('유명했던 주소' ≠ '지금 알파 주는 주소'). 나머지도 inactive 유지.",
+      "last_verified_at": "2026-04-27",
+      "notes": "Unnamed secondary-list. 2026-04-27: 215nhcAH... split out as 'ogantd' (promoted A active). AVAZvHLR... = Ansem (@blknoiz06) — 현 가치 ~$501, 2025-07-31 마지막 활동, 추가 안 함.",
       "is_active": false
     }
   ]

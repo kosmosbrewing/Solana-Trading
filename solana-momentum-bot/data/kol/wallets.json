@@ -6,7 +6,7 @@
   "//lane_strategy": "3 lane 구분: (a) Copy Core — decu/euris/bflg/ekawy_2/dzfk/jijo/johnson/heyitsyolo (저티켓 + 저시총 + 회전 살아있음). (b) Discovery Canary — clukz/theo/chester/kadenox/kev/the_doc/gdaqp3 (먼저 본다 — latency 민감). (c) Benchmark/Observer — oxsun/lebron/cupsey_benchmark/cented_benchmark/gwyg_watch/btyi_2_watch/wallet_91e6_watch (트리거 X).",
   "//rejected_candidates_2026_04_27": "Doji — Kolscan 랭커지만 별도 deployer 추적기에서 50회 배포 / 11 bonded 반복 배포자 노출. operator 성격 — KOL universe 부적합. Trey — realized PnL 음수 / 5x bucket 0, watch-only.",
   "//phase0_note": "2026-04-25 initial import from operator-provided wallet lists. Unnamed/old/project wallets are preserved inactive to avoid KOL signal pollution.",
-  "version": 5,
+  "version": 6,
   "last_updated": "2026-04-27",
   "kols": [
     {
@@ -383,11 +383,11 @@
       "addresses": [
         "3bzaJd5yZG73EVDz8xosQb7gfZm2LN5auFGh6wnP1n1f"
       ],
-      "tier": "B",
+      "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
-      "notes": "matt. 2026-04-27 NEW observe-only. Kolscan 상위권 후보, 2차 검증 전 inactive.",
-      "is_active": false
+      "notes": "matt. 2026-04-27 PROVISIONAL A (operator batch expansion 22→35). Prior note: \"Kolscan 상위권 후보\". Single-source — workflow rule #4 deviation. Auto-revert criteria: 30d realized ≤ 0 OR sample > 30 + 5x bucket = 0.",
+      "is_active": true
     },
     {
       "id": "naruza",
@@ -406,22 +406,22 @@
       "addresses": [
         "6S8GezkxYUfZy9JPtYnanbcZTMB87Wjt1qx3c6ELajKC"
       ],
-      "tier": "B",
+      "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
-      "notes": "nyhrox. 2026-04-27 NEW observe-only. single-source discovery 단계.",
-      "is_active": false
+      "notes": "nyhrox. 2026-04-27 PROVISIONAL A (operator batch expansion). Prior: \"leaderboard 후보, single-source\". Auto-revert: 30d ≤ 0 OR sample > 30 + 5x = 0.",
+      "is_active": true
     },
     {
       "id": "gh0stee",
       "addresses": [
         "2kv8X2a9bxnBM8NKLc6BBTX2z13GFNRL4oRotMUJRva9"
       ],
-      "tier": "B",
+      "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
-      "notes": "gh0stee. 2026-04-27 NEW observe-only. active 전환 전 1차 analytics 재확인 필요.",
-      "is_active": false
+      "notes": "gh0stee. 2026-04-27 PROVISIONAL A (operator batch expansion). Prior: \"leaderboard 후보, 1차 analytics 재확인 필요\". Auto-revert: 30d ≤ 0 OR sample > 30 + 5x = 0.",
+      "is_active": true
     },
     {
       "id": "gfree",
@@ -439,22 +439,22 @@
       "addresses": [
         "F2SuErm4MviWJ2HzKXk2nuzBC6xe883CFWUDCPz6cyWm"
       ],
-      "tier": "B",
+      "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
-      "notes": "earl. 2026-04-27 NEW observe-only. Kolscan 후보, OKX/GMGN 후속 확인 시 승격 여지.",
-      "is_active": false
+      "notes": "earl. 2026-04-27 PROVISIONAL A (operator batch expansion). Prior: \"Kolscan 후보, OKX/GMGN 확인 시 승격 여지\". Auto-revert: 30d ≤ 0 OR sample > 30 + 5x = 0.",
+      "is_active": true
     },
     {
       "id": "giann",
       "addresses": [
         "GNrmKZCxYyNiSUsjduwwPJzhed3LATjciiKVuSGrsHEC"
       ],
-      "tier": "B",
+      "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
-      "notes": "giann. 2026-04-27 NEW observe-only. Kolscan 후보, 수집 가치 있음.",
-      "is_active": false
+      "notes": "giann. 2026-04-27 PROVISIONAL A (operator batch expansion). Prior: \"Kolscan 후보, 수집 가치\". Auto-revert: 30d ≤ 0 OR sample > 30 + 5x = 0.",
+      "is_active": true
     },
     {
       "id": "coler",
@@ -604,88 +604,88 @@
       "addresses": [
         "BtMBMPkoNbnLF9Xn552guQq528KKXcsNBNNBre3oaQtr"
       ],
-      "tier": "B",
+      "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
-      "notes": "Letterbomb. 2026-04-27 NEW observe-only. Kolscan #5 +65.40 SOL 7d / 18/36 (33% win, 54 trades). Big PnL with low win rate = tail-hunter pattern. 2nd source 확보 시 active 승격 검토.",
-      "is_active": false
+      "notes": "Letterbomb. 2026-04-27 PROMOTED B → A. Kolscan #5 +65.40 SOL 7d / 18 wins / 36 losses (33% rate, 54 trades). Big PnL with low win = tail-hunter pattern. discovery canary A.",
+      "is_active": true
     },
     {
       "id": "dv",
       "addresses": [
         "BCagckXeMChUKrHEd6fKFA1uiWDtcmCXMsqaheLiUPJd"
       ],
-      "tier": "B",
+      "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
-      "notes": "dv. 2026-04-27 NEW observe-only. Kolscan #15 +20.88 SOL 7d / 57/73 (44% win, 130 trades). 가장 큰 sample size → 통계 신뢰도 높음. 2nd source 확보 시 priority 승격.",
-      "is_active": false
+      "notes": "dv. 2026-04-27 PROMOTED B → A (priority). Kolscan #15 +20.88 SOL 7d / 57 wins / 73 losses (44% rate, 130 trades — 가장 큰 sample). 통계 신뢰도 최상. copy core A.",
+      "is_active": true
     },
     {
       "id": "bigwarz",
       "addresses": [
         "7bsTkeWcSPG6nzsbXucxV89YUULoSExNJdX2WqfLHwZ4"
       ],
-      "tier": "B",
+      "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
-      "notes": "BIGWARZ. 2026-04-27 NEW observe-only. Kolscan #13 +26.21 SOL 7d / 9/23 (28% win, 32 trades). 낮은 승률 + 큰 PnL = tail-hunter.",
-      "is_active": false
+      "notes": "BIGWARZ. 2026-04-27 PROMOTED B → A. Kolscan #13 +26.21 SOL 7d / 9 wins / 23 losses (28% rate, 32 trades). tail-hunter + 큰 PnL. discovery canary A.",
+      "is_active": true
     },
     {
       "id": "schoen",
       "addresses": [
         "5hAgYC8TJCcEZV7LTXAzkTrm7YL29YXyQQJPCNrG84zM"
       ],
-      "tier": "B",
+      "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
-      "notes": "Schoen. 2026-04-27 NEW observe-only. Kolscan #16 +20.03 SOL 7d / 15/24 (38% win, 39 trades). moderate sample.",
-      "is_active": false
+      "notes": "Schoen. 2026-04-27 PROMOTED B → A. Kolscan #16 +20.03 SOL 7d / 15 wins / 24 losses (38% rate, 39 trades). discovery canary A.",
+      "is_active": true
     },
     {
       "id": "trenchman",
       "addresses": [
         "Hw5UKBU5k3YudnGwaykj5E8cYUidNMPuEewRRar5Xoc7"
       ],
-      "tier": "B",
+      "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
-      "notes": "Trenchman. 2026-04-27 NEW observe-only. Kolscan #18 +16.47 SOL 7d / 13/14 (48% win, 27 trades). balanced win/loss.",
-      "is_active": false
+      "notes": "Trenchman. 2026-04-27 PROMOTED B → A. Kolscan #18 +16.47 SOL 7d / 13 wins / 14 losses (48% rate, 27 trades). balanced. copy core A.",
+      "is_active": true
     },
     {
       "id": "jakey",
       "addresses": [
         "B3JyPD3t9ufZWfL3namyvoc258KH74JojSxxurUg9jCT"
       ],
-      "tier": "B",
+      "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
-      "notes": "jakey. 2026-04-27 NEW observe-only. Kolscan #21 +12.72 SOL 7d / 10/8 (55% win, 18 trades). Twitter/Telegram identity 검증 가능 (multi-source path 명확).",
-      "is_active": false
+      "notes": "jakey. 2026-04-27 PROMOTED B → A. Kolscan #21 +12.72 SOL 7d / 10 wins / 8 losses (55% rate, 18 trades). Twitter/Telegram identity 검증. copy core A.",
+      "is_active": true
     },
     {
       "id": "clown",
       "addresses": [
         "EDXHdSFdadFbYFFjxPXBqMe1kCEDFqpPu552uvp48HR8"
       ],
-      "tier": "B",
+      "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
-      "notes": "Clown. 2026-04-27 NEW observe-only. Kolscan #23 +10.50 SOL 7d / 15/29 (34% win, 44 trades). tail-hunter pattern.",
-      "is_active": false
+      "notes": "Clown. 2026-04-27 PROMOTED B → A. Kolscan #23 +10.50 SOL 7d / 15 wins / 29 losses (34% rate, 44 trades). tail-hunter. discovery canary A.",
+      "is_active": true
     },
     {
       "id": "trey",
       "addresses": [
         "831yhv67QpKqLBJjbmw2xoDUeeFHGUx8RnuRj9imeoEs"
       ],
-      "tier": "B",
+      "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
-      "notes": "Trey. 2026-04-27 RECONSIDERED (was rejected v2 — \"realized PnL 음수\"). Kolscan #24 +10.32 SOL 7d / 24/13 (65% win, 37 trades) — direction 반전. observe-only 로 재추가, 2차 검증 시 승격 검토.",
-      "is_active": false
+      "notes": "Trey. 2026-04-27 PROMOTED B → A. Kolscan #24 +10.32 SOL 7d / 24 wins / 13 losses (65% rate, 37 trades) — direction 반전 (이전 v2 rejection). copy core A.",
+      "is_active": true
     },
     {
       "id": "secondary_unverified_pool",
@@ -706,5 +706,6 @@
     }
   ],
   "//cleanup_2026_04_27_option_a": "Removed 3 misclassified entries (believe_buyback / believe_foundation / solhana_old) — not KOLs (project/treasury wallets). 55 → 52 entries.",
-  "//workflow_rebalance_2026_04_27_v3": "Inactive 31 re-examination (Option A cleanup applied separately, removed believe_buyback/believe_foundation/solhana_old). Kolscan top-30 leaderboard cross-check via WebFetch. Promotions: naruza (observe → active A, multi-source). New observe-only 9 entries (8 Kolscan top-30 not in DB + ansem split from pool). Sheep_watch confirmed (sample size 10 only — watch 유지)."
+  "//workflow_rebalance_2026_04_27_v3": "Inactive 31 re-examination (Option A cleanup applied separately, removed believe_buyback/believe_foundation/solhana_old). Kolscan top-30 leaderboard cross-check via WebFetch. Promotions: naruza (observe → active A, multi-source). New observe-only 9 entries (8 Kolscan top-30 not in DB + ansem split from pool). Sheep_watch confirmed (sample size 10 only — watch 유지).",
+  "//workflow_rebalance_2026_04_27_v4_expansion": "Operator request: active 22 → ~35 expansion. (a) 8 high-confidence promotions from new Kolscan-verified observe-only (letterbomb/dv/bigwarz/schoen/trenchman/jakey/clown/trey) — multi-source via Kolscan top-30. (b) 5 PROVISIONAL A promotions from prior single-source observe-only (matt/nyhrox/gh0stee/earl/giann) — workflow rule #4 deviation per operator decision. Provisional entries: auto-revert if 30d realized PnL ≤ 0 OR sample > 30 trades + 5x bucket = 0. 다음 월간 리뷰 또는 paper 50 trades 도달 시 강제 검증."
 }

@@ -51,6 +51,16 @@ import { evaluateSecurityGate } from '../gate/securityGate';
 import { evaluateSellQuoteProbe } from '../gate/sellQuoteProbe';
 import type { OnchainSecurityClient } from '../ingester/onchainSecurity';
 import type { GateCacheManager } from '../gate/gateCacheManager';
+// 2026-04-27 (KOL live canary): pure_ws live path 와 동일 패턴.
+import type { Order } from '../utils/types';
+import type { BotContext } from './types';
+import { acquireCanarySlot, releaseCanarySlot } from '../risk/canaryConcurrencyGuard';
+import { reportCanaryClose } from '../risk/canaryAutoHalt';
+import { reportBleed } from '../risk/dailyBleedBudget';
+import { isWalletStopActive, getWalletStopGuardState } from '../risk/walletStopGuard';
+import { persistOpenTradeWithIntegrity, appendEntryLedger, isEntryHaltActive } from './entryIntegrity';
+import { resolveActualEntryMetrics } from './signalProcessor';
+import { bpsToDecimal } from '../utils/units';
 
 const log = createModuleLogger('KolHunter');
 const LANE_STRATEGY = 'kol_hunter' as const;
@@ -141,6 +151,16 @@ export interface PaperPosition {
   detectorVersion: string;
   independentKolCount: number;
   survivalFlags: string[];
+  // 2026-04-27 (KOL live canary): live wallet path 진입 여부.
+  // closePosition 가 isLive=true 면 live sell + DB close + canary release 까지 처리.
+  // 기본값 false (paper). enterLivePosition 만 true 로 설정.
+  isLive?: boolean;
+  /** Live position 의 DB tradeId — closeTrade 시 사용. */
+  dbTradeId?: string;
+  /** Live entry tx signature — ledger / notifier 에 전파. */
+  entryTxSignature?: string;
+  /** Live entry slippage (bps) — ledger 기록용. */
+  entrySlippageBps?: number;
 }
 
 interface SmartV3PendingState {
@@ -271,6 +291,9 @@ const priceListeners = new Map<string, (tick: PriceTick) => void>(); // tokenMin
  */
 let securityClient: OnchainSecurityClient | undefined;
 let gateCache: GateCacheManager | undefined;
+// 2026-04-27 (KOL live canary): ctx 보존 — closePosition 등 deep call site 에서 사용.
+// initKolHunter 시 주입. paper-only 경로에선 unused (graceful null check).
+let botCtx: BotContext | undefined;
 
 export const kolHunterEvents = new EventEmitter();           // 외부 관측용 (test/index)
 
@@ -377,6 +400,7 @@ export function initKolHunter(
     priceFeed?: PaperPriceFeed;
     securityClient?: OnchainSecurityClient;
     gateCache?: GateCacheManager;
+    ctx?: BotContext;
   } = {}
 ): void {
   priceFeed = options.priceFeed ?? new PaperPriceFeed({
@@ -387,10 +411,40 @@ export function initKolHunter(
   });
   securityClient = options.securityClient;
   gateCache = options.gateCache;
+  // 2026-04-27 (KOL live canary): ctx 주입 — live path (executeBuy/executeSell, DB persist) 에 필요.
+  // paper-only 경로는 ctx 없어도 동작. live 가능 여부는 isLiveCanaryEnabled() 가 ctx 존재 + 3 flag 모두 검증.
+  botCtx = options.ctx;
+  const liveCapable = botCtx != null
+    && config.kolHunterLiveCanaryEnabled
+    && !config.kolHunterPaperOnly
+    && botCtx.tradingMode === 'live';
   log.info(
     `[KOL_HUNTER] initialized — paperOnly=${config.kolHunterPaperOnly} ` +
-    `survival=${securityClient ? 'enabled' : 'skipped (no client)'}`
+    `survival=${securityClient ? 'enabled' : 'skipped (no client)'} ` +
+    `liveCanary=${liveCapable ? 'ENABLED (live wallet exposure)' : 'disabled'}`
   );
+}
+
+// ─── Live canary helpers (2026-04-27, Phase 5 P1-9~14) ───────────────
+/**
+ * 3-flag triple gate. 어느 하나라도 false 면 live wallet 영향 0 (paper fallback).
+ * - kolHunterLiveCanaryEnabled (env, default false)
+ * - !kolHunterPaperOnly (env, default true → must explicit set false)
+ * - tradingMode === 'live' (env)
+ * + botCtx 주입 + executor available
+ */
+function isLiveCanaryActive(): boolean {
+  if (!botCtx) return false;
+  if (botCtx.tradingMode !== 'live') return false;
+  if (config.kolHunterPaperOnly) return false;
+  if (!config.kolHunterLiveCanaryEnabled) return false;
+  return true;
+}
+
+/** Live canary 의 wallet executor 결정. 현 phase 5 P1-15: main wallet 사용.
+ *  추후 KOL_HUNTER_WALLET_MODE env 추가 가능 (sandbox / main). */
+function getKolHunterExecutor(ctx: BotContext) {
+  return ctx.executor;
 }
 
 export function stopKolHunter(): void {
@@ -779,20 +833,31 @@ async function resolveStalk(tokenMint: string): Promise<void> {
     return;
   }
 
-  // Phase 5 P1-15 (2026-04-25): live canary 명시적 opt-in.
-  // KOL_HUNTER_PAPER_ONLY=false 만으로는 live 안 됨 (review feedback P0). 별도 flag 필요.
-  // 본 sprint 에서는 enterLivePosition 의 Jupiter swap path 가 미구현 — flag 가 켜져 있어도
-  // 안전하게 paper 로 fallback + critical alert. P1-9~14 후속 sprint 에서 enterLivePosition 구현.
-  if (config.kolHunterLiveCanaryEnabled && !config.kolHunterPaperOnly) {
-    log.error(
-      `[KOL_HUNTER_LIVE_NOT_IMPLEMENTED] ${tokenMint.slice(0, 8)} ` +
-      `KOL_HUNTER_LIVE_CANARY_ENABLED=true 이지만 enterLivePosition 미구현 — paper 로 fallback`
-    );
-    // paperOnly 강제 false 로 들어왔어도 실제 wallet 에는 buy 안 함 (paper path).
-  } else if (!config.kolHunterPaperOnly) {
-    log.warn(
-      `[KOL_HUNTER] PAPER_ONLY=false 인데 LIVE_CANARY_ENABLED=false — paper 로만 동작`
-    );
+  // 2026-04-27 (Phase 5 P1-9~14): live canary 실제 구현. triple-flag gate 모두 통과 시 live wallet 사용.
+  // 그 외 경우는 paper-only (default 안전).
+  if (isLiveCanaryActive() && botCtx) {
+    // Hard guards (live wallet protection)
+    if (isWalletStopActive()) {
+      log.warn(`[KOL_HUNTER_WALLET_STOP] ${tokenMint.slice(0, 8)} signal ignored — wallet floor active`);
+      fireRejectObserver(tokenMint, 'stalk_expired_no_consensus', cand, score, {
+        survivalReason: 'wallet_stop_active',
+        survivalFlags: ['WALLET_STOP'],
+      });
+      return;
+    }
+    if (isEntryHaltActive(LANE_STRATEGY)) {
+      log.warn(`[KOL_HUNTER_ENTRY_HALT] ${tokenMint.slice(0, 8)} signal ignored — integrity halt`);
+      fireRejectObserver(tokenMint, 'stalk_expired_no_consensus', cand, score, {
+        survivalReason: 'entry_halt_active',
+        survivalFlags: ['ENTRY_HALT'],
+      });
+      return;
+    }
+    await enterLivePosition(tokenMint, cand, score, preEntry.flags, botCtx);
+    return;
+  }
+  if (!config.kolHunterPaperOnly && !config.kolHunterLiveCanaryEnabled) {
+    log.warn(`[KOL_HUNTER] PAPER_ONLY=false 인데 LIVE_CANARY_ENABLED=false — paper 로만 동작`);
   }
   await enterPaperPosition(tokenMint, cand, score, preEntry.flags);
 }
@@ -1328,6 +1393,12 @@ function closePosition(
   mfePctAtClose: number,
   maePctAtClose: number
 ): void {
+  // 2026-04-27 (KOL live canary): live position 은 비동기 sell + DB close 별도 분기.
+  // fire-and-forget — tickMonitor 흐름은 막지 않음. 실패 시 critical alert.
+  if (pos.isLive === true) {
+    void closeLivePosition(pos, exitPrice, reason, nowSec, mfePctAtClose, maePctAtClose);
+    return;
+  }
   pos.state = 'CLOSED';
 
   const holdSec = nowSec - pos.entryTimeSec;
@@ -1477,6 +1548,383 @@ async function appendPaperLedger(
   } catch (err) {
     log.debug(`[KOL_HUNTER] paper ledger append failed: ${String(err)}`);
   }
+}
+
+// ─── Live canary entry / close (Phase 5 P1-9~14, 2026-04-27) ─────────
+// pure_ws live path 와 동일 패턴. Real Asset Guard, canary slot, DB persist, ledger 정합.
+// triple-flag gate 통과 시에만 실행 (isLiveCanaryActive() in resolveStalk).
+
+async function enterLivePosition(
+  tokenMint: string,
+  cand: PendingCandidate,
+  score: KolDiscoveryScore,
+  survivalFlags: string[],
+  ctx: BotContext
+): Promise<void> {
+  if (!priceFeed) {
+    log.warn(`[KOL_HUNTER_LIVE] priceFeed not initialized — fallback paper`);
+    await enterPaperPosition(tokenMint, cand, score, survivalFlags);
+    return;
+  }
+
+  // 1. Entry reference price — paper feed 와 동일 (Jupiter probe quote).
+  priceFeed.subscribe(tokenMint);
+  const firstTick = await waitForFirstTick(tokenMint, 10_000);
+  if (firstTick === null) {
+    unsubscribePriceIfIdle(tokenMint);
+    log.warn(`[KOL_HUNTER_LIVE] entry price timeout ${tokenMint.slice(0, 8)} — reject`);
+    fireRejectObserver(tokenMint, 'stalk_expired_no_consensus', cand, score, {
+      survivalReason: 'live_price_timeout',
+      survivalFlags: ['LIVE_PRICE_TIMEOUT'],
+    });
+    return;
+  }
+  const referencePrice = firstTick.price;
+  const ticketSol = config.kolHunterTicketSol;
+  const plannedQty = referencePrice > 0 ? ticketSol / referencePrice : 0;
+  if (plannedQty <= 0) {
+    unsubscribePriceIfIdle(tokenMint);
+    return;
+  }
+
+  // 2. Real Asset Guard — global canary slot.
+  if (!acquireCanarySlot(LANE_STRATEGY)) {
+    log.debug(`[KOL_HUNTER_LIVE] global canary slot full — defer ${tokenMint.slice(0, 8)}`);
+    unsubscribePriceIfIdle(tokenMint);
+    return;
+  }
+
+  // 3. executeBuy.
+  let actualEntryPrice = referencePrice;
+  let actualQuantity = plannedQty;
+  let entryTxSignature = 'KOL_LIVE_PENDING';
+  let entrySlippageBps = 0;
+  let partialFillDataMissing = false;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const positionId = `kolh-live-${tokenMint.slice(0, 8)}-${nowSec}`;
+
+  try {
+    const buyExecutor = getKolHunterExecutor(ctx);
+    const order: Order = {
+      pairAddress: tokenMint,
+      strategy: LANE_STRATEGY,
+      side: 'BUY',
+      price: referencePrice,
+      quantity: plannedQty,
+      stopLoss: referencePrice * (1 - config.kolHunterHardcutPct),
+      takeProfit1: referencePrice * (1 + config.kolHunterT1Mfe),
+      takeProfit2: referencePrice * (1 + config.kolHunterT2Mfe),
+      timeStopMinutes: Math.ceil(config.kolHunterStalkWindowSec / 60),
+    };
+    const buyResult = await buyExecutor.executeBuy(order);
+    const metrics = resolveActualEntryMetrics(order, buyResult);
+    actualEntryPrice = metrics.entryPrice;
+    actualQuantity = metrics.quantity;
+    entryTxSignature = buyResult.txSignature;
+    entrySlippageBps = buyResult.slippageBps;
+    partialFillDataMissing = metrics.partialFillDataMissing;
+    log.info(
+      `[KOL_HUNTER_LIVE_BUY] ${positionId} sig=${entryTxSignature.slice(0, 12)} ` +
+      `slip=${entrySlippageBps}bps qty=${actualQuantity.toFixed(2)}`
+    );
+  } catch (buyErr) {
+    log.warn(`[KOL_HUNTER_LIVE_BUY] ${positionId} buy failed: ${buyErr}`);
+    releaseCanarySlot(LANE_STRATEGY);
+    unsubscribePriceIfIdle(tokenMint);
+    return;
+  }
+
+  // 4. DB persist (entryIntegrity halt 보호).
+  const persistResult = await persistOpenTradeWithIntegrity({
+    ctx,
+    lane: LANE_STRATEGY,
+    tradeData: {
+      pairAddress: tokenMint,
+      strategy: LANE_STRATEGY,
+      side: 'BUY',
+      sourceLabel: `kol_hunter:${score.participatingKols.map((k) => k.id).join(',')}`,
+      discoverySource: 'kol_discovery_v1',
+      entryPrice: actualEntryPrice,
+      plannedEntryPrice: referencePrice,
+      quantity: actualQuantity,
+      stopLoss: actualEntryPrice * (1 - config.kolHunterHardcutPct),
+      takeProfit1: actualEntryPrice * (1 + config.kolHunterT1Mfe),
+      takeProfit2: actualEntryPrice * (1 + config.kolHunterT2Mfe),
+      trailingStop: undefined,
+      highWaterMark: actualEntryPrice,
+      timeStopAt: new Date((nowSec + config.kolHunterStalkWindowSec) * 1000),
+      status: 'OPEN',
+      txSignature: entryTxSignature,
+      createdAt: new Date(nowSec * 1000),
+      entrySlippageBps,
+    },
+    ledgerEntry: {
+      signalId: positionId,
+      positionId,
+      txSignature: entryTxSignature,
+      strategy: LANE_STRATEGY,
+      wallet: 'main',
+      pairAddress: tokenMint,
+      plannedEntryPrice: referencePrice,
+      actualEntryPrice,
+      actualQuantity,
+      slippageBps: entrySlippageBps,
+      signalTimeSec: nowSec,
+      signalPrice: referencePrice,
+      partialFillDataMissing,
+      kolScore: score.finalScore,
+      independentKolCount: score.independentKolCount,
+    },
+    notifierKey: 'kol_live_open_persist',
+    buildNotifierMessage: (err) =>
+      `${positionId} kol live buy persisted FAILED after tx=${entryTxSignature}: ${err} — NEW POSITIONS HALTED.`,
+  });
+
+  // 5. Build PaperPosition (with isLive=true).
+  const primaryVersion = config.kolHunterParameterVersion;
+  const armName = armNameForVersion(primaryVersion);
+  const entryReason = defaultEntryReasonForVersion(primaryVersion);
+  const conviction = defaultConvictionForVersion(primaryVersion);
+  const position: PaperPosition = {
+    positionId,
+    tokenMint,
+    state: 'PROBE',
+    entryPrice: actualEntryPrice,
+    entryTimeSec: nowSec,
+    ticketSol,
+    quantity: actualQuantity,
+    marketReferencePrice: referencePrice,
+    peakPrice: referencePrice,
+    troughPrice: referencePrice,
+    lastPrice: referencePrice,
+    participatingKols: score.participatingKols.map((k) => ({ ...k })),
+    kolScore: score.finalScore,
+    armName,
+    parameterVersion: primaryVersion,
+    isShadowArm: false,
+    kolEntryReason: entryReason,
+    kolConvictionLevel: conviction,
+    kolReinforcementCount: 0,
+    detectorVersion: config.kolHunterDetectorVersion,
+    independentKolCount: score.independentKolCount,
+    survivalFlags: [...survivalFlags, `LIVE_DECIMALS_${firstTick.outputDecimals ?? 'UNKNOWN'}`],
+    isLive: true,
+    dbTradeId: persistResult.dbTradeId ?? undefined,
+    entryTxSignature,
+    entrySlippageBps,
+  };
+
+  setActivePosition(position);
+  ensurePriceListener(tokenMint);
+
+  if (persistResult.dbTradeId) {
+    try {
+      await ctx.notifier.sendTradeOpen({
+        tradeId: persistResult.dbTradeId,
+        pairAddress: tokenMint,
+        strategy: LANE_STRATEGY,
+        side: 'BUY',
+        price: actualEntryPrice,
+        plannedEntryPrice: referencePrice,
+        quantity: actualQuantity,
+        sourceLabel: position.armName,
+        discoverySource: 'kol_discovery_v1',
+        stopLoss: actualEntryPrice * (1 - config.kolHunterHardcutPct),
+        takeProfit1: actualEntryPrice * (1 + config.kolHunterT1Mfe),
+        takeProfit2: actualEntryPrice * (1 + config.kolHunterT2Mfe),
+        timeStopMinutes: Math.ceil(config.kolHunterStalkWindowSec / 60),
+      }, entryTxSignature);
+    } catch (err) {
+      log.warn(`[KOL_HUNTER_LIVE_NOTIFY_OPEN_FAIL] ${positionId} ${err}`);
+    }
+  }
+
+  log.info(
+    `[KOL_HUNTER_LIVE_OPEN] ${positionId} ${tokenMint.slice(0, 8)} ` +
+    `entry=${actualEntryPrice.toFixed(8)} qty=${actualQuantity.toFixed(2)} ticket=${ticketSol}SOL ` +
+    `kols=${score.independentKolCount} score=${score.finalScore.toFixed(2)}`
+  );
+  kolHunterEvents.emit('paper_entry', position);
+}
+
+async function closeLivePosition(
+  pos: PaperPosition,
+  exitPrice: number,
+  reason: CloseReason,
+  nowSec: number,
+  mfePctAtClose: number,
+  maePctAtClose: number
+): Promise<void> {
+  if (!botCtx) {
+    log.error(`[KOL_HUNTER_LIVE_CLOSE] ${pos.positionId} no botCtx — cannot live close, falling back to paper close`);
+    pos.isLive = false;
+    closePosition(pos, exitPrice, reason, nowSec, mfePctAtClose, maePctAtClose);
+    return;
+  }
+  const ctx = botCtx;
+  const previousState = pos.state;
+  let actualExitPrice = exitPrice;
+  let executionSlippage = 0;
+  let exitTxSignature = pos.entryTxSignature;
+  let sellCompleted = false;
+  let liveReceivedSol = 0;
+  let effectiveReason: CloseReason = reason;
+
+  try {
+    const sellExecutor = getKolHunterExecutor(ctx);
+    const tokenBalance = await sellExecutor.getTokenBalance(pos.tokenMint);
+    if (tokenBalance > 0n) {
+      const solBefore = await sellExecutor.getBalance();
+      const sellResult = await sellExecutor.executeSell(pos.tokenMint, tokenBalance);
+      const solAfter = await sellExecutor.getBalance();
+      const receivedSol = solAfter - solBefore;
+      liveReceivedSol = receivedSol;
+      if (receivedSol > 0 && pos.quantity > 0) {
+        actualExitPrice = receivedSol / pos.quantity;
+      }
+      executionSlippage = bpsToDecimal(sellResult.slippageBps);
+      exitTxSignature = sellResult.txSignature;
+      sellCompleted = true;
+      log.info(
+        `[KOL_HUNTER_LIVE_SELL] ${pos.positionId} sig=${sellResult.txSignature.slice(0, 12)} ` +
+        `received=${receivedSol.toFixed(6)} SOL slip=${sellResult.slippageBps}bps`
+      );
+      const solSpentNominal = pos.entryPrice * pos.quantity;
+      const dbPnl = (actualExitPrice - pos.entryPrice) * pos.quantity;
+      const walletDelta = receivedSol - solSpentNominal;
+      const dbPnlDrift = dbPnl - walletDelta;
+      if (Math.abs(dbPnlDrift) > 0.001) {
+        log.warn(
+          `[KOL_HUNTER_LIVE_PNL_DRIFT] ${pos.positionId} dbPnl=${dbPnl.toFixed(6)} ` +
+          `walletDelta=${walletDelta.toFixed(6)} drift=${dbPnlDrift.toFixed(6)} SOL`
+        );
+      }
+      const mfePctPeak = pos.marketReferencePrice > 0
+        ? (pos.peakPrice - pos.marketReferencePrice) / pos.marketReferencePrice
+        : 0;
+      await appendEntryLedger('sell', {
+        positionId: pos.positionId,
+        dbTradeId: pos.dbTradeId,
+        txSignature: exitTxSignature,
+        entryTxSignature: pos.entryTxSignature,
+        strategy: LANE_STRATEGY,
+        wallet: 'main',
+        pairAddress: pos.tokenMint,
+        exitReason: effectiveReason,
+        receivedSol,
+        actualExitPrice,
+        slippageBps: sellResult.slippageBps,
+        entryPrice: pos.entryPrice,
+        holdSec: nowSec - pos.entryTimeSec,
+        mfePctPeak,
+        peakPrice: pos.peakPrice,
+        troughPrice: pos.troughPrice,
+        marketReferencePrice: pos.marketReferencePrice,
+        t1VisitAtSec: pos.t1VisitAtSec ?? null,
+        t2VisitAtSec: pos.t2VisitAtSec ?? null,
+        t3VisitAtSec: pos.t3VisitAtSec ?? null,
+        closeState: pos.state,
+        dbPnlSol: dbPnl,
+        walletDeltaSol: walletDelta,
+        dbPnlDriftSol: dbPnlDrift,
+        solSpentNominal,
+        kolScore: pos.kolScore,
+        independentKolCount: pos.independentKolCount,
+        armName: pos.armName,
+        parameterVersion: pos.parameterVersion,
+      });
+    } else {
+      // ORPHAN_NO_BALANCE — pure_ws 패턴 동일.
+      log.warn(
+        `[KOL_HUNTER_LIVE_ORPHAN] ${pos.positionId} ${pos.tokenMint.slice(0, 12)} zero balance — ` +
+        `force closing pnl=0 (previousReason=${reason})`
+      );
+      effectiveReason = 'ORPHAN_NO_BALANCE' as unknown as CloseReason;
+      actualExitPrice = pos.entryPrice;
+      sellCompleted = true;
+      exitTxSignature = pos.entryTxSignature ?? 'ORPHAN_NO_TX';
+      await ctx.notifier.sendCritical(
+        'kol_live_orphan',
+        `${pos.positionId} ${pos.tokenMint} zero balance at close — force closing 0 pnl`
+      ).catch(() => {});
+    }
+  } catch (sellErr) {
+    log.warn(`[KOL_HUNTER_LIVE_SELL] ${pos.positionId} sell failed: ${sellErr}`);
+    pos.state = previousState;
+    if (!pos.lastPrice || nowSec * 1000 - pos.entryTimeSec * 1000 >= 60_000) {
+      await ctx.notifier.sendCritical(
+        'kol_live_close_failed',
+        `${pos.positionId} ${pos.tokenMint} reason=${reason} sell failed — OPEN 유지`
+      ).catch(() => {});
+    }
+    return;
+  }
+  void liveReceivedSol;
+
+  pos.state = 'CLOSED';
+  const rawPnl = (actualExitPrice - pos.entryPrice) * pos.quantity;
+  const pnl = rawPnl;  // live: round-trip cost 는 wallet delta 에 이미 반영됨
+  const pnlPct = pos.entryPrice > 0
+    ? ((actualExitPrice - pos.entryPrice) / pos.entryPrice)
+    : 0;
+
+  // DB closeTrade.
+  let dbCloseSucceeded = false;
+  try {
+    if (pos.dbTradeId && sellCompleted) {
+      await ctx.tradeStore.closeTrade({
+        id: pos.dbTradeId,
+        exitPrice: actualExitPrice,
+        pnl,
+        slippage: executionSlippage,
+        exitReason: effectiveReason,
+        exitSlippageBps: Math.round(executionSlippage * 10_000),
+        decisionPrice: exitPrice,
+      });
+      dbCloseSucceeded = true;
+    }
+  } catch (err) {
+    log.warn(`[KOL_HUNTER_LIVE_CLOSE_PERSIST] ${pos.positionId}: ${err}`);
+    await ctx.notifier.sendCritical(
+      'kol_live_close_persist',
+      `${pos.positionId} ${pos.tokenMint} sell ok but DB close failed`
+    ).catch(() => {});
+  }
+  void dbCloseSucceeded;
+
+  log.info(
+    `[KOL_HUNTER_LIVE_CLOSED] ${pos.positionId} reason=${effectiveReason} state=${previousState} ` +
+    `pnl=${pnl >= 0 ? '+' : ''}${pnl.toFixed(6)} SOL (${pnlPct >= 0 ? '+' : ''}${(pnlPct * 100).toFixed(2)}%) ` +
+    `hold=${nowSec - pos.entryTimeSec}s mfe=${(mfePctAtClose * 100).toFixed(2)}% mae=${(maePctAtClose * 100).toFixed(2)}%`
+  );
+
+  deleteActivePosition(pos.positionId);
+  unsubscribePriceIfIdle(pos.tokenMint);
+
+  // Real Asset Guard feed: canary auto-halt + bleed budget.
+  reportCanaryClose(LANE_STRATEGY, pnl);
+  releaseCanarySlot(LANE_STRATEGY);
+  if (config.dailyBleedBudgetEnabled) {
+    const walletState = getWalletStopGuardState();
+    const walletBaselineSol = walletState.lastBalanceSol > 0 && Number.isFinite(walletState.lastBalanceSol)
+      ? walletState.lastBalanceSol
+      : config.walletStopMinSol + 0.01;
+    const bleedSol = pnl < 0 ? -pnl : 0;
+    reportBleed(bleedSol, walletBaselineSol, {
+      alpha: config.dailyBleedAlpha,
+      minCapSol: config.dailyBleedMinCapSol,
+      maxCapSol: config.dailyBleedMaxCapSol,
+    });
+  }
+
+  const mfePctPeak = pos.marketReferencePrice > 0
+    ? (pos.peakPrice - pos.marketReferencePrice) / pos.marketReferencePrice
+    : 0;
+  kolHunterEvents.emit('paper_close', {
+    pos, reason: effectiveReason, exitPrice: actualExitPrice,
+    netSol: pnl, netPct: pnlPct, mfePctPeak, holdSec: nowSec - pos.entryTimeSec,
+  });
+  void exitTxSignature;
 }
 
 // ─── Observer (reject side) ──────────────────────────────

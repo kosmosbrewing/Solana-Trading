@@ -1220,6 +1220,10 @@ async function main() {
         initKolHunter({
           securityClient: ctx.onchainSecurityClient,
           gateCache: ctx.gateCache,
+          // 2026-04-27 (Phase 5 P1-9~14): live canary path 활성을 위해 ctx 주입.
+          // triple-flag (kolHunterLiveCanaryEnabled + !kolHunterPaperOnly + tradingMode='live')
+          // 모두 충족 시에만 실제 live wallet 사용. 그 외엔 paper-only fallback.
+          ctx,
         });
         kolTracker.on('kol_swap', (tx: KolTx) => {
           handleKolSwap(tx).catch((err) => {

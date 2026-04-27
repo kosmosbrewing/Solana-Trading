@@ -130,6 +130,12 @@ export class KolWalletTracker extends EventEmitter {
       this.fullDisconnectAlerted = false;
     }
 
+    // 2026-04-27 (B-fix): wallets.json hot-reload 가 KolDB in-memory index 만 갱신하고
+    // tracker 의 targetAddresses 는 start() 시점에 frozen 되어 있던 한계 해결.
+    // 매 watchdog cycle 마다 KolDB 와 active set diff → 새 active 구독 / 제거 active 구독 해제.
+    // wallets.json 편집 → ≤5min 자동 반영 (재시작 불필요).
+    await this.syncActiveSet();
+
     // Missing subscriptions 가 있으면 재구독 시도 (cooldown 적용).
     const missing = this.targetAddresses.filter((addr) => !this.subscriptions.has(addr));
     if (missing.length === 0) return;
@@ -180,6 +186,65 @@ export class KolWalletTracker extends EventEmitter {
   /** 현재 구독 수 (헬스체크용). */
   getSubscriptionCount(): number {
     return this.subscriptions.size;
+  }
+
+  // ─── Active set sync (2026-04-27 B-fix) ───────────────
+  /**
+   * KolDB 의 현재 active addresses 와 tracker subscriptions 를 diff 해서
+   * 새 active 는 구독 시작, 제거된 active 는 구독 해제.
+   *
+   * Defensive guard: KolDB load 실패로 active set 이 비어 있는데 기존 subs 가 있으면
+   * "DB anomaly" 의심 → sync skip (전체 unsub 사고 방지). 다음 cycle 에서 정상 회복 시 재시도.
+   *
+   * Cooldown 분리: 신규 add/remove 는 missing-sub resub cooldown 무시 (운영자 변경은 즉시 적용).
+   */
+  private async syncActiveSet(): Promise<void> {
+    const liveActiveList = getAllActiveAddresses();
+    const liveActive = new Set(liveActiveList);
+
+    // Defensive guard: empty DB + existing subs = DB load anomaly 의심.
+    if (liveActive.size === 0 && this.subscriptions.size > 0) {
+      log.warn(
+        `[KOL_TRACKER_SYNC] active set empty but ${this.subscriptions.size} subs exist — ` +
+        `DB load anomaly 의심, sync skip (다음 cycle 재시도)`
+      );
+      return;
+    }
+
+    const currentSet = new Set(this.targetAddresses);
+    const toAdd = [...liveActive].filter((addr) => !currentSet.has(addr));
+    const toRemove = this.targetAddresses.filter((addr) => !liveActive.has(addr));
+
+    if (toAdd.length === 0 && toRemove.length === 0) return;
+
+    let added = 0;
+    let removed = 0;
+    for (const addr of toAdd) {
+      try {
+        await this.subscribeAddress(addr);
+        added++;
+      } catch (err) {
+        log.debug(`[KOL_TRACKER_SYNC] sub ${addr.slice(0, 8)} fail: ${String(err)}`);
+      }
+    }
+    for (const addr of toRemove) {
+      const subId = this.subscriptions.get(addr);
+      if (subId !== undefined) {
+        try {
+          await this.config.connection.removeOnLogsListener(subId);
+        } catch (err) {
+          log.debug(`[KOL_TRACKER_SYNC] unsub ${addr.slice(0, 8)} fail: ${String(err)}`);
+        }
+        this.subscriptions.delete(addr);
+        removed++;
+      }
+    }
+
+    this.targetAddresses = [...liveActive];
+    log.info(
+      `[KOL_TRACKER_SYNC] active set updated — added=${added} removed=${removed} ` +
+      `total_subs=${this.subscriptions.size}`
+    );
   }
 
   // ─── Subscription ─────────────────────────────────────

@@ -6,6 +6,102 @@
 
 ---
 
+## 2026-04-27 — KOL paper 측정 1차 종료 + KOL live canary 코드 완료 + DB v6 rebalance
+
+### 1. KOL paper 누적 결과 (n=212, 2026-04-23 ~ 04-27)
+
+| 지표 | 값 |
+|------|----|
+| 총 trade | **212** (smart-v3 133 / swing-v2 11 / v1 fallback 68) |
+| 누적 net SOL (paper) | **+0.0568 SOL** |
+| 평균 net% | +3.18% (smart-v3 +4.79 / swing-v2 +7.31 / v1 −0.65) |
+| Win rate | 30.0% |
+| T1 도달 | 33 (15.6%) |
+| **T2/T3 도달** | **0 / 0** |
+| **5x+ winner (net ≥ 400%)** | **0** ← 사명 §2.3 **binding constraint** |
+| 2x+ mfe | 5 |
+| 1x+ mfe | 13 |
+
+**Top winner**: kolh-7iwshRyG mfe **+285%** / net **+186%** (decu, T1 trail 337s). 사명 임계 +400% 의 47% 도달.
+
+**Reason 별 평균 net%**:
+- probe_hard_cut −16.29% (n=86, 가장 많음 — wallet bleed 의 주 원인)
+- insider_exit_full +14.68% (n=49)
+- **winner_trailing_t1 +66.25%** (n=17)
+- **hold_phase_sentinel_degraded_exit +44.59%** (n=6)
+- probe_flat_cut −1.50% (n=36)
+
+**KOL 별 net 기여 Top 5**: decu (S, +0.024 SOL), clukz (S, +0.024), euris (A→S, +0.010), trenchman (신규 A, +0.007), earl (신규 A, +0.005).
+
+**KOL 별 net 기여 Bottom (이미 inactive 처리됨)**:
+- west_ratwizardx (4-27 inactive) −0.0069 SOL
+- theo (active) −0.0049 SOL ← 활동 다대 (49 trade) but 평균 음수, 모니터링 대상
+- lexapro (4-27 inactive) −0.0024 SOL
+
+### 2. KOL DB v6 rebalance (2026-04-27)
+
+`data/kol/wallets.json` v6 last_updated 2026-04-27. External KOL feedback v2 + OKX/Kolscan/GMGN/Solscan cross-check 적용.
+
+| 변경 | 인원 | 사유 |
+|------|------|------|
+| Active → Inactive | 5명 (josim / lebron / pain / west_ratwizardx / scharo) | 공개 재검증 근거 약함 |
+| A → S 승격 | 1명 (euris) | 저시총 + 회전 + tail 분포 검증 |
+| split & 승격 | 1명 (ogantd) | secondary_unverified_pool → OKX+Kolscan 양쪽 검증 |
+| watch → active | 1명 (domy) | Kolscan 상위권 노출 |
+| 신규 A active | 8명 (chester / casino / jijo / johnson / the_doc / heyitsyolo / kadenox / kev) | copy core / discovery canary |
+| 신규 B observe-only | 13명 (matt / naruza / nyhrox 등) | single-source, 2차 검증 대기 |
+
+**Lane 분류 (3-tier)**:
+- **Copy Core**: decu / euris / bflg / ekawy_2 / dzfk / jijo / johnson / heyitsyolo (저티켓 + 저시총 + 회전)
+- **Discovery Canary**: clukz / theo / chester / kadenox / kev / the_doc / gdaqp3 (먼저 본다 — latency 민감)
+- **Benchmark / Observer**: oxsun / lebron / cupsey_benchmark 등 (트리거 X)
+
+현재 active 35명 (S 4 + A 31).
+
+### 3. KOL live canary 코드 완료 (commit 1469a08)
+
+`enterLivePosition` (~190 LOC) + `closeLivePosition` (~178 LOC) + Triple-flag gate (`isLiveCanaryActive`) 구현. **paper-only 코드 락 해제** — 운영자 명시 opt-in 시 live wallet 사용.
+
+**Triple-flag gate** (모두 충족 시에만 live):
+1. `botCtx` 주입 (initKolHunter ctx)
+2. `ctx.tradingMode === 'live'`
+3. `!config.kolHunterPaperOnly` (default true → explicit false 필요)
+4. `config.kolHunterLiveCanaryEnabled` (default false → explicit true)
+
+**점검 후 추가 fix (7건)**:
+- 🔴 CRITICAL: `walletDeltaComparator.haltAllLanes()` 의 lane 배열에 kol_hunter / pure_ws_swing_v2 누락 → 추가
+- 🔴 CRITICAL: `getAllLaneIntegrityState()` 의 lane 배열 누락 → 추가
+- 🔴 CRITICAL: `closeLivePosition` fire-and-forget race → state='CLOSED' 즉시 mark + guard
+- 🟡 HIGH: `canaryAutoHalt.DEFAULT_LANES` 에 kol_hunter 누락 → 추가
+- 🟡 HIGH: DB closeTrade 실패 시 `triggerEntryHalt('kol_hunter')` 추가 (cupsey/pure_ws 패턴 동등화)
+- 🟠 MEDIUM: startup `[STAGE_GATE_REMINDER]` 에 KOL_HUNTER_LIVE_CANARY 추가
+- 🟠 MEDIUM: Triple-flag gate test 5건 추가
+
+**미해결 (별도 sprint 권장)**:
+- KOL live position recovery (재시작 시 OPEN 복구) — `src/state/recovery.ts` 추가 필요
+- KOL 별도 canary cap (현재 공용 0.3 SOL 사용)
+- enterLivePosition 직접 호출 통합 test (executor mock 필요)
+
+### 4. 사명 §3 phase gate 평가
+
+| Gate | 임계 | 현재 | 충족? |
+|------|------|------|------|
+| Paper trades | ≥ 200 | **212** | ✅ |
+| Paper 5x+ winner (net ≥ 400%) | ≥ 1건 | **0** (가장 가까움 +186%) | ❌ |
+| Paper 5x+ winner (mfe ≥ 400%) | ≥ 1건 (참고) | 0 (가장 가까움 +285%) | ❌ |
+| sustained net 양수 | yes | smart-v3 +4.79%, swing-v2 +7.31% | ✅ |
+| 코드 (`enterLivePosition`) | 구현 | ✅ commit 1469a08 | ✅ |
+| 별도 ADR | yes | **없음** | ❌ |
+| Telegram critical ack | `stage4_approved_YYYY_MM_DD` | **없음** | ❌ |
+
+**진단**: 5x+ winner 미입증 → 활성화는 **운영자 자발적 §3 위반 인지** 상태에서만. 코드 안전망 (canary cap 0.3 / max consec / drift halt 0.2) 으로 wallet 보호.
+
+### 5. 1+2차 sweep 누적 14건 처리
+
+CRITICAL 7건 (Real Asset Guard / silent failure / race / TDZ / token 노출 / state API / drift halt 우회) + HIGH 4건 + MEDIUM 3건. jest 1038/1041 pass (regression 0).
+
+---
+
 ## 2026-04-26 — Phase 3.5/3.6: 손익비 정책 A/B + pure_ws swing-v2 live canary 코드 완성
 
 ### 산출물

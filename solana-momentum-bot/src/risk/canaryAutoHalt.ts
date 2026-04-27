@@ -42,7 +42,11 @@ interface LaneCanaryState {
   lastHaltReason: string | null;
 }
 
-const DEFAULT_LANES: EntryLane[] = ['cupsey', 'migration', 'main', 'strategy_d', 'pure_ws_breakout', 'pure_ws_swing_v2'];
+// 2026-04-27 fix: kol_hunter live canary lane 추가 — auto-reset / state query API 가 KOL 인지 가능.
+const DEFAULT_LANES: EntryLane[] = [
+  'cupsey', 'migration', 'main', 'strategy_d', 'pure_ws_breakout',
+  'pure_ws_swing_v2', 'kol_hunter',
+];
 
 const laneStates: Map<EntryLane, LaneCanaryState> = new Map();
 

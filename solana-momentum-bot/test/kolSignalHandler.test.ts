@@ -29,6 +29,7 @@ import {
   __testGetActive,
   __testForceResolveStalk,
   __testTriggerTick,
+  __testIsLiveCanaryActive,
   stopKolHunter,
   kolHunterEvents,
 } from '../src/orchestration/kolSignalHandler';
@@ -553,6 +554,61 @@ describe('kolSignalHandler — state machine', () => {
       const pos = __testGetActive()[0];
       expect(pos.tokenDecimals).toBeUndefined();
       expect(pos.survivalFlags).toContain('DECIMALS_UNKNOWN');
+    });
+  });
+
+  // 2026-04-27: KOL live canary triple-flag gate 검증.
+  // commit 1469a08 의 enterLivePosition 가 활성되려면 3 flag 모두 true 필요:
+  //   1. botCtx 주입
+  //   2. ctx.tradingMode === 'live'
+  //   3. !kolHunterPaperOnly (default true → explicit false 필요)
+  //   4. kolHunterLiveCanaryEnabled (default false → explicit true 필요)
+  // 어느 하나 false 면 paper fallback (live wallet 영향 0).
+  describe('live canary triple-flag gate', () => {
+    const mockedConfig = (require('../src/utils/config') as any).config;
+
+    afterEach(() => {
+      mockedConfig.kolHunterPaperOnly = true;
+      mockedConfig.kolHunterLiveCanaryEnabled = false;
+    });
+
+    it('default (모든 flag 안전 상태): live canary 비활성', () => {
+      mockedConfig.kolHunterPaperOnly = true;
+      mockedConfig.kolHunterLiveCanaryEnabled = false;
+      // ctx 미주입 (__testInit ctx 옵션 없음)
+      expect(__testIsLiveCanaryActive()).toBe(false);
+    });
+
+    it('LIVE_CANARY_ENABLED=true 이지만 PAPER_ONLY=true 면 live 비활성 (paper-first 강제)', () => {
+      const liveCtx = { tradingMode: 'live' } as any;
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx: liveCtx });
+      mockedConfig.kolHunterPaperOnly = true;          // ⚠ paper-only 강제
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      expect(__testIsLiveCanaryActive()).toBe(false);
+    });
+
+    it('PAPER_ONLY=false 이지만 LIVE_CANARY_ENABLED=false 면 live 비활성', () => {
+      const liveCtx = { tradingMode: 'live' } as any;
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx: liveCtx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = false;  // ⚠ flag off
+      expect(__testIsLiveCanaryActive()).toBe(false);
+    });
+
+    it('tradingMode=paper 이면 live 비활성 (env 모두 true 여도)', () => {
+      const paperCtx = { tradingMode: 'paper' } as any;  // ⚠ paper mode
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx: paperCtx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      expect(__testIsLiveCanaryActive()).toBe(false);
+    });
+
+    it('3 flag + ctx 모두 충족 시에만 live canary 활성', () => {
+      const liveCtx = { tradingMode: 'live' } as any;
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx: liveCtx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      expect(__testIsLiveCanaryActive()).toBe(true);
     });
   });
 });

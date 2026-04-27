@@ -1,11 +1,11 @@
 # REFACTORING v1.0 — Option 5: KOL Discovery + 자체 Execution
 
-> **Status**: Phase 0-3 완료 (paper 측정 단계). Phase 4 (Live Canary) 게이트 대기 중.
-> **Updated**: 2026-04-26 — Phase 3 + smart-v3 + swing-v2 (KOL/pure_ws) 코드 완료. Phase 4 gate 미충족 (200 trades + 5x+ winner 입증).
+> **Status**: Phase 0-4 코드 완료 (paper 측정 + live canary 코드). Phase 4 활성화 gate 부분 미충족 (5x+ winner).
+> **Updated**: 2026-04-27 — KOL paper 212 trade / 5x+ winner 0 / smart-v3 +4.79% net / KOL DB v6 (35 active) / live canary commit 1469a08 + 7 audit fix.
 > **Authority**: `docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md` (ADR)
 > **Debate log**: `docs/debates/kol-discovery-debate-2026-04-23.md`
 > **Paradigm**: KOL Wallet Activity = 1st-class Discovery, 자체 Execution = 구조 유지 + 파라미터 재조정
-> **Timeline**: Phase 0-3 완료 / Phase 4-5 paper 데이터 누적 후
+> **Timeline**: Phase 0-3 완료 / Phase 4 코드 완료 (활성화 gate 부분 미충족) / Phase 5 paper 데이터 누적 후
 
 ---
 
@@ -19,14 +19,42 @@
 
 ## 1. Phase Status
 
-- [x] **Phase 0**: KOL DB 정제 — scaffold 완료 (2026-04-23). 22 active KOL.
+- [x] **Phase 0**: KOL DB 정제 — scaffold 완료 (2026-04-23). v6 (2026-04-27) 35 active KOL (S 4 + A 31).
 - [x] **Phase 1**: KOL Wallet Tracker + passive logging — 코드 구현 완료 (2026-04-23). 운영 환경 활성.
 - [x] **Phase 2**: Shadow Eval 스크립트 — 완료 (2026-04-23). `npm run kol:shadow-eval`.
 - [x] **Phase 3**: kol_hunter Paper Lane — full 구현 완료 (2026-04-23). PROBE→T1→T2→T3 + price feed + observer hooks + paper ledger.
 - [x] **Phase 3.5** (2026-04-26): smart-v3 main + swing-v2 paper shadow — 손익비 정책 A/B. KOL `kol_hunter_smart_v3` (pullback/velocity/both) + `kol_hunter_swing_v2` (multi-KOL long hold).
 - [x] **Phase 3.6** (2026-04-26): pure_ws swing-v2 paper shadow + live canary 코드 — `pure_ws_swing_v2` arm. paper-first → opt-in live (별도 lane / canary slot / budget).
-- [ ] **Phase 4**: Live Canary 50 trades (2주) — **게이트 대기**: paper 200 trades + 5x+ winner ≥ 1건 입증 필요.
-- [ ] **Phase 5**: Live 200 trades → Stage 4 gate (4주)
+- [x] **Phase 4 코드** (2026-04-27, commit 1469a08): KOL live canary path 구현 — `enterLivePosition` + `closeLivePosition` + Triple-flag gate (`isLiveCanaryActive`). 7 audit fix 후속.
+- [ ] **Phase 4 활성화**: paper 5x+ winner ≥ 1건 입증 필요. 현재 0건 (가장 가까움 +186% net / +285% mfe = 사명 임계 +400% 의 47-71%).
+- [ ] **Phase 5**: Live 200 trades → Stage 4 SCALE gate (4주)
+
+### Phase 4 활성화 게이트 (2026-04-27 현황)
+
+| Gate | 임계 | 현재 | 충족? |
+|------|------|------|------|
+| Paper trades | ≥ 200 | **212** | ✅ |
+| Paper 5x+ winner (net ≥ 400%) | ≥ 1건 | **0** | ❌ binding |
+| smart-v3 sustained net 양수 | yes | +4.79% (n=133) | ✅ |
+| swing-v2 sustained 양수 | small sample | +7.31% (n=11) | ⚠ small |
+| 코드 (`enterLivePosition`) | 구현 | ✅ | ✅ |
+| 별도 ADR | yes | 없음 | ❌ |
+| Telegram critical ack | `stage4_approved_YYYY_MM_DD` | 없음 | ❌ |
+
+→ **활성화는 운영자 자발적 §3 위반 인지** 상태에서만. 코드 안전망 (canary cap 0.3 SOL / drift halt 0.2 SOL / max consec / triple-flag gate) 으로 wallet 보호.
+
+### Phase 4 활성화 시 .env
+
+```bash
+KOL_HUNTER_PAPER_ONLY=false                         # default true → explicit false
+KOL_HUNTER_LIVE_CANARY_ENABLED=true                 # default false → explicit true
+# (선택) KOL_HUNTER_TICKET_OVERRIDE_ACK=stage4_approved_YYYY_MM_DD  — ticket > 0.01 시만
+```
+
+봇 재시작 시 startup log:
+```
+[STAGE_GATE_REMINDER] live canary flags=[KOL_HUNTER_LIVE_CANARY]. 사명 §3 phase gate 의무: ...
+```
 
 ### Phase 3.5/3.6 산출물 (2026-04-26)
 

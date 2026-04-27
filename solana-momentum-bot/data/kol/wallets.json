@@ -6,12 +6,14 @@
   "//lane_strategy": "3 lane 구분: (a) Copy Core — decu/euris/bflg/ekawy_2/dzfk/jijo/johnson/heyitsyolo (저티켓 + 저시총 + 회전 살아있음). (b) Discovery Canary — clukz/theo/chester/kadenox/kev/the_doc/gdaqp3 (먼저 본다 — latency 민감). (c) Benchmark/Observer — oxsun/lebron/cupsey_benchmark/cented_benchmark/gwyg_watch/btyi_2_watch/wallet_91e6_watch (트리거 X).",
   "//rejected_candidates_2026_04_27": "Doji — Kolscan 랭커지만 별도 deployer 추적기에서 50회 배포 / 11 bonded 반복 배포자 노출. operator 성격 — KOL universe 부적합. Trey — realized PnL 음수 / 5x bucket 0, watch-only.",
   "//phase0_note": "2026-04-25 initial import from operator-provided wallet lists. Unnamed/old/project wallets are preserved inactive to avoid KOL signal pollution.",
-  "version": 3,
+  "version": 5,
   "last_updated": "2026-04-27",
   "kols": [
     {
       "id": "josim",
-      "addresses": ["5rkP7bqEUqwURvqFmKwLSxT5YkoHEyJLehmXUpUiFHQh"],
+      "addresses": [
+        "5rkP7bqEUqwURvqFmKwLSxT5YkoHEyJLehmXUpUiFHQh"
+      ],
       "tier": "B",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -58,7 +60,9 @@
     },
     {
       "id": "oxsun",
-      "addresses": ["HUpPyLU8KWisCAr3mzWy2FKT6uuxQ2qGgJQxyTpDoes5"],
+      "addresses": [
+        "HUpPyLU8KWisCAr3mzWy2FKT6uuxQ2qGgJQxyTpDoes5"
+      ],
       "tier": "B",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -67,7 +71,9 @@
     },
     {
       "id": "lexapro",
-      "addresses": ["8yJFWmVTQq69p6VJxGwpzW7ii7c5J9GRAtHCNMMQPydj"],
+      "addresses": [
+        "8yJFWmVTQq69p6VJxGwpzW7ii7c5J9GRAtHCNMMQPydj"
+      ],
       "tier": "B",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -76,7 +82,9 @@
     },
     {
       "id": "euris",
-      "addresses": ["DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj"],
+      "addresses": [
+        "DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj"
+      ],
       "tier": "S",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -86,7 +94,9 @@
     },
     {
       "id": "crypto_d",
-      "addresses": ["G1pRtSyKuWSjTqRDcazzKBDzqEF96i1xSURpiXj3yFcc"],
+      "addresses": [
+        "G1pRtSyKuWSjTqRDcazzKBDzqEF96i1xSURpiXj3yFcc"
+      ],
       "tier": "A",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -95,7 +105,9 @@
     },
     {
       "id": "lebron",
-      "addresses": ["ATmKENkRrL1JQQnoUNAQvkiwgjiHKUkzyncxTGxyzQL1"],
+      "addresses": [
+        "ATmKENkRrL1JQQnoUNAQvkiwgjiHKUkzyncxTGxyzQL1"
+      ],
       "tier": "B",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -104,7 +116,9 @@
     },
     {
       "id": "pain",
-      "addresses": ["HAN61KQbgzjDBC4RpZJ1ET8v32S4zdKAjoD7EApJ96q6"],
+      "addresses": [
+        "HAN61KQbgzjDBC4RpZJ1ET8v32S4zdKAjoD7EApJ96q6"
+      ],
       "tier": "B",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -113,7 +127,9 @@
     },
     {
       "id": "him",
-      "addresses": ["A1ECE86o3tz6UWmwMWicrqZmwRZ7RCRzmYYa9okNQRBw"],
+      "addresses": [
+        "A1ECE86o3tz6UWmwMWicrqZmwRZ7RCRzmYYa9okNQRBw"
+      ],
       "tier": "A",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -122,7 +138,9 @@
     },
     {
       "id": "pasternak",
-      "addresses": ["DjAfkjAV7qD6U2qjjU5RdcuzXwdk1gF3CtiWwGZc8pxJ"],
+      "addresses": [
+        "DjAfkjAV7qD6U2qjjU5RdcuzXwdk1gF3CtiWwGZc8pxJ"
+      ],
       "tier": "B",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -131,7 +149,9 @@
     },
     {
       "id": "decu",
-      "addresses": ["4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9"],
+      "addresses": [
+        "4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9"
+      ],
       "tier": "S",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -141,7 +161,9 @@
     },
     {
       "id": "clukz",
-      "addresses": ["G6fUXjMKPJzCY1rveAE6Qm7wy5U3vZgKDJmN1VPAdiZC"],
+      "addresses": [
+        "G6fUXjMKPJzCY1rveAE6Qm7wy5U3vZgKDJmN1VPAdiZC"
+      ],
       "tier": "S",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -151,7 +173,9 @@
     },
     {
       "id": "west_ratwizardx",
-      "addresses": ["JDd3hy3gQn2V982mi1zqhNqUw1GfV2UL6g76STojCJPN"],
+      "addresses": [
+        "JDd3hy3gQn2V982mi1zqhNqUw1GfV2UL6g76STojCJPN"
+      ],
       "tier": "B",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -160,7 +184,9 @@
     },
     {
       "id": "theo",
-      "addresses": ["Bi4rd5FH5bYEN8scZ7wevxNZyNmKHdaBcvewdPFxYdLt"],
+      "addresses": [
+        "Bi4rd5FH5bYEN8scZ7wevxNZyNmKHdaBcvewdPFxYdLt"
+      ],
       "tier": "A",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -170,7 +196,9 @@
     },
     {
       "id": "scharo",
-      "addresses": ["4sAUSQFdvWRBxR8UoLBYbw8CcXuwXWxnN8pXa4mtm5nU"],
+      "addresses": [
+        "4sAUSQFdvWRBxR8UoLBYbw8CcXuwXWxnN8pXa4mtm5nU"
+      ],
       "tier": "B",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -179,7 +207,9 @@
     },
     {
       "id": "gdaqp3",
-      "addresses": ["Gdaqp3ND6r3HVAWXpawkQU18EuQqwNxpaeeio8ASVAYd"],
+      "addresses": [
+        "Gdaqp3ND6r3HVAWXpawkQU18EuQqwNxpaeeio8ASVAYd"
+      ],
       "tier": "A",
       "added_at": "2026-04-26",
       "last_verified_at": "2026-04-27",
@@ -188,7 +218,9 @@
     },
     {
       "id": "bflg",
-      "addresses": ["BfLgBboMdNZLJFMkm3g89RK5sZ6VPGFQg5xUSoM6bJV8"],
+      "addresses": [
+        "BfLgBboMdNZLJFMkm3g89RK5sZ6VPGFQg5xUSoM6bJV8"
+      ],
       "tier": "S",
       "added_at": "2026-04-26",
       "last_verified_at": "2026-04-26",
@@ -198,7 +230,9 @@
     },
     {
       "id": "ekawy_2",
-      "addresses": ["2Ekawy8GtvEcroUMjdhthP18fUi1ZGFRkMdwtQrGzrH2"],
+      "addresses": [
+        "2Ekawy8GtvEcroUMjdhthP18fUi1ZGFRkMdwtQrGzrH2"
+      ],
       "tier": "A",
       "added_at": "2026-04-26",
       "last_verified_at": "2026-04-26",
@@ -208,7 +242,9 @@
     },
     {
       "id": "dzfk",
-      "addresses": ["DzFkEdqJNVQTri6gVJKvGWyaBx8QY4EuALySpsHxXuUL"],
+      "addresses": [
+        "DzFkEdqJNVQTri6gVJKvGWyaBx8QY4EuALySpsHxXuUL"
+      ],
       "tier": "A",
       "added_at": "2026-04-26",
       "last_verified_at": "2026-04-26",
@@ -218,7 +254,9 @@
     },
     {
       "id": "ftg1",
-      "addresses": ["FTg1gqW7vPm4kdU1LPM7JJnizbgPdRDy2PitKw6mY27j"],
+      "addresses": [
+        "FTg1gqW7vPm4kdU1LPM7JJnizbgPdRDy2PitKw6mY27j"
+      ],
       "tier": "A",
       "added_at": "2026-04-26",
       "last_verified_at": "2026-04-26",
@@ -227,7 +265,9 @@
     },
     {
       "id": "ogantd",
-      "addresses": ["215nhcAHjQQGgwpQSJQ7zR26etbjjtVdW74NLzwEgQjP"],
+      "addresses": [
+        "215nhcAHjQQGgwpQSJQ7zR26etbjjtVdW74NLzwEgQjP"
+      ],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -237,7 +277,9 @@
     },
     {
       "id": "domy",
-      "addresses": ["3LUfv2u5yzsDtUzPdsSJ7ygPBuqwfycMkjpNreRR2Yww"],
+      "addresses": [
+        "3LUfv2u5yzsDtUzPdsSJ7ygPBuqwfycMkjpNreRR2Yww"
+      ],
       "tier": "A",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -246,7 +288,9 @@
     },
     {
       "id": "chester",
-      "addresses": ["PMJA8UQDyWTFw2Smhyp9jGA6aTaP7jKHR7BPudrgyYN"],
+      "addresses": [
+        "PMJA8UQDyWTFw2Smhyp9jGA6aTaP7jKHR7BPudrgyYN"
+      ],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -256,7 +300,9 @@
     },
     {
       "id": "casino",
-      "addresses": ["8rvAsDKeAcEjEkiZMug9k8v1y8mW6gQQiMobd89Uy7qR"],
+      "addresses": [
+        "8rvAsDKeAcEjEkiZMug9k8v1y8mW6gQQiMobd89Uy7qR"
+      ],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -265,7 +311,9 @@
     },
     {
       "id": "jijo",
-      "addresses": ["4BdKaxN8G6ka4GYtQQWk4G4dZRUTX2vQH9GcXdBREFUk"],
+      "addresses": [
+        "4BdKaxN8G6ka4GYtQQWk4G4dZRUTX2vQH9GcXdBREFUk"
+      ],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -275,7 +323,9 @@
     },
     {
       "id": "johnson",
-      "addresses": ["J9TYAsWWidbrcZybmLSfrLzryANf4CgJBLdvwdGuC8MB"],
+      "addresses": [
+        "J9TYAsWWidbrcZybmLSfrLzryANf4CgJBLdvwdGuC8MB"
+      ],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -285,7 +335,9 @@
     },
     {
       "id": "the_doc",
-      "addresses": ["DYAn4XpAkN5mhiXkRB7dGq4Jadnx6XYgu8L5b3WGhbrt"],
+      "addresses": [
+        "DYAn4XpAkN5mhiXkRB7dGq4Jadnx6XYgu8L5b3WGhbrt"
+      ],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -294,7 +346,9 @@
     },
     {
       "id": "heyitsyolo",
-      "addresses": ["Av3xWHJ5EsoLZag6pr7LKbrGgLRTaykXomDD5kBhL9YQ"],
+      "addresses": [
+        "Av3xWHJ5EsoLZag6pr7LKbrGgLRTaykXomDD5kBhL9YQ"
+      ],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -304,7 +358,9 @@
     },
     {
       "id": "kadenox",
-      "addresses": ["B32QbbdDAyhvUQzjcaM5j6ZVKwjCxAwGH5Xgvb9SJqnC"],
+      "addresses": [
+        "B32QbbdDAyhvUQzjcaM5j6ZVKwjCxAwGH5Xgvb9SJqnC"
+      ],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -313,7 +369,9 @@
     },
     {
       "id": "kev",
-      "addresses": ["BTf4A2exGK9BCVDNzy65b9dUzXgMqB4weVkvTMFQsadd"],
+      "addresses": [
+        "BTf4A2exGK9BCVDNzy65b9dUzXgMqB4weVkvTMFQsadd"
+      ],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -322,7 +380,9 @@
     },
     {
       "id": "matt",
-      "addresses": ["3bzaJd5yZG73EVDz8xosQb7gfZm2LN5auFGh6wnP1n1f"],
+      "addresses": [
+        "3bzaJd5yZG73EVDz8xosQb7gfZm2LN5auFGh6wnP1n1f"
+      ],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -331,16 +391,21 @@
     },
     {
       "id": "naruza",
-      "addresses": ["ASVzakePP6GNg9r95d4LPZHJDMXun6L6E4um4pu5ybJk"],
-      "tier": "B",
+      "addresses": [
+        "ASVzakePP6GNg9r95d4LPZHJDMXun6L6E4um4pu5ybJk"
+      ],
+      "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
-      "notes": "naruza. 2026-04-27 NEW observe-only. leaderboard 후보, 성과 재검증 1회 더 필요.",
-      "is_active": false
+      "notes": "naruza. 2026-04-27 PROMOTED B → A (multi-source confirmed). Kolscan #17 leaderboard +18.51 SOL 7d / 9 wins / 2 losses. Prior observe + leaderboard = workflow rule #4 충족. discovery canary.",
+      "is_active": true,
+      "recent_30d_pnl_sol": 18.51
     },
     {
       "id": "nyhrox",
-      "addresses": ["6S8GezkxYUfZy9JPtYnanbcZTMB87Wjt1qx3c6ELajKC"],
+      "addresses": [
+        "6S8GezkxYUfZy9JPtYnanbcZTMB87Wjt1qx3c6ELajKC"
+      ],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -349,7 +414,9 @@
     },
     {
       "id": "gh0stee",
-      "addresses": ["2kv8X2a9bxnBM8NKLc6BBTX2z13GFNRL4oRotMUJRva9"],
+      "addresses": [
+        "2kv8X2a9bxnBM8NKLc6BBTX2z13GFNRL4oRotMUJRva9"
+      ],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -358,7 +425,9 @@
     },
     {
       "id": "gfree",
-      "addresses": ["4yo9CUuTBbds9NFhZd4MzPiZZkUvveXdTnAH8qMsE8ku"],
+      "addresses": [
+        "4yo9CUuTBbds9NFhZd4MzPiZZkUvveXdTnAH8qMsE8ku"
+      ],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -367,7 +436,9 @@
     },
     {
       "id": "earl",
-      "addresses": ["F2SuErm4MviWJ2HzKXk2nuzBC6xe883CFWUDCPz6cyWm"],
+      "addresses": [
+        "F2SuErm4MviWJ2HzKXk2nuzBC6xe883CFWUDCPz6cyWm"
+      ],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -376,7 +447,9 @@
     },
     {
       "id": "giann",
-      "addresses": ["GNrmKZCxYyNiSUsjduwwPJzhed3LATjciiKVuSGrsHEC"],
+      "addresses": [
+        "GNrmKZCxYyNiSUsjduwwPJzhed3LATjciiKVuSGrsHEC"
+      ],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -385,7 +458,9 @@
     },
     {
       "id": "coler",
-      "addresses": ["99xnE2zEFi8YhmKDaikc1EvH6ELTQJppnqUwMzmpLXrs"],
+      "addresses": [
+        "99xnE2zEFi8YhmKDaikc1EvH6ELTQJppnqUwMzmpLXrs"
+      ],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -394,7 +469,9 @@
     },
     {
       "id": "radiance",
-      "addresses": ["FAicXNV5FVqtfbpn4Zccs71XcfGeyxBSGbqLDyDJZjke"],
+      "addresses": [
+        "FAicXNV5FVqtfbpn4Zccs71XcfGeyxBSGbqLDyDJZjke"
+      ],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -403,7 +480,9 @@
     },
     {
       "id": "esee06257",
-      "addresses": ["4uCT4g7YHH4xxfmfNfKUDenwGrRNGoZ9Ay1XFxfUGhQG"],
+      "addresses": [
+        "4uCT4g7YHH4xxfmfNfKUDenwGrRNGoZ9Ay1XFxfUGhQG"
+      ],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -412,7 +491,9 @@
     },
     {
       "id": "putrick",
-      "addresses": ["AVjEtg2ECYKXYeqdRQXvaaAZBjfTjYuSMTR4WLhKoeQN"],
+      "addresses": [
+        "AVjEtg2ECYKXYeqdRQXvaaAZBjfTjYuSMTR4WLhKoeQN"
+      ],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -421,7 +502,9 @@
     },
     {
       "id": "gasp",
-      "addresses": ["xyzfhxfy8NhfeNG3Um3WaUvFXzNuHkrhrZMD8dsStB6"],
+      "addresses": [
+        "xyzfhxfy8NhfeNG3Um3WaUvFXzNuHkrhrZMD8dsStB6"
+      ],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -430,7 +513,9 @@
     },
     {
       "id": "bastille",
-      "addresses": ["3kebnKw7cPdSkLRfiMEALyZJGZ4wdiSRvmoN4rD1yPzV"],
+      "addresses": [
+        "3kebnKw7cPdSkLRfiMEALyZJGZ4wdiSRvmoN4rD1yPzV"
+      ],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -439,7 +524,9 @@
     },
     {
       "id": "cupsey_benchmark",
-      "addresses": ["2fg5QD1eD7rzNNCsvnhmXFm5hqNgwTTG8p7kQ6f3rx6f"],
+      "addresses": [
+        "2fg5QD1eD7rzNNCsvnhmXFm5hqNgwTTG8p7kQ6f3rx6f"
+      ],
       "tier": "S",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-25",
@@ -448,7 +535,9 @@
     },
     {
       "id": "cented_benchmark",
-      "addresses": ["CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o"],
+      "addresses": [
+        "CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o"
+      ],
       "tier": "S",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-25",
@@ -457,16 +546,20 @@
     },
     {
       "id": "sheep_watch",
-      "addresses": ["78N177fzNJpp8pG49xDv1efYcTMSzo9tPTKEA9mAVkh2"],
+      "addresses": [
+        "78N177fzNJpp8pG49xDv1efYcTMSzo9tPTKEA9mAVkh2"
+      ],
       "tier": "B",
       "added_at": "2026-04-25",
-      "last_verified_at": "2026-04-25",
-      "notes": "Sheep. tail-winner potential but role/longer-term verification weaker.",
+      "last_verified_at": "2026-04-27",
+      "notes": "Sheep. 2026-04-27 reverify: Kolscan #29 +8.73 SOL 7d / 9 wins 1 loss (90% rate, but sample 10 only). multi-source 확인되나 sample 작음 — watch 유지, 다음 월간 리뷰에서 sample > 30 시 승격 검토.",
       "is_active": false
     },
     {
       "id": "gwyg_watch",
-      "addresses": ["GwyG5FQRNtY1faXYWdTLbcDNZTyW5d2Z63o1UiMUDQDT"],
+      "addresses": [
+        "GwyG5FQRNtY1faXYWdTLbcDNZTyW5d2Z63o1UiMUDQDT"
+      ],
       "tier": "A",
       "added_at": "2026-04-26",
       "last_verified_at": "2026-04-26",
@@ -475,7 +568,9 @@
     },
     {
       "id": "btyi_2_watch",
-      "addresses": ["2btYi2pqVgtgzLqeAXE122FPhN2xBJMQpE1V9CMNv4EH"],
+      "addresses": [
+        "2btYi2pqVgtgzLqeAXE122FPhN2xBJMQpE1V9CMNv4EH"
+      ],
       "tier": "B",
       "added_at": "2026-04-26",
       "last_verified_at": "2026-04-26",
@@ -484,7 +579,9 @@
     },
     {
       "id": "wallet_91e6_watch",
-      "addresses": ["91e6tkWuCikpchersigVKqVtdMCBSfMNMui9LXpdz8qk"],
+      "addresses": [
+        "91e6tkWuCikpchersigVKqVtdMCBSfMNMui9LXpdz8qk"
+      ],
       "tier": "B",
       "added_at": "2026-04-26",
       "last_verified_at": "2026-04-26",
@@ -492,30 +589,102 @@
       "is_active": false
     },
     {
-      "id": "believe_buyback",
-      "addresses": ["GHXV4xsQjKETxeKFSAQuGLBDni5zZvMyM8EEmRDETWKH"],
+      "id": "ansem",
+      "addresses": [
+        "AVAZvHLR2PcWpDf8BXY4rVxNHYRBytycHkcB5z5QNXYm"
+      ],
       "tier": "B",
-      "added_at": "2026-04-25",
-      "last_verified_at": "2026-04-25",
-      "notes": "Project/treasury wallet, not KOL. Inactive.",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "Ansem (@blknoiz06). 2026-04-27 split from secondary_unverified_pool. Kolscan #12 +30.12 SOL 7d but sample 1/0 (whale 1회 hit). 활성 회전 X — observe-only B 유지. KOL alpha 라기보다 historical celebrity address.",
       "is_active": false
     },
     {
-      "id": "believe_foundation",
-      "addresses": ["4mC4CWyKDqUdShmUiYS4FvB8gZEKh4GD7SnmdKTpWM1k"],
+      "id": "letterbomb",
+      "addresses": [
+        "BtMBMPkoNbnLF9Xn552guQq528KKXcsNBNNBre3oaQtr"
+      ],
       "tier": "B",
-      "added_at": "2026-04-25",
-      "last_verified_at": "2026-04-25",
-      "notes": "Project/foundation wallet. Inactive.",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "Letterbomb. 2026-04-27 NEW observe-only. Kolscan #5 +65.40 SOL 7d / 18/36 (33% win, 54 trades). Big PnL with low win rate = tail-hunter pattern. 2nd source 확보 시 active 승격 검토.",
       "is_active": false
     },
     {
-      "id": "solhana_old",
-      "addresses": ["9dHzzDRHmBzuT7hJ3Es9YktAKow4VKGpbvDRKYi3jvnC"],
+      "id": "dv",
+      "addresses": [
+        "BCagckXeMChUKrHEd6fKFA1uiWDtcmCXMsqaheLiUPJd"
+      ],
       "tier": "B",
-      "added_at": "2026-04-25",
-      "last_verified_at": "2026-04-25",
-      "notes": "솔하나 from old group. Inactive until reverified.",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "dv. 2026-04-27 NEW observe-only. Kolscan #15 +20.88 SOL 7d / 57/73 (44% win, 130 trades). 가장 큰 sample size → 통계 신뢰도 높음. 2nd source 확보 시 priority 승격.",
+      "is_active": false
+    },
+    {
+      "id": "bigwarz",
+      "addresses": [
+        "7bsTkeWcSPG6nzsbXucxV89YUULoSExNJdX2WqfLHwZ4"
+      ],
+      "tier": "B",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "BIGWARZ. 2026-04-27 NEW observe-only. Kolscan #13 +26.21 SOL 7d / 9/23 (28% win, 32 trades). 낮은 승률 + 큰 PnL = tail-hunter.",
+      "is_active": false
+    },
+    {
+      "id": "schoen",
+      "addresses": [
+        "5hAgYC8TJCcEZV7LTXAzkTrm7YL29YXyQQJPCNrG84zM"
+      ],
+      "tier": "B",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "Schoen. 2026-04-27 NEW observe-only. Kolscan #16 +20.03 SOL 7d / 15/24 (38% win, 39 trades). moderate sample.",
+      "is_active": false
+    },
+    {
+      "id": "trenchman",
+      "addresses": [
+        "Hw5UKBU5k3YudnGwaykj5E8cYUidNMPuEewRRar5Xoc7"
+      ],
+      "tier": "B",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "Trenchman. 2026-04-27 NEW observe-only. Kolscan #18 +16.47 SOL 7d / 13/14 (48% win, 27 trades). balanced win/loss.",
+      "is_active": false
+    },
+    {
+      "id": "jakey",
+      "addresses": [
+        "B3JyPD3t9ufZWfL3namyvoc258KH74JojSxxurUg9jCT"
+      ],
+      "tier": "B",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "jakey. 2026-04-27 NEW observe-only. Kolscan #21 +12.72 SOL 7d / 10/8 (55% win, 18 trades). Twitter/Telegram identity 검증 가능 (multi-source path 명확).",
+      "is_active": false
+    },
+    {
+      "id": "clown",
+      "addresses": [
+        "EDXHdSFdadFbYFFjxPXBqMe1kCEDFqpPu552uvp48HR8"
+      ],
+      "tier": "B",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "Clown. 2026-04-27 NEW observe-only. Kolscan #23 +10.50 SOL 7d / 15/29 (34% win, 44 trades). tail-hunter pattern.",
+      "is_active": false
+    },
+    {
+      "id": "trey",
+      "addresses": [
+        "831yhv67QpKqLBJjbmw2xoDUeeFHGUx8RnuRj9imeoEs"
+      ],
+      "tier": "B",
+      "added_at": "2026-04-27",
+      "last_verified_at": "2026-04-27",
+      "notes": "Trey. 2026-04-27 RECONSIDERED (was rejected v2 — \"realized PnL 음수\"). Kolscan #24 +10.32 SOL 7d / 24/13 (65% win, 37 trades) — direction 반전. observe-only 로 재추가, 2차 검증 시 승격 검토.",
       "is_active": false
     },
     {
@@ -527,14 +696,15 @@
         "4kce1EvUHwHyWxur8ApZDifHS3W17yPXddNxoLatHwnT",
         "7jPTpyAtPXZ3uFduPyiHFqrWvq3wcJq3XmHgykidQJUD",
         "FVk1Fw2wgBo9S77ydKphGpWnDgsBw5Jkqx2rYSACo737",
-        "5M8ACGKEXG1ojKDTMH3sMqhTihTgHYMSsZc6W8i7QW3Y",
-        "AVAZvHLR2PcWpDf8BXY4rVxNHYRBytycHkcB5z5QNXYm"
+        "5M8ACGKEXG1ojKDTMH3sMqhTihTgHYMSsZc6W8i7QW3Y"
       ],
       "tier": "B",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
-      "notes": "Unnamed secondary-list. 2026-04-27: 215nhcAH... split out as 'ogantd' (promoted A active). AVAZvHLR... = Ansem (@blknoiz06) — 현 가치 ~$501, 2025-07-31 마지막 활동, 추가 안 함.",
+      "notes": "Unnamed secondary-list. 2026-04-27: AVAZvHLR... split out as standalone \"ansem\" entry (Kolscan #12 +30.12 SOL 7d 확인). 215nhcAH... already split as \"ogantd\" earlier.",
       "is_active": false
     }
-  ]
+  ],
+  "//cleanup_2026_04_27_option_a": "Removed 3 misclassified entries (believe_buyback / believe_foundation / solhana_old) — not KOLs (project/treasury wallets). 55 → 52 entries.",
+  "//workflow_rebalance_2026_04_27_v3": "Inactive 31 re-examination (Option A cleanup applied separately, removed believe_buyback/believe_foundation/solhana_old). Kolscan top-30 leaderboard cross-check via WebFetch. Promotions: naruza (observe → active A, multi-source). New observe-only 9 entries (8 Kolscan top-30 not in DB + ansem split from pool). Sheep_watch confirmed (sample size 10 only — watch 유지)."
 }

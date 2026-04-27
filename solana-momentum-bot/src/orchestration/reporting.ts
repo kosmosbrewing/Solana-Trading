@@ -39,8 +39,9 @@ export function getScheduledReportType(now: Date): 'daily' | 'heartbeat' | null 
   return null;
 }
 
-export function scheduleDailySummary(ctx: BotContext): void {
-  setInterval(async () => {
+export function scheduleDailySummary(ctx: BotContext): ReturnType<typeof setInterval> {
+  // Why: 2026-04-27 — handle 반환하여 setupShutdown 에서 clearInterval. 이전엔 leak.
+  return setInterval(async () => {
     const reportType = getScheduledReportType(new Date());
 
     if (reportType === 'daily') {

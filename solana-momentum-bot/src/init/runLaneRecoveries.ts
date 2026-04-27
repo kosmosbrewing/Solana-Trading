@@ -31,13 +31,8 @@ export async function runLaneRecoveries(ctx: BotContext, notifier: Notifier): Pr
   }
 
   // Block 3 (2026-04-18): pure_ws_breakout lane recovery
+  // Why: stale OPEN ledger 가 자주 남아 텔레그램 노이즈를 유발 — 운영 신호 가치 낮음. log-only.
   if (config.pureWsLaneEnabled) {
-    const recoveredPureWsCount = await recoverPureWsOpenPositions(ctx);
-    if (recoveredPureWsCount > 0) {
-      await notifier.sendInfo(
-        `Pure WS recovery: ${recoveredPureWsCount} OPEN trades rehydrated`,
-        'recovery'
-      ).catch(() => {});
-    }
+    await recoverPureWsOpenPositions(ctx);
   }
 }

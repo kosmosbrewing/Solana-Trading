@@ -86,8 +86,11 @@ export async function appendEntryLedger(
       JSON.stringify({ ...entry, recordedAt: new Date().toISOString() }) + '\n',
       'utf8'
     );
-  } catch {
-    // Why: fallback ledger 기록 실패는 trading path 차단하지 않음 — log only
+  } catch (err) {
+    // Why: fallback ledger 기록 실패는 trading path 차단하지 않지만, DB persist 실패 + ledger
+    // 실패가 동시에 발생하면 reconcile audit 가 silent 로 손실된다. 최소한 surface 한다.
+    const txSig = typeof entry.txSignature === 'string' ? entry.txSignature : 'unknown';
+    log.warn(`[ENTRY_LEDGER_FAIL] type=${type} tx=${txSig.slice(0, 12)} ${err}`);
   }
 }
 

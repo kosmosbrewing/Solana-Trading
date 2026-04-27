@@ -62,6 +62,16 @@ export function setupShutdown(c: ShutdownContext): void {
     if (c.monitoringHandles.kolHourlyDigestInterval) {
       clearInterval(c.monitoringHandles.kolHourlyDigestInterval);
     }
+    // 2026-04-27: 추가 telemetry/scheduler intervals (이전엔 unstored → leak).
+    if (c.monitoringHandles.dailySummaryInterval) {
+      clearInterval(c.monitoringHandles.dailySummaryInterval);
+    }
+    if (c.monitoringHandles.pureWsV2TelemetryInterval) {
+      clearInterval(c.monitoringHandles.pureWsV2TelemetryInterval);
+    }
+    if (c.monitoringHandles.canaryAutoResetInterval) {
+      clearInterval(c.monitoringHandles.canaryAutoResetInterval);
+    }
     // Why: grace period timer가 shutdown 후 발동하면 stopped ingester 호출 → 에러 방지
     for (const { timer } of c.pendingAliasCleanups.values()) {
       clearTimeout(timer);

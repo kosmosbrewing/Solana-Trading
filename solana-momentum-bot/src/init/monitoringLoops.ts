@@ -38,6 +38,10 @@ export interface MonitoringHandles {
   regimeInterval: ReturnType<typeof setInterval>;
   pruneInterval: ReturnType<typeof setInterval>;
   kolHourlyDigestInterval: ReturnType<typeof setInterval> | null;
+  // 2026-04-27: shutdown 시 cleanup 위해 main() 에서 startMonitoringLoops 호출 후 직접 set.
+  dailySummaryInterval?: ReturnType<typeof setInterval>;
+  pureWsV2TelemetryInterval?: ReturnType<typeof setInterval>;
+  canaryAutoResetInterval?: ReturnType<typeof setInterval>;
 }
 
 // Phase E1 (2026-04-08): exit mechanism mode 별 position check 주기.

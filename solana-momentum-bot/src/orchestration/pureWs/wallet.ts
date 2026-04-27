@@ -11,7 +11,7 @@ export function getPureWsExecutor(ctx: BotContext) {
     if (!ctx.sandboxExecutor) {
       throw new Error(
         `PUREWS_WALLET_MODE=sandbox but sandboxExecutor not initialized. ` +
-        `Check SANDBOX_WALLET_PRIVATE_KEY and STRATEGY_D_LIVE_ENABLED.`
+        `Check SANDBOX_WALLET_PRIVATE_KEY.`
       );
     }
     return ctx.sandboxExecutor;

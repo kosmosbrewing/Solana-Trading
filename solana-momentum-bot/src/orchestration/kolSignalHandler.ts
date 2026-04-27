@@ -1910,6 +1910,17 @@ async function closeLivePosition(
     `hold=${nowSec - pos.entryTimeSec}s mfe=${(mfePctAtClose * 100).toFixed(2)}% mae=${(maePctAtClose * 100).toFixed(2)}%`
   );
 
+  // 2026-04-27: live close 운영자 즉시 알림. 기존엔 hourly digest + 5x anomaly 만 → 일반
+  // close 가 무음이라 운영자가 실 자산 close 를 즉시 인지 못 함 (cupsey/migration 와 일관성 결여).
+  // hourly digest 는 그대로 유지 (집계용).
+  await ctx.notifier.sendInfo(
+    `[KOL_LIVE_CLOSE] ${pos.tokenMint.slice(0, 12)} reason=${effectiveReason} ` +
+    `pnl=${pnl >= 0 ? '+' : ''}${pnl.toFixed(6)} SOL (${pnlPct >= 0 ? '+' : ''}${(pnlPct * 100).toFixed(2)}%) ` +
+    `hold=${nowSec - pos.entryTimeSec}s state=${previousState}` +
+    (pos.dbTradeId ? '' : ' [NO_DB_RECORD — manual reconcile]'),
+    'kol_live_close'
+  ).catch((err) => log.warn(`[KOL_HUNTER_LIVE_NOTIFY_CLOSE_FAIL] ${pos.positionId} ${err}`));
+
   deleteActivePosition(pos.positionId);
   unsubscribePriceIfIdle(pos.tokenMint);
 

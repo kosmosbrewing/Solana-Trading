@@ -26,6 +26,12 @@ describe('cupseyLaneHandler persistence', () => {
     // test ctx 에 onchainSecurityClient 미주입 → 운영 .env 의 SURVIVAL_ALLOW_DATA_MISSING=false
     // 가 적용되어 reject. 테스트는 명시적 비활성화.
     securityGateEnabled: false,
+    // 운영 .env 의 CANARY_GLOBAL_CONCURRENCY_ENABLED=true / MAX=2 가 누적되면
+    // 앞 테스트가 slot 을 leak (sell 실패 / pos 미close path) 하여 후속 테스트의
+    // acquireCanarySlot 이 거절 → 포지션이 생성되지 않아 false-fail 이 된다.
+    // resetCupseyLaneStateForTests 가 canaryConcurrencyGuard.state 까지는 만지지 않으므로
+    // 테스트는 명시적으로 비활성화.
+    canaryGlobalConcurrencyEnabled: false,
     cupseyLaneTicketSol: 0.01,
     cupseyStalkDropPct: 0.001,
     cupseyStalkMaxDropPct: 0.015,

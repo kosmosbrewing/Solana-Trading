@@ -71,7 +71,11 @@ npm run check:fast
 **선택 A — 사명 §3 정합 (권장)**: paper 5x+ winner ≥ 1건 입증까지 누적
 1. 매일 1회 `bash scripts/sync-vps-data.sh` (자동 paper-arm-report 갱신)
 2. KOL DB v6 의 신규 23명 1주 활동 관측 후 sustained 신호 KOL 추가 승격 / dormant inactive 처리
-3. 5x+ winner 입증 (현재 가장 가까움 +186% net = 47% 도달) 시 별도 ADR + Telegram critical ack 후 KOL live canary opt-in
+3. **5x+ 미달 root cause 가설 3 검증** (INCIDENT.md §6 참조):
+   - (A) trail/sentinel 보수성 (mfe 245% → net 108%)
+   - (B) entry timing 늦음 (probe_hard_cut −16% × 86건 / 3-12초 즉시 dump)
+   - (C) T2 임계 +400% mfe 자체 적정성
+4. 5x+ winner 입증 (현재 가장 가까움 +186% net = 47% 도달) 시 별도 ADR + Telegram critical ack 후 KOL live canary opt-in
 
 **선택 B — 자발적 §3 위반 인지 후 활성화**: 코드 모두 준비됨
 - `.env` 에 `KOL_HUNTER_PAPER_ONLY=false` + `KOL_HUNTER_LIVE_CANARY_ENABLED=true` 추가 후 재시작

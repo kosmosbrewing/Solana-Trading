@@ -61,15 +61,22 @@ npm run check:fast
 ## 4. 5 분 안에 알아야 할 것
 
 ### 최근 무엇을 했나
-- **2026-04-26 (오늘)** — pure_ws swing-v2 paper shadow + live canary 구현, KOL smart-v3 + swing-v2 dual shadow, sync 스크립트 자동 paper-arm-report, scripts archive (25개), Strategy D 영구 retire (~2200 LOC 감소).
-- **2026-04-25 H1 Foundation** — Clock interface / network mock helper / env-catalog / `npm run check`. 새 세션 hand-off 비용 영구 감소.
-- **2026-04-23 Option 5 Phase 0-3 full** — KOL DB scaffold + tracker + state machine + paper ledger.
+- **2026-04-27** — KOL paper 212 누적 / 5x+ winner 0 / smart-v3 +4.79% net 입증. KOL DB v6 (22→35 active, S 4+A 31). KOL live canary 코드 commit 1469a08 + 7 audit fix (drift halt / state API / close race / DB integrity).
+- **2026-04-26** — pure_ws swing-v2 paper shadow + live canary 구현, KOL smart-v3 + swing-v2 dual shadow, sync 스크립트 자동 paper-arm-report, scripts archive (25개), Strategy D 영구 retire (~2200 LOC 감소).
+- **2026-04-25** H1 Foundation — Clock interface / network mock / env-catalog / `npm run check`.
+- **2026-04-23** Option 5 Phase 0-3 full — KOL DB scaffold + tracker + state machine + paper ledger.
 
-### 다음 운영 액션 (운영자)
-1. `data/kol/wallets.json` 추가 KOL 입력 (현재 22 active, 50-80 목표)
-2. 매일 1회 `bash scripts/sync-vps-data.sh` (자동 paper-arm-report 갱신)
-3. 1-2주 paper 누적 (KOL smart-v3 + swing-v2 + pure_ws swing-v2 shadow)
-4. 200 trade + 5x+ winner 입증 시 swing-v2 live canary opt-in 검토 (별도 ADR)
+### 다음 운영 액션 (운영자 결정)
+
+**선택 A — 사명 §3 정합 (권장)**: paper 5x+ winner ≥ 1건 입증까지 누적
+1. 매일 1회 `bash scripts/sync-vps-data.sh` (자동 paper-arm-report 갱신)
+2. KOL DB v6 의 신규 23명 1주 활동 관측 후 sustained 신호 KOL 추가 승격 / dormant inactive 처리
+3. 5x+ winner 입증 (현재 가장 가까움 +186% net = 47% 도달) 시 별도 ADR + Telegram critical ack 후 KOL live canary opt-in
+
+**선택 B — 자발적 §3 위반 인지 후 활성화**: 코드 모두 준비됨
+- `.env` 에 `KOL_HUNTER_PAPER_ONLY=false` + `KOL_HUNTER_LIVE_CANARY_ENABLED=true` 추가 후 재시작
+- startup `[STAGE_GATE_REMINDER]` warn 로 §3 의무 알림
+- 안전망: canary cap 0.3 SOL / drift halt 0.2 SOL / max consec / ticket 0.01 hard lock
 
 ### 절대 하지 말 것
 - ❌ `cupsey_flip_10s` 코드 수정 (frozen benchmark)

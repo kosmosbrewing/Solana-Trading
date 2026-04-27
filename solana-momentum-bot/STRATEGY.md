@@ -28,10 +28,11 @@
 | `bootstrap_10s` | **signal-only** | cupsey/pure_ws trigger source. `executionRrReject=99.0` 로 실거래 100% 억제. |
 | **`pure_ws_breakout`** | **live opt-in** (`PUREWS_LIVE_CANARY_ENABLED`) | Lane S 직접 — 30s probe + 15% trail. mission-pivot 첫 lane. |
 | **`pure_ws_swing_v2`** | **paper shadow** (`PUREWS_SWING_V2_ENABLED`) → **live canary opt-in** (`PUREWS_SWING_V2_LIVE_CANARY_ENABLED`) | Lane S long-hold A/B — 600s probe / 25% trail / 1.10 floor. 별도 canary slot + budget −0.1 SOL cap. |
-| **`kol_hunter`** | **paper-only (코드 강제)** | Option 5 active paradigm. KOL Wallet Discovery + state machine. |
+| **`kol_hunter`** | **paper-default + live canary opt-in (2026-04-27)** | Option 5 active paradigm. KOL Wallet Discovery + state machine. Triple-flag gate. |
 | ↳ `kol_hunter` v1 | paper legacy | 180s stalk / 15% trail / single-KOL wait |
 | ↳ **`kol_hunter` smart-v3** (main) | paper main (`KOL_HUNTER_SMART_V3_ENABLED=true` default) | pullback / velocity / both reason 별 trigger + trail/floor override (20-25% / 1.05-1.10) |
 | ↳ `kol_hunter` swing-v2 | paper shadow (`KOL_HUNTER_SWING_V2_ENABLED`) | multi-KOL S/A ≥2 + score ≥5.0 자격 시 동시 생성. 600s stalk / 25% trail / 1.10 floor. |
+| ↳ `kol_hunter` **live canary** (opt-in) | `KOL_HUNTER_PAPER_ONLY=false` + `KOL_HUNTER_LIVE_CANARY_ENABLED=true` + `tradingMode=live` | enterLivePosition (commit 1469a08). canary cap 0.3 SOL / ticket 0.01 hard lock / drift halt 0.2. 5x+ winner 미입증 시 §3 위반 인지. |
 | `migration_reclaim` | signal-only (env) | Migration Handoff Reclaim. paper 대기. |
 | `volume_spike` / `fib_pullback` / `core_momentum` | **dormant** | 5m 해상도, 밈코인 비적합 |
 | ~~`new_lp_sniper` (Strategy D)~~ | **retired (2026-04-26 cleanup)** | Birdeye WS + sandbox executor 영구 제거 |

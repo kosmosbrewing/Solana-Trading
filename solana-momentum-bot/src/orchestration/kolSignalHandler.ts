@@ -58,7 +58,7 @@ import { acquireCanarySlot, releaseCanarySlot } from '../risk/canaryConcurrencyG
 import { reportCanaryClose } from '../risk/canaryAutoHalt';
 import { reportBleed } from '../risk/dailyBleedBudget';
 import { isWalletStopActive, getWalletStopGuardState } from '../risk/walletStopGuard';
-import { persistOpenTradeWithIntegrity, appendEntryLedger, isEntryHaltActive } from './entryIntegrity';
+import { persistOpenTradeWithIntegrity, appendEntryLedger, isEntryHaltActive, triggerEntryHalt } from './entryIntegrity';
 import { resolveActualEntryMetrics } from './signalProcessor';
 import { bpsToDecimal } from '../utils/units';
 
@@ -88,7 +88,10 @@ export type CloseReason =
   | 'winner_trailing_t1'
   | 'winner_trailing_t2'
   | 'winner_trailing_t3'
-  | 'stalk_expired_no_consensus';
+  | 'stalk_expired_no_consensus'
+  // 2026-04-27 (P1 audit fix): live canary closeLivePosition 의 orphan path 에서 사용.
+  // 기존 cast `as unknown as CloseReason` 제거 — type safety 회복.
+  | 'ORPHAN_NO_BALANCE';
 
 export type KolEntryReason =
   | 'legacy_v1'
@@ -1396,6 +1399,11 @@ function closePosition(
   // 2026-04-27 (KOL live canary): live position 은 비동기 sell + DB close 별도 분기.
   // fire-and-forget — tickMonitor 흐름은 막지 않음. 실패 시 critical alert.
   if (pos.isLive === true) {
+    // 2026-04-27 race fix: tickMonitor 가 동시에 close signal 두 번 발사 시 (예: hardcut + insider_exit)
+    // closeLivePosition 가 비동기라 두 번째 invocation 이 첫 sell 완료 전 진입 → 2중 sell 위험.
+    // 즉시 state='CLOSED' 로 mark + closing flag 로 추가 동시 호출 차단. 실제 sell/DB close 는 비동기.
+    if (pos.state === 'CLOSED') return;  // 이미 진행 중
+    pos.state = 'CLOSED';
     void closeLivePosition(pos, exitPrice, reason, nowSec, mfePctAtClose, maePctAtClose);
     return;
   }
@@ -1839,7 +1847,7 @@ async function closeLivePosition(
         `[KOL_HUNTER_LIVE_ORPHAN] ${pos.positionId} ${pos.tokenMint.slice(0, 12)} zero balance — ` +
         `force closing pnl=0 (previousReason=${reason})`
       );
-      effectiveReason = 'ORPHAN_NO_BALANCE' as unknown as CloseReason;
+      effectiveReason = 'ORPHAN_NO_BALANCE';
       actualExitPrice = pos.entryPrice;
       sellCompleted = true;
       exitTxSignature = pos.entryTxSignature ?? 'ORPHAN_NO_TX';
@@ -1885,9 +1893,13 @@ async function closeLivePosition(
     }
   } catch (err) {
     log.warn(`[KOL_HUNTER_LIVE_CLOSE_PERSIST] ${pos.positionId}: ${err}`);
+    // 2026-04-27 fix: live sell 성공 후 DB close 실패 → wallet ↔ DB drift 누적 가능.
+    // pure_ws/cupsey 패턴 동일 적용 — kol_hunter lane entry halt 트리거.
+    // 운영자 reconciliation 후 resetEntryHalt('kol_hunter') 로 해제 필요.
+    triggerEntryHalt('kol_hunter', `KOL live close persist failed for ${pos.positionId}: ${err}`);
     await ctx.notifier.sendCritical(
       'kol_live_close_persist',
-      `${pos.positionId} ${pos.tokenMint} sell ok but DB close failed`
+      `${pos.positionId} ${pos.tokenMint} sell ok but DB close failed — NEW POSITIONS HALTED`
     ).catch(() => {});
   }
   void dbCloseSucceeded;
@@ -1978,9 +1990,14 @@ function buildObserverConfig() {
 // ─── Test utilities ──────────────────────────────────────
 
 /** 테스트 전용: price feed override + 직접 시뮬레이션. */
-export function __testInit(options: { priceFeed: PaperPriceFeed }): void {
+export function __testInit(options: { priceFeed: PaperPriceFeed; ctx?: BotContext }): void {
   stopKolHunter();
-  initKolHunter({ priceFeed: options.priceFeed });
+  initKolHunter({ priceFeed: options.priceFeed, ctx: options.ctx });
+}
+
+/** 테스트 전용: live canary triple-flag gate 평가 결과 노출. */
+export function __testIsLiveCanaryActive(): boolean {
+  return isLiveCanaryActive();
 }
 
 export function __testGetActive(): PaperPosition[] {

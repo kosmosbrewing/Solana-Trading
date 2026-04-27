@@ -72,9 +72,13 @@ export function resetEntryHalt(lane: EntryLane, reason = 'manual'): void {
 
 export function getAllLaneIntegrityState(): Record<EntryLane, Readonly<LaneIntegrityState>> {
   const out = {} as Record<EntryLane, LaneIntegrityState>;
-  // 2026-04-26 fix: pure_ws_swing_v2 lane 누락. EntryLane 타입에는 추가됐으나 본 루프 미반영.
-  // canaryAutoHalt 의 auto-reset 등 모든 lane state 조회 API 가 swing-v2 인지 가능하도록.
-  const lanes: EntryLane[] = ['cupsey', 'migration', 'main', 'strategy_d', 'pure_ws_breakout', 'pure_ws_swing_v2'];
+  // 2026-04-26/27 fix: pure_ws_swing_v2 + kol_hunter lane 누락 보정.
+  // EntryLane 타입에는 추가됐으나 본 루프 미반영 → state query 사각지대.
+  // canaryAutoHalt 의 auto-reset 등 모든 lane state 조회 API 가 두 lane 인지 가능하도록.
+  const lanes: EntryLane[] = [
+    'cupsey', 'migration', 'main', 'strategy_d', 'pure_ws_breakout',
+    'pure_ws_swing_v2', 'kol_hunter',
+  ];
   for (const lane of lanes) {
     out[lane] = { ...getLaneState(lane) };
   }

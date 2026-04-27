@@ -31,21 +31,26 @@ Solana DEX 순수 실전형 momentum / sniper 봇이다.
 | 2026-04-21 | Mission refinement — 100 SOL = tail outcome, 5x+ winner 실측 = 성공 | [`docs/design-docs/mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md) |
 | **2026-04-23 (현재)** | **Option 5 — KOL Discovery + 자체 Execution** | [`docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md`](./docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md) |
 
-## Current Status (2026-04-26)
+## Current Status (2026-04-27)
 
 - **Active paradigm**: Option 5 — KOL Wallet Discovery + 자체 Execution ([ADR](./docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md))
 - **Phase 진행도** ([`REFACTORING_v1.0.md`](./REFACTORING_v1.0.md)):
-  - Phase 0-3 완료 (KOL DB / tracker / shadow-eval / paper lane state machine)
-  - Phase 3.5 완료 (smart-v3 main + swing-v2 shadow A/B)
-  - Phase 3.6 완료 (pure_ws swing-v2 paper shadow + live canary 코드)
-  - Phase 4 (live canary 50 trades) — **gate 대기** (200 paper trades + 5x+ winner 입증 필요)
-- **Wallet baseline**: 시작 `1.3 SOL` → 현재 `1.07 SOL` (`-0.23 SOL`)
+  - Phase 0-3 완료 (KOL DB v6 / tracker / shadow-eval / paper lane state machine)
+  - Phase 3.5 / 3.6 완료 (smart-v3 main + swing-v2 shadow A/B / pure_ws swing-v2 paper+live canary 코드)
+  - **Phase 4 코드 완료** (commit 1469a08, 2026-04-27): KOL `enterLivePosition` + `closeLivePosition` + Triple-flag gate
+  - Phase 4 활성화 — **gate 부분 미충족**: paper 212 trade ✅ / 5x+ winner 0건 ❌
+- **KOL paper 누적 (2026-04-23 ~ 04-27)**:
+  - 212 trade / smart-v3 +4.79% / swing-v2 +7.31% / v1 fallback −0.65%
+  - 누적 net **+0.0568 SOL** (paper)
+  - **5x+ winner 0건** (가장 가까움 +186% net / +285% mfe)
+- **Wallet baseline**: 시작 `1.3 SOL` → 현재 `1.07 SOL` (`-0.23 SOL`, paper 영향 0)
 - **유일한 truth**: wallet delta. DB `pnl` drift `+18.34 SOL` 전력 있어 단독 판정 금지.
 - **Lane / arm 상태**:
   - `cupsey_flip_10s` — benchmark **frozen** (env disabled)
-  - `pure_ws_breakout` — Lane S baseline (live opt-in)
-  - `pure_ws_swing_v2` — Lane S long-hold A/B (paper shadow / live canary opt-in)
-  - `kol_hunter` v1 / smart-v3 (main) / swing-v2 (shadow) — Lane T (paper-only 코드 강제)
+  - `pure_ws_breakout` — Lane S baseline (live opt-in, 현재 `LIVE_CANARY_ENABLED=false`)
+  - `pure_ws_swing_v2` — Lane S long-hold A/B (paper shadow / live canary 코드 완료, opt-in)
+  - `kol_hunter` v1 / smart-v3 (main) / swing-v2 (shadow) — Lane T
+    - **paper-only 강제 + live canary 코드 완료** (Triple-flag gate, opt-in)
   - `bootstrap_10s` — signal-only
   - `migration_reclaim` — signal-only
   - `volume_spike` / `fib_pullback` — dormant (5m 해상도 비적합)

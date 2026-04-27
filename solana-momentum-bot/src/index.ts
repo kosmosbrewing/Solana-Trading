@@ -568,6 +568,10 @@ async function main() {
     if (config.pureWsSwingV2LiveCanaryEnabled) liveLanesEnabled.push('PUREWS_SWING_V2_LIVE_CANARY');
     if (config.cupseyLaneEnabled) liveLanesEnabled.push('CUPSEY_LANE');
     if (config.migrationLaneEnabled && !config.migrationLaneSignalOnly) liveLanesEnabled.push('MIGRATION_LANE');
+    // 2026-04-27: KOL live canary triple-flag gate (kolHunterLiveCanaryEnabled + !kolHunterPaperOnly + tradingMode='live')
+    if (config.kolHunterLiveCanaryEnabled && !config.kolHunterPaperOnly) {
+      liveLanesEnabled.push('KOL_HUNTER_LIVE_CANARY');
+    }
     if (liveLanesEnabled.length > 0) {
       log.warn(
         `[STAGE_GATE_REMINDER] live canary flags=[${liveLanesEnabled.join(',')}]. ` +

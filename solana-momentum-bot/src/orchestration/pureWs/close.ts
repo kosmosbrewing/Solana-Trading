@@ -67,9 +67,12 @@ async function closePureWsPositionSerialized(
   if (ctx.tradingMode === 'live') {
     try {
       const sellExecutor = getPureWsExecutor(ctx);
-      const tokenBalance = await sellExecutor.getTokenBalance(pos.pairAddress);
+      // 2026-04-28 P0-C fix: tokenBalance + getBalance(solBefore) 병렬 (~250ms 단축).
+      const [tokenBalance, solBefore] = await Promise.all([
+        sellExecutor.getTokenBalance(pos.pairAddress),
+        sellExecutor.getBalance(),
+      ]);
       if (tokenBalance > 0n) {
-        const solBefore = await sellExecutor.getBalance();
         const sellResult = await sellExecutor.executeSell(pos.pairAddress, tokenBalance);
         const solAfter = await sellExecutor.getBalance();
         const receivedSol = solAfter - solBefore;
@@ -278,7 +281,8 @@ async function closePureWsPositionSerialized(
       exitReason: reason,
       decisionPrice: exitPrice,
     };
-    await ctx.notifier.sendTradeClose(closedTrade).catch(() => {});
+    // 2026-04-28 P0-B fix: notifier fire-and-forget — Telegram 429 close path blocking 차단.
+    void ctx.notifier.sendTradeClose(closedTrade).catch(() => {});
   }
 
   // Block 4: canary auto-halt feed

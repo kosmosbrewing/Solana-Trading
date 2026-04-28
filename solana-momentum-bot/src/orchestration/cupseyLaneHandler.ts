@@ -708,7 +708,8 @@ export async function updateCupseyPositions(
           pos.dbTradeId = dbTradeId;
           funnelStats.dbPersisted++;
           recordCupseyFunnelSnapshot(ctx);
-          await ctx.notifier.sendTradeOpen({
+          // 2026-04-28 P0-B fix: notifier fire-and-forget. Telegram 429 entry path blocking 차단.
+          void ctx.notifier.sendTradeOpen({
             tradeId: dbTradeId,
             pairAddress: pos.pairAddress,
             strategy: 'cupsey_flip_10s',
@@ -723,9 +724,12 @@ export async function updateCupseyPositions(
             takeProfit1: actualEntryPrice * (1 + config.cupseyProbeMfeThreshold),
             takeProfit2: actualEntryPrice * (1 + config.cupseyWinnerTrailingPct * 2),
             timeStopMinutes: Math.ceil(config.cupseyWinnerMaxHoldSec / 60),
-          }, entryTxSignature);
-          funnelStats.notifierOpenSent++;
-          recordCupseyFunnelSnapshot(ctx);
+          }, entryTxSignature).then(() => {
+            funnelStats.notifierOpenSent++;
+            recordCupseyFunnelSnapshot(ctx);
+          }).catch(() => {
+            // 알림 실패는 trade 자체에 영향 없음 — DB / wallet 이미 commit
+          });
         } catch (persistErr) {
           log.error(`[CUPSEY_PERSIST_OPEN_FAIL] ${id} ${persistErr}`);
           // P0-3: live tx 성공 후 DB 실패 → 신규 포지션 halt (integrity 불일치 방지)
@@ -884,9 +888,12 @@ async function closeCupseyPositionSerialized(
   if (ctx.tradingMode === 'live') {
     try {
       const sellExecutor = getCupseyExecutor(ctx);
-      const tokenBalance = await sellExecutor.getTokenBalance(pos.pairAddress);
+      // 2026-04-28 P0-C fix: tokenBalance + getBalance(solBefore) 병렬 (~250ms 단축).
+      const [tokenBalance, solBefore] = await Promise.all([
+        sellExecutor.getTokenBalance(pos.pairAddress),
+        sellExecutor.getBalance(),
+      ]);
       if (tokenBalance > 0n) {
-        const solBefore = await sellExecutor.getBalance();
         const sellResult = await sellExecutor.executeSell(pos.pairAddress, tokenBalance);
         const solAfter = await sellExecutor.getBalance();
         const receivedSol = solAfter - solBefore;
@@ -1030,7 +1037,8 @@ async function closeCupseyPositionSerialized(
       exitReason: reason,
       decisionPrice: exitPrice,
     };
-    await ctx.notifier.sendTradeClose(closedTrade).catch(() => {});
+    // 2026-04-28 P0-B fix: notifier fire-and-forget.
+    void ctx.notifier.sendTradeClose(closedTrade).catch(() => {});
   } else if (dbCloseSucceeded) {
     await ctx.notifier.sendInfo(
       `[Cupsey Lane] ${sym} ${reason}: ${pnl >= 0 ? '+' : ''}${pnl.toFixed(6)} SOL (${holdSec}s hold)`,

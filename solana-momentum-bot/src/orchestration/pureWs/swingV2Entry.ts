@@ -277,26 +277,25 @@ async function openSwingV2Live(input: OpenSwingV2Input): Promise<void> {
   };
 
   if (persistResult.dbTradeId) {
-    try {
-      await ctx.notifier.sendTradeOpen({
-        tradeId: persistResult.dbTradeId,
-        pairAddress: livePos.pairAddress,
-        strategy: SWING_V2_LANE,
-        side: 'BUY',
-        tokenSymbol: livePos.tokenSymbol,
-        price: actualEntryPrice,
-        plannedEntryPrice: signal.price,
-        quantity: actualQuantity,
-        sourceLabel: livePos.sourceLabel,
-        discoverySource: livePos.discoverySource,
-        stopLoss: actualEntryPrice * (1 - config.pureWsSwingV2ProbeHardCutPct),
-        takeProfit1: actualEntryPrice * (1 + config.pureWsT1MfeThreshold),
-        takeProfit2: actualEntryPrice * (1 + config.pureWsT2MfeThreshold),
-        timeStopMinutes: Math.ceil(config.pureWsSwingV2ProbeWindowSec / 60),
-      }, entryTxSignature);
-    } catch (err) {
+    // 2026-04-28 P0-B fix: notifier fire-and-forget.
+    void ctx.notifier.sendTradeOpen({
+      tradeId: persistResult.dbTradeId,
+      pairAddress: livePos.pairAddress,
+      strategy: SWING_V2_LANE,
+      side: 'BUY',
+      tokenSymbol: livePos.tokenSymbol,
+      price: actualEntryPrice,
+      plannedEntryPrice: signal.price,
+      quantity: actualQuantity,
+      sourceLabel: livePos.sourceLabel,
+      discoverySource: livePos.discoverySource,
+      stopLoss: actualEntryPrice * (1 - config.pureWsSwingV2ProbeHardCutPct),
+      takeProfit1: actualEntryPrice * (1 + config.pureWsT1MfeThreshold),
+      takeProfit2: actualEntryPrice * (1 + config.pureWsT2MfeThreshold),
+      timeStopMinutes: Math.ceil(config.pureWsSwingV2ProbeWindowSec / 60),
+    }, entryTxSignature).catch((err) => {
       log.warn(`[PUREWS_SWING_V2_NOTIFY_OPEN_FAIL] ${livePositionId} ${err}`);
-    }
+    });
   }
 
   activePositions.set(livePositionId, livePos);

@@ -30,25 +30,31 @@ export const POLICY_TICKET_MAX_SOL = 0.01;
 /**
  * Lane 별 정책 상한 override (Stage 4 partial-pass lane 만).
  *
- * **2026-04-28 운영자 결정**: KOL hunter 0.01 → **0.03 SOL** (3x scale).
- * 근거:
- *   - paper n=401 / 5x+ winner ≥ 1건 (kolh-DF7DAPat 940% mfe/net, retreat 0%) ✅
- *   - sentinel 임계 완화 (0.30 → 0.45) 로 추가 5x capture 가능성 향상 ✅
- *   - KOL canary cap 0.1 → 0.3 SOL 동시 상향 (3x 정합)
- *   - Real Asset Guard wallet floor 0.8 SOL 위반 risk 미미 — 1 SOL 시드 기준
- *     0.03 ticket × 7 trade loser = 0.21 SOL 손실 시 wallet 0.79 → floor 진입
+ * **2026-04-28 (B안 운영자 결정)**: KOL hunter 0.03 → **0.02 SOL** (33% 후퇴).
  *
- * 한계:
- *   - **Stage 4 SCALE gate 의 live 항목 (n≥50, live 5x+ ≥1) 은 미충족** —
- *     ticket scale 은 paper proof 기반 운영자 명시 결정.
- *   - 정상 절차는 별도 ADR + Telegram critical ack `stage4_approved_YYYY_MM_DD`.
- *     본 변경은 운영자 직접 지시 + 본 코드 변경 자체를 ack 로 간주 (git commit + ADR 작성 후속).
+ * 배경:
+ *   1차 결정 (0.03): paper n=401 / 5x+ winner 1건 입증 후 3x scale.
+ *   B안 (0.02): live 24h n=44 데이터 도착 후 재산정.
+ *     - Live ROI = -2.55% (bleeding), avg loss -32.95% (paper -12.69% 의 2.6x)
+ *     - Catastrophic rate 4.5% (-100% PNL_DRIFT events 2건/44)
+ *     - 8JH1J6p4 incident 같은 5중 cascade (security + entry delay + dump + 429 sell + ticket scale)
+ *     - Live raw Kelly = 0% (-100% tail 영향)
  *
- * 다른 lane (pure_ws / cupsey / migration / pure_ws_swing_v2) 은 0.01 유지 —
- * 각 lane 의 Stage 4 paper proof 가 별개라 일괄 완화 금지.
+ * 0.02 SOL 산정 근거 (200-trade Stage 4 여정):
+ *   - Wallet floor 0.7 SOL 신규 (이전 0.8 → 0.3 SOL drawdown budget)
+ *   - 200 trade × 4.5% catastrophic = 9 events × 0.02 = 0.18 SOL
+ *   - 200 trade × -2.55% ROI bleed = 0.102 SOL
+ *   - 합계 drawdown ≈ 0.282 SOL → wallet 0.718 SOL (floor 0.7 margin +0.018)
+ *   - Catastrophic 견딤: 15 events (예상 9건 + 6 buffer)
+ *
+ * 100-trade 검증 조건 (Tier 2 승격):
+ *   - catastrophic rate < 2% AND per-trade ROI > 0% → 0.025 검토
+ *   - catastrophic rate ≥ 4% (개선 없음) → 0.015 후퇴
+ *
+ * 다른 lane (pure_ws / cupsey / migration / pure_ws_swing_v2) 은 0.01 유지.
  */
 export const POLICY_TICKET_MAX_SOL_BY_LANE: Readonly<Record<string, number>> = {
-  kol_hunter: 0.03,
+  kol_hunter: 0.02,
 };
 
 /**

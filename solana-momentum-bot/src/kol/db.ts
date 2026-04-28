@@ -86,6 +86,30 @@ export function lookupKolById(id: string): KolWallet | undefined {
   return wallet;
 }
 
+/**
+ * 2026-04-28 (Phase 0B/1): KOL 의 lane_role 조회. 미분류 시 'unknown' fallback.
+ * Phase 1 (style-aware insider_exit) 의 입력. 미분류 KOL 은 보수적 분기 (현재 default behavior 유지).
+ *
+ * Decision input:
+ *   - copy_core: sell 신호 → 우리도 close (직접 카피)
+ *   - discovery_canary: sell 신호 → confidence 하향만 (close 안 함)
+ *   - observer: trigger 자체 안 줌
+ *   - unknown: 보수적 — 직접 카피 default (기존 behavior)
+ */
+export function getKolLaneRole(kolId: string): 'copy_core' | 'discovery_canary' | 'observer' | 'unknown' {
+  const wallet = idIndex.get(kolId);
+  return wallet?.lane_role ?? 'unknown';
+}
+
+/**
+ * 2026-04-28 (Phase 0B/1): KOL trading style 조회. 미분류 시 'unknown'.
+ * lane_role 의 보조 dimension. scalper sell 무시 정책의 입력.
+ */
+export function getKolTradingStyle(kolId: string): 'longhold' | 'swing' | 'scalper' | 'unknown' {
+  const wallet = idIndex.get(kolId);
+  return wallet?.trading_style ?? 'unknown';
+}
+
 /** 활성 KOL 의 모든 address set. tracker subscription 용. */
 export function getAllActiveAddresses(): string[] {
   const result: string[] = [];

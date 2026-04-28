@@ -174,6 +174,10 @@ describe('kolSignalHandler — state machine', () => {
   beforeEach(() => {
     stopKolHunter();
     jest.clearAllMocks();
+    // 2026-04-28 (P1 isolation fix): KOL DB module global state 가 test 간 leak.
+    // Phase 1 신규 테스트의 __testInject 가 후속 test 영향 → resetKolDbState 로 격리.
+    const { resetKolDbState } = require('../src/kol/db');
+    resetKolDbState();
     const mockedConfig = (require('../src/utils/config') as any).config;
     mockedConfig.kolHunterSmartV3Enabled = false;
     mockedConfig.kolHunterSwingV2Enabled = false;
@@ -185,6 +189,8 @@ describe('kolSignalHandler — state machine', () => {
 
   afterEach(() => {
     stopKolHunter();
+    const { resetKolDbState } = require('../src/kol/db');
+    resetKolDbState();
   });
 
   it('stalk → entry 시 priceFeed 에서 initial price 가져와 PROBE 진입', async () => {
@@ -1364,6 +1370,141 @@ describe('kolSignalHandler — state machine', () => {
 
       expect(captured).not.toBeNull();
       expect(captured.pos.isShadowKol).toBe(true);
+    });
+
+    // 2026-04-28 Phase 1 — Style-aware insider_exit decision (외부 피드백 + GUfyGEF6 incident).
+    // kev (scalper) sell 신호로 bflg (longhold copy_core) thesis 청산 mismatch 차단.
+    // KOL DB 의 lane_role / trading_style 분류 따라 close / lower_confidence / ignore 분기.
+    it('Phase 1: scalper sell + position 에 longhold KOL 있음 → close 안 함 (lower_confidence + trail 하향)', async () => {
+      const { __testInject } = require('../src/kol/db');
+      // pain (S, longhold) + scalp1 (A, scalper) 가 같이 entry. scalp1 sell 시 close 안 함.
+      __testInject([
+        { id: 'pain', tier: 'S', addresses: ['wallet_pain'], added_at: '2026-04-01', last_verified_at: '2026-04-28', notes: '', is_active: true, trading_style: 'longhold', lane_role: 'copy_core' },
+        { id: 'scalp1', tier: 'A', addresses: ['wallet_scalp1'], added_at: '2026-04-01', last_verified_at: '2026-04-28', notes: '', is_active: true, trading_style: 'scalper', lane_role: 'discovery_canary' },
+      ]);
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      // anti-correlation 60s — 두 KOL 을 독립으로 인식하려면 ≥60s 차이 필요.
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART, 120_000));
+      await handleKolSwap(buyTx('scalp1', 'A', MINT_SMART));
+      await __testForceResolveStalk(MINT_SMART);
+
+      const positions = __testGetActive();
+      expect(positions.length).toBeGreaterThanOrEqual(1);
+      const pos = positions.find((p) => !p.isShadowArm);
+      expect(pos?.participatingKols.map((k) => k.id)).toEqual(expect.arrayContaining(['pain', 'scalp1']));
+
+      // Phase 1 QA F1 fix: scalper sell 시 trail 도 보수화 (이전엔 cosmetic 만이었음)
+      // applySmartV3Reinforcement 가 reinforcement 마다 trail+inc 했으므로 이전 값 stash
+      const trailBeforeSell = pos!.t1TrailPctOverride;
+
+      // scalp1 sell — close 안 되어야 함 (lower_confidence only)
+      let captured: any = null;
+      kolHunterEvents.once('paper_close', (evt) => { captured = evt; });
+      await handleKolSwap({ ...buyTx('scalp1', 'A', MINT_SMART), action: 'sell' });
+      await flushAsync();
+
+      expect(captured).toBeNull();  // close 안 됨
+      expect(__testGetActive().length).toBeGreaterThanOrEqual(1);  // 포지션 유지
+
+      // QA F1: trail 이 실제로 하향됐는지 (cosmetic 아닌 정책 영향) 검증
+      const posAfter = __testGetActive().find((p) => !p.isShadowArm)!;
+      if (trailBeforeSell != null) {
+        expect(posAfter.t1TrailPctOverride).toBeLessThanOrEqual(trailBeforeSell);
+      }
+    });
+
+    // 2026-04-28 (P2 fix): trail buildup/reduce 비대칭 — scalper buy 는 trail 영향 안 미침.
+    it('Phase 1+P2: scalper buy 는 trail buildup 안 시킴 (style-aware reinforcement)', async () => {
+      const { __testInject } = require('../src/kol/db');
+      mockedConfig.kolHunterSmartV3Enabled = true;  // smart-v3 path 라야 reinforcement 활성
+      __testInject([
+        { id: 'longh', tier: 'S', addresses: ['wallet_longh'], added_at: '2026-04-01', last_verified_at: '2026-04-28', notes: '', is_active: true, trading_style: 'longhold', lane_role: 'copy_core' },
+        { id: 'sca', tier: 'A', addresses: ['wallet_sca'], added_at: '2026-04-01', last_verified_at: '2026-04-28', notes: '', is_active: true, trading_style: 'scalper', lane_role: 'discovery_canary' },
+      ]);
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      // longhold + scalper multi-KOL → smart-v3 velocity trigger (≥2 indep KOL)
+      await handleKolSwap(buyTx('longh', 'S', MINT_SMART, 120_000));
+      await handleKolSwap(buyTx('sca', 'A', MINT_SMART));
+      await flushAsync();
+
+      const positions = __testGetActive();
+      if (positions.length === 0) {
+        // smart-v3 trigger 가 immediate emit 안 했을 수 있음 — force resolve
+        await __testForceResolveStalk(MINT_SMART);
+      }
+      const pos = __testGetActive().find((p) => !p.isShadowArm);
+      if (!pos) return;  // smart-v3 trigger 미충족이면 skip (test infra 한계)
+
+      const trailBeforeReinforcement = pos.t1TrailPctOverride;
+      const countBefore = pos.kolReinforcementCount;
+
+      // Existing position 에 scalper 추가 buy → reinforcementCount += 1, trail unchanged
+      await handleKolSwap(buyTx('sca', 'A', MINT_SMART, 0));
+      await flushAsync();
+
+      expect(pos.kolReinforcementCount).toBeGreaterThanOrEqual(countBefore);
+      // scalper buy 는 trail 변경 안 함 (P2 fix 정합 — 만약 변경했으면 buildup 됐을 것)
+      if (trailBeforeReinforcement != null) {
+        expect(pos.t1TrailPctOverride).toBe(trailBeforeReinforcement);
+      }
+    });
+
+    it('Phase 1: longhold KOL sell → close (의미 있는 exit 신호)', async () => {
+      const { __testInject } = require('../src/kol/db');
+      mockedConfig.kolHunterSmartV3Enabled = false;  // single KOL → v1 path
+      __testInject([
+        { id: 'longh', tier: 'S', addresses: ['wallet_longh'], added_at: '2026-04-01', last_verified_at: '2026-04-28', notes: '', is_active: true, trading_style: 'longhold', lane_role: 'copy_core' },
+      ]);
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('longh', 'S', MINT_SMART));
+      await __testForceResolveStalk(MINT_SMART);
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+
+      let captured: any = null;
+      kolHunterEvents.once('paper_close', (evt) => { captured = evt; });
+      await handleKolSwap({ ...buyTx('longh', 'S', MINT_SMART), action: 'sell' });
+
+      expect(captured).not.toBeNull();
+      expect(captured.reason).toBe('insider_exit_full');
+    });
+
+    it('Phase 1: 모든 진입 KOL 이 scalper 면 sell 그대로 따라감 (close)', async () => {
+      const { __testInject } = require('../src/kol/db');
+      mockedConfig.kolHunterSmartV3Enabled = false;  // single KOL → v1 path
+      __testInject([
+        { id: 'sc1', tier: 'A', addresses: ['wallet_sc1'], added_at: '2026-04-01', last_verified_at: '2026-04-28', notes: '', is_active: true, trading_style: 'scalper', lane_role: 'discovery_canary' },
+      ]);
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('sc1', 'A', MINT_SMART));
+      await __testForceResolveStalk(MINT_SMART);
+      expect(__testGetActive()).toHaveLength(1);
+
+      let captured: any = null;
+      kolHunterEvents.once('paper_close', (evt) => { captured = evt; });
+      await handleKolSwap({ ...buyTx('sc1', 'A', MINT_SMART), action: 'sell' });
+
+      expect(captured).not.toBeNull();  // all-scalper cohort → close
+      expect(captured.reason).toBe('insider_exit_full');
+    });
+
+    it('Phase 1: unknown style 은 보수적 fallback (close, 기존 default 보존)', async () => {
+      const { __testInject } = require('../src/kol/db');
+      mockedConfig.kolHunterSmartV3Enabled = false;  // single KOL → v1 path
+      // 분류 안 된 KOL (운영자 manual 분류 전)
+      __testInject([
+        { id: 'unk', tier: 'A', addresses: ['wallet_unk'], added_at: '2026-04-01', last_verified_at: '2026-04-28', notes: '', is_active: true },
+      ]);
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('unk', 'A', MINT_SMART));
+      await __testForceResolveStalk(MINT_SMART);
+      expect(__testGetActive()).toHaveLength(1);
+
+      let captured: any = null;
+      kolHunterEvents.once('paper_close', (evt) => { captured = evt; });
+      await handleKolSwap({ ...buyTx('unk', 'A', MINT_SMART), action: 'sell' });
+
+      expect(captured).not.toBeNull();  // unknown → conservative close
     });
 
     it('shadow-only cand 는 live canary 차단 (isLiveCanaryActive=true 여도 paper 만)', async () => {

@@ -176,4 +176,62 @@ describe('evaluateSecurityGate', () => {
     expect(strict.approved).toBe(false);
     expect(strict.flags).toContain('HIGH_CONCENTRATION');
   });
+
+  // 2026-04-28 (Phase 3) — Token-quality gate dimension flag stamp.
+  // 외부 피드백 정합: Pump.fun 1280만 token / 5억$ 사기 환경에서 entry 통과 token 의 quality 등급화.
+  describe('Phase 3 — token-quality flags', () => {
+    it('clean security + good ratio → CLEAN_TOKEN flag', () => {
+      const security: TokenSecurityData = { ...BASE_SECURITY, top10HolderPct: 0.30, creatorPct: 0.05 };
+      const exit = { exitLiquidityUsd: 50_000, sellVolume24h: 100, buyVolume24h: 100, sellBuyRatio: 1.0 };
+      const result = evaluateSecurityGate(security, exit);
+      expect(result.approved).toBe(true);
+      expect(result.flags).toContain('CLEAN_TOKEN');
+    });
+
+    it('high creatorPct (>30%) → UNCLEAN_TOKEN flag (creator-funded bundle 의심)', () => {
+      const security: TokenSecurityData = { ...BASE_SECURITY, top10HolderPct: 0.30, creatorPct: 0.40 };
+      const exit = { exitLiquidityUsd: 50_000, sellVolume24h: 100, buyVolume24h: 100, sellBuyRatio: 1.0 };
+      const result = evaluateSecurityGate(security, exit);
+      expect(result.approved).toBe(true);
+      expect(result.flags.some((f) => f.startsWith('UNCLEAN_TOKEN'))).toBe(true);
+      expect(result.flags.find((f) => f.startsWith('UNCLEAN_TOKEN'))).toContain('creator_40pct');
+    });
+
+    it('top10HolderPct between 50-80% → UNCLEAN_TOKEN (entry 통과 but quality 등급 down)', () => {
+      const security: TokenSecurityData = { ...BASE_SECURITY, top10HolderPct: 0.65, creatorPct: 0.05 };
+      const exit = { exitLiquidityUsd: 50_000, sellVolume24h: 100, buyVolume24h: 100, sellBuyRatio: 1.0 };
+      const result = evaluateSecurityGate(security, exit);
+      expect(result.approved).toBe(true);  // entry 통과 (80% 임계 안)
+      expect(result.flags.some((f) => f.startsWith('UNCLEAN_TOKEN'))).toBe(true);
+      expect(result.flags.find((f) => f.startsWith('UNCLEAN_TOKEN'))).toContain('top10_65pct');
+    });
+
+    it('sellBuyRatio anomaly (>2.0) → UNCLEAN_TOKEN flag (wash 패턴)', () => {
+      const security: TokenSecurityData = { ...BASE_SECURITY, top10HolderPct: 0.30, creatorPct: 0.05 };
+      const exit = { exitLiquidityUsd: 50_000, sellVolume24h: 500, buyVolume24h: 100, sellBuyRatio: 5.0 };
+      const result = evaluateSecurityGate(security, exit);
+      expect(result.approved).toBe(true);
+      expect(result.flags.some((f) => f.startsWith('UNCLEAN_TOKEN'))).toBe(true);
+      expect(result.flags.find((f) => f.startsWith('UNCLEAN_TOKEN'))).toContain('ratio_5.00');
+    });
+
+    it('exit liquidity 데이터 미가용 → TOKEN_QUALITY_UNKNOWN (UNCLEAN 아님)', () => {
+      // 2026-04-28 (QA F2 fix): 운영 24h 88% trade 가 EXIT_LIQUIDITY_UNKNOWN — UNCLEAN 마킹 시
+      // Phase 4 정책 무력화. exit_liq null 은 'actively unclean' 신호 아닌 unknown 으로 별도 분류.
+      const security: TokenSecurityData = { ...BASE_SECURITY, top10HolderPct: 0.30, creatorPct: 0.05 };
+      const result = evaluateSecurityGate(security, null);
+      expect(result.approved).toBe(true);
+      expect(result.flags).toContain('TOKEN_QUALITY_UNKNOWN');
+      expect(result.flags.some((f) => f.startsWith('UNCLEAN_TOKEN'))).toBe(false);
+    });
+
+    it('exit liquidity 미가용 + actively unclean signal 있으면 UNCLEAN_TOKEN', () => {
+      // unknown vs unclean 분리 검증 — exit_liq null 자체가 unclean trigger 아님.
+      const security: TokenSecurityData = { ...BASE_SECURITY, top10HolderPct: 0.65, creatorPct: 0.05 };
+      const result = evaluateSecurityGate(security, null);
+      expect(result.approved).toBe(true);
+      expect(result.flags.some((f) => f.startsWith('UNCLEAN_TOKEN'))).toBe(true);
+      expect(result.flags.find((f) => f.startsWith('UNCLEAN_TOKEN'))).toContain('top10_65pct');
+    });
+  });
 });

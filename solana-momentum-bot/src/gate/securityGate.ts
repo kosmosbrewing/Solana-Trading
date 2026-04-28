@@ -167,6 +167,41 @@ export function evaluateSecurityGate(
     };
   }
 
+  // 2026-04-28 (Phase 3): Token-quality dimension flag stamp.
+  // Why: 외부 피드백 — Pump.fun 1280만 token 발행 / 5억$ 사기 환경에서 entry 통과 token 의
+  //   quality 등급화 필요. blanket hard_cut 완화 = rug retention 위험 (fb 명시).
+  // 다음 dimensions 통과 시 'CLEAN_TOKEN' flag stamp → Phase 4 (조건부 hold-time) 가 읽음.
+  // 미통과는 reject 안 함 (현재 entry 차단 임계는 위에서 이미 처리). 단 'UNCLEAN_TOKEN' flag.
+  //
+  // 1) creatorPct ≤ 30% — creator-funded bundle 의심 차단 (creator 가 supply 대부분 보유)
+  // 2) top10HolderPct ≤ 50% — 보수적 (이미 80% 임계는 위에서, 50% 는 quality 등급)
+  // 3) sellBuyRatio in [0.5, 2.0] — wash trade 패턴 (균등 매매가 정상)
+  //
+  // 2026-04-28 (Phase 3 QA F2 fix): exit_liq_unknown 은 UNCLEAN 사유에서 제외.
+  // 운영 24h 데이터에서 88% trade 가 EXIT_LIQUIDITY_UNKNOWN flag — 거의 모든 trade 가
+  // UNCLEAN 마킹되어 Phase 4 (조건부 hold-time) 적용 cohort 무력화. 본 flag 는 sizing reduce
+  // 50% 의 보호로 충분 (line 174). quality 등급은 actively unclean 신호만 기록.
+  const cleanCheckpoints: string[] = [];
+  if (security.creatorPct != null && security.creatorPct > 0.30) {
+    cleanCheckpoints.push(`creator_${(security.creatorPct * 100).toFixed(0)}pct`);
+  }
+  if (security.top10HolderPct > 0.50) {
+    cleanCheckpoints.push(`top10_${(security.top10HolderPct * 100).toFixed(0)}pct`);
+  }
+  if (exitLiquidity) {
+    if (exitLiquidity.buyVolume24h <= 0) {
+      cleanCheckpoints.push('vol_zero');
+    } else if (exitLiquidity.sellBuyRatio < 0.5 || exitLiquidity.sellBuyRatio > 2.0) {
+      cleanCheckpoints.push(`ratio_${exitLiquidity.sellBuyRatio.toFixed(2)}`);
+    }
+  }
+  // exit liquidity null 자체는 quality 'actively unclean' 신호 아님 — UNKNOWN 으로 별도 분류.
+  if (cleanCheckpoints.length === 0) {
+    flags.push(exitLiquidity ? 'CLEAN_TOKEN' : 'TOKEN_QUALITY_UNKNOWN');
+  } else {
+    flags.push(`UNCLEAN_TOKEN:${cleanCheckpoints.join(',')}`);
+  }
+
   // ─── Exit-liquidity checks ───
 
   if (!exitLiquidity) {

@@ -524,7 +524,8 @@ async function enterMigrationProbe(
   });
   if (persistResult.dbTradeId) {
     pos.dbTradeId = persistResult.dbTradeId;
-    await ctx.notifier.sendTradeOpen({
+    // 2026-04-28 P0-B fix: notifier fire-and-forget (이전엔 await 였으나 .catch(() => {}) 만 있어 사실상 fire-and-forget. void 로 의도 명시).
+    void ctx.notifier.sendTradeOpen({
       tradeId: persistResult.dbTradeId,
       pairAddress: pos.event.pairAddress,
       strategy: 'migration_reclaim',
@@ -574,9 +575,12 @@ async function closeMigrationPositionSerialized(
   if (ctx.tradingMode === 'live') {
     try {
       const executor = getExecutor(ctx);
-      const tokenBalance = await executor.getTokenBalance(pos.event.pairAddress);
+      // 2026-04-28 P0-C fix: tokenBalance + getBalance(solBefore) 병렬 (~250ms 단축).
+      const [tokenBalance, solBefore] = await Promise.all([
+        executor.getTokenBalance(pos.event.pairAddress),
+        executor.getBalance(),
+      ]);
       if (tokenBalance > 0n) {
-        const solBefore = await executor.getBalance();
         const sellResult = await executor.executeSell(pos.event.pairAddress, tokenBalance);
         const solAfter = await executor.getBalance();
         const receivedSol = solAfter - solBefore;
@@ -661,7 +665,8 @@ async function closeMigrationPositionSerialized(
       exitSlippageBps,
       exitReason: reason,
     };
-    await ctx.notifier.sendTradeClose(closedTrade).catch(() => {});
+    // 2026-04-28 P0-B fix: notifier fire-and-forget.
+    void ctx.notifier.sendTradeClose(closedTrade).catch(() => {});
   }
 
   // 2026-04-26 Real Asset Guard fix: per-lane auto-halt feed + global slot release.

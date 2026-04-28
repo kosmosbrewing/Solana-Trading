@@ -35,11 +35,11 @@ export const kolHunter = {
   // ─── kol_hunter Lane T (Phase 3 paper-first) ───
   kolHunterEnabled: boolOptional('KOL_HUNTER_ENABLED', false),
   kolHunterPaperOnly: boolOptional('KOL_HUNTER_PAPER_ONLY', true),
-  // 2026-04-28: 운영자 결정 — paper n=401 / 5x+ winner 1건 (kolh-DF7DAPat 940%) 입증 후 3x scale.
-  // policyGuards.ts 의 POLICY_TICKET_MAX_SOL_BY_LANE.kol_hunter = 0.03 와 정합.
-  // wallet 1 SOL 시드 기준: 0.03 ticket × 7 trade loser = -0.21 SOL → wallet 0.79 (floor 0.8 근접).
-  // KOL canary cap 도 0.1 → 0.3 SOL (3x) 동시 상향 — Real Asset Guard 정합.
-  kolHunterTicketSol: numEnv('KOL_HUNTER_TICKET_SOL', '0.03'),
+  // 2026-04-28 B안: 운영자 결정 — live 24h n=44 데이터 (ROI -2.55%, catastrophic 4.5%) 도착 후
+  // 0.03 → 0.02 SOL 후퇴. policyGuards POLICY_TICKET_MAX_SOL_BY_LANE.kol_hunter = 0.02 정합.
+  // 200 trade 여정 시뮬: catastrophic 9건 + bleed 0.102 = 0.282 drawdown → wallet 0.718 (floor 0.7 +0.018 margin).
+  // 100 trade 검증 후 catastrophic < 2% + ROI > 0% 시 0.025 승격, ≥ 4% 시 0.015 후퇴.
+  kolHunterTicketSol: numEnv('KOL_HUNTER_TICKET_SOL', '0.02'),
   kolHunterMaxConcurrent: numEnv('KOL_HUNTER_MAX_CONCURRENT', '3'),
   kolHunterStalkWindowSec: numEnv('KOL_HUNTER_STALK_WINDOW_SEC', '180'),
   kolHunterHardcutPct: numEnv('KOL_HUNTER_HARDCUT_PCT', '0.10'),

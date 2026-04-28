@@ -594,27 +594,27 @@ export async function handlePureWsSignal(
 
   if (persistResult.dbTradeId) {
     funnelStats.dbPersisted++;
-    try {
-      await ctx.notifier.sendTradeOpen({
-        tradeId: persistResult.dbTradeId,
-        pairAddress: position.pairAddress,
-        strategy: LANE_STRATEGY,
-        side: 'BUY',
-        tokenSymbol: position.tokenSymbol,
-        price: actualEntryPrice,
-        plannedEntryPrice: signal.price,
-        quantity: actualQuantity,
-        sourceLabel: position.sourceLabel,
-        discoverySource: position.discoverySource,
-        stopLoss: actualEntryPrice * (1 - config.pureWsProbeHardCutPct),
-        takeProfit1: actualEntryPrice * (1 + config.pureWsT1MfeThreshold),
-        takeProfit2: actualEntryPrice * (1 + config.pureWsT2MfeThreshold),
-        timeStopMinutes: Math.ceil(config.pureWsProbeWindowSec / 60),
-      }, entryTxSignature);
+    // 2026-04-28 P0-B fix: notifier fire-and-forget. Telegram 429 entry path blocking 차단.
+    void ctx.notifier.sendTradeOpen({
+      tradeId: persistResult.dbTradeId,
+      pairAddress: position.pairAddress,
+      strategy: LANE_STRATEGY,
+      side: 'BUY',
+      tokenSymbol: position.tokenSymbol,
+      price: actualEntryPrice,
+      plannedEntryPrice: signal.price,
+      quantity: actualQuantity,
+      sourceLabel: position.sourceLabel,
+      discoverySource: position.discoverySource,
+      stopLoss: actualEntryPrice * (1 - config.pureWsProbeHardCutPct),
+      takeProfit1: actualEntryPrice * (1 + config.pureWsT1MfeThreshold),
+      takeProfit2: actualEntryPrice * (1 + config.pureWsT2MfeThreshold),
+      timeStopMinutes: Math.ceil(config.pureWsProbeWindowSec / 60),
+    }, entryTxSignature).then(() => {
       funnelStats.notifierOpenSent++;
-    } catch (err) {
+    }).catch((err) => {
       log.warn(`[PUREWS_NOTIFY_OPEN_FAIL] ${positionId} ${err}`);
-    }
+    });
   }
 
   // 2026-04-26: pure_ws v1 primary 에 명시적 라벨 (paper-arm-report 의 sub-arm 분리용).

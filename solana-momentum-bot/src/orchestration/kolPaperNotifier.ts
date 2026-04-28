@@ -105,6 +105,9 @@ function onDiscovery(tx: KolTx): void {
 }
 
 function onPaperEntry(pos: PaperPosition): void {
+  // 2026-04-28: shadow KOL paper trade (Option B) 는 active digest 에서 격리.
+  // active 분포 무결성 — promotion candidate 식별은 별도 ledger / Option C alert 로 처리.
+  if (pos.isShadowKol) return;
   const arm = (ARMS as readonly string[]).includes(pos.armName) ? (pos.armName as ArmName) : 'unknown';
   digest.perArm[arm].entries++;
   digest.perArm[arm].discoveries++;  // entry 가 곧 discovery 의 subset (arm 별 분포)
@@ -120,6 +123,9 @@ function onPaperClose(payload: {
   holdSec: number;
 }): void {
   const { pos, reason, netSol, netPct, mfePctPeak, holdSec } = payload;
+  // 2026-04-28: shadow paper close 도 active digest / 5x anomaly / top movers 에서 격리.
+  // 분포 측정 무결성 — Top movers 에 inactive KOL 결과가 섞여 active 평균 오염 방지.
+  if (pos.isShadowKol) return;
   const arm = (ARMS as readonly string[]).includes(pos.armName) ? (pos.armName as ArmName) : 'unknown';
   const counters = digest.perArm[arm];
   counters.closes++;

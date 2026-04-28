@@ -23,6 +23,10 @@ function setCfg(overrides: Partial<{
   canaryMinLossToCountSol: number;
   canaryAutoResetEnabled: boolean;
   canaryAutoResetMinSec: number;
+  // 2026-04-28 Sprint 2 Task 3: KOL hunter 별도 cap.
+  kolHunterCanaryMaxConsecLosers: number;
+  kolHunterCanaryMaxBudgetSol: number;
+  kolHunterCanaryMaxTrades: number;
 }>): void {
   for (const [k, v] of Object.entries(overrides)) {
     Object.defineProperty(config, k, { value: v, writable: true, configurable: true });
@@ -179,5 +183,73 @@ describe('canaryAutoHalt', () => {
     reportCanaryClose('pure_ws_breakout', -0.01);
     reportCanaryClose('pure_ws_breakout', -0.01);
     expect(isEntryHaltActive('pure_ws_breakout')).toBe(true);
+  });
+
+  // 2026-04-28 Sprint 2 Task 3: KOL hunter 별도 cap (공용 0.3 SOL 분리).
+  // 공용 cap (-0.3 SOL) 보다 더 보수적 (-0.1 SOL) 으로 적용 — paper 검증 단계 (n=401, 5x+ 1건) 정합.
+  describe('kol_hunter lane 별도 cap (Sprint 2)', () => {
+    it('uses kolHunterCanaryMaxConsecLosers (independent from default)', () => {
+      setCfg({
+        canaryMaxConsecutiveLosers: 100,         // 공용은 100
+        kolHunterCanaryMaxConsecLosers: 3,       // KOL 만 3
+        kolHunterCanaryMaxBudgetSol: 999,
+        kolHunterCanaryMaxTrades: 999,
+      });
+      reportCanaryClose('kol_hunter', -0.001);
+      reportCanaryClose('kol_hunter', -0.001);
+      expect(isEntryHaltActive('kol_hunter')).toBe(false);
+      reportCanaryClose('kol_hunter', -0.001);
+      // KOL 전용 임계 (3) 도달 → halt. 공용 100 임계와 무관.
+      expect(isEntryHaltActive('kol_hunter')).toBe(true);
+      // pure_ws_breakout 은 영향 없음 (공용 100 적용)
+      for (let i = 0; i < 10; i++) reportCanaryClose('pure_ws_breakout', -0.001);
+      expect(isEntryHaltActive('pure_ws_breakout')).toBe(false);
+    });
+
+    it('uses kolHunterCanaryMaxBudgetSol (more conservative than default)', () => {
+      setCfg({
+        canaryMaxBudgetSol: 0.5,                 // 공용은 0.5
+        kolHunterCanaryMaxBudgetSol: 0.05,       // KOL 만 0.05
+        kolHunterCanaryMaxConsecLosers: 100,
+        kolHunterCanaryMaxTrades: 999,
+      });
+      reportCanaryClose('kol_hunter', -0.02);
+      reportCanaryClose('kol_hunter', -0.02);
+      expect(isEntryHaltActive('kol_hunter')).toBe(false);
+      reportCanaryClose('kol_hunter', -0.02);  // 누적 -0.06 → cap -0.05 위반
+      expect(isEntryHaltActive('kol_hunter')).toBe(true);
+    });
+
+    it('uses kolHunterCanaryMaxTrades (smaller paper canary window)', () => {
+      setCfg({
+        canaryMaxTrades: 200,
+        kolHunterCanaryMaxTrades: 3,
+        kolHunterCanaryMaxConsecLosers: 100,
+        kolHunterCanaryMaxBudgetSol: 999,
+      });
+      reportCanaryClose('kol_hunter', +0.001);
+      reportCanaryClose('kol_hunter', +0.001);
+      expect(isEntryHaltActive('kol_hunter')).toBe(false);
+      reportCanaryClose('kol_hunter', +0.001);
+      // KOL 전용 max trades (3) 도달 → halt
+      expect(isEntryHaltActive('kol_hunter')).toBe(true);
+    });
+
+    it('Real Asset Guard 정합: KOL cap 위반이 공용 cap 위반보다 먼저 trigger', () => {
+      // 공용 cap (0.3) 보다 KOL cap (0.1) 이 작아 항상 KOL cap 이 먼저 trigger 되어야 함.
+      setCfg({
+        canaryMaxBudgetSol: 0.3,
+        kolHunterCanaryMaxBudgetSol: 0.1,
+        kolHunterCanaryMaxConsecLosers: 100,
+        kolHunterCanaryMaxTrades: 999,
+      });
+      reportCanaryClose('kol_hunter', -0.05);
+      reportCanaryClose('kol_hunter', -0.05);
+      // 누적 -0.1 — KOL cap 도달
+      reportCanaryClose('kol_hunter', -0.01);
+      expect(isEntryHaltActive('kol_hunter')).toBe(true);
+      // 공용 0.3 SOL 보다 한참 이른 시점 (0.11 SOL) 에 halt. 자산 보호 강화 정합.
+      expect(getCanaryState('kol_hunter').cumulativePnlSol).toBeGreaterThan(-0.3);
+    });
   });
 });

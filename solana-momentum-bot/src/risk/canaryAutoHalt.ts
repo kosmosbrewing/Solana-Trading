@@ -71,6 +71,16 @@ function readConfig(lane?: EntryLane): CanaryAutoHaltConfig {
       minLossToCountSol: config.canaryMinLossToCountSol,
     };
   }
+  // 2026-04-28 Sprint 2: kol_hunter 도 별도 cap. 공용 0.3 SOL 분리 — paper n=401 5x+ 1건 입증 단계.
+  if (lane === 'kol_hunter') {
+    return {
+      enabled: config.canaryAutoHaltEnabled,
+      maxConsecutiveLosers: config.kolHunterCanaryMaxConsecLosers,
+      maxCanaryBudgetSol: config.kolHunterCanaryMaxBudgetSol,
+      maxTradesPerCanary: config.kolHunterCanaryMaxTrades,
+      minLossToCountSol: config.canaryMinLossToCountSol,
+    };
+  }
   return {
     enabled: config.canaryAutoHaltEnabled,
     maxConsecutiveLosers: config.canaryMaxConsecutiveLosers,

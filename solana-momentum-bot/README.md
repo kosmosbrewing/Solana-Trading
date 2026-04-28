@@ -31,26 +31,34 @@ Solana DEX 순수 실전형 momentum / sniper 봇이다.
 | 2026-04-21 | Mission refinement — 100 SOL = tail outcome, 5x+ winner 실측 = 성공 | [`docs/design-docs/mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md) |
 | **2026-04-23 (현재)** | **Option 5 — KOL Discovery + 자체 Execution** | [`docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md`](./docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md) |
 
-## Current Status (2026-04-27)
+## Current Status (2026-04-28)
 
 - **Active paradigm**: Option 5 — KOL Wallet Discovery + 자체 Execution ([ADR](./docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md))
 - **Phase 진행도** ([`REFACTORING_v1.0.md`](./REFACTORING_v1.0.md)):
   - Phase 0-3 완료 (KOL DB v6 / tracker / shadow-eval / paper lane state machine)
   - Phase 3.5 / 3.6 완료 (smart-v3 main + swing-v2 shadow A/B / pure_ws swing-v2 paper+live canary 코드)
   - **Phase 4 코드 완료** (commit 1469a08, 2026-04-27): KOL `enterLivePosition` + `closeLivePosition` + Triple-flag gate
-  - Phase 4 활성화 — **gate 부분 미충족**: paper 212 trade ✅ / 5x+ winner 0건 ❌
-- **KOL paper 누적 (2026-04-23 ~ 04-27)**:
-  - 212 trade / smart-v3 +4.79% / swing-v2 +7.31% / v1 fallback −0.65%
-  - 누적 net **+0.0568 SOL** (paper)
-  - **5x+ winner 0건** (가장 가까움 +186% net / +285% mfe)
+  - Phase 4 활성화 — **gate 3 of 4 충족**: paper 466+ trade ✅ / 5x+ winner 1건 (24h, n=1) ✅ / 0.8 SOL floor ✅ / **ADR + Telegram critical ack 미작성** ❌
+- **KOL paper 24h 결과 (2026-04-27 02:36Z ~ 04-28 02:37Z, UTC)**:
+  - 254 trade / smart-v3 197건 +0.108 SOL (avg +5.99%) / swing-v2 57건 +0.034 SOL (avg +6.50%)
+  - 누적 net **+0.142 SOL** (24h)
+  - **5x+ winner 1건 (첫 돌파)**: `DF7DAPat` smart-v3 mfe+940% net+940% / insider_exit_full / hold 656s / kols=jijo,trey
+  - Single-winner 의존도: +0.094 / +0.142 = **66%** (표본 부족, 추가 winner 누적 필요)
+  - Top-5 mfe 중 **3건 hold_phase_sentinel 컷** (capture 29% / mfe 167% → net 58%) — 가설 (A) 정량 증거
+- **3대 active incident** (2026-04-28 발견, INCIDENT.md):
+  - 🔴 **missed-alpha observer dead** — `observations` 배열 24h × 4287건 모두 빈 상태 (commit 1469a08 회귀 의심)
+  - 🔴 **wallet_delta_warn drift 0.118 SOL spam** (5분 × 6회) — dedup/cooldown 미작동 + drift origin 불명
+  - 🟡 **notifier failures 3건** error 빈 capture
 - **Wallet baseline**: 시작 `1.3 SOL` → 현재 `1.07 SOL` (`-0.23 SOL`, paper 영향 0)
 - **유일한 truth**: wallet delta. DB `pnl` drift `+18.34 SOL` 전력 있어 단독 판정 금지.
+- **시간대 정합 규칙 (2026-04-28 적용)**: 모든 timestamp UTC `Z`, 분석 cutoff 도 `date -u` 기반. KST cutoff 사용 금지.
 - **Lane / arm 상태**:
   - `cupsey_flip_10s` — benchmark **frozen** (env disabled)
   - `pure_ws_breakout` — Lane S baseline (live opt-in, 현재 `LIVE_CANARY_ENABLED=false`)
   - `pure_ws_swing_v2` — Lane S long-hold A/B (paper shadow / live canary 코드 완료, opt-in)
   - `kol_hunter` v1 / smart-v3 (main) / swing-v2 (shadow) — Lane T
     - **paper-only 강제 + live canary 코드 완료** (Triple-flag gate, opt-in)
+    - 24h paired observation (32 mints / 57 pairs): swing-v2 +0.018 SOL outperform (표본 적음)
   - `bootstrap_10s` — signal-only
   - `migration_reclaim` — signal-only
   - `volume_spike` / `fib_pullback` — dormant (5m 해상도 비적합)

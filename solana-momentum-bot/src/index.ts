@@ -522,6 +522,15 @@ async function main() {
       ackEnvName: 'PUREWS_SWING_V2_TICKET_OVERRIDE_ACK',
       ackEnvValue: process.env.PUREWS_SWING_V2_TICKET_OVERRIDE_ACK,
     },
+    {
+      // 2026-04-28: kol_hunter 도 Real Asset Guard 정책 enforcement 등록.
+      // policyGuards.POLICY_TICKET_MAX_SOL_BY_LANE.kol_hunter = 0.03 (lane-specific cap).
+      // 운영자가 0.03 초과로 env override 시 ack 필요. ack 부재 시 0.03 으로 강제 복원.
+      lane: 'kol_hunter',
+      configuredTicketSol: config.kolHunterTicketSol,
+      ackEnvName: 'KOL_HUNTER_TICKET_OVERRIDE_ACK',
+      ackEnvValue: process.env.KOL_HUNTER_TICKET_OVERRIDE_ACK,
+    },
   ]);
 
   // 정책 위반 시 config 값 강제 복원 + Telegram critical alert 1회.
@@ -536,6 +545,8 @@ async function main() {
         (config as { migrationLaneTicketSol: number }).migrationLaneTicketSol = result.effectiveTicketSol;
       } else if (result.lane === 'pure_ws_swing_v2') {
         (config as { pureWsSwingV2TicketSol: number }).pureWsSwingV2TicketSol = result.effectiveTicketSol;
+      } else if (result.lane === 'kol_hunter') {
+        (config as { kolHunterTicketSol: number }).kolHunterTicketSol = result.effectiveTicketSol;
       }
       if (result.criticalMessage) {
         notifier.sendCritical(
@@ -1195,6 +1206,11 @@ async function main() {
         logFileName: config.kolTxLogFileName,
         txFetchTimeoutMs: config.kolTxFetchTimeoutMs,
         enabled: true,
+        // Option A (2026-04-27): inactive KOL shadow track. paper position 영향 0.
+        shadowTrackInactive: config.kolHunterShadowTrackInactive,
+        shadowLogFileName: config.kolShadowTxLogFileName,
+        // Option B (2026-04-28): inactive KOL paper trade opt-in. handler 가 isShadow=true 분기.
+        shadowPaperTradeEnabled: config.kolHunterShadowPaperTradeEnabled,
       });
       await kolTracker.start();
       log.info(`[KOL_DISCOVERY] Option 5 Phase 1 — tracker started (${stats.activeKols} active KOLs)`);

@@ -22,10 +22,34 @@ import { createModuleLogger } from './logger';
 const log = createModuleLogger('PolicyGuard');
 
 /**
- * 정책 상한: 모든 lane 의 ticket 은 이 값 이하여야 함.
+ * 정책 상한 (default): 명시적 lane override 없으면 이 값 이하여야 함.
  * **env 로 override 불가 — 코드 상수**. 변경하려면 git commit 필요.
  */
 export const POLICY_TICKET_MAX_SOL = 0.01;
+
+/**
+ * Lane 별 정책 상한 override (Stage 4 partial-pass lane 만).
+ *
+ * **2026-04-28 운영자 결정**: KOL hunter 0.01 → **0.03 SOL** (3x scale).
+ * 근거:
+ *   - paper n=401 / 5x+ winner ≥ 1건 (kolh-DF7DAPat 940% mfe/net, retreat 0%) ✅
+ *   - sentinel 임계 완화 (0.30 → 0.45) 로 추가 5x capture 가능성 향상 ✅
+ *   - KOL canary cap 0.1 → 0.3 SOL 동시 상향 (3x 정합)
+ *   - Real Asset Guard wallet floor 0.8 SOL 위반 risk 미미 — 1 SOL 시드 기준
+ *     0.03 ticket × 7 trade loser = 0.21 SOL 손실 시 wallet 0.79 → floor 진입
+ *
+ * 한계:
+ *   - **Stage 4 SCALE gate 의 live 항목 (n≥50, live 5x+ ≥1) 은 미충족** —
+ *     ticket scale 은 paper proof 기반 운영자 명시 결정.
+ *   - 정상 절차는 별도 ADR + Telegram critical ack `stage4_approved_YYYY_MM_DD`.
+ *     본 변경은 운영자 직접 지시 + 본 코드 변경 자체를 ack 로 간주 (git commit + ADR 작성 후속).
+ *
+ * 다른 lane (pure_ws / cupsey / migration / pure_ws_swing_v2) 은 0.01 유지 —
+ * 각 lane 의 Stage 4 paper proof 가 별개라 일괄 완화 금지.
+ */
+export const POLICY_TICKET_MAX_SOL_BY_LANE: Readonly<Record<string, number>> = {
+  kol_hunter: 0.03,
+};
 
 /**
  * Override ack 포맷: `stage4_approved_YYYY_MM_DD`
@@ -55,10 +79,18 @@ export interface TicketPolicyResult {
 }
 
 /**
+ * Lane 별 정책 상한 lookup. POLICY_TICKET_MAX_SOL_BY_LANE 에 entry 있으면 그 값,
+ * 없으면 default POLICY_TICKET_MAX_SOL.
+ */
+export function getPolicyMaxForLane(lane: string): number {
+  return POLICY_TICKET_MAX_SOL_BY_LANE[lane] ?? POLICY_TICKET_MAX_SOL;
+}
+
+/**
  * lane 별 ticket 정책 체크. 반환값의 `effectiveTicketSol` 을 실제 설정에 반영.
  * startup 1회 호출 — 운영자 개입 의존.
  *
- * @param lane       - "pure_ws" | "cupsey" | "migration"
+ * @param lane       - "pure_ws" | "cupsey" | "migration" | "pure_ws_swing_v2" | "kol_hunter"
  * @param configuredTicketSol - env override 또는 code default 로 결정된 값
  * @param overrideAck - 해당 lane 의 `{LANE}_TICKET_OVERRIDE_ACK` env 값
  */
@@ -67,8 +99,10 @@ export function checkTicketPolicy(
   configuredTicketSol: number,
   overrideAck: string | undefined | null
 ): TicketPolicyResult {
+  // 2026-04-28: per-lane policy max (KOL hunter 0.03, 그 외 0.01 default).
+  const laneMax = getPolicyMaxForLane(lane);
   // 부동소수점 오차 고려 (0.01 + 1e-12 같은 것)
-  const withinPolicy = configuredTicketSol <= POLICY_TICKET_MAX_SOL + 1e-9;
+  const withinPolicy = configuredTicketSol <= laneMax + 1e-9;
 
   if (withinPolicy) {
     return {
@@ -94,11 +128,11 @@ export function checkTicketPolicy(
     };
   }
 
-  // Policy 위반 — 강제 0.01 로 복원
+  // Policy 위반 — 강제 lane max 로 복원
   return {
     lane,
     configuredTicketSol,
-    effectiveTicketSol: POLICY_TICKET_MAX_SOL,
+    effectiveTicketSol: laneMax,
     ackProvided: false,
     violation: true,
     overrideAcknowledged: false,
@@ -123,16 +157,18 @@ export function enforceTicketPolicyForAllLanes(
     const result = checkTicketPolicy(entry.lane, entry.configuredTicketSol, entry.ackEnvValue);
 
     if (result.violation) {
+      const laneMax = getPolicyMaxForLane(result.lane);
       const msg =
         `[POLICY_VIOLATION] lane=${result.lane} ticket=${result.configuredTicketSol} SOL ` +
-        `exceeds policy max ${POLICY_TICKET_MAX_SOL} SOL. Force-reverting to ${POLICY_TICKET_MAX_SOL}. ` +
+        `exceeds policy max ${laneMax} SOL. Force-reverting to ${laneMax}. ` +
         `To override, reach Stage 4 and set ${entry.ackEnvName}=stage4_approved_YYYY_MM_DD.`;
       log.error(msg);
       results.push({ ...result, criticalMessage: msg, ackEnvName: entry.ackEnvName });
     } else if (result.overrideAcknowledged) {
+      const laneMax = getPolicyMaxForLane(result.lane);
       log.warn(
         `[POLICY_ACK] lane=${result.lane} ticket=${result.configuredTicketSol} SOL ` +
-        `(> policy ${POLICY_TICKET_MAX_SOL}) with valid ack=${entry.ackEnvValue}. ` +
+        `(> policy ${laneMax}) with valid ack=${entry.ackEnvValue}. ` +
         `Proceeding — this is your explicit Stage-4 ticket expansion decision.`
       );
       results.push({ ...result, ackEnvName: entry.ackEnvName });

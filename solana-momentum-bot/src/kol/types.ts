@@ -46,6 +46,11 @@ export interface KolTx {
   txSignature: string;
   /** SOL amount (buy: SOL spent, sell: SOL received). Approximate. */
   solAmount?: number;
+  /**
+   * 2026-04-28: inactive KOL (shadow) tx 여부. true 면 paper-only 별도 ledger 로 격리.
+   * 분포 측정 무결성 — active 의 paper trade 결과와 섞이지 않도록 handler 가 분기 처리.
+   */
+  isShadow?: boolean;
 }
 
 /**

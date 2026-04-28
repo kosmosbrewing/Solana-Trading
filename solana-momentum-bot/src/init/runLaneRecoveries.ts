@@ -4,6 +4,7 @@
 
 import { Notifier } from '../notifier';
 import { recoverCupseyOpenPositions } from '../orchestration/cupseyLaneHandler';
+import { recoverKolHunterOpenPositions } from '../orchestration/kolSignalHandler';
 import { recoverMigrationOpenPositions } from '../orchestration/migrationLaneHandler';
 import { recoverPureWsOpenPositions } from '../orchestration/pureWsBreakoutHandler';
 import type { BotContext } from '../orchestration/types';
@@ -34,5 +35,12 @@ export async function runLaneRecoveries(ctx: BotContext, notifier: Notifier): Pr
   // Why: stale OPEN ledger 가 자주 남아 텔레그램 노이즈를 유발 — 운영 신호 가치 낮음. log-only.
   if (config.pureWsLaneEnabled) {
     await recoverPureWsOpenPositions(ctx);
+  }
+
+  // Sprint 2A (2026-04-28): KOL hunter live position recovery.
+  // Why: KOL live canary 활성화 후 봇 크래시 시 OPEN trade orphan 위험. cupsey/pure_ws 패턴 동일.
+  // log-only (pure_ws 와 동일 — stale OPEN ledger noise 방지).
+  if (config.kolHunterEnabled) {
+    await recoverKolHunterOpenPositions(ctx);
   }
 }

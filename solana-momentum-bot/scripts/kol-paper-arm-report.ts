@@ -24,6 +24,13 @@ interface PaperTradeRecord {
   kolEntryReason?: string;
   kolConvictionLevel?: string;
   isShadowArm?: boolean;
+  /**
+   * 2026-04-28 (Option B): inactive (shadow) KOL paper trade marker.
+   * 별도 ledger (`kol-shadow-paper-trades.jsonl`) 로 분리되지만, 향후 merge 시 또는
+   * 운영자가 명시적으로 shadow 파일을 --in 으로 전달했을 때 active 분포에 섞이지 않게
+   * defensive filter 적용 (main 의 line 186 참조).
+   */
+  isShadowKol?: boolean;
   parentPositionId?: string | null;
   netSol?: number;
   netPct?: number;
@@ -177,9 +184,13 @@ function formatMarkdown(rows: PaperTradeRecord[], summaries: ArmSummary[]): stri
 async function main(): Promise<void> {
   const args = parseArgs();
   const loaded = await readJsonl<PaperTradeRecord>(args.inputFile);
+  // 2026-04-28: defensive filter — inputFile 에 shadow KOL paper trade 가 섞여 있으면 제외.
+  // 정상 운영에서는 active ledger (`kol-paper-trades.jsonl`) 만 읽지만, 향후 merge 또는
+  // 운영자 실수로 shadow 파일이 같이 와도 active arm 통계 무결성 유지.
+  const activeOnly = loaded.filter((r) => !r.isShadowKol);
   const rows = args.sinceMs
-    ? loaded.filter((r) => r.closedAt && new Date(r.closedAt).getTime() >= args.sinceMs!)
-    : loaded;
+    ? activeOnly.filter((r) => r.closedAt && new Date(r.closedAt).getTime() >= args.sinceMs!)
+    : activeOnly;
   const groups = new Map<string, PaperTradeRecord[]>();
   for (const row of rows) {
     const key = armNameOf(row);

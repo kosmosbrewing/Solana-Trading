@@ -6,6 +6,328 @@
 
 ---
 
+## 2026-04-28 — 우선순위 8 항목 진척 점검 (코드 audit)
+
+직전 우선순위 표(P0~P3 9항목 + 티켓 금액)를 코드/데이터로 직접 검증 → 다수가 이미 완료. 진척표:
+
+| 순위 | 항목 | 상태 | 검증 근거 |
+|------|------|------|---------|
+| **P0** | 5x+ winner 가설 3종 검증 | 🟡 **부분 진행** | 24h 에 5x winner **1건 첫 돌파** (`DF7DAPat` mfe+940%). 가설 (A) trail/sentinel 보수성 = 정량 증거 (Top-5 mfe 중 3건 sentinel 컷, capture 29%). 가설 (B) entry timing = 보조 증거 (smart_v3_price_timeout 1644건, 38.3%). **단 missed-alpha observer dead 로 가설 (B) 직접 측정 차단** |
+| **P1** | KOL live position recovery (`src/state/recovery.ts`) | ✅ **완료** | `kolSignalHandler.ts:2141 recoverKolHunterOpenPositions` 구현. 8 테스트 케이스 (orphan / dust / paper mode / RPC fail / state inference) PASS. setupShutdown 통합은 별도 wiring 필요 (검증 미실시) |
+| **P1** | KOL-specific canary cap config (공유 0.3 → 별도) | ✅ **완료** | `walletAndCanary.ts:30-32`: `KOL_HUNTER_CANARY_MAX_BUDGET_SOL=0.1` / `KOL_HUNTER_CANARY_MAX_CONSEC_LOSERS=5` / `KOL_HUNTER_CANARY_MAX_TRADES=50`. `canaryAutoHalt.ts:75-83` 에서 lane='kol_hunter' 분기 적용 ✓ |
+| **P2** | inactive KOL paper shadow 측정 (Option A) | ✅ **완료** | `kolWalletTracker.ts:56 shadowTrackInactive` flag + `getAllInactiveAddresses()` + `shadowAddresses` Set + 별도 `kol-shadow-tx.jsonl` 라우팅. handleLog 가 active vs shadow 분기 ✓ |
+| **P2** | Trending Sniper 신규 lane | ⏸ **보류 (의도)** | 코드 변경 없음. KOL root cause 검증 선행 — 5x winner 추가 누적 후 재평가 |
+| **P3** | pure_ws lane retire 결정 | ⏸ **보류 (의도)** | 코드 변경 없음. swing-v2 paper shadow 데이터 누적 후 |
+| **P3** | KOL live integration tests | ✅ **완료** | test/kolSignalHandler.test.ts 의 17 통합 케이스: triple-flag gate (5) + smart-v3 trigger live wiring (4) + recovery (8). executor.executeBuy 직접 호출 검증 |
+| **P3** | probe_hard_cut threshold A/B simulation | ❌ **미구현** | simulation script 없음. paper-trades.jsonl 의 95건 (24h) 으로 직접 분석 가능하나 도구화 필요 |
+| **P3** | swing-v2 hurdle 완화 A/B (multi-KOL ≥2 → ≥1 + score ≥4.0) | ❌ **미구현** | `minKolCount=2 / minScore=5.0` default 그대로. 24h paired observation 57 pairs / swing-v2 +0.034 SOL 데이터 더 누적 후 |
+| **(보너스)** | 티켓 금액 hard lock | ✅ **이미 구현됨** | `policyGuards.ts:28 POLICY_TICKET_MAX_SOL=0.01` + 초과 시 force revert + Telegram critical. 운영자 ack `stage4_approved_YYYY_MM_DD` 형식 엄격 검증 |
+
+### 진척 요약
+
+- **완료 5건**: KOL recovery / KOL canary cap / inactive KOL shadow / KOL live integration tests / 티켓 금액 hard lock
+- **부분 진행 1건 (P0)**: 5x winner 1건 첫 돌파 + 가설 (A)/(B) 정량 증거. 단 가설 (B) 직접 측정 도구 (observer) dead
+- **보류 2건 (의도)**: Trending Sniper / pure_ws retire — 데이터 누적 단계
+- **미구현 2건 (P3, follow-up)**: probe_hard_cut A/B simulation / swing-v2 hurdle 완화
+
+### 미흡 / 위험 — 운영자 확인 필요
+
+| # | 항목 | 위험 | 권고 |
+|---|-----|------|------|
+| **R1** | ~~`recoverKolHunterOpenPositions` wiring~~ | ✅ 검증 완료 | `src/init/runLaneRecoveries.ts:44 await recoverKolHunterOpenPositions(ctx)` 호출 wiring 정상 |
+| **R2** | missed-alpha observer dead (commit 1469a08 회귀 의심) | 가설 (B) entry timing 정량 측정 차단 — 사명 §3 root cause 분석 핵심 도구 부재 | `src/observability/missedAlphaObserver.ts` + observer init 점검 sprint 필요 |
+| **R3** | wallet_delta_warn drift 0.118 SOL spam (5분 × 6회 dedup 미작동) | critical alert 무딘화 + drift origin 불명 (paper-only인데 main wallet 변동) | `walletDeltaComparator` dedup/cooldown 코드 점검 + `ops:reconcile:wallet` 으로 drift origin 추적 |
+| **R4** | 24h 5x winner 1건의 single-winner 의존도 66% (+0.094 / +0.142) | 표본 부족 — 1건이 paper test 의 통계적 한계 | 추가 5x winner 1-2건 누적까지 ADR 작성 보류 권고 (선택 A 정합) |
+| **R5** | KOL_HUNTER_CANARY_MAX_BUDGET_SOL=0.1 SOL 의 의미 점검 | ticket 0.01 × 50 trades = 최대 0.5 SOL 노출이지만 budget 0.1 SOL 도달 시 즉시 halt → 평균 −2% net 이상 시 10 trade 안에 budget 소진 가능 | 실제 24h 데이터로는 net +0.142 SOL 흑자라 0.1 SOL budget 충분. 단 첫 1-3 trade 가 즉시 hard_cut 만 발동하면 7-8건 만에 halt 가능 (avg hard_cut −2.0%/0.01 = −0.0190 → 5건이면 −0.095 ≈ budget 한계) |
+| **R6** | 티켓 0.01 SOL × 첫 1-3 trade 안전 한계 | hard_cut 평균 −19.5% 손실 = 1건당 −0.00195 SOL. 5건 연속 loser 시 −0.00975 SOL → consec losers cap 5 도달로 halt | 안전망 작동 ✓. 단 운영자 첫 morning-stop 윈도 권고 |
+
+---
+
+## 2026-04-28 — Inactive KOL paper trade (Option B) 구현 sprint
+
+### 1. 결정 — Option B: 측정 분리 ledger
+
+INCIDENT.md 2026-04-27 §7 의 3 옵션 중 **Option B (full paper shadow trading + 별도 ledger)** 채택. Option A 는 이미 구현 (shadow tx 만 jsonl 기록), Option C 는 후속 (promotion 알림 자동화).
+
+### 2. 구현 (4 task 병렬)
+
+| Task | 파일 | 변경 |
+|------|------|------|
+| **#81** | `src/kol/types.ts:KolTx` | optional `isShadow?: boolean` 필드 추가 — handler 가 active vs inactive 분기 처리 |
+| **#83** | `src/ingester/kolWalletTracker.ts:329-396` | shadow 분기에서 `kol_shadow_tx` emit 후 `shadowPaperTradeEnabled=true` 면 `kol_swap` 도 emit (isShadow=true). KolTx 에 isShadow flag stamp |
+| **#83** | `src/index.ts:1212` | tracker config 에 `shadowPaperTradeEnabled` wiring |
+| **#82** | `src/config/kolHunter.ts:28-29` | `kolHunterShadowPaperTradeEnabled` (default false, opt-in) + `kolShadowPaperTradesFileName` (default `'kol-shadow-paper-trades.jsonl'`) |
+| **#82** | `src/orchestration/kolSignalHandler.ts:PaperPosition` | `isShadowKol?: boolean` 필드 추가 |
+| **#82** | `src/orchestration/kolSignalHandler.ts:enterPaperPosition` | `cand.kolTxs.every((t) => t.isShadow === true)` 일 때만 `isShadowKol=true` 마킹. active 1명이라도 끼면 active 우선 (downgrade 안 함, 보수적 정책) |
+| **#82** | `src/orchestration/kolSignalHandler.ts:appendPaperLedger` | `pos.isShadowKol` 이면 `config.kolShadowPaperTradesFileName` 으로 분리 dump |
+| **#82** | `src/orchestration/kolSignalHandler.ts:resolveStalk` + `evaluateSmartV3Triggers` | shadow-only cand 는 `isLiveCanaryActive() && botCtx` 분기 진입 차단 (`!candIsShadow` guard) — 실 자산 노출 금지 |
+| **#84** | `test/kolSignalHandler.test.ts` | 신규 describe `inactive KOL paper trade (Option B, 2026-04-28)` — 5 회귀-방지 케이스 |
+
+### 3. 5 회귀 방지 테스트
+
+1. `cand.kolTxs.every isShadow=true` → `isShadowKol=true` 마킹
+2. shadow + active 혼합 → `isShadowKol=false` (downgrade 안 함)
+3. shadow position close → `kol-shadow-paper-trades.jsonl` 로 분리 dump (active ledger 안 건드림)
+4. active position close → active ledger 로 dump (shadow ledger 안 건드림)
+5. **shadow-only cand 는 live canary 차단** — `isLiveCanaryActive=true` + executeBuy 미호출 + `isLive=false` (실 자산 노출 0)
+
+### 4. 검증
+
+```
+npm run check:fast
+Test Suites: 132 passed, 132 total
+Tests:       1080 passed, 1080 total  (+5 inactive paper trade + 8 sprint 2A recovery)
+```
+
+### 5. 운영자 활성화 액션
+
+```bash
+# 1. .env 에 두 flag 모두 활성 (superset 관계)
+KOL_HUNTER_SHADOW_TRACK_INACTIVE=true       # 기존 flag (subscribe + jsonl)
+KOL_HUNTER_SHADOW_PAPER_TRADE_ENABLED=true  # ← 신규 flag (paper trade 진입)
+
+# 2. dist 재빌드 + restart
+npm run build
+pm2 restart momentum-bot --update-env
+
+# 3. 결과 dump 위치
+data/realtime/kol-shadow-paper-trades.jsonl  # ← inactive KOL paper close 결과
+data/realtime/kol-paper-trades.jsonl         # ← active KOL paper close 결과 (분리 유지)
+```
+
+### 6. 안전 정합 (실 자산 0 노출)
+
+- `kolHunterPaperOnly=false + kolHunterLiveCanaryEnabled=true` 운영 환경에서도 **shadow-only cand 는 무조건 paper** (코드 강제, env 우회 불가)
+- ledger 분리로 active vs inactive 분포 측정 무결성 유지 — `kol-paper-arm-report.ts` / kolDailySummary 가 active ledger 만 보면 inactive 결과가 active 평균을 오염 안 시킴
+- Helius 429 risk: `shadowTrackInactive=true` 의 RPC 부담 (active+inactive subscriptions) 그대로. paper trade 옵션 활성은 추가 RPC 부담 0 (handler 내부 처리만)
+
+### 6-bis. Sprint self-QA findings (post-merge)
+
+8 audit finding 검증 → 진짜 issue 2건만 fix:
+
+| # | Severity 주장 | 검증 결과 | 처리 |
+|---|------------|---------|------|
+| #1 | CRITICAL — fileName undefined crash | **FALSE POSITIVE** — `optional()` helper 의 fallback 명시로 항상 string 반환 | 변경 불요 |
+| #2 | HIGH — daily summary 가 shadow 안 읽음 | **DESIGN INTENT** — 분포 분리 의도, promotion alert 는 Option C (next sprint) | 변경 불요 |
+| #3 | MEDIUM — recovery 가 isShadowKol 미설정 | **NOT-A-BUG** — recovery 는 DB live position 만, paper shadow 는 DB persist 안 함 | 변경 불요 |
+| #4 | MEDIUM — `kol-paper-arm-report` 필터 부재 | **부분 valid** | **defensive filter 추가** (`activeOnly = loaded.filter(r => !r.isShadowKol)`) |
+| Q5 | **HIGH (audit miss)** — `kolPaperNotifier.onPaperClose/onPaperEntry` 가 shadow paper close/entry 를 active hourly digest / 5x anomaly / top movers 에 합산 → active 분포 오염 | **REAL** | **`if (pos.isShadowKol) return;` 격리** (양쪽 handler) |
+| Q6 | empty cand 가 enterPaperPosition 도달 가능? | OK — `length > 0` guard 정상 | 변경 불요 |
+| Q7 | enterLivePosition 의 paired swing-v2 shadow 가 isShadowKol 가짐? | OK — entry 자체가 candIsShadow=false 일 때만이라 자동으로 false | 변경 불요 |
+
+**적용된 fix**:
+1. `src/orchestration/kolPaperNotifier.ts:onPaperEntry/onPaperClose` — `pos.isShadowKol` 분기 추가하여 shadow 격리
+2. `scripts/kol-paper-arm-report.ts:main` — `activeOnly = loaded.filter(r => !r.isShadowKol)` defensive filter
+3. `test/kolSignalHandler.test.ts` — `paper_close payload.pos.isShadowKol=true` 검증 회귀 케이스
+
+**검증**: `Tests: 1081 passed` (1080 → +1 회귀).
+
+### 7. 다음 단계 (운영 결과 누적 후)
+
+- `kol-shadow-paper-trades.jsonl` 24-72h 누적 → silent inactive KOLs (`johnson` 89tx, `kev` 46, `decu` 45, `trenchman` 24 — INCIDENT.md 2026-04-28 §4 24h 분석 발견) 의 paper outcome 측정
+- mfe / capture / hold 분포가 active KOL 평균보다 좋으면 promotion candidate 로 KOL DB 수정 검토
+- Option C (promotion 자동 알림) 은 별도 sprint — Option B 결과 1주 누적 후
+
+---
+
+## 2026-04-28 — KOL live canary dead-path 수정 sprint (sync fix)
+
+### 1. 발견 — smart-v3 main arm 의 live wiring 누락 (commit 1469a08 회귀)
+
+운영자가 `KOL_HUNTER_LIVE_CANARY_ENABLED=true` + `KOL_HUNTER_PAPER_ONLY=false` + `TRADING_MODE=live` 로 13시간+ 운영했음에도 `executed-buys.jsonl` 의 `kol_hunter` 건수 0. 봇 startup log 는 `liveCanary=ENABLED` 정상 출력됨.
+
+**Root cause**: `evaluateSmartV3Triggers` (smart-v3 main arm trigger 경로, `kolSignalHandler.ts:798`) 가 무조건 `enterPaperPosition` 호출. `isLiveCanaryActive()` 체크 부재.
+
+`isLiveCanaryActive()` 의 live 분기는 `resolveStalk` (v1 fallback arm, line 841) 안에만 존재. 그러나 운영 환경은 smart-v3 가 main 으로 활성이라 v1 경로는 dormant → **line 841 분기는 운영에서 도달 불가능한 dead path**. `executeBuy` 가 단 한 번도 호출되지 않은 정상 동작 (코드 버그 영향).
+
+### 2. 추가 발견
+
+- `enterLivePosition` 시그니처가 v1 arm 만 가정: `(tokenMint, cand, score, survivalFlags, ctx)` 로 옵션 미수신. smart-v3 의 `entryReason / convictionLevel / paramVersion / tokenDecimals` 를 받을 수 없음.
+- `enterLivePosition` 내부에서 `armNameForVersion(config.kolHunterParameterVersion)` (= v1) 로 라벨링 → 만약 단순 분기 추가만으로 fix 시 smart-v3 가 live 로 가도 **v1 arm 라벨/파라미터 가 적용**되어 trail/sentinel 정책 어긋남.
+- swing-v2 paired observation 처리: `enterPaperPosition` 안의 `isSwingV2Eligible(score)` 분기가 main 이 live 일 때는 호출되지 않음 → swing-v2 shadow 측정 누락.
+
+### 3. 수정 (병렬 4 task, 본 sprint)
+
+| Task | 파일 | 변경 |
+|------|------|------|
+| #77 | `kolSignalHandler.ts:1602` | `enterLivePosition` 시그니처에 `options: PaperEntryOptions` 추가. fallback paper 호출 시 options 전달 |
+| #77 | `kolSignalHandler.ts:1693-1758` | hardcoded v1 paramVersion 제거. 옵션 기반 `primaryVersion / armName / entryReason / conviction / dynamicExit / liveDecimals` 사용. `t1MfeOverride / t1TrailPctOverride / t1ProfitFloorMult / probeFlatTimeoutSec` 적용 |
+| #79 | `kolSignalHandler.ts` (enterLivePosition 내부) | smart-v3 live entry 시 swing-v2 shadow paired paper position 추가 (`isLive=false`, `parentPositionId` 연결, `LIVE_PAIRED_PAPER_SHADOW` flag) |
+| #78 | `kolSignalHandler.ts:782-839` (`evaluateSmartV3Triggers`) | `isLiveCanaryActive() && botCtx` 체크 + 2 hard guard (`isWalletStopActive`, `isEntryHaltActive`) + fallback paper. 통과 시 `enterLivePosition` 호출 |
+| #80 | `test/kolSignalHandler.test.ts` | 신규 describe `smart-v3 trigger → live canary wiring (2026-04-28)` 3 테스트: (1) triple-flag + smart-v3 pullback → `executor.executeBuy` 호출 + `isLive=true` (회귀 방지 핵심), (2) `LIVE_CANARY_ENABLED=false` → executor 미호출 (기존 동작 보존), (3) smart-v3 + swing-v2 dual → main live + shadow paper paired |
+
+### 4. 검증
+
+```
+npm run check:fast
+Test Suites: 132 passed, 132 total
+Tests:       1057 passed, 1057 total  (3 sprint + 8 recovery + QA fix 회귀 방지)
+```
+
+### 4-bis. Sprint self-QA findings (post-merge)
+
+| # | Severity | Finding | Fix |
+|---|---------|---------|-----|
+| QA1 | CRITICAL | `enterLivePosition` 의 swing-v2 paired shadow 가 `kolHunterEvents.emit('paper_entry', ...)` 누락 — `enterPaperPosition` (line 1216) 와 비대칭 → kolPaperNotifier 의 hourly digest + 5x anomaly alert 에서 paired shadow 분포 누락 | swing-v2 shadow `setActivePosition` 직후 `emit('paper_entry')` 추가. 신규 회귀 케이스 추가 |
+| QA2 | MINOR | live shadow 의 `survivalFlags` 가 `LIVE_PAIRED_PAPER_SHADOW` 만 — paper shadow 의 `DECIMALS_${source}` 미포함 | `DECIMALS_${liveDecimalsSource?.toUpperCase() ?? 'UNKNOWN'}` flag 추가 (paper 분포 분석 호환) |
+| QA3 | LOW (defer) | swing-v2 shadow entryPrice = `actualEntryPrice` (live slippage 포함). enterPaperPosition shadow 는 paper firstTick 사용 | paired observation 의 정합 측면에서 같은 entry 사용이 합리적이라 deferral. follow-up sprint 에서 분포 비교 후 결정 |
+| QA4 | LOW (defer) | DRY 미스 — PaperPosition build 코드 enterPaperPosition.makePosition vs enterLivePosition inline 2곳 | follow-up refactor (테스트 강화 후 헬퍼 추출) |
+| QA5 | LOW (verified) | swing-v2 shadow 의 `t1MfeOverride` 등 dynamicExit 빈 객체 — enterPaperPosition 도 동일 (`config.kolHunterSwingV2T1TrailPct` 등은 별도 경로 적용) | 정합 ✓, 변경 불요 |
+
+### 5. 운영 영향
+
+- 본 fix 가 배포되어야 비로소 `KOL_HUNTER_LIVE_CANARY_ENABLED=true` 가 의미있게 동작.
+- 사명 §3 phase gate 의 5x winner 1건은 paper 데이터 (n=1) 이므로 **paper-only 단계에서의 충족** 으로 인정됨. live canary 는 배포 후 별도 누적 필요.
+- **주의**: 본 fix 배포 직후 첫 1-3 trade 가 가장 위험. canary cap 0.3 SOL / drift halt 0.2 SOL / ticket 0.01 hard lock / max consec losers 등 안전망은 모두 유지되지만, 운영자가 **첫 1-3 close** 를 morning-stop 가능한 윈도에서 직접 관측 권고.
+- 잔존 incident 3건 (observer dead / drift spam / notifier fail) 은 별도 sprint 필요 — 본 sprint 와 무관.
+
+### 6. dist 빌드 + pm2 restart 필요
+
+운영자 액션:
+```bash
+npm run build                    # dist 재빌드 (smart-v3 live wiring 반영)
+pm2 restart momentum-bot         # process 새 코드 로드
+pm2 logs momentum-bot --lines 200 | grep -E "KOL_HUNTER_LIVE_BUY|KOL_HUNTER_LIVE_OPEN"
+# ↑ smart-v3 trigger 발동 시 위 두 로그가 떠야 정상 (이전엔 KOL_HUNTER_PAPER_ENTER 만 떴음)
+```
+
+---
+
+## 2026-04-28 — 5x winner 첫 돌파 + 측정 인프라 회귀 + drift spam (24h sync 분석)
+
+### 1. 24h KOL paper 결과 (2026-04-27 02:36Z ~ 04-28 02:37Z, UTC)
+
+| 지표 | smart-v3 (main) | swing-v2 (shadow) | 합계 |
+|------|----------------|-------------------|------|
+| Trades | 197 | 57 | **254** |
+| netSol | +0.108 | +0.034 | **+0.142 SOL** |
+| avgNet% | +5.99% | +6.50% | — |
+| avgMfe% | +26.6% | +19.9% | — |
+| T1+ (mfe ≥ +50%) | 33 (16.8%) | 5 (8.8%) | 38 |
+| 2x+ (mfe ≥ +100%) | 13 | 2 | 15 |
+| **5x (mfe ≥ +400%)** | **1** | 0 | **1** ✓ |
+| 10x (mfe ≥ +900%) | 0 (940% = 9.4x) | 0 | 0 |
+
+→ **사명 §3 5x+ winner binding constraint 24h 내 첫 돌파**. 단 single-winner 의존도 매우 높음 (+0.094 / +0.142 = **66%**).
+
+### 2. 5x winner raw record 검증 — `kolh-DF7DAPat-1777322938`
+
+```
+closedAt: 2026-04-27T20:59:54Z
+arm:      kol_hunter_smart_v3 (paramVersion smart-v3.0.0-paper-2026-04-26)
+entry=1.3745e-07  exit=1.4302e-06   (10.4x entry)
+peak=exit (정확 일치)  trough=entry (drift 0, MAE 0)
+mfePeak=940.5%  netPct=940.5%  netSol=+0.094 SOL
+hold=656s  reason=insider_exit_full
+T1@+109s, T2@+506s, T3@+639s
+kols: jijo (A), trey (A)  kolScore=1.99  indep=1
+```
+
+→ price feed glitch 의심 점검 결과 **데이터 일관성 ✓**. peak == exit 정확 일치는 **insider_exit_full 이 정확히 정점 tick 에서 컷**한 결과 (회귀 0). MAE=0 은 진입 후 entry 아래로 한 번도 안 내려간 이상 trajectory. 가설 (A) trail 보수성을 *이 케이스에서는 반박* — insider_exit signal 따라가기가 trail 보다 정점에 가까움.
+
+### 3. Capture rate by exit reason (mfe ≥ 50% trade, 24h)
+
+| Exit reason | n | avg capture (net/mfe) | avg mfe% | avg net% |
+|------------|---|----------------------|---------|---------|
+| **insider_exit_full** | 15 | **+0.88** | +148% | **+139%** |
+| winner_trailing_t1 | 8 | +0.50 | +116% | +61% |
+| **hold_phase_sentinel_degraded_exit** | 8 | **+0.29** | **+167%** | **+58%** |
+
+→ **가설 (A) "trail/sentinel 보수성" 정량 증거 누적**. Top-5 mfe 중 3건이 sentinel 컷 (mfe 215~246% / net 42~116%). sentinel 완화 시 추가 5x winner 후보 존재 가능성. INCIDENT.md §6 가설 (A) 검증의 1차 데이터 도착.
+
+### 4. probe_hard_cut 95건 = 가설 (B) entry timing 추적
+
+| 지표 | 값 |
+|------|-----|
+| 건수 | 95 (전체 254의 37.4%) |
+| 평균 MAE | −19.5% |
+| 평균 hold | 47s |
+| hold < 5s | 1건 (1%) |
+| hold < 15s | 23건 (24%) |
+| 누적 손실 | **−0.190 SOL** |
+
+→ **probe_hard_cut 누적 손실 −0.190 > 24h winner 합산 +0.142**. 즉 net +0.142 흑자는 **+940% winner (+0.094) + 그 외 winner들이 hard_cut 손실을 가까스로 상쇄한 결과**. 즉시 dump (hold<5s) 비율은 1% 로 낮음 — 04-27 누적의 86건 즉시 dump 주장 (이전 데이터) 대비 개선 추세.
+
+### 5. Reject 분포 (24h, 4287건)
+
+| Reason | n | % |
+|--------|---|---|
+| **smart_v3_price_timeout** | **1644** | **38.3%** |
+| stalk_expired_no_consensus | 987 | 23.0% |
+| smart_v3_kol_sell_cancel | 802 | 18.7% |
+| smart_v3_no_trigger | 376 | 8.8% |
+
+→ smart-v3 price/velocity trigger 가 stalk 윈도 안에 못 맞춰 1644건 (38%) 미진입. 가설 (B) entry timing 보수성의 보조 증거.
+
+### 6. Paired observation (32 mints, 57 pairs) — smart-v3 vs swing-v2
+
+| 결과 | 건수 |
+|------|-----|
+| smart-v3 wins | 7 |
+| swing-v2 wins | 9 |
+| tied | 41 |
+
+paired net: smart-v3 +0.0165 / **swing-v2 +0.0342** / **diff swing-v2 +0.0177 SOL**
+
+→ 같은 mint 진입 시 swing-v2 가 약간 더 좋은 결과. tied 41건은 양 arm 동시 insider_exit 컷. 차이는 trail 정책이 다른 9건 — 표본 적음, 결정적 신호 아님.
+
+### 7. ⚠ 측정 인프라 회귀: missed-alpha observations 24h × 4287건 모두 빈 배열
+
+→ post-reject T+60/300/1800s 가격 관측이 **dead**. INCIDENT.md §6 가설 (B) "stalk 끝난 후 +50% mfe 도달 빈도" 측정 도구가 회귀. 원인 후보: commit 1469a08 (KOL live canary) 이후 `MissedAlphaObserver` 시작 누락 또는 observation persist 회귀.
+
+**P0 조치**: `src/observability/missedAlphaObserver.ts` + observer init 점검. 회복 전엔 가설 (B) 정량 검증 불가.
+
+### 8. ⚠ wallet_delta_warn 12회 spam (2026-04-27 13:01-13:26)
+
+```
+drift 0.1180 SOL (warn ≥ 0.03 SOL, halt ≥ 0.2 SOL)
+5분 간격 6회 발동, 동일 drift 값 (cooldown/dedup 깨짐)
+```
+
+→ **두 개의 별도 문제**:
+1. **drift origin 불명**: paper-only 운영인데 main wallet 에 0.118 SOL 변동. `executed-buys/sells.jsonl` 마지막 04-26 06:53Z 이후 외부 활동 없음 가정. 운영자 수동 입출금? 외부 transfer? 검증 필요.
+2. **alert spam**: 동일 drift 값 5분 간격 6회 발동. dedup/cooldown 미작동. 운영자 critical alert 무딘화 위험.
+
+**P0 조치**: drift origin 추적 (`ops:reconcile:wallet`) + `walletDeltaComparator` dedup 코드 점검 (`state.haltTriggered` reset path 만 있고 warn-단계 dedup 없음 가능).
+
+### 9. Daily reporter `win10x` 임계 점검
+
+Telegram daily 가 `bestPeak +940%` (= 9.4x) 를 `win10x=1` 로 카운트. 임계가 `>= 9.0` 인지 `>= 10.0` 인지 reporter 코드 (`src/orchestration/kolDailySummary.ts`) 정의 확인 필요. **이름과 임계 일관성 정정** (P1).
+
+### 10. notifier failures 3건 (24h)
+
+| 시각 | category | 비고 |
+|------|---------|------|
+| 04-27 16:29:43 | info:kol_hourly_digest | error 빈 문자열 |
+| 04-27 17:00:53 | info:heartbeat | 동일 |
+| 04-28 00:00:59 | daily_summary | 동일 |
+
+→ fail 경로의 `error` 필드가 빈 문자열로 capture. notifier audit 의 fail 경로 점검 필요 (P2).
+
+### 11. Telegram daily 246 vs jsonl 254 — 정합 ✓
+
+이전 세션의 246 vs 17 (12h) 14배 모순은 **시간대 오류 (KST cutoff vs UTC 데이터) + sync stale** 합산이었음. UTC 정정 후 254 (24h) ↔ 246 (daily 발송 시점 cutoff) 차이 +8건은 daily 발송 후 누적분으로 설명됨 → **정합 회복**. 향후 분석은 UTC 기준 일관 적용.
+
+### 12. 사명 §3 phase gate 진척
+
+| 조건 | 현재 | 평가 |
+|------|------|------|
+| 0.8 SOL floor 유지 | 1.07 SOL | ✓ |
+| 200 paper trades | **466+ 건** (4-25 시작 누적) | ✓ |
+| 5x+ winner ≥ 1 | **24h 내 1건** ✓ | **첫 돌파 — 단 single-winner 표본** |
+| 별도 ADR + Telegram critical ack | — | 미작성 |
+
+→ **3 of 4 조건 충족**. 추가 5x winner 1-2건 + observer 회복 + drift origin 확인 후에 ADR 작성 가능 상태. 즉시 live canary 활성화는 **표본 부족 (n=1) + observer dead + drift incident** 으로 **여전히 비추**.
+
+### 13. 분석 측정 무결성 — 시간대 정합 규칙 (적용)
+
+- 봇 로그/jsonl 모든 timestamp 는 **UTC `Z` 접미사**
+- 분석 cutoff 도 **UTC 기준 ISO** (`date -u +%Y-%m-%dT%H:%M:%SZ`)
+- KST 기준 cutoff 사용 금지 (`date -v-12H` 출력은 로컬 시간이라 함정)
+- 향후 모든 운영 분석 보고에 시간대 명시
+
+---
+
 ## 2026-04-27 — KOL paper 측정 1차 종료 + KOL live canary 코드 완료 + DB v6 rebalance
 
 ### 1. KOL paper 누적 결과 (n=212, 2026-04-23 ~ 04-27)

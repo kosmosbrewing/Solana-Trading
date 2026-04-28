@@ -15,6 +15,19 @@ export const kolHunter = {
   kolTxFetchTimeoutMs: numEnv('KOL_TX_FETCH_TIMEOUT_MS', '5000'),
   kolTxLogFileName: optional('KOL_TX_LOG_FILE_NAME', 'kol-tx.jsonl'),
 
+  // ─── Inactive KOL Shadow Track (Option A, 2026-04-27) ───
+  // Why: 28 inactive KOL 의 실제 활동량을 paper position 영향 0 으로 사후 관측 → promotion candidate 식별.
+  // Helius 429 risk MEDIUM: subscribe 대상이 active+inactive 합산이라 RPC 부하 증가.
+  // 운영자는 활성화 전 KOL_TRACKER_ENABLED 와 무관하게 helius rate-limit 여유 확인 필수.
+  // shadow 활성 시: inactive tx 는 kolSignalHandler 호출 없이 별도 jsonl 에만 기록 → entry 영향 0.
+  kolHunterShadowTrackInactive: boolOptional('KOL_HUNTER_SHADOW_TRACK_INACTIVE', false),
+  kolShadowTxLogFileName: optional('KOL_SHADOW_TX_LOG_FILE_NAME', 'kol-shadow-tx.jsonl'),
+  // 2026-04-28: inactive KOL paper trade opt-in. shadowTrackInactive=true 의 superset.
+  // 활성 시 inactive KOL signal 도 handleKolSwap 진입 → paper PROBE 생성 → 별도 jsonl 분리 dump.
+  // 분포 측정 무결성 — active paper trade ledger 와 섞이지 않음.
+  kolHunterShadowPaperTradeEnabled: boolOptional('KOL_HUNTER_SHADOW_PAPER_TRADE_ENABLED', false),
+  kolShadowPaperTradesFileName: optional('KOL_SHADOW_PAPER_TRADES_FILE_NAME', 'kol-shadow-paper-trades.jsonl'),
+
   // ─── KOL Scoring (Discovery trigger 용, Gate 가산 아님) ───
   kolScoringWindowMs: numEnv('KOL_SCORING_WINDOW_MS', String(24 * 60 * 60 * 1000)),
   kolAntiCorrelationMs: numEnv('KOL_ANTI_CORRELATION_MS', '60000'),
@@ -22,7 +35,11 @@ export const kolHunter = {
   // ─── kol_hunter Lane T (Phase 3 paper-first) ───
   kolHunterEnabled: boolOptional('KOL_HUNTER_ENABLED', false),
   kolHunterPaperOnly: boolOptional('KOL_HUNTER_PAPER_ONLY', true),
-  kolHunterTicketSol: numEnv('KOL_HUNTER_TICKET_SOL', '0.01'),
+  // 2026-04-28: 운영자 결정 — paper n=401 / 5x+ winner 1건 (kolh-DF7DAPat 940%) 입증 후 3x scale.
+  // policyGuards.ts 의 POLICY_TICKET_MAX_SOL_BY_LANE.kol_hunter = 0.03 와 정합.
+  // wallet 1 SOL 시드 기준: 0.03 ticket × 7 trade loser = -0.21 SOL → wallet 0.79 (floor 0.8 근접).
+  // KOL canary cap 도 0.1 → 0.3 SOL (3x) 동시 상향 — Real Asset Guard 정합.
+  kolHunterTicketSol: numEnv('KOL_HUNTER_TICKET_SOL', '0.03'),
   kolHunterMaxConcurrent: numEnv('KOL_HUNTER_MAX_CONCURRENT', '3'),
   kolHunterStalkWindowSec: numEnv('KOL_HUNTER_STALK_WINDOW_SEC', '180'),
   kolHunterHardcutPct: numEnv('KOL_HUNTER_HARDCUT_PCT', '0.10'),
@@ -37,6 +54,17 @@ export const kolHunter = {
   kolHunterQuickRejectFactorCount: numEnv('KOL_HUNTER_QUICK_REJECT_FACTOR_COUNT', '3'),
   // Paper round-trip cost (Jupiter platform fee + MEV + AMM fee). Live 시 wallet delta 에서 직접 차감.
   kolHunterPaperRoundTripCostPct: numEnv('KOL_HUNTER_PAPER_ROUND_TRIP_COST_PCT', '0.005'),
+
+  // ─── Hold-phase sentinel relaxation (2026-04-28, Sprint 1A 결과) ───
+  // Why: paper n=401 분석에서 mfe 200%+ 9건 중 4건이 sentinel (peak drift 0.30) 로 cut.
+  //   - 8ipcTXum mfe 246% → net 108% (drift 40%)
+  //   - HqyQHwQv mfe 207% → net 98%  (drift 36%)
+  //   - ssFb5yQU mfe 215% → net 116% (drift 31%, 임계 직상)
+  //   - EjY599u1 mfe 230% → net 42%  (drift 82%, 심각 — 완화해도 cut 됨)
+  // 0.30 → 0.45 완화: 임계 직상 (31-40%) 케이스에서 retreat 견디고 추가 상승 capture 기대.
+  // 심각 케이스 (drift 50%+) 는 여전히 cut → 다운사이드 보호 유지.
+  // env override 로 추가 A/B 가능 (0.50 / 0.40 등).
+  kolHunterHoldPhasePeakDriftThreshold: numEnv('KOL_HUNTER_HOLD_PHASE_PEAK_DRIFT_THRESHOLD', '0.45'),
 
   // ─── KOL Survival (MISSION_CONTROL §KOL Control, 2026-04-25) ───
   // Live canary 단계에서는 운영자가 명시적으로 false 로 닫아야 live 와 같은 gate 분포 보장.

@@ -98,6 +98,31 @@ export function getAllActiveAddresses(): string[] {
   return result;
 }
 
+/**
+ * 비활성 KOL 의 모든 address set. Shadow track (Option A, 2026-04-27) 전용.
+ * Why: inactive 활동량을 paper position 영향 0 으로 관측 → promotion candidate 식별.
+ * Active 와 분리 반환해야 호출 측에서 shadow vs live routing 결정 가능.
+ */
+export function getAllInactiveAddresses(): string[] {
+  const result: string[] = [];
+  for (const wallet of idIndex.values()) {
+    if (wallet.is_active) continue;
+    for (const addr of wallet.addresses) {
+      if (addr) result.push(addr);
+    }
+  }
+  return result;
+}
+
+/**
+ * Active 여부 무관 lookup. Shadow track 에서 inactive wallet metadata (id/tier) 조회용.
+ * 일반 hot path 는 `lookupKolByAddress` 사용 (inactive 자동 필터). 본 함수는 shadow 전용.
+ */
+export function lookupAnyKolByAddress(address: string): KolWallet | undefined {
+  if (!address) return undefined;
+  return addressIndex.get(address);
+}
+
 /** 활성 KOL id 집합 (tier 필터링 가능). */
 export function getActiveKols(tierFilter?: KolTier[]): KolWallet[] {
   const result: KolWallet[] = [];

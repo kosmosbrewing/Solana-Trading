@@ -22,6 +22,17 @@ export const walletAndCanary = {
   canaryPreliminaryReviewTrades: numEnv('CANARY_PRELIMINARY_REVIEW_TRADES', '100'),
   canaryMinLossToCountSol: numEnv('CANARY_MIN_LOSS_TO_COUNT_SOL', '0'),
 
+  // ─── KOL hunter live canary 별도 cap (Sprint 2, 2026-04-28) ───
+  // Why: 공용 0.3 SOL budget 을 cupsey/migration/pure_ws 와 공유 시 KOL 단독 손실이 cap 빠르게 소진.
+  // 2026-04-28 ticket 0.01 → 0.03 (3x) scale 결정에 따라 cap 도 0.1 → 0.3 SOL 동시 상향.
+  //   - 공용 cap (-0.3 SOL) 과 동일 수준 = KOL 단독 max 손실 = 공용 max 손실
+  //   - max consec losers 5 유지 → 0.03 × 5 = 0.15 SOL (cap 절반에서 streak halt)
+  //   - max trades 50 유지 → first-checkpoint 의미
+  // Real Asset Guard wallet floor 0.8 SOL 위반 risk 미미 — 1 SOL 시드 기준 cap 0.3 손실 시 wallet 0.7.
+  kolHunterCanaryMaxBudgetSol: numEnv('KOL_HUNTER_CANARY_MAX_BUDGET_SOL', '0.3'),
+  kolHunterCanaryMaxConsecLosers: numEnv('KOL_HUNTER_CANARY_MAX_CONSEC_LOSERS', '5'),
+  kolHunterCanaryMaxTrades: numEnv('KOL_HUNTER_CANARY_MAX_TRADES', '50'),
+
   // ─── Block 4 QA fix: wallet-level 전역 concurrency guard ───
   // Why: lane별 maxConcurrent 합계가 mission-pivot 의 "동시 max 3 ticket" 을 초과 가능 (cupsey 5 + pure_ws 3).
   // default false (opt-in) — canary 전환 시점에만 운영자가 활성.

@@ -13,14 +13,35 @@ jest.mock('../src/utils/logger', () => ({
 
 import {
   POLICY_TICKET_MAX_SOL,
+  POLICY_TICKET_MAX_SOL_BY_LANE,
+  getPolicyMaxForLane,
   checkTicketPolicy,
   isValidTicketOverrideAck,
   enforceTicketPolicyForAllLanes,
 } from '../src/utils/policyGuards';
 
 describe('policyGuards — ticket size hard lock (F5)', () => {
-  it('POLICY_TICKET_MAX_SOL is locked to 0.01 (const)', () => {
+  it('POLICY_TICKET_MAX_SOL is locked to 0.01 (const default)', () => {
     expect(POLICY_TICKET_MAX_SOL).toBe(0.01);
+  });
+
+  // 2026-04-28: per-lane policy max — KOL hunter Stage 4 partial 승격.
+  describe('per-lane policy max', () => {
+    it('KOL hunter has 0.03 lane-specific max (운영자 결정 2026-04-28)', () => {
+      expect(POLICY_TICKET_MAX_SOL_BY_LANE.kol_hunter).toBe(0.03);
+      expect(getPolicyMaxForLane('kol_hunter')).toBe(0.03);
+    });
+
+    it('default 0.01 for non-overridden lanes (pure_ws / cupsey / migration / swing-v2)', () => {
+      expect(getPolicyMaxForLane('pure_ws')).toBe(0.01);
+      expect(getPolicyMaxForLane('cupsey')).toBe(0.01);
+      expect(getPolicyMaxForLane('migration')).toBe(0.01);
+      expect(getPolicyMaxForLane('pure_ws_swing_v2')).toBe(0.01);
+    });
+
+    it('unknown lane falls back to default 0.01', () => {
+      expect(getPolicyMaxForLane('unknown_lane')).toBe(0.01);
+    });
   });
 
   // ─── isValidTicketOverrideAck ───
@@ -105,6 +126,38 @@ describe('policyGuards — ticket size hard lock (F5)', () => {
       const r = checkTicketPolicy('migration', 1.0, undefined);
       expect(r.violation).toBe(true);
       expect(r.effectiveTicketSol).toBe(POLICY_TICKET_MAX_SOL);
+    });
+
+    // 2026-04-28: KOL hunter per-lane max (0.03) 검증
+    it('[KOL] allows ticket = 0.03 (lane-specific max) without ack', () => {
+      const r = checkTicketPolicy('kol_hunter', 0.03, undefined);
+      expect(r.violation).toBe(false);
+      expect(r.effectiveTicketSol).toBe(0.03);
+    });
+
+    it('[KOL] allows ticket = 0.025 (under lane max) without ack', () => {
+      const r = checkTicketPolicy('kol_hunter', 0.025, undefined);
+      expect(r.violation).toBe(false);
+      expect(r.effectiveTicketSol).toBe(0.025);
+    });
+
+    it('[KOL] rejects ticket = 0.05 without ack → reverts to 0.03 (lane max, NOT 0.01)', () => {
+      const r = checkTicketPolicy('kol_hunter', 0.05, undefined);
+      expect(r.violation).toBe(true);
+      expect(r.effectiveTicketSol).toBe(0.03);  // KOL lane max, not default 0.01
+    });
+
+    it('[KOL] allows ticket = 0.05 WITH valid ack', () => {
+      const r = checkTicketPolicy('kol_hunter', 0.05, 'stage4_approved_2026_05_01');
+      expect(r.violation).toBe(false);
+      expect(r.effectiveTicketSol).toBe(0.05);
+      expect(r.overrideAcknowledged).toBe(true);
+    });
+
+    it('[KOL] non-KOL lane (pure_ws) at 0.03 is STILL violation (default 0.01 applies)', () => {
+      const r = checkTicketPolicy('pure_ws', 0.03, undefined);
+      expect(r.violation).toBe(true);
+      expect(r.effectiveTicketSol).toBe(0.01);  // default, not KOL's 0.03
     });
   });
 

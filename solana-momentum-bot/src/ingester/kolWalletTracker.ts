@@ -23,7 +23,12 @@ import { appendFile, mkdir } from 'fs/promises';
 import path from 'path';
 import { createModuleLogger } from '../utils/logger';
 import { SOL_MINT, LAMPORTS_PER_SOL } from '../utils/constants';
-import { getAllActiveAddresses, lookupKolByAddress } from '../kol/db';
+import {
+  getAllActiveAddresses,
+  getAllInactiveAddresses,
+  lookupAnyKolByAddress,
+  lookupKolByAddress,
+} from '../kol/db';
 import type { KolTx, KolAction } from '../kol/types';
 
 const log = createModuleLogger('KolWalletTracker');
@@ -39,6 +44,25 @@ export interface KolWalletTrackerConfig {
   txFetchTimeoutMs: number;
   /** 활성화 flag (env gate) */
   enabled: boolean;
+  /**
+   * Inactive KOL Shadow Track (Option A, 2026-04-27).
+   * true 면 inactive KOL 도 subscribe 하지만 tx 는 별도 logger 에만 기록.
+   * `kol_swap` event emit 안 함 → kolSignalHandler / smart-v3 / swing-v2 entry 호출 불가.
+   *
+   * Helius 429 risk MEDIUM: subscription 수가 active+inactive 합산이라 RPC 부담 ↑.
+   * fetch rate cooldown 전략: 기존 `txFetchTimeoutMs` (5s) 와 onLogs fire-and-forget 구조 그대로 사용.
+   * 추가 throttle 미적용 (관측 신호량 기반 향후 조정).
+   */
+  shadowTrackInactive?: boolean;
+  /** Shadow tx jsonl 파일명 (default 'kol-shadow-tx.jsonl'). */
+  shadowLogFileName?: string;
+  /**
+   * 2026-04-28: inactive KOL paper trade opt-in (Option B).
+   * true 면 shadow tx 도 `kol_swap` event 로 emit (isShadow=true).
+   * kolSignalHandler 가 inactive 분기로 paper PROBE 진입 → 별도 ledger 로 dump.
+   * `shadowTrackInactive=true` 의 superset (둘 다 활성 필요).
+   */
+  shadowPaperTradeEnabled?: boolean;
 }
 
 /** 2026-04-26 (P0 audit fix #1): watchdog tunables — silent disconnect 시 자동 재구독.
@@ -54,6 +78,9 @@ export class KolWalletTracker extends EventEmitter {
   private started = false;
   private outputDirEnsured = false;
   private targetAddresses: string[] = [];
+  // Shadow track (Option A): inactive KOL 만 담는 별도 set. handleLog 에서 routing 결정.
+  // active 와 분리해야 sync 시 active→inactive 전환 (또는 역) 같은 미묘한 상태 변화 추적 가능.
+  private shadowAddresses: Set<string> = new Set();
   private watchdogTimer: NodeJS.Timeout | null = null;
   private lastResubscribeMs = 0;
   private lastNonZeroSubscriptionsMs = Date.now();
@@ -75,13 +102,21 @@ export class KolWalletTracker extends EventEmitter {
     if (this.started) return;
     this.started = true;
 
-    const addresses = getAllActiveAddresses();
+    const activeAddresses = getAllActiveAddresses();
+    // Shadow (Option A): inactive 도 subscribe — tx 는 별도 jsonl 로만 라우팅.
+    const shadowAddrs = this.config.shadowTrackInactive ? getAllInactiveAddresses() : [];
+    this.shadowAddresses = new Set(shadowAddrs);
+    const addresses = [...activeAddresses, ...shadowAddrs];
+
     if (addresses.length === 0) {
       log.warn(`[KOL_TRACKER] no active KOL addresses — tracker idle (DB 확인 필요)`);
       return;
     }
     this.targetAddresses = [...addresses];
-    log.info(`[KOL_TRACKER] subscribing to ${addresses.length} KOL addresses`);
+    log.info(
+      `[KOL_TRACKER] subscribing to ${addresses.length} KOL addresses ` +
+      `(active=${activeAddresses.length} shadow=${shadowAddrs.length})`
+    );
 
     for (const addr of addresses) {
       await this.subscribeAddress(addr).catch((err) => {
@@ -219,9 +254,14 @@ export class KolWalletTracker extends EventEmitter {
   private async syncActiveSetInner(): Promise<void> {
     const liveActiveList = getAllActiveAddresses();
     const liveActive = new Set(liveActiveList);
+    // Shadow set 도 매 cycle 재계산 — wallets.json 에서 active↔inactive flip 시 routing 자동 갱신.
+    const liveShadowList = this.config.shadowTrackInactive ? getAllInactiveAddresses() : [];
+    const liveShadow = new Set(liveShadowList);
+    // 합산 set: subscribe 결정의 단일 source of truth.
+    const liveAll = new Set<string>([...liveActive, ...liveShadow]);
 
     // Defensive guard: empty DB + existing subs = DB load anomaly 의심.
-    if (liveActive.size === 0 && this.subscriptions.size > 0) {
+    if (liveAll.size === 0 && this.subscriptions.size > 0) {
       log.warn(
         `[KOL_TRACKER_SYNC] active set empty but ${this.subscriptions.size} subs exist — ` +
         `DB load anomaly 의심, sync skip (다음 cycle 재시도)`
@@ -230,8 +270,10 @@ export class KolWalletTracker extends EventEmitter {
     }
 
     const currentSet = new Set(this.targetAddresses);
-    const toAdd = [...liveActive].filter((addr) => !currentSet.has(addr));
-    const toRemove = this.targetAddresses.filter((addr) => !liveActive.has(addr));
+    const toAdd = [...liveAll].filter((addr) => !currentSet.has(addr));
+    const toRemove = this.targetAddresses.filter((addr) => !liveAll.has(addr));
+    // Shadow 분류는 항상 최신 liveShadow 기준으로 갱신 (active↔shadow flip 반영).
+    this.shadowAddresses = liveShadow;
 
     if (toAdd.length === 0 && toRemove.length === 0) return;
 
@@ -258,10 +300,10 @@ export class KolWalletTracker extends EventEmitter {
       }
     }
 
-    this.targetAddresses = [...liveActive];
+    this.targetAddresses = [...liveAll];
     log.info(
       `[KOL_TRACKER_SYNC] active set updated — added=${added} removed=${removed} ` +
-      `total_subs=${this.subscriptions.size}`
+      `total_subs=${this.subscriptions.size} shadow=${this.shadowAddresses.size}`
     );
   }
 
@@ -292,8 +334,13 @@ export class KolWalletTracker extends EventEmitter {
   }
 
   private async handleLog(walletAddress: string, signature: string, slot: number): Promise<void> {
-    const wallet = lookupKolByAddress(walletAddress);
-    if (!wallet) return; // DB 에서 사라졌거나 비활성
+    // Shadow path: inactive KOL — kolSignalHandler 호출 금지, jsonl 만 기록.
+    // lookupKolByAddress 는 inactive 를 undefined 로 반환하므로 shadow 분기에서는 lookupAnyKolByAddress 사용.
+    const isShadow = this.shadowAddresses.has(walletAddress);
+    const wallet = isShadow
+      ? lookupAnyKolByAddress(walletAddress)
+      : lookupKolByAddress(walletAddress);
+    if (!wallet) return; // DB 에서 사라짐 (shadow 도 DB 에서 fully 제거되면 무시)
 
     const tx = await Promise.race([
       this.config.connection.getParsedTransaction(signature, {
@@ -316,13 +363,32 @@ export class KolWalletTracker extends EventEmitter {
       timestamp: (tx.blockTime ?? Math.floor(Date.now() / 1000)) * 1000,
       txSignature: signature,
       solAmount: swap.solAmount,
+      isShadow,  // 2026-04-28: handler 가 active vs inactive 분기 처리하도록 마킹.
     };
+
+    if (isShadow) {
+      // 2026-04-28 (Option B): inactive KOL paper trade opt-in.
+      // shadowPaperTradeEnabled=true 면 kol_swap 도 emit 하여 kolSignalHandler 가 paper PROBE 진입.
+      // isShadow=true flag 로 active 와 분리. 분포 측정 무결성: 별도 ledger 로 dump.
+      // false (default) 면 기존 Option A 동작 — kol_shadow_tx 만 emit, paper position 영향 0.
+      this.emit('kol_shadow_tx', kolTx);
+      await this.appendJsonl(kolTx, /* shadow */ true);
+      log.info(
+        `[KOL_SHADOW_TX] kol=${wallet.id} tier=${wallet.tier} ${kolTx.action} ` +
+        `${swap.tokenMint.slice(0, 8)}... sol=${swap.solAmount?.toFixed(4) ?? '?'} sig=${signature.slice(0, 8)}`
+      );
+      if (this.config.shadowPaperTradeEnabled) {
+        // Inactive 도 kol_swap emit (paper trade trigger). isShadow flag 유지 → handler 분기.
+        this.emit('kol_swap', kolTx);
+      }
+      return;
+    }
 
     // Emit → downstream consumer (Phase 3 kolSignalHandler)
     this.emit('kol_swap', kolTx);
 
     // Persist
-    await this.appendJsonl(kolTx);
+    await this.appendJsonl(kolTx, /* shadow */ false);
 
     log.info(
       `[KOL_TX] kol=${wallet.id} tier=${wallet.tier} ${kolTx.action} ` +
@@ -330,15 +396,18 @@ export class KolWalletTracker extends EventEmitter {
     );
   }
 
-  private async appendJsonl(kolTx: KolTx): Promise<void> {
+  private async appendJsonl(kolTx: KolTx, shadow: boolean): Promise<void> {
     try {
       if (!this.outputDirEnsured) {
         await mkdir(this.config.realtimeDataDir, { recursive: true });
         this.outputDirEnsured = true;
       }
-      const line = JSON.stringify({ ...kolTx, recordedAt: new Date().toISOString() }) + '\n';
+      const fileName = shadow
+        ? (this.config.shadowLogFileName ?? 'kol-shadow-tx.jsonl')
+        : this.config.logFileName;
+      const line = JSON.stringify({ ...kolTx, shadow, recordedAt: new Date().toISOString() }) + '\n';
       await appendFile(
-        path.join(this.config.realtimeDataDir, this.config.logFileName),
+        path.join(this.config.realtimeDataDir, fileName),
         line,
         'utf8'
       );

@@ -47,6 +47,19 @@ export interface WalletDeltaComparatorConfig {
   minSamplesBeforeAlert: number;
   walletName: string;
   realtimeDataDir: string;
+  /**
+   * 2026-04-28 (Sprint A1): warn alert dedup cooldown (ms).
+   * 동일 drift 값이 cooldown 안에 재발동하면 sendCritical skip. log.warn 은 유지.
+   * Default 30분 — 5분 polling 의 6 cycle 동안 spam 차단.
+   */
+  warnAlertCooldownMs?: number;
+  /**
+   * 2026-04-28 (Sprint A1): drift 값 변화 허용 오차 (SOL).
+   * 마지막 alert 의 drift 와 ±tolerance 안이면 "동일 drift" 로 간주하고 dedup.
+   * 새 drift (변화 ≥ tolerance) 면 cooldown 무시하고 재발동 — 운영자에게 변화 알림.
+   * Default 0.005 SOL.
+   */
+  warnDriftDeltaToleranceSol?: number;
 }
 
 interface LedgerLineCount {
@@ -65,6 +78,10 @@ interface ComparatorState {
   consecutiveDriftBreaches: number;
   consecutiveRpcFailures: number;
   haltTriggered: boolean;
+  /** 2026-04-28 (Sprint A1): 마지막 warn sendCritical 시각 (epoch ms). 0 = 미발사. */
+  lastWarnAlertAtMs: number;
+  /** 2026-04-28 (Sprint A1): 마지막 warn alert 의 drift 값. cooldown 중 동일성 비교용. */
+  lastWarnAlertDrift: number;
 }
 
 const state: ComparatorState = {
@@ -78,6 +95,8 @@ const state: ComparatorState = {
   consecutiveDriftBreaches: 0,
   consecutiveRpcFailures: 0,
   haltTriggered: false,
+  lastWarnAlertAtMs: 0,
+  lastWarnAlertDrift: 0,
 };
 
 let pollerHandle: ReturnType<typeof setInterval> | null = null;
@@ -226,6 +245,12 @@ export async function startWalletDeltaComparator(
 
       if (absDrift < cfg.driftWarnSol) {
         state.consecutiveDriftBreaches = 0;
+        // 2026-04-28 (Sprint A1 QA Q9): drift 회복 시 warn dedup state 도 reset.
+        // Why: 회복 후 같은 drift 값이 재발생하면 cooldown 안에서 skip 되어 운영자가 incident
+        // 재발생을 인지 못 한다 (real incident risk). 회복 시 dedup state 초기화하여
+        // 다음 breach 시 즉시 alert.
+        state.lastWarnAlertAtMs = 0;
+        state.lastWarnAlertDrift = 0;
         // 2026-04-26 fix: drift 복구 시 haltTriggered flag 도 reset.
         // 이전: state.haltTriggered 가 한 번 true 되면 영구 → 운영자 수동 reset 후 재halt 불가.
         // 수정: drift 가 warn threshold 미만으로 복구되면 자동 reset → 다음 breach 감지 가능.
@@ -267,12 +292,36 @@ export async function startWalletDeltaComparator(
           `[WALLET_DELTA_WARN] drift ${drift.toFixed(6)} SOL >= warn threshold ${cfg.driftWarnSol} ` +
           `(x${state.consecutiveDriftBreaches})`
         );
-        await notifier.sendCritical(
-          'wallet_delta_warn',
-          `Wallet delta drift ${drift.toFixed(4)} SOL (warn ≥ ${cfg.driftWarnSol}). ` +
-          `observed=${observedDelta.toFixed(4)} expected=${expectedDelta.toFixed(4)}. ` +
-          `Run ops:reconcile:wallet to investigate.`
-        ).catch(() => {});
+        // 2026-04-28 (Sprint A1): warn alert dedup.
+        // - cooldown 안에 동일 drift (±tolerance) 면 sendCritical skip → 5분 polling spam 차단
+        // - 새 drift (변화 ≥ tolerance) 또는 cooldown 경과 시 재발동
+        // - log.warn 은 항상 유지 (운영자 grep / 로그 분석 채널)
+        // 2026-04-28 (Sprint A1 QA Q5): defensive — negative/non-finite 면 default fallback.
+        const cooldownMs = Math.max(0, Number.isFinite(cfg.warnAlertCooldownMs) ? cfg.warnAlertCooldownMs! : 1_800_000);
+        const tolerance = Math.max(0, Number.isFinite(cfg.warnDriftDeltaToleranceSol) ? cfg.warnDriftDeltaToleranceSol! : 0.005);
+        const nowMs = Date.now();
+        const sinceLastAlertMs = nowMs - state.lastWarnAlertAtMs;
+        const driftChanged = Math.abs(drift - state.lastWarnAlertDrift) >= tolerance;
+        const shouldSendAlert =
+          state.lastWarnAlertAtMs === 0 ||  // 처음 발동
+          sinceLastAlertMs >= cooldownMs ||  // cooldown 경과
+          driftChanged;                       // 새 drift 값
+        if (shouldSendAlert) {
+          state.lastWarnAlertAtMs = nowMs;
+          state.lastWarnAlertDrift = drift;
+          await notifier.sendCritical(
+            'wallet_delta_warn',
+            `Wallet delta drift ${drift.toFixed(4)} SOL (warn ≥ ${cfg.driftWarnSol}). ` +
+            `observed=${observedDelta.toFixed(4)} expected=${expectedDelta.toFixed(4)}. ` +
+            `Run ops:reconcile:wallet to investigate.`
+          ).catch(() => {});
+        } else {
+          log.debug(
+            `[WALLET_DELTA_WARN_DEDUP] drift=${drift.toFixed(6)} ` +
+            `last=${state.lastWarnAlertDrift.toFixed(6)} elapsed=${Math.round(sinceLastAlertMs/1000)}s ` +
+            `cooldown=${Math.round(cooldownMs/1000)}s — alert suppressed`
+          );
+        }
       }
     } catch (err) {
       state.consecutiveRpcFailures++;
@@ -307,6 +356,8 @@ export function resetWalletDeltaComparatorForTests(): void {
   state.consecutiveDriftBreaches = 0;
   state.consecutiveRpcFailures = 0;
   state.haltTriggered = false;
+  state.lastWarnAlertAtMs = 0;
+  state.lastWarnAlertDrift = 0;
   stopWalletDeltaComparator();
 }
 
@@ -343,10 +394,28 @@ export async function runWalletDeltaCheckOnceForTests(
       haltAllLanes(reason);
       await notifier.sendCritical('wallet_delta_halt', reason).catch(() => {});
     } else if (state.consecutiveDriftBreaches >= cfg.minSamplesBeforeAlert) {
-      await notifier.sendCritical('wallet_delta_warn', `drift ${drift.toFixed(6)}`).catch(() => {});
+      // 2026-04-28 (Sprint A1): production check() 와 동일한 dedup 적용 (회귀 검증).
+      // 2026-04-28 (Sprint A1 QA Q5): defensive — negative/non-finite 면 default fallback.
+      const cooldownMs = Math.max(0, Number.isFinite(cfg.warnAlertCooldownMs) ? cfg.warnAlertCooldownMs! : 1_800_000);
+      const tolerance = Math.max(0, Number.isFinite(cfg.warnDriftDeltaToleranceSol) ? cfg.warnDriftDeltaToleranceSol! : 0.005);
+      const nowMs = Date.now();
+      const sinceLastAlertMs = nowMs - state.lastWarnAlertAtMs;
+      const driftChanged = Math.abs(drift - state.lastWarnAlertDrift) >= tolerance;
+      const shouldSendAlert =
+        state.lastWarnAlertAtMs === 0 ||
+        sinceLastAlertMs >= cooldownMs ||
+        driftChanged;
+      if (shouldSendAlert) {
+        state.lastWarnAlertAtMs = nowMs;
+        state.lastWarnAlertDrift = drift;
+        await notifier.sendCritical('wallet_delta_warn', `drift ${drift.toFixed(6)}`).catch(() => {});
+      }
     }
   } else {
     state.consecutiveDriftBreaches = 0;
+    // 2026-04-28 (Sprint A1 QA Q9): drift 회복 시 dedup state reset (production check 와 정합).
+    state.lastWarnAlertAtMs = 0;
+    state.lastWarnAlertDrift = 0;
   }
   return state;
 }

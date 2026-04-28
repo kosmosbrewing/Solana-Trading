@@ -1175,6 +1175,9 @@ async function main() {
       minSamplesBeforeAlert: config.walletDeltaMinSamplesBeforeAlert,
       walletName: config.walletStopWalletName,
       realtimeDataDir: config.realtimeDataDir,
+      // Sprint A1 (2026-04-28): warn alert dedup
+      warnAlertCooldownMs: config.walletDeltaWarnAlertCooldownMs,
+      warnDriftDeltaToleranceSol: config.walletDeltaWarnDriftDeltaToleranceSol,
     });
   } else {
     log.info(

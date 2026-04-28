@@ -59,4 +59,10 @@ export const walletAndCanary = {
   walletDeltaDriftWarnSol: numEnv('WALLET_DELTA_DRIFT_WARN_SOL', '0.05'),
   walletDeltaDriftHaltSol: numEnv('WALLET_DELTA_DRIFT_HALT_SOL', '0.20'),
   walletDeltaMinSamplesBeforeAlert: numEnv('WALLET_DELTA_MIN_SAMPLES', '2'),  // N회 연속 drift 후 알림
+  // 2026-04-28 (Sprint A1): warn alert dedup. 동일 drift 값 5분 spam 차단.
+  // - 마지막 alert 후 cooldown 안 지났고
+  // - drift 값이 ±warnDriftDeltaToleranceSol 이내면 sendCritical skip (log.warn 은 유지)
+  // 새 drift 또는 cooldown 경과 시 다시 발동.
+  walletDeltaWarnAlertCooldownMs: numEnv('WALLET_DELTA_WARN_ALERT_COOLDOWN_MS', '1800000'),  // 30분
+  walletDeltaWarnDriftDeltaToleranceSol: numEnv('WALLET_DELTA_WARN_DRIFT_DELTA_TOLERANCE_SOL', '0.005'),
 } as const;

@@ -157,4 +157,108 @@ describe('walletDeltaComparator', () => {
     expect(snapshot).toHaveProperty('lastDrift');
     expect(snapshot).toHaveProperty('haltTriggered');
   });
+
+  // 2026-04-28 Sprint A1 — wallet_delta_warn dedup/cooldown.
+  // 운영 incident — 6h 동안 동일 drift 0.04~0.05 SOL spam 108회 (5분 polling × 발동)
+  // → 운영자 critical alert 무딘화 위험. 동일 drift 값은 cooldown 안에 sendCritical skip.
+  //
+  // Setup pattern: 동일 drift 를 보장하려면 baseline 캡처 시점에 ledger 에 이미 sell 이 있어야
+  // 한다. baseline ledger offset 에 그 sell 이 포함되어 expected delta 계산에서 제외 → 이후
+  // 같은 balance 를 반환하면 observed=expected 가 되어 drift=0. 따라서 다른 패턴 사용:
+  // wallet manager 가 매 check 마다 다른 balance 를 반환하지만 ledger 도 그에 맞춰 같이
+  // 변화하면 drift 값이 일정.
+  describe('Sprint A1 — warn alert dedup/cooldown', () => {
+    it('동일 drift 값이 cooldown 내 재발동 시 sendCritical skip', async () => {
+      // baseline 1.0 → 0.94 (warn 임계 -0.06 SOL drift). 같은 wallet 반환 → 같은 drift 유지.
+      const walletManager = makeWalletManager([1.0, 0.94, 0.94, 0.94, 0.94, 0.94]);
+      const notifier = makeNotifier();
+      const cfg = baseCfg({
+        warnAlertCooldownMs: 1_800_000,
+        warnDriftDeltaToleranceSol: 0.005,
+      });
+
+      // baseline 캡처
+      await runWalletDeltaCheckOnceForTests(walletManager as any, notifier as any, cfg);
+      // 1st warn check — drift -0.06, alert 발동
+      await runWalletDeltaCheckOnceForTests(walletManager as any, notifier as any, cfg);
+      expect(notifier.sendCritical).toHaveBeenCalledTimes(1);
+      const firstDrift = getWalletDeltaComparatorState().lastDrift;
+
+      // 2회 더 check — 같은 balance, ledger 변화 없음 → drift 동일 → cooldown 으로 skip
+      await runWalletDeltaCheckOnceForTests(walletManager as any, notifier as any, cfg);
+      await runWalletDeltaCheckOnceForTests(walletManager as any, notifier as any, cfg);
+      expect(notifier.sendCritical).toHaveBeenCalledTimes(1);
+      expect(getWalletDeltaComparatorState().lastDrift).toBeCloseTo(firstDrift, 6);
+    });
+
+    it('새 drift 값 (변화 ≥ tolerance) 은 cooldown 무시하고 재발동', async () => {
+      // baseline 1.0 → balance 0.94 (drift1=-0.06, alert 1) → balance 0.88 (drift2=-0.12, 새 drift)
+      // makeWalletManager 의 mock 은 매 호출마다 i++ — 첫 run 은 getBalance 2번 (baseline+current).
+      const walletManager = makeWalletManager([1.0, 0.94, 0.88, 0.88]);
+      const notifier = makeNotifier();
+      const cfg = baseCfg({
+        warnAlertCooldownMs: 1_800_000,
+        warnDriftDeltaToleranceSol: 0.005,
+      });
+
+      // 1st run: baseline 1.0 + current 0.94 → drift -0.06 → alert (count=1)
+      await runWalletDeltaCheckOnceForTests(walletManager as any, notifier as any, cfg);
+      expect(notifier.sendCritical).toHaveBeenCalledTimes(1);
+
+      // 2nd run: current 0.88 → drift -0.12, 변화 0.06 > tolerance 0.005 → 새 drift, alert (count=2)
+      await runWalletDeltaCheckOnceForTests(walletManager as any, notifier as any, cfg);
+      expect(notifier.sendCritical).toHaveBeenCalledTimes(2);
+
+      // 3rd run: current 0.88 (unchanged) → drift -0.12 동일, cooldown 안 → skip
+      await runWalletDeltaCheckOnceForTests(walletManager as any, notifier as any, cfg);
+      expect(notifier.sendCritical).toHaveBeenCalledTimes(2);
+    });
+
+    // 2026-04-28 QA Q9: drift 회복 후 재발생 시 dedup state 가 stale 하면 운영자 미수신.
+    // 회복 시점에 lastWarnAlertAtMs/Drift 도 reset 되어야 다음 breach 즉시 alert.
+    it('drift 회복 후 동일 값으로 재발생 시 알림 재발동 (Q9)', async () => {
+      // baseline 1.0 → 0.94 (warn) → 0.99 (recover, < 0.05 drift) → 0.94 (재발생)
+      const walletManager = makeWalletManager([1.0, 0.94, 0.99, 0.94]);
+      const notifier = makeNotifier();
+      const cfg = baseCfg({
+        warnAlertCooldownMs: 1_800_000,
+        warnDriftDeltaToleranceSol: 0.005,
+      });
+
+      // 1st run: baseline + drift -0.06 → alert 1
+      await runWalletDeltaCheckOnceForTests(walletManager as any, notifier as any, cfg);
+      expect(notifier.sendCritical).toHaveBeenCalledTimes(1);
+
+      // 2nd run: drift -0.01 < warn → recover, dedup state reset 되어야 함
+      await runWalletDeltaCheckOnceForTests(walletManager as any, notifier as any, cfg);
+      expect(notifier.sendCritical).toHaveBeenCalledTimes(1);  // 회복은 alert 안 함
+
+      // 3rd run: drift -0.06 (재발생, 이전 값과 동일하지만 회복 후라 새 incident)
+      await runWalletDeltaCheckOnceForTests(walletManager as any, notifier as any, cfg);
+      // dedup state 가 reset 됐으면 alert 재발동 (count=2)
+      expect(notifier.sendCritical).toHaveBeenCalledTimes(2);
+    });
+
+    it('cooldown 경과 후 동일 drift 는 재발동 (운영자 reminder)', async () => {
+      const walletManager = makeWalletManager([1.0, 0.94, 0.94, 0.94]);
+      const notifier = makeNotifier();
+      const cfg = baseCfg({
+        warnAlertCooldownMs: 100,
+        warnDriftDeltaToleranceSol: 0.005,
+      });
+
+      await runWalletDeltaCheckOnceForTests(walletManager as any, notifier as any, cfg);
+      await runWalletDeltaCheckOnceForTests(walletManager as any, notifier as any, cfg);
+      expect(notifier.sendCritical).toHaveBeenCalledTimes(1);
+
+      // cooldown 안 → skip
+      await runWalletDeltaCheckOnceForTests(walletManager as any, notifier as any, cfg);
+      expect(notifier.sendCritical).toHaveBeenCalledTimes(1);
+
+      // cooldown 경과 → 재발동
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await runWalletDeltaCheckOnceForTests(walletManager as any, notifier as any, cfg);
+      expect(notifier.sendCritical).toHaveBeenCalledTimes(2);
+    });
+  });
 });

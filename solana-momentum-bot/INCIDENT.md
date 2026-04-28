@@ -43,6 +43,100 @@
 
 ---
 
+## 2026-04-28 — Sprint A1 (wallet_delta_warn dedup) + B1 (Jupiter 429 retry 강화)
+
+### 1. 배경 — last 6h 운영 critical alerts 156건 분석 결과
+
+| Alert | 건수 | Root cause |
+|-------|-----|-----------|
+| `wallet_delta_warn` | **108** | dedup/cooldown 미작동 → 동일 drift 0.04~0.05 SOL 5분 spam |
+| `kol_live_close_failed` | **44** | Jupiter 429 rate-limit. `kolh-live-GwR3ruFz` 9 attempts × 3 retries = **17분 close 지연 → mae −63%→−66.8% 손실 확대** |
+
+### 2. Sprint A1 — `wallet_delta_warn` dedup/cooldown
+
+**구현** (`src/risk/walletDeltaComparator.ts:265-296` + `runWalletDeltaCheckOnceForTests`):
+- ComparatorState 에 `lastWarnAlertAtMs` + `lastWarnAlertDrift` 추가
+- 발동 조건: (1) 처음 발동 OR (2) cooldown 경과 OR (3) drift 값 변화 ≥ tolerance
+- log.warn 은 **항상 유지** (운영자 grep 채널), `sendCritical` 만 dedup
+- env: `WALLET_DELTA_WARN_ALERT_COOLDOWN_MS` (default 30분), `WALLET_DELTA_WARN_DRIFT_DELTA_TOLERANCE_SOL` (default 0.005 SOL)
+
+**효과**: 5분 polling × 6 cycle = 30분 동안 동일 drift 발동을 1회로 압축. **108건 spam → 예상 ~6건 (90% 감소)**.
+
+### 3. Sprint B1 — Jupiter 429 retry 강화
+
+**구현** (`src/executor/executor.ts:executeSwapV6`):
+- `is429Error()` helper — axios `response.status === 429` + generic error message fallback (`/\b429\b/` / `/rate.?limit/i`)
+- 일반 retry (`maxRetries=3`, backoff 1/2/4s) 와 **별도 429-specific retry**: 5/15/45/60/60s, max 5회 (env `JUPITER_429_MAX_RETRIES`)
+- 429 발생 시 일반 attempt counter 회복 (`attempt--`) — 429 가 quote endpoint rate-limit 이라 일반 attempt 소진하면 진짜 swap 시도 기회 잃음
+- `recordJupiter429('executor_swap_v6')` 호출 — 운영 모니터링 hook
+
+**효과**: 9 attempts × 3 retries (이전) → 3 일반 + 5 429-retry × 5/15/45/60/60s backoff. GwR3ruFz 같은 17분 지연 케이스에서 **5분 안 close 가능 → 손실 확대 차단**.
+
+### 4. 회귀 테스트 (9 신규)
+
+| 파일 | 테스트 |
+|------|--------|
+| `test/walletDeltaComparator.test.ts` | 동일 drift cooldown skip / 새 drift 재발동 / cooldown 경과 후 재발동 (3건) |
+| `test/executor429Detection.test.ts` | AxiosError 429 / 500 / generic message fallback / non-Error null (6건) |
+
+### 5. 검증
+
+```
+npm run check:fast
+Test Suites: 133 passed, 133 total
+Tests:       1091 passed, 1091 total  (1081 → +10: 4 A1 + 6 B1)
+```
+
+### 5-bis. Sprint self-QA findings (post-merge)
+
+10 audit point 검증 → 진짜 issue 3건 fix:
+
+| # | Severity 주장 | 검증 결과 | 처리 |
+|---|------------|---------|------|
+| Q1 | DRY 미스 (production check vs test helper 의 dedup 로직 중복) | OK — 정합 유지, 향후 cleanup 후보 | 변경 불요 |
+| Q2 | `attempt--` 무한루프 가능성 | OK — `retry429Count < max429Retries` 종료 조건. 소진 후 fallthrough 로 일반 attempt 진행 | 변경 불요 |
+| Q3 | AxiosError import 미사용 | OK — line 29 `error instanceof AxiosError` | 변경 불요 |
+| **Q4** | Ultra path 의 429 detection / `recordJupiter429` 호출 누락 | **LOW (관측 누락)** | **fix** — Ultra catch 에서 `is429Error(ultraError) → recordJupiter429('executor_swap_ultra')` |
+| **Q5** | env value 0/negative 방어 부재 (`cooldownMs`, `tolerance`) | **LOW (defensive)** | **fix** — `Math.max(0, Number.isFinite(...) ? ... : default)` |
+| **Q9** | **drift 회복 후 재발생 시 dedup state stale → 운영자 미수신** | **MEDIUM 위험 (real incident risk)** | **fix** — 회복 분기에서 `lastWarnAlertAtMs = 0; lastWarnAlertDrift = 0;` reset |
+| Q6 | drift 부호 변화 시 dedup 정확성 | OK — `Math.abs(drift - lastWarnAlertDrift)` 가 부호 반전도 정확히 감지 | 변경 불요 |
+| Q7 | `runWalletDeltaCheckOnceForTests` 가 dedup state reset 하는지 | OK — line 352-353 에서 reset 정상 | 변경 불요 |
+| Q8 | Ultra path 의 429 retry 자체 부재 | OK — v6 fallback 이 retry mitigation 역할. 단 관측은 Q4 로 보정 | 변경 불요 |
+| Q10 | 직전 sprint (inactive paper trade) 와의 충돌 | OK — 다른 모듈 변경 | 변경 불요 |
+
+**적용된 fix 3건**:
+1. `walletDeltaComparator.ts:check()` + `runWalletDeltaCheckOnceForTests` — 회복 분기 dedup state reset
+2. 양쪽에 `Math.max(0, Number.isFinite(...) ? ...!: default)` defensive
+3. `executor.ts:executeSwapWithRetry` Ultra catch — `is429Error → recordJupiter429('executor_swap_ultra')`
+
+**신규 회귀 테스트 1건**: drift 회복 후 동일 값 재발생 시 alert 재발동 (Q9 핵심 시나리오)
+
+### 6. 운영자 활성화 액션
+
+```bash
+# A1: 자동 활성 (default 값으로 운영 가능)
+# 별도 env override 가능:
+WALLET_DELTA_WARN_ALERT_COOLDOWN_MS=1800000           # default 30분
+WALLET_DELTA_WARN_DRIFT_DELTA_TOLERANCE_SOL=0.005     # default 0.005 SOL
+
+# B1: 자동 활성 (default JUPITER_429_MAX_RETRIES=5, backoff 5/15/45/60/60s)
+# 더 보수적 운영하려면:
+JUPITER_429_MAX_RETRIES=8                             # 더 많은 retry
+
+npm run build
+pm2 restart momentum-bot --update-env
+```
+
+### 7. 남은 위험 / 후속 sprint
+
+| # | 항목 | 우선순위 |
+|---|------|---------|
+| R3.5 | wallet_delta_comparator 의 baseline 갱신 정책 — 매매로 인한 wallet 변화는 drift 가 아니라 expected 로 처리 (분석 §A) | P1 (Sprint A2) |
+| R5 | Daily Loss limit 안전망 실제 entry block 작동 여부 검증 | P1 (Sprint A3) |
+| R6 | Alternative DEX route (Raydium direct, Pump.fun direct) fallback — Jupiter 단일 점 실패 분산 | P2 (Sprint B3) |
+
+---
+
 ## 2026-04-28 — Inactive KOL paper trade (Option B) 구현 sprint
 
 ### 1. 결정 — Option B: 측정 분리 ledger

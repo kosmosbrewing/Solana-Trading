@@ -1,4 +1,4 @@
-import axios, { AxiosInstance } from 'axios';
+import axios, { AxiosError, AxiosInstance } from 'axios';
 import {
   Connection,
   Keypair,
@@ -12,6 +12,29 @@ import { SOL_MINT } from '../utils/constants';
 import { JitoClient } from './jitoClient';
 import { normalizeJupiterSwapApiUrl } from '../utils/jupiterApi';
 import { BPS_DENOMINATOR_BIGINT, decimalToBps } from '../utils/units';
+import { recordJupiter429 } from '../observability/jupiterRateLimitMetric';
+
+/**
+ * 2026-04-28 (Sprint B1): Jupiter 429 retry 강화.
+ * 운영 incident — kolh-live-GwR3ruFz 가 9 attempts × 3 retries = 27회 fail 후 17분 close 지연,
+ * mae −63% → −66.8% 손실 확대. 일반 backoff (1/2/4s) 가 Jupiter rate-limit reset window 보다 짧음.
+ * 정책:
+ *   - 429 명시 detect (axios response.status === 429)
+ *   - 별도 429-specific backoff: 5s / 15s / 45s (free tier rate-limit window 와 정합)
+ *   - 별도 maxRetries (default 5, env override JUPITER_429_MAX_RETRIES)
+ *   - recordJupiter429('executor_swap_v6') 호출 — 운영 모니터링 hook
+ */
+/** Sprint B1 회귀 검증용 export. */
+export function is429Error(error: unknown): boolean {
+  if (error instanceof AxiosError) {
+    return error.response?.status === 429;
+  }
+  // Jupiter rate-limit message 도 fallback detect (axios 가 wrap 안 한 경우)
+  const msg = (error as Error)?.message ?? '';
+  return /\b429\b/.test(msg) || /rate.?limit/i.test(msg);
+}
+const JUPITER_429_BACKOFFS_MS = [5_000, 15_000, 45_000, 60_000, 60_000];
+const JUPITER_429_MAX_RETRIES = Number(process.env.JUPITER_429_MAX_RETRIES ?? '5');
 
 const log = createModuleLogger('Executor');
 
@@ -177,6 +200,11 @@ export class Executor {
       try {
         return await this.executeSwapUltra(inputMint, outputMint, amountLamports);
       } catch (ultraError) {
+        // 2026-04-28 (Sprint B1 QA Q4): Ultra path 의 429 도 recordJupiter429 호출 (관측 누락 보정).
+        // v6 fallback 자체가 retry mitigation 역할 — 단 source 별 카운터에는 ultra 도 잡혀야 함.
+        if (is429Error(ultraError)) {
+          recordJupiter429('executor_swap_ultra');
+        }
         log.warn(`Ultra V3 swap failed: ${ultraError}. Falling back to v6.`);
       }
     }
@@ -301,6 +329,10 @@ export class Executor {
     amountLamports: bigint
   ): Promise<SwapResult> {
     let lastError: Error | undefined;
+    // 2026-04-28 (Sprint B1): 429 retry 는 일반 maxRetries 와 별도 카운터.
+    // 일반 retry maxRetries=3 (default). 429 는 longer backoff + 추가 retry 5회 (default).
+    let retry429Count = 0;
+    const max429Retries = JUPITER_429_MAX_RETRIES;
 
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       try {
@@ -361,6 +393,28 @@ export class Executor {
         };
       } catch (error) {
         lastError = error as Error;
+        // 2026-04-28 (Sprint B1): 429 분기 — longer backoff + 별도 retry counter.
+        // 일반 attempt counter 는 증가 안 시킴 (429 는 quote endpoint rate-limit 이라
+        // attempt 다 소진하면 진짜 swap 시도 기회를 잃음 → 429 는 별도 counter).
+        if (is429Error(error)) {
+          recordJupiter429('executor_swap_v6');
+          if (retry429Count < max429Retries) {
+            const backoffMs = JUPITER_429_BACKOFFS_MS[retry429Count]
+              ?? JUPITER_429_BACKOFFS_MS[JUPITER_429_BACKOFFS_MS.length - 1];
+            log.warn(
+              `[JUPITER_429] swap attempt ${attempt} hit rate-limit, ` +
+              `429-retry ${retry429Count + 1}/${max429Retries} in ${backoffMs}ms`
+            );
+            retry429Count++;
+            await new Promise((resolve) => setTimeout(resolve, backoffMs));
+            attempt--;  // 일반 attempt counter 회복 (429 는 별도)
+            continue;
+          }
+          log.error(
+            `[JUPITER_429] exhausted ${max429Retries} 429-retries — propagating swap failure. ` +
+            `Last error: ${lastError.message}`
+          );
+        }
         log.warn(`Swap attempt ${attempt}/${this.maxRetries} failed: ${lastError.message}`);
 
         if (attempt < this.maxRetries) {

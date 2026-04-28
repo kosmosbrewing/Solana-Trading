@@ -23,13 +23,15 @@ export const walletAndCanary = {
   canaryMinLossToCountSol: numEnv('CANARY_MIN_LOSS_TO_COUNT_SOL', '0'),
 
   // ─── KOL hunter live canary 별도 cap (Sprint 2, 2026-04-28) ───
-  // Why: 공용 0.3 SOL budget 을 cupsey/migration/pure_ws 와 공유 시 KOL 단독 손실이 cap 빠르게 소진.
-  // 2026-04-28 ticket 0.01 → 0.03 (3x) scale 결정에 따라 cap 도 0.1 → 0.3 SOL 동시 상향.
-  //   - 공용 cap (-0.3 SOL) 과 동일 수준 = KOL 단독 max 손실 = 공용 max 손실
-  //   - max consec losers 5 유지 → 0.03 × 5 = 0.15 SOL (cap 절반에서 streak halt)
-  //   - max trades 50 유지 → first-checkpoint 의미
-  // Real Asset Guard wallet floor 0.8 SOL 위반 risk 미미 — 1 SOL 시드 기준 cap 0.3 손실 시 wallet 0.7.
-  kolHunterCanaryMaxBudgetSol: numEnv('KOL_HUNTER_CANARY_MAX_BUDGET_SOL', '0.3'),
+  // 2026-04-28 B안: ticket 0.03 → 0.02 후퇴 + wallet floor 0.8 → 0.7. cap 도 비례 조정.
+  //   - cap 0.3 → 0.2 SOL: wallet floor 도달 전에 KOL lane 자체 차단
+  //   - max consec losers 5 유지: 0.02 × 5 = 0.10 SOL streak halt (cap 절반)
+  //   - max trades 50 유지: first checkpoint
+  //   - drawdown budget = wallet - floor = 1.0 - 0.7 = 0.3 SOL
+  //     KOL cap 0.2 < 0.3 budget → KOL 단독으로 floor 위반 불가
+  //     단 cupsey/migration 동시 운영 시 합산 cap 0.5 SOL → wallet floor 가 최종 차단
+  // Real Asset Guard wallet floor (walletStopGuard) 가 absolute hardstop.
+  kolHunterCanaryMaxBudgetSol: numEnv('KOL_HUNTER_CANARY_MAX_BUDGET_SOL', '0.2'),
   kolHunterCanaryMaxConsecLosers: numEnv('KOL_HUNTER_CANARY_MAX_CONSEC_LOSERS', '5'),
   kolHunterCanaryMaxTrades: numEnv('KOL_HUNTER_CANARY_MAX_TRADES', '50'),
 
@@ -42,7 +44,12 @@ export const walletAndCanary = {
   // ─── Wallet Stop Guard (override 가드레일 #2, 2026-04-17) ───
   // wallet balance < threshold 시 cupsey + migration 신규 진입 차단. exit 영향 없음.
   walletStopGuardEnabled: boolOptional('WALLET_STOP_GUARD_ENABLED', true),
-  walletStopMinSol: numEnv('WALLET_STOP_MIN_SOL', '0.8'),
+  // 2026-04-28 B안 운영자 결정: floor 0.8 → 0.7 SOL.
+  // 배경: KOL ticket 0.03 → 0.02 후퇴와 동시 적용. drawdown budget 0.2 → 0.3 SOL 으로 50% 확장 →
+  //   200 trade Stage 4 gate 도달 가능성 확보 (catastrophic 9건 + bleed 0.102 = 0.282 drawdown).
+  //   ralph-loop fix (429 backoff 단축 / inflight dedup / RPC 병렬화 / notifier fire-and-forget)
+  //   배포 후 PNL_DRIFT 개선 시 catastrophic rate 감소 기대 — 그 측정 시간 확보.
+  walletStopMinSol: numEnv('WALLET_STOP_MIN_SOL', '0.7'),
   walletStopPollIntervalMs: numEnv('WALLET_STOP_POLL_INTERVAL_MS', '30000'),
   walletStopWalletName: process.env.WALLET_STOP_WALLET_NAME ?? 'main',
   walletStopRpcFailSafeThreshold: numEnv('WALLET_STOP_RPC_FAIL_SAFE', '3'),

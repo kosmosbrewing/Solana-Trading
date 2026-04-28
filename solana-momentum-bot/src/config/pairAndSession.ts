@@ -28,7 +28,10 @@ export const pairAndSession = {
   // reject 이후 T+N초 Jupiter price 를 비동기로 기록 → reject 옳고 그름 분포 판정.
   // observer 는 trade 결정에 간섭하지 않는다. 출력: `${realtimeDataDir}/missed-alpha.jsonl`
   missedAlphaObserverEnabled: boolOptional('MISSED_ALPHA_OBSERVER_ENABLED', true),
-  missedAlphaObserverOffsetsSec: (process.env.MISSED_ALPHA_OBSERVER_OFFSETS_SEC ?? '60,300,1800')
+  // 2026-04-28 (Phase 2B, ralph-loop): T+30s 추가 — close 직후 즉시 rebound (scalper sell 후 회복)
+  // 측정. 외부 피드백의 "post-close T+30/60/300/1800s" 정합. close 30초 안 reject 후 30s probe
+  // 가 가장 critical (scalper KOL sell trigger 가 misfire 인지 즉시 판정 가능).
+  missedAlphaObserverOffsetsSec: (process.env.MISSED_ALPHA_OBSERVER_OFFSETS_SEC ?? '30,60,300,1800')
     .split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0),
   missedAlphaObserverJitterPct: numEnv('MISSED_ALPHA_OBSERVER_JITTER_PCT', '0.1'),
   missedAlphaObserverMaxInflight: numEnv('MISSED_ALPHA_OBSERVER_MAX_INFLIGHT', '50'),

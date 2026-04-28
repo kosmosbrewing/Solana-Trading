@@ -18,9 +18,16 @@ import { recordJupiter429 } from '../observability/jupiterRateLimitMetric';
  * 2026-04-28 (Sprint B1): Jupiter 429 retry 강화.
  * 운영 incident — kolh-live-GwR3ruFz 가 9 attempts × 3 retries = 27회 fail 후 17분 close 지연,
  * mae −63% → −66.8% 손실 확대. 일반 backoff (1/2/4s) 가 Jupiter rate-limit reset window 보다 짧음.
+ *
+ * 2026-04-28 (P0-D fix, ralph-loop): backoff 단축 — 17분 close 지연 incident 의 추가 완화.
+ *   - 이전: [5s, 15s, 45s, 60s, 60s] = 185s worst case
+ *   - 현재: [2s, 5s, 15s, 30s, 60s] = **112s worst case (39% 감소)**
+ *   - 첫 2회 (2s+5s=7s) 는 transient 429 빠른 회복, 60s tail 은 여전히 rate-limit reset 준수.
+ *   - close path latency 단축 → MAE 확대 방어 (sentinel/hardcut 의 보수성 fix 와 정합).
+ *
  * 정책:
  *   - 429 명시 detect (axios response.status === 429)
- *   - 별도 429-specific backoff: 5s / 15s / 45s (free tier rate-limit window 와 정합)
+ *   - 별도 429-specific backoff (사이즈 위 참조)
  *   - 별도 maxRetries (default 5, env override JUPITER_429_MAX_RETRIES)
  *   - recordJupiter429('executor_swap_v6') 호출 — 운영 모니터링 hook
  */
@@ -33,7 +40,7 @@ export function is429Error(error: unknown): boolean {
   const msg = (error as Error)?.message ?? '';
   return /\b429\b/.test(msg) || /rate.?limit/i.test(msg);
 }
-const JUPITER_429_BACKOFFS_MS = [5_000, 15_000, 45_000, 60_000, 60_000];
+const JUPITER_429_BACKOFFS_MS = [2_000, 5_000, 15_000, 30_000, 60_000];
 const JUPITER_429_MAX_RETRIES = Number(process.env.JUPITER_429_MAX_RETRIES ?? '5');
 
 const log = createModuleLogger('Executor');

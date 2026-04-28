@@ -45,6 +45,7 @@ import { createModuleLogger } from '../utils/logger';
 import { config } from '../utils/config';
 import type { KolTx, KolDiscoveryScore } from '../kol/types';
 import { computeKolDiscoveryScore } from '../kol/scoring';
+import { getKolLaneRole, getKolTradingStyle } from '../kol/db';
 import { PaperPriceFeed, type PriceTick } from '../kol/paperPriceFeed';
 import { trackRejectForMissedAlpha, type MissedAlphaEvent } from '../observability/missedAlphaObserver';
 import { evaluateSecurityGate } from '../gate/securityGate';
@@ -299,6 +300,13 @@ function computeKolDiscoveryScoreCached(tokenMint: string, nowMs: number): KolDi
 let priceFeed: PaperPriceFeed | null = null;
 const priceListeners = new Map<string, (tick: PriceTick) => void>(); // tokenMint → fan-out handler
 
+// 2026-04-28 (P0-2A fix, ralph-loop): inflight dedup for live entry path.
+// Why: KOL hunter 가 cupsey/pure_ws 패턴의 inflight guard 누락 — 동일 mint 동시 signal
+// 들어오면 enterLivePosition 두 번 진입 → executeBuy 두 번 + DB duplicate row 위험.
+// pure_ws 의 inflightEntryByPair 와 cupsey 의 enteringLock 패턴 동일.
+// live entry 전체 lifetime (subscribe → first tick → executeBuy → persist) 동안 보호.
+const inflightLiveEntry = new Set<string>();
+
 /**
  * MISSION_CONTROL §KOL Control survival 의존성 (2026-04-25):
  * Phase 3 paper-mode 도 live 와 동일한 entry-side gate 를 거쳐야 paper 결과가 live 비교 가능.
@@ -398,13 +406,26 @@ function applySmartV3Reinforcement(pos: PaperPosition, tx: KolTx): void {
   appendParticipatingKol(pos, tx);
   if (!isSmartV3Position(pos)) return;
   pos.kolReinforcementCount += 1;
+
+  // 2026-04-28 (P2 fix): trail buildup 을 style-aware 로 변경 — buildup/reduce 비대칭 해결.
+  // 이전: 모든 KOL buy → trail += inc (style 무관). Phase 1 의 lower_confidence (scalper sell)
+  //   가 trail -= inc 했는데 scalper buy 가 다시 trail += inc → 정책 효과 약화.
+  // 수정: scalper KOL buy 는 trail 변경 안 함 (reinforcementCount 만 +1). longhold/swing/unknown
+  //   buy 만 trail buildup. unknown 은 보수적 fallback (기존 default 보존, 운영자 분류 후 점진).
+  const buyerStyle = getKolTradingStyle(tx.kolId);
+  if (buyerStyle === 'scalper') {
+    log.info(
+      `[KOL_REINFORCEMENT] ${pos.positionId} +1 from kol=${tx.kolId} tier=${tx.tier} (scalper — trail unchanged)`
+    );
+    return;
+  }
   const nextTrail = Math.min(
     config.kolHunterSmartV3ReinforcementTrailMax,
     (pos.t1TrailPctOverride ?? config.kolHunterT1TrailPct) + config.kolHunterSmartV3ReinforcementTrailInc
   );
   pos.t1TrailPctOverride = nextTrail;
   log.info(
-    `[KOL_REINFORCEMENT] ${pos.positionId} +1 from kol=${tx.kolId} tier=${tx.tier} ` +
+    `[KOL_REINFORCEMENT] ${pos.positionId} +1 from kol=${tx.kolId} tier=${tx.tier} style=${buyerStyle} ` +
     `trail=${(nextTrail * 100).toFixed(1)}% floor=${pos.t1ProfitFloorMult ?? 'none'}`
   );
 }
@@ -565,6 +586,67 @@ function tokenMint(tx: KolTx): string {
   return tx.tokenMint.slice(0, 8);
 }
 
+/**
+ * 2026-04-28 (Phase 1): Style-aware insider_exit decision.
+ *
+ * Why: 외부 피드백 + GUfyGEF6 incident 정합. kev (5분 flip scalper) sell 한 건이 bflg
+ *   (13일 hold copy_core) thesis 까지 청산하는 mismatch 차단.
+ *
+ * Decision tree (input: position 의 진입 KOL 들 + sell 한 KOL 의 lane_role/style):
+ *   1) sell 한 KOL 이 'observer' lane → 무시 (entry 대상도 아니므로 close 도 trigger 안 함).
+ *   2) sell 한 KOL 이 'scalper' style + position 의 다른 진입 KOL 중 'longhold/swing' 있음
+ *      → confidence 하향만 (close 안 함). scalper sell 은 short-term flip 신호.
+ *   3) sell 한 KOL 이 'longhold' or 'swing' style (copy_core/canary 무관)
+ *      → close. 의미 있는 exit 신호.
+ *   4) sell 한 KOL 이 lane_role/style 모두 'unknown' → close (보수적 fallback, 기존 default).
+ *   5) Position 의 모든 진입 KOL 이 scalper 면 어쨌든 close (cohort 자체가 short-term).
+ *
+ * 'unknown' fallback 정책: KOL DB 의 운영자 manual 분류 (Phase 0A) 가 완료되기 전엔 거의 모든
+ *   KOL 이 unknown 이라 기존 behavior 보존. 분류 누적될수록 점진적 정확도 향상.
+ */
+type InsiderExitAction = 'close' | 'lower_confidence' | 'ignore';
+
+export function evaluateInsiderExitDecision(
+  pos: PaperPosition,
+  sellingKolId: string
+): { action: InsiderExitAction; reason: string } {
+  const sellingRole = getKolLaneRole(sellingKolId);
+  const sellingStyle = getKolTradingStyle(sellingKolId);
+
+  // (1) Observer 는 trigger 안 줌. 단 entry 도 안 줘야 정합 — observer KOL 이 진입 KOL 에 있는
+  //     것 자체가 misconfiguration. 안전: ignore (close 도 안 함, 다른 진입 KOL 의 신호 대기).
+  if (sellingRole === 'observer') {
+    return { action: 'ignore', reason: `kol=${sellingKolId} is observer-only` };
+  }
+
+  // (5) 모든 진입 KOL 이 scalper 면 cohort 자체가 short-term — sell 은 그대로 따라감.
+  const allScalper = pos.participatingKols.length > 0
+    && pos.participatingKols.every((k) => getKolTradingStyle(k.id) === 'scalper');
+  if (allScalper) {
+    return { action: 'close', reason: `all-scalper cohort, follow sell` };
+  }
+
+  // (2) Scalper sell + position 에 longhold/swing 진입 KOL 있음 → confidence 하향만.
+  //     scalper 의 5분 flip 신호로 swing thesis 청산 방지.
+  if (sellingStyle === 'scalper') {
+    const hasNonScalper = pos.participatingKols.some((k) => {
+      const s = getKolTradingStyle(k.id);
+      return s === 'longhold' || s === 'swing';
+    });
+    if (hasNonScalper) {
+      return { action: 'lower_confidence', reason: `scalper sell ignored (longhold/swing in cohort)` };
+    }
+  }
+
+  // (3) Longhold / swing sell → close.
+  if (sellingStyle === 'longhold' || sellingStyle === 'swing') {
+    return { action: 'close', reason: `${sellingStyle} kol sell` };
+  }
+
+  // (4) Unknown fallback — 보수적으로 close (기존 default behavior 보존).
+  return { action: 'close', reason: `unknown style, conservative close` };
+}
+
 function handleKolSellSignal(tx: KolTx): void {
   const cand = pending.get(tx.tokenMint);
   if (cand?.smartV3 && cand.kolTxs.some((buy) => buy.kolId === tx.kolId)) {
@@ -585,11 +667,39 @@ function handleKolSellSignal(tx: KolTx): void {
   }
 
   for (const pos of positions) {
+    const decision = evaluateInsiderExitDecision(pos, tx.kolId);
     const nowSec = Math.floor(Date.now() / 1000);
     const ref = pos.marketReferencePrice;
     const mfePct = (pos.peakPrice - ref) / ref;
     const maePct = (pos.troughPrice - ref) / ref;
-    closePosition(pos, pos.lastPrice, 'insider_exit_full', nowSec, mfePct, maePct);
+
+    if (decision.action === 'close') {
+      log.info(
+        `[KOL_HUNTER_INSIDER_EXIT] ${pos.positionId} kol=${tx.kolId} action=close reason="${decision.reason}"`
+      );
+      closePosition(pos, pos.lastPrice, 'insider_exit_full', nowSec, mfePct, maePct);
+    } else if (decision.action === 'lower_confidence') {
+      // 2026-04-28 (Phase 1 QA F1 fix): scalper sell → close 안 함 + trail 즉시 보수화.
+      // 이전: kolReinforcementCount 만 하향 — applySmartV3Reinforcement 가 buildup 만 하고
+      //   reduce 안 하므로 t1TrailPctOverride stuck → 정책 영향 0 였음 (cosmetic 만).
+      // 수정: t1TrailPctOverride 를 ReinforcementTrailInc 만큼 즉시 보수 회복. 다음 reinforcement
+      //   buildup 시 다시 올라가지만, 일시적으로 trail 좁혀 scalper sell 의 단기 retreat 위험 차단.
+      pos.kolReinforcementCount = Math.max(0, pos.kolReinforcementCount - 1);
+      const baseTrail = config.kolHunterT1TrailPct;
+      const inc = config.kolHunterSmartV3ReinforcementTrailInc;
+      const currentTrail = pos.t1TrailPctOverride ?? baseTrail;
+      const reducedTrail = Math.max(baseTrail, currentTrail - inc);
+      pos.t1TrailPctOverride = reducedTrail;
+      log.info(
+        `[KOL_HUNTER_SCALPER_SELL_IGNORE] ${pos.positionId} kol=${tx.kolId} action=lower_confidence ` +
+        `reason="${decision.reason}" reinforcementCount=${pos.kolReinforcementCount} ` +
+        `trail=${(currentTrail * 100).toFixed(1)}% → ${(reducedTrail * 100).toFixed(1)}%`
+      );
+    } else {
+      log.debug(
+        `[KOL_HUNTER_OBSERVER_SELL_IGNORE] ${pos.positionId} kol=${tx.kolId} action=ignore reason="${decision.reason}"`
+      );
+    }
   }
 }
 
@@ -648,7 +758,9 @@ async function registerSmartV3Pending(tx: KolTx): Promise<void> {
   }
 
   priceFeed.subscribe(tokenMint);
-  const firstTick = await waitForFirstTick(tokenMint, 10_000);
+  // 2026-04-28 P1-A fix: 10s → 5s. PaperPriceFeed pollIntervalMs=3s 라 첫 tick typical 1-3s 도달.
+  // 10s 는 과보수적 — worst case latency 50% 단축. 캐시 hit 은 즉시 반환 (timeout 영향 없음).
+  const firstTick = await waitForFirstTick(tokenMint, 5_000);
   if (firstTick === null) {
     priceFeed.unsubscribe(tokenMint);
     const rejected: PendingCandidate = {
@@ -1106,7 +1218,9 @@ async function enterPaperPosition(
   // 2026-04-26 P1 fix: price tick 의 known decimals 와 security decimals 를 분리해서 stash.
   // fallback 6 은 observer 로 넘기지 않아 잘못된 post-close delta 를 막는다.
   priceFeed.subscribe(tokenMint);
-  const firstTick = await waitForFirstTick(tokenMint, 10_000);
+  // 2026-04-28 P1-A fix: 10s → 5s. PaperPriceFeed pollIntervalMs=3s 라 첫 tick typical 1-3s 도달.
+  // 10s 는 과보수적 — worst case latency 50% 단축. 캐시 hit 은 즉시 반환 (timeout 영향 없음).
+  const firstTick = await waitForFirstTick(tokenMint, 5_000);
   if (firstTick === null) {
     unsubscribePriceIfIdle(tokenMint);
     log.warn(`[KOL_HUNTER] entry price fetch timeout ${tokenMint.slice(0, 8)}`);
@@ -1648,9 +1762,20 @@ async function enterLivePosition(
     return;
   }
 
+  // 2026-04-28 P0-2A inflight dedup: 동일 mint 동시 signal 시 enterLivePosition 2회 진입 차단.
+  // executeBuy 2회 + DB duplicate row 위험 방지. pure_ws/cupsey 동일 패턴.
+  if (inflightLiveEntry.has(tokenMint)) {
+    log.debug(`[KOL_HUNTER_LIVE] inflight entry already in progress for ${tokenMint.slice(0, 12)} — skip`);
+    return;
+  }
+  inflightLiveEntry.add(tokenMint);
+
+  try {
   // 1. Entry reference price — paper feed 와 동일 (Jupiter probe quote).
   priceFeed.subscribe(tokenMint);
-  const firstTick = await waitForFirstTick(tokenMint, 10_000);
+  // 2026-04-28 P1-A fix: 10s → 5s. PaperPriceFeed pollIntervalMs=3s 라 첫 tick typical 1-3s 도달.
+  // 10s 는 과보수적 — worst case latency 50% 단축. 캐시 hit 은 즉시 반환 (timeout 영향 없음).
+  const firstTick = await waitForFirstTick(tokenMint, 5_000);
   if (firstTick === null) {
     unsubscribePriceIfIdle(tokenMint);
     log.warn(`[KOL_HUNTER_LIVE] entry price timeout ${tokenMint.slice(0, 8)} — reject`);
@@ -1870,25 +1995,25 @@ async function enterLivePosition(
   }
 
   if (persistResult.dbTradeId) {
-    try {
-      await ctx.notifier.sendTradeOpen({
-        tradeId: persistResult.dbTradeId,
-        pairAddress: tokenMint,
-        strategy: LANE_STRATEGY,
-        side: 'BUY',
-        price: actualEntryPrice,
-        plannedEntryPrice: referencePrice,
-        quantity: actualQuantity,
-        sourceLabel: position.armName,
-        discoverySource: 'kol_discovery_v1',
-        stopLoss: actualEntryPrice * (1 - config.kolHunterHardcutPct),
-        takeProfit1: actualEntryPrice * (1 + config.kolHunterT1Mfe),
-        takeProfit2: actualEntryPrice * (1 + config.kolHunterT2Mfe),
-        timeStopMinutes: Math.ceil(config.kolHunterStalkWindowSec / 60),
-      }, entryTxSignature);
-    } catch (err) {
+    // 2026-04-28 P0-B fix: notifier fire-and-forget. Telegram 429 시 entry path 200-2000ms blocking 차단.
+    // 신뢰도: notifier 실패는 trade 경제성에 영향 없음 (DB / wallet 은 이미 commit). log.warn 만 충분.
+    void ctx.notifier.sendTradeOpen({
+      tradeId: persistResult.dbTradeId,
+      pairAddress: tokenMint,
+      strategy: LANE_STRATEGY,
+      side: 'BUY',
+      price: actualEntryPrice,
+      plannedEntryPrice: referencePrice,
+      quantity: actualQuantity,
+      sourceLabel: position.armName,
+      discoverySource: 'kol_discovery_v1',
+      stopLoss: actualEntryPrice * (1 - config.kolHunterHardcutPct),
+      takeProfit1: actualEntryPrice * (1 + config.kolHunterT1Mfe),
+      takeProfit2: actualEntryPrice * (1 + config.kolHunterT2Mfe),
+      timeStopMinutes: Math.ceil(config.kolHunterStalkWindowSec / 60),
+    }, entryTxSignature).catch((err) => {
       log.warn(`[KOL_HUNTER_LIVE_NOTIFY_OPEN_FAIL] ${positionId} ${err}`);
-    }
+    });
   }
 
   log.info(
@@ -1897,6 +2022,10 @@ async function enterLivePosition(
     `kols=${score.independentKolCount} score=${score.finalScore.toFixed(2)}`
   );
   kolHunterEvents.emit('paper_entry', position);
+  } finally {
+    // 2026-04-28 P0-2A: inflight dedup release (try block 시작 → 모든 return / throw 경로 cover).
+    inflightLiveEntry.delete(tokenMint);
+  }
 }
 
 async function closeLivePosition(
@@ -1927,9 +2056,13 @@ async function closeLivePosition(
 
   try {
     const sellExecutor = getKolHunterExecutor(ctx);
-    const tokenBalance = await sellExecutor.getTokenBalance(pos.tokenMint);
+    // 2026-04-28 P0-C fix: tokenBalance + getBalance(solBefore) 병렬화 (이전엔 직렬 await).
+    // 두 RPC 모두 sellExecutor 의 read-only 호출 — 병렬 안전. ~250ms latency 단축.
+    const [tokenBalance, solBefore] = await Promise.all([
+      sellExecutor.getTokenBalance(pos.tokenMint),
+      sellExecutor.getBalance(),
+    ]);
     if (tokenBalance > 0n) {
-      const solBefore = await sellExecutor.getBalance();
       const sellResult = await sellExecutor.executeSell(pos.tokenMint, tokenBalance);
       const solAfter = await sellExecutor.getBalance();
       const receivedSol = solAfter - solBefore;
@@ -2066,7 +2199,8 @@ async function closeLivePosition(
   // 2026-04-27: live close 운영자 즉시 알림. 기존엔 hourly digest + 5x anomaly 만 → 일반
   // close 가 무음이라 운영자가 실 자산 close 를 즉시 인지 못 함 (cupsey/migration 와 일관성 결여).
   // hourly digest 는 그대로 유지 (집계용).
-  await ctx.notifier.sendInfo(
+  // 2026-04-28 P0-B fix: notifier fire-and-forget — Telegram 429 close path blocking 차단.
+  void ctx.notifier.sendInfo(
     `[KOL_LIVE_CLOSE] ${pos.tokenMint.slice(0, 12)} reason=${effectiveReason} ` +
     `pnl=${pnl >= 0 ? '+' : ''}${pnl.toFixed(6)} SOL (${pnlPct >= 0 ? '+' : ''}${(pnlPct * 100).toFixed(2)}%) ` +
     `hold=${nowSec - pos.entryTimeSec}s state=${previousState}` +

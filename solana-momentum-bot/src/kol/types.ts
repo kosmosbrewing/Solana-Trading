@@ -7,6 +7,27 @@
 
 export type KolTier = 'S' | 'A' | 'B';
 
+/**
+ * 2026-04-28 (Phase 0B/1): KOL 의 follower-perspective 스타일 분류.
+ * Why: 외부 피드백 — kev (5분 flip scalper) 의 sell 신호로 bflg (13일 hold copy_core) thesis
+ *   까지 청산하는 mismatch 차단. style-weighted exit 정책의 입력.
+ *
+ * Decision tree:
+ *   - copy_core: 일관된 PnL + low/mid 빈도 + follower 체결 가능한 size + long hold (≥1 day avg).
+ *                직접 카피 대상. sell 신호로 우리도 close.
+ *   - discovery_canary: 빠른 진입 + scalp 패턴 (≤1h avg hold). 작은 ticket 으로만 사용.
+ *                      sell 신호는 confidence 하향만 (close 안 함).
+ *   - observer: 시장 감시용. trigger 안 줌.
+ *   - unknown: 미분류. 보수적 fallback (현재 default behavior 유지).
+ */
+export type KolLaneRole = 'copy_core' | 'discovery_canary' | 'observer' | 'unknown';
+
+/**
+ * Trading style — lane_role 의 보조 dimension. lane_role 만으로 분기 안 되는 edge case
+ * (예: copy_core 인데 swing 인지 longhold 인지) 를 처리.
+ */
+export type KolTradingStyle = 'longhold' | 'swing' | 'scalper' | 'unknown';
+
 export interface KolWallet {
   /** 인물 식별자 (lowercase, unique). 예: 'pain', 'dunpa' */
   id: string;
@@ -20,6 +41,17 @@ export interface KolWallet {
   /** 월간 재검증 결과 (optional) */
   recent_30d_pnl_sol?: number;
   recent_30d_5x_count?: number;
+  /**
+   * 2026-04-28 (Phase 0B): Follower-perspective lane 분류.
+   * 미설정 시 'unknown' fallback — handler 가 보수적 분기 (현재 default behavior 유지).
+   */
+  lane_role?: KolLaneRole;
+  /** 2026-04-28 (Phase 0B): trading style. 미설정 시 'unknown'. */
+  trading_style?: KolTradingStyle;
+  /** 2026-04-28 (Phase 0B): 평균 hold 시간 (일 단위, observation 기반). */
+  avg_hold_days?: number;
+  /** 2026-04-28 (Phase 0B): 평균 ticket size (SOL). follower 가 체결 가능한 size 평가용. */
+  avg_ticket_sol?: number;
 }
 
 export interface KolDbFile {

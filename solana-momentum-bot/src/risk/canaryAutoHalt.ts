@@ -2,7 +2,7 @@
  * Canary Auto-Halt (Block 4, 2026-04-18)
  *
  * Why: Block 3 의 `pure_ws_breakout` 은 loose gate 라 초기 entry 양이 cupsey 대비 많을 가능성.
- * Wallet Stop Guard (0.8 SOL) / wallet delta comparator (drift) 는 전체 wallet 보호이지만,
+ * Wallet Stop Guard (0.7 SOL, 2026-04-28 B안) / wallet delta comparator (drift) 는 전체 wallet 보호이지만,
  * **특정 lane 의 연속 손실 / 예산 소진** 에 대한 per-lane automatic circuit-breaker 는 아직 없다.
  *
  * 본 모듈은 canary 단계에서 다음 위험을 자동 차단한다:

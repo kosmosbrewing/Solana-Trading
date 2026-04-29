@@ -6,6 +6,189 @@
 
 ---
 
+## 2026-04-29 (Late Evening) — 외부 전략 리포트 Tier 1 + #5 일괄 구현
+
+직전 외부 트레이더 리포트 (KOL Hunter edge 강화 9 권고) 정합성 분석 후 Tier 1 (3 sprint) + #5 일괄 진행. 4 agent 병렬.
+
+### 사전 분석
+`docs/design-docs/external-strategy-report-analysis-2026-04-29.md` (476 LOC) — 9 권고 ↔ 코드 정합 + arxiv 12 source 검증 + Phase 분리 계획
+
+### 4 Sprint 산출물
+
+| Sprint | 산출 | LOC + Test |
+|---|---|---|
+| 1.1 KOL style classifier | `scripts/kol-metrics-analyzer.ts` 4-class 자동 분류 + `--update-wallets` | 327 + 134 |
+| 1.2 MissedAlpha retrospective | `scripts/missed-alpha-retrospective.ts` + T+2h offset | 370 + 165 |
+| 1.3 DSR + CSCV validator | `scripts/dsr-validator.ts` Bailey/López de Prado | 430 + 155 |
+| #5 Co-buy graph community | `src/kol/coBuyGraph.ts` + scoring + analyzer + runtime wiring | 280+254+202 |
+
+### 실측 발견 (★ 가장 중요)
+
+#### DSR Statistical Validation
+**Pooled (n=488, 30d)**: DSR Prob>0 = **64.4%** FAIL / PBO = **0.679** overfit 의심.
+| Arm | T | SR | γ4 | DSR Prob | 판정 |
+|---|---|---|---|---|---|
+| smart-v3 main | 324 | 0.072 | **169.7** | 65.5% | FAIL |
+| swing-v2 | 96 | 0.104 | 21.6 | 70.4% | FAIL |
+| v1.0.0 | 68 | -0.026 | 12.9 | 25.4% | FAIL |
+
+→ **사명 §3 statistical 정당성 확정**. paper 표본만으로는 통계적 유의성 미달. Phase 2/3/4 prerequisite = paper n ≥ 1000 + 5x+ ≥ 3건 + DSR Prob > 95%.
+
+#### Co-buy Graph (kol-tx.jsonl, 5min window, minWeight=25)
+- **{chester, decu, dv, earl, theo} 5-KOL squad** + **{heyitsyolo, kev}** 발견
+- Top edges: chester—dv (53), dv—theo (35), decu—dv (32) — 60s anti-correlation 만으로 dedup 안 되던 chain forward 증거
+
+#### KOL DB v8 자동 분류 (wallets.json mutation, 35 KOL)
+- scalper 25 / whale 5 / momentum_confirmer 5 / sample_too_small 7
+- fill rate **7.1% → 95%+** (active 42 중 35 자동 분류)
+
+### Runtime Wiring (defaults)
+
+| Config | Default |
+|---|---|
+| `kolHunterCommunityDetectionEnabled` | **false** (운영자 활성화 권고) |
+| `kolHunterCommunityWindowMs` | 300_000 |
+| `kolHunterCommunityMinEdgeWeight` | **25** |
+| `missedAlphaObserverOffsetsSec` | [30, 60, 300, 1800, **7200**] |
+
+### 검증
+tsc clean / jest **1180/1180 pass** (regression 0, 5 sprint test 123 신규 pass).
+
+### 미해결 / 후속
+- Step 3 (1주 누적): retrospective alert level 측정 → reject threshold 완화 ADR trigger
+- Step 5 (Phase 2): prerequisite 충족 후 Manipulation classifier (#3) + Day Quality Index (#7) + State-conditional policy (#1)
+
+### 누적 working tree (commit 미수행)
+4 신규 script + src/kol/ 갱신 + kolSignalHandler 통합 + config 16 + 4 test 신규. wallets.json mutation + style-analysis.json 신규. 약 ~2300 LOC.
+
+### 사명 §3 정합
+✅ Wallet floor 보호 / ✅ 5x+ winner 보호 (style classifier + community false consensus 차단) / ✅ Real Asset Guard 위반 0
+
+---
+
+## 2026-04-29 — Backlog 추가: BBRI Phase 0 (장 분위기 감지, 측정 sprint 후 candidate)
+
+### 1. 외부 입력 — 사용자 권고 BBRI (Banger/Beta Regime Index)
+
+사용자 권고 (장 분위기 감지 6 components): 온체인 유동성 / 신규 런치 품질 / 실행 품질 / 스마트머니 순매수 / 소셜 / 파생 심리. 시간대별 0-100 score → regime 4단 (방어 / 중립 / 베타 온 / 뱅어).
+
+### 2. 평가 결론 — **Phase 0 (Shadow Observe) 만 백로그 추가, Phase 1+ (regime gating) 보류**
+
+**찬성 근거**:
+- 사명 §3 5x discovery rate 와 macro regime 의 상관 측정 가능
+- DF7DAPat 5x winner (2026-04-28T08:13Z close) 시점 BBRI 사후 측정 → 도입 가치 정량 입증 가능
+- Discovery KOL 신규 3명 (684cvp/orange/daumen) 진입 분포의 regime 의존도 측정
+
+**보류 근거** (5건):
+- (R1) 우리 paper 7d (n=464) 만 누적 → 30일 z-score 즉시 신뢰 불가
+- (R2) Track 2A 결과 = "외부 API 없이 strong predictor 발견" 패러다임. BBRI Phase 2-3 의 외부 API 4종 (DefiLlama / Google Trends / Binance / OKX) 도입 신중
+- (R3) 현 binding constraint = Track 1+2B 측정 sprint 미진행. BBRI 도입은 측정 sprint 결과 입력 후 합리적
+- (R4) regime 0-35 = Discovery off 가 사명 §3 와 충돌 가능. DF7DAPat 같은 outlier winner 가 low regime 시점 발생했다면 차단 위험
+- (R5) Phase 0 (observe-only) 만 lane 영향 0 — 안전. Phase 1+ 는 사후 검증 + 운영자 ADR 후
+
+### 3. Phase 0 구현 명세 (1주 sprint, 측정 sprint 후 candidate)
+
+| 영역 | 내용 |
+|------|------|
+| Scope | observe-only, lane 영향 0, 외부 API 0개 |
+| Components (3) | smart_flow (40%, KOL net buy 1h) / execution_quality (30%, Jupiter 1 SOL quote impact) / liquidity_proxy (30%, paper trade round-trip cost p50) |
+| 보류 components | launch_quality / social / derivs (Phase 2-3 candidate) |
+| 신규 파일 | `src/regime/bangerBetaRegime.ts` / `bbriPersist.ts` / `bbriCron.ts` / `index.ts` (~450 LOC) |
+| 신규 tests | `test/bangerBetaRegime.test.ts` / `bbriPersist.test.ts` (~230 LOC) |
+| 사후 분석 | `scripts/bbri-retro.ts` — historical paper trade 시뮬 |
+| Config | `BBRI_ENABLED=false` default (운영자 opt-in) / `BBRI_INTERVAL_MS=3600000` / `BBRI_Z_SCORE_WINDOW_MS=7d` (Phase 0) |
+| Schema | `data/realtime/bbri-history.jsonl` 1줄/1h |
+
+### 4. Phase 1 진입 조건 (4 모두 충족 시)
+
+| 조건 | 임계 |
+|------|------|
+| baseline n | ≥ 168h (7d) sample |
+| 5x winner cross-tab | regime 70+ 빈도 ≥ 35-70 의 2배 |
+| Big-loss correlation | regime 0-35 의 big_loss rate ≥ baseline 1.5배 |
+| 운영자 ADR + Telegram critical ack | 명시적 승인 |
+
+미충족 시 Phase 0 유지, lane gating 활성 안 함.
+
+### 5. 우선순위 — 측정 sprint 후 candidate
+
+현 백로그 순서 (변경 없음):
+1. (P0) Track 1+2B 측정 sprint (Task #105)
+2. (P0/P2) 3대 incident 회복 (missed-alpha schema / drift origin / notifier capture)
+3. (P1) Track 2C — RugCheck 외부 API
+4. (P2) Track 3 — KOL-pair cohort
+5. **(P2) BBRI Phase 0 (Task #109)** ← 신규 백로그 추가
+6. (P2) Track 4 — Tick-level observer + Live mfe schema
+
+→ 측정 sprint 결과 + Track 3 결과 입력 후 BBRI Phase 0 진입 결정. 사용자 명시 승인 시 우선순위 조정 가능.
+
+---
+
+## 2026-04-29 (Evening) — Telegram 알림 재정비 + Reporting 안정화 (9 항목)
+
+직전 telegram 알림 운영 피드백 (verbose / 일관성 부족 / 1-2h 알림 안 옴 / 재기동 시 데이터 손실 / 금액 불일치) 일괄 대응.
+
+### 1. Wallet ground truth fix (4 lane, CRITICAL)
+- 발견: `if (receivedSol > 0 && pos.quantity > 0)` 조건이 receivedSol 음수일 때 `actualExitPrice` 갱신 차단 → DB/notification pnl 이 trigger price 기준 (이론값) 표시
+- 8JH1J6p4 incident 실측: 알림 -0.005 SOL vs 실 wallet -0.055 SOL (10x), PNL_DRIFT 0.0498 SOL 의 root cause
+- Fix: 4 lane (`kolSignalHandler` / `cupseyLaneHandler` / `pureWs/close` / `migrationLaneHandler`) 의 조건 `if (qty > 0)` 만 검사 → 음수 receivedSol 도 wallet 기준 actualExitPrice 갱신
+- 결과: `pnl = walletDelta` 항상 일치 (사명 §3 wallet ground truth)
+
+### 2. KOL CLOSE 통합 — sendTradeClose 사용 (cupsey/pure_ws/migration 와 일관성)
+- 이전: `sendInfo('kol_live_close')` raw 한 줄 문자열
+- 신규: 구조화 Trade 객체 → 다른 lane 과 동일 formatter
+- DB 미기록 경로 → `sendCritical('kol_live_close_no_db')` 별도 분리
+
+### 3. 메시지 3-line 표준화 + 🟢/🔴 일관 emoji
+- OPEN: 8라인 → **3라인**, CLOSE: 4-5라인 → **3라인**
+- ✅/❌ 가변 emoji → 🟢 진입 / 🔴 종료 일관 (W/L 부호로 표시)
+- 제거: 전략 라벨 / 시그널 품질 / Entry/Exit gap / 슬리피지 / 비용 분해 / 결과 라벨 / size constraint
+- 보존: pnl SOL+% / reason / 보유 / 가격 / 컨트랙트 / tx
+
+### 4. actualNotionalSol RPC 검증값 전파 + ⚠ planned flag
+- Order 타입에 `actualNotionalSol` + `partialFillDataMissing` 추가
+- 4 lane 모두 `resolveActualEntryMetrics` 의 actualEntryNotionalSol (RPC 측정 wallet delta) 을 sendTradeOpen 으로 전파
+- `partialFillDataMissing=true` 시 알림에 `· ⚠ planned (RPC 측정 누락)` flag
+
+### 5. Reporting scheduler — UTC hour boundary fire-once-per-hour
+- 발견: `setInterval(60_000) + minute === 0` strict 검사 fragile pattern → event loop drift 시 매 시간 firing 통째로 skip 가능 ("1, 2시간마다 알림 안 와" 운영자 보고 root cause)
+- Fix: `lastFiredUtcHour` tracking (UTC hour 기반) + 30s polling. minute 검사 제거.
+
+### 6. Hourly 개별 → 2h batch 통합
+- 매 hour capture 후 in-memory buffer (Telegram 미발사)
+- KST 짝수 hour heartbeat 시 buffer + current hour 시간별 한 줄씩 + 합계 = 단일 메시지
+- 일 24 hourly msg → 12 heartbeat msg (alarm fatigue 50% 감소)
+
+### 7. Restart-resilient persistence
+- `data/realtime/hourly-snapshots.jsonl` (capture append) + `hourly-flush-state.json` (lastFlushAtMs)
+- 봇 startup 시 `loadHourlyLinesSinceFlush()` rehydrate → 재기동 시점 무관 다음 batch 정합
+- 24h hard window 안전망 + 72h lazy prune
+
+### 8. Startup snapshot (기동 직후 1회)
+- 잔고 + floor margin + 직전 1h close + 다음 batch 시각
+- floor 위반 시 `⚠ floor 위반` 명시
+- baseline set → 다음 hourly capture delta 정확
+
+### 9. Tier 1 noise reduction (15분 작업, 일 −16 msg)
+- `KOL_HOURLY_DIGEST_INTERVAL_MS` default 1h → 2h (env override 가능, heartbeat 동기)
+- `heartbeat_ops` trivial-summary skip 강화 (signals=0 + executed=0 + diagnostic=0 + no trigger/cupsey/alias/freshness 시 skip)
+
+### 누적 working tree (9 파일 / +210 / -11 LOC, commit 미수행)
+
+### Quality 점검 — false positives 정정 패턴
+
+session 중 자체 quality check 에서 직전 audit 의 부정확 claim 6건 발견 (Jupiter 18k/min, Helius unbounded, sellQuoteProbe cache 부재, Sprint cost 추정, sendTradeAlert fold, regime fold cost-benefit). **교훈**: agent grep 단독 검증 한계 — critical claim 은 직접 read 필수. 문서화: memory:project_telegram_alerts_revamp_2026_04_29.md.
+
+### 미해결 / 후속 sprint
+- **`PRICE_ANOMALY] Partial fill` 빈도 측정** (1주): 5% 이상이면 root cause sprint
+- **C-3 sites sendTradeAlert fold** (조건부): 1주 partial close 발사 빈도 측정 후 결정
+- **B (regime + paper_metrics fold)**: 영구 보류
+
+### 검증
+tsc clean / jest **1122/1122 pass** (regression 0).
+
+---
+
 ## 2026-04-29 — reporting.ts hourly snapshot 정확성 fix (Q1+Q2+Q3) + reports/ gitignore
 
 ### 1. .gitignore — `reports/` 추가 + 기존 6 파일 untrack

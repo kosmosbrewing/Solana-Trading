@@ -255,6 +255,75 @@ function isInReentryCooldown(tokenMint: string): { blocked: boolean; remainingMs
 export function resetReentryCooldownForTests(): void {
   recentClosedTokens.clear();
 }
+
+// 2026-04-29 (P0-2 손실 방어 layer 0): KOL alpha decay cooldown.
+// 격언 "Cut losses short" 의 KOL-level 확장. 직전 N close 가 손실 streak 인 KOL 이 trigger 한
+// entry 를 차단 — 8JH1J6p4 incident 같은 cascade 직전 패턴 (KOL 4명 dump 직전) 의 코드화.
+//
+// State: kolId → recent N close pnl (ring buffer, in-memory).
+// 매 close 시 push (live + paper). startup empty.
+// 정확히는 "최근 close 의 cumulative pnl < 0 AND consec losing >= threshold" → cooldownMs 차단.
+//
+// Track 1 (same-token cooldown) 과 직교 — 둘 다 entry path 에서 검사.
+interface KolCloseRecord { closedAtMs: number; pnlSol: number; isWin: boolean; }
+const recentKolCloses = new Map<string, KolCloseRecord[]>();
+const KOL_DECAY_RING_SIZE = 5;  // 최근 N close 추적
+
+function markKolClosed(kolIds: string[], pnlSol: number): void {
+  if (!config.kolHunterKolDecayCooldownEnabled) return;
+  const nowMs = Date.now();
+  const isWin = pnlSol > 0;
+  for (const kolId of kolIds) {
+    const buf = recentKolCloses.get(kolId) ?? [];
+    buf.push({ closedAtMs: nowMs, pnlSol, isWin });
+    while (buf.length > KOL_DECAY_RING_SIZE) buf.shift();
+    recentKolCloses.set(kolId, buf);
+  }
+  // Lazy prune (잘 활동 안 하는 KOL 의 stale buffer 정리)
+  if (recentKolCloses.size > 200) {
+    const cutoff = nowMs - 24 * 60 * 60 * 1000;  // 24h 이상 된 entry 의 last record 면 drop
+    for (const [id, recs] of recentKolCloses) {
+      const last = recs[recs.length - 1];
+      if (last && last.closedAtMs < cutoff) recentKolCloses.delete(id);
+    }
+  }
+}
+
+function isKolInDecay(kolId: string): { decayed: boolean; reason?: string } {
+  if (!config.kolHunterKolDecayCooldownEnabled) return { decayed: false };
+  const buf = recentKolCloses.get(kolId);
+  if (!buf || buf.length < config.kolHunterKolDecayMinCloses) return { decayed: false };
+  const cooldownMs = config.kolHunterKolDecayCooldownMs;
+  if (cooldownMs <= 0) return { decayed: false };
+  const recent = buf.slice(-config.kolHunterKolDecayMinCloses);
+  const cumPnl = recent.reduce((s, r) => s + r.pnlSol, 0);
+  const losses = recent.filter((r) => !r.isWin).length;
+  const lossRatio = losses / recent.length;
+  // 결정 로직: 직전 N close 의 cumulative pnl 음수 AND 손실 비율 ≥ threshold AND 최근 close 가 cooldown 안
+  if (cumPnl >= 0) return { decayed: false };
+  if (lossRatio < config.kolHunterKolDecayLossRatioThreshold) return { decayed: false };
+  const lastCloseMs = recent[recent.length - 1].closedAtMs;
+  const elapsedMs = Date.now() - lastCloseMs;
+  if (elapsedMs >= cooldownMs) return { decayed: false };
+  return {
+    decayed: true,
+    reason: `kol=${kolId} recent ${recent.length} cum=${cumPnl.toFixed(4)} losses=${losses}/${recent.length} cooldown=${Math.round((cooldownMs - elapsedMs) / 60000)}min`,
+  };
+}
+
+/** entry 시 participating KOL 중 alpha decay 인 KOL 발견 시 차단. */
+function checkKolAlphaDecay(kolIds: string[]): { blocked: boolean; reason?: string } {
+  for (const kolId of kolIds) {
+    const r = isKolInDecay(kolId);
+    if (r.decayed) return { blocked: true, reason: r.reason };
+  }
+  return { blocked: false };
+}
+
+/** 테스트용 reset. */
+export function resetKolDecayForTests(): void {
+  recentKolCloses.clear();
+}
 // 2026-04-26 P1 audit fix #5: O(N) `[...active.values()].filter(p => p.tokenMint === X)` 패턴이
 // 매 price tick / kol_swap 마다 hot path 에 등장. token → positionId Set 인덱스로 O(1) 화.
 // 항상 active 와 동기화 (setActivePosition / deleteActivePosition wrapper 만 사용).
@@ -310,6 +379,46 @@ function pruneRecentKolTxsByCutoff(cutoffMs: number): void {
 // recentKolTxs 가 push/splice 될 때마다 length 가 바뀌므로 자동 invalidation.
 const SCORE_CACHE_BUCKET_MS = 1000;  // 1s bucket — 같은 second 내 중복 호출만 캐시 hit
 const scoreCache = new Map<string, { recentTxsLen: number; nowBucket: number; score: KolDiscoveryScore }>();
+
+// 2026-04-29: Co-buy graph community 캐시 (외부 전략 리포트 권고 #5).
+// recentKolTxs 로 community 빌드 → effectiveIndependentCount 산출 시 활용.
+// 빈도: 높지 않음 — 매 N분 마다 갱신 (cost = O(k²) where k=KOL count, ≤ 50).
+import { buildCoBuyGraph, type KolCommunity } from '../kol/coBuyGraph';
+let cachedCommunities: KolCommunity[] = [];
+let lastCommunityRefreshMs = 0;
+const COMMUNITY_REFRESH_INTERVAL_MS = 10 * 60 * 1000;  // 10분
+function refreshCommunitiesIfStale(nowMs: number): void {
+  if (!config.kolHunterCommunityDetectionEnabled) {
+    cachedCommunities = [];
+    return;
+  }
+  if (nowMs - lastCommunityRefreshMs < COMMUNITY_REFRESH_INTERVAL_MS) return;
+  try {
+    const result = buildCoBuyGraph(recentKolTxs, {
+      windowMs: config.kolHunterCommunityWindowMs,
+      minEdgeWeight: config.kolHunterCommunityMinEdgeWeight,
+    });
+    cachedCommunities = result.communities;
+    lastCommunityRefreshMs = nowMs;
+    if (result.communities.length > 0) {
+      const summary = result.communities
+        .filter((c) => c.members.length >= 2)
+        .map((c) => `${c.communityId}:${c.members.length}`)
+        .join(',');
+      log.info(
+        `[KOL_COBUY_GRAPH] refreshed — edges=${result.edges.length} communities=${result.communities.length} multi-member=[${summary}]`
+      );
+    }
+  } catch (err) {
+    log.warn(`[KOL_COBUY_GRAPH] refresh failed: ${err}`);
+  }
+}
+/** 테스트용 reset. */
+export function resetCommunityCacheForTests(): void {
+  cachedCommunities = [];
+  lastCommunityRefreshMs = 0;
+}
+
 function computeKolDiscoveryScoreCached(tokenMint: string, nowMs: number): KolDiscoveryScore {
   const bucket = Math.floor(nowMs / SCORE_CACHE_BUCKET_MS);
   const cached = scoreCache.get(tokenMint);
@@ -320,10 +429,11 @@ function computeKolDiscoveryScoreCached(tokenMint: string, nowMs: number): KolDi
   ) {
     return cached.score;
   }
+  refreshCommunitiesIfStale(nowMs);
   const score = computeKolDiscoveryScore(tokenMint, recentKolTxs, nowMs, {
     windowMs: config.kolScoringWindowMs,
     antiCorrelationMs: config.kolAntiCorrelationMs,
-  });
+  }, cachedCommunities.length > 0 ? cachedCommunities : undefined);
   scoreCache.set(tokenMint, { recentTxsLen: recentKolTxs.length, nowBucket: bucket, score });
   // Cache size cap — 1000 token (스캐닝 token 수가 그 이상이면 LRU 효과로 oldest 제거)
   if (scoreCache.size > 1000) {
@@ -955,6 +1065,33 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     `conviction=${trigger.conviction} score=${score.finalScore.toFixed(2)} ` +
     `kols=${score.independentKolCount}`
   );
+
+  // 2026-04-29 (P0-2 quality fix): smart-v3 production main path 에도 KOL alpha decay 적용.
+  // 이전 patch 는 resolveStalk (v1/legacy) 만 적용 → smart-v3 (kolHunterSmartV3Enabled=true default)
+  // 운영 환경에서 효과 0. 이 위치 (trigger 발화 직후, entry 진입 직전) 에 차단 검사 삽입.
+  // same-token cooldown 도 누락이라 함께 추가.
+  const cooldownCheck = isInReentryCooldown(cand.tokenMint);
+  if (cooldownCheck.blocked) {
+    log.info(
+      `[KOL_HUNTER_SMART_V3_REENTRY_BLOCK] ${cand.tokenMint.slice(0, 8)} cooldown ${Math.round(cooldownCheck.remainingMs/1000)}s — reject`
+    );
+    fireRejectObserver(cand.tokenMint, 'smart_v3_no_trigger', cand, score, {
+      survivalReason: 'reentry_cooldown',
+      survivalFlags: ['REENTRY_COOLDOWN'],
+      cooldownRemainingMs: cooldownCheck.remainingMs,
+    });
+    return;
+  }
+  const decayCheck = checkKolAlphaDecay(score.participatingKols.map((k) => k.id));
+  if (decayCheck.blocked) {
+    log.info(`[KOL_HUNTER_SMART_V3_DECAY_BLOCK] ${cand.tokenMint.slice(0, 8)} ${decayCheck.reason} — reject`);
+    fireRejectObserver(cand.tokenMint, 'smart_v3_no_trigger', cand, score, {
+      survivalReason: 'kol_alpha_decay',
+      survivalFlags: ['KOL_ALPHA_DECAY'],
+    });
+    return;
+  }
+
   const entryOptions: PaperEntryOptions = {
     parameterVersion: config.kolHunterSmartV3ParameterVersion,
     entryReason: trigger.reason,
@@ -1021,6 +1158,20 @@ async function resolveStalk(tokenMint: string): Promise<void> {
       survivalReason: 'reentry_cooldown',
       survivalFlags: ['REENTRY_COOLDOWN'],
       cooldownRemainingMs: cooldown.remainingMs,
+    });
+    return;
+  }
+
+  // 2026-04-29 (P0-2): KOL alpha decay cooldown.
+  // participating KOL 중 직전 N close 가 손실 streak 인 KOL 발견 시 차단.
+  // 8JH1J6p4 incident 의 KOL 다수 dump 직전 패턴 코드화.
+  const kolIds = score.participatingKols.map((k) => k.id);
+  const kolDecay = checkKolAlphaDecay(kolIds);
+  if (kolDecay.blocked) {
+    log.info(`[KOL_HUNTER_KOL_DECAY_BLOCK] ${tokenMint.slice(0, 8)} ${kolDecay.reason} — reject`);
+    fireRejectObserver(tokenMint, 'stalk_expired_no_consensus', cand, score, {
+      survivalReason: 'kol_alpha_decay',
+      survivalFlags: ['KOL_ALPHA_DECAY'],
     });
     return;
   }
@@ -1732,6 +1883,8 @@ function closePosition(
   // shadow arm (paired) 도 stamp 하지만 main arm 만 정합 (shadow 는 paper-only fallback).
   if (!pos.isShadowArm) {
     markTokenClosed(pos.tokenMint);
+    // 2026-04-29 (P0-2): KOL alpha decay tracking — paper close 도 KOL track-record 누적.
+    markKolClosed(pos.participatingKols.map((k) => k.id), netSol);
   }
 
   // price feed unsubscribe — token 의 모든 A/B arm 이 닫힌 뒤에만 정리
@@ -1880,6 +2033,7 @@ async function enterLivePosition(
   // 3. executeBuy.
   let actualEntryPrice = referencePrice;
   let actualQuantity = plannedQty;
+  let actualNotionalSol = referencePrice * plannedQty;  // 2026-04-29: RPC 측정 wallet delta (sendTradeOpen 전파)
   let entryTxSignature = 'KOL_LIVE_PENDING';
   let entrySlippageBps = 0;
   let partialFillDataMissing = false;
@@ -1903,6 +2057,7 @@ async function enterLivePosition(
     const metrics = resolveActualEntryMetrics(order, buyResult);
     actualEntryPrice = metrics.entryPrice;
     actualQuantity = metrics.quantity;
+    actualNotionalSol = metrics.actualEntryNotionalSol;
     entryTxSignature = buyResult.txSignature;
     entrySlippageBps = buyResult.slippageBps;
     partialFillDataMissing = metrics.partialFillDataMissing;
@@ -2088,6 +2243,9 @@ async function enterLivePosition(
       takeProfit1: actualEntryPrice * (1 + config.kolHunterT1Mfe),
       takeProfit2: actualEntryPrice * (1 + config.kolHunterT2Mfe),
       timeStopMinutes: Math.ceil(config.kolHunterStalkWindowSec / 60),
+      // 2026-04-29: RPC 측정 wallet delta + partial-fill flag 전파.
+      actualNotionalSol,
+      partialFillDataMissing,
     }, entryTxSignature).catch((err) => {
       log.warn(`[KOL_HUNTER_LIVE_NOTIFY_OPEN_FAIL] ${positionId} ${err}`);
     });
@@ -2329,6 +2487,8 @@ async function closeLivePosition(
   // 2026-04-29 (Track 1): live close 도 same-token cooldown stamp.
   if (!pos.isShadowArm) {
     markTokenClosed(pos.tokenMint);
+    // 2026-04-29 (P0-2): KOL alpha decay tracking — live close 가 우선 신호 (real wallet delta).
+    markKolClosed(pos.participatingKols.map((k) => k.id), pnl);
   }
   unsubscribePriceIfIdle(pos.tokenMint);
 

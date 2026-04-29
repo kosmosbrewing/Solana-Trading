@@ -1,0 +1,765 @@
+{
+  "generatedAt": "2026-04-29T06:29:34.533Z",
+  "txWindowDays": 30,
+  "parsedLines": 22097,
+  "skippedLines": 0,
+  "activeKolCount": 42,
+  "rows": [
+    {
+      "kolId": "bigwarz",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "scalper",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "bigwarz",
+        "txCount30d": 576,
+        "buyCount30d": 345,
+        "sellCount30d": 231,
+        "avgTicketSol": 1.3612399873043408,
+        "medianHoldTimeMs": 56500,
+        "reBuyDensity": 1.35,
+        "timeToFirstSellMs": 56500,
+        "uniqueMintsBought30d": 80
+      }
+    },
+    {
+      "kolId": "casino",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "whale",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "casino",
+        "txCount30d": 306,
+        "buyCount30d": 159,
+        "sellCount30d": 147,
+        "avgTicketSol": 5.174215876138363,
+        "medianHoldTimeMs": 75000,
+        "reBuyDensity": 0.3048780487804878,
+        "timeToFirstSellMs": 75000,
+        "uniqueMintsBought30d": 82
+      }
+    },
+    {
+      "kolId": "chester",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "scalper",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "chester",
+        "txCount30d": 1314,
+        "buyCount30d": 870,
+        "sellCount30d": 444,
+        "avgTicketSol": 0.8061198436413787,
+        "medianHoldTimeMs": 11000,
+        "reBuyDensity": 1.2241379310344827,
+        "timeToFirstSellMs": 11000,
+        "uniqueMintsBought30d": 348
+      }
+    },
+    {
+      "kolId": "clown",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "scalper",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "clown",
+        "txCount30d": 609,
+        "buyCount30d": 315,
+        "sellCount30d": 294,
+        "avgTicketSol": 1.1436231664571426,
+        "medianHoldTimeMs": 21000,
+        "reBuyDensity": 0.678082191780822,
+        "timeToFirstSellMs": 21000,
+        "uniqueMintsBought30d": 146
+      }
+    },
+    {
+      "kolId": "clukz",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "whale",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "clukz",
+        "txCount30d": 433,
+        "buyCount30d": 177,
+        "sellCount30d": 256,
+        "avgTicketSol": 5.392419151943504,
+        "medianHoldTimeMs": 15500,
+        "reBuyDensity": 0.26126126126126126,
+        "timeToFirstSellMs": 15500,
+        "uniqueMintsBought30d": 111
+      }
+    },
+    {
+      "kolId": "crypto_d",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "whale",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "crypto_d",
+        "txCount30d": 186,
+        "buyCount30d": 31,
+        "sellCount30d": 155,
+        "avgTicketSol": 11.267831489129032,
+        "medianHoldTimeMs": 2235000,
+        "reBuyDensity": 0.375,
+        "timeToFirstSellMs": 2235000,
+        "uniqueMintsBought30d": 16
+      }
+    },
+    {
+      "kolId": "decu",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "scalper",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "decu",
+        "txCount30d": 1555,
+        "buyCount30d": 1076,
+        "sellCount30d": 479,
+        "avgTicketSol": 0.8492616831273321,
+        "medianHoldTimeMs": 22000,
+        "reBuyDensity": 1.2125984251968505,
+        "timeToFirstSellMs": 22000,
+        "uniqueMintsBought30d": 381
+      }
+    },
+    {
+      "kolId": "degenerate_brian",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "momentum_confirmer",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "degenerate_brian",
+        "txCount30d": 101,
+        "buyCount30d": 61,
+        "sellCount30d": 40,
+        "avgTicketSol": 1.2456789829836066,
+        "medianHoldTimeMs": 370500,
+        "reBuyDensity": 0,
+        "timeToFirstSellMs": 370500,
+        "uniqueMintsBought30d": 23
+      }
+    },
+    {
+      "kolId": "domy",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "scalper",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "domy",
+        "txCount30d": 1709,
+        "buyCount30d": 1230,
+        "sellCount30d": 479,
+        "avgTicketSol": 1.9209952104414638,
+        "medianHoldTimeMs": 15000,
+        "reBuyDensity": 4.966019417475728,
+        "timeToFirstSellMs": 15000,
+        "uniqueMintsBought30d": 206
+      }
+    },
+    {
+      "kolId": "dv",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "scalper",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "dv",
+        "txCount30d": 3232,
+        "buyCount30d": 2332,
+        "sellCount30d": 900,
+        "avgTicketSol": 0.486341100505147,
+        "medianHoldTimeMs": 10000,
+        "reBuyDensity": 3.0296296296296297,
+        "timeToFirstSellMs": 10000,
+        "uniqueMintsBought30d": 540
+      }
+    },
+    {
+      "kolId": "dzfk",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "whale",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "dzfk",
+        "txCount30d": 12,
+        "buyCount30d": 4,
+        "sellCount30d": 8,
+        "avgTicketSol": 8.8128612335,
+        "medianHoldTimeMs": 0,
+        "reBuyDensity": 0,
+        "timeToFirstSellMs": 0,
+        "uniqueMintsBought30d": 1
+      }
+    },
+    {
+      "kolId": "earl",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "scalper",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "earl",
+        "txCount30d": 501,
+        "buyCount30d": 235,
+        "sellCount30d": 266,
+        "avgTicketSol": 2.5330173533361737,
+        "medianHoldTimeMs": 17000,
+        "reBuyDensity": 0.1301775147928994,
+        "timeToFirstSellMs": 17000,
+        "uniqueMintsBought30d": 169
+      }
+    },
+    {
+      "kolId": "ekawy_2",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "momentum_confirmer",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "ekawy_2",
+        "txCount30d": 16,
+        "buyCount30d": 10,
+        "sellCount30d": 6,
+        "avgTicketSol": 2.2999507600999998,
+        "medianHoldTimeMs": 632000,
+        "reBuyDensity": 0.4,
+        "timeToFirstSellMs": 632000,
+        "uniqueMintsBought30d": 5
+      }
+    },
+    {
+      "kolId": "euris",
+      "tier": "S",
+      "currentStyle": "unset",
+      "autoStyle": "scalper",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "euris",
+        "txCount30d": 445,
+        "buyCount30d": 303,
+        "sellCount30d": 142,
+        "avgTicketSol": 1.0211551087788795,
+        "medianHoldTimeMs": 34000,
+        "reBuyDensity": 0.9647058823529412,
+        "timeToFirstSellMs": 34000,
+        "uniqueMintsBought30d": 85
+      }
+    },
+    {
+      "kolId": "gh0stee",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "scalper",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "gh0stee",
+        "txCount30d": 149,
+        "buyCount30d": 87,
+        "sellCount30d": 62,
+        "avgTicketSol": 2.529198779390807,
+        "medianHoldTimeMs": 69500,
+        "reBuyDensity": 0.4186046511627907,
+        "timeToFirstSellMs": 69500,
+        "uniqueMintsBought30d": 43
+      }
+    },
+    {
+      "kolId": "giann",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "scalper",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "giann",
+        "txCount30d": 189,
+        "buyCount30d": 67,
+        "sellCount30d": 122,
+        "avgTicketSol": 2.5087086532238816,
+        "medianHoldTimeMs": 9000,
+        "reBuyDensity": 0.11864406779661017,
+        "timeToFirstSellMs": 9000,
+        "uniqueMintsBought30d": 59
+      }
+    },
+    {
+      "kolId": "heyitsyolo",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "scalper",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "heyitsyolo",
+        "txCount30d": 796,
+        "buyCount30d": 549,
+        "sellCount30d": 247,
+        "avgTicketSol": 0.5303903040437156,
+        "medianHoldTimeMs": 19000,
+        "reBuyDensity": 1.0922330097087378,
+        "timeToFirstSellMs": 19000,
+        "uniqueMintsBought30d": 206
+      }
+    },
+    {
+      "kolId": "jakey",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "momentum_confirmer",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "jakey",
+        "txCount30d": 64,
+        "buyCount30d": 37,
+        "sellCount30d": 27,
+        "avgTicketSol": 2.664932132972973,
+        "medianHoldTimeMs": 323000,
+        "reBuyDensity": 0.23809523809523808,
+        "timeToFirstSellMs": 323000,
+        "uniqueMintsBought30d": 21
+      }
+    },
+    {
+      "kolId": "jijo",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "scalper",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "jijo",
+        "txCount30d": 448,
+        "buyCount30d": 281,
+        "sellCount30d": 167,
+        "avgTicketSol": 1.029627793284697,
+        "medianHoldTimeMs": 22000,
+        "reBuyDensity": 1.4342105263157894,
+        "timeToFirstSellMs": 22000,
+        "uniqueMintsBought30d": 76
+      }
+    },
+    {
+      "kolId": "johnson",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "momentum_confirmer",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "johnson",
+        "txCount30d": 412,
+        "buyCount30d": 321,
+        "sellCount30d": 91,
+        "avgTicketSol": 0.9343593709190021,
+        "medianHoldTimeMs": 404000,
+        "reBuyDensity": 1.9454545454545455,
+        "timeToFirstSellMs": 404000,
+        "uniqueMintsBought30d": 55
+      }
+    },
+    {
+      "kolId": "kadenox",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "scalper",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "kadenox",
+        "txCount30d": 416,
+        "buyCount30d": 174,
+        "sellCount30d": 242,
+        "avgTicketSol": 3.479950673390806,
+        "medianHoldTimeMs": 18000,
+        "reBuyDensity": 0.2967032967032967,
+        "timeToFirstSellMs": 18000,
+        "uniqueMintsBought30d": 91
+      }
+    },
+    {
+      "kolId": "kev",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "scalper",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "kev",
+        "txCount30d": 544,
+        "buyCount30d": 307,
+        "sellCount30d": 237,
+        "avgTicketSol": 1.2130181297100975,
+        "medianHoldTimeMs": 8000,
+        "reBuyDensity": 0.5025380710659898,
+        "timeToFirstSellMs": 8000,
+        "uniqueMintsBought30d": 197
+      }
+    },
+    {
+      "kolId": "letterbomb",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "scalper",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "letterbomb",
+        "txCount30d": 1496,
+        "buyCount30d": 965,
+        "sellCount30d": 531,
+        "avgTicketSol": 1.0575782616974068,
+        "medianHoldTimeMs": 12500,
+        "reBuyDensity": 3.1366120218579234,
+        "timeToFirstSellMs": 12500,
+        "uniqueMintsBought30d": 183
+      }
+    },
+    {
+      "kolId": "limfork_eth",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "scalper",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "limfork_eth",
+        "txCount30d": 680,
+        "buyCount30d": 480,
+        "sellCount30d": 200,
+        "avgTicketSol": 0.8334281696000009,
+        "medianHoldTimeMs": 51000,
+        "reBuyDensity": 1.3541666666666667,
+        "timeToFirstSellMs": 51000,
+        "uniqueMintsBought30d": 144
+      }
+    },
+    {
+      "kolId": "matt",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "momentum_confirmer",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "matt",
+        "txCount30d": 108,
+        "buyCount30d": 59,
+        "sellCount30d": 49,
+        "avgTicketSol": 3.005350273491525,
+        "medianHoldTimeMs": 1846000,
+        "reBuyDensity": 0.4230769230769231,
+        "timeToFirstSellMs": 1846000,
+        "uniqueMintsBought30d": 26
+      }
+    },
+    {
+      "kolId": "naruza",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "scalper",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "naruza",
+        "txCount30d": 157,
+        "buyCount30d": 68,
+        "sellCount30d": 89,
+        "avgTicketSol": 2.1180847861617638,
+        "medianHoldTimeMs": 44000,
+        "reBuyDensity": 0.2631578947368421,
+        "timeToFirstSellMs": 44000,
+        "uniqueMintsBought30d": 38
+      }
+    },
+    {
+      "kolId": "noob_mini",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "scalper",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "noob_mini",
+        "txCount30d": 908,
+        "buyCount30d": 699,
+        "sellCount30d": 209,
+        "avgTicketSol": 0.6088330205650907,
+        "medianHoldTimeMs": 23000,
+        "reBuyDensity": 2.4710743801652892,
+        "timeToFirstSellMs": 23000,
+        "uniqueMintsBought30d": 121
+      }
+    },
+    {
+      "kolId": "nyhrox",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "scalper",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "nyhrox",
+        "txCount30d": 310,
+        "buyCount30d": 113,
+        "sellCount30d": 197,
+        "avgTicketSol": 2.7185866628318602,
+        "medianHoldTimeMs": 50000,
+        "reBuyDensity": 0.8571428571428571,
+        "timeToFirstSellMs": 50000,
+        "uniqueMintsBought30d": 42
+      }
+    },
+    {
+      "kolId": "ogantd",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "whale",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "ogantd",
+        "txCount30d": 47,
+        "buyCount30d": 27,
+        "sellCount30d": 20,
+        "avgTicketSol": 5.83689897814815,
+        "medianHoldTimeMs": 3972500,
+        "reBuyDensity": 0.18181818181818182,
+        "timeToFirstSellMs": 3972500,
+        "uniqueMintsBought30d": 11
+      }
+    },
+    {
+      "kolId": "schoen",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "scalper",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "schoen",
+        "txCount30d": 207,
+        "buyCount30d": 117,
+        "sellCount30d": 90,
+        "avgTicketSol": 4.096284157162393,
+        "medianHoldTimeMs": 269000,
+        "reBuyDensity": 0.3055555555555556,
+        "timeToFirstSellMs": 269000,
+        "uniqueMintsBought30d": 72
+      }
+    },
+    {
+      "kolId": "the_doc",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "scalper",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "the_doc",
+        "txCount30d": 233,
+        "buyCount30d": 135,
+        "sellCount30d": 98,
+        "avgTicketSol": 1.8008663865777785,
+        "medianHoldTimeMs": 129000,
+        "reBuyDensity": 0.18032786885245902,
+        "timeToFirstSellMs": 129000,
+        "uniqueMintsBought30d": 61
+      }
+    },
+    {
+      "kolId": "theo",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "scalper",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "theo",
+        "txCount30d": 2333,
+        "buyCount30d": 1696,
+        "sellCount30d": 637,
+        "avgTicketSol": 0.9857227662228963,
+        "medianHoldTimeMs": 25000,
+        "reBuyDensity": 2.8931297709923665,
+        "timeToFirstSellMs": 25000,
+        "uniqueMintsBought30d": 393
+      }
+    },
+    {
+      "kolId": "trenchman",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "scalper",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "trenchman",
+        "txCount30d": 190,
+        "buyCount30d": 106,
+        "sellCount30d": 84,
+        "avgTicketSol": 2.913131579556605,
+        "medianHoldTimeMs": 172000,
+        "reBuyDensity": 0.15625,
+        "timeToFirstSellMs": 172000,
+        "uniqueMintsBought30d": 64
+      }
+    },
+    {
+      "kolId": "trey",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "scalper",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "trey",
+        "txCount30d": 505,
+        "buyCount30d": 252,
+        "sellCount30d": 253,
+        "avgTicketSol": 3.0726174236785715,
+        "medianHoldTimeMs": 35000,
+        "reBuyDensity": 0.34375,
+        "timeToFirstSellMs": 35000,
+        "uniqueMintsBought30d": 128
+      }
+    },
+    {
+      "kolId": "yenni",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "scalper",
+      "diff": "newly_classified",
+      "metric": {
+        "kolId": "yenni",
+        "txCount30d": 467,
+        "buyCount30d": 362,
+        "sellCount30d": 105,
+        "avgTicketSol": 1.3556264030276257,
+        "medianHoldTimeMs": 197500,
+        "reBuyDensity": 1.1940298507462686,
+        "timeToFirstSellMs": 197500,
+        "uniqueMintsBought30d": 67
+      }
+    },
+    {
+      "kolId": "bflg",
+      "tier": "S",
+      "currentStyle": "unset",
+      "autoStyle": "unknown",
+      "diff": "sample_too_small",
+      "metric": {
+        "kolId": "bflg",
+        "txCount30d": 4,
+        "buyCount30d": 0,
+        "sellCount30d": 4,
+        "avgTicketSol": 0,
+        "medianHoldTimeMs": 0,
+        "reBuyDensity": 0,
+        "timeToFirstSellMs": 0,
+        "uniqueMintsBought30d": 0
+      }
+    },
+    {
+      "kolId": "daumen",
+      "tier": "A",
+      "currentStyle": "scalper",
+      "autoStyle": "unknown",
+      "diff": "sample_too_small",
+      "metric": {
+        "kolId": "daumen",
+        "txCount30d": 0,
+        "buyCount30d": 0,
+        "sellCount30d": 0,
+        "avgTicketSol": 0,
+        "medianHoldTimeMs": 0,
+        "reBuyDensity": 0,
+        "timeToFirstSellMs": 0,
+        "uniqueMintsBought30d": 0
+      }
+    },
+    {
+      "kolId": "ftg1",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "unknown",
+      "diff": "sample_too_small",
+      "metric": {
+        "kolId": "ftg1",
+        "txCount30d": 0,
+        "buyCount30d": 0,
+        "sellCount30d": 0,
+        "avgTicketSol": 0,
+        "medianHoldTimeMs": 0,
+        "reBuyDensity": 0,
+        "timeToFirstSellMs": 0,
+        "uniqueMintsBought30d": 0
+      }
+    },
+    {
+      "kolId": "gdaqp3",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "unknown",
+      "diff": "sample_too_small",
+      "metric": {
+        "kolId": "gdaqp3",
+        "txCount30d": 0,
+        "buyCount30d": 0,
+        "sellCount30d": 0,
+        "avgTicketSol": 0,
+        "medianHoldTimeMs": 0,
+        "reBuyDensity": 0,
+        "timeToFirstSellMs": 0,
+        "uniqueMintsBought30d": 0
+      }
+    },
+    {
+      "kolId": "him",
+      "tier": "A",
+      "currentStyle": "unset",
+      "autoStyle": "unknown",
+      "diff": "sample_too_small",
+      "metric": {
+        "kolId": "him",
+        "txCount30d": 0,
+        "buyCount30d": 0,
+        "sellCount30d": 0,
+        "avgTicketSol": 0,
+        "medianHoldTimeMs": 0,
+        "reBuyDensity": 0,
+        "timeToFirstSellMs": 0,
+        "uniqueMintsBought30d": 0
+      }
+    },
+    {
+      "kolId": "orange",
+      "tier": "A",
+      "currentStyle": "scalper",
+      "autoStyle": "unknown",
+      "diff": "sample_too_small",
+      "metric": {
+        "kolId": "orange",
+        "txCount30d": 0,
+        "buyCount30d": 0,
+        "sellCount30d": 0,
+        "avgTicketSol": 0,
+        "medianHoldTimeMs": 0,
+        "reBuyDensity": 0,
+        "timeToFirstSellMs": 0,
+        "uniqueMintsBought30d": 0
+      }
+    },
+    {
+      "kolId": "wallet_684cvp",
+      "tier": "A",
+      "currentStyle": "scalper",
+      "autoStyle": "unknown",
+      "diff": "sample_too_small",
+      "metric": {
+        "kolId": "wallet_684cvp",
+        "txCount30d": 0,
+        "buyCount30d": 0,
+        "sellCount30d": 0,
+        "avgTicketSol": 0,
+        "medianHoldTimeMs": 0,
+        "reBuyDensity": 0,
+        "timeToFirstSellMs": 0,
+        "uniqueMintsBought30d": 0
+      }
+    }
+  ]
+}

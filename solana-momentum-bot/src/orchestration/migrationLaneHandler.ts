@@ -433,6 +433,8 @@ async function enterMigrationProbe(
 
   let actualEntryPrice = currentPrice;
   let actualQuantity = quantity;
+  let actualNotionalSol = currentPrice * quantity;  // 2026-04-29: RPC 측정 wallet delta 전파용
+  let partialFillDataMissing = false;
   let entryTxSignature = 'PAPER_TRADE';
   let entrySlippageBps = 0;
 
@@ -455,6 +457,8 @@ async function enterMigrationProbe(
       const metrics = resolveActualEntryMetrics(order, buyResult);
       actualEntryPrice = metrics.entryPrice;
       actualQuantity = metrics.quantity;
+      actualNotionalSol = metrics.actualEntryNotionalSol;
+      partialFillDataMissing = metrics.partialFillDataMissing;
       entryTxSignature = buyResult.txSignature;
       entrySlippageBps = buyResult.slippageBps;
       log.info(
@@ -540,6 +544,9 @@ async function enterMigrationProbe(
       takeProfit1: actualEntryPrice * (1 + config.migrationProbeMfeThreshold),
       takeProfit2: actualEntryPrice * (1 + config.migrationWinnerTrailingPct * 2),
       timeStopMinutes: Math.ceil(config.migrationWinnerMaxHoldSec / 60),
+      // 2026-04-29: RPC 측정 wallet delta + partial-fill flag.
+      actualNotionalSol,
+      partialFillDataMissing,
     }, entryTxSignature).catch(() => {});
   }
 }

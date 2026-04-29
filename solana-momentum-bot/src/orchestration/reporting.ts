@@ -1,3 +1,5 @@
+import { appendFile, mkdir, readFile, writeFile } from 'fs/promises';
+import path from 'path';
 import { CostSummary, DailySummaryReport, RealtimeAdmissionSummary } from '../notifier/dailySummaryFormatter';
 import {
   buildHeartbeatPerformanceSummary,
@@ -62,6 +64,17 @@ export function scheduleDailySummary(ctx: BotContext): ReturnType<typeof setInte
   // 2026-04-29 fix: 30s polling + lastFiredUtcHour 기반 fire-once-per-hour 보장.
   log.info('[Reporting] scheduler started — 30s poll, fire-once-per-UTC-hour, KST-aware');
 
+  // 2026-04-29 (restart-resilient): disk 에서 hourly buffer rehydrate.
+  // lastFlushAtMs 이후 entries 만 → 다음 heartbeat 시 봇 재기동 무관 정확한 batch 구성.
+  void loadHourlyLinesSinceFlush().then((lines) => {
+    if (lines.length > 0) {
+      hourlyLineBuffer.push(...lines);
+      log.info(`[Reporting] rehydrated ${lines.length} hourly snapshot(s) from disk (since last flush)`);
+    }
+  }).catch((err) => {
+    log.warn(`[Reporting] hourly buffer rehydrate failed: ${err}`);
+  });
+
   // 2026-04-29: 기동 직후 startup snapshot 1회 발사 — 운영자가 봇 정상 작동 + 현재 상태 확인.
   // 다음 정규 batch (heartbeat / daily) 까지 기다리지 않고 즉시 Telegram 으로 baseline 노출.
   // hourlyBaseline 도 동시에 set → 다음 hour 의 delta 계산 정확히.
@@ -119,8 +132,16 @@ function formatKstHour(now: Date): string {
 // 2026-04-29 (B안): hourly 개별 Telegram 발사 → 2시간 batch 로 통합.
 // 매 KST hour 정각 1회 capture (in-memory line buffer) + heartbeat / daily 시점에 일괄 flush.
 // 한 줄 요약 형식: `- HH:00 · X.XXXX SOL (±delta) · close N건 (WL) net ±M SOL [· 🎉 5x+]`
+//
+// 2026-04-29 (restart-resilient): disk persist 추가.
+//   - 매 hourly capture → `data/realtime/hourly-snapshots.jsonl` 에 append
+//   - lastFlushAtMs 는 `data/realtime/hourly-flush-state.json` 에 기록
+//   - scheduler startup 시 lastFlushAtMs 이후의 entries 만 in-memory rehydrate
+//   - heartbeat / daily flush 시 lastFlushAtMs 갱신 → 다음 batch 는 새 window 만
+//   → 봇 재기동 시점 무관 24h 전체 (또는 last-flush 기준 window) 정확 출력.
 interface HourlyLine {
   kstHour: number;
+  capturedAtMs: number;  // restart-resilient persistence + cross-day filter
   text: string;
   liveClosed: number;
   liveWinners: number;
@@ -129,6 +150,103 @@ interface HourlyLine {
   fivexWinners: number;
 }
 const hourlyLineBuffer: HourlyLine[] = [];
+
+const HOURLY_SNAPSHOT_FILE = 'hourly-snapshots.jsonl';
+const HOURLY_FLUSH_STATE_FILE = 'hourly-flush-state.json';
+const HOURLY_SNAPSHOT_RETENTION_MS = 72 * 60 * 60 * 1000;  // 72h — daily 24h 의 안전 여유
+
+async function persistHourlyLine(line: HourlyLine): Promise<void> {
+  try {
+    const dir = config.realtimeDataDir;
+    await mkdir(dir, { recursive: true });
+    await appendFile(path.join(dir, HOURLY_SNAPSHOT_FILE), JSON.stringify(line) + '\n', 'utf8');
+  } catch (err) {
+    log.warn(`[Reporting] hourly snapshot persist failed: ${err}`);
+  }
+}
+
+async function loadHourlyLinesSinceFlush(): Promise<HourlyLine[]> {
+  try {
+    const dir = config.realtimeDataDir;
+    let lastFlushAtMs = 0;
+    try {
+      const stateRaw = await readFile(path.join(dir, HOURLY_FLUSH_STATE_FILE), 'utf8');
+      const state = JSON.parse(stateRaw) as { lastFlushAtMs?: number };
+      lastFlushAtMs = typeof state.lastFlushAtMs === 'number' ? state.lastFlushAtMs : 0;
+    } catch {
+      // first run — no state file yet
+    }
+    // 24h hard window (안전망 — daily 미발사 incident 시 무한 누적 차단)
+    const windowStartMs = Math.max(lastFlushAtMs, Date.now() - HOURLY_SNAPSHOT_RETENTION_MS);
+
+    let text: string;
+    try {
+      text = await readFile(path.join(dir, HOURLY_SNAPSHOT_FILE), 'utf8');
+    } catch {
+      return [];
+    }
+    const lines = text.split('\n').filter((l) => l.trim().length > 0);
+    const result: HourlyLine[] = [];
+    for (const raw of lines) {
+      try {
+        const entry = JSON.parse(raw) as HourlyLine;
+        if (typeof entry.capturedAtMs === 'number' && entry.capturedAtMs > windowStartMs) {
+          result.push(entry);
+        }
+      } catch {
+        // malformed line — skip
+      }
+    }
+    // sort by capturedAtMs ascending (file is append-order, but defensive)
+    result.sort((a, b) => a.capturedAtMs - b.capturedAtMs);
+    return result;
+  } catch (err) {
+    log.warn(`[Reporting] hourly snapshot load failed: ${err}`);
+    return [];
+  }
+}
+
+async function persistFlushState(nowMs: number): Promise<void> {
+  try {
+    const dir = config.realtimeDataDir;
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      path.join(dir, HOURLY_FLUSH_STATE_FILE),
+      JSON.stringify({ lastFlushAtMs: nowMs }),
+      'utf8'
+    );
+  } catch (err) {
+    log.warn(`[Reporting] hourly flush state persist failed: ${err}`);
+  }
+}
+
+async function pruneOldHourlySnapshots(): Promise<void> {
+  // 72h 이전 entries 제거 (lazy — heartbeat / daily 시 호출).
+  // 실패해도 silent — 무한 누적은 24h hard window 가 차단.
+  try {
+    const dir = config.realtimeDataDir;
+    const filePath = path.join(dir, HOURLY_SNAPSHOT_FILE);
+    const text = await readFile(filePath, 'utf8').catch(() => '');
+    if (!text) return;
+    const cutoffMs = Date.now() - HOURLY_SNAPSHOT_RETENTION_MS;
+    const lines = text.split('\n').filter((l) => l.trim().length > 0);
+    const kept: string[] = [];
+    for (const raw of lines) {
+      try {
+        const entry = JSON.parse(raw) as HourlyLine;
+        if (typeof entry.capturedAtMs === 'number' && entry.capturedAtMs > cutoffMs) {
+          kept.push(raw);
+        }
+      } catch { /* drop malformed */ }
+    }
+    if (kept.length !== lines.length) {
+      await writeFile(filePath, kept.join('\n') + (kept.length > 0 ? '\n' : ''), 'utf8');
+      log.debug(`[Reporting] hourly snapshot pruned: ${lines.length} → ${kept.length}`);
+    }
+  } catch (err) {
+    log.debug(`[Reporting] hourly snapshot prune failed: ${err}`);
+  }
+}
 
 async function captureHourlySnapshot(ctx: BotContext): Promise<HourlyLine> {
   const now = new Date();
@@ -191,14 +309,25 @@ async function captureHourlySnapshot(ctx: BotContext): Promise<HourlyLine> {
 
   hourlyBaseline = { balanceSol: balance, capturedAtMs: now.getTime() };
 
-  return { kstHour, text, liveClosed: liveClosedCount, liveWinners, liveLosers, liveCumPnl, fivexWinners };
+  return {
+    kstHour,
+    capturedAtMs: now.getTime(),
+    text,
+    liveClosed: liveClosedCount,
+    liveWinners,
+    liveLosers,
+    liveCumPnl,
+    fivexWinners,
+  };
 }
 
 async function bufferHourlySnapshot(ctx: BotContext): Promise<void> {
   // hourly slot — 알림 미발사. heartbeat / daily 시 batch flush.
+  // 2026-04-29 (restart-resilient): in-memory buffer + disk persist 동시.
   try {
     const line = await captureHourlySnapshot(ctx);
     hourlyLineBuffer.push(line);
+    await persistHourlyLine(line);
   } catch (err) {
     log.warn(`Hourly snapshot capture failed: ${err}`);
   }
@@ -232,8 +361,12 @@ function buildHourlyDigest(currentHour: HourlyLine | null): string {
   return [headline, ...allLines.map((l) => l.text), aggregateLine].join('\n');
 }
 
-function flushHourlyBuffer(): void {
+async function flushHourlyBuffer(): Promise<void> {
   hourlyLineBuffer.length = 0;
+  // 2026-04-29 (restart-resilient): lastFlushAtMs 갱신 → 다음 batch window 의 시작점.
+  await persistFlushState(Date.now());
+  // lazy prune (72h 이전 entries 정리)
+  void pruneOldHourlySnapshots();
 }
 
 // 2026-04-29: 기동 직후 1회 발사 — baseline + 현재 상태 + 다음 batch 시각 안내.
@@ -322,7 +455,7 @@ async function sendHeartbeatReport(ctx: BotContext): Promise<void> {
     return null;
   });
   const hourlyDigest = buildHourlyDigest(currentHourLine);
-  flushHourlyBuffer();
+  await flushHourlyBuffer();
 
   const userLines: string[] = [];
   if (hourlyDigest) userLines.push(hourlyDigest);
@@ -353,10 +486,22 @@ async function sendHeartbeatReport(ctx: BotContext): Promise<void> {
     await ctx.notifier.sendInfo(userLines.join('\n\n'), 'heartbeat');
   }
 
-  const sparseSummary = buildSparseOpsSummaryMessage(
-    loadSparseOpsSummary(config.realtimeDataDir, HEARTBEAT_WINDOW_HOURS, 3)
-  );
-  if (sparseSummary) {
+  // 2026-04-29 (Tier 1 noise reduction): trivial-summary skip 강화.
+  // 이전: `if (sparseSummary)` — undefined 만 차단 (loadSparseOpsSummary 가 undefined 반환 시).
+  //   loadSparseOpsSummary 는 current-session.json + runtime-diagnostics.json 만 있으면 항상 build →
+  //   "신호 0건 | 진입 0건 | 진단 이벤트 0건" 같은 trivially-empty summary 도 발사 = 실제 noise.
+  // 현재: 신호/진입/진단/trigger/cupsey funnel/alias miss/freshness 전부 0 또는 부재면 skip.
+  const sparseSummaryData = loadSparseOpsSummary(config.realtimeDataDir, HEARTBEAT_WINDOW_HOURS, 3);
+  const sparseSummary = buildSparseOpsSummaryMessage(sparseSummaryData);
+  const sparseTrivial = !sparseSummaryData
+    || (sparseSummaryData.totalSignals === 0
+      && sparseSummaryData.executedLiveSignals === 0
+      && sparseSummaryData.diagnosticEvents === 0
+      && !sparseSummaryData.latestTriggerStats
+      && !sparseSummaryData.latestCupseyFunnel
+      && sparseSummaryData.aliasMissTop.length === 0
+      && !sparseSummaryData.freshness);
+  if (sparseSummary && !sparseTrivial) {
     await ctx.notifier.sendInfo(sparseSummary, 'heartbeat_ops');
   }
 }
@@ -372,7 +517,7 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
   if (digest) {
     await ctx.notifier.sendInfo(digest, 'hourly_digest_pre_daily').catch(() => {});
   }
-  flushHourlyBuffer();
+  await flushHourlyBuffer();
 
   const cadenceHours = [6, 12, 24];
   const rejectionMixHours = 24;

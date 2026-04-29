@@ -31,7 +31,10 @@ export const pairAndSession = {
   // 2026-04-28 (Phase 2B, ralph-loop): T+30s 추가 — close 직후 즉시 rebound (scalper sell 후 회복)
   // 측정. 외부 피드백의 "post-close T+30/60/300/1800s" 정합. close 30초 안 reject 후 30s probe
   // 가 가장 critical (scalper KOL sell trigger 가 misfire 인지 즉시 판정 가능).
-  missedAlphaObserverOffsetsSec: (process.env.MISSED_ALPHA_OBSERVER_OFFSETS_SEC ?? '30,60,300,1800')
+  // 2026-04-29 (external strategy report addendum): T+2h(7200s) 추가 — long-tail trajectory
+  // 측정. T+30m 이후 추가 상승 (5x+ winner late breakout) 을 capture, retrospective false-neg
+  // rate 분포 산출의 분모 확장. observer fire-and-forget 이라 trade 결정 영향 없음.
+  missedAlphaObserverOffsetsSec: (process.env.MISSED_ALPHA_OBSERVER_OFFSETS_SEC ?? '30,60,300,1800,7200')
     .split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0),
   missedAlphaObserverJitterPct: numEnv('MISSED_ALPHA_OBSERVER_JITTER_PCT', '0.1'),
   missedAlphaObserverMaxInflight: numEnv('MISSED_ALPHA_OBSERVER_MAX_INFLIGHT', '50'),

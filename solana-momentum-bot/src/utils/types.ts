@@ -227,6 +227,19 @@ export interface Order {
    * fresh pair drop 경로를 측정 가능하게 한다.
    */
   cohort?: Cohort;
+  /**
+   * 2026-04-29: 실 RPC 측정 wallet delta (executor.executeBuy 의 solBefore-solAfter).
+   * sendTradeOpen 에서 entryNotionalSol 표시 시 우선 사용 — `price × quantity` 의 부동소수
+   * 오차 회피 + partial-fill fallback 시 정확한 값 보존. resolveActualEntryMetrics 의
+   * actualEntryNotionalSol 을 그대로 전파.
+   */
+  actualNotionalSol?: number;
+  /**
+   * 2026-04-29: actualInputUiAmount / actualOutUiAmount 한쪽만 가용 → planned 강제 복원된 경우.
+   * sendTradeOpen 시 알림에 `⚠ planned (RPC 측정 누락)` flag 표시 → 운영자가 그 알림 금액이
+   * RPC 검증되지 않았음을 즉시 인지.
+   */
+  partialFillDataMissing?: boolean;
 }
 
 export interface Trade {

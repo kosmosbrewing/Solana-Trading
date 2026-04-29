@@ -108,16 +108,22 @@ export function buildSignalMessage(signal: Signal): string {
 // 제거: 전략 라벨 / 슬리피지 / Entry/Exit gap / 시그널 품질 / 사이즈 제한 (모두 ledger 보존).
 
 export function buildTradeOpenMessage(order: Order, txSignature?: string): string {
-  const entryNotionalSol = order.price * order.quantity;
+  // 2026-04-29: actualNotionalSol (RPC 측정 wallet delta) 우선 사용.
+  //   - 정상: order.actualNotionalSol = buyResult.actualInputUiAmount = wallet 차감 SOL (fee 포함)
+  //   - fallback (partialFillDataMissing): order.actualNotionalSol = plannedEntryNotionalSol (planned)
+  //     → 알림에 `⚠ planned (RPC 측정 누락)` flag 표시.
+  //   - 미전파 (legacy): price × quantity 로 fallback.
+  const entryNotionalSol = order.actualNotionalSol ?? (order.price * order.quantity);
   const shortTradeId = order.tradeId ? order.tradeId.slice(0, 8) : '';
   const symbol = order.tokenSymbol ?? shortenAddress(order.pairAddress);
   const slPct = ((order.stopLoss - order.price) / order.price) * 100;
   const tp1Pct = ((order.takeProfit1 - order.price) / order.price) * 100;
   const tp2Pct = ((order.takeProfit2 - order.price) / order.price) * 100;
   const txShort = txSignature ? txSignature.slice(0, 12) : '';
+  const fallbackFlag = order.partialFillDataMissing ? ' · ⚠ planned (RPC 측정 누락)' : '';
 
   const headline = `🟢 <b>진입</b> <b>${escapeHtml(symbol)}</b>${shortTradeId ? ` <code>${escapeHtml(shortTradeId)}</code>` : ''}`;
-  const detail = `${entryNotionalSol.toFixed(4)} SOL @ ${order.price.toFixed(8)} · SL ${slPct.toFixed(0)}% / TP +${tp1Pct.toFixed(0)}% / +${tp2Pct.toFixed(0)}%`;
+  const detail = `${entryNotionalSol.toFixed(4)} SOL @ ${order.price.toFixed(8)} · SL ${slPct.toFixed(0)}% / TP +${tp1Pct.toFixed(0)}% / +${tp2Pct.toFixed(0)}%${fallbackFlag}`;
   const linkLine = `<code>${escapeHtml(order.pairAddress)}</code>${txShort ? ` · tx <code>${escapeHtml(txShort)}</code>` : ''}`;
 
   return [headline, detail, linkLine].join('\n');

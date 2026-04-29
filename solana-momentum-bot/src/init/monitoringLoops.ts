@@ -13,7 +13,11 @@ import { flushKolHourlyDigest } from '../orchestration/kolPaperNotifier';
 const log = createModuleLogger('MonitoringLoops');
 
 const REGIME_UPDATE_INTERVAL_MS = 15 * 60 * 1000;
-const KOL_HOURLY_DIGEST_INTERVAL_MS = 60 * 60 * 1000;
+// 2026-04-29 (Tier 1 noise reduction): 1h → 2h.
+// Why: 매 시간 발사 = 24 msg/day. heartbeat (KST 짝수 hour) 와 동기 시 12 msg/day.
+//   reporting.ts 의 hourly batch (heartbeat 시 시간별 1줄 요약) 와 정보 중복도 감소.
+//   `KOL_HOURLY_DIGEST_INTERVAL_MS` env override 로 운영자 조정 가능.
+const KOL_HOURLY_DIGEST_INTERVAL_MS = Number(process.env.KOL_HOURLY_DIGEST_INTERVAL_MS ?? '7200000');
 
 export interface MonitoringDeps {
   ctx: BotContext;

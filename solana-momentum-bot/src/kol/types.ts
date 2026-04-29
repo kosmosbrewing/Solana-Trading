@@ -91,8 +91,14 @@ export interface KolTx {
  */
 export interface KolDiscoveryScore {
   tokenMint: string;
-  /** anti-correlation 통과 후 독립 판단으로 간주된 KOL 수 */
+  /** anti-correlation 통과 후 독립 판단으로 간주된 KOL 수 (backward compat) */
   independentKolCount: number;
+  /**
+   * 2026-04-29: co-buy graph community 기반 effective independent count.
+   * Σ (1 / community_size). 모두 같은 community → 1.0, 모두 독립 → independentKolCount 와 동일.
+   * Graph 미공급 시 independentKolCount 와 동일.
+   */
+  effectiveIndependentCount: number;
   /** 참여 KOL (이름 + tier) */
   participatingKols: Array<{ id: string; tier: KolTier; timestamp: number }>;
   /** tier 가중치 합 (S=3 / A=1 / B=0.5) */

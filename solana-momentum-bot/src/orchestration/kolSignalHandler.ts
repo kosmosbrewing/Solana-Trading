@@ -53,7 +53,7 @@ import { evaluateSellQuoteProbe } from '../gate/sellQuoteProbe';
 import type { OnchainSecurityClient } from '../ingester/onchainSecurity';
 import type { GateCacheManager } from '../gate/gateCacheManager';
 // 2026-04-27 (KOL live canary): pure_ws live path 와 동일 패턴.
-import type { Order } from '../utils/types';
+import type { Order, Trade } from '../utils/types';
 import type { BotContext } from './types';
 import { acquireCanarySlot, releaseCanarySlot } from '../risk/canaryConcurrencyGuard';
 import { reportCanaryClose } from '../risk/canaryAutoHalt';
@@ -220,6 +220,41 @@ interface PendingCandidate {
 
 const pending = new Map<string, PendingCandidate>();        // tokenMint → pending
 const active = new Map<string, PaperPosition>();            // positionId → position
+
+/**
+ * 2026-04-29 (Track 1): Same-token re-entry cooldown.
+ * Why: GUfyGEF6 incident — 같은 token 에 4회 진입 (paper 3 + live 1) 모두 손실. 5 mints / 12 big losses
+ *   누적 −0.033 SOL. 시뮬 +13% improvement. 5x winner 는 대부분 single-entry 라 보호.
+ * State: tokenMint → 마지막 close 시각 (epoch ms). cooldown 안에 재진입 차단.
+ * Pruning: 4 × cooldown 보다 오래된 entry 자동 정리 (메모리 leak 방지).
+ */
+const recentClosedTokens = new Map<string, number>();
+function markTokenClosed(tokenMint: string): void {
+  const cooldownMs = config.kolHunterReentryCooldownMs;
+  if (cooldownMs <= 0) return;  // disabled — stamp 의미 없음 (memory leak 방지)
+  const nowMs = Date.now();
+  recentClosedTokens.set(tokenMint, nowMs);
+  // Lazy prune — 100 entry 마다 cooldown 4배 이상 된 것 정리
+  if (recentClosedTokens.size > 100) {
+    const pruneBeforeMs = nowMs - cooldownMs * 4;
+    for (const [mint, ts] of recentClosedTokens) {
+      if (ts < pruneBeforeMs) recentClosedTokens.delete(mint);
+    }
+  }
+}
+function isInReentryCooldown(tokenMint: string): { blocked: boolean; remainingMs: number } {
+  const lastClosedMs = recentClosedTokens.get(tokenMint);
+  if (lastClosedMs == null) return { blocked: false, remainingMs: 0 };
+  const cooldownMs = config.kolHunterReentryCooldownMs;
+  if (cooldownMs <= 0) return { blocked: false, remainingMs: 0 };  // disabled
+  const elapsedMs = Date.now() - lastClosedMs;
+  if (elapsedMs >= cooldownMs) return { blocked: false, remainingMs: 0 };
+  return { blocked: true, remainingMs: cooldownMs - elapsedMs };
+}
+/** 테스트용 reset. */
+export function resetReentryCooldownForTests(): void {
+  recentClosedTokens.clear();
+}
 // 2026-04-26 P1 audit fix #5: O(N) `[...active.values()].filter(p => p.tokenMint === X)` 패턴이
 // 매 price tick / kol_swap 마다 hot path 에 등장. token → positionId Set 인덱스로 O(1) 화.
 // 항상 active 와 동기화 (setActivePosition / deleteActivePosition wrapper 만 사용).
@@ -974,6 +1009,22 @@ async function resolveStalk(tokenMint: string): Promise<void> {
   const nowMs = Date.now();
   const score = computeKolDiscoveryScoreCached(tokenMint, nowMs);  // P1 #7
 
+  // 2026-04-29 (Track 1): Same-token re-entry cooldown.
+  // Why: 같은 mint 에 close 후 30분 안 재진입 차단 (GUfyGEF6 incident 패턴).
+  // 시뮬 +13% improvement, 5x winner 보호 (대부분 single-entry).
+  const cooldown = isInReentryCooldown(tokenMint);
+  if (cooldown.blocked) {
+    log.info(
+      `[KOL_HUNTER_REENTRY_BLOCK] ${tokenMint.slice(0, 8)} cooldown ${Math.round(cooldown.remainingMs/1000)}s remaining — reject`
+    );
+    fireRejectObserver(tokenMint, 'stalk_expired_no_consensus', cand, score, {
+      survivalReason: 'reentry_cooldown',
+      survivalFlags: ['REENTRY_COOLDOWN'],
+      cooldownRemainingMs: cooldown.remainingMs,
+    });
+    return;
+  }
+
   // 최소 1명의 독립 KOL 이 있어야 진입 (multi-KOL 합의 선호)
   if (score.independentKolCount === 0) {
     log.info(
@@ -1041,6 +1092,16 @@ async function checkKolSurvivalPreEntry(
   const flags: string[] = [];
 
   if (!securityClient) {
+    // 2026-04-29 (Track 2B): NO_SECURITY_CLIENT 도 NO_SECURITY_DATA 와 동일 cohort 취급.
+    // securityClient 가 미주입이면 결국 data missing 과 효과 같음 — paper n=372 분석에서
+    // 두 flag cohort 모두 mfe<1% rate 65.7% / 5x winner 0건.
+    if (config.kolHunterRejectOnNoSecurityData) {
+      return {
+        approved: false,
+        reason: 'no_security_client',
+        flags: ['NO_SECURITY_CLIENT'],
+      };
+    }
     if (config.kolHunterSurvivalAllowDataMissing) {
       return { approved: true, flags: ['NO_SECURITY_CLIENT'] };
     }
@@ -1083,6 +1144,16 @@ async function checkKolSurvivalPreEntry(
   }
 
   if (!tokenSecurityData) {
+    // 2026-04-29 (Track 2B): NO_SECURITY_DATA cohort reject. Track 2A retro 결과 —
+    // n=70 / mfe<1% 65.7% (baseline +20.6%) / cum_net -0.0376 SOL / 5x winner 0건.
+    // allowDataMissing 보다 우선. RPC stale 후에도 data 없으면 같은 cohort.
+    if (config.kolHunterRejectOnNoSecurityData) {
+      return {
+        approved: false,
+        reason: 'security_data_unavailable',
+        flags: [...flags, 'NO_SECURITY_DATA'],
+      };
+    }
     if (config.kolHunterSurvivalAllowDataMissing) {
       return { approved: true, flags: [...flags, 'NO_SECURITY_DATA'] };
     }
@@ -1657,6 +1728,12 @@ function closePosition(
 
   deleteActivePosition(pos.positionId);  // P1 #5: index 동기화
 
+  // 2026-04-29 (Track 1): Same-token re-entry cooldown — close 시점 stamp.
+  // shadow arm (paired) 도 stamp 하지만 main arm 만 정합 (shadow 는 paper-only fallback).
+  if (!pos.isShadowArm) {
+    markTokenClosed(pos.tokenMint);
+  }
+
   // price feed unsubscribe — token 의 모든 A/B arm 이 닫힌 뒤에만 정리
   unsubscribePriceIfIdle(pos.tokenMint);
 
@@ -2067,7 +2144,12 @@ async function closeLivePosition(
       const solAfter = await sellExecutor.getBalance();
       const receivedSol = solAfter - solBefore;
       liveReceivedSol = receivedSol;
-      if (receivedSol > 0 && pos.quantity > 0) {
+      // 2026-04-29: 사명 §3 wallet ground truth — receivedSol 부호 무관 항상 wallet 기준 가격 사용.
+      // 이전 (receivedSol > 0 만): sell 시 fees 가 sell 가치 초과하면 (Jito tip + Jupiter fee >
+      //   received tokens 가치) actualExitPrice 가 trigger price 그대로 → DB pnl ↔ wallet 10x drift.
+      //   8JH1J6p4 incident 의 PNL_DRIFT 0.0498 SOL 직접 원인.
+      // 현재: 항상 receivedSol/qty 로 갱신 → DB/notification pnl = wallet delta 일치.
+      if (pos.quantity > 0) {
         actualExitPrice = receivedSol / pos.quantity;
       }
       executionSlippage = bpsToDecimal(sellResult.slippageBps);
@@ -2196,19 +2278,58 @@ async function closeLivePosition(
     `hold=${nowSec - pos.entryTimeSec}s mfe=${(mfePctAtClose * 100).toFixed(2)}% mae=${(maePctAtClose * 100).toFixed(2)}%`
   );
 
-  // 2026-04-27: live close 운영자 즉시 알림. 기존엔 hourly digest + 5x anomaly 만 → 일반
-  // close 가 무음이라 운영자가 실 자산 close 를 즉시 인지 못 함 (cupsey/migration 와 일관성 결여).
-  // hourly digest 는 그대로 유지 (집계용).
-  // 2026-04-28 P0-B fix: notifier fire-and-forget — Telegram 429 close path blocking 차단.
-  void ctx.notifier.sendInfo(
-    `[KOL_LIVE_CLOSE] ${pos.tokenMint.slice(0, 12)} reason=${effectiveReason} ` +
-    `pnl=${pnl >= 0 ? '+' : ''}${pnl.toFixed(6)} SOL (${pnlPct >= 0 ? '+' : ''}${(pnlPct * 100).toFixed(2)}%) ` +
-    `hold=${nowSec - pos.entryTimeSec}s state=${previousState}` +
-    (pos.dbTradeId ? '' : ' [NO_DB_RECORD — manual reconcile]'),
-    'kol_live_close'
-  ).catch((err) => log.warn(`[KOL_HUNTER_LIVE_NOTIFY_CLOSE_FAIL] ${pos.positionId} ${err}`));
+  // 2026-04-29: 다른 lane (cupsey / pure_ws / migration) 과 동일하게 sendTradeClose 사용.
+  //   - 이전: sendInfo 의 raw 문자열 (한 줄 [KOL_LIVE_CLOSE] ...) — 진입 알림과 포맷 불일치
+  //   - 현재: 구조화된 Trade 객체 → notifier.sendTradeClose 가 OPEN 알림과 동일 톤 출력
+  // dbCloseSucceeded 시에만 sendTradeClose. DB 미기록은 sendCritical 로 분리 (별도 reconcile 경로).
+  // P0-B fix: fire-and-forget 유지 (Telegram 429 close path blocking 차단).
+  if (dbCloseSucceeded && pos.dbTradeId) {
+    const closedTrade: Trade = {
+      id: pos.dbTradeId,
+      pairAddress: pos.tokenMint,
+      strategy: LANE_STRATEGY,
+      side: 'BUY',
+      entryPrice: pos.entryPrice,
+      plannedEntryPrice: pos.marketReferencePrice,
+      exitPrice: actualExitPrice,
+      quantity: pos.quantity,
+      pnl,
+      slippage: executionSlippage,
+      txSignature: exitTxSignature,
+      status: 'CLOSED',
+      createdAt: new Date(pos.entryTimeSec * 1000),
+      closedAt: new Date(),
+      stopLoss: pos.entryPrice * (1 - config.kolHunterHardcutPct),
+      takeProfit1: pos.entryPrice * (1 + config.kolHunterT1Mfe),
+      takeProfit2: pos.entryPrice * (1 + config.kolHunterT2Mfe),
+      highWaterMark: pos.peakPrice,
+      timeStopAt: new Date((pos.entryTimeSec + config.kolHunterStalkWindowSec) * 1000),
+      entrySlippageBps: pos.entrySlippageBps,
+      exitSlippageBps: Math.round(executionSlippage * 10_000),
+      // KOL hunter local CloseReason 은 utils/types CloseReason 과 별도 (probe_hard_cut 등).
+      // notifier 는 string 만 활용하므로 안전한 cast — DB 도 enum 검증 없이 문자열 저장.
+      exitReason: effectiveReason as unknown as Trade['exitReason'],
+      decisionPrice: exitPrice,
+      sourceLabel: pos.armName,
+      discoverySource: 'kol_discovery_v1',
+    };
+    void ctx.notifier.sendTradeClose(closedTrade)
+      .catch((err) => log.warn(`[KOL_HUNTER_LIVE_NOTIFY_CLOSE_FAIL] ${pos.positionId} ${err}`));
+  } else {
+    // DB 미기록 경로 — operator 가 manual reconcile 필요. 별도 critical 로 분리.
+    void ctx.notifier.sendCritical(
+      'kol_live_close_no_db',
+      `${pos.positionId} ${pos.tokenMint.slice(0, 12)} reason=${effectiveReason} ` +
+      `pnl=${pnl >= 0 ? '+' : ''}${pnl.toFixed(6)} SOL (${pnlPct >= 0 ? '+' : ''}${(pnlPct * 100).toFixed(2)}%) ` +
+      `hold=${nowSec - pos.entryTimeSec}s [NO_DB_RECORD — manual reconcile]`
+    ).catch(() => {});
+  }
 
   deleteActivePosition(pos.positionId);
+  // 2026-04-29 (Track 1): live close 도 same-token cooldown stamp.
+  if (!pos.isShadowArm) {
+    markTokenClosed(pos.tokenMint);
+  }
   unsubscribePriceIfIdle(pos.tokenMint);
 
   // Real Asset Guard feed: canary auto-halt + bleed budget.

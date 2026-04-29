@@ -584,7 +584,8 @@ async function closeMigrationPositionSerialized(
         const sellResult = await executor.executeSell(pos.event.pairAddress, tokenBalance);
         const solAfter = await executor.getBalance();
         const receivedSol = solAfter - solBefore;
-        if (receivedSol > 0 && pos.quantity > 0) {
+        // 2026-04-29: wallet ground truth — receivedSol 부호 무관 항상 wallet 기준.
+        if (pos.quantity > 0) {
           actualExitPrice = receivedSol / pos.quantity;
         }
         executionSlippage = bpsToDecimal(sellResult.slippageBps);

@@ -35,6 +35,10 @@ export const kolHunter = {
   // ─── kol_hunter Lane T (Phase 3 paper-first) ───
   kolHunterEnabled: boolOptional('KOL_HUNTER_ENABLED', false),
   kolHunterPaperOnly: boolOptional('KOL_HUNTER_PAPER_ONLY', true),
+  // 2026-04-29 (Track 1): Same-token re-entry cooldown — GUfyGEF6 incident 패턴 차단.
+  // Why: paper 데이터 5 mints / 12 big losses (cum -0.033 SOL). 시뮬 +13% improvement.
+  // 같은 mint 의 close 후 N ms 안에는 재진입 차단. 5x winner 보호 (대부분 single-entry).
+  kolHunterReentryCooldownMs: numEnv('KOL_HUNTER_REENTRY_COOLDOWN_MS', '1800000'),  // 30분
   // 2026-04-28 B안: 운영자 결정 — live 24h n=44 데이터 (ROI -2.55%, catastrophic 4.5%) 도착 후
   // 0.03 → 0.02 SOL 후퇴. policyGuards POLICY_TICKET_MAX_SOL_BY_LANE.kol_hunter = 0.02 정합.
   // 200 trade 여정 시뮬: catastrophic 9건 + bleed 0.102 = 0.282 drawdown → wallet 0.718 (floor 0.7 +0.018 margin).
@@ -72,6 +76,13 @@ export const kolHunter = {
   kolHunterSurvivalMinExitLiquidityUsd: numEnv('KOL_HUNTER_SURVIVAL_MIN_EXIT_LIQUIDITY_USD', '5000'),
   kolHunterSurvivalMaxTop10HolderPct: numEnv('KOL_HUNTER_SURVIVAL_MAX_TOP10_HOLDER_PCT', '0.80'),
   kolHunterRunSellQuoteProbe: boolOptional('KOL_HUNTER_RUN_SELL_QUOTE_PROBE', true),
+  // 2026-04-29 (Track 2B): NO_SECURITY_DATA cohort reject — Track 2A retro 결과.
+  // Why: paper n=372 분석 — securityData 가 null 인 cohort (n=70) 가 mfe<1% rate 65.7%
+  //   (vs baseline 45.2%, Δ +20.6%) + cum_net -0.0376 SOL + 5x winner 0건. 외부 API 없이
+  //   순수 entry-time signal 로 IDEAL 달성률 +10% 추가 가능. allowDataMissing 보다 우선
+  //   적용 — true 여도 본 flag 가 true 면 reject. paper-first (default true 안전, kol_hunter
+  //   에만 적용 — pure_ws / cupsey 기존 정책 유지).
+  kolHunterRejectOnNoSecurityData: boolOptional('KOL_HUNTER_REJECT_ON_NO_SECURITY_DATA', true),
 
   // Phase 5 P1-15 (2026-04-25): KOL live canary 명시적 opt-in.
   // Why: KOL_HUNTER_PAPER_ONLY=false 만으로는 live 안 돔 (review feedback P0). 별도 flag 필요.

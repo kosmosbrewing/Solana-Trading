@@ -138,20 +138,18 @@ describe('messageFormatter', () => {
 
     const closeMessage = buildTradeCloseMessage(trade);
 
-    expect(closeMessage).toContain('✅ <b>포지션 종료</b> <b>PAIR</b> <code>trade-1</code> · 이익 실현');
-    expect(closeMessage).toContain('- 전략: Fib Pullback');
-    // 1차 익절 → ㄹ받침 → "로"
-    expect(closeMessage).toContain('- 사유: 1차 익절로 종료 · 보유 2h 30m');
-    expect(closeMessage).toContain('- 실현 손익: +0.0003 SOL (+12.2%) · 슬리피지 1.1%');
+    // 2026-04-29 간소화: 8라인 → 4라인. 사유/보유시간 은 손익 라인에 merge.
+    expect(closeMessage).toContain('✅ <b>포지션 종료</b> <b>PAIR</b> <code>trade-1</code>');
+    expect(closeMessage).toContain('- 손익: +0.0003 SOL (+12.2%) · 1차 익절 · 보유 2h 30m');
     expect(closeMessage).toContain('- 가격: 0.00123456 → 0.00140000');
-    expect(closeMessage).toContain('- 비용: entry 25bps · exit 40bps · rtCost 0.90%');
-    expect(closeMessage).toContain('- Exit gap: -1.41% (decision=0.00142000 → fill=0.00140000)');
-    expect(closeMessage).toContain('- 컨트랙트: <code>PAIR1234567890</code>');
+    expect(closeMessage).toContain('- <code>PAIR1234567890</code>');
     expect(closeMessage).toContain('- tx: <code>TX456</code>');
-    // 중복 제거 검증
-    expect(closeMessage).not.toContain('한눈에 보기');
-    expect(closeMessage).not.toContain('종료 사유:');
-    expect(closeMessage).not.toContain('결과:');
+    // 제거 검증 (간소화)
+    expect(closeMessage).not.toContain('- 전략:');
+    expect(closeMessage).not.toContain('- 비용:');
+    expect(closeMessage).not.toContain('Exit gap');
+    expect(closeMessage).not.toContain('슬리피지');
+    expect(closeMessage).not.toContain('이익 실현');
   });
 
   it('uses "으로" particle for close reasons without 받침-ㄹ', () => {
@@ -176,10 +174,11 @@ describe('messageFormatter', () => {
     };
 
     const message = buildTradeCloseMessage(trade);
-    // 초기 하드컷 → ㅅ받침 → "으로"
-    expect(message).toContain('- 사유: 초기 하드컷으로 종료 · 보유 1분 미만');
+    // 2026-04-29 간소화: 손익 라인에 reason 직접 포함 (particle 부착 제거).
+    expect(message).toContain('- 손익:');
+    expect(message).toContain('초기 하드컷');
+    expect(message).toContain('보유 1분 미만');
     expect(message).toContain('❌ <b>포지션 종료</b> <b>ASTR</b>');
-    expect(message).not.toContain('하드컷로');
     // HTML 이스케이프 후에도 꼬이지 않아야 함
     expect(message).not.toContain('&lt;');
   });
@@ -271,9 +270,10 @@ describe('messageFormatter', () => {
     };
 
     const closeMessage = buildTradeCloseMessage(trade);
-    expect(closeMessage).toContain('<b>PAIR1234...DEFG</b> (ticker 미확인)');
-    // 손절 → ㄹ받침 → "로"
-    expect(closeMessage).toContain('- 사유: 손절로 종료 · 보유 5분');
+    // 2026-04-29 간소화: ticker 미확인 라벨 제거 (headline 단순화).
+    expect(closeMessage).toContain('<b>PAIR1234...DEFG</b>');
+    expect(closeMessage).toContain('손절');
+    expect(closeMessage).toContain('보유 5분');
   });
 
   it('formats daily summary with risk and strategy sections', () => {

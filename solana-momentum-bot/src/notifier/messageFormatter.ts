@@ -153,76 +153,41 @@ function buildEntryGapLine(order: Order): string {
 }
 
 export function buildTradeCloseMessage(trade: Trade): string {
+  // 2026-04-29 간소화: 8라인 → 4라인. wallet ground truth (실 체결가) 기준만 표시.
+  // 제거: 사유 별도 라인 / 비용 라인 / Exit gap 라인 / 결과 라벨 / 슬리피지 (DB ledger 에 보존됨).
+  // 보존: 손익 (실 wallet delta), 가격 (실 fill), 컨트랙트, tx (체결 검증용).
   const pnl = trade.pnl;
   const pnlPct = calculatePnlPct(trade);
   const duration = trade.closedAt ? formatShortDuration(trade.closedAt.getTime() - trade.createdAt.getTime()) : '';
-  const resultLabel = pnl == null ? '결과 미정' : pnl >= 0 ? '이익 실현' : '손실 확정';
-  const shortId = trade.id.slice(0, 8);
   const reasonText = formatCloseReason(trade.exitReason);
-  const particle = koreanRoParticle(reasonText);
-  const reasonLine = [
-    `${reasonText}${particle} 종료`,
-    duration ? `보유 ${duration}` : '',
-  ].filter(Boolean).join(' · ');
-  const pnlLine = buildCloseProfitLine(trade, pnl, pnlPct);
-  const priceLine = buildClosePriceLine(trade);
-  const gapLine = buildExitGapLine(trade);
-  const costLine = buildCostSummaryLine(trade);
-  const headline = buildCloseHeadline(trade, pnl, resultLabel, shortId);
+  const headline = buildCloseHeadline(trade);
+  const pnlText = `${formatSignedSol(pnl)}${pnlPct != null ? ` (${formatSignedPercent(pnlPct)})` : ''}`;
+  const exit = trade.exitPrice != null ? trade.exitPrice.toFixed(8) : 'N/A';
+  const meta = [reasonText, duration ? `보유 ${duration}` : ''].filter(Boolean).join(' · ');
 
   return [
     headline,
-    `- 전략: ${escapeHtml(formatStrategy(trade.strategy))}`,
-    `- 사유: ${escapeHtml(reasonLine)}`,
-    pnlLine,
-    priceLine,
-    costLine,
-    gapLine,
-    `- 컨트랙트: <code>${escapeHtml(trade.pairAddress)}</code>`,
+    `- 손익: ${pnlText} · ${escapeHtml(meta)}`,
+    `- 가격: ${trade.entryPrice.toFixed(8)} → ${exit}`,
+    `- <code>${escapeHtml(trade.pairAddress)}</code>`,
     trade.txSignature ? `- tx: <code>${escapeHtml(trade.txSignature)}</code>` : '',
   ].filter(Boolean).join('\n');
 }
 
-function buildCloseHeadline(
-  trade: Trade,
-  pnl: number | undefined,
-  resultLabel: string,
-  shortId: string
-): string {
+function buildCloseHeadline(trade: Trade): string {
+  const pnl = trade.pnl;
   const icon = pnl != null && pnl >= 0 ? '✅' : '❌';
   const label = trade.tokenSymbol
     ? `<b>${escapeHtml(trade.tokenSymbol)}</b>`
-    : `<b>${escapeHtml(shortenAddress(trade.pairAddress))}</b> (ticker 미확인)`;
-  return `${icon} <b>포지션 종료</b> ${label} <code>${escapeHtml(shortId)}</code> · ${resultLabel}`;
+    : `<b>${escapeHtml(shortenAddress(trade.pairAddress))}</b>`;
+  const shortId = trade.id.slice(0, 8);
+  return `${icon} <b>포지션 종료</b> ${label} <code>${escapeHtml(shortId)}</code>`;
 }
 
-function buildCloseProfitLine(trade: Trade, pnl: number | undefined, pnlPct: number | null): string {
-  const pnlText = `${formatSignedSol(pnl)}${pnlPct != null ? ` (${formatSignedPercent(pnlPct)})` : ''}`;
-  const slippageText = trade.slippage != null ? ` · 슬리피지 ${formatPercent(trade.slippage)}` : '';
-  return `- 실현 손익: ${pnlText}${slippageText}`;
-}
-
-function buildClosePriceLine(trade: Trade): string {
-  const exit = trade.exitPrice != null ? trade.exitPrice.toFixed(8) : 'N/A';
-  return `- 가격: ${trade.entryPrice.toFixed(8)} → ${exit}`;
-}
-
-function buildExitGapLine(trade: Trade): string {
-  if (trade.decisionPrice == null || trade.exitPrice == null || trade.decisionPrice <= 0) return '';
-  const gapPct = ((trade.exitPrice - trade.decisionPrice) / trade.decisionPrice) * 100;
-  if (Math.abs(gapPct) < GAP_EPSILON_PCT) return '';
-  return `- Exit gap: ${gapPct >= 0 ? '+' : ''}${gapPct.toFixed(2)}% (decision=${trade.decisionPrice.toFixed(8)} → fill=${trade.exitPrice.toFixed(8)})`;
-}
-
-function buildCostSummaryLine(trade: Trade): string {
-  const parts: string[] = [];
-  if (trade.entrySlippageBps != null) parts.push(`entry ${trade.entrySlippageBps}bps`);
-  if (trade.exitSlippageBps != null) parts.push(`exit ${trade.exitSlippageBps}bps`);
-  if (trade.entryPriceImpactPct != null) parts.push(`impact ${trade.entryPriceImpactPct.toFixed(2)}%`);
-  if (trade.roundTripCostPct != null) parts.push(`rtCost ${trade.roundTripCostPct.toFixed(2)}%`);
-  if (parts.length === 0) return '';
-  return `- 비용: ${parts.join(' · ')}`;
-}
+// 2026-04-29 간소화: buildCloseProfitLine / buildClosePriceLine / buildExitGapLine /
+//   buildCostSummaryLine 4 helper 제거 — 모두 close 메시지 inline 으로 통합.
+//   slippage / cost / exit gap 정보는 trade ledger (executed-sells.jsonl) 에 보존되므로
+//   알림 noise 만 줄이고 분석 데이터는 무손실.
 
 export function buildRecoveryReportMessage(details: string[]): string {
   return [

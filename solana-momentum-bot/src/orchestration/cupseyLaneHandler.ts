@@ -30,6 +30,7 @@ import { serializeClose, resetSharedCloseMutexForTests } from './swapSerializer'
 import { reportCanaryClose } from '../risk/canaryAutoHalt';
 import { acquireCanarySlot, releaseCanarySlot } from '../risk/canaryConcurrencyGuard';
 import { resolveActualEntryMetrics } from './signalProcessor';
+import { resolveTokenSymbol, lookupCachedSymbol } from '../ingester/tokenSymbolResolver';
 
 const log = createModuleLogger('CupseyLane');
 
@@ -381,6 +382,12 @@ export async function handleCupseyLaneSignal(
   funnelStats.signalsReceived++;
   recordCupseyFunnelSnapshot(ctx);
 
+  // 2026-04-29: token symbol prefetch (Helius DAS + pump.fun, 24h cache).
+  // F3 fix: cache hit 시 함수 진입 skip.
+  if (!signal.tokenSymbol && !lookupCachedSymbol(signal.pairAddress)) {
+    void resolveTokenSymbol(signal.pairAddress).catch(() => {});
+  }
+
   // Guard: integrity halt (live buy 성공 후 DB persist 실패 시 설정됨)
   if (integrityHaltActive) {
     log.warn('[CUPSEY_INTEGRITY_HALT] signal ignored — ledger integrity issue, call resetCupseyIntegrityHalt() after reconciliation');
@@ -718,7 +725,8 @@ export async function updateCupseyPositions(
             pairAddress: pos.pairAddress,
             strategy: 'cupsey_flip_10s',
             side: 'BUY',
-            tokenSymbol: pos.tokenSymbol,
+            // 2026-04-29: signal upstream → resolver cache → undefined 순서로 fallback.
+            tokenSymbol: pos.tokenSymbol ?? lookupCachedSymbol(pos.pairAddress) ?? undefined,
             price: actualEntryPrice,
             plannedEntryPrice: currentPrice,
             quantity: actualQuantity,
@@ -1023,7 +1031,8 @@ async function closeCupseyPositionSerialized(
       pairAddress: pos.pairAddress,
       strategy: 'cupsey_flip_10s',
       side: 'BUY',
-      tokenSymbol: pos.tokenSymbol,
+      // 2026-04-29: close path 도 동일 fallback 체인.
+      tokenSymbol: pos.tokenSymbol ?? lookupCachedSymbol(pos.pairAddress) ?? undefined,
       sourceLabel: pos.sourceLabel,
       discoverySource: pos.discoverySource,
       entryPrice: pos.entryPrice,

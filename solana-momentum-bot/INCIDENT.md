@@ -66,6 +66,45 @@ tsc clean / jest **1180/1180 pass** (regression 0, 5 sprint test 123 신규 pass
 
 ---
 
+## 2026-04-29 (Night) — external-strategy-report-analysis 2nd-pass 비판 정정 (13건)
+
+### 1. 외부 입력 — 운영 승인 문서 등급 평가
+
+외부 비판 5 critical + 8 minor → 모두 정합 판정. 본 문서 (`docs/design-docs/external-strategy-report-analysis-2026-04-29.md`) 가 "전략 메모" 에서 "운영 승인 문서" 수준으로 승격되려면 13건 정정 필요.
+
+### 2. 정정 13건 (Q-C1 ~ Q-C13)
+
+| Q | 내용 |
+|---|------|
+| C1 | §1.1 사명 확률식 IID 가정 단서 + day-block / regime bootstrap 명시 |
+| C2 | DSR 위상 — mission objective 1순위 아님, governance metric. mission metric 4 축 (DSR + floor breach probability + P(no 5x by 200) + winner-kill rate) |
+| C3 | Phase 1.2 신규 — Copyability/Executability score (entry drift + landing delay + sell route failure + fill uncertainty). Solana priority fee + Jito bundle landing 환경 정합 |
+| C4 | Authority chain — source tier A/B/C 등급 도입 (peer-reviewed / working paper / arXiv preprint vendor news). DB snapshot v8 명시 (active 42, total 74) |
+| C5 | Phase 1 = "Telemetry + Validation". markout / copyability / missed-alpha / style 이 최상단 prerequisite, DSR/PBO/CSCV 는 그 위 governance |
+| C6 | §2.1 82.89% union 방법론 정밀화 (anomaly block 다지표 + wash + LPI). "wash/LPI/ownership 3 OR" 단순화 표현 거칢 |
+| C7 | Solidus 98.6% = operational metric ($1,000 미만 유동성 도달), 학술 rug label 아님. live classifier ground-truth 직접 사용 금지 |
+| C8 | MemeTrans 56% 손실 ↓ + LROO PR AUC 0.997 dataset-specific caveat (production domain shift 자동 해결 안 됨, strongest baseline 차이 modest) |
+| C9 | Memecoin Phenomenon = Pump.fun 중심 Q4 2024 분석 한정 명시. IEEE conference proceeding (Tier B) |
+| C10 | style + manipulation classifier — hard threshold 직접 production trigger 금지. probability 형태 (scalper_prob/swing_prob/whale_prob/unknown_prob) 저장 후 운영자 검수 |
+| C11 | manipulation shadow 기간 7d → "최소 2개 이상의 hot/cold regime 포괄" + soft penalty 단계 1회 추가 |
+| C12 | §3.4 posterior alpha 식에 `copyability_cost` 항 추가 (entry_drift + landing_delay + sell_route_failure + fill_uncertainty) |
+| C13 | LOC 추정 (~250/~760) → complexity band (S/M/L) |
+
+### 3. 영향
+
+- 본 문서가 **운영 승인 문서** 수준으로 승격
+- DSR 만 prerequisite 하던 Phase 1 의사결정 → 4 축 동시 통과로 강화
+- 향후 sprint 의사결정 시 source tier 명시 의무
+- DB snapshot version 명시 의무 (commit hash 또는 v 번호 동반)
+
+### 4. 미해결 (다음 sprint candidate)
+
+- **Phase 1.2 Copyability score** 가 신규 layer — Phase 1 진입 시 telemetry 5+ source 함께 구현 필요
+- **mission metric 4 축 측정 도구** — `scripts/dsr-validator.ts` 외에 floor breach / P(no 5x) bootstrap script 별도 추가
+- §11 Implementation Status 의 이전 Tier 1 작업이 "DSR 단독 prerequisite" 가정 하에 진행됨 — Phase 1 재정의 후 다음 sprint 입력 재검토
+
+---
+
 ## 2026-04-29 — Backlog 추가: BBRI Phase 0 (장 분위기 감지, 측정 sprint 후 candidate)
 
 ### 1. 외부 입력 — 사용자 권고 BBRI (Banger/Beta Regime Index)

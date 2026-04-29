@@ -31,6 +31,7 @@ import { checkPureWsSurvival } from './pureWs/survivalCheck';
 import { serializeClose } from './swapSerializer';
 import { appendEntryLedger, persistOpenTradeWithIntegrity, isEntryHaltActive } from './entryIntegrity';
 import { resolveActualEntryMetrics } from './signalProcessor';
+import { resolveTokenSymbol, lookupCachedSymbol } from '../ingester/tokenSymbolResolver';
 
 const log = createModuleLogger('MigrationLane');
 
@@ -215,6 +216,12 @@ export function onMigrationEvent(event: MigrationEvent, ctx: BotContext): void {
     return;
   }
   processedEventTimestamps.set(event.signature, Date.now());
+
+  // 2026-04-29: token symbol prefetch (Helius DAS + pump.fun, 24h cache).
+  // F3 fix: cache hit 시 함수 진입 skip.
+  if (!event.tokenSymbol && !lookupCachedSymbol(event.pairAddress)) {
+    void resolveTokenSymbol(event.pairAddress).catch(() => {});
+  }
 
   // 같은 pair 에 이미 활성 포지션 있으면 skip (cupsey와 독립 카운트)
   for (const pos of activePositions.values()) {
@@ -534,7 +541,8 @@ async function enterMigrationProbe(
       pairAddress: pos.event.pairAddress,
       strategy: 'migration_reclaim',
       side: 'BUY',
-      tokenSymbol: pos.event.tokenSymbol,
+      // 2026-04-29: event upstream → resolver cache → undefined fallback.
+      tokenSymbol: pos.event.tokenSymbol ?? lookupCachedSymbol(pos.event.pairAddress) ?? undefined,
       price: actualEntryPrice,
       plannedEntryPrice: currentPrice,
       quantity: actualQuantity,
@@ -652,7 +660,8 @@ async function closeMigrationPositionSerialized(
       pairAddress: pos.event.pairAddress,
       strategy: 'migration_reclaim',
       side: 'BUY',
-      tokenSymbol: pos.event.tokenSymbol,
+      // 2026-04-29: close path 도 동일 fallback 체인.
+      tokenSymbol: pos.event.tokenSymbol ?? lookupCachedSymbol(pos.event.pairAddress) ?? undefined,
       sourceLabel: config.migrationSourceLabel,
       discoverySource: pos.event.kind,
       entryPrice: pos.entryPrice,

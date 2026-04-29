@@ -26,6 +26,7 @@ import { activePositions, funnelStats } from './positionState';
 import { getPureWsLivePriceTracker } from './livePriceTracker';
 import { getPureWsExecutor, resolvePureWsWalletLabel } from './wallet';
 import type { PureWsPosition } from './types';
+import { lookupCachedSymbol } from '../../ingester/tokenSymbolResolver';
 
 export async function closePureWsPosition(
   id: string,
@@ -259,7 +260,8 @@ async function closePureWsPositionSerialized(
       pairAddress: pos.pairAddress,
       strategy: LANE_STRATEGY,
       side: 'BUY',
-      tokenSymbol: pos.tokenSymbol,
+      // 2026-04-29: close path 도 동일 fallback 체인 (resolver cache).
+      tokenSymbol: pos.tokenSymbol ?? lookupCachedSymbol(pos.pairAddress) ?? undefined,
       sourceLabel: pos.sourceLabel,
       discoverySource: pos.discoverySource,
       entryPrice: pos.entryPrice,

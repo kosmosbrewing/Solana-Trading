@@ -615,6 +615,8 @@ export async function updateCupseyPositions(
         const ticketSol = config.cupseyLaneTicketSol;
         let actualEntryPrice = currentPrice;
         let actualQuantity = pos.quantity;
+        let actualNotionalSol = currentPrice * pos.quantity;  // 2026-04-29: RPC 측정 wallet delta 전파용
+        let partialFillDataMissing = false;
         let entryTxSignature = 'PAPER_TRADE';
         let entrySlippageBps = 0;
 
@@ -640,6 +642,8 @@ export async function updateCupseyPositions(
             const metrics = resolveActualEntryMetrics(order, buyResult);
             actualEntryPrice = metrics.entryPrice;
             actualQuantity = metrics.quantity;
+            actualNotionalSol = metrics.actualEntryNotionalSol;
+            partialFillDataMissing = metrics.partialFillDataMissing;
             entryTxSignature = buyResult.txSignature;
             entrySlippageBps = buyResult.slippageBps;
             log.info(
@@ -724,6 +728,9 @@ export async function updateCupseyPositions(
             takeProfit1: actualEntryPrice * (1 + config.cupseyProbeMfeThreshold),
             takeProfit2: actualEntryPrice * (1 + config.cupseyWinnerTrailingPct * 2),
             timeStopMinutes: Math.ceil(config.cupseyWinnerMaxHoldSec / 60),
+            // 2026-04-29: RPC 측정 wallet delta + partial-fill flag.
+            actualNotionalSol,
+            partialFillDataMissing,
           }, entryTxSignature).then(() => {
             funnelStats.notifierOpenSent++;
             recordCupseyFunnelSnapshot(ctx);

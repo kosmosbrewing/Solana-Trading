@@ -417,6 +417,7 @@ export async function handlePureWsSignal(
   // ─── Immediate PROBE entry (NO STALK) ───
   let actualEntryPrice = signal.price;
   let actualQuantity = quantity;
+  let actualNotionalSol = signal.price * quantity;  // 2026-04-29: RPC 측정 wallet delta 전파용
   let entryTxSignature = 'PAPER_TRADE';
   let entrySlippageBps = 0;
   // Phase 1 P0-3 (2026-04-25): true 면 actualIn/actualOut 한쪽만 가용 → planned 강제 복원됨.
@@ -477,6 +478,7 @@ export async function handlePureWsSignal(
       const metrics = resolveActualEntryMetrics(order, buyResult);
       actualEntryPrice = metrics.entryPrice;
       actualQuantity = metrics.quantity;
+      actualNotionalSol = metrics.actualEntryNotionalSol;
       entryTxSignature = buyResult.txSignature;
       entrySlippageBps = buyResult.slippageBps;
       // Phase 1 P0-3: partial fill data missing flag for downstream ledger.
@@ -610,6 +612,9 @@ export async function handlePureWsSignal(
       takeProfit1: actualEntryPrice * (1 + config.pureWsT1MfeThreshold),
       takeProfit2: actualEntryPrice * (1 + config.pureWsT2MfeThreshold),
       timeStopMinutes: Math.ceil(config.pureWsProbeWindowSec / 60),
+      // 2026-04-29: RPC 측정 wallet delta + partial-fill flag.
+      actualNotionalSol,
+      partialFillDataMissing,
     }, entryTxSignature).then(() => {
       funnelStats.notifierOpenSent++;
     }).catch((err) => {

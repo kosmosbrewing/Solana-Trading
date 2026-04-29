@@ -146,6 +146,15 @@ jest.mock('../src/utils/config', () => ({
     // 2026-04-29 (Track 1): default 0 — test 내 same-token 반복 사용 차단 안 함.
     // Track 1 회귀 테스트에서 explicit 으로 override 하여 검증.
     kolHunterReentryCooldownMs: 0,
+    // 2026-04-29 (P0-2): KOL alpha decay default disabled — 회귀 테스트 explicit override.
+    kolHunterKolDecayCooldownEnabled: false,
+    kolHunterKolDecayCooldownMs: 14_400_000,
+    kolHunterKolDecayMinCloses: 3,
+    kolHunterKolDecayLossRatioThreshold: 0.66,
+    // 2026-04-29 (외부 전략 리포트 #5): community detection default disabled.
+    kolHunterCommunityDetectionEnabled: false,
+    kolHunterCommunityWindowMs: 300_000,
+    kolHunterCommunityMinEdgeWeight: 25,
     // 2026-04-28 (inactive paper trade Sprint): default false. tests 가 explicit override.
     kolHunterShadowTrackInactive: false,
     kolHunterShadowPaperTradeEnabled: false,
@@ -185,8 +194,16 @@ describe('kolSignalHandler — state machine', () => {
     const { resetKolDbState } = require('../src/kol/db');
     resetKolDbState();
     // 2026-04-29 (Track 1): same-token reentry cooldown 도 test 간 격리.
-    const { resetReentryCooldownForTests } = require('../src/orchestration/kolSignalHandler');
+    const {
+      resetReentryCooldownForTests,
+      resetKolDecayForTests,
+      resetCommunityCacheForTests,
+    } = require('../src/orchestration/kolSignalHandler');
     resetReentryCooldownForTests();
+    // 2026-04-29 (P0-2): KOL alpha decay tracking 도 test 간 격리.
+    resetKolDecayForTests();
+    // 2026-04-29 (#5): community cache 도 test 간 격리.
+    resetCommunityCacheForTests();
     const mockedConfig = (require('../src/utils/config') as any).config;
     mockedConfig.kolHunterSmartV3Enabled = false;
     mockedConfig.kolHunterSwingV2Enabled = false;

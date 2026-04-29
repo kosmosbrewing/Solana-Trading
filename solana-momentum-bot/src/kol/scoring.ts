@@ -12,6 +12,12 @@
  * Anti-correlation (ADR §5.4): 60s 내 연속 KOL tx = chain forward 의심, 단일 signal 처리.
  */
 import type { KolTx, KolTier, KolDiscoveryScore } from './types';
+import {
+  buildCoBuyGraph,
+  effectiveIndependentCount,
+  type KolCommunity,
+  type CoBuyGraphConfig,
+} from './coBuyGraph';
 
 export interface KolScoringConfig {
   /** 조회 창 (ms). 기본 24h. 더 오래된 tx 는 score 에 포함 안 함 */
@@ -45,12 +51,17 @@ export const DEFAULT_KOL_SCORING_CONFIG: KolScoringConfig = {
  * @param recentKolTxs 최근 KOL tx feed (모든 토큰/KOL 섞여서 넘어와도 됨 — 내부에서 필터)
  * @param nowMs 현재 시점 (테스트 주입용, 기본 Date.now())
  * @param config scoring config override
+ * @param communitiesOrConfig 선택: 사전 계산된 KolCommunity[] 또는 CoBuyGraphConfig.
+ *   주입 시 effectiveIndependentCount 산출. 미주입 시 effectiveIndependentCount = independentKolCount.
+ *   Why optional: 빈번 호출 hot-path 에서 매 호출마다 graph 빌드는 낭비 — caller 가
+ *   `buildCoBuyGraph(feed)` 결과를 cache 하여 주입할 수 있도록 함. 미주입 시 backward compat.
  */
 export function computeKolDiscoveryScore(
   tokenMint: string,
   recentKolTxs: KolTx[],
   nowMs: number = Date.now(),
-  config: Partial<KolScoringConfig> = {}
+  config: Partial<KolScoringConfig> = {},
+  communitiesOrConfig?: KolCommunity[] | Partial<CoBuyGraphConfig>
 ): KolDiscoveryScore {
   const cfg = { ...DEFAULT_KOL_SCORING_CONFIG, ...config };
 
@@ -112,9 +123,20 @@ export function computeKolDiscoveryScore(
 
   const finalScore = (weightedScore + consensusBonus) * timeDecay;
 
+  // 7. Effective independent count (co-buy graph community 기반).
+  // Why: simple anti-correlation 60s 만으로는 같은 community KOL 의 chain forward 를 dedup 못 함.
+  // graph 미공급 시 independentKolCount fallback (backward compat).
+  const independentIds = independent.map((tx) => tx.kolId);
+  const communities = resolveCommunities(recentKolTxs, communitiesOrConfig);
+  const effectiveCount =
+    communities === null
+      ? independent.length
+      : effectiveIndependentCount(independentIds, communities);
+
   return {
     tokenMint,
     independentKolCount: independent.length,
+    effectiveIndependentCount: effectiveCount,
     participatingKols: independent.map((tx) => ({
       id: tx.kolId,
       tier: tx.tier,
@@ -128,10 +150,26 @@ export function computeKolDiscoveryScore(
   };
 }
 
+/**
+ * communitiesOrConfig 를 정규화한다.
+ *  - undefined → null (caller 가 graph 미주입 → backward compat)
+ *  - KolCommunity[] → 그대로 사용
+ *  - CoBuyGraphConfig → recentKolTxs 로 즉석 build (편의용, 단발 분석/테스트 시)
+ */
+function resolveCommunities(
+  recentKolTxs: KolTx[],
+  arg: KolCommunity[] | Partial<CoBuyGraphConfig> | undefined
+): KolCommunity[] | null {
+  if (arg === undefined) return null;
+  if (Array.isArray(arg)) return arg;
+  return buildCoBuyGraph(recentKolTxs, arg).communities;
+}
+
 function emptyScore(tokenMint: string, nowMs: number): KolDiscoveryScore {
   return {
     tokenMint,
     independentKolCount: 0,
+    effectiveIndependentCount: 0,
     participatingKols: [],
     weightedScore: 0,
     consensusBonus: 0,

@@ -39,6 +39,26 @@ export const kolHunter = {
   // Why: paper 데이터 5 mints / 12 big losses (cum -0.033 SOL). 시뮬 +13% improvement.
   // 같은 mint 의 close 후 N ms 안에는 재진입 차단. 5x winner 보호 (대부분 single-entry).
   kolHunterReentryCooldownMs: numEnv('KOL_HUNTER_REENTRY_COOLDOWN_MS', '1800000'),  // 30분
+
+  // 2026-04-29 (외부 전략 리포트 권고 #5): Co-buy graph community detection.
+  // 같은 community KOL 들이 chain forward 시 simple 60s anti-correlation dedup 만으로 부족.
+  // co-buy graph 빌드 후 community 추출 → N_eff (effective independent count) 산출.
+  // consensusBonus 의 false positive (같은 squad 의 5명이 large 보너스 받는 경우) 차단.
+  // 실측 (kol-tx.jsonl, minWeight=25): {chester, decu, dv, earl, theo} 5-KOL squad + {heyitsyolo, kev} 2-KOL pair.
+  // disabled by default — 운영자 paper-shadow 측정 후 명시 활성화 권고.
+  kolHunterCommunityDetectionEnabled: boolOptional('KOL_HUNTER_COMMUNITY_DETECTION_ENABLED', false),
+  kolHunterCommunityWindowMs: numEnv('KOL_HUNTER_COMMUNITY_WINDOW_MS', '300000'),  // 5분 co-buy 윈도우
+  kolHunterCommunityMinEdgeWeight: numEnv('KOL_HUNTER_COMMUNITY_MIN_EDGE_WEIGHT', '25'),  // 실측 권고 시작점
+
+  // 2026-04-29 (P0-2 손실 방어 layer 0): KOL alpha decay cooldown.
+  // 직전 N close 의 cumulative pnl 음수 + 손실 ratio ≥ threshold 인 KOL 이 trigger 한 entry 차단.
+  // Track 1 (same-mint) 과 직교 — KOL-level 확장. 8JH1J6p4 incident 직전 패턴 (KOL 다수 dump streak)
+  // 의 코드화. 격언 "Cut losses short" 의 KOL-level 적용.
+  // downside-only — entry 차단만, 잘못 발동해도 손실 안 늘어남.
+  kolHunterKolDecayCooldownEnabled: boolOptional('KOL_HUNTER_KOL_DECAY_COOLDOWN_ENABLED', true),
+  kolHunterKolDecayCooldownMs: numEnv('KOL_HUNTER_KOL_DECAY_COOLDOWN_MS', '14400000'),  // 4h
+  kolHunterKolDecayMinCloses: numEnv('KOL_HUNTER_KOL_DECAY_MIN_CLOSES', '3'),  // 직전 N close 평가
+  kolHunterKolDecayLossRatioThreshold: numEnv('KOL_HUNTER_KOL_DECAY_LOSS_RATIO', '0.66'),  // 2/3 이상 손실
   // 2026-04-28 B안: 운영자 결정 — live 24h n=44 데이터 (ROI -2.55%, catastrophic 4.5%) 도착 후
   // 0.03 → 0.02 SOL 후퇴. policyGuards POLICY_TICKET_MAX_SOL_BY_LANE.kol_hunter = 0.02 정합.
   // 200 trade 여정 시뮬: catastrophic 9건 + bleed 0.102 = 0.282 drawdown → wallet 0.718 (floor 0.7 +0.018 margin).

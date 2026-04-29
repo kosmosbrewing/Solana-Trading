@@ -164,6 +164,8 @@ async function openSwingV2Live(input: OpenSwingV2Input): Promise<void> {
   // ─── Live executor 호출 (별도 ticket / quantity 로) ───
   let actualEntryPrice = signal.price;
   let actualQuantity = probeQuantity;
+  let actualNotionalSol = signal.price * probeQuantity;  // 2026-04-29: RPC 측정 wallet delta 전파용
+  let partialFillDataMissing = false;
   let entryTxSignature = 'PAPER_TRADE';
   let entrySlippageBps = 0;
   try {
@@ -183,6 +185,8 @@ async function openSwingV2Live(input: OpenSwingV2Input): Promise<void> {
     const metrics = resolveActualEntryMetrics(order, buyResult);
     actualEntryPrice = metrics.entryPrice;
     actualQuantity = metrics.quantity;
+    actualNotionalSol = metrics.actualEntryNotionalSol;
+    partialFillDataMissing = metrics.partialFillDataMissing;
     entryTxSignature = buyResult.txSignature;
     entrySlippageBps = buyResult.slippageBps;
     log.info(
@@ -293,6 +297,9 @@ async function openSwingV2Live(input: OpenSwingV2Input): Promise<void> {
       takeProfit1: actualEntryPrice * (1 + config.pureWsT1MfeThreshold),
       takeProfit2: actualEntryPrice * (1 + config.pureWsT2MfeThreshold),
       timeStopMinutes: Math.ceil(config.pureWsSwingV2ProbeWindowSec / 60),
+      // 2026-04-29: RPC 측정 wallet delta + partial-fill flag.
+      actualNotionalSol,
+      partialFillDataMissing,
     }, entryTxSignature).catch((err) => {
       log.warn(`[PUREWS_SWING_V2_NOTIFY_OPEN_FAIL] ${livePositionId} ${err}`);
     });

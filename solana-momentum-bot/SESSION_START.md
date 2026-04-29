@@ -47,20 +47,24 @@ npm run check:fast
 
 | 항목 | 값 | 위반 시 |
 |------|-----|---------|
-| Wallet floor | 0.8 SOL | **commit 거부** — 명시적 ADR 없으면 변경 금지 |
-| Canary cumulative loss cap | -0.3 SOL | 동일 |
-| Fixed ticket | 0.01 SOL | 동일 |
+| Wallet floor | 0.7 SOL (2026-04-28 B안) | **commit 거부** — 명시적 ADR 없으면 변경 금지 |
+| Cupsey canary cap (default lane) | -0.3 SOL | 동일 |
+| KOL canary cap (별도) | -0.2 SOL | 동일 |
+| Fixed ticket | pure_ws/cupsey/migration 0.01 / **kol_hunter 0.02** | 동일 |
 | Max concurrent | 3 (전역) | 동일 |
 | Drift halt | ≥ 0.2 SOL | 동일 |
-| Security hard reject | mint/freeze/honeypot/Token-2022 dangerous ext | 동일 |
+| Security hard reject | mint/freeze/honeypot/Token-2022 dangerous ext / **NO_SECURITY_DATA** (Track 2B) | 동일 |
+| Same-token re-entry cooldown (KOL) | 30 분 (Track 1) | env override 가능 (`KOL_HUNTER_REENTRY_COOLDOWN_MS=0` 으로 disable) |
 
-→ 이 값들 변경하려면 **별도 ADR + 48h cooldown + 운영자 명시 승인**.
+→ 절대값 (floor / cap / ticket / max concurrent / drift / hard reject) 변경하려면 **별도 ADR + 48h cooldown + 운영자 명시 승인**.
+→ 정책 layer (cooldown / Calibration tier 15% / RISK_MAX_DAILY_LOSS_OVERRIDE) 는 운영자 env 로 즉시 조정 가능.
 
 ---
 
 ## 4. 5 분 안에 알아야 할 것
 
 ### 최근 무엇을 했나
+- **2026-04-29** — KOL Big-loss Roadmap 채택 (`docs/exec-plans/active/kol-bigloss-roadmap-2026-04-29.md`) — paper n=438 분석에서 big-loss 51건이 all-loser cum 의 41% (IDEAL +84% sim). 4-Track 단계별 IDEAL 12%→25%→45%→60%→80% 도달 계획. **5종 변경 일괄 구현 (working tree, 미commit)**: (1) Track 1 same-token re-entry cooldown 30분 (KOL 진입 직전 reject), (2) Track 2A retro 분석 script (`scripts/kol-token-quality-retro.ts` 신규 — NO_SECURITY_DATA cohort = strong predictor 발견), (3) Track 2B NO_SECURITY_DATA reject default true (IDEAL 25%→35%), (4) Daily loss D+A (Calibration `0.05→0.15` + `RISK_MAX_DAILY_LOSS_OVERRIDE` env, -0.094 halt 사례 대응), (5) reporting.ts Q1+Q2+Q3 (reset helper 통합 / 5x peak 정의 사명 §3 정합 / transient 실패 batch 보존). `reports/` gitignore + 6 파일 untrack. **134 suites / 1122 tests pass**.
 - **2026-04-28** — 24h 동기화 분석에서 **5x winner 1건 첫 돌파** (`DF7DAPat` smart-v3 mfe+940% / net+940% / insider_exit_full / hold 656s). 사명 §3 binding constraint 24h 첫 돌파 ✓. 3 of 4 phase gate 충족. 단 **3대 incident** 동시 발견: missed-alpha observer dead, wallet_delta_warn drift 0.118 SOL spam (5분 × 6회), notifier failures 3건 error 빈 capture. 분석 측정 무결성 — 시간대 정합 규칙 적용 (UTC 기준 일관).
 - **2026-04-27** — KOL paper 212 누적 / 5x+ winner 0 / smart-v3 +4.79% net. KOL DB v6 (22→35 active, S 4+A 31). KOL live canary 코드 commit 1469a08 + 7 audit fix. ralph-loop 3 iteration: cupsey test isolation, dead strategy_d toggles, silent fallback ledger logs, 3개 setInterval handle cleanup, KOL live close operator notification.
 - **2026-04-26** — pure_ws swing-v2 paper shadow + live canary 구현, smart-v3 + swing-v2 dual shadow, scripts archive (25개), Strategy D 영구 retire (~2200 LOC 감소).
@@ -69,23 +73,34 @@ npm run check:fast
 
 ### 다음 운영 액션 (운영자 결정)
 
-**선택 A — 사명 §3 정합 (권장)**: 추가 5x winner 1-2건 누적 + 3대 incident 회복 후 ADR
-1. 매일 1회 `bash scripts/sync-vps-data.sh` 후 UTC 기준 24h 분석
-2. **3대 incident P0 회복** (INCIDENT.md 2026-04-28 §7-8-10):
-   - (P0) `MissedAlphaObserver` dead 회복 — `src/observability/missedAlphaObserver.ts` + observer init 점검. 회복 전엔 가설 (B) 정량 검증 불가
-   - (P0) wallet_delta_warn drift 0.118 SOL origin 추적 (`ops:reconcile:wallet`) + dedup/cooldown 코드 점검
+**선택 A — Track 1+2B 효과 측정 sprint (권장)**: 24-48h 운영 후 회귀 차단 검증
+1. VPS 재배포 (.env 추가 없이 default 즉시 활성 — Track 1 cooldown 30분 / Track 2B NO_SECURITY_DATA reject / Calibration 15% / reporting Q1+Q2+Q3)
+2. 24-48h 운영 후 `bash scripts/sync-vps-data.sh` + `npx ts-node scripts/kol-token-quality-retro.ts --in data/realtime/kol-paper-trades.jsonl --md docs/exec-plans/active/kol-token-quality-retro-2026-04-30.md`
+3. 측정 metric (회귀 차단):
+   - mfe<1% rate 45.2% → ≤ 35% 목표
+   - big-loss 12.4% → ≤ 9% 목표
+   - 5x winner ≥ 1 보존 (회귀 critical)
+   - cum_net Δ 측정
+4. **3대 incident P0 회복** (INCIDENT.md 2026-04-28 §7-8-10) 동시 진행:
+   - (P0) `MissedAlphaObserver` schema 재확인 (probe 단일 객체 / observations 미사용)
+   - (P0) wallet_delta_warn drift origin 추적 (`ops:reconcile:wallet`) + dedup/cooldown 점검
    - (P2) notifier fail 경로 error capture 정정
-3. **5x+ root cause 가설 검증** (INCIDENT.md 2026-04-28 §3 데이터 근거):
-   - (A) trail/sentinel 보수성 = **정량 증거 누적** (Top-5 mfe 중 3건 sentinel 컷 / capture 29% / mfe 167%→net 58%)
-   - (B) entry timing — smart_v3_price_timeout 1644건 (38.3%) / 가설 보조 증거 ✓ / observer 회복 시 직접 측정 가능
-   - (C) T2 임계 적정성 — 5x winner 1건 추가 누적 후 재평가
-4. 추가 5x winner 1-2건 누적 시 별도 ADR + Telegram critical ack `stage4_approved_YYYY_MM_DD` 후 KOL live canary opt-in
+5. 효과 + 회귀 검증 후 Track 2C (RugCheck) / Track 3 (KOL-pair cohort) / 추가 5x winner 누적 → ADR + KOL live canary opt-in 검토
 
-**선택 B — 자발적 §3 위반 인지 후 활성화**: 코드 모두 준비됨
+**선택 B — Track 2C 즉시 진행**: 잔여 mfe<1% 130건 (~30%) 추가 차단 시도
+- RugCheck (무료) / Solana Tracker (free tier 1k req/day) 평가
+- IDEAL 35% → ~50% 시뮬 후 결정
+- 단 측정 sprint 완료 전 권고 안 함 — Track 1+2B 회귀 검증 우선
+
+**백로그 — BBRI Phase 0 (장 분위기 감지, 측정 sprint 후 candidate)**:
+- 사용자 권고 macro regime index (smart_flow / execution_quality / liquidity_proxy 3 components, 외부 API 0)
+- observe-only, lane 영향 0 — DF7DAPat 5x winner 시점 BBRI 사후 측정으로 도입 가치 정량 입증
+- INCIDENT.md 2026-04-29 BBRI 섹션 + Task #109 참조
+
+**선택 C — 자발적 §3 위반 인지 후 KOL live canary 확대**: 코드 모두 준비됨
 - `.env` 에 `KOL_HUNTER_PAPER_ONLY=false` + `KOL_HUNTER_LIVE_CANARY_ENABLED=true` 추가 후 재시작
-- startup `[STAGE_GATE_REMINDER]` warn 로 §3 의무 알림
-- 안전망: canary cap 0.3 SOL / drift halt 0.2 SOL / max consec / ticket 0.01 hard lock
-- 단 **현재 비추** — single-winner n=1 + observer dead + drift incident 진행 중
+- 안전망: floor 0.7 / KOL cap 0.2 / ticket 0.02 / Track 1 cooldown / Track 2B reject / Daily loss 15%
+- 단 **현재 비추** — single-winner n=1 진행 중. 추가 5x winner 1-2건 누적 + 측정 sprint 후
 
 ### 절대 하지 말 것
 - ❌ `cupsey_flip_10s` 코드 수정 (frozen benchmark)
@@ -202,4 +217,4 @@ KOL_HUNTER 9h/24h/7d 보고서 작성 시 다음 12 항목 체크 의무:
 
 ---
 
-*Last updated: 2026-04-28 — 5x winner 첫 돌파 (24h n=1) + 3대 incident 회복 sprint 진입.*
+*Last updated: 2026-04-29 — KOL Big-loss Roadmap Sprint 1: Track 1+2A+2B + Daily loss D+A + reporting Q1+Q2+Q3. IDEAL 12% → 35%. 측정 sprint 권고.*

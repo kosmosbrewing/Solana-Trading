@@ -312,7 +312,11 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
     signalsExecuted: signalCounts.executed,
     signalsFiltered: signalCounts.filtered,
     dailyLossUsed: portfolio.equitySol > 0 ? Math.abs(dailyPnl) / portfolio.equitySol : 0,
-    dailyLossLimit: portfolio.riskTier?.maxDailyLoss ?? config.maxDailyLoss,
+    // 2026-04-29 (Option D): env override 반영 — Telegram digest 가 실 halt 임계 (riskManager.getActiveHalt) 와 정합.
+    // null = tier 정책. 0 이하 = disable (해당 lane 은 wallet floor + canary cap 만 보호).
+    dailyLossLimit: config.riskMaxDailyLossOverride != null
+      ? config.riskMaxDailyLossOverride
+      : (portfolio.riskTier?.maxDailyLoss ?? config.maxDailyLoss),
     consecutiveLosses: portfolio.consecutiveLosses,
     uptime: status.uptime,
     restarts: 0,

@@ -36,6 +36,15 @@ describe('RiskTier', () => {
     expect(locked.maxRiskPerTrade).toBeCloseTo(0.01, 6); // Calibration = 1% 고정
   });
 
+  // 2026-04-29 (Option A): Calibration tier maxDailyLoss 0.05 → 0.15.
+  // Why: floor 0.7 + canary cap 0.2 가 catastrophic 방어 cover. mission §3 측정 단계
+  //   에서 5% % equity 가 misalignment (-0.0943 SOL 에서 halt 사례).
+  it('Calibration tier maxDailyLoss = 0.15 (Confirmed/Proven 와 정합)', () => {
+    const calibration = resolveProfile(makeTrades(20));
+    expect(calibration.edgeState).toBe('Calibration');
+    expect(calibration.maxDailyLoss).toBeCloseTo(0.15, 6);
+  });
+
   it('v4: interpolates risk at Confirmed entry (trade 50, interpolation mid-zone)', () => {
     const profile = resolveProfile(makeTrades(50));
     expect(profile.edgeState).toBe('Confirmed');

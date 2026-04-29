@@ -6,6 +6,57 @@
 
 ---
 
+## 2026-04-29 — Daily loss limit 정책 완화 (D + A) — KOL live halt 대응
+
+### 1. 사건
+
+KOL hunter live canary 운영 중 `🔴 Critical Alert — Daily loss limit reached: -0.0943 SOL` 으로 halt. floor 0.7 SOL + KOL canary cap 0.2 SOL 까지 여유 충분한 상황이었음.
+
+### 2. 근본 원인
+
+`src/risk/riskTier.ts` Calibration tier (live trade <50건) `maxDailyLoss: 0.05` (5% equity) 가 floor / canary cap 보다 과보수적. equity ~0.94 × 5% = 0.047 SOL → -0.094 도달 시 halt. mission §3 (200 trades + 5x winner 측정) 단계에서 인위적 거래 차단 = 5x discovery 지연 misalignment.
+
+### 3. A 옵션 — Calibration tier 5% → 15%
+
+`src/risk/riskTier.ts:34` Calibration `maxDailyLoss: 0.05 → 0.15` (Confirmed/Proven 와 정합). 근거: lane 별 canary cap (cupsey 0.3 / KOL 0.2) 가 일별 catastrophic 방어 cover.
+
+### 4. D 옵션 — RISK_MAX_DAILY_LOSS_OVERRIDE env
+
+`src/config/walletAndCanary.ts:riskMaxDailyLossOverride` (default null = tier 정책 그대로). env set 시 모든 tier 강제 override. 0 이하 = daily loss limit 사실상 disable (wallet floor + canary cap 만 보호). `src/risk/riskManager.ts:getActiveHalt` 가 portfolio.riskTier?.maxDailyLoss 보다 우선 적용.
+
+### 5. 보호 구조 (변경 후)
+
+| Guard | 임계 | 적용 |
+|-------|------|------|
+| Real Asset Guard wallet floor | 절대값 0.7 SOL | wallet < 0.7 → 모든 lane 차단 |
+| KOL canary cumulative cap | 절대값 -0.2 SOL | KOL lane 만 차단 |
+| Cupsey canary cap | 절대값 -0.3 SOL | cupsey lane 만 차단 |
+| risk tier maxDrawdownPct | 30-40% equity | drawdown halt |
+| risk tier maxDailyLoss | **15%** equity (Calibration 포함 통일) | dailyPnl < -equity × 15% |
+| RISK_MAX_DAILY_LOSS_OVERRIDE | env | 운영자 control (set 시 tier 무시) |
+
+### 6. 회귀 테스트
+
+- `test/riskTier.test.ts`: ✓ Calibration tier maxDailyLoss=0.15
+- `test/riskManager.test.ts:Daily loss limit env override`: ✓ override null → tier / 0.30 → 통과 / 0 → disable
+- 전체 tests: **133 suites / 1114 pass**
+
+### 7. 운영 권고
+
+- 즉시 `RISK_MAX_DAILY_LOSS_OVERRIDE` env unset (default null) → A 옵션 (15%) 적용
+- 추가 측정 필요 시 `RISK_MAX_DAILY_LOSS_OVERRIDE=0.30` 또는 `0` 으로 일시 완화
+- 100 trades 후 catastrophic rate / floor margin 검토 후 tier 정책 재평가
+- 기존 cupsey live 운영도 영향 받음 (Calibration tier 사용 시) → 동일 보호로 floor 진입 방지는 cupsey canary cap 0.3 이 cover
+
+### 8. Default 동작 (env 무설정 시)
+
+| Config | 값 | 의미 |
+|--------|-----|------|
+| `riskMaxDailyLossOverride` | `null` | tier 정책 그대로 사용 |
+| Calibration `maxDailyLoss` | `0.15` (15%) | A 옵션 적용 — 코드 default |
+
+---
+
 ## 2026-04-29 — Track 2A retro + Track 2B (NO_SECURITY_DATA reject) 구현 완료
 
 ### 1. Track 2A retro 분석 — `scripts/kol-token-quality-retro.ts` 신설

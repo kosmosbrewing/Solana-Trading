@@ -28,6 +28,7 @@ import { log } from './constants';
 import { activePositions } from './positionState';
 import { getPureWsExecutor, resolvePureWsWalletLabel } from './wallet';
 import type { PureWsPosition } from './types';
+import { lookupCachedSymbol } from '../../ingester/tokenSymbolResolver';
 
 const SWING_V2_LANE = 'pure_ws_swing_v2' as const;
 
@@ -287,7 +288,8 @@ async function openSwingV2Live(input: OpenSwingV2Input): Promise<void> {
       pairAddress: livePos.pairAddress,
       strategy: SWING_V2_LANE,
       side: 'BUY',
-      tokenSymbol: livePos.tokenSymbol,
+      // 2026-04-29: prefetch 된 cache fallback (entryFlow 에서 이미 resolveTokenSymbol 호출).
+      tokenSymbol: livePos.tokenSymbol ?? lookupCachedSymbol(livePos.pairAddress) ?? undefined,
       price: actualEntryPrice,
       plannedEntryPrice: signal.price,
       quantity: actualQuantity,

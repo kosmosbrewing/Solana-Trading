@@ -27,6 +27,7 @@ import {
 } from '../tokenSessionTracker';
 import { persistOpenTradeWithIntegrity, isEntryHaltActive } from '../entryIntegrity';
 import { resolveActualEntryMetrics } from '../signalProcessor';
+import { resolveTokenSymbol, lookupCachedSymbol } from '../../ingester/tokenSymbolResolver';
 import type { BotContext } from '../types';
 import { LANE_STRATEGY, log } from './constants';
 import { activePositions, funnelStats } from './positionState';
@@ -49,6 +50,12 @@ export async function handlePureWsSignal(
   if (!config.pureWsLaneEnabled) return;
 
   funnelStats.signalsReceived++;
+
+  // 2026-04-29: token symbol prefetch (Helius DAS + pump.fun, 24h cache).
+  // F3 fix: cache hit 시 함수 진입 skip.
+  if (!signal.tokenSymbol && !lookupCachedSymbol(signal.pairAddress)) {
+    void resolveTokenSymbol(signal.pairAddress).catch(() => {});
+  }
 
   // Hard guards
   if (isEntryHaltActive(LANE_STRATEGY)) {
@@ -602,7 +609,8 @@ export async function handlePureWsSignal(
       pairAddress: position.pairAddress,
       strategy: LANE_STRATEGY,
       side: 'BUY',
-      tokenSymbol: position.tokenSymbol,
+      // 2026-04-29: signal upstream → resolver cache → undefined fallback.
+      tokenSymbol: position.tokenSymbol ?? lookupCachedSymbol(position.pairAddress) ?? undefined,
       price: actualEntryPrice,
       plannedEntryPrice: signal.price,
       quantity: actualQuantity,

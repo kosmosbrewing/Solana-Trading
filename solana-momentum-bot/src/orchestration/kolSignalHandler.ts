@@ -52,6 +52,7 @@ import { evaluateSecurityGate } from '../gate/securityGate';
 import { evaluateSellQuoteProbe } from '../gate/sellQuoteProbe';
 import type { OnchainSecurityClient } from '../ingester/onchainSecurity';
 import type { GateCacheManager } from '../gate/gateCacheManager';
+import { resolveTokenSymbol, lookupCachedSymbol } from '../ingester/tokenSymbolResolver';
 // 2026-04-27 (KOL live canary): pure_ws live path 와 동일 패턴.
 import type { Order, Trade } from '../utils/types';
 import type { BotContext } from './types';
@@ -674,6 +675,14 @@ export async function handleKolSwap(tx: KolTx): Promise<void> {
 
   // 2026-04-26 paper notifier L1: discovery 카운팅 (kolPaperNotifier 가 hourly digest 에 사용)
   kolHunterEvents.emit('discovery', tx);
+
+  // 2026-04-29: token symbol prefetch (Helius DAS + pump.fun fallback, 24h cache).
+  // KOL signal 첫 만남 시 fire-and-forget 으로 resolve → entry 까지 5-30s 사이 cache populate.
+  // 알림 발사 시점엔 lookupCachedSymbol() 만 사용 (RPC 차단 0).
+  // F3 fix (2026-04-29 QA): cache hit 시 함수 진입 자체 skip — burst (KOL squad) 시 5명 동시 buy 도 1회만 호출.
+  if (tx.action === 'buy' && !lookupCachedSymbol(tx.tokenMint)) {
+    void resolveTokenSymbol(tx.tokenMint).catch(() => {});
+  }
 
   // recent buffer 유지 (24h). audit fix #2: batch prune (매 1024 push 마다, splice 1회).
   recentKolTxs.push(tx);
@@ -2234,6 +2243,8 @@ async function enterLivePosition(
       pairAddress: tokenMint,
       strategy: LANE_STRATEGY,
       side: 'BUY',
+      // 2026-04-29: KOL signal prefetch 로 24h cache populate → notifier path RPC 0.
+      tokenSymbol: lookupCachedSymbol(tokenMint) ?? undefined,
       price: actualEntryPrice,
       plannedEntryPrice: referencePrice,
       quantity: actualQuantity,
@@ -2447,6 +2458,8 @@ async function closeLivePosition(
       pairAddress: pos.tokenMint,
       strategy: LANE_STRATEGY,
       side: 'BUY',
+      // 2026-04-29: prefetch 시 populate. miss 시 messageFormatter 가 shortenAddress 로 fallback.
+      tokenSymbol: lookupCachedSymbol(pos.tokenMint) ?? undefined,
       entryPrice: pos.entryPrice,
       plannedEntryPrice: pos.marketReferencePrice,
       exitPrice: actualExitPrice,

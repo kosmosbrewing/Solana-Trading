@@ -6,6 +6,156 @@
 
 ---
 
+## 2026-04-28 (오후-저녁) — KOL Live Canary 본격 활성화 + B안 ticket 결정 + 8JH1J6p4 incident
+
+### 1. 누적 코드 변경 (commit 미수행, working tree 18 파일 / +1474 LOC)
+
+#### Sprint 1A — Hold-phase sentinel 임계 완화
+- `KOL_PAPER_HOLD_PHASE_PEAK_DRIFT_THRESHOLD` (hardcoded 0.30) → **`config.kolHunterHoldPhasePeakDriftThreshold` (default 0.45, env override 가능)**
+- 근거: paper n=401 mfe 200%+ 9건 중 **4건 sentinel 컷** (8ipcTXum 246%→108% / HqyQHwQv 207%→98% / ssFb5yQU 215%→116% / EjY599u1 230%→42%)
+- 영향: drift 31-40% 케이스 보호, 50%+ 심각 cases 는 여전히 cut
+
+#### Sprint 2A — KOL live position recovery
+- `recoverKolHunterOpenPositions(ctx)` 신규 (~143 LOC, kolSignalHandler.ts)
+- cupsey/pure_ws 패턴 모방: orphan/dust/RPC fail/state inference (PROBE/T1/T2/T3)
+- 8 통합 테스트 케이스 PASS
+- `runLaneRecoveries.ts` wiring (config.kolHunterEnabled gate)
+
+#### Sprint 2 Task 3 — KOL-specific canary cap (independent from 공유)
+- `kolHunterCanaryMaxBudgetSol` / `MaxConsecLosers` / `MaxTrades` 신규
+- B안 적용 후 **0.2 / 5 / 50** (ticket 0.02 비례)
+- `canaryAutoHalt.readConfig('kol_hunter')` 분기 추가
+
+#### Sprint 2 Task 4 — KOL live canary E2E integration tests + F1/F2 source defect fix
+- 6 E2E 테스트 케이스 (winner trail / executeBuy throw / executeSell throw / ORPHAN / canary slot / close race)
+- **F1 fix** (CRITICAL): `closePosition` 가 mutation 후 capture → sell 실패 시 state 영구 'CLOSED' 잠금. callerPreviousState param 추가, mutation 전 capture.
+- **F2 fix** (HIGH): "60s cooldown" 이 entry-since check 였음 → entry 직후 sell 실패 critical 미발사. lastCloseFailureAtSec 필드 + cupsey/pure_ws 패턴 동일.
+
+#### Sprint 3 — Inactive KOL shadow track
+- `KOL_HUNTER_SHADOW_TRACK_INACTIVE` flag (default false), inactive 28명 별도 subscribe
+- `kol-shadow-tx.jsonl` 별도 logger, kolSignalHandler 호출 0 (entry 영향 0)
+- Helius 429 risk MEDIUM (활성화 전 quota 확인 필수)
+
+#### KOL DB v6 → v7 — 7 신규 candidate
+- 4 active 승격: `degenerate_brian` (5x bucket=1 입증) / `noob_mini` PROVISIONAL / `limfork_eth` PROVISIONAL / `yenni` PROVISIONAL
+- 2 observe-only B: `fz7` (promotion candidate) / `cowboybnb` (ticket 4.23 SOL 영구 보류)
+- 1 REJECT: `qavec` (Solana Explorer creator 필드 노출 = Doji 패턴, operator/dev overlap)
+- Active 35 → **39** (S 4 + A 35), inactive 28명
+
+### 2. Ticket scaling 진로 (3단계)
+
+| 단계 | Ticket | floor | KOL canary cap | 적용 시각 | 근거 |
+|---|---|---|---|---|---|
+| 초기 | 0.01 SOL | 0.8 SOL | 공유 0.3 | F5 hard lock 정책 | 외부 트레이더 피드백 |
+| **A안** | 0.03 SOL | 0.8 SOL | 0.3 SOL | 오후 초반 | paper n=401 / 5x+ winner 1건 입증 후 3x scale |
+| **B안 (현재)** | **0.02 SOL** | **0.7 SOL** | **0.2 SOL** | 오후 후반 | live 24h n=44 ROI -2.55% + catastrophic 4.5% 후 후퇴 |
+
+#### Per-lane policy max 도입
+- `policyGuards.ts:POLICY_TICKET_MAX_SOL_BY_LANE = { kol_hunter: 0.02 }` 신규
+- `getPolicyMaxForLane(lane)` helper
+- 다른 lane (pure_ws / cupsey / migration / pure_ws_swing_v2) 0.01 정책 그대로 유지
+- KOL 만 별도 max — Stage 4 partial (paper proof) 인정
+
+### 3. B안 산정 근거 (200-trade Stage 4 여정 시뮬)
+
+**Live 24h 데이터 (n=44, ticket 0.03 산 결과)**:
+- Win rate 27.3% (12W / 32L)
+- avg WIN +86.42% (paper +46% 의 1.87x)
+- avg LOSS -32.95% (paper -12.69% 의 **2.6x 악화**)
+- avg per-trade **-2.55%** (bleeding 중)
+- Catastrophic **4.5%** (-100% PNL_DRIFT 2건/44, 8JH1J6p4 incident 포함)
+- Best gain +244.27%
+
+**Live raw Kelly = 0.00%** ← -100% tail 이 log-growth 음수화. Kelly 수학적으로는 trading 중단 권고.
+
+**B안 시뮬 (200 trade)**:
+- Catastrophic 9건 × 0.02 = 0.18 SOL
+- Bleed 200 × 2.55% × 0.02 = 0.102 SOL
+- 합계 drawdown ≈ 0.282 SOL → wallet **0.718 SOL** (floor 0.7 +0.018 margin)
+- Catastrophic 견딤: 15 events (예상 9건 + 6 buffer)
+
+**100-trade 자동 재평가 분기**:
+- catastrophic rate < 2% AND ROI > 0% → **0.025 승격 검토**
+- catastrophic rate ≥ 4% (개선 없음) → **0.015 후퇴**
+- ROI 양수 + 5x+ winner ≥ 1건 live 입증 → Stage 4 SCALE gate ADR 진입
+
+### 4. Ralph-loop 6 iter (API 병목 P0/P1 fix)
+
+| Iter | Priority | 변경 | 효과 |
+|---|---|---|---|
+| 1 | P0 | KOL inflight dedup (`inflightLiveEntry` Set) | live entry duplicate 차단 |
+| 2 | P0 | Notifier fire-and-forget (4 lane × open + 3 lane × close, 7 sites) | Telegram 429 entry/exit blocking 0 |
+| 3 | P0 | Exit RPC 병렬 (`Promise.all([getTokenBalance, getBalance])`) | ~250ms 단축 |
+| 4 | P0 | Jupiter 429 backoff [5,15,45,60,60] → [2,5,15,30,60] | **185s → 112s (39% 단축)** |
+| 5 | P1 | waitForFirstTick 10s → 5s | worst case 50% 단축 |
+| 6 | P1 | sellQuoteProbe TTL cache | **N/A** (이미 구현됨, audit claim 잘못) |
+
+### 5. 8JH1J6p4 Incident (live canary 첫 운영 사고, 11:54-12:02 UTC)
+
+**Token**: `8JH1J6p43XYm1zUo3ZYfFqeBkmPQ5362JpKC3xH5CV5p`
+
+**5중 cascade 실패**:
+1. **Security gate bypass** — "Invalid param: not a Token mint" 오류에도 `kolHunterSurvivalAllowDataMissing=true` 통과 (Token-2022/비표준 program 검증 0)
+2. **Smart-v3 score fooled** — KOL exit 직전 pullback 을 "기회" 로 해석 (score 4.98/5.96)
+3. **Jupiter 429 entry cascade** — pos `1777377286` trigger 11:54:46 → fill 11:57:59 = **3분 13초 delay**, mae -77.73% 까지 하락 후 매수
+4. **0.03 ticket scale 영향** — 각 손실이 0.01 ticket 대비 3배. 합계 wallet **-0.0754 SOL** (2.5x ticket)
+5. **Sell 429 cascade** — pos `1777377286` close "Swap failed after 3 attempts: 429" → retry success 까지 ~3-4분
+
+**정량**:
+- pos `1777377322`: walletDelta -0.0552 / receivedSol = **-0.0230 (negative!)** / **PNL_DRIFT 0.0498**
+- pos `1777377286`: walletDelta -0.0202 / hold 407s / mae -77.73%
+- wallet_delta_warn drift -0.0603 SOL (PNL_DRIFT 가 주된 기여)
+
+**잔여 권고**:
+- ⚠️ Token blacklist (8JH1J6p4 quarantine)
+- ⚠️ `KOL_HUNTER_SURVIVAL_ALLOW_DATA_MISSING=false` 운영 변경 — "not a Token mint" 자동 reject
+- ⚠️ Same-mint cooldown (5분 내 재진입 차단)
+- ⚠️ Smart-v3 trigger 시 observe 윈도우 KOL SELL 발생 시 trigger 무효화
+
+### 6. Quality 점검 패턴 — agent grep 단독 한계 노출
+
+자체 quality check 에서 직전 audit agent 의 false claim **4건** 발견:
+- "Jupiter 18k/min 부하" → 실측 ~186/min (free tier 31%)
+- "Helius onLogs unbounded" → 실제 maxFallbackQueue=200 cap
+- "sendTradeOpen .catch() 누락" → 실제 모든 사이트 .catch() 있음
+- "sellQuoteProbe cache 부재" → 실제 quoteResultCache + quoteInFlight + rateLimitedUntilMs 3-layer 구현
+
+**교훈**: agent grep 단독 검증은 부분 context 누락 → false positive. critical claim 은 직접 read + cross-check 필수.
+
+### 7. 검증
+
+- tsc clean
+- jest **1101/1101 pass** (regression 0, 새 테스트 +95: recovery 8 + E2E 6 + KOL canary cap 4 + sentinel relax + KOL ticket policy + shadow 4)
+
+### 8. 운영 적용 절차
+
+`.env` 변경 **불필요** (코드 default 모두 적용). 재배포만으로:
+- ticket 0.02 SOL
+- wallet floor 0.7 SOL
+- KOL canary cap 0.2 SOL
+- sentinel peak drift 0.45
+- 429 backoff 단축
+- live position recovery
+- F1/F2 fix 운영 반영
+
+운영자 명시 변경 권고:
+- `KOL_HUNTER_SURVIVAL_ALLOW_DATA_MISSING=false` (8JH1J6p4 같은 incident 차단)
+- `KOL_HUNTER_LIVE_CANARY_ENABLED=true` + `KOL_HUNTER_PAPER_ONLY=false` (live canary 의도적 활성화 시)
+- (선택) `KOL_HUNTER_SHADOW_TRACK_INACTIVE=true` (inactive KOL 활동량 관측)
+
+### 9. 미해결 / 별도 sprint
+
+- **PNL_DRIFT root cause 진단** — 2/44 의 -100% events (sell-side fee + Jito tip + slippage 분해 필요)
+- **Same-mint 5분 cooldown** — 8JH1J6p4 같은 동시 2 position 진입 방지
+- **Smart-v3 KOL SELL trigger guard** — observe 윈도우 내 KOL exit 시 trigger 무효화
+- **Token blacklist file** (`data/quarantine.jsonl` 등 영구 차단 시스템)
+- **commit/push** — 누적 working tree 18 파일 / +1474 LOC, 운영자 승인 대기
+- **probe_hard_cut threshold A/B simulation** — 미구현 (paper-trades.jsonl 95건 24h 으로 분석 가능, script 도구화 필요)
+- **swing-v2 hurdle 완화 A/B** — minKolCount 2→1 + score 5.0→4.0, 24h paired observation 후 결정
+- **Trending Sniper / pure_ws retire** — 의도된 보류, 5x winner 추가 누적 후 재평가
+
+---
+
 ## 2026-04-28 — 우선순위 8 항목 진척 점검 (코드 audit)
 
 직전 우선순위 표(P0~P3 9항목 + 티켓 금액)를 코드/데이터로 직접 검증 → 다수가 이미 완료. 진척표:
@@ -40,6 +190,121 @@
 | **R4** | 24h 5x winner 1건의 single-winner 의존도 66% (+0.094 / +0.142) | 표본 부족 — 1건이 paper test 의 통계적 한계 | 추가 5x winner 1-2건 누적까지 ADR 작성 보류 권고 (선택 A 정합) |
 | **R5** | KOL_HUNTER_CANARY_MAX_BUDGET_SOL=0.1 SOL 의 의미 점검 | ticket 0.01 × 50 trades = 최대 0.5 SOL 노출이지만 budget 0.1 SOL 도달 시 즉시 halt → 평균 −2% net 이상 시 10 trade 안에 budget 소진 가능 | 실제 24h 데이터로는 net +0.142 SOL 흑자라 0.1 SOL budget 충분. 단 첫 1-3 trade 가 즉시 hard_cut 만 발동하면 7-8건 만에 halt 가능 (avg hard_cut −2.0%/0.01 = −0.0190 → 5건이면 −0.095 ≈ budget 한계) |
 | **R6** | 티켓 0.01 SOL × 첫 1-3 trade 안전 한계 | hard_cut 평균 −19.5% 손실 = 1건당 −0.00195 SOL. 5건 연속 loser 시 −0.00975 SOL → consec losers cap 5 도달로 halt | 안전망 작동 ✓. 단 운영자 첫 morning-stop 윈도 권고 |
+
+---
+
+## 2026-04-29 — 분석 무결성 체크리스트 등재 + 9h log 분석 6 critical finding 정정
+
+### 1. 직전 9h 분석 (2026-04-28 14:40~23:40Z) 의 6 critical finding
+
+| # | 직전 claim | 검증 결과 | Severity |
+|---|---------|---------|---------|
+| F1 | "5x winner 첫 돌파 (live 4y1gkKzC +487%)" | **❌ 정의 위반** — paper mirror 의 mfePctPeak=102% (5x 미달). +487% 는 wallet axis netPct 이지 mfe 아님. **mfe ≥ +400% 5x winner 0건** (paper/live) | CRITICAL |
+| F2 | "paper 3.5h 정지" | **❌ schema 오해** — paper-trades.jsonl 의 last 8건이 모두 `kolh-live-*` (live mirror). 실제 paper-only **7h 정지** (16:53 이후) | HIGH |
+| F3 | "paper 16건" | **mixed pool** — paper-only 8건 + live mirror 8건 | HIGH |
+| F4 | "Single-winner 5145% 의존도" | misleading 수학 — total small 이라 비율 inflated. 정확: winner +0.108 SOL, 그 외 16건 cum −0.106 SOL = winner 빼면 net loss | MEDIUM |
+| F5 | "Sprint A1 효과 100%" | **부분 검증** — sendCritical 0 사실, 단 dedup vs drift recover 미구분 (bot.log stale) | MEDIUM |
+| F6 | "Phase 1 over-close 가능성" | schema 정정 후 paper-only 7h 정지가 진짜 — root cause 진단 필요 | MEDIUM |
+
+### 2. 운영 사실 (정정 후)
+
+| 지표 | 9h 값 |
+|------|-------|
+| Live trades | 17건 / wallet net **+0.0021 SOL** |
+| Live winners (wallet axis +) | 4건 (24%) — 1건 net+487% (winner +0.108) |
+| Paper-only trades | 8건 (16:27~16:53) + 7h 정지 |
+| **mfe ≥ +400% 5x winner** | **0건** (paper / live 모두) |
+| Sprint A1 (drift dedup) | sendCritical 108→0 (dedup OR recover, 미구분) |
+| Sprint B1 (429 retry) | 44→8 (80% 감소) |
+| `kol_live_close_failed` | 8건 / 5 unique pos / `FXB6a9Di` 3회 retry |
+
+### 3. 분석 무결성 체크리스트 (12 항목) 등재
+
+`SESSION_START.md §6-bis` 에 등재. 향후 KOL_HUNTER 분석 보고서 작성 시 체크 의무:
+
+- **Time**: UTC 기준 / `date -u` 명시
+- **Schema**: paper-only vs live mirror positionId 분리 / probe 단일 객체 (observations array 아님) / executed-* 에 mfe 부재
+- **Axis**: ticket axis 금지, wallet axis / 5x = mfe 정의 / paper 단위 차이
+- **Statistical hygiene**: single-winner 의존도 / cohort 95% CI / 시뮬 hold-side 가정
+- **Cross-check**: Sprint before/after / 외부 claim 직접 검증 / INCIDENT false positive
+
+→ 매 보고서 첫 줄 "체크리스트 12/12 통과" 명시 권고.
+
+### 4. P0 진단 결과 — Paper-only 7h 정지 = **false positive (의도된 정책 효과)**
+
+24h hourly cross-check:
+
+```
+03:00 paper=13, live=1   livecanary 비활성 (paper dominant)
+04:00 paper=0,  live=9   ← 13:29 livecanary 활성 후 분기 변경
+04~14 paper=0~4, live=2~15  livecanary dominant
+16:00 paper=8 (일시 fallback — wallet stop / entry halt 흔적)
+17:00~ paper=0 영구
+```
+
+**Root cause** (`kolSignalHandler.ts:824` `evaluateSmartV3Triggers`):
+```ts
+if (isLiveCanaryActive() && botCtx && !candIsShadow) {
+  await enterLivePosition(...);  // 모든 non-shadow cand → live
+  return;
+}
+await enterPaperPosition(...);  // shadow KOL 또는 fallback 만
+```
+
+→ livecanary 활성 시 **paper-only 분기는 의도된 dead path**. shadow KOL (Option B) 또는 wallet_stop / entry_halt fallback 시에만 paper 진입. 16:00 의 paper=8 spike 는 일시적 fallback 흔적.
+
+**처리**:
+- ✅ 신규 sprint 불필요 (의도된 정책)
+- ✅ SESSION_START.md §6-bis 체크리스트 (paper-only vs live mirror 분리) 가 향후 false positive 차단
+- ⚠ 측정 도구 (`kol-paper-arm-report.ts` 등) 가 paper-only ledger 와 live mirror 분리해서 read 하는지 점검 필요 (별도 sub-task)
+
+### 5. P1 — bot.log freshness 검증 sync 자동화
+
+**Root cause**: `sync-vps-data.sh` 가 logs/ 전체 rsync 하지만 sync 후 freshness 검증 없음 → 운영자가 sync 안 돌렸거나 VPS 봇 down 시 stale data 로 분석 진행.
+
+**Fix** (`scripts/sync-vps-data.sh`):
+```bash
+LOG_FRESHNESS_THRESHOLD_SEC=1800  # 30분 default, env override
+# sync 후 logs/bot.log mtime vs NOW 비교 → 30분 이상 stale 시 WARNING + 봇 상태 확인 권고
+```
+
+- macOS (BSD) / Linux (GNU) `stat` 양쪽 호환
+- threshold env override 가능 (`LOG_FRESHNESS_THRESHOLD_SEC=300` 등)
+- 직전 incident (logs/bot.log 20:16Z stale) 같은 패턴 자동 감지
+- bash syntax 검증 통과 + 현재 stale (755min old) 시나리오 dry-run 정합
+
+### 6. Hourly KST snapshot + close 알림 일관성 fix (2026-04-29)
+
+**운영자 요청**:
+- 매 KST 시간 (00~23) 잔고 + 증감 짧은 알림 (`00:00 1.0sol(잔고) 증감 +-` 형식)
+- close 알림이 올 때 있고 안 올 때 있는 issue
+
+**Fix** (`src/orchestration/reporting.ts`):
+- `getScheduledReportType` 에 `'hourly'` enum 추가
+- `HOURLY_SNAPSHOT_KST_HOURS = 0~23` 모두
+- 우선순위: daily(9시) > heartbeat(짝수) > hourly
+- `sendHourlySnapshot` — 짧은 1-3 줄 (잔고 + 1h 증감 + live close 카운트 + 5x+ winner 표시)
+- in-memory baseline 으로 1h 증감 계산 (재시작 시 reset, 첫 1h 는 증감 표시 없음)
+- 회귀 테스트 2건 추가
+
+**Close 알림 일관성 분석**:
+| Path | 알림 | 빈도 |
+|------|------|------|
+| Live close 정상 | `sendInfo('[KOL_LIVE_CLOSE] ...')` | 매 close ✓ |
+| Live close sell fail | `sendCritical('kol_live_close_failed')` | retry 시점 |
+| Live close DB persist fail | `sendCritical('kol_live_close_persist')` | DB 에러 시 |
+| **Paper close** | `emit('paper_close')` 만 | hourly digest + 5x anomaly 만 (silent by design) |
+
+→ "close 알림 안 올 때" = paper close (의도된 silent). hourly snapshot 의 누적 표시로 인지 보완.
+   단 paper close 는 jsonl ledger 라 `tradeStore.getTradesCreatedWithinHours` (DB) 에 없음 → 향후 sub-task 로 paper jsonl reader 추가.
+
+### 7. 잔존 sprint
+
+| 우선순위 | 항목 |
+|---------|------|
+| P2 | live trade 의 mfe 측정 인프라 — executed-* schema 에 mfePctPeak 추가 또는 paper mirror cross-ref 자동화 |
+| P2 | `kol-paper-arm-report.ts` 의 paper-only ledger filter — 현재 mixed (paper-only + live mirror) read 가능성 점검 |
+| P2 | hourly snapshot 의 paper close 누적 표시 — kol-paper-trades.jsonl reader 통합 |
 
 ---
 

@@ -46,7 +46,7 @@ Stage 1-2 만 읽으면 (5-10분) 코드 변경 가능. Stage 3+ 는 필요 시.
 - **Ground truth**: wallet delta 만 유일한 판정 기준. DB pnl 단독 판정 금지 (drift `+18.34 SOL` 전력).
 - **Success redefined (2026-04-21)**: 0.8 SOL floor 유지 + 200 live trades + 5x+ winner 분포 실측 = 기술적 성공. 100 SOL 달성 여부 무관.
 - **Trade-count 구간 의미 (2026-04-21)**: `50 trades` = safety checkpoint (관측 전용, 승격 결정 없음) / `100 trades` = preliminary edge/bleed/quickReject 검토 (Stage 2) / `200 trades` = scale/retire decision gate (Stage 4). 50 을 승격 기준으로 쓰지 말 것.
-- **Real Asset Guard 정책값 (불변)**: `wallet floor=0.8 SOL` / `canary cumulative loss cap=-0.3 SOL` / `pure_ws max concurrent=3` / `fixed ticket=0.01 SOL`. Startup 에 `[REAL_ASSET_GUARD]` 로그로 effective 값 확인 가능.
+- **Real Asset Guard 정책값 (2026-04-28 B안 갱신)**: `wallet floor=0.7 SOL` (이전 0.8) / `canary cumulative loss cap=-0.3 SOL` (공유) / `KOL canary cap=0.2 SOL` (별도) / `pure_ws max concurrent=3` / **per-lane ticket cap**: pure_ws / cupsey / migration / pure_ws_swing_v2 = `0.01 SOL`, **kol_hunter = `0.02 SOL`** (paper n=401 / 5x+ winner 1건 입증 후 partial scale, live 24h n=44 ROI -2.55% 후 0.03→0.02 후퇴). Startup 에 `[REAL_ASSET_GUARD]` 로그로 effective 값 확인 가능. 변경 ADR: memory:project_kol_b_decision_ralph_loop_2026_04_28.md
 - archive: [`PLAN_CMPL.md`](./PLAN_CMPL.md), [`docs/historical/pre-pivot-2026-04-18/`](./docs/historical/pre-pivot-2026-04-18/)
 - 현재 전략 quick reference: [`STRATEGY.md`](./STRATEGY.md)
 - 전략 방향/다음 가설: [`STRATEGY_NOTES.md`](./STRATEGY_NOTES.md)

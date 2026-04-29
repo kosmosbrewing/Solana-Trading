@@ -482,4 +482,76 @@ describe('RiskManager unrealized drawdown', () => {
       expect(result.appliedAdjustments ?? []).toContain('BYPASSED_EDGE_BLACKLIST');
     });
   });
+
+  // 2026-04-29 (Option D): RISK_MAX_DAILY_LOSS_OVERRIDE — runtime tier override.
+  // Why: -0.0943 SOL halt 사례. floor 0.7 + canary cap 0.2 가 catastrophic 방어 cover.
+  describe('Daily loss limit env override (Option D)', () => {
+    let originalOverride: number | null;
+
+    beforeEach(() => {
+      originalOverride = config.riskMaxDailyLossOverride;
+    });
+
+    afterEach(() => {
+      (config as { riskMaxDailyLossOverride: number | null }).riskMaxDailyLossOverride = originalOverride;
+    });
+
+    function buildManager(): RiskManager {
+      return new RiskManager({
+        maxRiskPerTrade: 0.01,
+        maxDailyLoss: 0.05,
+        maxDrawdownPct: 0.30,
+        recoveryPct: 0.85,
+        maxConsecutiveLosses: 3,
+        cooldownMinutes: 30,
+        maxSlippage: 0.05,
+        minPoolLiquidity: 50_000,
+        minTokenAgeHours: 24,
+        maxHolderConcentration: 0.8,
+      }, {} as unknown as TradeStore, createFakeClock(FIXTURE_NOW));
+    }
+
+    function buildPortfolio(dailyPnlSol: number, equitySol: number): PortfolioState {
+      return {
+        balanceSol: equitySol,
+        equitySol,
+        dailyPnl: dailyPnlSol,
+        consecutiveLosses: 0,
+        openTrades: [],
+        drawdownGuard: { halted: false, peakBalanceSol: equitySol, drawdownPct: 0 } as unknown as PortfolioState['drawdownGuard'],
+        riskTier: {
+          edgeState: 'Calibration',
+          maxRiskPerTrade: 0.01,
+          maxDailyLoss: 0.05,
+          maxDrawdownPct: 0.30,
+          recoveryPct: 0.85,
+          kellyFraction: 0,
+          kellyApplied: false,
+          kellyMode: 'fixed',
+        },
+      } as unknown as PortfolioState;
+    }
+
+    it('override null (default) → tier 정책 그대로 (Calibration 5% trip)', () => {
+      (config as { riskMaxDailyLossOverride: number | null }).riskMaxDailyLossOverride = null;
+      const manager = buildManager();
+      // equity 1 SOL × 5% = 0.05 SOL → -0.06 trip
+      const halt = manager.getActiveHalt(buildPortfolio(-0.06, 1.0));
+      expect(halt?.kind).toBe('dailyLoss');
+    });
+
+    it('override 0.30 (30%) → -0.06 SOL 통과 (mission §3 측정 sprint)', () => {
+      (config as { riskMaxDailyLossOverride: number | null }).riskMaxDailyLossOverride = 0.30;
+      const manager = buildManager();
+      const halt = manager.getActiveHalt(buildPortfolio(-0.06, 1.0));
+      expect(halt).toBeUndefined();
+    });
+
+    it('override 0 → daily loss limit disable, wallet floor / canary cap 만 보호', () => {
+      (config as { riskMaxDailyLossOverride: number | null }).riskMaxDailyLossOverride = 0;
+      const manager = buildManager();
+      const halt = manager.getActiveHalt(buildPortfolio(-0.50, 1.0));
+      expect(halt).toBeUndefined();
+    });
+  });
 });

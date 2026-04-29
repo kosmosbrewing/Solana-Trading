@@ -4,6 +4,13 @@
 
 import { boolOptional, numEnv } from './helpers';
 
+function numOrNullEnv(key: string): number | null {
+  const raw = process.env[key];
+  if (raw == null || raw === '') return null;
+  const v = Number(raw);
+  return Number.isFinite(v) ? v : null;
+}
+
 export const walletAndCanary = {
   // ─── Block 4 (2026-04-18) + 2026-04-21 mission-refinement: per-lane circuit-breaker ───
   // Why: pure_ws_breakout loose gate → 연속 entry loser streak 위험. per-lane auto-halt.
@@ -72,4 +79,14 @@ export const walletAndCanary = {
   // 새 drift 또는 cooldown 경과 시 다시 발동.
   walletDeltaWarnAlertCooldownMs: numEnv('WALLET_DELTA_WARN_ALERT_COOLDOWN_MS', '1800000'),  // 30분
   walletDeltaWarnDriftDeltaToleranceSol: numEnv('WALLET_DELTA_WARN_DRIFT_DELTA_TOLERANCE_SOL', '0.005'),
+
+  // ─── 2026-04-29: Risk daily loss limit override (D 옵션) ───
+  // Why: 2026-04-29 KOL hunter live 운영에서 dailyLoss -0.0943 SOL 으로 halt 발생.
+  //   wallet floor 0.7 + canary cap 0.2 가 catastrophic 방어 cover 하는데 5%/15% % equity 가
+  //   misalignment. floor 까지 여유 충분한 상황에서 mission §3 측정 차단 = 5x discovery 지연.
+  // 본 env 가 set 되면 portfolio.riskTier?.maxDailyLoss 와 무관하게 모든 tier 에 강제 적용.
+  // unset (null) 이면 기존 tier 정책 그대로 (Bootstrap 5% / Calibration 15% / Confirmed/Proven 15%).
+  // 0 (또는 음수) 설정 시 daily loss limit 사실상 disable — wallet floor + canary cap 만 보호.
+  // 권고: mission §3 측정 sprint 동안 0.30 (30% equity) 또는 큰 절대값. catastrophic 발생 시 즉시 복구.
+  riskMaxDailyLossOverride: numOrNullEnv('RISK_MAX_DAILY_LOSS_OVERRIDE'),
 } as const;

@@ -405,7 +405,13 @@ export class RiskManager {
       };
     }
 
-    const maxDailyLoss = portfolio.riskTier?.maxDailyLoss ?? this.riskConfig.maxDailyLoss;
+    // 2026-04-29 (Option D): runtime env override. tier 정책 무관하게 강제 적용.
+    // null (default) = 기존 tier 정책 그대로. 0 이하 = daily loss limit 사실상 disable
+    // (wallet floor + canary cap 만 보호). mission §3 측정 sprint 동안 운영자 control.
+    const dailyLossOverride = config.riskMaxDailyLossOverride;
+    const maxDailyLoss = dailyLossOverride != null
+      ? dailyLossOverride
+      : (portfolio.riskTier?.maxDailyLoss ?? this.riskConfig.maxDailyLoss);
     if (this.isDailyLossExceeded(portfolio, maxDailyLoss)) {
       return {
         kind: 'dailyLoss',
@@ -417,6 +423,7 @@ export class RiskManager {
   }
 
   private isDailyLossExceeded(portfolio: PortfolioState, maxDailyLoss: number): boolean {
+    if (maxDailyLoss <= 0) return false;  // disabled
     const maxLoss = portfolio.equitySol * maxDailyLoss;
     return portfolio.dailyPnl < -maxLoss;
   }

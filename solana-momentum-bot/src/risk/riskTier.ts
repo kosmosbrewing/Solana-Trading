@@ -31,7 +31,13 @@ const RISK_TIERS: Record<EdgeState, RiskTierDefinition> = {
   },
   Calibration: {
     fixedRiskPerTrade: 0.01,  // Bootstrap/Calibration 모두 1% 고정 (strategy-catalog 참조)
-    maxDailyLoss: 0.05,
+    // 2026-04-29: 5% → 15% (Confirmed/Proven 와 정합).
+    // Why: floor 0.7 SOL + KOL canary cap 0.2 SOL 가 이미 catastrophic day 방어 cover.
+    //   기존 5% 는 wallet ~1 SOL 기준 0.05 SOL 일 limit → mission §3 (200 trades + 5x winner)
+    //   측정 단계에서 인위적 거래 차단 (-0.094 SOL 에서 halt 사례 2026-04-29 발생).
+    //   floor 까지 여유 0.24 SOL 인데 0.05 SOL 에서 멈추는 misalignment.
+    //   Calibration tier 도 lane 별 canaryCap (cupsey/kol_hunter) 가 일별 보호 → 15% 로 통일.
+    maxDailyLoss: 0.15,
     maxDrawdownPct: 0.30,
     kellyScale: 0,
     kellyCap: 0.01,

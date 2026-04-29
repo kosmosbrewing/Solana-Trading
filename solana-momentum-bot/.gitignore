@@ -13,6 +13,10 @@ coverage/
 data/*.csv
 results/
 
+# Generated analysis reports (kol-paper-arm-report / lane-edge-report / kol-shadow-eval / lane-reconcile)
+# 2026-04-29: sync-vps-data.sh 가 자동 생성하는 운영자 분석 산출. 시점별 측정값이라 commit 불요.
+reports/
+
 # Runtime collected data (대용량, 재수집 가능)
 data/realtime/
 data/realtime/micro-candles.jsonl

@@ -91,6 +91,28 @@ if [ "$SKIP_LOGS" != "true" ]; then
   mkdir -p "${LOCAL_LOGS_PATH}"
   echo "[sync-vps-data] logs: ${REMOTE_HOST}:${REMOTE_LOGS_PATH} -> ${LOCAL_LOGS_PATH}"
   rsync -avz --progress --partial "${REMOTE_HOST}:${REMOTE_LOGS_PATH}" "${LOCAL_LOGS_PATH}"
+
+  # 2026-04-29 (P1): freshness 검증 — sync 후 bot.log 가 stale 하면 명시적 warn.
+  # Why: 운영자가 sync 명령 안 돌렸거나 VPS 봇 down 상태인 경우 분석 결과 오염.
+  # 직전 incident: logs/bot.log mtime 20:16Z 인데 분석 시점은 23:40Z (3.5h stale) — wallet_delta_warn
+  # dedup 검증 불가. SESSION_START.md §6-bis 체크리스트의 "bot.log freshness" 자동화.
+  LOG_FRESHNESS_THRESHOLD_SEC="${LOG_FRESHNESS_THRESHOLD_SEC:-1800}"  # 30분 default
+  if [ -f "${LOCAL_LOGS_PATH}/bot.log" ]; then
+    NOW_EPOCH=$(date +%s)
+    # macOS (BSD) / Linux (GNU) 양쪽 호환
+    LOG_MTIME=$(stat -f "%m" "${LOCAL_LOGS_PATH}/bot.log" 2>/dev/null || stat -c "%Y" "${LOCAL_LOGS_PATH}/bot.log" 2>/dev/null || echo 0)
+    LOG_AGE_SEC=$((NOW_EPOCH - LOG_MTIME))
+    if [ "$LOG_AGE_SEC" -gt "$LOG_FRESHNESS_THRESHOLD_SEC" ]; then
+      LOG_AGE_MIN=$((LOG_AGE_SEC / 60))
+      echo "[sync-vps-data] ⚠️  WARNING: logs/bot.log is ${LOG_AGE_MIN}min old (>${LOG_FRESHNESS_THRESHOLD_SEC}s threshold)"
+      echo "[sync-vps-data]    가능 원인: (1) VPS 봇 down (2) pm2 log rotation 직후 (3) rsync 실패"
+      echo "[sync-vps-data]    분석 전 ssh ${REMOTE_HOST} 'pm2 list' 로 봇 상태 확인 권장"
+    else
+      echo "[sync-vps-data] logs/bot.log freshness OK (${LOG_AGE_SEC}s old)"
+    fi
+  else
+    echo "[sync-vps-data] ⚠️  WARNING: logs/bot.log not found after sync — VPS log path 확인 필요"
+  fi
 else
   echo "[sync-vps-data] logs: SKIPPED (SKIP_LOGS=true)"
 fi

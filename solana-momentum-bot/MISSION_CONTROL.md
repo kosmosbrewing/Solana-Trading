@@ -11,10 +11,12 @@ This project is not searching for one perfect trading rule. The mission is to ke
 `100 SOL` is a tail outcome, not a planning KPI. Operational success remains:
 
 ```text
-Keep the 0.8 SOL floor intact,
+Keep the 0.7 SOL floor intact (2026-04-28 B안 갱신: 이전 0.8),
 survive 200 live trades,
 measure whether 5x+ winners exist in the selected universe.
 ```
+
+> 2026-04-28 B안 갱신 사유: KOL ticket scale 0.01→0.02 (paper proof 후) 시 drawdown budget 확장 필요. 1.0 - 0.7 = **0.3 SOL** budget (이전 0.2). 200 trade 여정 시뮬레이션 (catastrophic 4.5% × 9건 + bleed 0.102) = 0.282 drawdown 정합. 사명 §3 정합 — wallet ground truth 우선.
 
 The bot optimizes for positive optionality:
 

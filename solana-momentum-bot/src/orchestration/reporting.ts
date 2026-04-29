@@ -20,7 +20,15 @@ const log = createModuleLogger('Reporting');
 const HEARTBEAT_KST_HOURS = Array.from({ length: 12 }, (_, index) => index * 2);
 const DAILY_KST_HOUR = 9;
 
-export function getScheduledReportType(now: Date): 'daily' | 'heartbeat' | null {
+/**
+ * 2026-04-29: 매 시간 KST snapshot — 잔고 + 1h 증감 + close 카운트.
+ * Why: paper close 가 silent (kolPaperNotifier 가 hourly digest + 5x anomaly 만) 하여 운영자가
+ *   close 알림 누락 인지. hourly snapshot 으로 매 시간 paper/live close 누적 표시.
+ *   2h heartbeat 와 daily 는 그대로 유지 (더 자세). hourly 는 짧은 quick check.
+ */
+const HOURLY_SNAPSHOT_KST_HOURS = Array.from({ length: 24 }, (_, i) => i);
+
+export function getScheduledReportType(now: Date): 'daily' | 'heartbeat' | 'hourly' | null {
   const kstHour = (now.getUTCHours() + 9) % 24;
   const minute = now.getMinutes();
 
@@ -28,12 +36,17 @@ export function getScheduledReportType(now: Date): 'daily' | 'heartbeat' | null 
     return null;
   }
 
+  // 우선순위: daily > heartbeat > hourly (같은 시각이면 더 자세한 보고만)
   if (kstHour === DAILY_KST_HOUR) {
     return 'daily';
   }
 
   if (HEARTBEAT_KST_HOURS.includes(kstHour)) {
     return 'heartbeat';
+  }
+
+  if (HOURLY_SNAPSHOT_KST_HOURS.includes(kstHour)) {
+    return 'hourly';
   }
 
   return null;
@@ -56,8 +69,84 @@ export function scheduleDailySummary(ctx: BotContext): ReturnType<typeof setInte
       } catch (error) {
         log.error(`Heartbeat report failed: ${error}`);
       }
+    } else if (reportType === 'hourly') {
+      try {
+        await sendHourlySnapshot(ctx);
+      } catch (error) {
+        log.error(`Hourly snapshot failed: ${error}`);
+      }
     }
   }, 60_000);
+}
+
+// ─── Hourly Snapshot (2026-04-29) ───
+// 매 KST 시간 정각 — 잔고 + 1h 증감 + close 카운트 + 5x winner 누적.
+// state: 직전 1h baseline 저장 (in-memory, 봇 재시작 시 reset 됨 — 첫 1h 는 증감 표시 없음).
+
+interface HourlyBaseline {
+  balanceSol: number;
+  capturedAtMs: number;
+}
+let hourlyBaseline: HourlyBaseline | null = null;
+
+function formatKstHour(now: Date): string {
+  const kstHour = (now.getUTCHours() + 9) % 24;
+  return `${kstHour.toString().padStart(2, '0')}:00`;
+}
+
+async function sendHourlySnapshot(ctx: BotContext): Promise<void> {
+  const now = new Date();
+  const balance = ctx.tradingMode === 'paper' && ctx.paperBalance != null
+    ? ctx.paperBalance
+    : await ctx.executor.getBalance();
+
+  // 1h 증감 계산
+  let deltaStr = '';
+  if (hourlyBaseline != null) {
+    const delta = balance - hourlyBaseline.balanceSol;
+    const sign = delta >= 0 ? '+' : '';
+    deltaStr = ` (${sign}${delta.toFixed(4)} SOL)`;
+  }
+
+  // 1h 누적 close 카운트 (live = DB trades) + 5x winner
+  // Note: paper close 는 별도 jsonl ledger (kol-paper-trades.jsonl) 에 dump — DB 에 없음.
+  //   향후 paper close 카운트 표시 필요 시 jsonl reader 추가 (별도 sub-task).
+  const oneHourAgoMs = now.getTime() - 60 * 60 * 1000;
+  const recentTrades = await ctx.tradeStore.getTradesCreatedWithinHours(1);
+  const liveClosed = recentTrades.filter(
+    (t) => t.status === 'CLOSED' && t.pnl !== undefined && t.closedAt && t.closedAt.getTime() >= oneHourAgoMs
+  );
+  const liveWinners = liveClosed.filter((t) => (t.pnl ?? 0) > 0).length;
+  const liveLosers = liveClosed.filter((t) => (t.pnl ?? 0) <= 0).length;
+  const liveCumPnl = liveClosed.reduce((sum, t) => sum + (t.pnl ?? 0), 0);
+  // 5x+ winner 검출 (entry vs exit price 기반 — pnl 만으로는 mfe 알 수 없음, ratio 추정)
+  const fivexWinners = liveClosed.filter((t) => {
+    if (!t.entryPrice || !t.exitPrice || t.entryPrice <= 0) return false;
+    return t.exitPrice / t.entryPrice >= 5.0;
+  }).length;
+
+  const lines: string[] = [];
+  lines.push(`⏰ [HOURLY ${formatKstHour(now)} KST] balance=${balance.toFixed(4)} SOL${deltaStr}`);
+
+  if (liveClosed.length > 0) {
+    const cumSign = liveCumPnl >= 0 ? '+' : '';
+    lines.push(`  · live close: ${liveClosed.length}건 (${liveWinners}W/${liveLosers}L) net ${cumSign}${liveCumPnl.toFixed(4)} SOL`);
+    if (fivexWinners > 0) {
+      lines.push(`  · 🎉 5x+ winner: ${fivexWinners}건 (사명 §3 phase gate)`);
+    }
+  } else {
+    lines.push(`  · live close: 0건`);
+  }
+
+  await ctx.notifier.sendInfo(lines.join('\n'), 'hourly_snapshot');
+
+  // baseline 갱신 (다음 시간 비교용)
+  hourlyBaseline = { balanceSol: balance, capturedAtMs: now.getTime() };
+}
+
+/** 테스트 / 재시작 시 baseline reset. */
+export function resetHourlyBaselineForTests(): void {
+  hourlyBaseline = null;
 }
 
 /**

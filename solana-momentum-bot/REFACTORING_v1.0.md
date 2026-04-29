@@ -1,8 +1,8 @@
 # REFACTORING v1.0 — Option 5: KOL Discovery + 자체 Execution
 
-> **Status**: Phase 0-4 코드 완료 (paper 측정 + live canary 코드). Phase 4 활성화 gate 부분 미충족 (5x+ winner).
-> **Updated**: 2026-04-27 — KOL paper 212 trade / 5x+ winner 0 / smart-v3 +4.79% net / KOL DB v6 (35 active) / live canary commit 1469a08 + 7 audit fix.
-> **Authority**: `docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md` (ADR)
+> **Status**: Phase 0-5 코드 완료. Live canary 활성화 진행 (B안 ticket 0.02). Stage 4 SCALE gate 부분 충족 (paper 5x+ 1건, live 미달).
+> **Updated**: 2026-04-28 — paper n=401 / 5x+ winner 1건 입증 (DF7DAPat mfe+940%) → A안 ticket 0.03 적용 → live 24h n=44 ROI -2.55% + catastrophic 4.5% → **B안 0.02 후퇴** + wallet floor 0.8→0.7 + per-lane policy max + ralph-loop 6 iter (P0/P1 API 병목 fix) + Sprint 1A/2A/3 + F1/F2 source defect fix + KOL DB v7 (39 active). 8JH1J6p4 first live incident 5중 cascade 분석. jest 1101 pass.
+> **Authority**: `docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md` (ADR) + memory:project_kol_b_decision_ralph_loop_2026_04_28.md
 > **Debate log**: `docs/debates/kol-discovery-debate-2026-04-23.md`
 > **Paradigm**: KOL Wallet Activity = 1st-class Discovery, 자체 Execution = 구조 유지 + 파라미터 재조정
 > **Timeline**: Phase 0-3 완료 / Phase 4 코드 완료 (활성화 gate 부분 미충족) / Phase 5 paper 데이터 누적 후

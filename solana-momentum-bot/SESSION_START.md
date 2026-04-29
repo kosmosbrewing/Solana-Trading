@@ -129,16 +129,58 @@ npx jest test/utils/clock       # Clock interface
 |------|----------|
 | 5x+ winner 0건 / probe_reject_timeout 다수 | Lane T 파라미터 재조정 필요 (REFACTORING §3) |
 | 5x winner 의 hold_phase_sentinel 컷 빈도 ↑ | INCIDENT.md 2026-04-28 §3 — capture rate 29% / mfe 167%→net 58%. sentinel 완화 검토 (가설 A) |
-| `missed-alpha.observations` 배열 비어있음 | `MissedAlphaObserver` dead — INCIDENT.md 2026-04-28 §7 (commit 1469a08 회귀 의심) |
+| ~~`missed-alpha.observations` 배열 비어있음~~ | ~~observer dead~~ — **false positive 정정 (2026-04-28)**. record schema 는 `probe` 단일 객체 / `observations` array 가 아니다. 8910/8910 = 100% probe 데이터 정상. |
 | wallet_delta_warn 동일 drift 5분 spam | dedup/cooldown 미작동 + drift origin 추적 — INCIDENT.md 2026-04-28 §8 |
-| `smart_v3_price_timeout` 38%+ | entry timing 가설 (B) 보조 증거. observer 회복 후 직접 측정 |
+| `smart_v3_price_timeout` 38%+ | entry timing 가설 (B) 보조 증거. missed-alpha probe 로 직접 측정 |
 | jsonl 분석 결과가 daily 와 14배 차이 | 시간대 함정 — 데이터는 UTC `Z`, cutoff 도 `date -u` 사용 (KST 금지) |
+| paper-trades.jsonl 의 positionId 가 `kolh-live-*` | live mirror — paper-only 분석 시 `pid.startsWith('kolh-')` && `!pid.startsWith('kolh-live-')` 필터링 필수 |
+| `5x winner` 라는 표현 | **mfe ≥ +400% 정의** (NOT netPct). live 의 received/actualIn 비율은 wallet axis 이지 mfe 아님 — paper mirror record 에서 mfePctPeak 직접 확인 |
+| `logs/bot.log` mtime stale | `bash scripts/sync-vps-data.sh` 미실행. sync script 가 freshness 검증 추가됨 (2026-04-29) — 30분 이상 stale 시 WARNING 출력 |
+| livecanary 활성 후 paper-only 분기 거의 0 | **의도된 정책 효과** (NOT incident) — `evaluateSmartV3Triggers` 의 `isLiveCanaryActive() && botCtx && !candIsShadow` 통과 시 enterLivePosition. paper-only 는 shadow KOL 또는 wallet_stop/entry_halt fallback 만 |
 | V2 PASS pair = 1-2 | Detection diversity 붕괴 — Option 5 Phase 1-2 결과 확인 |
 | `deltaPct p50 ≈ -92%` | Signal price bug (pool stale) — Tier C sprint 미해결 |
 | Jupiter 429 cluster | `recordJupiter429` source 별 카운터 + cooldown 작동 확인 |
 | `unhandled rejection` in test | network 누락 mock — `createBlockedAxiosMock()` 패턴 적용 |
 | `dailyPnl=0` in test | Clock 미주입 — `createFakeClock(FIXTURE_NOW)` 사용 |
 | 테스트가 운영 .env 영향으로 fail | `cupseyWalletMode='sandbox'` / `securityGateEnabled=false` / `canaryGlobalConcurrencyEnabled=false` 등 explicit override 필요 |
+
+### 6-bis. KOL_HUNTER 분석 무결성 체크리스트 (2026-04-29 등재, 운영 분석 보고 필수)
+
+직전 분석들이 schema 오해 / axis 혼동 / 표본 부족 / 시간대 함정 으로 반복 false positive 발생.
+KOL_HUNTER 9h/24h/7d 보고서 작성 시 다음 12 항목 체크 의무:
+
+```
+[Time]
+□ window 가 UTC 기준인가? `date -u +%Y-%m-%dT%H:%M:%SZ` 출력 명시
+   (KST 인 `date -v-9H` 은 UTC 데이터와 9시간 어긋남 — 함정)
+
+[Schema]
+□ paper-trades.jsonl 의 positionId 가 `kolh-` (paper-only) vs `kolh-live-` (live mirror) 분리됐는가?
+   filter: paper_only = pid.startsWith('kolh-') && !pid.startsWith('kolh-live-')
+□ missed-alpha.jsonl 의 record 는 `probe` 단일 객체 (NOT `observations` array)
+□ executed-buys/sells.jsonl 에는 mfePctPeak 없음 — 직접 측정 불가, paper mirror 에서 cross-ref
+
+[Axis]
+□ ticket axis (0.01/0.02/0.03 × n) 가 아닌 wallet axis (actualIn × Qty − receivedSol) 기반 net?
+□ "5x winner" 표현 시 mfe ≥ +400% 정의 사용 (NOT netPct ≥ +400%)
+□ paper netSol vs live wallet net 의 단위 차이 명시
+
+[Statistical hygiene]
+□ Single-winner 의존도 별도 표시 (winner contribution / total cum_net)
+   주의: total cum_net 이 small positive 면 비율 inflated — winner 빼면 net loss 인지 cross-check
+□ Cohort 비교 시 표본 ≥30/cohort? 미달 시 95% CI 같이 표시 (binomial: ±1.96·sqrt(p(1-p)/n))
+□ 시뮬 결과의 hold-side 가정 명시 — "임계 안 넘으면 final outcome 그대로" 가정 시 wide 방향 시뮬 invalid
+
+[Cross-check]
+□ Sprint deploy 효과 측정 시 before/after 같은 metric — dedup vs drift recover 같은 분기 구분
+□ "외부 claim (예: 70x pump)" 검증 시 우리 데이터의 peak retention / mfePctPeak 직접 측정. 데이터 없으면 "측정 불가" 명시
+
+[INCIDENT 정합]
+□ 직전 분석의 false positive (R2 observer dead, paper 정지 등) 와 충돌하는 결론 없는가?
+   schema 의심 시 raw record 의 keys 직접 확인하고 시작
+```
+
+→ 매 KOL_HUNTER 보고서 첫 줄에 "체크리스트 12/12 통과" 명시 권고.
 
 ---
 

@@ -139,7 +139,13 @@ jest.mock('../src/utils/config', () => ({
     kolHunterSurvivalMinExitLiquidityUsd: 5000,
     kolHunterSurvivalMaxTop10HolderPct: 0.80,
     kolHunterRunSellQuoteProbe: false,
+    // 2026-04-29 (Track 2B): default false in tests — 기존 tests 는 securityClient 미주입 환경
+    // 에서 통과 가정. Track 2B 회귀 테스트만 explicit override.
+    kolHunterRejectOnNoSecurityData: false,
     kolHunterLiveCanaryEnabled: false,
+    // 2026-04-29 (Track 1): default 0 — test 내 same-token 반복 사용 차단 안 함.
+    // Track 1 회귀 테스트에서 explicit 으로 override 하여 검증.
+    kolHunterReentryCooldownMs: 0,
     // 2026-04-28 (inactive paper trade Sprint): default false. tests 가 explicit override.
     kolHunterShadowTrackInactive: false,
     kolHunterShadowPaperTradeEnabled: false,
@@ -178,11 +184,16 @@ describe('kolSignalHandler — state machine', () => {
     // Phase 1 신규 테스트의 __testInject 가 후속 test 영향 → resetKolDbState 로 격리.
     const { resetKolDbState } = require('../src/kol/db');
     resetKolDbState();
+    // 2026-04-29 (Track 1): same-token reentry cooldown 도 test 간 격리.
+    const { resetReentryCooldownForTests } = require('../src/orchestration/kolSignalHandler');
+    resetReentryCooldownForTests();
     const mockedConfig = (require('../src/utils/config') as any).config;
     mockedConfig.kolHunterSmartV3Enabled = false;
     mockedConfig.kolHunterSwingV2Enabled = false;
     mockedConfig.kolHunterSwingV2T1TrailPct = 0.25;
     mockedConfig.kolHunterSwingV2T1ProfitFloorMult = 1.10;
+    // 2026-04-29 (Track 2B): test 간 격리. describe 블록에서 true 로 설정해도 다음 test 까지 leak 안 함.
+    mockedConfig.kolHunterRejectOnNoSecurityData = false;
     stubFeed = new StubPaperPriceFeed();
     __testInit({ priceFeed: stubFeed as unknown as never });
   });
@@ -1093,7 +1104,10 @@ describe('kolSignalHandler — state machine', () => {
       expect(fx.getTokenBalance).toHaveBeenCalledTimes(1);
       expect(fx.getBalance).toHaveBeenCalledTimes(2); // before + after sell
       expect(fx.closeTrade).toHaveBeenCalledTimes(1);
-      expect(fx.sendInfo).toHaveBeenCalledTimes(1);
+      // 2026-04-29: kol_live_close 알림이 sendInfo (raw 문자열) 에서 sendTradeClose (구조화) 로 전환.
+      // OPEN 알림과 포맷 일관성 확보. sendInfo 는 0 호출, sendTradeClose 가 1 호출.
+      expect(fx.sendTradeClose).toHaveBeenCalledTimes(1);
+      expect(fx.sendInfo).toHaveBeenCalledTimes(0);
 
       // sell ledger
       const sellLedgerCalls = mockAppendFile.mock.calls.filter((c) =>
@@ -1370,6 +1384,100 @@ describe('kolSignalHandler — state machine', () => {
 
       expect(captured).not.toBeNull();
       expect(captured.pos.isShadowKol).toBe(true);
+    });
+
+    // 2026-04-29 (Track 1) — Same-token re-entry cooldown.
+    // Why: GUfyGEF6 incident 패턴 (같은 mint 4회 진입 모두 손실). 시뮬 +13% improvement.
+    describe('Track 1: same-token re-entry cooldown', () => {
+      it('cooldown 안 같은 mint 재진입 → reject (close 후 30분 안)', async () => {
+        mockedConfig.kolHunterReentryCooldownMs = 1_800_000;  // 30분 활성
+        mockedConfig.kolHunterSmartV3Enabled = false;  // single-KOL → v1 path
+        stubFeed.setInitialPrice(MINT_SMART, 0.001);
+        await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+        await __testForceResolveStalk(MINT_SMART);
+        const positions = __testGetActive();
+        expect(positions).toHaveLength(1);
+
+        // close — same-token cooldown stamp
+        __testTriggerTick(positions[0].positionId, 0.001 * 0.85);  // -15% hard cut
+        await flushAsync();
+        expect(__testGetActive()).toHaveLength(0);
+
+        // 같은 mint 재진입 시도 → cooldown reject
+        await handleKolSwap(buyTx('pain2', 'S', MINT_SMART));
+        await __testForceResolveStalk(MINT_SMART);
+        expect(__testGetActive()).toHaveLength(0);  // 진입 안 됨
+      });
+
+      it('다른 mint 는 cooldown 무관 (격리)', async () => {
+        mockedConfig.kolHunterReentryCooldownMs = 1_800_000;
+        mockedConfig.kolHunterSmartV3Enabled = false;  // single-KOL → v1 path
+        stubFeed.setInitialPrice(MINT_SMART, 0.001);
+        stubFeed.setInitialPrice(MINT_WINNER, 0.001);
+        await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+        await __testForceResolveStalk(MINT_SMART);
+        const pos = __testGetActive()[0];
+        __testTriggerTick(pos.positionId, 0.001 * 0.85);
+        await flushAsync();
+
+        // 다른 mint 진입 → 정상 (cooldown 무관)
+        await handleKolSwap(buyTx('pain2', 'S', MINT_WINNER));
+        await __testForceResolveStalk(MINT_WINNER);
+        expect(__testGetActive().filter((p) => p.tokenMint === MINT_WINNER)).toHaveLength(1);
+      });
+
+      it('cooldown 0 (disabled, default test) → 같은 mint 재진입 가능', async () => {
+        mockedConfig.kolHunterReentryCooldownMs = 0;  // disabled
+        mockedConfig.kolHunterSmartV3Enabled = false;  // single-KOL → v1 path
+        stubFeed.setInitialPrice(MINT_SMART, 0.001);
+        await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+        await __testForceResolveStalk(MINT_SMART);
+        const pos = __testGetActive()[0];
+        __testTriggerTick(pos.positionId, 0.001 * 0.85);
+        await flushAsync();
+
+        // close 시 stub feed 가 unsubscribe → price map 에서 삭제. 재진입 위해 price 다시 set.
+        stubFeed.setInitialPrice(MINT_SMART, 0.001);
+        // 같은 mint 재진입 → 정상 (cooldown disabled)
+        await handleKolSwap(buyTx('pain2', 'S', MINT_SMART));
+        await __testForceResolveStalk(MINT_SMART);
+        expect(__testGetActive()).toHaveLength(1);
+      });
+    });
+
+    // 2026-04-29 (Track 2B) — NO_SECURITY_DATA reject (Track 2A retro 결과).
+    // Why: paper n=372 분석 — n=70 cohort mfe<1% 65.7% (Δ +20.6%) / cum -0.0376 / 5x 0건.
+    // 외부 API 없이 entry-time signal 로 IDEAL 달성률 +10% 추가 가능.
+    describe('Track 2B: NO_SECURITY_DATA reject', () => {
+      it('rejectOnNoSecurityData=true + securityClient 미주입 → reject (NO_SECURITY_CLIENT)', async () => {
+        mockedConfig.kolHunterRejectOnNoSecurityData = true;
+        mockedConfig.kolHunterSmartV3Enabled = false;  // single-KOL → v1 path
+        stubFeed.setInitialPrice(MINT_SMART, 0.001);
+        await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+        await __testForceResolveStalk(MINT_SMART);
+        expect(__testGetActive()).toHaveLength(0);  // 진입 안 됨
+      });
+
+      it('rejectOnNoSecurityData=false (기존 동작) → allowDataMissing=true 로 통과', async () => {
+        mockedConfig.kolHunterRejectOnNoSecurityData = false;
+        mockedConfig.kolHunterSurvivalAllowDataMissing = true;
+        mockedConfig.kolHunterSmartV3Enabled = false;
+        stubFeed.setInitialPrice(MINT_SMART, 0.001);
+        await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+        await __testForceResolveStalk(MINT_SMART);
+        expect(__testGetActive()).toHaveLength(1);  // 통과
+      });
+
+      it('rejectOnNoSecurityData=true + smart-v3 path → reject (smart_v3_survival_reject)', async () => {
+        mockedConfig.kolHunterRejectOnNoSecurityData = true;
+        mockedConfig.kolHunterSmartV3Enabled = true;  // smart-v3 path
+        stubFeed.setInitialPrice(MINT_SMART, 0.001);
+        // smart-v3 trigger: anti-correlation 60s 떨어진 multi-KOL.
+        await handleKolSwap(buyTx('pain', 'S', MINT_SMART, 120_000));
+        await handleKolSwap(buyTx('scalp1', 'A', MINT_SMART));
+        await flushAsync();
+        expect(__testGetActive()).toHaveLength(0);  // smart-v3 도 reject 적용
+      });
     });
 
     // 2026-04-28 Phase 1 — Style-aware insider_exit decision (외부 피드백 + GUfyGEF6 incident).

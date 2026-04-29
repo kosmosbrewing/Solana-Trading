@@ -6,6 +6,95 @@
 
 ---
 
+## 2026-04-29 — Track 2A retro + Track 2B (NO_SECURITY_DATA reject) 구현 완료
+
+### 1. Track 2A retro 분석 — `scripts/kol-token-quality-retro.ts` 신설
+
+paper n=372 (active arm, shadow 제외) flag cohort 별 mfe<1% rate / big-loss rate / cum_net 측정.
+
+| Flag | n | mfe<1% | Δ baseline | cum_net | 5x |
+|------|---|--------|------------|---------|-----|
+| baseline (전체) | 372 | 45.2% | — | +0.1422 | 1 |
+| **NO_SECURITY_DATA** | **70** | **65.7%** | **+20.6%** | **-0.0376** | **0** |
+| TOKEN_2022 / EXT_metadataPointer | 254 | 39.8% | -5.4% | +0.1722 | 1 |
+| EXIT_LIQUIDITY_UNKNOWN | 302 | 40.4% | -4.8% | +0.1798 | 1 |
+| UNCLEAN_TOKEN | 3 | 0% | -45.2% | +0.0103 | 0 |
+
+**판정**: NO_SECURITY_DATA = strong predictor (n≥30 + |Δ|≥10% 충족). 외부 API 없이 entry-time reject 가치 있음. TOKEN_2022 reject 하면 winner 차단 → 금지. 결과 문서: `docs/exec-plans/active/kol-token-quality-retro-2026-04-29.md`.
+
+### 2. Track 2B 구현 — NO_SECURITY_DATA reject
+
+#### 코드 변경
+- `src/config/kolHunter.ts`: `kolHunterRejectOnNoSecurityData` (env `KOL_HUNTER_REJECT_ON_NO_SECURITY_DATA`, default true) 추가. allowDataMissing 보다 우선 적용.
+- `src/orchestration/kolSignalHandler.ts:checkKolSurvivalPreEntry`:
+  - `securityClient` 미주입 시 NO_SECURITY_CLIENT reject (Track 2B flag true 시)
+  - `tokenSecurityData=null` 시 NO_SECURITY_DATA reject (Track 2B flag true 시)
+  - smart-v3 + v1 entry 양 path 자동 적용 (둘 다 동일 helper 호출)
+- `.env.example.generated`: 254 keys 자동 갱신
+
+#### 회귀 테스트 (`test/kolSignalHandler.test.ts` Track 2B describe block)
+- ✓ rejectOnNoSecurityData=true + securityClient 미주입 → reject
+- ✓ rejectOnNoSecurityData=false (기존 동작) → allowDataMissing=true 로 통과
+- ✓ rejectOnNoSecurityData=true + smart-v3 path → reject
+
+전체 tests: **133 suites / 1110 pass** (`npm run check:fast` 성공).
+
+### 3. 시뮬 효과 (paper n=372 retro 기반)
+
+- 70 trades 차단 → cum_net **-0.0376 SOL** 회피, baseline +0.1422 → +0.1798 (+26%)
+- 5x winner 보호 ✓ (해당 cohort 0건)
+- IDEAL 달성률 25% (Track 1 후) → **35%** (Track 2B 후)
+- 잔여 mfe<1% 130건 (~30% rate) — Track 2C (RugCheck 외부 API) 후속 검토 대상
+
+### 4. 주의
+
+- `kolHunterRejectOnNoSecurityData` default **true** — 신규 운영자 환경에서 securityClient 미주입 / RPC 실패 시 KOL entry 0건 가능. 운영자가 명시적으로 false override 하거나 securityClient 주입 환경 필수.
+- 기존 production 운영은 securityClient 주입 + getTokenSecurityDetailed 정상 → 영향 거의 없음 (NO_SECURITY_DATA 발생은 RPC 일시 실패 시에 한함).
+
+---
+
+## 2026-04-29 — KOL Big-loss Roadmap 채택 + Track 1 (same-token re-entry cooldown) 구현 완료
+
+### 1. Roadmap 채택 — `docs/exec-plans/active/kol-bigloss-roadmap-2026-04-29.md`
+
+paper n=438 분석 → big-loss 51건 (12% trades) = all-loser cum 의 41%. IDEAL (모든 big-loss 차단) 시뮬 cum_net +0.201 → +0.370 SOL (**+84%**, 5x winner 보호).
+사용자 직관 ("큰 손실만 방지해도 사명 §3 달성에 유리") 정량 검증 통과.
+
+4-Track 단계별 IDEAL 달성률:
+- **T1 (즉시)**: same-token re-entry cooldown — IDEAL 12% → 25%
+- **T2 (1-2주)**: token-quality real-time API — IDEAL 25% → 45%
+- **T3 (중기)**: KOL-pair cohort 학습 — IDEAL 45% → 60%
+- **T4 (장기)**: tick-level observer + live mfe schema — IDEAL 60% → 80%
+
+### 2. Track 1 구현 — Same-token re-entry cooldown
+
+**근거**: paper 51 big-loss 중 GUfyGEF6 같은 mint 4회 진입 모두 손실 패턴. 시뮬 +0.026 SOL (+13%).
+의존성 0, 5x winner 보호 ✓ (대부분 single-entry).
+
+#### 코드 변경
+- `src/config/kolHunter.ts`: `kolHunterReentryCooldownMs` (env `KOL_HUNTER_REENTRY_COOLDOWN_MS`, default 1800000=30분) 추가
+- `src/orchestration/kolSignalHandler.ts`:
+  - `recentClosedTokens: Map<string, number>` + `markTokenClosed` / `isInReentryCooldown` / `resetReentryCooldownForTests` helpers
+  - `resolveStalk` 진입 직전 cooldown check → `[KOL_HUNTER_REENTRY_BLOCK]` log + `fireRejectObserver(reason='reentry_cooldown', flags=['REENTRY_COOLDOWN'])`
+  - `closePosition` (paper) + `closeLivePosition` 양쪽에서 `markTokenClosed` 호출 (shadow arm 제외)
+- `.env.example.generated`: 자동 갱신 (253 keys)
+
+#### 회귀 테스트 (`test/kolSignalHandler.test.ts` Track 1 describe block)
+- ✓ cooldown 안 같은 mint 재진입 → reject (close 후 30분 안)
+- ✓ 다른 mint 는 cooldown 무관 (격리)
+- ✓ cooldown 0 (disabled) → 같은 mint 재진입 가능
+
+전체 tests: **133 suites / 1107 pass** (`npm run check:fast` 성공).
+
+### 3. 미해결 gap (다음 sprint 대상)
+
+- T2 (token-quality API): mfe<1% 200건 (전체 46%) entry 시점 식별 불가 — 외부 API 평가 1일 후 결정
+- T3 (KOL-pair cohort): 200+ trades 누적 충족, pair n≥10 표본 사전 측정 필요
+- T4 (tick-level + live mfe): hard_cut 임계 simulation valid 화 + live 5x winner 정확 측정
+- 사명 §3 Track 1+2 완료 시 floor 보호 critical path 충족, T3+4 는 정확 측정 + 추가 winner 누적 인프라
+
+---
+
 ## 2026-04-28 (오후-저녁) — KOL Live Canary 본격 활성화 + B안 ticket 결정 + 8JH1J6p4 incident
 
 ### 1. 누적 코드 변경 (commit 미수행, working tree 18 파일 / +1474 LOC)

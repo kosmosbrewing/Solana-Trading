@@ -77,7 +77,8 @@ async function closePureWsPositionSerialized(
         const solAfter = await sellExecutor.getBalance();
         const receivedSol = solAfter - solBefore;
         liveReceivedSol = receivedSol;
-        if (receivedSol > 0 && pos.quantity > 0) {
+        // 2026-04-29: wallet ground truth — receivedSol 부호 무관 항상 wallet 기준.
+        if (pos.quantity > 0) {
           actualExitPrice = receivedSol / pos.quantity;
         }
         executionSlippage = bpsToDecimal(sellResult.slippageBps);

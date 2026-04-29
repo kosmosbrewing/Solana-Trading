@@ -29,12 +29,12 @@ const DAILY_KST_HOUR = 9;
 const HOURLY_SNAPSHOT_KST_HOURS = Array.from({ length: 24 }, (_, i) => i);
 
 export function getScheduledReportType(now: Date): 'daily' | 'heartbeat' | 'hourly' | null {
+  // 2026-04-29 fix: minute===0 strict 검사 제거.
+  // 이전 로직: `setInterval(60_000) + minute === 0` 패턴은 event loop lag / 시작 시각 misalign
+  //   시 매 시간 firing 을 통째로 skip 가능 (e.g., 시작 12:34:56 → fire 시각 HH:00:56 일 때 OK,
+  //   누적 drift 5초만 발생해도 HH:01:01 으로 밀려 minute===0 false → 그 시간 skip).
+  // 신규: 호출자가 hour boundary 1회 fire 보장 (lastFiredHour 추적). minute 조건 제거.
   const kstHour = (now.getUTCHours() + 9) % 24;
-  const minute = now.getMinutes();
-
-  if (minute !== 0) {
-    return null;
-  }
 
   // 우선순위: daily > heartbeat > hourly (같은 시각이면 더 자세한 보고만)
   if (kstHour === DAILY_KST_HOUR) {
@@ -52,10 +52,33 @@ export function getScheduledReportType(now: Date): 'daily' | 'heartbeat' | 'hour
   return null;
 }
 
+// 2026-04-29 fix: UTC hour boundary 기반 fire-once tracking.
+// scheduler 가 매 30s 깨어나서 현재 UTC hour 이 lastFiredHour 와 다른지 확인.
+// 다르면 1회 fire 후 lastFiredHour 갱신 → event loop drift / 시작 misalign 무관 보장.
+let lastFiredUtcHour = -1;
+
+/** 테스트 / 재시작 시 fire tracker reset. */
+export function resetReportSchedulerForTests(): void {
+  lastFiredUtcHour = -1;
+  hourlyBaseline = null;
+}
+
 export function scheduleDailySummary(ctx: BotContext): ReturnType<typeof setInterval> {
-  // Why: 2026-04-27 — handle 반환하여 setupShutdown 에서 clearInterval. 이전엔 leak.
+  // 2026-04-27: handle 반환하여 setupShutdown 에서 clearInterval. 이전엔 leak.
+  // 2026-04-29 fix: 30s polling + lastFiredUtcHour 기반 fire-once-per-hour 보장.
+  log.info('[Reporting] scheduler started — 30s poll, fire-once-per-UTC-hour, KST-aware');
   return setInterval(async () => {
-    const reportType = getScheduledReportType(new Date());
+    const now = new Date();
+    const currentUtcHour = Math.floor(now.getTime() / 3_600_000);
+    if (currentUtcHour === lastFiredUtcHour) return;  // 이미 이 hour 발사 — skip
+
+    const reportType = getScheduledReportType(now);
+    if (!reportType) return;  // KST 정의된 hour 가 아니면 skip (방어 — 실제론 매 시간 1개 type)
+
+    // 발사 확정 — drift 보호 위해 mark 우선 (await 도중 다음 30s tick 진입 차단)
+    lastFiredUtcHour = currentUtcHour;
+    const kstHour = (now.getUTCHours() + 9) % 24;
+    log.info(`[Reporting] firing ${reportType} (UTC ${now.toISOString()} / KST ${kstHour}:00)`);
 
     if (reportType === 'daily') {
       try {
@@ -76,7 +99,7 @@ export function scheduleDailySummary(ctx: BotContext): ReturnType<typeof setInte
         log.error(`Hourly snapshot failed: ${error}`);
       }
     }
-  }, 60_000);
+  }, 30_000);
 }
 
 // ─── Hourly Snapshot (2026-04-29) ───
@@ -147,6 +170,7 @@ async function sendHourlySnapshot(ctx: BotContext): Promise<void> {
 /** 테스트 / 재시작 시 baseline reset. */
 export function resetHourlyBaselineForTests(): void {
   hourlyBaseline = null;
+  lastFiredUtcHour = -1;
 }
 
 /**

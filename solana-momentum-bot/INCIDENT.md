@@ -6,6 +6,46 @@
 
 ---
 
+## 2026-04-29 — reporting.ts hourly snapshot 정확성 fix (Q1+Q2+Q3) + reports/ gitignore
+
+### 1. .gitignore — `reports/` 추가 + 기존 6 파일 untrack
+
+`scripts/sync-vps-data.sh` 가 자동 생성하는 운영자 분석 산출 (kol-paper-arms / kelly-cohort / kol_shadow_eval / lane-reconcile). 시점별 측정값이라 commit 불요. `git rm --cached reports/ -r` 로 working tree 보존하며 untrack.
+
+### 2. Q1 — Reset helper 중복 통합
+
+`src/orchestration/reporting.ts` 에 `resetReportSchedulerForTests` (lastFiredUtcHour + hourlyBaseline 만 reset) 와 `resetHourlyBaselineForTests` (3 state 모두 reset) 두 함수 공존. 전자는 hourlyLineBuffer 누락 → 테스트 간 누수 가능. 후자만 남기고 전자는 alias 로 deprecate.
+
+### 3. Q2 — 5x winner 정의 사명 §3 정합
+
+이전: `t.exitPrice / t.entryPrice >= 5.0` — close 시점만 평가. trail/hard_cut 으로 5x 도달 후 더 낮게 close 한 winner 누락 (false negative).
+수정: `(t.highWaterMark ?? t.exitPrice) / t.entryPrice >= 5.0` — peak 가격 기반 (mfe peak ≥ +400% = 사명 §3 정의). highWaterMark 미기록 시 exitPrice conservative fallback.
+
+### 4. Q3 — Transient 실패 시 batch 손실 방지
+
+이전:
+- `getTradesCreatedWithinHours(1)` throw → captureHourlySnapshot 전체 throw
+- `bufferHourlySnapshot` catch → 그 hour buffer 미push
+- heartbeat 시 `currentHourLine=null` → digest 미발사 → **누적 hourly 통째로 사라짐**
+
+수정:
+- `captureHourlySnapshot` 내부 try/catch — fetch 실패 시 `close ?건 (DB unavailable)` degraded line 반환 (balance / delta 는 보존)
+- `buildHourlyDigest(currentHour: HourlyLine | null)` — currentHour null 이어도 buffer 만으로 digest 생성. 둘 다 비어있을 때만 빈 string
+- heartbeat / daily 호출자도 catch + log + buffer-only digest 시도
+
+### 5. 회귀 테스트
+
+- `test/reportingHourlyFixes.test.ts` 신규 — Q1 alias 검증, Q2 5x peak invariant 6 케이스, Q3 invariant
+- 전체: **134 suites / 1122 tests pass**
+
+### 6. 운영 영향
+
+- 5x winner 카운트가 사명 §3 measurement 와 정합 → mission §3 phase gate 검증 정확성 회복
+- DB transient 실패 (ex: TimescaleDB connection drop) 시에도 hourly digest 보존 — 운영자가 잔고 추이 끊김 없이 확인 가능
+- 이전 `데이터가 일부 없는 것 같다` 의 root cause 였을 가능성 high — heartbeat / daily 시 currentHour fetch 실패 → 누적 batch 손실
+
+---
+
 ## 2026-04-29 — Daily loss limit 정책 완화 (D + A) — KOL live halt 대응
 
 ### 1. 사건

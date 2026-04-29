@@ -93,22 +93,21 @@ describe('messageFormatter', () => {
 
     const openMessage = buildTradeOpenMessage(order, 'TX123');
 
-    expect(openMessage).toContain('🟢 <b>포지션 진입</b> <b>PAIR</b> <code>trade-op</code>');
-    expect(openMessage).toContain('- 전략: Fib Pullback');
-    expect(openMessage).toContain('- 진입: 0.002469 SOL @ 0.00123456 (수량 2.000000 PAIR)');
-    expect(openMessage).toContain('- 손절: -10.9% · -0.000269 SOL @ 0.00110000');
-    expect(openMessage).toContain('- TP1: +13.4% · +0.000331 SOL @ 0.00140000');
-    expect(openMessage).toContain('- TP2: +29.6% · +0.000731 SOL @ 0.00160000');
-    // pnl 0.0003 / notional (0.00123456*2=0.00246912) = 12.15% → "+12.1%"
-    expect(openMessage).toContain('- 포지션 제한: 리스크 한도 기준');
-    expect(openMessage).toContain('- 시그널 품질: 58점 (B등급)');
-    expect(openMessage).toContain('- Entry gap: +2.88% (planned=0.00120000 → fill=0.00123456)');
-    expect(openMessage).toContain('- 컨트랙트: <code>PAIR1234567890</code>');
-    expect(openMessage).toContain('- tx: <code>TX123</code>');
-    // 한눈에 보기 / 진입 가격 / 진입 금액 중복 제거 검증
-    expect(openMessage).not.toContain('한눈에 보기');
-    expect(openMessage).not.toContain('진입 가격');
-    expect(openMessage).not.toContain('진입 금액');
+    // 2026-04-29: 진입 알림 일관 emoji 🟢 + 3-line 표준화.
+    // 라인 1: 🟢 진입 SYM <id8>
+    // 라인 2: notional SOL @ price · SL X% / TP +Y% / +Z%
+    // 라인 3: <contract> · tx <txShort>
+    expect(openMessage).toContain('🟢 <b>진입</b> <b>PAIR</b> <code>trade-op</code>');
+    expect(openMessage).toContain('0.0025 SOL @ 0.00123456');
+    expect(openMessage).toContain('SL -11% / TP +13% / +30%');
+    expect(openMessage).toContain('<code>PAIR1234567890</code>');
+    expect(openMessage).toContain('tx <code>TX123</code>');
+    // 제거 (간소화)
+    expect(openMessage).not.toContain('- 전략:');
+    expect(openMessage).not.toContain('- 시그널 품질');
+    expect(openMessage).not.toContain('- Entry gap');
+    expect(openMessage).not.toContain('수량');
+    expect(openMessage).not.toContain('포지션 제한');
 
     const trade: Trade = {
       id: 'trade-1',
@@ -138,18 +137,25 @@ describe('messageFormatter', () => {
 
     const closeMessage = buildTradeCloseMessage(trade);
 
-    // 2026-04-29 간소화: 8라인 → 4라인. 사유/보유시간 은 손익 라인에 merge.
-    expect(closeMessage).toContain('✅ <b>포지션 종료</b> <b>PAIR</b> <code>trade-1</code>');
-    expect(closeMessage).toContain('- 손익: +0.0003 SOL (+12.2%) · 1차 익절 · 보유 2h 30m');
-    expect(closeMessage).toContain('- 가격: 0.00123456 → 0.00140000');
-    expect(closeMessage).toContain('- <code>PAIR1234567890</code>');
-    expect(closeMessage).toContain('- tx: <code>TX456</code>');
-    // 제거 검증 (간소화)
+    // 2026-04-29: 종료 알림 일관 emoji 🔴 + 3-line 표준화 (W/L 무관 동일 emoji, pnl 부호로 표시).
+    // 라인 1: 🔴 종료 SYM <id8> · ±pnl SOL (±%)
+    // 라인 2: reason · 보유 X · entry → exit
+    // 라인 3: <contract> · tx <txShort>
+    expect(closeMessage).toContain('🔴 <b>종료</b> <b>PAIR</b> <code>trade-1</code> · +0.0003 SOL (+12.2%)');
+    expect(closeMessage).toContain('1차 익절');
+    expect(closeMessage).toContain('보유 2h 30m');
+    expect(closeMessage).toContain('0.00123456 → 0.00140000');
+    expect(closeMessage).toContain('<code>PAIR1234567890</code>');
+    expect(closeMessage).toContain('tx <code>TX456</code>');
+    // 제거 (간소화 + 일관 emoji)
+    expect(closeMessage).not.toContain('✅');  // 일관 🔴 만 사용
+    expect(closeMessage).not.toContain('❌');
+    expect(closeMessage).not.toContain('이익 실현');
+    expect(closeMessage).not.toContain('손실 확정');
     expect(closeMessage).not.toContain('- 전략:');
     expect(closeMessage).not.toContain('- 비용:');
     expect(closeMessage).not.toContain('Exit gap');
     expect(closeMessage).not.toContain('슬리피지');
-    expect(closeMessage).not.toContain('이익 실현');
   });
 
   it('uses "으로" particle for close reasons without 받침-ㄹ', () => {
@@ -174,11 +180,11 @@ describe('messageFormatter', () => {
     };
 
     const message = buildTradeCloseMessage(trade);
-    // 2026-04-29 간소화: 손익 라인에 reason 직접 포함 (particle 부착 제거).
-    expect(message).toContain('- 손익:');
+    // 2026-04-29: 일관 🔴 emoji (loss 여도 ❌ 안 씀). 손실은 부호로 표시.
+    expect(message).toContain('🔴 <b>종료</b> <b>ASTR</b>');
     expect(message).toContain('초기 하드컷');
     expect(message).toContain('보유 1분 미만');
-    expect(message).toContain('❌ <b>포지션 종료</b> <b>ASTR</b>');
+    expect(message).not.toContain('❌');
     // HTML 이스케이프 후에도 꼬이지 않아야 함
     expect(message).not.toContain('&lt;');
   });
@@ -244,11 +250,11 @@ describe('messageFormatter', () => {
     };
 
     const openMessage = buildTradeOpenMessage(order);
-    expect(openMessage).toContain('<b>PAIR1234...DEFG</b> (ticker 미확인)');
-    expect(openMessage).toContain('- 손절: 미설정 (유효한 손절가 없음 / 재검토 필요)');
-    expect(openMessage).toContain('- TP1: +8.0% · +0.000553 SOL @ 0.00750000');
-    expect(openMessage).toContain('- TP2: +16.6% · +0.001153 SOL @ 0.00810000');
-    expect(openMessage).not.toContain('-100.0%');
+    // 2026-04-29 간소화: ticker 미확인 → shortened address only (no annotation).
+    expect(openMessage).toContain('🟢 <b>진입</b> <b>PAIR1234...DEFG</b>');
+    // SL stopLoss=0 → -100% 표시 (간소화 — 운영자가 -100% 보고 재검토 필요 인지)
+    expect(openMessage).toContain('TP +8% / +17%');
+    expect(openMessage).toContain('<code>PAIR1234567890ABCDEFG</code>');
 
     const trade: Trade = {
       id: 'trade-fallback',

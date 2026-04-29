@@ -101,87 +101,45 @@ export function buildSignalMessage(signal: Signal): string {
   ].filter(Boolean).join('\n');
 }
 
+// 2026-04-29: 진입/종료 알림 일관 emoji + 3-line 표준화.
+//   - 🟢 진입 (OPEN, 항상 동일)
+//   - 🔴 종료 (CLOSE, 항상 동일 — pnl 부호로 W/L 표시)
+//   - 3 라인 max: 헤드라인 / 핵심 정보 / 컨트랙트+tx
+// 제거: 전략 라벨 / 슬리피지 / Entry/Exit gap / 시그널 품질 / 사이즈 제한 (모두 ledger 보존).
+
 export function buildTradeOpenMessage(order: Order, txSignature?: string): string {
   const entryNotionalSol = order.price * order.quantity;
-  const shortTradeId = order.tradeId ? order.tradeId.slice(0, 8) : undefined;
-  const headline = buildOpenHeadline(order.tokenSymbol, order.pairAddress, shortTradeId);
-  const entryLine = buildEntryLine(order, entryNotionalSol);
-  const gapLine = buildEntryGapLine(order);
-  const stopLine = buildExitLevelLine('손절', order.price, order.stopLoss, order.quantity, 'stop');
-  const tp1Line = buildExitLevelLine('TP1', order.price, order.takeProfit1, order.quantity, 'take_profit');
-  const tp2Line = buildExitLevelLine('TP2', order.price, order.takeProfit2, order.quantity, 'take_profit');
-  const qualityLine = order.breakoutScore != null
-    ? `- 시그널 품질: ${order.breakoutScore}점 (${escapeHtml(formatGrade(order.breakoutGrade ?? 'N/A'))})`
-    : '';
-  const sizeLine = formatSizeConstraint(order.sizeConstraint);
+  const shortTradeId = order.tradeId ? order.tradeId.slice(0, 8) : '';
+  const symbol = order.tokenSymbol ?? shortenAddress(order.pairAddress);
+  const slPct = ((order.stopLoss - order.price) / order.price) * 100;
+  const tp1Pct = ((order.takeProfit1 - order.price) / order.price) * 100;
+  const tp2Pct = ((order.takeProfit2 - order.price) / order.price) * 100;
+  const txShort = txSignature ? txSignature.slice(0, 12) : '';
 
-  return [
-    headline,
-    `- 전략: ${escapeHtml(formatStrategy(order.strategy))}`,
-    entryLine,
-    stopLine,
-    tp1Line,
-    tp2Line,
-    sizeLine ? `- 포지션 제한: ${escapeHtml(sizeLine)}` : '',
-    qualityLine,
-    gapLine,
-    `- 컨트랙트: <code>${escapeHtml(order.pairAddress)}</code>`,
-    txSignature ? `- tx: <code>${escapeHtml(txSignature)}</code>` : '',
-  ].filter(Boolean).join('\n');
-}
+  const headline = `🟢 <b>진입</b> <b>${escapeHtml(symbol)}</b>${shortTradeId ? ` <code>${escapeHtml(shortTradeId)}</code>` : ''}`;
+  const detail = `${entryNotionalSol.toFixed(4)} SOL @ ${order.price.toFixed(8)} · SL ${slPct.toFixed(0)}% / TP +${tp1Pct.toFixed(0)}% / +${tp2Pct.toFixed(0)}%`;
+  const linkLine = `<code>${escapeHtml(order.pairAddress)}</code>${txShort ? ` · tx <code>${escapeHtml(txShort)}</code>` : ''}`;
 
-function buildOpenHeadline(
-  symbol: string | undefined,
-  pairAddress: string,
-  shortTradeId: string | undefined
-): string {
-  const label = symbol ? `<b>${escapeHtml(symbol)}</b>` : `<b>${escapeHtml(shortenAddress(pairAddress))}</b> (ticker 미확인)`;
-  const id = shortTradeId ? ` <code>${escapeHtml(shortTradeId)}</code>` : '';
-  return `🟢 <b>포지션 진입</b> ${label}${id}`;
-}
-
-function buildEntryLine(order: Order, entryNotionalSol: number): string {
-  const symbol = order.tokenSymbol ? ` ${escapeHtml(order.tokenSymbol)}` : '';
-  return `- 진입: ${entryNotionalSol.toFixed(6)} SOL @ ${order.price.toFixed(8)} (수량 ${order.quantity.toFixed(6)}${symbol})`;
-}
-
-function buildEntryGapLine(order: Order): string {
-  if (order.plannedEntryPrice == null || order.plannedEntryPrice <= 0) return '';
-  const gapPct = ((order.price - order.plannedEntryPrice) / order.plannedEntryPrice) * 100;
-  if (Math.abs(gapPct) < GAP_EPSILON_PCT) return '';
-  return `- Entry gap: ${gapPct >= 0 ? '+' : ''}${gapPct.toFixed(2)}% (planned=${order.plannedEntryPrice.toFixed(8)} → fill=${order.price.toFixed(8)})`;
+  return [headline, detail, linkLine].join('\n');
 }
 
 export function buildTradeCloseMessage(trade: Trade): string {
-  // 2026-04-29 간소화: 8라인 → 4라인. wallet ground truth (실 체결가) 기준만 표시.
-  // 제거: 사유 별도 라인 / 비용 라인 / Exit gap 라인 / 결과 라벨 / 슬리피지 (DB ledger 에 보존됨).
-  // 보존: 손익 (실 wallet delta), 가격 (실 fill), 컨트랙트, tx (체결 검증용).
   const pnl = trade.pnl;
   const pnlPct = calculatePnlPct(trade);
   const duration = trade.closedAt ? formatShortDuration(trade.closedAt.getTime() - trade.createdAt.getTime()) : '';
   const reasonText = formatCloseReason(trade.exitReason);
-  const headline = buildCloseHeadline(trade);
-  const pnlText = `${formatSignedSol(pnl)}${pnlPct != null ? ` (${formatSignedPercent(pnlPct)})` : ''}`;
-  const exit = trade.exitPrice != null ? trade.exitPrice.toFixed(8) : 'N/A';
-  const meta = [reasonText, duration ? `보유 ${duration}` : ''].filter(Boolean).join(' · ');
-
-  return [
-    headline,
-    `- 손익: ${pnlText} · ${escapeHtml(meta)}`,
-    `- 가격: ${trade.entryPrice.toFixed(8)} → ${exit}`,
-    `- <code>${escapeHtml(trade.pairAddress)}</code>`,
-    trade.txSignature ? `- tx: <code>${escapeHtml(trade.txSignature)}</code>` : '',
-  ].filter(Boolean).join('\n');
-}
-
-function buildCloseHeadline(trade: Trade): string {
-  const pnl = trade.pnl;
-  const icon = pnl != null && pnl >= 0 ? '✅' : '❌';
-  const label = trade.tokenSymbol
-    ? `<b>${escapeHtml(trade.tokenSymbol)}</b>`
-    : `<b>${escapeHtml(shortenAddress(trade.pairAddress))}</b>`;
+  const symbol = trade.tokenSymbol ?? shortenAddress(trade.pairAddress);
   const shortId = trade.id.slice(0, 8);
-  return `${icon} <b>포지션 종료</b> ${label} <code>${escapeHtml(shortId)}</code>`;
+  const exit = trade.exitPrice != null ? trade.exitPrice.toFixed(8) : 'N/A';
+  const pnlText = `${formatSignedSol(pnl)}${pnlPct != null ? ` (${formatSignedPercent(pnlPct)})` : ''}`;
+  const txShort = trade.txSignature ? trade.txSignature.slice(0, 12) : '';
+
+  const headline = `🔴 <b>종료</b> <b>${escapeHtml(symbol)}</b> <code>${escapeHtml(shortId)}</code> · ${pnlText}`;
+  const meta = [reasonText, duration ? `보유 ${duration}` : '', `${trade.entryPrice.toFixed(8)} → ${exit}`]
+    .filter(Boolean).join(' · ');
+  const linkLine = `<code>${escapeHtml(trade.pairAddress)}</code>${txShort ? ` · tx <code>${escapeHtml(txShort)}</code>` : ''}`;
+
+  return [headline, escapeHtml(meta), linkLine].join('\n');
 }
 
 // 2026-04-29 간소화: buildCloseProfitLine / buildClosePriceLine / buildExitGapLine /
@@ -213,10 +171,8 @@ function formatGrade(grade: BreakoutGrade | 'N/A'): string {
   return grade === 'N/A' ? '등급 없음' : `${grade}등급`;
 }
 
-function formatSizeConstraint(value?: SizeConstraint): string {
-  if (!value) return '';
-  return SIZE_CONSTRAINT_LABELS[value] ?? value;
-}
+// 2026-04-29: formatSizeConstraint / buildExitLevelLine / formatSignedSolDetailed / GAP_EPSILON_PCT
+//   helper 4종 제거 — 진입/종료 알림 일관 emoji + 3-line 표준화 시 inline 으로 통합됨.
 
 function formatCloseReason(value?: CloseReason): string {
   if (!value) return '사유 없음';
@@ -234,35 +190,3 @@ function buildInstrumentLine(symbol: string | undefined, pairAddress: string): s
   return `- 종목: <b>${escapeHtml(shortenAddress(pairAddress))}</b> (ticker 미확인)`;
 }
 
-function buildExitLevelLine(
-  label: string,
-  entryPrice: number,
-  targetPrice: number,
-  quantity: number,
-  kind: 'stop' | 'take_profit'
-): string {
-  if (
-    !Number.isFinite(entryPrice) || entryPrice <= 0 ||
-    !Number.isFinite(targetPrice) || targetPrice <= 0 ||
-    !Number.isFinite(quantity) || quantity <= 0
-  ) {
-    return `- ${label}: 미설정 (유효한 ${kind === 'stop' ? '손절가' : '목표가'} 없음 / 재검토 필요)`;
-  }
-  const pnlSol = (targetPrice - entryPrice) * quantity;
-  const pnlPct = entryPrice > 0 ? (targetPrice - entryPrice) / entryPrice : null;
-  const reviewNeeded = kind === 'stop'
-    ? !(targetPrice > 0 && targetPrice < entryPrice)
-    : !(targetPrice > entryPrice);
-  // Why: percentage를 앞에 두면 "손익 방향"이 한 눈에 들어옴 (price는 부가 정보).
-  return [
-    `- ${label}: `,
-    pnlPct != null ? formatSignedPercent(pnlPct) : '—',
-    ` · ${formatSignedSolDetailed(pnlSol)}`,
-    ` @ ${targetPrice.toFixed(8)}`,
-    reviewNeeded ? ' · 재검토 필요' : '',
-  ].join('');
-}
-
-function formatSignedSolDetailed(value: number): string {
-  return `${value >= 0 ? '+' : ''}${value.toFixed(6)} SOL`;
-}

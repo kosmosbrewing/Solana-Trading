@@ -57,16 +57,18 @@ export function getScheduledReportType(now: Date): 'daily' | 'heartbeat' | 'hour
 // 다르면 1회 fire 후 lastFiredHour 갱신 → event loop drift / 시작 misalign 무관 보장.
 let lastFiredUtcHour = -1;
 
-/** 테스트 / 재시작 시 fire tracker reset. */
-export function resetReportSchedulerForTests(): void {
-  lastFiredUtcHour = -1;
-  hourlyBaseline = null;
-}
-
 export function scheduleDailySummary(ctx: BotContext): ReturnType<typeof setInterval> {
   // 2026-04-27: handle 반환하여 setupShutdown 에서 clearInterval. 이전엔 leak.
   // 2026-04-29 fix: 30s polling + lastFiredUtcHour 기반 fire-once-per-hour 보장.
   log.info('[Reporting] scheduler started — 30s poll, fire-once-per-UTC-hour, KST-aware');
+
+  // 2026-04-29: 기동 직후 startup snapshot 1회 발사 — 운영자가 봇 정상 작동 + 현재 상태 확인.
+  // 다음 정규 batch (heartbeat / daily) 까지 기다리지 않고 즉시 Telegram 으로 baseline 노출.
+  // hourlyBaseline 도 동시에 set → 다음 hour 의 delta 계산 정확히.
+  void sendStartupSnapshot(ctx).catch((err) => {
+    log.warn(`[Reporting] startup snapshot failed: ${err}`);
+  });
+
   return setInterval(async () => {
     const now = new Date();
     const currentUtcHour = Math.floor(now.getTime() / 3_600_000);
@@ -93,11 +95,8 @@ export function scheduleDailySummary(ctx: BotContext): ReturnType<typeof setInte
         log.error(`Heartbeat report failed: ${error}`);
       }
     } else if (reportType === 'hourly') {
-      try {
-        await sendHourlySnapshot(ctx);
-      } catch (error) {
-        log.error(`Hourly snapshot failed: ${error}`);
-      }
+      // 2026-04-29 B안: hourly Telegram 발사 안 함. buffer 에만 capture (heartbeat 시 일괄 flush).
+      await bufferHourlySnapshot(ctx);
     }
   }, 30_000);
 }
@@ -117,61 +116,187 @@ function formatKstHour(now: Date): string {
   return `${kstHour.toString().padStart(2, '0')}:00`;
 }
 
-async function sendHourlySnapshot(ctx: BotContext): Promise<void> {
+// 2026-04-29 (B안): hourly 개별 Telegram 발사 → 2시간 batch 로 통합.
+// 매 KST hour 정각 1회 capture (in-memory line buffer) + heartbeat / daily 시점에 일괄 flush.
+// 한 줄 요약 형식: `- HH:00 · X.XXXX SOL (±delta) · close N건 (WL) net ±M SOL [· 🎉 5x+]`
+interface HourlyLine {
+  kstHour: number;
+  text: string;
+  liveClosed: number;
+  liveWinners: number;
+  liveLosers: number;
+  liveCumPnl: number;
+  fivexWinners: number;
+}
+const hourlyLineBuffer: HourlyLine[] = [];
+
+async function captureHourlySnapshot(ctx: BotContext): Promise<HourlyLine> {
   const now = new Date();
+  const kstHour = (now.getUTCHours() + 9) % 24;
   const balance = ctx.tradingMode === 'paper' && ctx.paperBalance != null
     ? ctx.paperBalance
     : await ctx.executor.getBalance();
 
-  // 1h 증감 계산
   let deltaStr = '';
   if (hourlyBaseline != null) {
     const delta = balance - hourlyBaseline.balanceSol;
     const sign = delta >= 0 ? '+' : '';
-    deltaStr = ` (${sign}${delta.toFixed(4)} SOL)`;
+    deltaStr = ` (${sign}${delta.toFixed(4)})`;
   }
 
-  // 1h 누적 close 카운트 (live = DB trades) + 5x winner
-  // Note: paper close 는 별도 jsonl ledger (kol-paper-trades.jsonl) 에 dump — DB 에 없음.
-  //   향후 paper close 카운트 표시 필요 시 jsonl reader 추가 (별도 sub-task).
+  // 2026-04-29 (Q3 fix): tradeStore fetch 실패해도 balance line 은 보존.
+  // 이전: getTradesCreatedWithinHours throw → captureHourlySnapshot 전체 throw → 그 hour 의 line 누락 +
+  //   heartbeat/daily 시점 currentHourLine null → buffer 도 미flush 되어 누적 hourly digest 통째로 사라짐.
+  // 수정: trade fetch 실패 시 closeText='close ?' (degraded line) + 카운트 0 으로 line 생성.
+  //   balance / delta 는 유효 → 운영자가 잔고 추이는 끊김 없이 확인. 다음 hour 정상 fetch 시 정확값 복귀.
   const oneHourAgoMs = now.getTime() - 60 * 60 * 1000;
-  const recentTrades = await ctx.tradeStore.getTradesCreatedWithinHours(1);
+  let liveClosedCount = 0;
+  let liveWinners = 0;
+  let liveLosers = 0;
+  let liveCumPnl = 0;
+  let fivexWinners = 0;
+  let fetchFailed = false;
+  try {
+    const recentTrades = await ctx.tradeStore.getTradesCreatedWithinHours(1);
+    const liveClosed = recentTrades.filter(
+      (t) => t.status === 'CLOSED' && t.pnl !== undefined && t.closedAt && t.closedAt.getTime() >= oneHourAgoMs
+    );
+    liveClosedCount = liveClosed.length;
+    liveWinners = liveClosed.filter((t) => (t.pnl ?? 0) > 0).length;
+    liveLosers = liveClosed.filter((t) => (t.pnl ?? 0) <= 0).length;
+    liveCumPnl = liveClosed.reduce((sum, t) => sum + (t.pnl ?? 0), 0);
+    // 2026-04-29 (Q2 fix): 5x winner 정의 = mfe peak ≥ +400% (사명 §3 정합).
+    // 이전: exitPrice/entryPrice ≥ 5.0 — close 시점만 보아 trail/hard_cut 으로 5x 도달 후
+    //   더 낮게 close 한 winner 누락. mission §3 measurement 와 정의 불일치.
+    // 수정: highWaterMark (live close 시점의 peak 가격) / entryPrice ≥ 5.0.
+    //   highWaterMark 미기록 trade 는 exitPrice 로 conservative fallback (false negative 가능, but safe).
+    fivexWinners = liveClosed.filter((t) => {
+      if (!t.entryPrice || t.entryPrice <= 0) return false;
+      const peak = t.highWaterMark ?? t.exitPrice ?? 0;
+      if (peak <= 0) return false;
+      return peak / t.entryPrice >= 5.0;
+    }).length;
+  } catch (err) {
+    fetchFailed = true;
+    log.warn(`[Reporting] getTradesCreatedWithinHours(1) failed in hourly snapshot: ${err}`);
+  }
+
+  const closeText = fetchFailed
+    ? 'close ?건 (DB unavailable)'
+    : liveClosedCount === 0
+      ? 'close 0건'
+      : `close ${liveClosedCount}건 (${liveWinners}W/${liveLosers}L) net ${liveCumPnl >= 0 ? '+' : ''}${liveCumPnl.toFixed(4)}`;
+  const fivexText = fivexWinners > 0 ? ` · 🎉 5x+ ${fivexWinners}` : '';
+  const text = `- ${kstHour.toString().padStart(2, '0')}:00 · ${balance.toFixed(4)} SOL${deltaStr} · ${closeText}${fivexText}`;
+
+  hourlyBaseline = { balanceSol: balance, capturedAtMs: now.getTime() };
+
+  return { kstHour, text, liveClosed: liveClosedCount, liveWinners, liveLosers, liveCumPnl, fivexWinners };
+}
+
+async function bufferHourlySnapshot(ctx: BotContext): Promise<void> {
+  // hourly slot — 알림 미발사. heartbeat / daily 시 batch flush.
+  try {
+    const line = await captureHourlySnapshot(ctx);
+    hourlyLineBuffer.push(line);
+  } catch (err) {
+    log.warn(`Hourly snapshot capture failed: ${err}`);
+  }
+}
+
+/**
+ * 2026-04-29 (Q3 fix): currentHour 가 null 이어도 buffer 만으로 digest 생성.
+ * 이전: buildHourlyDigest 호출자가 null check 후 미발사 → 누적 hourly 통째로 손실.
+ * 수정: buffer 비어 있고 currentHour 도 null 일 때만 빈 string 반환. 그 외에는 가능한 데이터로 digest.
+ */
+function buildHourlyDigest(currentHour: HourlyLine | null): string {
+  const allLines: HourlyLine[] = currentHour != null
+    ? [...hourlyLineBuffer, currentHour]
+    : [...hourlyLineBuffer];
+  if (allLines.length === 0) return '';
+
+  const totalClosed = allLines.reduce((s, l) => s + l.liveClosed, 0);
+  const totalW = allLines.reduce((s, l) => s + l.liveWinners, 0);
+  const totalL = allLines.reduce((s, l) => s + l.liveLosers, 0);
+  const totalNet = allLines.reduce((s, l) => s + l.liveCumPnl, 0);
+  const totalFivex = allLines.reduce((s, l) => s + l.fivexWinners, 0);
+  const startHour = allLines[0].kstHour.toString().padStart(2, '0');
+  const endHour = allLines[allLines.length - 1].kstHour.toString().padStart(2, '0');
+  const span = allLines.length;
+
+  const headline = `📊 <b>${span}h 요약</b> (KST ${startHour}:00 → ${endHour}:00)`;
+  const aggregateLine = totalClosed > 0
+    ? `· 합계 close ${totalClosed}건 (${totalW}W/${totalL}L) net ${totalNet >= 0 ? '+' : ''}${totalNet.toFixed(4)} SOL${totalFivex > 0 ? ` · 🎉 5x+ ${totalFivex}` : ''}`
+    : `· 합계 close 0건 (해당 구간 거래 없음)`;
+
+  return [headline, ...allLines.map((l) => l.text), aggregateLine].join('\n');
+}
+
+function flushHourlyBuffer(): void {
+  hourlyLineBuffer.length = 0;
+}
+
+// 2026-04-29: 기동 직후 1회 발사 — baseline + 현재 상태 + 다음 batch 시각 안내.
+async function sendStartupSnapshot(ctx: BotContext): Promise<void> {
+  const now = new Date();
+  const kstHour = (now.getUTCHours() + 9) % 24;
+  const kstMin = now.getUTCMinutes();
+  const balance = ctx.tradingMode === 'paper' && ctx.paperBalance != null
+    ? ctx.paperBalance
+    : await ctx.executor.getBalance();
+
+  // 1h 누적 close 카운트 — 기동 시점부터 직전 1h
+  const oneHourAgoMs = now.getTime() - 60 * 60 * 1000;
+  const recentTrades = await ctx.tradeStore.getTradesCreatedWithinHours(1).catch(() => []);
   const liveClosed = recentTrades.filter(
     (t) => t.status === 'CLOSED' && t.pnl !== undefined && t.closedAt && t.closedAt.getTime() >= oneHourAgoMs
   );
   const liveWinners = liveClosed.filter((t) => (t.pnl ?? 0) > 0).length;
   const liveLosers = liveClosed.filter((t) => (t.pnl ?? 0) <= 0).length;
   const liveCumPnl = liveClosed.reduce((sum, t) => sum + (t.pnl ?? 0), 0);
-  // 5x+ winner 검출 (entry vs exit price 기반 — pnl 만으로는 mfe 알 수 없음, ratio 추정)
-  const fivexWinners = liveClosed.filter((t) => {
-    if (!t.entryPrice || !t.exitPrice || t.entryPrice <= 0) return false;
-    return t.exitPrice / t.entryPrice >= 5.0;
-  }).length;
 
-  const lines: string[] = [];
-  lines.push(`⏰ [HOURLY ${formatKstHour(now)} KST] balance=${balance.toFixed(4)} SOL${deltaStr}`);
+  // 다음 batch 시각 = 다음 KST 짝수 hour (heartbeat) 또는 KST 09 (daily) 중 가까운 것
+  const nextEvenHour = kstHour % 2 === 0 && kstMin === 0 ? kstHour : (kstHour + (kstHour % 2 === 0 ? 2 : 1)) % 24;
+  const minutesUntilNext = ((nextEvenHour - kstHour + 24) % 24) * 60 - kstMin;
 
-  if (liveClosed.length > 0) {
-    const cumSign = liveCumPnl >= 0 ? '+' : '';
-    lines.push(`  · live close: ${liveClosed.length}건 (${liveWinners}W/${liveLosers}L) net ${cumSign}${liveCumPnl.toFixed(4)} SOL`);
-    if (fivexWinners > 0) {
-      lines.push(`  · 🎉 5x+ winner: ${fivexWinners}건 (사명 §3 phase gate)`);
-    }
-  } else {
-    lines.push(`  · live close: 0건`);
-  }
+  // wallet floor 까지 여유
+  const floor = config.walletStopMinSol;
+  const marginToFloor = balance - floor;
 
-  await ctx.notifier.sendInfo(lines.join('\n'), 'hourly_snapshot');
+  const closeText = liveClosed.length === 0
+    ? 'close 0건 (직전 1h)'
+    : `close ${liveClosed.length}건 (${liveWinners}W/${liveLosers}L) net ${liveCumPnl >= 0 ? '+' : ''}${liveCumPnl.toFixed(4)} SOL`;
+  const marginText = marginToFloor >= 0
+    ? `floor 까지 +${marginToFloor.toFixed(4)} SOL`
+    : `⚠ floor 위반 ${marginToFloor.toFixed(4)} SOL`;
 
-  // baseline 갱신 (다음 시간 비교용)
+  const lines = [
+    `🚀 <b>Bot 기동</b> · KST ${kstHour.toString().padStart(2, '0')}:${kstMin.toString().padStart(2, '0')}`,
+    `- 잔고: ${balance.toFixed(4)} SOL · ${marginText}`,
+    `- 직전 1h: ${closeText}`,
+    `- 다음 2h 요약: KST ${nextEvenHour.toString().padStart(2, '0')}:00 (~${minutesUntilNext}분 후)`,
+  ];
+
+  await ctx.notifier.sendInfo(lines.join('\n'), 'startup_snapshot');
+
+  // baseline set → 다음 hourly capture 시 delta 정확.
   hourlyBaseline = { balanceSol: balance, capturedAtMs: now.getTime() };
+  log.info(`[Reporting] startup snapshot sent — balance=${balance.toFixed(4)} SOL, next batch in ~${minutesUntilNext}min`);
 }
 
-/** 테스트 / 재시작 시 baseline reset. */
+/**
+ * 테스트 / 재시작 시 reporting scheduler + hourly state 전체 reset.
+ * 2026-04-29 (Q1 fix): 이전엔 resetReportSchedulerForTests 와 동일 역할 두 함수가 공존하여
+ *   누락된 hourlyLineBuffer 가 test 간 누수 위험. 단일 함수로 통합.
+ */
 export function resetHourlyBaselineForTests(): void {
   hourlyBaseline = null;
   lastFiredUtcHour = -1;
+  hourlyLineBuffer.length = 0;
 }
+
+/** @deprecated Use resetHourlyBaselineForTests. Q1 fix 후 alias 로 보존. */
+export const resetReportSchedulerForTests = resetHourlyBaselineForTests;
 
 /**
  * 2시간 간격 간략 리포트.
@@ -190,17 +315,26 @@ async function sendHeartbeatReport(ctx: BotContext): Promise<void> {
     : await ctx.executor.getBalance();
   const portfolio = await ctx.riskManager.getPortfolioState(balance);
 
-  const userLines: string[] = [
-    buildHeartbeatTradingSummary({
-      tradingMode: ctx.tradingMode,
-      windowHours: HEARTBEAT_WINDOW_HOURS,
-      balanceSol: balance,
-      pnl,
-      enteredTrades: recentTrades.length,
-      closedTrades: closedRecentTrades.length,
-      openTrades: portfolio.openTrades.length,
-    }),
-  ];
+  // 2026-04-29 B안: 현재 hour 의 hourly capture + buffer flush → 메시지 상단에 batch 표시.
+  // 2026-04-29 (Q3 fix): currentHourLine null 이어도 buffer 만으로 digest 시도 → 누적 손실 방지.
+  const currentHourLine = await captureHourlySnapshot(ctx).catch((err) => {
+    log.warn(`[Reporting] heartbeat captureHourlySnapshot failed: ${err}`);
+    return null;
+  });
+  const hourlyDigest = buildHourlyDigest(currentHourLine);
+  flushHourlyBuffer();
+
+  const userLines: string[] = [];
+  if (hourlyDigest) userLines.push(hourlyDigest);
+  userLines.push(buildHeartbeatTradingSummary({
+    tradingMode: ctx.tradingMode,
+    windowHours: HEARTBEAT_WINDOW_HOURS,
+    balanceSol: balance,
+    pnl,
+    enteredTrades: recentTrades.length,
+    closedTrades: closedRecentTrades.length,
+    openTrades: portfolio.openTrades.length,
+  }));
 
   if (ctx.paperMetrics) {
     const performanceSummary = buildHeartbeatPerformanceSummary(
@@ -228,6 +362,18 @@ async function sendHeartbeatReport(ctx: BotContext): Promise<void> {
 }
 
 async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
+  // 2026-04-29 B안: daily 시점에도 hourly buffer flush + digest 발송 (last batch 손실 방지).
+  // 2026-04-29 (Q3 fix): dailyHourLine null 이어도 buffer 만으로 digest 시도.
+  const dailyHourLine = await captureHourlySnapshot(ctx).catch((err) => {
+    log.warn(`[Reporting] daily captureHourlySnapshot failed: ${err}`);
+    return null;
+  });
+  const digest = buildHourlyDigest(dailyHourLine);
+  if (digest) {
+    await ctx.notifier.sendInfo(digest, 'hourly_digest_pre_daily').catch(() => {});
+  }
+  flushHourlyBuffer();
+
   const cadenceHours = [6, 12, 24];
   const rejectionMixHours = 24;
   const todayTrades = await ctx.tradeStore.getTodayTrades();

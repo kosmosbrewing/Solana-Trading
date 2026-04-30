@@ -6,6 +6,56 @@
 
 ---
 
+## 2026-04-30 — 학술 리포트 통합: Sprint 1 + Sprint 2.A1 + 품질 fix (P0~Sprint 2)
+
+**Authority**: [`docs/design-docs/kol-academic-report-integration-2026-04-30.md`](./docs/design-docs/kol-academic-report-integration-2026-04-30.md) (영구 ADR — 11개 권고 결정 매트릭스 + 보류 트리거 조건)
+
+### 외부 입력
+운영자가 외부 전략가 학술 리포트 (KOL Hunter Kelly·손익비·손절 짧게 수익 길게 전략 연구) 제공. 11개 권고를 코드 사실 기반으로 정합 분석 후 5개 채택 / 6개 보류 결정.
+
+### 채택 (Sprint 1 + Sprint 2.A1, ~810 LOC, jest 1202/1202 pass, regression 0)
+- **Sprint 1.A3** Landing latency 측정 — `executor.ts` SwapResult.landingLatencyMs (Jito/Ultra/V6 3 path)
+- **Sprint 1.A4** KOL post-close observer — `kolMissedAlpha.ts` + closeLivePosition wiring (shadow arm 차단)
+- **Sprint 1.B2** Winner-kill rate analyzer — `scripts/winner-kill-analyzer.ts`. **7일 paper 실측 winner-kill 3건 발견 (postMfe +41,678% / +2,085% / +1,388%)** — 학술 §검증 권고의 "5x 도달했는데 cut" 가설 직접 증거
+- **Sprint 1.B3** DSR `--source=paper|live|both` flag + `kol-live-trades.jsonl` writer
+- **Sprint 2.A1** Structural kill-switch — `kolHunterStructuralKill*` 5 config + `'structural_kill_sell_route'` 신규 close reason. peakDrift 0.20 pre-gate + sellQuoteProbe runtime cache 30s
+
+### 품질 fix (3건)
+- **F11**: `deleteActivePosition` 의 structuralKillCache cleanup — memory leak 차단
+- **F3**: `tokenDecimals == null` skip — 9-decimal 토큰의 부정확 quote 차단
+- **F7**: live + impact>0.10 → kill 발화 positive case 회귀 테스트 (jest.spyOn evaluateSellQuoteProbe)
+
+### 보류 항목 (트리거 조건은 ADR §4)
+- RCK (Phase 3): paper n≥1000 + 5x≥3 + DSR Prob>0≥95% 통과 후
+- DRK (Phase 4): RCK 후 6개월
+- Partial take @ T1: Trade DB schema / wallet ledger 영향 Discovery 후 별도 sprint
+- Continuous DD throttle: KOL canary 가 dynamic ticket 으로 전환되는 시점
+- MAE 분위수 기반 hardcut: live n≥100 + winner cohort 분리
+- Regime filter / DQI: 외부 리포트 #7 sprint 와 통합
+
+### 운영 default 변경 환경변수
+```
+KOL_HUNTER_STRUCTURAL_KILL_ENABLED=true (default ON)
+KOL_HUNTER_STRUCTURAL_KILL_MIN_HOLD_SEC=60
+KOL_HUNTER_STRUCTURAL_KILL_MAX_IMPACT_PCT=0.10
+KOL_HUNTER_STRUCTURAL_KILL_CACHE_MS=30000
+KOL_HUNTER_STRUCTURAL_KILL_PEAK_DRIFT_TRIGGER=0.20
+```
+
+### 사명 §3 정합
+| KPI | 영향 |
+|---|---|
+| Wallet floor 0.7 | structural kill + daily halt + tradingHalted 가드 다층 보호 |
+| 200 trade | live 49 / 200 = 24.5% (paper 487) |
+| 5x+ winner | winner-safe 분기 + structural kill winner 보호 + winner-kill rate 측정 |
+| Real Asset Guard | 변경 없음 |
+
+### 검증 후속 (배포 후 측정)
+1. **24h**: DSR 재실행 (`--source=both --window-days=1`) / Winner-kill rate (학술 권고 ≤10-15%) / Landing latency D-bucket 빈도 / Structural kill 발화 빈도 / WALLET_DELTA drift 변화
+2. **1주**: live n≥100 도달 시 보류 항목 (A2 partial take / B1 DD throttle / #7 분위수 hardcut) 결정
+
+---
+
 ## 2026-04-29 (Late Evening) — 외부 전략 리포트 Tier 1 + #5 일괄 구현
 
 직전 외부 트레이더 리포트 (KOL Hunter edge 강화 9 권고) 정합성 분석 후 Tier 1 (3 sprint) + #5 일괄 진행. 4 agent 병렬.

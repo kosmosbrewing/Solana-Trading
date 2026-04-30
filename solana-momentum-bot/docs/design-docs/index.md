@@ -12,6 +12,8 @@
 | Pure WS Breakout Lane | `pure-ws-breakout-lane-2026-04-18.md` | ✅ 구현 완료 (Block 3, paper-first gate) | 2026-04-18 |
 | Pure WS Breakout V2 — Detector Math Spec | `pure-ws-breakout-v2-detector-2026-04-18.md` | ✅ Phase 1.1-1.3 완료 (pure function + scanner + handler wiring) | 2026-04-18 |
 | Lane Edge Controller — Conservative Kelly / Payoff Control | `lane-edge-controller-kelly-2026-04-25.md` | 🟡 제안 — Kelly를 sizing이 아닌 lane/cohort throttle로 사용 | 2026-04-25 |
+| External Strategy Report Analysis (Tier 1 + #5) | `external-strategy-report-analysis-2026-04-29.md` | ✅ Tier 1 + #5 구현 완료 (DSR/CSCV + style classifier + missed-alpha retro + co-buy graph) | 2026-04-29 |
+| **KOL Academic Report Integration ADR** | `kol-academic-report-integration-2026-04-30.md` | ✅ Sprint 1 + Sprint 2.A1 완료 / Phase 3-4 보류 (트리거 조건 명시) | 2026-04-30 |
 | DEX_TRADE Phase 3 (Quick Reject + Hold Sentinel + Ruin Sim) | — | ✅ 구현 완료 (modules + script + tests) | 2026-04-18 |
 
 ## Pre-Pivot (historical — 현재 판정 근거로 사용 금지)

@@ -1032,10 +1032,13 @@ function evaluateSmartV3TriggerState(cand: PendingCandidate, score: KolDiscovery
   const pullbackPct = (smart.peakPrice - smart.currentPrice) / Math.max(smart.peakPrice, 1e-12);
   const aboveKolDrawdownFloor =
     smart.currentPrice >= smart.kolEntryPrice * (1 - config.kolHunterSmartV3MaxDrawdownFromKolEntryPct);
+  // 2026-04-30 (P1-2): pullback path 에 KOL count gate 추가.
+  //   live 15h 분석: pullback|kols=1 이 손실의 103% 차지. velocity path 와 동일 강도로 강제.
   const pullback =
     smart.peakPrice > smart.kolEntryPrice &&
     pullbackPct >= config.kolHunterSmartV3MinPullbackPct &&
-    aboveKolDrawdownFloor;
+    aboveKolDrawdownFloor &&
+    score.independentKolCount >= config.kolHunterSmartV3PullbackMinKolCount;
 
   const velocity =
     score.finalScore >= config.kolHunterSmartV3VelocityScoreThreshold &&
@@ -1053,8 +1056,9 @@ function hasSmartV3TierStrength(kols: Array<{ tier: 'S' | 'A' | 'B' }>): boolean
   //  - "S+A or A+A" 의 실무 해석: S/A급 독립 판단이 2명 이상이면 velocity 신뢰.
   //  - Tier B 단독 / Tier B + Tier B 는 velocity 진입 영구 reject. (single-wallet 추세를 신호로 보지 않음)
   //  - Tier B 가 합류해도 S/A ≥ 2 가 충족되어야 velocity 통과.
-  //  - Pullback path 는 별도 evaluator (`evaluatePullbackTrigger`) 에서 KOL tier 상관없이 가격 조건만 검사.
-  //    즉 Tier B 단독은 pullback path 로만 진입 가능, velocity 단독으로는 절대 진입 불가.
+  //  - Pullback path 는 evaluateSmartV3TriggerState 안 inline 평가 (별도 evaluator 아님).
+  //    2026-04-30 (P1-2) 이전: 가격 조건만 검사 → Tier B 단독 등 단일 KOL pullback 진입 가능.
+  //    2026-04-30 (P1-2) 이후: kolHunterSmartV3PullbackMinKolCount (default 2) 강제 → 단일 KOL reject.
   return kols.filter((k) => k.tier === 'S' || k.tier === 'A').length >= 2;
 }
 
@@ -1118,6 +1122,18 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
   // shadow 측정 자체가 active 승격 candidate 식별용이라 실 자산 노출 금지.
   const candIsShadow = cand.kolTxs.length > 0 && cand.kolTxs.every((t) => t.isShadow === true);
   if (isLiveCanaryActive() && botCtx && !candIsShadow) {
+    // 2026-04-30 (P1.5): daily-loss halt 도 wallet stop / canary halt 와 동일 강도로 fallback paper.
+    //   이전: tradingHaltedReason 은 signalProcessor 의 5분 lane filter 만 → KOL lane 우회 발생.
+    //   실측: AwuMSrQm trade 가 daily halt -0.1951 SOL 활성 1h 12m 후 live entry → 추가 -0.0099 SOL 손실.
+    //   wallet floor 와 daily halt 사이 buffer 확보를 위해 KOL lane 도 존중.
+    if (botCtx.tradingHaltedReason) {
+      log.warn(
+        `[KOL_HUNTER_TRADING_HALT] ${cand.tokenMint.slice(0, 8)} smart-v3 trigger — ` +
+        `${botCtx.tradingHaltedReason}. fallback paper.`
+      );
+      await enterPaperPosition(cand.tokenMint, cand, score, smart.preEntryFlags, entryOptions);
+      return;
+    }
     if (isWalletStopActive()) {
       log.warn(
         `[KOL_HUNTER_WALLET_STOP] ${cand.tokenMint.slice(0, 8)} smart-v3 trigger — ` +
@@ -1215,6 +1231,12 @@ async function resolveStalk(tokenMint: string): Promise<void> {
   const candIsShadow = cand.kolTxs.length > 0 && cand.kolTxs.every((t) => t.isShadow === true);
   if (isLiveCanaryActive() && botCtx && !candIsShadow) {
     // Hard guards (live wallet protection)
+    // 2026-04-30 (P1.5): daily-loss halt 도 KOL lane 에서 존중 (signalProcessor 5분 lane 우회 방지).
+    if (botCtx.tradingHaltedReason) {
+      log.warn(`[KOL_HUNTER_TRADING_HALT] ${tokenMint.slice(0, 8)} signal ignored — ${botCtx.tradingHaltedReason}. fallback paper.`);
+      await enterPaperPosition(tokenMint, cand, score, preEntry.flags);
+      return;
+    }
     if (isWalletStopActive()) {
       log.warn(`[KOL_HUNTER_WALLET_STOP] ${tokenMint.slice(0, 8)} signal ignored — wallet floor active`);
       fireRejectObserver(tokenMint, 'stalk_expired_no_consensus', cand, score, {
@@ -1632,10 +1654,9 @@ function ensurePriceListener(tokenMint: string): void {
 // Paper-only 휴리스틱 — Phase 4+ live 에서는 실 candle / buy ratio / tx density 기반으로 대체 예정.
 const KOL_PAPER_PROBE_FLAT_BAND_PCT = 0.10;                  // stalk 만료 시 ±10% 범위 내면 timeout reject
 const KOL_PAPER_PROBE_TRAIL_PCT = 0.15;                      // PROBE 의 peak-pullback trail (15%)
-const KOL_PAPER_QUICK_REJECT_MFE_LOW_THRESHOLD = 0.02;       // (a) MFE 2% 미만 + 30s 경과 시 factor +1
-const KOL_PAPER_QUICK_REJECT_MFE_LOW_ELAPSED_SEC = 30;
-const KOL_PAPER_QUICK_REJECT_PRICE_DROP_THRESHOLD = -0.05;   // (b) 현 price -5% 이하 시 factor +1
-const KOL_PAPER_QUICK_REJECT_PULLBACK_THRESHOLD = 0.20;      // (c) peak 로부터 20% pullback 시 factor +1
+// 2026-04-30 (P1-1): MFE_LOW_THRESHOLD/ELAPSED_SEC/PULLBACK_THRESHOLD 가 config 로 승격 (config.kolHunter*).
+// 본 constant 는 (b) price drop 만 유지 — 현 price 대비 -5% 이하 시 factor +1.
+const KOL_PAPER_QUICK_REJECT_PRICE_DROP_THRESHOLD = -0.05;
 // 2026-04-28: 0.30 → config 화 (default 0.45). config.kolHunterHoldPhasePeakDriftThreshold 참조.
 // 사유: Sprint 1A paper 분석 (n=401) — mfe 200%+ winner 4건 sentinel cut 발견. 임계 완화로 large
 // winner retreat capture. config/kolHunter.ts 의 정책 주석 참조.
@@ -1670,7 +1691,11 @@ function onPriceTick(positionId: string, tick: PriceTick): void {
       }
       // 2. Quick reject classifier (Lane T: 180s + 3 factor)
       // paper 는 microstructure data 없음 → elapsed + price 기반 단순 휴리스틱
-      if (elapsedSec <= config.kolHunterQuickRejectWindowSec) {
+      // 2026-04-30 (P1-1 winner 보호): 한 번이라도 winnerSafeMfe (default 5%) 도달 시 비활성화.
+      //   사유: live n=49 분석에서 mfe>=10% 의 3건 평균 hold 83s, mae -14% — winner 진입 후 retest 케이스.
+      //   QR 임계 단축 후 false positive 차단. RUNNER_T1 promote 전 단계라도 winner 영역 진입 시 보호.
+      const safeMfeReached = mfePct >= config.kolHunterQuickRejectWinnerSafeMfe;
+      if (!safeMfeReached && elapsedSec <= config.kolHunterQuickRejectWindowSec) {
         const factors = countQuickRejectFactors(pos, currentPrice, elapsedSec);
         if (factors >= config.kolHunterQuickRejectFactorCount) {
           closePosition(pos, currentPrice, 'quick_reject_classifier_exit', nowSec, mfePct, maePct);
@@ -1775,16 +1800,17 @@ function onPriceTick(positionId: string, tick: PriceTick): void {
 
 function countQuickRejectFactors(pos: PaperPosition, currentPrice: number, elapsedSec: number): number {
   // Paper 모드에서는 candle microstructure 데이터 없음 → price-based 휴리스틱
+  // 2026-04-30 (P1-1): mfeLow / pullback 임계는 config 로 승격. price drop 만 hardcode 유지.
   let factors = 0;
   const mfeSoFar = (pos.peakPrice - pos.marketReferencePrice) / pos.marketReferencePrice;
   const currentPct = (currentPrice - pos.marketReferencePrice) / pos.marketReferencePrice;
   if (
-    mfeSoFar < KOL_PAPER_QUICK_REJECT_MFE_LOW_THRESHOLD &&
-    elapsedSec > KOL_PAPER_QUICK_REJECT_MFE_LOW_ELAPSED_SEC
+    mfeSoFar < config.kolHunterQuickRejectMfeLowThreshold &&
+    elapsedSec > config.kolHunterQuickRejectMfeLowElapsedSec
   ) factors += 1;
   if (currentPct < KOL_PAPER_QUICK_REJECT_PRICE_DROP_THRESHOLD) factors += 1;
   const pullback = (pos.peakPrice - currentPrice) / Math.max(pos.peakPrice, 1e-12);
-  if (pullback > KOL_PAPER_QUICK_REJECT_PULLBACK_THRESHOLD) factors += 1;
+  if (pullback > config.kolHunterQuickRejectPullbackThreshold) factors += 1;
   return factors;
 }
 

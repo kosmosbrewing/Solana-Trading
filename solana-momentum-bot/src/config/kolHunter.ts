@@ -76,6 +76,17 @@ export const kolHunter = {
   kolHunterT3TrailPct: numEnv('KOL_HUNTER_T3_TRAIL_PCT', '0.25'),
   kolHunterQuickRejectWindowSec: numEnv('KOL_HUNTER_QUICK_REJECT_WINDOW_SEC', '180'),
   kolHunterQuickRejectFactorCount: numEnv('KOL_HUNTER_QUICK_REJECT_FACTOR_COUNT', '3'),
+  // 2026-04-30 (P1-1, 외부 비판 후속): hardcoded constant → config 승격.
+  // Why: live 운영 15h n=49 trades 에서 hold≤30s 의 12건 (44%) 이 mfeLowElapsedSec=30 임계
+  //   미달로 quick reject 평가 자체 안 됨. avgHold 15s. → 시간 임계 단축 + winner 보호 분기.
+  // - mfeLowThreshold (현 hardcode 0.02): peak MFE 임계 — 진입 후 한 번도 N% 도달 못하면 factor +1
+  // - mfeLowElapsedSec (현 hardcode 30): 위 임계 적용 시점. 새 default 15.
+  // - pullbackThreshold (현 hardcode 0.20): peak 대비 pullback 임계. 새 default 0.10 (덜 보수적).
+  // - winnerSafeMfe: 한 번이라도 도달 시 quick reject 비활성화 (winner 보호). default 0.05 (5%).
+  kolHunterQuickRejectMfeLowThreshold: numEnv('KOL_HUNTER_QUICK_REJECT_MFE_LOW_THRESHOLD', '0.02'),
+  kolHunterQuickRejectMfeLowElapsedSec: numEnv('KOL_HUNTER_QUICK_REJECT_MFE_LOW_ELAPSED_SEC', '15'),
+  kolHunterQuickRejectPullbackThreshold: numEnv('KOL_HUNTER_QUICK_REJECT_PULLBACK_THRESHOLD', '0.10'),
+  kolHunterQuickRejectWinnerSafeMfe: numEnv('KOL_HUNTER_QUICK_REJECT_WINNER_SAFE_MFE', '0.05'),
   // Paper round-trip cost (Jupiter platform fee + MEV + AMM fee). Live 시 wallet delta 에서 직접 차감.
   kolHunterPaperRoundTripCostPct: numEnv('KOL_HUNTER_PAPER_ROUND_TRIP_COST_PCT', '0.005'),
 
@@ -134,6 +145,11 @@ export const kolHunter = {
   kolHunterSmartV3MaxDrawdownFromKolEntryPct: numEnv('KOL_HUNTER_SMART_V3_MAX_DRAWDOWN_FROM_KOL_ENTRY_PCT', '0.15'),
   kolHunterSmartV3VelocityScoreThreshold: numEnv('KOL_HUNTER_SMART_V3_VELOCITY_SCORE_THRESHOLD', '6.0'),
   kolHunterSmartV3VelocityMinIndependentKol: numEnv('KOL_HUNTER_SMART_V3_VELOCITY_MIN_INDEPENDENT_KOL', '2'),
+  // 2026-04-30 (P1-2): pullback path 도 KOL count gate 강제.
+  // Why: live 운영 15h n=49 trades 의 trigger×kols 분석 — pullback|kols=1 이 31건 (63%) 차지,
+  //   net -0.1158 SOL = 전체 net 의 103% (다른 path 합 +0.0037). pullback 평가에 KOL count 조건 누락.
+  // velocity path 는 이미 MIN_INDEPENDENT_KOL=2 강제, pullback 만 무방비 → 동일 강도로 잠금.
+  kolHunterSmartV3PullbackMinKolCount: numEnv('KOL_HUNTER_SMART_V3_PULLBACK_MIN_KOL_COUNT', '2'),
   kolHunterSmartV3T1ThresholdHigh: numEnv('KOL_HUNTER_SMART_V3_T1_THRESHOLD_HIGH', '0.40'),
   kolHunterSmartV3T1TrailBoth: numEnv('KOL_HUNTER_SMART_V3_T1_TRAIL_BOTH', '0.25'),
   kolHunterSmartV3T1TrailPullback: numEnv('KOL_HUNTER_SMART_V3_T1_TRAIL_PULLBACK', '0.22'),

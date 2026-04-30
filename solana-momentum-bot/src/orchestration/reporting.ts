@@ -3,8 +3,7 @@ import path from 'path';
 import { CostSummary, DailySummaryReport, RealtimeAdmissionSummary } from '../notifier/dailySummaryFormatter';
 import {
   buildHeartbeatPerformanceSummary,
-  buildHeartbeatRegimeSummary,
-  buildHeartbeatTradingSummary,
+  // 2026-04-30 (사용자 권고): heartbeat trading + regime summary 제거 — hourlyDigest 와 중복.
   HEARTBEAT_WINDOW_HOURS,
 } from '../reporting/heartbeatSummary';
 import { buildSparseOpsSummaryMessage, loadSparseOpsSummary } from '../reporting/sparseOpsSummary';
@@ -162,6 +161,62 @@ async function persistHourlyLine(line: HourlyLine): Promise<void> {
     await appendFile(path.join(dir, HOURLY_SNAPSHOT_FILE), JSON.stringify(line) + '\n', 'utf8');
   } catch (err) {
     log.warn(`[Reporting] hourly snapshot persist failed: ${err}`);
+  }
+}
+
+/**
+ * 2026-04-30 (사용자 권고): heartbeat / daily digest 를 **KST 00:00 부터 현재까지** 누적 표시.
+ * 이전: lastFlushAtMs 기반 batch window (2-3h 만 보임) → 사용자가 "전체 시간 보고 싶다" 요청.
+ * 수정: KST 자정 시각 (UTC 로 환산) 이후 모든 hourly snapshot 을 disk 에서 load.
+ * 안전망: 24h hard window 유지 — daily 미발사 incident 시 cross-day 누적 방지.
+ */
+async function loadHourlyLinesSinceKstMidnight(): Promise<HourlyLine[]> {
+  try {
+    const dir = config.realtimeDataDir;
+    const now = new Date();
+    // KST 자정 = UTC 의 (어제 15:00) 또는 (오늘 15:00)
+    const utcHourNow = now.getUTCHours();
+    const kstMidnightUtcMs = (() => {
+      const d = new Date(now);
+      d.setUTCMinutes(0, 0, 0);
+      // KST 자정 → UTC 15:00 of previous calendar day (KST 00:00 == UTC 15:00 전날)
+      // utcHourNow >= 15 → 오늘 KST = 오늘 UTC, kstMidnight = today UTC 15:00 (어제 KST 23 → 오늘 KST 0 의 경계)
+      // utcHourNow < 15 → 오늘 KST 의 자정은 어제 UTC 15:00
+      if (utcHourNow >= 15) {
+        d.setUTCHours(15, 0, 0, 0);
+      } else {
+        d.setUTCDate(d.getUTCDate() - 1);
+        d.setUTCHours(15, 0, 0, 0);
+      }
+      return d.getTime();
+    })();
+
+    // 24h hard window — daily 미발사 incident 시 무한 누적 차단
+    const windowStartMs = Math.max(kstMidnightUtcMs, Date.now() - HOURLY_SNAPSHOT_RETENTION_MS);
+
+    let text: string;
+    try {
+      text = await readFile(path.join(dir, HOURLY_SNAPSHOT_FILE), 'utf8');
+    } catch {
+      return [];
+    }
+    const lines = text.split('\n').filter((l) => l.trim().length > 0);
+    const result: HourlyLine[] = [];
+    for (const raw of lines) {
+      try {
+        const entry = JSON.parse(raw) as HourlyLine;
+        if (typeof entry.capturedAtMs === 'number' && entry.capturedAtMs >= windowStartMs) {
+          result.push(entry);
+        }
+      } catch {
+        // malformed — skip
+      }
+    }
+    result.sort((a, b) => a.capturedAtMs - b.capturedAtMs);
+    return result;
+  } catch (err) {
+    log.warn(`[Reporting] hourly snapshot KST-midnight load failed: ${err}`);
+    return [];
   }
 }
 
@@ -335,30 +390,35 @@ async function bufferHourlySnapshot(ctx: BotContext): Promise<void> {
 
 /**
  * 2026-04-29 (Q3 fix): currentHour 가 null 이어도 buffer 만으로 digest 생성.
- * 이전: buildHourlyDigest 호출자가 null check 후 미발사 → 누적 hourly 통째로 손실.
- * 수정: buffer 비어 있고 currentHour 도 null 일 때만 빈 string 반환. 그 외에는 가능한 데이터로 digest.
+ * 2026-04-30 (사용자 권고): KST 00:00 부터 누적 — buffer 가 아닌 priorLines (disk persisted KST-midnight-anchored).
+ * 이전: lastFlushAtMs 기반 buffer 만 (2-3h window).
+ * 수정: priorLines (KST midnight 부터) + currentHour 결합. capturedAtMs dedup.
  */
-function buildHourlyDigest(currentHour: HourlyLine | null): string {
-  const allLines: HourlyLine[] = currentHour != null
-    ? [...hourlyLineBuffer, currentHour]
-    : [...hourlyLineBuffer];
-  if (allLines.length === 0) return '';
+function buildHourlyDigest(priorLines: HourlyLine[], currentHour: HourlyLine | null): string {
+  const merged: HourlyLine[] = [...priorLines];
+  if (currentHour != null) {
+    // dedup — 같은 capturedAtMs 가 prior 에도 있으면 skip (replay 방어)
+    const dup = merged.some((l) => l.capturedAtMs === currentHour.capturedAtMs);
+    if (!dup) merged.push(currentHour);
+  }
+  if (merged.length === 0) return '';
+  merged.sort((a, b) => a.capturedAtMs - b.capturedAtMs);
 
-  const totalClosed = allLines.reduce((s, l) => s + l.liveClosed, 0);
-  const totalW = allLines.reduce((s, l) => s + l.liveWinners, 0);
-  const totalL = allLines.reduce((s, l) => s + l.liveLosers, 0);
-  const totalNet = allLines.reduce((s, l) => s + l.liveCumPnl, 0);
-  const totalFivex = allLines.reduce((s, l) => s + l.fivexWinners, 0);
-  const startHour = allLines[0].kstHour.toString().padStart(2, '0');
-  const endHour = allLines[allLines.length - 1].kstHour.toString().padStart(2, '0');
-  const span = allLines.length;
+  const totalClosed = merged.reduce((s, l) => s + l.liveClosed, 0);
+  const totalW = merged.reduce((s, l) => s + l.liveWinners, 0);
+  const totalL = merged.reduce((s, l) => s + l.liveLosers, 0);
+  const totalNet = merged.reduce((s, l) => s + l.liveCumPnl, 0);
+  const totalFivex = merged.reduce((s, l) => s + l.fivexWinners, 0);
+  const startHour = merged[0].kstHour.toString().padStart(2, '0');
+  const endHour = merged[merged.length - 1].kstHour.toString().padStart(2, '0');
+  const span = merged.length;
 
-  const headline = `📊 <b>${span}h 요약</b> (KST ${startHour}:00 → ${endHour}:00)`;
+  const headline = `📊 <b>${span}h 요약</b> (KST ${startHour}:00 → ${endHour}:00, today)`;
   const aggregateLine = totalClosed > 0
     ? `· 합계 close ${totalClosed}건 (${totalW}W/${totalL}L) net ${totalNet >= 0 ? '+' : ''}${totalNet.toFixed(4)} SOL${totalFivex > 0 ? ` · 🎉 5x+ ${totalFivex}` : ''}`
     : `· 합계 close 0건 (해당 구간 거래 없음)`;
 
-  return [headline, ...allLines.map((l) => l.text), aggregateLine].join('\n');
+  return [headline, ...merged.map((l) => l.text), aggregateLine].join('\n');
 }
 
 async function flushHourlyBuffer(): Promise<void> {
@@ -438,36 +498,19 @@ export const resetReportSchedulerForTests = resetHourlyBaselineForTests;
  *      별도 카테고리로 분리 발송해 throttle 키도 독립화한다.
  */
 async function sendHeartbeatReport(ctx: BotContext): Promise<void> {
-  const recentTrades = await ctx.tradeStore.getTradesCreatedWithinHours(HEARTBEAT_WINDOW_HOURS);
-  const closedRecentTrades = recentTrades.filter(
-    trade => trade.status === 'CLOSED' && trade.pnl !== undefined
-  );
-  const pnl = await ctx.tradeStore.getClosedPnlWithinHours(HEARTBEAT_WINDOW_HOURS);
-  const balance = ctx.tradingMode === 'paper' && ctx.paperBalance != null
-    ? ctx.paperBalance
-    : await ctx.executor.getBalance();
-  const portfolio = await ctx.riskManager.getPortfolioState(balance);
-
-  // 2026-04-29 B안: 현재 hour 의 hourly capture + buffer flush → 메시지 상단에 batch 표시.
-  // 2026-04-29 (Q3 fix): currentHourLine null 이어도 buffer 만으로 digest 시도 → 누적 손실 방지.
+  // 2026-04-30 (사용자 권고): heartbeat = hourly digest 만 (KST 00:00 부터 누적).
+  //   "📊 Live · 최근 4h" trading summary + "🔍 시장 regime" 부분은 hourlyDigest 와 중복 → 제거.
+  // 잔액 / close 카운트 / net 은 hourlyDigest 의 합계 라인에 이미 포함.
   const currentHourLine = await captureHourlySnapshot(ctx).catch((err) => {
     log.warn(`[Reporting] heartbeat captureHourlySnapshot failed: ${err}`);
     return null;
   });
-  const hourlyDigest = buildHourlyDigest(currentHourLine);
+  const priorLines = await loadHourlyLinesSinceKstMidnight();
+  const hourlyDigest = buildHourlyDigest(priorLines, currentHourLine);
   await flushHourlyBuffer();
 
   const userLines: string[] = [];
   if (hourlyDigest) userLines.push(hourlyDigest);
-  userLines.push(buildHeartbeatTradingSummary({
-    tradingMode: ctx.tradingMode,
-    windowHours: HEARTBEAT_WINDOW_HOURS,
-    balanceSol: balance,
-    pnl,
-    enteredTrades: recentTrades.length,
-    closedTrades: closedRecentTrades.length,
-    openTrades: portfolio.openTrades.length,
-  }));
 
   if (ctx.paperMetrics) {
     const performanceSummary = buildHeartbeatPerformanceSummary(
@@ -476,10 +519,6 @@ async function sendHeartbeatReport(ctx: BotContext): Promise<void> {
     if (performanceSummary) {
       userLines.push(performanceSummary);
     }
-  }
-
-  if (ctx.regimeFilter) {
-    userLines.push(buildHeartbeatRegimeSummary(ctx.regimeFilter.getState()));
   }
 
   if (userLines.length > 0) {
@@ -513,7 +552,9 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
     log.warn(`[Reporting] daily captureHourlySnapshot failed: ${err}`);
     return null;
   });
-  const digest = buildHourlyDigest(dailyHourLine);
+  // 2026-04-30 (사용자 권고): KST 00:00 ~ 09:00 (daily 시각) 까지 누적.
+  const dailyPriorLines = await loadHourlyLinesSinceKstMidnight();
+  const digest = buildHourlyDigest(dailyPriorLines, dailyHourLine);
   if (digest) {
     await ctx.notifier.sendInfo(digest, 'hourly_digest_pre_daily').catch(() => {});
   }
@@ -637,12 +678,8 @@ async function sendDailySummaryReport(ctx: BotContext): Promise<void> {
     const paperText = ctx.paperMetrics.formatSummaryText(24);
     await ctx.notifier.sendInfo(paperText, 'paper_metrics');
   }
-  if (ctx.regimeFilter) {
-    await ctx.notifier.sendInfo(
-      buildHeartbeatRegimeSummary(ctx.regimeFilter.getState()),
-      'regime'
-    );
-  }
+  // 2026-04-30 (사용자 권고): "🔍 시장 regime" 별도 알림 제거 (heartbeat 와 동일 — 사용자가 noise 로 평가).
+  // 운영자가 다시 필요하면 explicit env (REGIME_DAILY_ALERT_ENABLED=true) 로 재활성 권고.
 
   // 2026-04-26 L3: KOL paper A/B daily summary (kol-paper-trades.jsonl 기준).
   // config.kolDailySummaryEnabled 로 gate. 24h 거래 0건이면 skip.

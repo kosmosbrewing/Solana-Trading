@@ -31,6 +31,7 @@ Stage 1-2 만 읽으면 (5-10분) 코드 변경 가능. Stage 3+ 는 필요 시.
 ---
 
 ## Quick Reference (legacy, Stage 1-2 의 alias)
+- **2026-04-30 KOL Academic Report Integration ADR**: [`docs/design-docs/kol-academic-report-integration-2026-04-30.md`](./docs/design-docs/kol-academic-report-integration-2026-04-30.md) — 외부 학술 리포트 11개 권고 결정 매트릭스. Sprint 1 + Sprint 2.A1 채택 (~810 LOC, 1202/1202 jest pass). Phase 3-4 (RCK/DRK) 보류 + 트리거 조건 명시. 신규 close reason `'structural_kill_sell_route'` + structural kill default ON.
 - **2026-04-25 Mission Control Framework (control-plane policy)**: [`MISSION_CONTROL.md`](./MISSION_CONTROL.md) — survival/universe/payoff/execution/experiment/discipline 6 controls. mission-refinement 의 운영 항목화. 모든 변경의 4-layer reporting + adaptive change log 의무.
 - **2026-04-23 Option 5 Adoption (현 active paradigm)**: [`docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md`](./docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md) — KOL Wallet = 1st-class Discovery, 자체 Execution 구조 유지 + Lane T 파라미터 재조정. Real Asset Guard 불변. Phase 2 shadow eval = go/no-go first filter.
 - **대담 기록 (append-only)**: [`docs/debates/kol-discovery-debate-2026-04-23.md`](./docs/debates/kol-discovery-debate-2026-04-23.md)

@@ -8,6 +8,7 @@ import {
   resetCanaryLaneState,
   resetAllCanaryStatesForTests,
   checkAndAutoResetHalt,
+  hydrateCanaryStatesFromCloseRecords,
 } from '../src/risk/canaryAutoHalt';
 import {
   isEntryHaltActive,
@@ -23,6 +24,8 @@ function setCfg(overrides: Partial<{
   canaryMinLossToCountSol: number;
   canaryAutoResetEnabled: boolean;
   canaryAutoResetMinSec: number;
+  canaryAutoHaltHydrateLookbackHours: number;
+  canaryAutoHaltHydrateSince: string;
   // 2026-04-28 Sprint 2 Task 3: KOL hunter 별도 cap.
   kolHunterCanaryMaxConsecLosers: number;
   kolHunterCanaryMaxBudgetSol: number;
@@ -43,6 +46,8 @@ describe('canaryAutoHalt', () => {
       canaryMaxBudgetSol: 0.5,
       canaryMaxTrades: 100,
       canaryMinLossToCountSol: 0,
+      canaryAutoHaltHydrateLookbackHours: 72,
+      canaryAutoHaltHydrateSince: '',
     });
   });
 
@@ -160,6 +165,23 @@ describe('canaryAutoHalt', () => {
     expect(isEntryHaltActive('pure_ws_breakout')).toBe(true);
   });
 
+  it('[2026-04-30] auto-reset skipped when max trades reached (canary evaluation gate)', () => {
+    setCfg({
+      canaryMaxTrades: 3,
+      canaryMaxConsecutiveLosers: 100,
+      canaryMaxBudgetSol: 999,
+      canaryAutoResetEnabled: true,
+      canaryAutoResetMinSec: 1800,
+    });
+    reportCanaryClose('pure_ws_breakout', +0.001);
+    reportCanaryClose('pure_ws_breakout', +0.001);
+    reportCanaryClose('pure_ws_breakout', +0.001);
+    expect(isEntryHaltActive('pure_ws_breakout')).toBe(true);
+
+    expect(checkAndAutoResetHalt('pure_ws_breakout', Date.now() + 31 * 60_000)).toBe(false);
+    expect(isEntryHaltActive('pure_ws_breakout')).toBe(true);
+  });
+
   it('[2026-04-21 P2] auto-reset disabled via config (no-op)', () => {
     setCfg({
       canaryMaxConsecutiveLosers: 3,
@@ -250,6 +272,100 @@ describe('canaryAutoHalt', () => {
       expect(isEntryHaltActive('kol_hunter')).toBe(true);
       // 공용 0.3 SOL 보다 한참 이른 시점 (0.11 SOL) 에 halt. 자산 보호 강화 정합.
       expect(getCanaryState('kol_hunter').cumulativePnlSol).toBeGreaterThan(-0.3);
+    });
+  });
+
+  describe('restart hydration from executed-sells ledger (2026-04-30)', () => {
+    it('replays walletDeltaSol rows and restores KOL budget halt', () => {
+      setCfg({
+        kolHunterCanaryMaxBudgetSol: 0.05,
+        kolHunterCanaryMaxConsecLosers: 100,
+        kolHunterCanaryMaxTrades: 999,
+      });
+
+      const summary = hydrateCanaryStatesFromCloseRecords([
+        {
+          strategy: 'kol_hunter',
+          wallet: 'main',
+          positionId: 'kolh-live-a',
+          walletDeltaSol: -0.02,
+          recordedAt: '2026-04-30T00:00:01.000Z',
+        },
+        {
+          strategy: 'kol_hunter',
+          wallet: 'main',
+          positionId: 'kolh-live-b',
+          walletDeltaSol: -0.04,
+          recordedAt: '2026-04-30T00:00:02.000Z',
+        },
+      ], { resetBeforeHydrate: true });
+
+      expect(summary.replayedRows).toBe(2);
+      expect(summary.byLane.kol_hunter).toBe(2);
+      expect(getCanaryState('kol_hunter').cumulativePnlSol).toBeCloseTo(-0.06, 6);
+      expect(isEntryHaltActive('kol_hunter')).toBe(true);
+    });
+
+    it('maps strategies to lane state and skips rows before since', () => {
+      const sinceMs = new Date('2026-04-30T00:00:00.000Z').getTime();
+      const summary = hydrateCanaryStatesFromCloseRecords([
+        {
+          strategy: 'pure_ws_breakout',
+          walletDeltaSol: -0.01,
+          recordedAt: '2026-04-29T23:59:59.000Z',
+        },
+        {
+          strategy: 'pure_ws_breakout',
+          walletDeltaSol: -0.02,
+          recordedAt: '2026-04-30T00:00:01.000Z',
+        },
+        {
+          strategy: 'pure_ws_swing_v2',
+          dbPnlSol: -0.03,
+          recordedAt: '2026-04-30T00:00:02.000Z',
+        },
+        {
+          strategy: 'cupsey_flip_10s',
+          receivedSol: 0.008,
+          solSpentNominal: 0.01,
+          recordedAt: '2026-04-30T00:00:03.000Z',
+        },
+        {
+          strategy: 'unknown',
+          walletDeltaSol: -0.99,
+          recordedAt: '2026-04-30T00:00:04.000Z',
+        },
+        {
+          strategy: 'pure_ws_breakout',
+          walletDeltaSol: -0.99,
+        },
+      ], { sinceMs, resetBeforeHydrate: true });
+
+      expect(summary.replayedRows).toBe(3);
+      expect(summary.skippedRows).toBe(3);
+      expect(summary.byLane.pure_ws_breakout).toBe(1);
+      expect(summary.byLane.pure_ws_swing_v2).toBe(1);
+      expect(summary.byLane.cupsey).toBe(1);
+      expect(getCanaryState('pure_ws_breakout').cumulativePnlSol).toBeCloseTo(-0.02, 6);
+      expect(getCanaryState('pure_ws_swing_v2').cumulativePnlSol).toBeCloseTo(-0.03, 6);
+      expect(getCanaryState('cupsey').cumulativePnlSol).toBeCloseTo(-0.002, 6);
+    });
+
+    it('does not count hydration rows as replayed when canary auto-halt is disabled', () => {
+      setCfg({ canaryAutoHaltEnabled: false });
+
+      const summary = hydrateCanaryStatesFromCloseRecords([
+        {
+          strategy: 'kol_hunter',
+          walletDeltaSol: -0.10,
+          recordedAt: '2026-04-30T00:00:01.000Z',
+        },
+      ], { resetBeforeHydrate: true });
+
+      expect(summary.replayedRows).toBe(0);
+      expect(summary.skippedRows).toBe(1);
+      expect(getCanaryState('kol_hunter').tradeCount).toBe(0);
+      expect(isEntryHaltActive('kol_hunter')).toBe(false);
     });
   });
 });

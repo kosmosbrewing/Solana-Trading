@@ -29,7 +29,7 @@ npm run check:fast
 
 1. **`MISSION_CONTROL.md`** — 6 control framework (survival/universe/payoff/execution/experiment/discipline). 모든 변경의 4-layer reporting 의무.
 2. **`docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md`** — **현 active paradigm**. KOL Wallet = 1st-class Discovery, 자체 Execution 구조 유지 + Lane T 파라미터 재조정.
-3. **`docs/design-docs/mission-refinement-2026-04-21.md`** — 사명: 0.8 SOL floor + 200 trades + 5x+ winner 실측. 100 SOL 은 tail outcome.
+3. **`docs/design-docs/mission-refinement-2026-04-21.md`** — 원 사명 정의. 현재 운영 floor 는 2026-04-28 B안으로 **0.7 SOL** 확정 예정 + 200 live trades + 5x+ winner 실측. 100 SOL 은 tail outcome.
 4. **`REFACTORING_v1.0.md`** — Option 5 의 Phase 0-5 실행 가이드 (현 active sprint).
 
 ### Lane 표 (2026-04-26 갱신 — swing-v2 추가)
@@ -39,7 +39,7 @@ npm run check:fast
 | `cupsey_flip_10s` | — | (disabled) | **Benchmark (frozen)** — 개조 금지 | `cupseyLaneHandler.ts` | 변경 0 |
 | `pure_ws_breakout` | primary (v1) | live opt-in | Lane S (scalping baseline) | `pureWsBreakoutHandler.ts` | 30s probe / 15% trail |
 | `pure_ws_swing_v2` | shadow / live canary | paper-first → opt-in live | swing 손익비 A/B | `pureWs/swingV2Entry.ts` | 600s probe / 25% trail / 1.10 floor |
-| `kol_hunter` | v1 / smart-v3 / swing-v2 | paper-only (코드 강제) | **Lane T (사명 직결)** | `kolSignalHandler.ts` | smart-v3 main + swing-v2 shadow |
+| `kol_hunter` | v1 / smart-v3 / swing-v2 | **live canary active** + paper fallback/shadow | **Lane T (사명 직결)** | `kolSignalHandler.ts` | smart-v3 main + swing-v2 shadow |
 
 ---
 
@@ -85,7 +85,7 @@ npm run check:fast
    - (P0) `MissedAlphaObserver` schema 재확인 (probe 단일 객체 / observations 미사용)
    - (P0) wallet_delta_warn drift origin 추적 (`ops:reconcile:wallet`) + dedup/cooldown 점검
    - (P2) notifier fail 경로 error capture 정정
-5. 효과 + 회귀 검증 후 Track 2C (RugCheck) / Track 3 (KOL-pair cohort) / 추가 5x winner 누적 → ADR + KOL live canary opt-in 검토
+5. 효과 + 회귀 검증 후 Track 2C (RugCheck) / Track 3 (KOL-pair cohort) / 추가 5x winner 누적 → KOL live canary 계속/강화/중단 판정
 
 **선택 B — Track 2C 즉시 진행**: 잔여 mfe<1% 130건 (~30%) 추가 차단 시도
 - RugCheck (무료) / Solana Tracker (free tier 1k req/day) 평가
@@ -97,10 +97,11 @@ npm run check:fast
 - observe-only, lane 영향 0 — DF7DAPat 5x winner 시점 BBRI 사후 측정으로 도입 가치 정량 입증
 - INCIDENT.md 2026-04-29 BBRI 섹션 + Task #109 참조
 
-**선택 C — 자발적 §3 위반 인지 후 KOL live canary 확대**: 코드 모두 준비됨
-- `.env` 에 `KOL_HUNTER_PAPER_ONLY=false` + `KOL_HUNTER_LIVE_CANARY_ENABLED=true` 추가 후 재시작
-- 안전망: floor 0.7 / KOL cap 0.2 / ticket 0.02 / Track 1 cooldown / Track 2B reject / Daily loss 15%
-- 단 **현재 비추** — single-winner n=1 진행 중. 추가 5x winner 1-2건 누적 + 측정 sprint 후
+**선택 C — KOL live canary stabilization sprint (현 active)**:
+- `.env` 는 `KOL_HUNTER_PAPER_ONLY=false` + `KOL_HUNTER_LIVE_CANARY_ENABLED=true` 로 운영 중
+- 안전망: floor 0.7 / KOL cap 0.2 / ticket 0.02 / independent KOL ≥ 2 / Track 1 cooldown / Track 2B reject / Daily loss override
+- 구현 완료: yellow-zone live gate, single-KOL live paper fallback, canary budget ledger hydration, `npm run kol:live-canary-report`
+- 다음 sprint 초점: hardcut/slippage root-cause + live/paper divergence deep-dive
 
 ### 절대 하지 말 것
 - ❌ `cupsey_flip_10s` 코드 수정 (frozen benchmark)
@@ -108,7 +109,8 @@ npm run check:fast
 - ❌ V2 detector / probe window / ticket size 튜닝 (관측 데이터 없이)
 - ❌ KOL DB 자동 추가 (수동 편집 only)
 - ❌ trail/sentinel 파라미터 변경을 observer 회복 전에 (가설 (A) 검증 도구 부재)
-- ❌ KOL live canary 활성화를 추가 5x winner 1-2건 + observer 회복 + drift origin 확인 전에
+- ❌ single-KOL cohort 를 live 로 재허용 (`KOL_HUNTER_LIVE_MIN_INDEPENDENT_KOL<2`) — 새 근거 + ADR 전 금지
+- ❌ 0.75 SOL 미만 yellow-zone 에서 KOL live canary 조건 완화
 - ❌ KST cutoff 으로 UTC 데이터 분석 (시간대 함정 — `date -u` 기준 일관 사용)
 - ❌ ESLint disable / `STRUCTURE_BASELINE freeze` 같은 임시방편 (Phase H2-H4 에서 근본 refactor)
 - ❌ `npm run check:fast` 가 빨강인 채로 commit

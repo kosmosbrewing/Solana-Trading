@@ -16,6 +16,8 @@
  *   - 운영자 reset 필수 (auto-recover 없음 — false halt 보다 false unblock 이 더 위험)
  *   - close 이벤트에서 호출 (handler 의 closePosition 후에 `reportCanaryClose(lane, pnl)`)
  */
+import { readFile } from 'fs/promises';
+import path from 'path';
 import { createModuleLogger } from '../utils/logger';
 import {
   triggerEntryHalt,
@@ -40,6 +42,25 @@ interface LaneCanaryState {
   consecutiveLosers: number;
   cumulativePnlSol: number;
   lastHaltReason: string | null;
+}
+
+export interface CanaryCloseLedgerRecord {
+  strategy?: string;
+  wallet?: string;
+  positionId?: string;
+  walletDeltaSol?: number;
+  dbPnlSol?: number;
+  receivedSol?: number;
+  solSpentNominal?: number;
+  recordedAt?: string;
+}
+
+export interface CanaryHydrationSummary {
+  loadedRows: number;
+  replayedRows: number;
+  skippedRows: number;
+  sinceMs: number | null;
+  byLane: Partial<Record<EntryLane, number>>;
 }
 
 // 2026-04-27 fix: kol_hunter live canary lane 추가 — auto-reset / state query API 가 KOL 인지 가능.
@@ -90,10 +111,94 @@ function readConfig(lane?: EntryLane): CanaryAutoHaltConfig {
   };
 }
 
-/** Close 이벤트 보고 — handler 가 매 close 마다 호출한다. */
-export function reportCanaryClose(lane: EntryLane, pnlSol: number): void {
+function parseRecordedAtMs(recordedAt?: string): number | null {
+  if (!recordedAt) return null;
+  const t = new Date(recordedAt).getTime();
+  return Number.isFinite(t) ? t : null;
+}
+
+function resolveCanaryLaneFromLedger(row: CanaryCloseLedgerRecord): EntryLane | null {
+  if (row.strategy === 'cupsey_flip_10s') return 'cupsey';
+  if (row.strategy === 'pure_ws_breakout') return 'pure_ws_breakout';
+  if (row.strategy === 'pure_ws_swing_v2') return 'pure_ws_swing_v2';
+  if (row.strategy === 'kol_hunter') return 'kol_hunter';
+  if (row.strategy === 'migration' || row.strategy?.startsWith('migration_')) return 'migration';
+  if (row.strategy === 'main') return 'main';
+  if (row.strategy === 'strategy_d') return 'strategy_d';
+  return null;
+}
+
+function resolveLedgerPnl(row: CanaryCloseLedgerRecord): number | null {
+  if (typeof row.walletDeltaSol === 'number') return row.walletDeltaSol;
+  if (typeof row.dbPnlSol === 'number') return row.dbPnlSol;
+  if (typeof row.receivedSol === 'number' && typeof row.solSpentNominal === 'number') {
+    return row.receivedSol - row.solSpentNominal;
+  }
+  return null;
+}
+
+function parseJsonl<T>(text: string): T[] {
+  return text
+    .split('\n')
+    .filter((line) => line.trim().length > 0)
+    .map((line) => {
+      try {
+        return JSON.parse(line) as T;
+      } catch {
+        return null;
+      }
+    })
+    .filter((row): row is T => row !== null);
+}
+
+function hydrationSinceMs(nowMs: number): number | null {
+  if (config.canaryAutoHaltHydrateSince) {
+    const t = new Date(config.canaryAutoHaltHydrateSince).getTime();
+    return Number.isFinite(t) ? t : null;
+  }
+  const hours = config.canaryAutoHaltHydrateLookbackHours;
+  if (!Number.isFinite(hours) || hours <= 0) return null;
+  return nowMs - hours * 60 * 60 * 1000;
+}
+
+function triggerCanaryCircuitIfNeeded(lane: EntryLane, cfg: CanaryAutoHaltConfig, st: LaneCanaryState): void {
+  // 자산 보호 우선순위: budget > canary window complete > consecutive streak.
+  if (st.cumulativePnlSol <= -cfg.maxCanaryBudgetSol) {
+    const reason = `canary budget exhausted ${st.cumulativePnlSol.toFixed(4)} <= -${cfg.maxCanaryBudgetSol}`;
+    const reasonKey = `canary budget exhausted <= -${cfg.maxCanaryBudgetSol}`;
+    if (st.lastHaltReason !== reasonKey) {
+      st.lastHaltReason = reasonKey;
+      log.warn(`[CANARY_HALT] lane=${lane} ${reason} — entry blocked`);
+      triggerEntryHalt(lane, reason);
+    }
+    return;
+  }
+
+  if (st.tradeCount >= cfg.maxTradesPerCanary) {
+    const reason = `canary trade count reached ${st.tradeCount} >= ${cfg.maxTradesPerCanary}`;
+    const reasonKey = `canary trade count reached >= ${cfg.maxTradesPerCanary}`;
+    if (st.lastHaltReason !== reasonKey) {
+      st.lastHaltReason = reasonKey;
+      log.info(`[CANARY_COMPLETE] lane=${lane} ${reason} — entry paused for promotion review`);
+      triggerEntryHalt(lane, reason);
+    }
+    return;
+  }
+
+  if (st.consecutiveLosers >= cfg.maxConsecutiveLosers) {
+    const reason = `consecutive losers ${st.consecutiveLosers} >= ${cfg.maxConsecutiveLosers}`;
+    const reasonKey = `consecutive losers >= ${cfg.maxConsecutiveLosers}`;
+    if (st.lastHaltReason !== reasonKey) {
+      st.lastHaltReason = reasonKey;
+      log.warn(`[CANARY_HALT] lane=${lane} ${reason} — entry blocked`);
+      triggerEntryHalt(lane, reason);
+    }
+  }
+}
+
+function applyCanaryClose(lane: EntryLane, pnlSol: number, triggerCircuit: boolean): boolean {
   const cfg = readConfig(lane);
-  if (!cfg.enabled) return;
+  if (!cfg.enabled) return false;
 
   const st = getLane(lane);
   st.tradeCount++;
@@ -110,35 +215,86 @@ export function reportCanaryClose(lane: EntryLane, pnlSol: number): void {
     `streak=${st.consecutiveLosers} cum=${st.cumulativePnlSol.toFixed(6)}`
   );
 
-  // ─── Circuit breaker checks ───
-  if (st.consecutiveLosers >= cfg.maxConsecutiveLosers) {
-    const reason = `consecutive losers ${st.consecutiveLosers} >= ${cfg.maxConsecutiveLosers}`;
-    if (st.lastHaltReason !== reason) {
-      st.lastHaltReason = reason;
-      log.warn(`[CANARY_HALT] lane=${lane} ${reason} — entry blocked`);
-      triggerEntryHalt(lane, reason);
+  if (triggerCircuit) triggerCanaryCircuitIfNeeded(lane, cfg, st);
+  return true;
+}
+
+/** Close 이벤트 보고 — handler 가 매 close 마다 호출한다. */
+export function reportCanaryClose(lane: EntryLane, pnlSol: number): void {
+  applyCanaryClose(lane, pnlSol, true);
+}
+
+/**
+ * Restart-resilient canary budget: executed-sells ledger 를 replay 해 in-memory state 를 복원한다.
+ * close handler 와 같은 reportCanaryClose 경로를 사용하므로 budget/trade halt 도 동일하게 발동된다.
+ */
+export function hydrateCanaryStatesFromCloseRecords(
+  rows: CanaryCloseLedgerRecord[],
+  opts: { sinceMs?: number | null; resetBeforeHydrate?: boolean } = {}
+): CanaryHydrationSummary {
+  if (opts.resetBeforeHydrate) laneStates.clear();
+  const sinceMs = opts.sinceMs ?? null;
+  const ordered = [...rows].sort((a, b) =>
+    (parseRecordedAtMs(a.recordedAt) ?? 0) - (parseRecordedAtMs(b.recordedAt) ?? 0)
+  );
+  const summary: CanaryHydrationSummary = {
+    loadedRows: rows.length,
+    replayedRows: 0,
+    skippedRows: 0,
+    sinceMs,
+    byLane: {},
+  };
+
+  for (const row of ordered) {
+    const rowMs = parseRecordedAtMs(row.recordedAt);
+    if (sinceMs != null && (rowMs == null || rowMs < sinceMs)) {
+      summary.skippedRows += 1;
+      continue;
     }
-    return;
+    const lane = resolveCanaryLaneFromLedger(row);
+    const pnlSol = resolveLedgerPnl(row);
+    if (!lane || pnlSol == null) {
+      summary.skippedRows += 1;
+      continue;
+    }
+    if (!applyCanaryClose(lane, pnlSol, false)) {
+      summary.skippedRows += 1;
+      continue;
+    }
+    summary.replayedRows += 1;
+    summary.byLane[lane] = (summary.byLane[lane] ?? 0) + 1;
   }
 
-  if (st.cumulativePnlSol <= -cfg.maxCanaryBudgetSol) {
-    const reason = `canary budget exhausted ${st.cumulativePnlSol.toFixed(4)} <= -${cfg.maxCanaryBudgetSol}`;
-    if (st.lastHaltReason !== reason) {
-      st.lastHaltReason = reason;
-      log.warn(`[CANARY_HALT] lane=${lane} ${reason} — entry blocked`);
-      triggerEntryHalt(lane, reason);
-    }
-    return;
+  for (const lane of Object.keys(summary.byLane) as EntryLane[]) {
+    triggerCanaryCircuitIfNeeded(lane, readConfig(lane), getLane(lane));
   }
 
-  if (st.tradeCount >= cfg.maxTradesPerCanary) {
-    const reason = `canary trade count reached ${st.tradeCount} >= ${cfg.maxTradesPerCanary}`;
-    if (st.lastHaltReason !== reason) {
-      st.lastHaltReason = reason;
-      log.info(`[CANARY_COMPLETE] lane=${lane} ${reason} — entry paused for promotion review`);
-      triggerEntryHalt(lane, reason);
-    }
+  return summary;
+}
+
+export async function hydrateCanaryAutoHaltFromLedger(
+  ledgerDir = config.realtimeDataDir,
+  nowMs = Date.now()
+): Promise<CanaryHydrationSummary> {
+  const file = path.join(ledgerDir, 'executed-sells.jsonl');
+  let rows: CanaryCloseLedgerRecord[] = [];
+  try {
+    rows = parseJsonl<CanaryCloseLedgerRecord>(await readFile(file, 'utf8'));
+  } catch (err) {
+    log.info(`[CANARY_HYDRATE] skipped — ${file} unavailable (${err})`);
   }
+  const summary = hydrateCanaryStatesFromCloseRecords(rows, {
+    sinceMs: hydrationSinceMs(nowMs),
+    resetBeforeHydrate: false,
+  });
+  const lanes = Object.entries(summary.byLane)
+    .map(([lane, count]) => `${lane}=${count}`)
+    .join(', ') || 'none';
+  log.info(
+    `[CANARY_HYDRATE] loaded=${summary.loadedRows} replayed=${summary.replayedRows} ` +
+    `skipped=${summary.skippedRows} since=${summary.sinceMs ? new Date(summary.sinceMs).toISOString() : 'all'} lanes=${lanes}`
+  );
+  return summary;
 }
 
 export function getCanaryState(lane: EntryLane): Readonly<LaneCanaryState> {
@@ -180,6 +336,13 @@ export function checkAndAutoResetHalt(lane: EntryLane, nowMs: number = Date.now(
     log.info(
       `[CANARY_AUTO_RESET] lane=${lane} skipped — budget exhausted ` +
       `(cumulative=${st.cumulativePnlSol.toFixed(4)} <= -${laneCfg.maxCanaryBudgetSol})`
+    );
+    return false;
+  }
+  if (config.canaryAutoHaltEnabled && st.tradeCount >= laneCfg.maxTradesPerCanary) {
+    log.info(
+      `[CANARY_AUTO_RESET] lane=${lane} skipped — max trades reached ` +
+      `(trades=${st.tradeCount} >= ${laneCfg.maxTradesPerCanary})`
     );
     return false;
   }

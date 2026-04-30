@@ -39,7 +39,7 @@ to justify the bleed budget?
 
 ## Control 1: Survival Budget
 
-`0.8 SOL` is a hard floor. Survival accounting includes realized PnL, failed transaction fees, base fee, priority fee, tip, slippage, bad fill drift, and open inventory equity view. DB-only PnL is reconciliation evidence only.
+`0.7 SOL` is the current hard floor. Survival accounting includes realized PnL, failed transaction fees, base fee, priority fee, tip, slippage, bad fill drift, and open inventory equity view. DB-only PnL is reconciliation evidence only.
 
 Required controls:
 
@@ -70,7 +70,7 @@ All tokens are not one universe. Arms must be separated by tail structure.
 | Lane C: `cupsey_flip_10s` | benchmark | **frozen** (env disabled) |
 | Lane S primary: `pure_ws_breakout` | Helius/WS scalping baseline (30s probe + 15% trail) | implemented (live opt-in) |
 | Lane S A/B: `pure_ws_swing_v2` | swing 손익비 A/B (600s probe + 25% trail + 1.10 floor) | paper shadow + live canary 코드 (Stage 4 SCALE 후 opt-in) |
-| Lane T main: `kol_hunter` smart-v3 | pullback / velocity / both trigger + reason 별 trail/floor | paper-only (코드 강제) |
+| Lane T main: `kol_hunter` smart-v3 | pullback / velocity / both trigger + reason 별 trail/floor | live canary active + paper fallback, live independent KOL ≥ 2 |
 | Lane T A/B: `kol_hunter` swing-v2 | multi-KOL S/A ≥2 + score ≥5.0 자격 시 long-hold shadow | paper shadow |
 | Lane T legacy: `kol_hunter` v1 | single-KOL wait entry | paper fallback |
 | Lane M: `migration_handoff` | graduation / canonical pool reclaim | signal-only |
@@ -194,7 +194,7 @@ Guardrail relaxation must not depend on emotion after losses.
 
 Hard rules:
 
-- Never weaken `0.8 SOL` wallet floor.
+- Never weaken the `0.7 SOL` wallet floor.
 - Never weaken wallet delta halt because it is inconvenient.
 - Never increase ticket size after a loss streak.
 - Never enable live for a new lane before paper/shadow criteria pass.
@@ -277,7 +277,7 @@ Detector edge before expensive infrastructure.
 Daily review answers only:
 
 1. Did wallet truth remain valid?
-2. Did the 0.8 SOL floor remain protected?
+2. Did the 0.7 SOL floor remain protected?
 3. Which arm consumed bleed, and did it produce runner visits?
 4. Which cohort improved or degraded the 5x conditional probability?
 
@@ -331,8 +331,8 @@ The mission is won by preserving survival while repeatedly buying cheap optional
 
 | Control | Real Asset Guard 항목 | 변경 절차 |
 |---------|----------------------|----------|
-| C1 Survival Budget | wallet floor 0.8 / canary -0.3 / drift halt 0.2 | 별도 ADR + 48h cooldown + 운영자 ack + 단계적 |
-| C3 Payoff | ticket 0.01 / max concurrent 3 | 동일 |
+| C1 Survival Budget | wallet floor 0.7 / canary -0.3 / KOL canary -0.2 / drift halt 0.2 | 별도 ADR + 48h cooldown + 운영자 ack + 단계적 |
+| C3 Payoff | pure_ws/cupsey/migration ticket 0.01 / KOL ticket 0.02 / max concurrent 3 / KOL live independent KOL ≥ 2 | 동일 |
 | C4 Execution | security gate / sell probe / drift guard | 정책 완화 절대 금지 (Stage 4 SCALE 후만 검토) |
 
 → **Phase H2 ARCHITECTURE.md §0 의 Layer A (Real Asset Guard)** 가 본 매핑의 코드적 enforcement.

@@ -150,8 +150,13 @@ export function resetWalletStopGuardForTests(): void {
 }
 
 /** 테스트용 — poller 없이 상태 직접 설정 */
-export function setWalletStopGuardStateForTests(active: boolean, reason = 'test'): void {
+export function setWalletStopGuardStateForTests(
+  active: boolean,
+  reason = 'test',
+  balanceSol: number = state.lastBalanceSol
+): void {
   state.active = active;
+  state.lastBalanceSol = balanceSol;
   state.triggeredAt = active ? new Date() : null;
   state.triggerReason = active ? reason : null;
 }

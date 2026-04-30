@@ -2,13 +2,12 @@ import { Pool } from 'pg';
 import { config } from './utils/config';
 import { createModuleLogger } from './utils/logger';
 import { HealthMonitor } from './utils/healthMonitor';
-import { checkAllLanesAutoResetHalt } from './risk/canaryAutoHalt';
+import { checkAllLanesAutoResetHalt, hydrateCanaryAutoHaltFromLedger } from './risk/canaryAutoHalt';
 import { enforceTicketPolicyForAllLanes } from './utils/policyGuards';
 import { Candle, Signal } from './utils/types';
 
 import {
   GeckoTerminalClient,
-  BirdeyeClient,
   Ingester,
   IngesterConfig,
   OnchainSecurityClient,
@@ -394,8 +393,6 @@ async function main() {
   const geckoClient = new GeckoTerminalClient((source) => {
     runtimeDiagnosticsTracker.recordRateLimit(source);
   });
-  // Why: Birdeye optional — overview/legacy REST + Strategy D WS 보조용
-  const birdeyeClient = config.birdeyeApiKey ? new BirdeyeClient(config.birdeyeApiKey) : null;
   const onchainSecurityClient = new OnchainSecurityClient(config.solanaRpcUrl);
 
   // Phase 2: Social mention tracker (C-2)
@@ -591,6 +588,13 @@ async function main() {
         `미달 상태에서 활성 시 운영자가 자발적 책임 인지로 간주.`
       );
     }
+  }
+
+  // 2026-04-30: restart-resilient canary state.
+  // reportCanaryClose 는 in-memory 라 재기동 시 KOL/PureWS budget 이 0 으로 리셋될 수 있었다.
+  // live boot 에서 executed-sells ledger 를 replay 해 이미 소진된 budget/max-trade halt 를 복원한다.
+  if (tradingMode === 'live' && config.canaryAutoHaltHydrateOnStart) {
+    await hydrateCanaryAutoHaltFromLedger(config.realtimeDataDir);
   }
 
   // 2026-04-21 P0 (observability) + 2026-04-27 (handle 저장): v2 scanner / canary auto-reset
@@ -1105,7 +1109,6 @@ async function main() {
     tradingHaltedReason: undefined,
     scanner: scanner ?? undefined,
     geckoClient,
-    birdeyeClient: birdeyeClient ?? undefined,
     onchainSecurityClient,
     regimeFilter,
     paperMetrics,

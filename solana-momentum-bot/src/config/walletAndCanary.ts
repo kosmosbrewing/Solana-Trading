@@ -1,8 +1,9 @@
 // Real Asset Guard 의 운영 layer — wallet floor + canary auto-halt + delta drift comparator.
 // REFACTORING_v1.0 §2.1 hard constraint:
-//   wallet floor=0.8 SOL · canary cumulative loss cap=-0.3 SOL · max concurrent=3 · ticket=0.01 SOL
+//   wallet floor=0.7 SOL · default canary cap=-0.3 SOL · KOL cap=-0.2 SOL ·
+//   max concurrent=3 · fixed ticket per lane (KOL 0.02 SOL, others 0.01 SOL)
 
-import { boolOptional, numEnv } from './helpers';
+import { boolOptional, numEnv, optional } from './helpers';
 
 function numOrNullEnv(key: string): number | null {
   const raw = process.env[key];
@@ -28,6 +29,11 @@ export const walletAndCanary = {
   canarySafetyCheckpointTrades: numEnv('CANARY_SAFETY_CHECKPOINT_TRADES', '50'),
   canaryPreliminaryReviewTrades: numEnv('CANARY_PRELIMINARY_REVIEW_TRADES', '100'),
   canaryMinLossToCountSol: numEnv('CANARY_MIN_LOSS_TO_COUNT_SOL', '0'),
+  // 재기동 시 in-memory canary state 가 0으로 돌아가 budget/trade gate 를 우회하지 않도록
+  // executed-sells.jsonl 에서 최근 close 를 replay. since 가 있으면 since 우선, 없으면 lookback 적용.
+  canaryAutoHaltHydrateOnStart: boolOptional('CANARY_AUTO_HALT_HYDRATE_ON_START', true),
+  canaryAutoHaltHydrateLookbackHours: numEnv('CANARY_AUTO_HALT_HYDRATE_LOOKBACK_HOURS', '72'),
+  canaryAutoHaltHydrateSince: optional('CANARY_AUTO_HALT_HYDRATE_SINCE', ''),
 
   // ─── KOL hunter live canary 별도 cap (Sprint 2, 2026-04-28) ───
   // 2026-04-28 B안: ticket 0.03 → 0.02 후퇴 + wallet floor 0.8 → 0.7. cap 도 비례 조정.

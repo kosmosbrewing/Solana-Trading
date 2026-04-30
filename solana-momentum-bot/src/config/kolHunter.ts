@@ -138,6 +138,19 @@ export const kolHunter = {
   // Phase 5 P1-15 (2026-04-25): KOL live canary 명시적 opt-in.
   // Why: KOL_HUNTER_PAPER_ONLY=false 만으로는 live 안 돔 (review feedback P0). 별도 flag 필요.
   kolHunterLiveCanaryEnabled: boolOptional('KOL_HUNTER_LIVE_CANARY_ENABLED', false),
+  // 2026-04-30 Sprint: live canary 실측에서 single-KOL cohort 가 손실 대부분을 차지.
+  // live wallet 진입은 최소 independent KOL 2명부터 허용하고, 미달은 paper 로만 관측한다.
+  kolHunterLiveMinIndependentKol: numEnv('KOL_HUNTER_LIVE_MIN_INDEPENDENT_KOL', '2'),
+  // 2026-04-30: KOL live canary stabilization sprint — floor 0.7 확정 전제.
+  // Wallet 이 floor 근처로 내려오면 live canary 를 끄지 않고 entry 품질만 강화한다.
+  // - balance < paperFallbackBelowSol: live 대신 paper fallback
+  // - paperFallbackBelowSol <= balance < startSol: independent KOL / security / Jupiter pressure gate
+  // - maxRecentJupiter429 <= 0 이면 429 gate disabled
+  kolHunterYellowZoneEnabled: boolOptional('KOL_HUNTER_YELLOW_ZONE_ENABLED', true),
+  kolHunterYellowZoneStartSol: numEnv('KOL_HUNTER_YELLOW_ZONE_START_SOL', '0.85'),
+  kolHunterYellowZonePaperFallbackBelowSol: numEnv('KOL_HUNTER_YELLOW_ZONE_PAPER_FALLBACK_BELOW_SOL', '0.75'),
+  kolHunterYellowZoneMinIndependentKol: numEnv('KOL_HUNTER_YELLOW_ZONE_MIN_INDEPENDENT_KOL', '2'),
+  kolHunterYellowZoneMaxRecentJupiter429: numEnv('KOL_HUNTER_YELLOW_ZONE_MAX_RECENT_JUPITER_429', '20'),
 
   // MISSION_CONTROL §Control 5 — arm identity / detector version.
   kolHunterParameterVersion: process.env.KOL_HUNTER_PARAMETER_VERSION ?? 'v1.0.0',

@@ -89,6 +89,14 @@ export interface SwapResult {
    * 별도 telemetry (Phase E1 `monitor_trigger_price` vs `pre_submit_tick_price`) 로 측정한다.
    */
   slippageBps: number;
+  /**
+   * 2026-04-30 (Sprint 1.A3): tx submit → confirm 까지 latency (ms).
+   * Why: KOL Hunter 의 D-bucket 분석 (mae<-30%) 에서 sell tx confirm 지연 (~60s) 이
+   *      mae 부풀림의 24% 를 차지. landing latency 측정으로 root cause 정량 평가.
+   * 측정: sendTransaction 의 sendTransaction → confirmTransaction (또는 Jito bundle
+   *      submit → waitForConfirmation) 구간. 비측정 (예: 실패 전 throw) 시 undefined.
+   */
+  landingLatencyMs?: number;
 }
 
 interface JupiterQuote {
@@ -258,6 +266,8 @@ export class Executor {
     const signedTxBase64 = Buffer.from(tx.serialize()).toString('base64');
 
     // Step 3: POST /ultra/v1/execute
+    // 2026-04-30 (Sprint 1.A3): Ultra path 도 submit→confirm latency 측정.
+    const ultraStartMs = Date.now();
     const executeResponse = await this.ultraClient.post<UltraExecuteResponse>('/ultra/v1/execute', {
       signedTransaction: signedTxBase64,
       requestId: order.requestId,
@@ -270,6 +280,7 @@ export class Executor {
     }
 
     const confirmation = await this.connection.confirmTransaction(result.signature, 'confirmed');
+    const ultraLandingLatencyMs = Date.now() - ultraStartMs;
     if (confirmation.value.err) {
       throw new Error(`Ultra tx failed on-chain: ${JSON.stringify(confirmation.value.err)}`);
     }
@@ -324,6 +335,8 @@ export class Executor {
       ...inputMetrics,
       ...outputMetrics,
       slippageBps: actualSlippageBps,
+      // 2026-04-30 (Sprint 1.A3): Ultra path landing latency.
+      landingLatencyMs: ultraLandingLatencyMs,
     };
   }
 
@@ -359,7 +372,7 @@ export class Executor {
           : await this.getTokenBalance(outputMint);
 
         const swapTx = await this.getSwapTransaction(quote);
-        const txSignature = await this.sendTransaction(swapTx);
+        const { signature: txSignature, landingLatencyMs } = await this.sendTransaction(swapTx);
 
         const inputBalanceAfter = inputMint === SOL_MINT
           ? BigInt(Math.round(await this.getBalance() * 1e9))
@@ -397,6 +410,8 @@ export class Executor {
           ...inputMetrics,
           ...outputMetrics,
           slippageBps: actualSlippageBps,
+          // 2026-04-30 (Sprint 1.A3): tx submit→confirm latency 전파.
+          landingLatencyMs,
         };
       } catch (error) {
         lastError = error as Error;
@@ -598,7 +613,7 @@ export class Executor {
    * 단일 트랜잭션 전송 + 확인 (retry는 executeSwapWithRetry에서 quote 포함 처리)
    * Phase 3: Jito bundle 경로 추가 — MEV 보호.
    */
-  private async sendTransaction(txBuffer: Buffer): Promise<string> {
+  private async sendTransaction(txBuffer: Buffer): Promise<{ signature: string; landingLatencyMs: number }> {
     let tx = VersionedTransaction.deserialize(txBuffer);
     tx.sign([this.wallet]);
 
@@ -606,11 +621,14 @@ export class Executor {
     if (this.useJito && this.jitoClient) {
       try {
         log.info('Submitting via Jito bundle...');
+        // 2026-04-30 (Sprint 1.A3): Jito bundle 의 submit→confirmation 구간 측정.
+        const jitoStartMs = Date.now();
         const result = await this.jitoClient.submitSingleTx(tx, this.wallet);
         await this.jitoClient.waitForConfirmation(result.bundleId);
+        const landingLatencyMs = Date.now() - jitoStartMs;
         const signature = result.txSignatures[0];
-        log.info(`TX confirmed via Jito: ${signature}`);
-        return signature;
+        log.info(`TX confirmed via Jito: ${signature} landing=${landingLatencyMs}ms`);
+        return { signature, landingLatencyMs };
       } catch (jitoErr) {
         log.warn(`Jito bundle failed: ${jitoErr}. Falling back to standard RPC.`);
         // TX를 재서명하여 standard RPC로 전송
@@ -620,7 +638,8 @@ export class Executor {
       }
     }
 
-    // Standard RPC path
+    // 2026-04-30 (Sprint 1.A3): Standard RPC submit→confirm 구간 측정.
+    const sendStartMs = Date.now();
     const signature = await this.connection.sendTransaction(tx, {
       maxRetries: 2,
       skipPreflight: false,
@@ -630,13 +649,14 @@ export class Executor {
       signature,
       'confirmed'
     );
+    const landingLatencyMs = Date.now() - sendStartMs;
 
     if (confirmation.value.err) {
       throw new Error(`TX failed on-chain: ${JSON.stringify(confirmation.value.err)}`);
     }
 
-    log.info(`TX confirmed: ${signature}`);
-    return signature;
+    log.info(`TX confirmed: ${signature} landing=${landingLatencyMs}ms`);
+    return { signature, landingLatencyMs };
   }
 }
 

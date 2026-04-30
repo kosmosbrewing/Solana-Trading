@@ -392,6 +392,8 @@ interface CliArgs {
   byArm: boolean;
   windowDays: number;
   compare?: [string, string];
+  /** 2026-04-30 (Sprint 1.B3): paper / live / both. default paper (backward compat). */
+  source: 'paper' | 'live' | 'both';
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -399,11 +401,14 @@ function parseArgs(argv: string[]): CliArgs {
     inputFile: path.resolve(process.cwd(), 'data/realtime/kol-paper-trades.jsonl'),
     byArm: false,
     windowDays: 30,
+    source: 'paper',
   };
+  let inputFileExplicit = false;
   for (let i = 0; i < argv.length; i++) {
     const token = argv[i];
     if (token === '--in') {
       args.inputFile = argv[++i];
+      inputFileExplicit = true;
     } else if (token === '--by-arm') {
       args.byArm = true;
     } else if (token.startsWith('--window-days=')) {
@@ -415,7 +420,20 @@ function parseArgs(argv: string[]): CliArgs {
       const b = argv[++i];
       if (!a || !b) throw new Error('--compare requires two parameterVersion ids');
       args.compare = [a, b];
+    } else if (token.startsWith('--source=')) {
+      const v = token.split('=')[1];
+      if (v !== 'paper' && v !== 'live' && v !== 'both') {
+        throw new Error('--source must be paper|live|both');
+      }
+      args.source = v;
     }
+  }
+  // --in 명시 없을 때 source 에 따라 default 파일 자동 선택.
+  if (!inputFileExplicit) {
+    if (args.source === 'live') {
+      args.inputFile = path.resolve(process.cwd(), 'data/realtime/kol-live-trades.jsonl');
+    }
+    // 'both' 는 paper inputFile 만 — caller 가 둘 다 합치려면 별도 파일 미리 cat 권고.
   }
   return args;
 }
@@ -532,7 +550,19 @@ function renderReport(args: CliArgs, all: PaperTradeRecord[], reports: ArmReport
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  const loaded = await readJsonl<PaperTradeRecord>(args.inputFile);
+  // 2026-04-30 (Sprint 1.B3): source=both 시 paper + live 두 파일 합산 입력.
+  let loaded: PaperTradeRecord[];
+  if (args.source === 'both') {
+    const paperFile = path.resolve(process.cwd(), 'data/realtime/kol-paper-trades.jsonl');
+    const liveFile = path.resolve(process.cwd(), 'data/realtime/kol-live-trades.jsonl');
+    const [paper, live] = await Promise.all([
+      readJsonl<PaperTradeRecord>(paperFile),
+      readJsonl<PaperTradeRecord>(liveFile),
+    ]);
+    loaded = [...paper, ...live];
+  } else {
+    loaded = await readJsonl<PaperTradeRecord>(args.inputFile);
+  }
   const cutoffMs = Date.now() - args.windowDays * 86_400_000;
   const filtered = loaded.filter((r) => {
     if (r.isShadowKol) return false;

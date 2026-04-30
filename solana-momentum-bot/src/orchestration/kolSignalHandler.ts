@@ -48,6 +48,7 @@ import { computeKolDiscoveryScore } from '../kol/scoring';
 import { getKolLaneRole, getKolTradingStyle } from '../kol/db';
 import { PaperPriceFeed, type PriceTick } from '../kol/paperPriceFeed';
 import { trackRejectForMissedAlpha, type MissedAlphaEvent } from '../observability/missedAlphaObserver';
+import { trackKolClose } from './kolMissedAlpha';
 import { evaluateSecurityGate } from '../gate/securityGate';
 import { evaluateSellQuoteProbe } from '../gate/sellQuoteProbe';
 import type { OnchainSecurityClient } from '../ingester/onchainSecurity';
@@ -93,7 +94,11 @@ export type CloseReason =
   | 'stalk_expired_no_consensus'
   // 2026-04-27 (P1 audit fix): live canary closeLivePosition 의 orphan path 에서 사용.
   // 기존 cast `as unknown as CloseReason` 제거 — type safety 회복.
-  | 'ORPHAN_NO_BALANCE';
+  | 'ORPHAN_NO_BALANCE'
+  // 2026-04-30 (Sprint 2.A1): runtime sell quote impact / no-route 시 emergency exit.
+  // Why: hardcut/QR 보다 우선 — D-bucket (mae<-30%) 의 root cause 가 sell tx confirm 지연.
+  //      "팔 수 있는가" 가 stop 보다 먼저 (학술 §exit two-layer 권고).
+  | 'structural_kill_sell_route';
 
 export type KolEntryReason =
   | 'legacy_v1'
@@ -347,6 +352,9 @@ function deleteActivePosition(positionId: string): void {
     set.delete(positionId);
     if (set.size === 0) activeByMint.delete(pos.tokenMint);
   }
+  // 2026-04-30 (F11 fix): structural kill cache 정리 — close 후에도 entry 유지되면
+  // 장기 봇 운영 시 1 trade per entry 누적 → memory leak. positionId 기반 cleanup.
+  structuralKillCache.delete(positionId);
 }
 function getActivePositionsByMint(tokenMint: string): PaperPosition[] {
   const set = activeByMint.get(tokenMint);
@@ -1661,6 +1669,39 @@ const KOL_PAPER_QUICK_REJECT_PRICE_DROP_THRESHOLD = -0.05;
 // 사유: Sprint 1A paper 분석 (n=401) — mfe 200%+ winner 4건 sentinel cut 발견. 임계 완화로 large
 // winner retreat capture. config/kolHunter.ts 의 정책 주석 참조.
 
+// ─── Structural Kill-Switch (Sprint 2.A1, 2026-04-30) ─────
+// Why: hardcut/QR 의 가격 신호로는 sellability 변화 미감지. live D-bucket (mae<-30%, n=6) 의
+//      root cause = sell tx confirm 지연 (CeAnreXv 84s 동안 -10% → -34%). "팔 수 있는가" 평가
+//      를 stop 보다 우선. 학술 §exit two-layer 권고 정합.
+//
+// Trigger 조건 (모두 AND):
+//   1. live position (paper 는 quote 호출 부담)
+//   2. config.kolHunterStructuralKillEnabled === true
+//   3. hold time >= kolHunterStructuralKillMinHoldSec (default 60s — 진입 직후 noise 차단)
+//   4. peakDrift >= kolHunterStructuralKillPeakDriftTrigger (default 0.20 — 가격 약화 전조)
+//   5. cache miss + last evaluation > cacheMs ago
+//
+// 발화 시: sell quote 실시간 호출 → impact >= maxImpactPct (default 0.10) 또는 no_route → close.
+const structuralKillCache = new Map<string, { evaluatedAt: number; lastTrigger: 'safe' | 'kill' }>();
+
+/** 동기 cache lookup. quote 호출은 호출자가 별도 schedule. */
+function shouldRunStructuralKillProbe(pos: PaperPosition, currentPrice: number, nowMs: number): boolean {
+  if (!config.kolHunterStructuralKillEnabled) return false;
+  if (pos.isLive !== true) return false;  // paper 는 quote 부담 회피
+  const elapsedSec = nowMs / 1000 - pos.entryTimeSec;
+  if (elapsedSec < config.kolHunterStructuralKillMinHoldSec) return false;
+  const peakDrift = pos.peakPrice > 0 ? (pos.peakPrice - currentPrice) / pos.peakPrice : 0;
+  if (peakDrift < config.kolHunterStructuralKillPeakDriftTrigger) return false;
+  const cached = structuralKillCache.get(pos.positionId);
+  if (cached && nowMs - cached.evaluatedAt < config.kolHunterStructuralKillCacheMs) return false;
+  return true;
+}
+
+/** Test 용 — cache 격리. */
+export function __testResetStructuralKillCache(): void {
+  structuralKillCache.clear();
+}
+
 // ─── State Machine ───────────────────────────────────────
 
 function onPriceTick(positionId: string, tick: PriceTick): void {
@@ -1681,6 +1722,13 @@ function onPriceTick(positionId: string, tick: PriceTick): void {
   const currentPct = (currentPrice - ref) / ref;
   const nowSec = Math.floor(Date.now() / 1000);
   const elapsedSec = nowSec - pos.entryTimeSec;
+
+  // 2026-04-30 (Sprint 2.A1): 모든 state 에서 structural kill-switch 우선 평가.
+  //   PROBE / RUNNER_T1/T2/T3 모두 적용 — sellability 변화는 winner 진입 후에도 위험.
+  //   호출 자체는 fire-and-forget (state machine 흐름 막지 않음). cache miss 시만 실제 quote.
+  if (shouldRunStructuralKillProbe(pos, currentPrice, Date.now())) {
+    void evaluateStructuralKillAsync(pos, currentPrice, nowSec, mfePct, maePct).catch(() => {});
+  }
 
   switch (pos.state) {
     case 'PROBE': {
@@ -1795,6 +1843,70 @@ function onPriceTick(positionId: string, tick: PriceTick): void {
       }
       break;
     }
+  }
+}
+
+/**
+ * Sprint 2.A1: structural kill-switch async evaluator.
+ *
+ * fire-and-forget — onPriceTick 흐름 막지 않음. cache miss 시만 실제 quote (rate-limit).
+ * impact >= maxImpactPct 또는 no_route 발견 시 closePosition 으로 emergency close.
+ */
+async function evaluateStructuralKillAsync(
+  pos: PaperPosition,
+  currentPrice: number,
+  nowSec: number,
+  mfePct: number,
+  maePct: number
+): Promise<void> {
+  const nowMs = Date.now();
+  // double-check (race fix — 동일 mint 의 동시 tick 처리 시 cache 갱신 직전 race)
+  const cached = structuralKillCache.get(pos.positionId);
+  if (cached && nowMs - cached.evaluatedAt < config.kolHunterStructuralKillCacheMs) return;
+
+  // 2026-04-30 (F3 fix): tokenDecimals 미설정 시 skip — fallback 6 은 9-decimal 토큰에서
+  // probe raw 1000x 작아져 impactPct 부정확. tokenDecimals 는 entry 시점에 stash 되며
+  // recovery 등 예외 경로에서만 nullish. 정확도 우선으로 quote 자체 skip.
+  if (pos.tokenDecimals == null) {
+    structuralKillCache.set(pos.positionId, { evaluatedAt: nowMs, lastTrigger: 'safe' });
+    return;
+  }
+  const tokenDecimals = pos.tokenDecimals;
+  // 현재 보유량 기반 sell quote — paper 는 가상 quantity, live 는 실 quantity 동일.
+  const probeTokenAmountRaw = BigInt(Math.max(1, Math.floor(pos.quantity * 10 ** tokenDecimals)));
+  let observedImpactPct = 0;
+  let routeFound = false;
+  try {
+    const result = await evaluateSellQuoteProbe({
+      tokenMint: pos.tokenMint,
+      probeTokenAmountRaw,
+      expectedSolReceive: pos.ticketSol,
+      tokenDecimals,
+    }, {
+      maxImpactPct: config.kolHunterStructuralKillMaxImpactPct,
+    });
+    routeFound = result.routeFound;
+    observedImpactPct = result.observedImpactPct;
+  } catch (err) {
+    // quote 실패는 critical 로 간주 안 함 — 다음 tick 에서 재평가.
+    structuralKillCache.set(pos.positionId, { evaluatedAt: nowMs, lastTrigger: 'safe' });
+    log.debug(`[KOL_STRUCTURAL_KILL_QUOTE_FAIL] ${pos.positionId} ${err}`);
+    return;
+  }
+
+  const shouldKill = !routeFound || observedImpactPct > config.kolHunterStructuralKillMaxImpactPct;
+  structuralKillCache.set(pos.positionId, {
+    evaluatedAt: nowMs,
+    lastTrigger: shouldKill ? 'kill' : 'safe',
+  });
+
+  if (shouldKill && pos.state !== 'CLOSED') {
+    log.warn(
+      `[KOL_HUNTER_STRUCTURAL_KILL] ${pos.positionId} ${pos.tokenMint.slice(0, 8)} ` +
+      `routeFound=${routeFound} impact=${(observedImpactPct * 100).toFixed(2)}% ` +
+      `state=${pos.state} mfe=${(mfePct * 100).toFixed(2)}% mae=${(maePct * 100).toFixed(2)}%`
+    );
+    closePosition(pos, currentPrice, 'structural_kill_sell_route', nowSec, mfePct, maePct);
   }
 }
 
@@ -2006,6 +2118,77 @@ async function appendPaperLedger(
     await appendFile(path.join(dir, fileName), JSON.stringify(record) + '\n', 'utf8');
   } catch (err) {
     log.debug(`[KOL_HUNTER] paper ledger append failed: ${String(err)}`);
+  }
+}
+
+/**
+ * Live ledger writer (`kol-live-trades.jsonl`).
+ *
+ * 2026-04-30 (Sprint 1.B3): live trade 의 trade-level outcome 을 jsonl 로 기록.
+ * Why: DSR validator (scripts/dsr-validator.ts) 가 paper-trades.jsonl 만 분석하던 한계 해소.
+ *      live trades 는 wallet ground truth 기반이라 statistical validation 의 핵심 데이터.
+ *      executed-buys/sells.jsonl 와는 별개 — 저쪽은 ledger integrity, 이쪽은 DSR 입력.
+ * record format: paper ledger 와 호환 (DSR validator 가 동일 schema 로 처리 가능).
+ */
+async function appendLiveLedger(
+  pos: PaperPosition,
+  exitPrice: number,
+  reason: CloseReason,
+  holdSec: number,
+  mfePct: number,
+  maePct: number,
+  netSol: number,
+  netPct: number,
+  exitTxSignature?: string
+): Promise<void> {
+  try {
+    const dir = config.realtimeDataDir;
+    await mkdir(dir, { recursive: true });
+    const record = {
+      positionId: pos.positionId,
+      strategy: LANE_STRATEGY,
+      tokenMint: pos.tokenMint,
+      entryPrice: pos.entryPrice,
+      exitPrice,
+      marketReferencePrice: pos.marketReferencePrice,
+      peakPrice: pos.peakPrice,
+      troughPrice: pos.troughPrice,
+      mfePctPeak: mfePct,
+      maePct,
+      netPct,
+      netSol,
+      holdSec,
+      exitReason: reason,
+      t1VisitAtSec: pos.t1VisitAtSec ?? null,
+      t2VisitAtSec: pos.t2VisitAtSec ?? null,
+      t3VisitAtSec: pos.t3VisitAtSec ?? null,
+      kols: pos.participatingKols,
+      kolScore: pos.kolScore,
+      lane: LANE_STRATEGY,
+      armName: pos.armName,
+      parameterVersion: pos.parameterVersion,
+      isShadowArm: pos.isShadowArm,
+      parentPositionId: pos.parentPositionId ?? null,
+      kolEntryReason: pos.kolEntryReason,
+      kolConvictionLevel: pos.kolConvictionLevel,
+      kolReinforcementCount: pos.kolReinforcementCount,
+      detectorVersion: pos.detectorVersion,
+      independentKolCount: pos.independentKolCount,
+      survivalFlags: pos.survivalFlags,
+      isShadowKol: pos.isShadowKol ?? false,
+      tokenDecimals: pos.tokenDecimals ?? null,
+      tokenDecimalsSource: pos.tokenDecimalsSource ?? null,
+      // live-only fields:
+      isLive: true,
+      dbTradeId: pos.dbTradeId ?? null,
+      entryTxSignature: pos.entryTxSignature ?? null,
+      exitTxSignature: exitTxSignature ?? null,
+      ticketSol: pos.ticketSol,
+      closedAt: new Date().toISOString(),
+    };
+    await appendFile(path.join(dir, 'kol-live-trades.jsonl'), JSON.stringify(record) + '\n', 'utf8');
+  } catch (err) {
+    log.debug(`[KOL_HUNTER] live ledger append failed: ${String(err)}`);
   }
 }
 
@@ -2528,6 +2711,50 @@ async function closeLivePosition(
     markTokenClosed(pos.tokenMint);
     // 2026-04-29 (P0-2): KOL alpha decay tracking — live close 가 우선 신호 (real wallet delta).
     markKolClosed(pos.participatingKols.map((k) => k.id), pnl);
+  }
+
+  // 2026-04-30 (Sprint 1.B3): live trade outcome 을 jsonl 로 persist (DSR validator 입력).
+  if (!pos.isShadowArm) {
+    const liveHoldSec = nowSec - pos.entryTimeSec;
+    const liveNetPct = pos.entryPrice > 0 ? (actualExitPrice - pos.entryPrice) / pos.entryPrice : 0;
+    void appendLiveLedger(
+      pos,
+      actualExitPrice,
+      effectiveReason,
+      liveHoldSec,
+      mfePctAtClose,
+      maePctAtClose,
+      pnl,
+      liveNetPct,
+      exitTxSignature
+    ).catch(() => {});
+  }
+
+  // 2026-04-30 (Sprint 1.A4): live close → post-close observer.
+  // paper close path 는 closePosition 안에서 trackRejectForMissedAlpha 직접 호출 중,
+  // live 만 누락 → live close 도 동일 trajectory 측정 (winner-kill rate 산출 인프라).
+  // shadow arm 은 fire 금지 (pure_ws 패턴 정합).
+  if (!pos.isShadowArm) {
+    trackKolClose({
+      tokenMint: pos.tokenMint,
+      closeReason: effectiveReason,
+      signalPrice: pos.marketReferencePrice,
+      ticketSol: pos.ticketSol,
+      state: pos.state,
+      entryTimeSec: pos.entryTimeSec,
+      nowSec,
+      mfePct: mfePctAtClose,
+      maePct: maePctAtClose,
+      entryPrice: pos.entryPrice,
+      exitPrice: actualExitPrice,
+      peakPrice: pos.peakPrice,
+      troughPrice: pos.troughPrice,
+      isLive: true,
+      armName: pos.armName,
+      t1VisitAtSec: pos.t1VisitAtSec,
+      t2VisitAtSec: pos.t2VisitAtSec,
+      t3VisitAtSec: pos.t3VisitAtSec,
+    });
   }
   unsubscribePriceIfIdle(pos.tokenMint);
 

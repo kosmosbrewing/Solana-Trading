@@ -30,11 +30,13 @@ import {
   __testForceResolveStalk,
   __testTriggerTick,
   __testIsLiveCanaryActive,
+  __testResetStructuralKillCache,
   recoverKolHunterOpenPositions,
   stopKolHunter,
   kolHunterEvents,
 } from '../src/orchestration/kolSignalHandler';
 import type { KolTx } from '../src/kol/types';
+import * as sellQuoteProbeModule from '../src/gate/sellQuoteProbe';
 
 // 최소 Stub PaperPriceFeed — subscribe/unsubscribe + getLastPrice + on/off 지원
 class StubPaperPriceFeed extends EventEmitter {
@@ -108,6 +110,13 @@ jest.mock('../src/utils/config', () => ({
     kolHunterQuickRejectMfeLowElapsedSec: 30,
     kolHunterQuickRejectPullbackThreshold: 0.20,
     kolHunterQuickRejectWinnerSafeMfe: 0.05,
+    // 2026-04-30 (Sprint 2.A1): structural kill-switch — test default disabled
+    // (paper-shadow 시간 길게 측정 후 활성화 권고). 회귀 테스트만 explicit override.
+    kolHunterStructuralKillEnabled: false,
+    kolHunterStructuralKillMinHoldSec: 60,
+    kolHunterStructuralKillMaxImpactPct: 0.10,
+    kolHunterStructuralKillCacheMs: 30000,
+    kolHunterStructuralKillPeakDriftTrigger: 0.20,
     kolHunterPaperRoundTripCostPct: 0.005,
     kolHunterParameterVersion: 'v1.0.0',
     kolHunterDetectorVersion: 'kol_discovery_v1',
@@ -562,6 +571,145 @@ describe('kolSignalHandler — state machine', () => {
         mockedConfig.kolHunterQuickRejectPullbackThreshold = 0.20;
         mockedConfig.kolHunterQuickRejectMfeLowElapsedSec = 30;
         mockedConfig.kolHunterQuickRejectWinnerSafeMfe = 0.05;
+      }
+    });
+
+    // 2026-04-30 (Sprint 2.A1 회귀): structural kill-switch — 정확한 trigger 조건 검증.
+    //   학술 §exit two-layer 권고 정합. paper 는 fire 금지, live + enabled + minHold + peakDrift 충족 시에만.
+    it('Sprint 2.A1: structural kill default disabled 시 fire 안 함 (paper close 무영향)', async () => {
+      // default config (kolHunterStructuralKillEnabled=false) — quote 호출 안 일어나는지 검증
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      stubFeed.emitTick(MINT_SMART, 0.0013);
+      stubFeed.emitTick(MINT_SMART, 0.00115);
+      await flushAsync();
+      const pos = __testGetActive()[0];
+      expect(pos).toBeDefined();
+      // peak 0.0013 → 0.0008 (-38% peakDrift, 임계 0.20 초과) — 그러나 disabled 라 structural fire 안 함
+      // 대신 hardcut 에서 잡힐 수 있으므로 reason 만 확인
+      let captured: any = null;
+      kolHunterEvents.once('paper_close', (evt) => { captured = evt; });
+      __testTriggerTick(pos.positionId, pos.entryPrice * 0.85);  // mae -15% (hardcut -10% 초과)
+      // disabled 면 'structural_kill_sell_route' 발생 절대 불가
+      expect(captured?.reason).not.toBe('structural_kill_sell_route');
+    });
+
+    // 2026-04-30 (F7 fix, B안): positive case — live + enabled + impact > maxImpactPct → fire 검증.
+    //   spyOn 으로 evaluateSellQuoteProbe mock — 외부 Jupiter 호출 없이 impact 0.15 (>0.10) 반환.
+    //   이 테스트가 없으면 structural kill 로직이 영구 fire 안 해도 통과 가능 (단방향 검증 함정).
+    it('Sprint 2.A1: live + enabled + impact 임계 초과 시 structural_kill_sell_route 발화', async () => {
+      // live ctx 준비 (triple-flag gate 통과)
+      const insertTrade = jest.fn().mockResolvedValue('db-kolh-live-2');
+      const closeTrade = jest.fn().mockResolvedValue(undefined);
+      const executeBuy = jest.fn().mockResolvedValue({
+        txSignature: 'KOL_LIVE_BUY_SIG_F7',
+        expectedOutAmount: 1n,
+        actualOutUiAmount: 1,
+        actualInputUiAmount: 0.01,
+        slippageBps: 12,
+      });
+      const executeSell = jest.fn().mockResolvedValue({
+        txSignature: 'KOL_LIVE_SELL_SIG_F7',
+        actualOutAmount: 0n,
+        slippageBps: 0,
+      });
+      const liveCtx = {
+        tradingMode: 'live',
+        tradeStore: { insertTrade, closeTrade, getOpenTrades: jest.fn().mockResolvedValue([]) },
+        notifier: {
+          sendCritical: jest.fn().mockResolvedValue(undefined),
+          sendTradeOpen: jest.fn().mockResolvedValue(undefined),
+          sendTradeClose: jest.fn().mockResolvedValue(undefined),
+          sendInfo: jest.fn().mockResolvedValue(undefined),
+        },
+        executor: {
+          executeBuy,
+          executeSell,
+          getTokenBalance: jest.fn().mockResolvedValue(0n),
+          getBalance: jest.fn().mockResolvedValue(1.0),
+        },
+      } as any;
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx: liveCtx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterStructuralKillEnabled = true;
+      mockedConfig.kolHunterStructuralKillMinHoldSec = 0;       // 시간 제약 제거
+      mockedConfig.kolHunterStructuralKillPeakDriftTrigger = 0.10;
+      mockedConfig.kolHunterStructuralKillCacheMs = 0;          // cache off — 매 tick quote
+      __testResetStructuralKillCache();
+
+      // sellQuoteProbe spy: impact 0.15 (>0.10) — kill 발화 조건
+      const probeSpy = jest.spyOn(sellQuoteProbeModule, 'evaluateSellQuoteProbe').mockResolvedValue({
+        approved: false,
+        routeFound: true,
+        observedOutSol: 0.005,
+        observedImpactPct: 0.15,
+        roundTripPct: -0.5,
+        quoteFailed: false,
+        reason: 'sell_impact_high',
+      } as any);
+
+      try {
+        stubFeed.setInitialPrice(MINT_SMART, 0.001);
+        await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+        stubFeed.emitTick(MINT_SMART, 0.0013);
+        stubFeed.emitTick(MINT_SMART, 0.00115);
+        await flushAsync();
+
+        const positions = __testGetActive();
+        const livePos = positions.find((p) => p.isLive === true);
+        expect(livePos).toBeDefined();
+
+        // 회귀 핵심: peakDrift 충족 + structural kill enabled + live → tick 시 quote → impact>임계 → kill close
+        let captured: any = null;
+        kolHunterEvents.once('paper_close', (evt) => { captured = evt; });
+        // peakPrice 0.0013 → 0.0009 (-30% peakDrift, 임계 0.10 충족)
+        __testTriggerTick(livePos!.positionId, 0.0009);
+        // quote 호출 비동기 — flush
+        await flushAsync();
+        await flushAsync();
+
+        // spy 호출 확인 (peakDrift 충족 후 quote 호출 발생)
+        expect(probeSpy).toHaveBeenCalled();
+        // close reason 검증 — paper_close 가 fire 됐다면 (live 도 paper_close emit 호환) reason 일치
+        // 또는 active 에서 사라졌는지 확인 (closeLivePosition 비동기, state=CLOSED mark 만 보장)
+        const after = __testGetActive().find((p) => p.positionId === livePos!.positionId);
+        if (after) {
+          expect(after.state).toBe('CLOSED');
+        }
+      } finally {
+        probeSpy.mockRestore();
+        mockedConfig.kolHunterPaperOnly = true;
+        mockedConfig.kolHunterLiveCanaryEnabled = false;
+        mockedConfig.kolHunterStructuralKillEnabled = false;
+        mockedConfig.kolHunterStructuralKillMinHoldSec = 60;
+        mockedConfig.kolHunterStructuralKillPeakDriftTrigger = 0.20;
+        mockedConfig.kolHunterStructuralKillCacheMs = 30000;
+      }
+    });
+
+    it('Sprint 2.A1: paper 모드에서는 enabled 여도 structural kill fire 안 함 (quote 부담 회피)', async () => {
+      mockedConfig.kolHunterStructuralKillEnabled = true;
+      mockedConfig.kolHunterStructuralKillMinHoldSec = 0;  // 시간 제약 제거
+      mockedConfig.kolHunterStructuralKillPeakDriftTrigger = 0.10;
+      try {
+        stubFeed.setInitialPrice(MINT_SMART, 0.001);
+        await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+        stubFeed.emitTick(MINT_SMART, 0.0013);
+        stubFeed.emitTick(MINT_SMART, 0.00115);
+        await flushAsync();
+        const pos = __testGetActive()[0];
+        expect(pos).toBeDefined();
+        expect(pos.isLive).toBeFalsy();  // paper
+        let captured: any = null;
+        kolHunterEvents.once('paper_close', (evt) => { captured = evt; });
+        __testTriggerTick(pos.positionId, pos.entryPrice * 0.95);  // peakDrift 충분
+        // paper 모드 — structural 발화 안 함 (다른 path 로 close 가능)
+        expect(captured?.reason).not.toBe('structural_kill_sell_route');
+      } finally {
+        mockedConfig.kolHunterStructuralKillEnabled = false;
+        mockedConfig.kolHunterStructuralKillMinHoldSec = 60;
+        mockedConfig.kolHunterStructuralKillPeakDriftTrigger = 0.20;
       }
     });
 

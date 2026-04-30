@@ -87,6 +87,26 @@ export const kolHunter = {
   kolHunterQuickRejectMfeLowElapsedSec: numEnv('KOL_HUNTER_QUICK_REJECT_MFE_LOW_ELAPSED_SEC', '15'),
   kolHunterQuickRejectPullbackThreshold: numEnv('KOL_HUNTER_QUICK_REJECT_PULLBACK_THRESHOLD', '0.10'),
   kolHunterQuickRejectWinnerSafeMfe: numEnv('KOL_HUNTER_QUICK_REJECT_WINNER_SAFE_MFE', '0.05'),
+
+  // 2026-04-30 (Sprint 2.A1, 외부 학술 리포트 §exit two-layer): structural kill-switch.
+  // Why: live 운영 15h 분석 — D-bucket 6건 (mae<-30%) 의 root cause 가 sell tx confirm 84s 동안
+  //   가격 -10% → -34% 진행. universal hardcut (-10%) 만으로는 sellability 변화 못 잡음.
+  //   학술 권고 "stop 보다 팔 수 있음 우선" — runtime sell quote 평가로 emergency exit.
+  // 정책:
+  //   - paper 모드: kolHunterHoldPhasePeakDriftThreshold (이미 0.45) 강화 분기는 별도 keep,
+  //     본 sprint 는 live 우선 (paper 는 가격 신호만).
+  //   - live 모드: hold 60s 이상 + impact 임계 초과 시 즉시 close (close reason
+  //     'structural_kill_sell_route').
+  // Rate-limit: peakDrift 0.20 이상 + tick interval 30s 이상 trigger 후 quote 호출 (cache).
+  kolHunterStructuralKillEnabled: boolOptional('KOL_HUNTER_STRUCTURAL_KILL_ENABLED', true),
+  /** sell quote runtime 평가의 minimum hold 시간 (s). 0 미만은 disabled. */
+  kolHunterStructuralKillMinHoldSec: numEnv('KOL_HUNTER_STRUCTURAL_KILL_MIN_HOLD_SEC', '60'),
+  /** sell impact 임계 (decimal, 0.10 = 10% — sellQuoteProbe.maxImpactPct 정합). */
+  kolHunterStructuralKillMaxImpactPct: numEnv('KOL_HUNTER_STRUCTURAL_KILL_MAX_IMPACT_PCT', '0.10'),
+  /** quote cache TTL (ms) — 동일 mint 의 runtime quote 빈도 cap. */
+  kolHunterStructuralKillCacheMs: numEnv('KOL_HUNTER_STRUCTURAL_KILL_CACHE_MS', '30000'),
+  /** peakDrift 가 이 값을 초과해야 sell quote 호출 (rate-limit pre-gate). */
+  kolHunterStructuralKillPeakDriftTrigger: numEnv('KOL_HUNTER_STRUCTURAL_KILL_PEAK_DRIFT_TRIGGER', '0.20'),
   // Paper round-trip cost (Jupiter platform fee + MEV + AMM fee). Live 시 wallet delta 에서 직접 차감.
   kolHunterPaperRoundTripCostPct: numEnv('KOL_HUNTER_PAPER_ROUND_TRIP_COST_PCT', '0.005'),
 

@@ -146,7 +146,9 @@ interface HourlyLine {
   liveWinners: number;
   liveLosers: number;
   liveCumPnl: number;
-  fivexWinners: number;
+  fivexWinners: number;       // 후방호환 — capture + killed 합산 (총 5x peak 도달)
+  fivexCaptured?: number;     // 2026-04-30: net 도 5x 인 실제 winner
+  fivexKilled?: number;       // 2026-04-30: mfe 5x 도달했지만 net < 5x (winner-kill)
 }
 const hourlyLineBuffer: HourlyLine[] = [];
 
@@ -327,7 +329,8 @@ async function captureHourlySnapshot(ctx: BotContext): Promise<HourlyLine> {
   let liveWinners = 0;
   let liveLosers = 0;
   let liveCumPnl = 0;
-  let fivexWinners = 0;
+  let fivexCaptured = 0;  // mfe peak ≥+400% AND net ≥+400% (실제 winner)
+  let fivexKilled = 0;    // mfe peak ≥+400% BUT net < +400% (winner-kill, 사용자 지적)
   let fetchFailed = false;
   try {
     const recentTrades = await ctx.tradeStore.getTradesCreatedWithinHours(1);
@@ -338,17 +341,21 @@ async function captureHourlySnapshot(ctx: BotContext): Promise<HourlyLine> {
     liveWinners = liveClosed.filter((t) => (t.pnl ?? 0) > 0).length;
     liveLosers = liveClosed.filter((t) => (t.pnl ?? 0) <= 0).length;
     liveCumPnl = liveClosed.reduce((sum, t) => sum + (t.pnl ?? 0), 0);
-    // 2026-04-29 (Q2 fix): 5x winner 정의 = mfe peak ≥ +400% (사명 §3 정합).
-    // 이전: exitPrice/entryPrice ≥ 5.0 — close 시점만 보아 trail/hard_cut 으로 5x 도달 후
-    //   더 낮게 close 한 winner 누락. mission §3 measurement 와 정의 불일치.
-    // 수정: highWaterMark (live close 시점의 peak 가격) / entryPrice ≥ 5.0.
-    //   highWaterMark 미기록 trade 는 exitPrice 로 conservative fallback (false negative 가능, but safe).
-    fivexWinners = liveClosed.filter((t) => {
-      if (!t.entryPrice || t.entryPrice <= 0) return false;
+    // 2026-04-30 (사용자 권고 — 🎉 톤 다운): 5x peak 도달 trade 를 capture / killed 분리.
+    //   capture: mfe peak ≥+400% AND net ≥+400% (실제 winner — 사명 §3 카운트 + 축하)
+    //   killed: mfe peak ≥+400% BUT net < +400% (winner-kill — 톤 다운, 정직한 표기)
+    //   net loss 인데 🎉 표시는 misleading 했음. 5x peak 라는 사실은 사명 §3 measurement 정합 유지.
+    for (const t of liveClosed) {
+      if (!t.entryPrice || t.entryPrice <= 0) continue;
       const peak = t.highWaterMark ?? t.exitPrice ?? 0;
-      if (peak <= 0) return false;
-      return peak / t.entryPrice >= 5.0;
-    }).length;
+      if (peak <= 0) continue;
+      if (peak / t.entryPrice >= 5.0) {
+        const exitPrice = t.exitPrice ?? 0;
+        const netRatio = exitPrice > 0 ? exitPrice / t.entryPrice : 0;
+        if (netRatio >= 5.0) fivexCaptured++;
+        else fivexKilled++;
+      }
+    }
   } catch (err) {
     fetchFailed = true;
     log.warn(`[Reporting] getTradesCreatedWithinHours(1) failed in hourly snapshot: ${err}`);
@@ -359,12 +366,16 @@ async function captureHourlySnapshot(ctx: BotContext): Promise<HourlyLine> {
     : liveClosedCount === 0
       ? 'close 0건'
       : `close ${liveClosedCount}건 (${liveWinners}W/${liveLosers}L) net ${liveCumPnl >= 0 ? '+' : ''}${liveCumPnl.toFixed(4)}`;
-  const fivexText = fivexWinners > 0 ? ` · 🎉 5x+ ${fivexWinners}` : '';
+  // 5x peak 표기 — capture 와 killed 분리. 폭죽 → 목표(🎯) 로 톤 다운.
+  const fivexParts: string[] = [];
+  if (fivexCaptured > 0) fivexParts.push(`🎯 5x capture ${fivexCaptured}`);
+  if (fivexKilled > 0) fivexParts.push(`⚠ 5x killed ${fivexKilled}`);
+  const fivexText = fivexParts.length > 0 ? ` · ${fivexParts.join(' · ')}` : '';
   const text = `- ${kstHour.toString().padStart(2, '0')}:00 · ${balance.toFixed(4)} SOL${deltaStr} · ${closeText}${fivexText}`;
 
   hourlyBaseline = { balanceSol: balance, capturedAtMs: now.getTime() };
 
-  return {
+  const line: HourlyLine = {
     kstHour,
     capturedAtMs: now.getTime(),
     text,
@@ -372,17 +383,26 @@ async function captureHourlySnapshot(ctx: BotContext): Promise<HourlyLine> {
     liveWinners,
     liveLosers,
     liveCumPnl,
-    fivexWinners,
+    fivexWinners: fivexCaptured + fivexKilled,  // 후방호환 (총 5x peak 도달 카운트)
+    fivexCaptured,
+    fivexKilled,
   };
+
+  // 2026-04-30 (사용자 권고 — 시간대 누락 fix): captureHourlySnapshot 자체에서 disk persist.
+  // 이전: bufferHourlySnapshot 만 persist → heartbeat (짝수 KST hour) / daily (KST 09) 시각의
+  //   line 은 buffer 에만 들어가서 flushHourlyBuffer 후 사라짐 → 다음 batch load 시 02/04/06/08/09 누락.
+  // 수정: captureHourlySnapshot 모든 호출자에서 disk 에 즉시 append → KST midnight load 시 빠짐 없음.
+  await persistHourlyLine(line);
+  return line;
 }
 
 async function bufferHourlySnapshot(ctx: BotContext): Promise<void> {
   // hourly slot — 알림 미발사. heartbeat / daily 시 batch flush.
   // 2026-04-29 (restart-resilient): in-memory buffer + disk persist 동시.
+  // 2026-04-30: persist 는 captureHourlySnapshot 내부에서 자동 호출 (모든 호출자 정합).
   try {
     const line = await captureHourlySnapshot(ctx);
     hourlyLineBuffer.push(line);
-    await persistHourlyLine(line);
   } catch (err) {
     log.warn(`Hourly snapshot capture failed: ${err}`);
   }
@@ -408,14 +428,25 @@ function buildHourlyDigest(priorLines: HourlyLine[], currentHour: HourlyLine | n
   const totalW = merged.reduce((s, l) => s + l.liveWinners, 0);
   const totalL = merged.reduce((s, l) => s + l.liveLosers, 0);
   const totalNet = merged.reduce((s, l) => s + l.liveCumPnl, 0);
-  const totalFivex = merged.reduce((s, l) => s + l.fivexWinners, 0);
+  // 2026-04-30: 5x peak capture vs killed 분리 합계. legacy entries (fivexCaptured 미기록) 는 fivexWinners 를 unknown 으로 처리.
+  const totalCaptured = merged.reduce((s, l) => s + (l.fivexCaptured ?? 0), 0);
+  const totalKilled = merged.reduce((s, l) => s + (l.fivexKilled ?? 0), 0);
+  const totalFivexLegacy = merged.reduce((s, l) => {
+    if (l.fivexCaptured == null && l.fivexKilled == null) return s + (l.fivexWinners ?? 0);
+    return s;
+  }, 0);
   const startHour = merged[0].kstHour.toString().padStart(2, '0');
   const endHour = merged[merged.length - 1].kstHour.toString().padStart(2, '0');
   const span = merged.length;
 
   const headline = `📊 <b>${span}h 요약</b> (KST ${startHour}:00 → ${endHour}:00, today)`;
+  const fivexParts: string[] = [];
+  if (totalCaptured > 0) fivexParts.push(`🎯 5x capture ${totalCaptured}`);
+  if (totalKilled > 0) fivexParts.push(`⚠ 5x killed ${totalKilled}`);
+  if (totalFivexLegacy > 0) fivexParts.push(`5x peak ${totalFivexLegacy} (legacy)`);
+  const fivexSummary = fivexParts.length > 0 ? ` · ${fivexParts.join(' · ')}` : '';
   const aggregateLine = totalClosed > 0
-    ? `· 합계 close ${totalClosed}건 (${totalW}W/${totalL}L) net ${totalNet >= 0 ? '+' : ''}${totalNet.toFixed(4)} SOL${totalFivex > 0 ? ` · 🎉 5x+ ${totalFivex}` : ''}`
+    ? `· 합계 close ${totalClosed}건 (${totalW}W/${totalL}L) net ${totalNet >= 0 ? '+' : ''}${totalNet.toFixed(4)} SOL${fivexSummary}`
     : `· 합계 close 0건 (해당 구간 거래 없음)`;
 
   return [headline, ...merged.map((l) => l.text), aggregateLine].join('\n');

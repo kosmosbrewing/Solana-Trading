@@ -11,44 +11,41 @@
  *   - live + main paper 만 fire (KOL paper 도 close trajectory 측정 가치 있음)
  *   - rate-limit: missedAlphaObserver 의 maxInflight=50 cap + dedup 30s 가 자체 보호
  */
-import path from 'path';
 import { config } from '../utils/config';
 import {
   trackRejectForMissedAlpha,
+  buildMissedAlphaConfigFromGlobal,
   type MissedAlphaObserverConfig,
   type RejectCategory,
 } from '../observability/missedAlphaObserver';
 
 const KOL_LANE_STRATEGY = 'kol_hunter';
 
-/** Close reason → MissedAlpha RejectCategory 매핑. 기존 enum 재사용으로 분석 정합성 유지. */
-function closeReasonToCategory(reason: string): RejectCategory {
-  switch (reason) {
-    case 'probe_hard_cut': return 'probe_hard_cut';
-    case 'probe_flat_cut': return 'probe_flat_cut';
-    case 'probe_reject_timeout': return 'probe_reject_timeout';
-    case 'quick_reject_classifier_exit': return 'quick_reject_classifier_exit';
-    case 'hold_phase_sentinel_degraded_exit': return 'hold_phase_sentinel_degraded_exit';
-    // 2026-04-30 (Sprint 2.A1): structural_kill_sell_route — 새 close reason.
-    //   기존 enum 에 없으니 'sell_quote_probe' 로 매핑 (sellability 기준 동일 cohort).
-    case 'structural_kill_sell_route': return 'sell_quote_probe';
-    // winner / insider / orphan 은 'other' — winner 도 post-close trajectory 측정 가치 있음
-    // (5x winner 가 trail 시점에 cut 됐는데 그 후 추가 상승했는지 → winner-kill rate).
-    default: return 'other';
-  }
+/**
+ * Close reason → MissedAlpha RejectCategory 매핑.
+ * 2026-04-30 (B1 refactor): 모든 KOL close-site 는 'kol_close' 로 통일. 분석 스크립트는
+ *   rejectReason 으로 세부 분기 (probe_hard_cut / winner_trailing_t1 등). 이전엔 이미 존재
+ *   하던 enum (probe_hard_cut 등) 으로 분산 매핑 → reject-side 와 같은 enum 공유로 close vs
+ *   reject 구분이 extras.elapsedSecAtClose 존재 여부로만 가능했음. 이제 enum 자체로 분리.
+ */
+function closeReasonToCategory(_reason: string): RejectCategory {
+  return 'kol_close';
 }
 
+// 2026-04-30 (B2 refactor): observer config 공통 helper 사용. KOL 만 writeScheduleMarker=true
+// (재시작 직후 close coverage 보존 — pure_ws 는 재시작 시 active position recover 별도 경로).
 function buildMissedAlphaConfig(): Partial<MissedAlphaObserverConfig> {
-  return {
+  return buildMissedAlphaConfigFromGlobal({
+    realtimeDataDir: config.realtimeDataDir,
     enabled: config.missedAlphaObserverEnabled,
     offsetsSec: config.missedAlphaObserverOffsetsSec,
     jitterPct: config.missedAlphaObserverJitterPct,
     maxInflight: config.missedAlphaObserverMaxInflight,
     dedupWindowSec: config.missedAlphaObserverDedupWindowSec,
-    outputFile: path.join(config.realtimeDataDir, 'missed-alpha.jsonl'),
     jupiterApiUrl: config.jupiterApiUrl,
     jupiterApiKey: config.jupiterApiKey,
-  };
+    writeScheduleMarker: true,
+  });
 }
 
 /**
@@ -57,10 +54,13 @@ function buildMissedAlphaConfig(): Partial<MissedAlphaObserverConfig> {
  * @param input - close 시점의 핵심 metric. shadow arm 은 caller 에서 사전 차단 권고.
  */
 export function trackKolClose(input: {
+  positionId: string;
   tokenMint: string;
   closeReason: string;
   signalPrice: number;
   ticketSol: number;
+  tokenDecimals?: number;
+  tokenDecimalsSource?: string;
   state: string;
   entryTimeSec: number;
   nowSec: number;
@@ -86,8 +86,10 @@ export function trackKolClose(input: {
       lane: KOL_LANE_STRATEGY,
       signalPrice: input.signalPrice,
       probeSolAmount: input.ticketSol,
+      tokenDecimals: input.tokenDecimals,
       signalSource: input.armName,
       extras: {
+        positionId: input.positionId,
         closeState: input.state,
         elapsedSecAtClose: input.nowSec - input.entryTimeSec,
         mfePctAtClose: input.mfePct,
@@ -97,6 +99,7 @@ export function trackKolClose(input: {
         peakPrice: input.peakPrice,
         troughPrice: input.troughPrice,
         isLive: input.isLive,
+        tokenDecimalsSource: input.tokenDecimalsSource ?? null,
         t1VisitAtSec: input.t1VisitAtSec ?? null,
         t2VisitAtSec: input.t2VisitAtSec ?? null,
         t3VisitAtSec: input.t3VisitAtSec ?? null,

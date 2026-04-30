@@ -15,7 +15,7 @@
  *  - Fire-and-forget. trade pipeline latency 영향 없음.
  *  - Entry pipeline 의 entryDriftGuard Jupiter 회로와 별도 429 circuit 유지 — observer 의
  *    load 가 gate 성능에 역류하지 않도록.
- *  - Per-tokenMint dedup 창 (default 30s) — pippin 같이 반복 reject 하는 pair 의 probe 폭주 방지.
+ *  - Per-event dedup 창 (default 30s) — positionId 가 있으면 close 단위, 없으면 tokenMint 단위.
  *  - Hard max inflight cap (default 50) — Jupiter rate limit 안전.
  *  - 실패는 silent. observer 가 trade 판단에 절대 간섭하지 않는다.
  *  - env kill-switch: `MISSED_ALPHA_OBSERVER_ENABLED=false` 로 완전 무음.
@@ -77,6 +77,10 @@ export type RejectCategory =
   | 'probe_flat_cut'
   | 'quick_reject_classifier_exit'
   | 'hold_phase_sentinel_degraded_exit'
+  // 2026-04-30 (B1): KOL close-site 명시 카테고리. winner / insider / orphan / structural_kill_sell_route
+  // 등 기존 enum 으로 매핑 안 되던 close reason 을 single enum 으로 정리.
+  // 분석 스크립트는 lane='kol_hunter' + rejectCategory='kol_close' 로 close-site 만 직접 필터.
+  | 'kol_close'
   | 'other';
 
 export interface MissedAlphaEvent {
@@ -112,6 +116,8 @@ export interface MissedAlphaObserverConfig {
   slippageBps: number;
   /** Jupiter 429 감지 후 observer 자체의 호출 cooldown (ms). */
   rateLimitCooldownMs: number;
+  /** 스케줄 시점 marker 를 즉시 남겨 timer 유실/재시작에도 coverage 를 보존. */
+  writeScheduleMarker: boolean;
 }
 
 // ─── Defaults (caller 가 대부분 override) ───
@@ -127,7 +133,47 @@ export const DEFAULT_MISSED_ALPHA_CONFIG: MissedAlphaObserverConfig = {
   timeoutMs: 6_000,
   slippageBps: 200,
   rateLimitCooldownMs: 5_000,
+  writeScheduleMarker: false,
 };
+
+/**
+ * 2026-04-30 (B2 refactor): observer config builder 공통 helper.
+ *
+ * pureWs / kol-missed-alpha 두 lane 의 buildMissedAlphaConfig 가 동일한 config field 를
+ * 복제하던 한계 해소. caller 는 lane-specific override 만 추가하면 됨.
+ *
+ * @param overrides - lane-specific 옵션 (writeScheduleMarker 등)
+ */
+export function buildMissedAlphaConfigFromGlobal(overrides: {
+  realtimeDataDir: string;
+  enabled: boolean;
+  offsetsSec: number[];
+  jitterPct: number;
+  maxInflight: number;
+  dedupWindowSec: number;
+  jupiterApiUrl: string;
+  jupiterApiKey?: string;
+  /** lane-specific 옵션 — kol_hunter 는 writeScheduleMarker=true (재시작 직후 coverage 보존) */
+  writeScheduleMarker?: boolean;
+  outputFileName?: string; // default 'missed-alpha.jsonl'
+}): Partial<MissedAlphaObserverConfig> {
+  return {
+    enabled: overrides.enabled,
+    offsetsSec: overrides.offsetsSec,
+    jitterPct: overrides.jitterPct,
+    maxInflight: overrides.maxInflight,
+    dedupWindowSec: overrides.dedupWindowSec,
+    outputFile: pathJoin(overrides.realtimeDataDir, overrides.outputFileName ?? 'missed-alpha.jsonl'),
+    jupiterApiUrl: overrides.jupiterApiUrl,
+    jupiterApiKey: overrides.jupiterApiKey,
+    ...(overrides.writeScheduleMarker !== undefined ? { writeScheduleMarker: overrides.writeScheduleMarker } : {}),
+  };
+}
+
+// path.join 인라인 — 모듈 의존성 최소화 (path 는 이미 import 위쪽에 있음).
+function pathJoin(a: string, b: string): string {
+  return path.join(a, b);
+}
 
 // ─── Module State (process-wide) ───
 
@@ -138,7 +184,7 @@ interface ScheduledProbe {
   timer: NodeJS.Timeout;
 }
 
-const recentEventsByToken = new Map<string, number>(); // tokenMint → epochMs
+const recentEventsByToken = new Map<string, number>(); // dedupKey(tokenMint or tokenMint:positionId) → epochMs
 let inflightProbes = 0;
 let rateLimitedUntilMs = 0;
 let outputDirEnsured = false;
@@ -197,12 +243,13 @@ export function trackRejectForMissedAlpha(
 
   const nowMs = Date.now();
 
-  // Per-token dedup (윈도 안에 한 번만 스케줄).
-  const lastAt = recentEventsByToken.get(event.tokenMint);
+  // Per-event dedup. close-site 는 positionId 로 같은 mint 반복 close 를 분리한다.
+  const dedupKey = dedupKeyFor(event);
+  const lastAt = recentEventsByToken.get(dedupKey);
   if (lastAt != null && nowMs - lastAt < cfg.dedupWindowSec * 1000) {
     return;
   }
-  recentEventsByToken.set(event.tokenMint, nowMs);
+  recentEventsByToken.set(dedupKey, nowMs);
   prunePerTokenCache(nowMs, cfg.dedupWindowSec);
 
   // 하드캡 — 새 이벤트 drop.
@@ -214,8 +261,11 @@ export function trackRejectForMissedAlpha(
     return;
   }
 
-  const eventId = buildEventId(event.tokenMint, nowMs);
+  const eventId = buildEventId(event, nowMs);
   const rejectedAtIso = new Date(nowMs).toISOString();
+  if (cfg.writeScheduleMarker) {
+    void writeRecord(cfg.outputFile, buildScheduleMarkerRecord(event, eventId, rejectedAtIso));
+  }
 
   for (const offsetSec of cfg.offsetsSec) {
     const jitterMs = computeJitterMs(offsetSec, cfg.jitterPct);
@@ -330,6 +380,35 @@ async function runProbe(
   await writeRecord(cfg.outputFile, record);
 }
 
+function buildScheduleMarkerRecord(
+  event: MissedAlphaEvent,
+  eventId: string,
+  rejectedAtIso: string
+): Record<string, unknown> {
+  return {
+    eventId,
+    tokenMint: event.tokenMint,
+    lane: event.lane,
+    rejectCategory: event.rejectCategory,
+    rejectReason: event.rejectReason,
+    signalPrice: event.signalPrice,
+    probeSolAmount: event.probeSolAmount,
+    signalSource: event.signalSource ?? null,
+    rejectedAt: rejectedAtIso,
+    extras: event.extras ?? null,
+    probe: {
+      offsetSec: 0,
+      firedAt: rejectedAtIso,
+      observedPrice: null,
+      outAmountRaw: null,
+      outputDecimals: event.tokenDecimals ?? null,
+      deltaPct: null,
+      quoteStatus: 'scheduled',
+      quoteReason: null,
+    },
+  };
+}
+
 // ─── Jupiter forward quote (observer-local, separate from gate circuit) ───
 
 interface ForwardQuote {
@@ -413,9 +492,21 @@ function resolveConfig(partial: Partial<MissedAlphaObserverConfig>): MissedAlpha
   };
 }
 
-function buildEventId(tokenMint: string, epochMs: number): string {
-  const tokenShort = tokenMint.slice(0, 8);
-  return `ma-${epochMs}-${tokenShort}`;
+function dedupKeyFor(event: MissedAlphaEvent): string {
+  const positionId = typeof event.extras?.positionId === 'string' && event.extras.positionId.length > 0
+    ? event.extras.positionId
+    : null;
+  return positionId ? `${event.tokenMint}:${positionId}` : event.tokenMint;
+}
+
+function buildEventId(event: MissedAlphaEvent, epochMs: number): string {
+  const tokenShort = event.tokenMint.slice(0, 8);
+  const positionId = typeof event.extras?.positionId === 'string' && event.extras.positionId.length > 0
+    ? event.extras.positionId
+    : null;
+  if (!positionId) return `ma-${epochMs}-${tokenShort}`;
+  const positionShort = positionId.replace(/[^a-zA-Z0-9_-]/g, '').slice(-24);
+  return `ma-${epochMs}-${tokenShort}-${positionShort}`;
 }
 
 function computeJitterMs(offsetSec: number, jitterPct: number): number {

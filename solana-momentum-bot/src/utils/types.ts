@@ -199,6 +199,11 @@ export type CloseReason =
   // pnl=0 으로 closed 처리하여 loop 종료 + canary streak 리셋.
   | 'ORPHAN_NO_BALANCE';
 export type SizeConstraint = 'RISK' | 'LIQUIDITY' | 'EMERGENCY';
+export type PartialFillDataReason =
+  | 'missing_actual_input'
+  | 'missing_actual_output'
+  | 'output_sanity_high'
+  | 'output_sanity_low';
 
 export interface Order {
   pairAddress: string;
@@ -240,6 +245,8 @@ export interface Order {
    * RPC 검증되지 않았음을 즉시 인지.
    */
   partialFillDataMissing?: boolean;
+  /** planned 강제 복원 원인. live canary 데이터 품질을 원인별로 집계한다. */
+  partialFillDataReason?: PartialFillDataReason;
 }
 
 export interface Trade {

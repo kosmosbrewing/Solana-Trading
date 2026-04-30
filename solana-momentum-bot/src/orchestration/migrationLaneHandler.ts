@@ -13,7 +13,7 @@
 import { appendFile, mkdir } from 'fs/promises';
 import path from 'path';
 import { createModuleLogger } from '../utils/logger';
-import { Order, Trade, CloseReason } from '../utils/types';
+import { Order, PartialFillDataReason, Trade, CloseReason } from '../utils/types';
 import { config } from '../utils/config';
 import { MicroCandleBuilder } from '../realtime';
 import {
@@ -442,6 +442,7 @@ async function enterMigrationProbe(
   let actualQuantity = quantity;
   let actualNotionalSol = currentPrice * quantity;  // 2026-04-29: RPC 측정 wallet delta 전파용
   let partialFillDataMissing = false;
+  let partialFillDataReason: PartialFillDataReason | undefined;
   let entryTxSignature = 'PAPER_TRADE';
   let entrySlippageBps = 0;
 
@@ -466,6 +467,7 @@ async function enterMigrationProbe(
       actualQuantity = metrics.quantity;
       actualNotionalSol = metrics.actualEntryNotionalSol;
       partialFillDataMissing = metrics.partialFillDataMissing;
+      partialFillDataReason = metrics.partialFillDataReason;
       entryTxSignature = buyResult.txSignature;
       entrySlippageBps = buyResult.slippageBps;
       log.info(
@@ -527,6 +529,8 @@ async function enterMigrationProbe(
       actualEntryPrice,
       actualQuantity,
       slippageBps: entrySlippageBps,
+      partialFillDataMissing,
+      partialFillDataReason,
     },
     notifierKey: 'migration_open_persist',
     buildNotifierMessage: (err) =>
@@ -555,6 +559,7 @@ async function enterMigrationProbe(
       // 2026-04-29: RPC 측정 wallet delta + partial-fill flag.
       actualNotionalSol,
       partialFillDataMissing,
+      partialFillDataReason,
     }, entryTxSignature).catch(() => {});
   }
 }

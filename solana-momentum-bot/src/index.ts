@@ -82,9 +82,13 @@ import { startJupiter429SummaryLoop } from './observability/jupiterRateLimitMetr
 import { Connection } from '@solana/web3.js';
 import { initKolDb, getKolDbStats } from './kol/db';
 import { KolWalletTracker } from './ingester/kolWalletTracker';
-import { initKolHunter, handleKolSwap } from './orchestration/kolSignalHandler';
+import { startKolTrackerWithPreparedHunter } from './init/kolHunterStartup';
+import {
+  handleKolSwap,
+  hydrateLiveExecutionQualityCooldownsFromLedger,
+  initKolHunter,
+} from './orchestration/kolSignalHandler';
 import { initKolPaperNotifier } from './orchestration/kolPaperNotifier';
-import type { KolTx } from './kol/types';
 import { resolveCupseyWalletLabel } from './orchestration/cupseyLaneHandler';
 import { resolveMigrationWalletLabel } from './orchestration/migrationLaneHandler';
 import { persistOpenTradeWithIntegrity, isEntryHaltActive } from './orchestration/entryIntegrity';
@@ -1218,34 +1222,24 @@ async function main() {
         // Option B (2026-04-28): inactive KOL paper trade opt-in. handler 가 isShadow=true 분기.
         shadowPaperTradeEnabled: config.kolHunterShadowPaperTradeEnabled,
       });
-      await kolTracker.start();
-      log.info(`[KOL_DISCOVERY] Option 5 Phase 1 — tracker started (${stats.activeKols} active KOLs)`);
 
       // Phase 3: kol_hunter paper lane 활성화 여부
-      if (config.kolHunterEnabled) {
-        // MISSION_CONTROL §KOL Control survival 체크가 실 운영 path 에서 동작하려면
-        // securityClient + gateCache 를 명시적으로 주입해야 한다 (2026-04-25 review fix).
-        initKolHunter({
-          securityClient: ctx.onchainSecurityClient,
-          gateCache: ctx.gateCache,
-          // 2026-04-27 (Phase 5 P1-9~14): live canary path 활성을 위해 ctx 주입.
-          // triple-flag (kolHunterLiveCanaryEnabled + !kolHunterPaperOnly + tradingMode='live')
-          // 모두 충족 시에만 실제 live wallet 사용. 그 외엔 paper-only fallback.
-          ctx,
-        });
-        kolTracker.on('kol_swap', (tx: KolTx) => {
-          handleKolSwap(tx).catch((err) => {
-            log.warn(`[KOL_HUNTER] handleKolSwap error: ${String(err)}`);
-          });
-        });
-        // 2026-04-26: paper notifier (L1 hourly digest + L2 5x anomaly alert).
-        // L3 daily summary 는 reporting.ts 의 sendDailySummaryReport 에서 호출.
-        initKolPaperNotifier(notifier);
-        log.info(
-          `[KOL_HUNTER] Option 5 Phase 3 — paper lane started (paperOnly=${config.kolHunterPaperOnly}, ` +
-          `survival=${ctx.onchainSecurityClient ? 'wired' : 'no-client'})`
-        );
-      }
+      await startKolTrackerWithPreparedHunter({
+        tracker: kolTracker,
+        ctx,
+        notifier,
+        log,
+        activeKols: stats.activeKols,
+        kolHunterEnabled: config.kolHunterEnabled,
+        kolHunterLiveCanaryEnabled: config.kolHunterLiveCanaryEnabled,
+        kolHunterPaperOnly: config.kolHunterPaperOnly,
+        runtime: {
+          initKolHunter,
+          hydrateLiveExecutionQualityCooldownsFromLedger,
+          handleKolSwap,
+          initKolPaperNotifier,
+        },
+      });
     } else {
       log.warn(`[KOL_DISCOVERY] KOL DB empty — tracker NOT started. data/kol/wallets.json 채우기`);
     }

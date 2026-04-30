@@ -124,6 +124,34 @@ describe('missedAlphaObserver', () => {
     expect(record.probe.deltaPct).toBeCloseTo(1.0, 2);
   });
 
+  it('optionally writes a schedule marker immediately to preserve coverage across restarts', async () => {
+    trackRejectForMissedAlpha(
+      {
+        rejectCategory: 'other',
+        rejectReason: 'winner_trailing_t1',
+        tokenMint: 'MARKERMINT111111111111111111111111111111111',
+        lane: 'kol_hunter',
+        signalPrice: 0.003,
+        probeSolAmount: 0.01,
+        tokenDecimals: 6,
+        extras: { isLive: true, elapsedSecAtClose: 120, positionId: 'kolh-live-MARKER-1000' },
+      },
+      { ...BASE_CFG, offsetsSec: [60], writeScheduleMarker: true }
+    );
+    await flushAsync();
+
+    expect(mockAppendFile).toHaveBeenCalledTimes(1);
+    const record = JSON.parse(String(mockAppendFile.mock.calls[0][1]).trim());
+    expect(record.tokenMint).toBe('MARKERMINT111111111111111111111111111111111');
+    expect(record.probe.offsetSec).toBe(0);
+    expect(record.probe.quoteStatus).toBe('scheduled');
+    expect(record.probe.deltaPct).toBeNull();
+    expect(record.extras.isLive).toBe(true);
+    expect(record.extras.positionId).toBe('kolh-live-MARKER-1000');
+    expect(record.eventId).toContain('kolh-live-MARKER-1000');
+    expect(getMissedAlphaObserverStats().scheduled).toBe(1);
+  });
+
   it('drops duplicate tokenMint within dedup window', () => {
     const event = {
       rejectCategory: 'survival' as const,
@@ -141,6 +169,35 @@ describe('missedAlphaObserver', () => {
     const stats = getMissedAlphaObserverStats();
     expect(stats.scheduled).toBe(1); // 두 번째·세 번째 호출은 dedup 으로 drop.
     expect(stats.inflight).toBe(1);
+  });
+
+  it('does not dedup distinct close positionIds for the same tokenMint', () => {
+    const baseEvent = {
+      rejectCategory: 'kol_close' as const,
+      rejectReason: 'probe_hard_cut',
+      tokenMint: 'SAMEMINT111111111111111111111111111111111',
+      lane: 'kol_hunter',
+      signalPrice: 0.01,
+      probeSolAmount: 0.01,
+    };
+
+    trackRejectForMissedAlpha(
+      { ...baseEvent, extras: { positionId: 'kolh-live-SAME-1000', isLive: true } },
+      { ...BASE_CFG, offsetsSec: [60] }
+    );
+    trackRejectForMissedAlpha(
+      { ...baseEvent, extras: { positionId: 'kolh-live-SAME-2000', isLive: true } },
+      { ...BASE_CFG, offsetsSec: [60] }
+    );
+    trackRejectForMissedAlpha(
+      { ...baseEvent, extras: { positionId: 'kolh-live-SAME-2000', isLive: true } },
+      { ...BASE_CFG, offsetsSec: [60] }
+    );
+
+    const stats = getMissedAlphaObserverStats();
+    expect(stats.scheduled).toBe(2);
+    expect(stats.inflight).toBe(2);
+    expect(stats.recentEventsByToken).toBe(2);
   });
 
   it('is a no-op when enabled=false', () => {

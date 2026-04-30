@@ -28,7 +28,7 @@
 import { readFile } from 'fs/promises';
 import path from 'path';
 
-interface ProbeLine {
+export interface ProbeLine {
   eventId: string;
   tokenMint: string;
   lane: string;
@@ -46,7 +46,7 @@ interface ProbeLine {
   };
 }
 
-interface CloseEvent {
+export interface CloseEvent {
   eventId: string;
   tokenMint: string;
   closeReason: string;
@@ -92,13 +92,16 @@ function parseArgs(argv: string[]): AnalyzerArgs {
   return { inputPath, windowDays, thresholdMfe, targetOffsetSec };
 }
 
-function isCloseEvent(line: ProbeLine): boolean {
+export function isCloseEvent(line: ProbeLine): boolean {
   if (line.lane !== 'kol_hunter') return false;
-  // close-site only — extras.elapsedSecAtClose 존재 여부로 reject/close 구분.
+  // 2026-04-30 (B1): rejectCategory==='kol_close' 가 가장 정확한 close-site 식별자.
+  //   backward compat: 4-30 이전 데이터는 기존 enum (probe_hard_cut 등) + extras.elapsedSecAtClose
+  //   로 식별. 두 path 모두 OR 로 허용 → 기존 jsonl 분석 호환성 유지.
+  if (line.rejectCategory === 'kol_close') return true;
   return line.extras != null && typeof line.extras.elapsedSecAtClose === 'number';
 }
 
-function aggregateCloseEvents(lines: ProbeLine[]): Map<string, CloseEvent> {
+export function aggregateCloseEvents(lines: ProbeLine[]): Map<string, CloseEvent> {
   const map = new Map<string, CloseEvent>();
   for (const line of lines) {
     if (!isCloseEvent(line)) continue;
@@ -128,16 +131,20 @@ function aggregateCloseEvents(lines: ProbeLine[]): Map<string, CloseEvent> {
   return map;
 }
 
-interface CohortStats {
+export interface CohortStats {
   cohort: string;
+  /** close-site events in this cohort, including pending/no-observation rows. */
   total: number;
+  /** events with a valid target-offset post-close MFE denominator. */
+  observedTargetTotal: number;
   winnerKills: number;
   rate: number;
   examples: Array<{ eventId: string; tokenMint: string; postMfe: number | null; closeReason: string }>;
 }
 
-function computeCohort(events: CloseEvent[], targetOffsetSec: number, threshold: number, label: string): CohortStats {
+export function computeCohort(events: CloseEvent[], targetOffsetSec: number, threshold: number, label: string): CohortStats {
   let winnerKills = 0;
+  let observedTargetTotal = 0;
   const examples: CohortStats['examples'] = [];
   for (const evt of events) {
     const delta = evt.postCloseDelta.get(targetOffsetSec);
@@ -147,6 +154,7 @@ function computeCohort(events: CloseEvent[], targetOffsetSec: number, threshold:
     //   observedPrice = signalPrice * (1 + delta)
     //   postMfe = (observedPrice - exitPrice) / exitPrice
     if (evt.exitPrice <= 0 || evt.signalPrice <= 0) continue;
+    observedTargetTotal += 1;
     const observedPrice = evt.signalPrice * (1 + delta);
     const postMfe = (observedPrice - evt.exitPrice) / evt.exitPrice;
     if (postMfe >= threshold) {
@@ -158,8 +166,9 @@ function computeCohort(events: CloseEvent[], targetOffsetSec: number, threshold:
   return {
     cohort: label,
     total: events.length,
+    observedTargetTotal,
     winnerKills,
-    rate: events.length > 0 ? winnerKills / events.length : 0,
+    rate: observedTargetTotal > 0 ? winnerKills / observedTargetTotal : 0,
     examples: examples.slice(0, 5),
   };
 }
@@ -177,10 +186,10 @@ function renderMarkdown(args: AnalyzerArgs, cohorts: CohortStats[]): string {
   lines.push(`- Threshold mfe: +${pct(args.thresholdMfe)} (5x default = 4.0)`);
   lines.push(`- Target offset: T+${args.targetOffsetSec}s`);
   lines.push('');
-  lines.push('| Cohort | Total | Winner-Kills | Rate |');
-  lines.push('|---|---:|---:|---:|');
+  lines.push('| Cohort | Total closes | Observed target | Winner-Kills | Rate |');
+  lines.push('|---|---:|---:|---:|---:|');
   for (const c of cohorts) {
-    lines.push(`| ${c.cohort} | ${c.total} | ${c.winnerKills} | ${pct(c.rate)} |`);
+    lines.push(`| ${c.cohort} | ${c.total} | ${c.observedTargetTotal} | ${c.winnerKills} | ${pct(c.rate)} |`);
   }
   lines.push('');
   for (const c of cohorts) {

@@ -217,6 +217,8 @@ export interface AnalyzeOptions {
   windowDays: number;
   /** 특정 category 만 분석하고 싶을 때 (others 는 byCategory 에 미포함). */
   rejectCategory?: string;
+  /** 기본 false: close-site kol_close 는 winner-kill 전용 리포트에서 계산한다. */
+  includeCloseSite?: boolean;
   /** test 용 fixed nowMs. */
   nowMs?: number;
 }
@@ -231,6 +233,7 @@ export function analyze(
     if (!Number.isFinite(tl.rejectedAtMs)) return false;
     if (tl.rejectedAtMs < cutoffMs) return false;
     if (opts.rejectCategory && tl.rejectCategory !== opts.rejectCategory) return false;
+    if (!opts.rejectCategory && opts.includeCloseSite !== true && tl.rejectCategory === 'kol_close') return false;
     return true;
   });
 
@@ -277,7 +280,7 @@ export function buildMarkdown(report: RetroAnalysis, generatedAtIso: string): st
   lines.push('');
   lines.push(`| 지표 | 값 |`);
   lines.push(`|------|-----|`);
-  lines.push(`| total rejects (events in window) | ${report.totalRejects} |`);
+  lines.push(`| total pre-entry rejects (events in window) | ${report.totalRejects} |`);
   lines.push(`| overall false-neg rate (mfe ≥ +50%) | ${fmtPct(report.overallFalseNegRate)} |`);
   lines.push(`| alert level | ${report.alertLevel.toUpperCase()} |`);
   lines.push('');
@@ -314,6 +317,7 @@ interface CliArgs {
   inputFile: string;
   windowDays: number;
   rejectCategory?: string;
+  includeCloseSite?: boolean;
   alertOutFile: string;
 }
 
@@ -335,6 +339,8 @@ export function parseArgs(argv: string[]): CliArgs {
       args.rejectCategory = a.slice('--reject-category='.length);
     } else if (a === '--reject-category' && argv[i + 1]) {
       args.rejectCategory = argv[++i];
+    } else if (a === '--include-close-site') {
+      args.includeCloseSite = true;
     } else if (a === '--in' && argv[i + 1]) {
       args.inputFile = argv[++i];
     } else if (a.startsWith('--in=')) {
@@ -362,6 +368,7 @@ async function main(): Promise<void> {
   const report = analyze(records, {
     windowDays: args.windowDays,
     rejectCategory: args.rejectCategory,
+    includeCloseSite: args.includeCloseSite,
   });
 
   const generatedAtIso = new Date().toISOString();

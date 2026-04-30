@@ -18,6 +18,7 @@
     "kol:shadow-eval": "ts-node scripts/kol-shadow-eval.ts",
     "kol:paper-arm-report": "ts-node scripts/kol-paper-arm-report.ts",
     "kol:live-canary-report": "ts-node scripts/kol-live-canary-report.ts",
+    "kol:policy-report": "ts-node scripts/kol-policy-report.ts",
     "lane:reconcile": "ts-node scripts/reconcile-lane-outcomes.ts",
     "lane:edge-report": "ts-node scripts/lane-edge-report.ts",
     "ops:burst:replay": "ts-node scripts/wsBurstPaperReplay.ts",

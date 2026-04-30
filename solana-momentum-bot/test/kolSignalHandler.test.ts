@@ -10,9 +10,11 @@ jest.mock('../src/utils/logger', () => ({
 
 const mockAppendFile = jest.fn().mockResolvedValue(undefined);
 const mockMkdir = jest.fn().mockResolvedValue(undefined);
+const mockReadFile = jest.fn();
 jest.mock('fs/promises', () => ({
   appendFile: (...args: unknown[]) => mockAppendFile(...args),
   mkdir: (...args: unknown[]) => mockMkdir(...args),
+  readFile: (...args: unknown[]) => mockReadFile(...args),
 }));
 
 const mockAxiosGet = jest.fn();
@@ -31,6 +33,8 @@ import {
   __testTriggerTick,
   __testIsLiveCanaryActive,
   __testResetStructuralKillCache,
+  hydrateLiveExecutionQualityCooldownsFromBuyRecords,
+  hydrateLiveExecutionQualityCooldownsFromLedger,
   recoverKolHunterOpenPositions,
   stopKolHunter,
   kolHunterEvents,
@@ -42,27 +46,59 @@ import * as sellQuoteProbeModule from '../src/gate/sellQuoteProbe';
 class StubPaperPriceFeed extends EventEmitter {
   public prices = new Map<string, number>();
   public decimals = new Map<string, number | null>();
+  public timestamps = new Map<string, number>();
+  public freshPrices = new Map<string, { price: number; outputDecimals: number | null; timestamp: number } | null>();
+  public refreshNowCalls = 0;
   subscribe(mint: string) { /* noop */ void mint; }
-  unsubscribe(mint: string) { this.prices.delete(mint); }
+  unsubscribe(mint: string) {
+    this.prices.delete(mint);
+    this.decimals.delete(mint);
+    this.timestamps.delete(mint);
+  }
   getLastPrice(mint: string): { price: number; timestamp: number } | null {
     const p = this.prices.get(mint);
-    return p != null ? { price: p, timestamp: Date.now() } : null;
+    return p != null ? { price: p, timestamp: this.timestamps.get(mint) ?? Date.now() } : null;
   }
   // 2026-04-26 P1 fix: tokenDecimals stash — test 도 PaperPriceFeed 인터페이스 준수.
   getLastTick(mint: string): { price: number; timestamp: number; outputDecimals: number | null } | null {
     const p = this.prices.get(mint);
     const outputDecimals = this.decimals.has(mint) ? this.decimals.get(mint)! : 6;
-    return p != null ? { price: p, timestamp: Date.now(), outputDecimals } : null;
+    return p != null ? { price: p, timestamp: this.timestamps.get(mint) ?? Date.now(), outputDecimals } : null;
+  }
+  async refreshNow(mint: string): Promise<{ price: number; timestamp: number; outputDecimals: number | null } | null> {
+    this.refreshNowCalls += 1;
+    const fresh = this.freshPrices.has(mint) ? this.freshPrices.get(mint)! : this.getLastTick(mint);
+    if (!fresh) return null;
+    this.prices.set(mint, fresh.price);
+    this.decimals.set(mint, fresh.outputDecimals);
+    this.timestamps.set(mint, fresh.timestamp);
+    this.emit('price', {
+      tokenMint: mint,
+      price: fresh.price,
+      outAmountUi: 0.01 / fresh.price,
+      outputDecimals: fresh.outputDecimals,
+      probeSolAmount: 0.01,
+      timestamp: fresh.timestamp,
+    });
+    return fresh;
   }
   getActiveSubscriptionCount() { return this.prices.size; }
-  stopAll() { this.prices.clear(); this.decimals.clear(); }
-  setInitialPrice(mint: string, price: number, outputDecimals: number | null = 6) {
+  stopAll() { this.prices.clear(); this.decimals.clear(); this.timestamps.clear(); this.freshPrices.clear(); }
+  setInitialPrice(mint: string, price: number, outputDecimals: number | null = 6, timestamp = Date.now()) {
     this.prices.set(mint, price);
     this.decimals.set(mint, outputDecimals);
+    this.timestamps.set(mint, timestamp);
+  }
+  setFreshPrice(mint: string, price: number, outputDecimals: number | null = 6, timestamp = Date.now()) {
+    this.freshPrices.set(mint, { price, outputDecimals, timestamp });
+  }
+  setFreshUnavailable(mint: string) {
+    this.freshPrices.set(mint, null);
   }
   emitTick(mint: string, price: number, outputDecimals: number | null = 6) {
     this.prices.set(mint, price);
     this.decimals.set(mint, outputDecimals);
+    this.timestamps.set(mint, Date.now());
     this.emit('price', {
       tokenMint: mint,
       price,
@@ -166,6 +202,13 @@ jest.mock('../src/utils/config', () => ({
     kolHunterYellowZonePaperFallbackBelowSol: 0.75,
     kolHunterYellowZoneMinIndependentKol: 2,
     kolHunterYellowZoneMaxRecentJupiter429: 20,
+    kolHunterLiveExecutionQualityCooldownEnabled: true,
+    kolHunterLiveExecutionQualityCooldownMs: 1_800_000,
+    kolHunterLiveExecutionQualityMaxBuyLagMs: 90_000,
+    kolHunterLiveExecutionQualityMaxEntryAdvantageAbsPct: 0.5,
+    kolHunterLiveFreshReferenceGuardEnabled: true,
+    kolHunterLiveFreshReferenceMaxAgeMs: 2_000,
+    kolHunterLiveFreshReferenceMaxAdverseDriftPct: 0.20,
     // 2026-04-29 (Track 1): default 0 — test 내 same-token 반복 사용 차단 안 함.
     // Track 1 회귀 테스트에서 explicit 으로 override 하여 검증.
     kolHunterReentryCooldownMs: 0,
@@ -206,12 +249,23 @@ async function flushAsync(): Promise<void> {
   await new Promise((resolve) => setImmediate(resolve));
 }
 
+function policyDecisionRecords(): any[] {
+  return mockAppendFile.mock.calls
+    .filter((call) => typeof call[0] === 'string' && call[0].includes('kol-policy-decisions.jsonl'))
+    .map((call) => JSON.parse(String(call[1]).trim()));
+}
+
+function policyRecordsWithFlag(flag: string): any[] {
+  return policyDecisionRecords().filter((row) => Array.isArray(row.riskFlags) && row.riskFlags.includes(flag));
+}
+
 describe('kolSignalHandler — state machine', () => {
   let stubFeed: StubPaperPriceFeed;
 
   beforeEach(() => {
     stopKolHunter();
     jest.clearAllMocks();
+    mockReadFile.mockRejectedValue(Object.assign(new Error('missing ledger'), { code: 'ENOENT' }));
     // 2026-04-28 (P1 isolation fix): KOL DB module global state 가 test 간 leak.
     // Phase 1 신규 테스트의 __testInject 가 후속 test 영향 → resetKolDbState 로 격리.
     const { resetKolDbState } = require('../src/kol/db');
@@ -219,10 +273,12 @@ describe('kolSignalHandler — state machine', () => {
     // 2026-04-29 (Track 1): same-token reentry cooldown 도 test 간 격리.
     const {
       resetReentryCooldownForTests,
+      resetLiveExecutionQualityCooldownForTests,
       resetKolDecayForTests,
       resetCommunityCacheForTests,
     } = require('../src/orchestration/kolSignalHandler');
     resetReentryCooldownForTests();
+    resetLiveExecutionQualityCooldownForTests();
     // 2026-04-29 (P0-2): KOL alpha decay tracking 도 test 간 격리.
     resetKolDecayForTests();
     // 2026-04-29 (#5): community cache 도 test 간 격리.
@@ -236,6 +292,9 @@ describe('kolSignalHandler — state machine', () => {
     mockedConfig.kolHunterSwingV2Enabled = false;
     mockedConfig.kolHunterSwingV2T1TrailPct = 0.25;
     mockedConfig.kolHunterSwingV2T1ProfitFloorMult = 1.10;
+    mockedConfig.kolHunterLiveFreshReferenceGuardEnabled = true;
+    mockedConfig.kolHunterLiveFreshReferenceMaxAgeMs = 2_000;
+    mockedConfig.kolHunterLiveFreshReferenceMaxAdverseDriftPct = 0.20;
     // 2026-04-29 (Track 2B): test 간 격리. describe 블록에서 true 로 설정해도 다음 test 까지 leak 안 함.
     mockedConfig.kolHunterRejectOnNoSecurityData = false;
     stubFeed = new StubPaperPriceFeed();
@@ -258,6 +317,20 @@ describe('kolSignalHandler — state machine', () => {
     expect(positions[0].entryPrice).toBeCloseTo(0.001, 6);
     expect(positions[0].participatingKols).toHaveLength(1);
     expect(positions[0].participatingKols[0].id).toBe('pain');
+  });
+
+  it('entry 기준가는 오래된 cached tick 대신 fresh tick 을 기다린다', async () => {
+    stubFeed.setInitialPrice(MINT_WINNER, 0.001, 6, Date.now() - 30_000);
+    await handleKolSwap(buyTx('pain', 'S', MINT_WINNER));
+
+    const resolving = __testForceResolveStalk(MINT_WINNER);
+    await flushAsync();
+    stubFeed.emitTick(MINT_WINNER, 0.002);
+    await resolving;
+
+    const positions = __testGetActive();
+    expect(positions).toHaveLength(1);
+    expect(positions[0].entryPrice).toBeCloseTo(0.002, 6);
   });
 
   it('stalk expired, independent KOL 0명 → reject (no position)', async () => {
@@ -985,10 +1058,10 @@ describe('kolSignalHandler — state machine', () => {
       mockedConfig.kolHunterLiveCanaryEnabled = false;
     });
 
-    function buildLiveCtx() {
+    function buildLiveCtx(opts: { executeBuy?: jest.Mock } = {}) {
       const insertTrade = jest.fn().mockResolvedValue('db-kolh-live-1');
       const closeTrade = jest.fn().mockResolvedValue(undefined);
-      const executeBuy = jest.fn().mockResolvedValue({
+      const executeBuy = opts.executeBuy ?? jest.fn().mockResolvedValue({
         txSignature: 'KOL_LIVE_BUY_SIG',
         expectedOutAmount: 1n,
         actualOutUiAmount: 1,
@@ -1057,6 +1130,123 @@ describe('kolSignalHandler — state machine', () => {
       expect(live?.entryTxSignature).toBe('KOL_LIVE_BUY_SIG');
     });
 
+    it('live fresh reference guard: pre-buy reference drift 가 크면 live 대신 paper fallback', async () => {
+      const { ctx, executeBuy, insertTrade } = buildLiveCtx();
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterLiveFreshReferenceMaxAdverseDriftPct = 0.20;
+      stubFeed.setFreshPrice(MINT_SMART, 0.0016); // pullback trigger 0.00115 대비 +39.1%
+
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART, 120_000));
+      await handleKolSwap(buyTx('gorapandeok', 'B', MINT_SMART));
+      stubFeed.emitTick(MINT_SMART, 0.0013);
+      stubFeed.emitTick(MINT_SMART, 0.00115);
+      await flushAsync();
+
+      expect(stubFeed.refreshNowCalls).toBeGreaterThan(0);
+      expect(executeBuy).not.toHaveBeenCalled();
+      expect(insertTrade).not.toHaveBeenCalled();
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].isLive).toBeFalsy();
+      expect(positions[0].entryPrice).toBeCloseTo(0.0016, 8);
+      expect(positions[0].survivalFlags).toContain('LIVE_FRESH_REFERENCE_REJECT');
+      expect(positions[0].survivalFlags.some((flag) => flag.startsWith('LIVE_FRESH_REFERENCE_DRIFT_PCT='))).toBe(true);
+      const freshReferencePolicies = policyRecordsWithFlag('LIVE_FRESH_REFERENCE_REJECT');
+      const liveFallbackPolicy = freshReferencePolicies.find((row) => row.metrics?.isLive === true);
+      expect(liveFallbackPolicy?.currentAction).toBe('enter');
+      expect(liveFallbackPolicy?.recommendedAction).toBe('paper_fallback');
+      expect(liveFallbackPolicy?.divergence).toBe(true);
+      expect(liveFallbackPolicy?.confidence).toBe('high');
+      expect(liveFallbackPolicy?.reasons).toContain('live_fresh_reference_reject');
+      expect(liveFallbackPolicy?.riskFlags).toContain('LIVE_FRESH_REFERENCE_REJECT');
+      expect(freshReferencePolicies.some((row) => row.metrics?.isLive !== true)).toBe(false);
+    });
+
+    it('live fresh reference guard: favorable fresh drift 는 live 진입을 막지 않는다', async () => {
+      const favorableBuy = jest.fn(async (order: any) => {
+        const outUi = order.quantity;
+        const outRaw = BigInt(Math.max(1, Math.round(outUi * 1_000_000)));
+        return {
+          txSignature: 'KOL_LIVE_FAVORABLE_REFERENCE_SIG',
+          expectedInAmount: 10_000_000n,
+          actualInputAmount: 10_000_000n,
+          actualInputUiAmount: 0.01,
+          inputDecimals: 9,
+          expectedOutAmount: outRaw,
+          actualOutAmount: outRaw,
+          actualOutUiAmount: outUi,
+          outputDecimals: 6,
+          slippageBps: 0,
+        };
+      });
+      const { ctx, executeBuy } = buildLiveCtx({ executeBuy: favorableBuy });
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      stubFeed.setFreshPrice(MINT_SMART, 0.0008); // pullback trigger 0.00115 대비 favorable drift
+
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART, 120_000));
+      await handleKolSwap(buyTx('gorapandeok', 'B', MINT_SMART));
+      stubFeed.emitTick(MINT_SMART, 0.0013);
+      stubFeed.emitTick(MINT_SMART, 0.00115);
+      await flushAsync();
+
+      expect(executeBuy).toHaveBeenCalledTimes(1);
+      const live = __testGetActive().find((p) => p.isLive === true);
+      expect(live).toBeDefined();
+      expect(live?.entryPrice).toBeCloseTo(0.0008, 8);
+    });
+
+    it('live fresh reference guard: one-shot quote 불가 시 live 대신 paper fallback', async () => {
+      const { ctx, executeBuy } = buildLiveCtx();
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      stubFeed.setFreshUnavailable(MINT_SMART);
+
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART, 120_000));
+      await handleKolSwap(buyTx('gorapandeok', 'B', MINT_SMART));
+      stubFeed.emitTick(MINT_SMART, 0.0013);
+      stubFeed.emitTick(MINT_SMART, 0.00115);
+      await flushAsync();
+
+      expect(executeBuy).not.toHaveBeenCalled();
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].isLive).toBeFalsy();
+      expect(positions[0].survivalFlags).toEqual(expect.arrayContaining([
+        'LIVE_FRESH_REFERENCE_REJECT',
+        'LIVE_FRESH_REFERENCE_UNAVAILABLE',
+      ]));
+    });
+
+    it('live fresh reference guard: one-shot quote 가 stale 이면 live 대신 paper fallback', async () => {
+      const { ctx, executeBuy } = buildLiveCtx();
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      stubFeed.setFreshPrice(MINT_SMART, 0.00115, 6, Date.now() - 5_000);
+
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART, 120_000));
+      await handleKolSwap(buyTx('gorapandeok', 'B', MINT_SMART));
+      stubFeed.emitTick(MINT_SMART, 0.0013);
+      stubFeed.emitTick(MINT_SMART, 0.00115);
+      await flushAsync();
+
+      expect(executeBuy).not.toHaveBeenCalled();
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].isLive).toBeFalsy();
+      expect(positions[0].survivalFlags).toContain('LIVE_FRESH_REFERENCE_REJECT');
+      expect(positions[0].survivalFlags.some((flag) => flag.startsWith('LIVE_FRESH_REFERENCE_STALE_MS='))).toBe(true);
+    });
+
     it('live canary: wallet healthy 여도 single-KOL live 는 paper fallback', async () => {
       const { ctx, executeBuy } = buildLiveCtx();
       const { setWalletStopGuardStateForTests } = require('../src/risk/walletStopGuard');
@@ -1076,6 +1266,15 @@ describe('kolSignalHandler — state machine', () => {
       expect(positions).toHaveLength(1);
       expect(positions[0].isLive).toBeFalsy();
       expect(positions[0].survivalFlags).toContain('LIVE_MIN_KOL');
+      const minKolPolicies = policyRecordsWithFlag('LIVE_MIN_KOL');
+      const liveFallbackPolicy = minKolPolicies.find((row) => row.metrics?.isLive === true);
+      expect(liveFallbackPolicy?.currentAction).toBe('enter');
+      expect(liveFallbackPolicy?.recommendedAction).toBe('paper_fallback');
+      expect(liveFallbackPolicy?.divergence).toBe(true);
+      expect(liveFallbackPolicy?.confidence).toBe('high');
+      expect(liveFallbackPolicy?.reasons).toContain('single_kol_live_not_enough');
+      expect(liveFallbackPolicy?.riskFlags).toContain('LIVE_MIN_KOL');
+      expect(minKolPolicies.some((row) => row.metrics?.isLive !== true)).toBe(false);
     });
 
     // 2026-04-30 (P1.5 회귀): daily-loss halt 시 KOL lane 도 fallback paper.
@@ -1505,9 +1704,14 @@ describe('kolSignalHandler — state machine', () => {
       const closeTrade = jest.fn().mockResolvedValue(undefined);
       const executeBuy = opts.executeBuy ?? jest.fn().mockResolvedValue({
         txSignature: 'KOL_LIVE_BUY_SIG',
-        expectedOutAmount: 1n,
-        actualOutUiAmount: 10,
+        expectedInAmount: 10_000_000n,
+        actualInputAmount: 10_000_000n,
         actualInputUiAmount: 0.01,
+        inputDecimals: 9,
+        expectedOutAmount: 10_000_000n,
+        actualOutAmount: 10_000_000n,
+        actualOutUiAmount: 10,
+        outputDecimals: 6,
         slippageBps: 12,
       });
       const executeSell = opts.executeSell ?? jest.fn().mockResolvedValue({
@@ -1569,6 +1773,19 @@ describe('kolSignalHandler — state machine', () => {
       const buyEntryRecord = JSON.parse(String(buyLedgerCalls[0][1]).trim());
       expect(buyEntryRecord.wallet).toBe('main');
       expect(buyEntryRecord.txSignature).toBe('KOL_LIVE_BUY_SIG');
+      expect(typeof buyEntryRecord.referencePriceTimestampMs).toBe('number');
+      expect(typeof buyEntryRecord.referenceResolvedAtMs).toBe('number');
+      expect(typeof buyEntryRecord.referenceAgeMs).toBe('number');
+      expect(buyEntryRecord.referenceAgeMs).toBeGreaterThanOrEqual(0);
+      expect(typeof buyEntryRecord.signalToReferenceMs).toBe('number');
+      expect(buyEntryRecord.signalToReferenceMs).toBeGreaterThanOrEqual(0);
+      expect(typeof buyEntryRecord.buyStartedAtMs).toBe('number');
+      expect(typeof buyEntryRecord.buyCompletedAtMs).toBe('number');
+      expect(typeof buyEntryRecord.buyExecutionMs).toBe('number');
+      expect(buyEntryRecord.buyExecutionMs).toBeGreaterThanOrEqual(0);
+      expect(buyEntryRecord.swapQuoteEntryPrice).toBeCloseTo(0.001, 8);
+      expect(buyEntryRecord.swapQuoteEntryAdvantagePct).toBeCloseTo(0, 6);
+      expect(buyEntryRecord.referenceToSwapQuotePct).toBeCloseTo(0.001 / 0.00115 - 1, 6);
 
       const positions = __testGetActive();
       const live = positions.find((p) => p.isLive === true)!;
@@ -1576,9 +1793,13 @@ describe('kolSignalHandler — state machine', () => {
       expect(live.dbTradeId).toBe('db-kolh-live-e2e');
       expect(live.entryTxSignature).toBe('KOL_LIVE_BUY_SIG');
       expect(live.entrySlippageBps).toBe(12);
+      expect(live.marketReferencePrice).toBeCloseTo(live.entryPrice, 8);
+      expect(live.peakPrice).toBeCloseTo(live.entryPrice, 8);
+      expect(live.troughPrice).toBeCloseTo(live.entryPrice, 8);
+      expect(live.lastPrice).toBeCloseTo(live.entryPrice, 8);
 
-      // T1 promote (pullback arm: t1Mfe override 0.40 of 0.00115 entry)
-      __testTriggerTick(live.positionId, 0.00115 * 1.5); // +50% > +40% T1
+      // T1 promote (pullback arm: t1Mfe override 0.40, live 는 actual fill 기준)
+      __testTriggerTick(live.positionId, live.entryPrice * 1.5); // +50% > +40% T1
       expect(live.state).toBe('RUNNER_T1');
 
       // trail close (peak * 0.77 → trail 22% pullback)
@@ -1619,6 +1840,227 @@ describe('kolSignalHandler — state machine', () => {
       expect(__testGetActive()).toHaveLength(0);
     });
 
+    it('1b. forced-planned fill metrics → same mint next live signal falls back to paper', async () => {
+      const badBuy = jest.fn().mockResolvedValue({
+        txSignature: 'KOL_LIVE_BAD_FILL_SIG',
+        expectedOutAmount: 1n,
+        actualOutUiAmount: 1,      // expected qty = 10, ratio 0.1 → forced planned
+        actualInputUiAmount: 0.01,
+        slippageBps: 12,
+      });
+      const fx = buildE2EFixtures({
+        executeBuy: badBuy,
+        solBefore: 1.0,
+        solAfter: 0.99,
+      });
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx: fx.ctx });
+
+      await triggerSmartV3LiveEntry(MINT_SMART);
+      expect(badBuy).toHaveBeenCalledTimes(1);
+      const badBuyLedgerCalls = mockAppendFile.mock.calls.filter((c) =>
+        typeof c[0] === 'string' && c[0].includes('executed-buys.jsonl')
+      );
+      const badBuyRecord = JSON.parse(String(badBuyLedgerCalls[0][1]).trim());
+      expect(badBuyRecord.partialFillDataMissing).toBe(true);
+      expect(badBuyRecord.partialFillDataReason).toBe('output_sanity_low');
+      expect(badBuyRecord.actualInputUiAmount).toBeCloseTo(0.01, 8);
+      expect(badBuyRecord.actualOutUiAmount).toBeCloseTo(1, 8);
+      expect(badBuyRecord.expectedOutAmount).toBe('1');
+      expect(badBuyRecord.entryFillOutputRatio).toBeGreaterThan(0);
+      expect(badBuyRecord.entryFillOutputRatio).toBeLessThan(0.2);
+      const live = __testGetActive().find((p) => p.isLive === true)!;
+      expect(live).toBeDefined();
+
+      __testTriggerTick(live.positionId, live.marketReferencePrice * 0.85);
+      await flushAsync();
+      expect(__testGetActive()).toHaveLength(0);
+
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await triggerSmartV3LiveEntry(MINT_SMART, 'lexapro');
+
+      expect(badBuy).toHaveBeenCalledTimes(1);
+      const fallbackPaper = __testGetActive().find((p) => p.tokenMint === MINT_SMART && p.isLive !== true);
+      expect(fallbackPaper).toBeDefined();
+      expect(fallbackPaper?.survivalFlags).toContain('LIVE_EXEC_QUALITY_COOLDOWN');
+      const cooldownPolicies = policyRecordsWithFlag('LIVE_EXEC_QUALITY_COOLDOWN');
+      const cooldownPolicy = cooldownPolicies.find((row) => row.metrics?.isLive === true);
+      expect(cooldownPolicy?.currentAction).toBe('enter');
+      expect(cooldownPolicy?.recommendedAction).toBe('paper_fallback');
+      expect(cooldownPolicy?.divergence).toBe(true);
+      expect(cooldownPolicy?.confidence).toBe('high');
+      expect(cooldownPolicy?.reasons).toContain('live_execution_quality_cooldown');
+      expect(cooldownPolicy?.riskFlags).toContain('LIVE_EXEC_QUALITY_COOLDOWN');
+      expect(cooldownPolicies.some((row) => row.metrics?.isLive !== true)).toBe(false);
+    });
+
+    it('1b-2. severe measured entry advantage → emergency close and same mint next live signal falls back to paper', async () => {
+      const adverseBuy = jest.fn().mockResolvedValue({
+        txSignature: 'KOL_LIVE_ADVERSE_FILL_SIG',
+        expectedOutAmount: 10n,
+        actualOutUiAmount: 10,
+        actualInputUiAmount: 0.02, // planned reference=0.001, qty=10 → actual entry=0.002 (+100%)
+        slippageBps: 12,
+      });
+      const fx = buildE2EFixtures({
+        executeBuy: adverseBuy,
+        solBefore: 1.0,
+        solAfter: 1.015,
+      });
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx: fx.ctx });
+
+      await triggerSmartV3LiveEntry(MINT_SMART);
+      expect(adverseBuy).toHaveBeenCalledTimes(1);
+      const buyLedgerCalls = mockAppendFile.mock.calls.filter((c) =>
+        typeof c[0] === 'string' && c[0].includes('executed-buys.jsonl')
+      );
+      const buyRecord = JSON.parse(String(buyLedgerCalls[0][1]).trim());
+      expect(buyRecord.partialFillDataMissing).toBe(false);
+      expect(buyRecord.plannedEntryPrice).toBeCloseTo(0.00115, 8);
+      expect(buyRecord.actualEntryPrice).toBeCloseTo(0.002, 8);
+      expect(buyRecord.actualInputUiAmount).toBeCloseTo(0.02, 8);
+      expect(buyRecord.actualOutUiAmount).toBeCloseTo(10, 8);
+      expect(buyRecord.entryFillOutputRatio).toBeGreaterThan(0.5);
+      expect(typeof buyRecord.buyExecutionMs).toBe('number');
+      expect(typeof buyRecord.referenceAgeMs).toBe('number');
+
+      await flushAsync();
+      expect(fx.executeSell).toHaveBeenCalledTimes(1);
+      expect(fx.closeTrade).toHaveBeenCalledTimes(1);
+      expect(fx.sendTradeOpen).toHaveBeenCalledTimes(0);
+      const sellLedgerCalls = mockAppendFile.mock.calls.filter((c) =>
+        typeof c[0] === 'string' && c[0].includes('executed-sells.jsonl')
+      );
+      expect(sellLedgerCalls.length).toBe(1);
+      const sellRecord = JSON.parse(String(sellLedgerCalls[0][1]).trim());
+      expect(sellRecord.exitReason).toBe('entry_advantage_emergency_exit');
+      expect(sellRecord.entryTxSignature).toBe('KOL_LIVE_ADVERSE_FILL_SIG');
+      await flushAsync();
+      expect(__testGetActive()).toHaveLength(0);
+
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await triggerSmartV3LiveEntry(MINT_SMART, 'lexapro');
+
+      expect(adverseBuy).toHaveBeenCalledTimes(1);
+      const fallbackPaper = __testGetActive().find((p) => p.tokenMint === MINT_SMART && p.isLive !== true);
+      expect(fallbackPaper).toBeDefined();
+      expect(fallbackPaper?.survivalFlags).toContain('LIVE_EXEC_QUALITY_COOLDOWN');
+    });
+
+    it('1c. restart hydrate: recent bad buy ledger restores live quality cooldown', async () => {
+      const fx = buildE2EFixtures();
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx: fx.ctx });
+
+      const nowMs = Date.now();
+      const summary = hydrateLiveExecutionQualityCooldownsFromBuyRecords([
+        {
+          strategy: 'kol_hunter',
+          pairAddress: MINT_SMART,
+          recordedAt: new Date(nowMs - 60_000).toISOString(),
+          signalTimeSec: Math.floor((nowMs - 61_000) / 1000),
+          partialFillDataMissing: true,
+        },
+      ], nowMs);
+
+      expect(summary.hydrated).toBe(1);
+
+      await triggerSmartV3LiveEntry(MINT_SMART);
+
+      expect(fx.executeBuy).not.toHaveBeenCalled();
+      const fallbackPaper = __testGetActive().find((p) => p.tokenMint === MINT_SMART && p.isLive !== true);
+      expect(fallbackPaper).toBeDefined();
+      expect(fallbackPaper?.survivalFlags).toContain('LIVE_EXEC_QUALITY_COOLDOWN');
+    });
+
+    it('1c-2. restart hydrate restores cooldown from severe measured entry advantage', async () => {
+      const fx = buildE2EFixtures();
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx: fx.ctx });
+
+      const nowMs = Date.now();
+      const summary = hydrateLiveExecutionQualityCooldownsFromBuyRecords([
+        {
+          strategy: 'kol_hunter',
+          pairAddress: MINT_SMART,
+          recordedAt: new Date(nowMs - 60_000).toISOString(),
+          signalTimeSec: Math.floor((nowMs - 61_000) / 1000),
+          partialFillDataMissing: false,
+          plannedEntryPrice: 0.001,
+          actualEntryPrice: 0.002,
+        },
+      ], nowMs);
+
+      expect(summary.hydrated).toBe(1);
+
+      await triggerSmartV3LiveEntry(MINT_SMART);
+
+      expect(fx.executeBuy).not.toHaveBeenCalled();
+      const fallbackPaper = __testGetActive().find((p) => p.tokenMint === MINT_SMART && p.isLive !== true);
+      expect(fallbackPaper).toBeDefined();
+      expect(fallbackPaper?.survivalFlags).toContain('LIVE_EXEC_QUALITY_COOLDOWN');
+    });
+
+    it('1c-3. restart hydrate prefers explicit buyExecutionMs over legacy ledger timestamp gap', async () => {
+      const fx = buildE2EFixtures();
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx: fx.ctx });
+
+      const nowMs = Date.now();
+      const summary = hydrateLiveExecutionQualityCooldownsFromBuyRecords([
+        {
+          strategy: 'kol_hunter',
+          pairAddress: MINT_SMART,
+          recordedAt: new Date(nowMs - 1_000).toISOString(),
+          signalTimeSec: Math.floor((nowMs - 1_000) / 1000),
+          buyExecutionMs: 120_000,
+          partialFillDataMissing: false,
+        },
+      ], nowMs);
+
+      expect(summary.hydrated).toBe(1);
+
+      await triggerSmartV3LiveEntry(MINT_SMART);
+
+      expect(fx.executeBuy).not.toHaveBeenCalled();
+      const fallbackPaper = __testGetActive().find((p) => p.tokenMint === MINT_SMART && p.isLive !== true);
+      expect(fallbackPaper).toBeDefined();
+      expect(fallbackPaper?.survivalFlags).toContain('LIVE_EXEC_QUALITY_COOLDOWN');
+    });
+
+    it('1d. restart hydrate reads executed-buys ledger and restores live quality cooldown', async () => {
+      const fx = buildE2EFixtures();
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx: fx.ctx });
+
+      const nowMs = Date.now();
+      mockReadFile.mockResolvedValueOnce([
+        JSON.stringify({
+          strategy: 'kol_hunter',
+          pairAddress: MINT_SMART,
+          recordedAt: new Date(nowMs - 30_000).toISOString(),
+          signalTimeSec: Math.floor((nowMs - 140_000) / 1000),
+          partialFillDataMissing: false,
+        }),
+        '{broken-json',
+        JSON.stringify({
+          strategy: 'kol_hunter',
+          pairAddress: MINT_WINNER,
+          recordedAt: new Date(nowMs - 3_600_000).toISOString(),
+          partialFillDataMissing: true,
+        }),
+      ].join('\n'));
+
+      const summary = await hydrateLiveExecutionQualityCooldownsFromLedger('/tmp/kol-test-ledger');
+
+      expect(mockReadFile).toHaveBeenCalledWith('/tmp/kol-test-ledger/executed-buys.jsonl', 'utf8');
+      expect(summary.loaded).toBe(2);
+      expect(summary.hydrated).toBe(1);
+      expect(summary.skippedExpired).toBe(1);
+
+      await triggerSmartV3LiveEntry(MINT_SMART);
+
+      expect(fx.executeBuy).not.toHaveBeenCalled();
+      const fallbackPaper = __testGetActive().find((p) => p.tokenMint === MINT_SMART && p.isLive !== true);
+      expect(fallbackPaper).toBeDefined();
+      expect(fallbackPaper?.survivalFlags).toContain('LIVE_EXEC_QUALITY_COOLDOWN');
+    });
+
     it('2. live entry fail (executor.executeBuy throws) → canary slot release + no DB insert', async () => {
       const failBuy = jest.fn().mockRejectedValue(new Error('jupiter rpc fail'));
       const fx = buildE2EFixtures({ executeBuy: failBuy });
@@ -1655,7 +2097,7 @@ describe('kolSignalHandler — state machine', () => {
       const stateBeforeFail = live.state;  // PROBE / RUNNER_T1 등
 
       // Hardcut trigger
-      __testTriggerTick(live.positionId, 0.00115 * 0.85);
+      __testTriggerTick(live.positionId, live.entryPrice * 0.85);
       await flushAsync();
 
       // sell 시도 1회 (closeLivePosition 진입 → executeSell 호출 → throw)
@@ -1673,7 +2115,7 @@ describe('kolSignalHandler — state machine', () => {
       );
 
       // 두 번째 close trigger (60s 이내) — cooldown 으로 추가 critical 차단 + retry 가능
-      __testTriggerTick(live.positionId, 0.00115 * 0.84);
+      __testTriggerTick(live.positionId, live.entryPrice * 0.84);
       await flushAsync();
       // F1 fix 효과: state 복원되므로 retry 가능 (executeSell 다시 호출됨)
       expect(failSell).toHaveBeenCalledTimes(2);
@@ -1689,7 +2131,7 @@ describe('kolSignalHandler — state machine', () => {
       const live = __testGetActive().find((p) => p.isLive === true)!;
 
       // 임의 close trigger (hardcut)
-      __testTriggerTick(live.positionId, 0.00115 * 0.85);
+      __testTriggerTick(live.positionId, live.entryPrice * 0.85);
       await flushAsync();
 
       // sell 호출 안 됨 (balance 0 분기)
@@ -1745,11 +2187,11 @@ describe('kolSignalHandler — state machine', () => {
 
       const live = __testGetActive().find((p) => p.isLive === true)!;
       // tick A: hardcut (close 시작 → state='CLOSED' 즉시 mark + void closeLivePosition)
-      __testTriggerTick(live.positionId, 0.00115 * 0.85);
+      __testTriggerTick(live.positionId, live.entryPrice * 0.85);
       // tick B: 동일 micro-task tick 에서 다시 trigger — 이미 state='CLOSED' 라 onPriceTick 의 guard
       // (line 1275) + closePosition 의 guard (line 1441) 양쪽에서 차단되어 두 번째 closeLivePosition
       // 호출이 발생하지 않아야 한다.
-      __testTriggerTick(live.positionId, 0.00115 * 1.5);  // winner trail 시도
+      __testTriggerTick(live.positionId, live.entryPrice * 1.5);  // winner trail 시도
       await flushAsync();
 
       // executeSell 정확히 1회 → 2중 sell 방지 confirm

@@ -4,27 +4,28 @@
 //
 // trackPureWsClose: close-site observer hook (P2-1b). Phase 3 miss 가설 (cut 이후 가격 상승) 측정.
 
-import path from 'path';
 import { config } from '../../utils/config';
 import {
   trackRejectForMissedAlpha,
+  buildMissedAlphaConfigFromGlobal,
   type MissedAlphaEvent,
   type MissedAlphaObserverConfig,
 } from '../../observability/missedAlphaObserver';
 import { LANE_STRATEGY } from './constants';
 import type { PureWsPosition } from './types';
 
+// 2026-04-30 (B2 refactor): observer config 공통 helper 사용 (kol-missed-alpha 와 통합).
 export function buildMissedAlphaConfig(): Partial<MissedAlphaObserverConfig> {
-  return {
+  return buildMissedAlphaConfigFromGlobal({
+    realtimeDataDir: config.realtimeDataDir,
     enabled: config.missedAlphaObserverEnabled,
     offsetsSec: config.missedAlphaObserverOffsetsSec,
     jitterPct: config.missedAlphaObserverJitterPct,
     maxInflight: config.missedAlphaObserverMaxInflight,
     dedupWindowSec: config.missedAlphaObserverDedupWindowSec,
-    outputFile: path.join(config.realtimeDataDir, 'missed-alpha.jsonl'),
     jupiterApiUrl: config.jupiterApiUrl,
     jupiterApiKey: config.jupiterApiKey,
-  };
+  });
 }
 
 export function trackPureWsReject(partial: Omit<MissedAlphaEvent, 'lane'>): void {

@@ -39,13 +39,15 @@
  * Real Asset Guard 무영향 (paper only, 지갑 trade 0).
  */
 import { EventEmitter } from 'events';
-import { appendFile, mkdir } from 'fs/promises';
+import { appendFile, mkdir, readFile } from 'fs/promises';
 import path from 'path';
 import { createModuleLogger } from '../utils/logger';
 import { config } from '../utils/config';
 import type { KolTx, KolDiscoveryScore } from '../kol/types';
 import { computeKolDiscoveryScore } from '../kol/scoring';
 import { getKolLaneRole, getKolTradingStyle } from '../kol/db';
+import { evaluateKolShadowPolicy } from '../kol/policy';
+import type { KolPolicyDecision, KolPolicyInput, KolPolicyParticipant } from '../kol/policyTypes';
 import { PaperPriceFeed, type PriceTick } from '../kol/paperPriceFeed';
 import { trackRejectForMissedAlpha, type MissedAlphaEvent } from '../observability/missedAlphaObserver';
 import { trackKolClose } from './kolMissedAlpha';
@@ -56,7 +58,7 @@ import { GateCacheManager } from '../gate/gateCacheManager';
 import { getJupiter429Stats } from '../observability/jupiterRateLimitMetric';
 import { resolveTokenSymbol, lookupCachedSymbol } from '../ingester/tokenSymbolResolver';
 // 2026-04-27 (KOL live canary): pure_ws live path 와 동일 패턴.
-import type { Order, Trade } from '../utils/types';
+import type { Order, PartialFillDataReason, Trade } from '../utils/types';
 import type { BotContext } from './types';
 import { acquireCanarySlot, releaseCanarySlot } from '../risk/canaryConcurrencyGuard';
 import { reportCanaryClose } from '../risk/canaryAutoHalt';
@@ -89,6 +91,7 @@ export type CloseReason =
   | 'smart_v3_price_timeout'
   | 'smart_v3_kol_sell_cancel'
   | 'insider_exit_full'
+  | 'entry_advantage_emergency_exit'
   | 'winner_trailing_t1'
   | 'winner_trailing_t2'
   | 'winner_trailing_t3'
@@ -205,6 +208,7 @@ interface PaperEntryOptions {
   convictionLevel?: KolConvictionLevel;
   tokenDecimals?: number;
   tokenDecimalsSource?: 'security_client' | 'jupiter_quote';
+  skipPolicyEntry?: boolean;
 }
 
 interface DynamicExitParams {
@@ -262,6 +266,200 @@ function isInReentryCooldown(tokenMint: string): { blocked: boolean; remainingMs
 /** 테스트용 reset. */
 export function resetReentryCooldownForTests(): void {
   recentClosedTokens.clear();
+}
+
+interface LiveExecutionQualityCooldown {
+  untilMs: number;
+  reason: string;
+}
+interface LiveExecutionQualityBuyRecord {
+  strategy?: string;
+  pairAddress?: string;
+  tokenMint?: string;
+  recordedAt?: string;
+  signalTimeSec?: number;
+  buyExecutionMs?: number;
+  plannedEntryPrice?: number;
+  actualEntryPrice?: number;
+  partialFillDataMissing?: boolean;
+  partialFillDataReason?: string;
+}
+export interface LiveExecutionQualityHydrationSummary {
+  loaded: number;
+  hydrated: number;
+  skippedExpired: number;
+}
+const liveExecutionQualityCooldowns = new Map<string, LiveExecutionQualityCooldown>();
+
+function pruneLiveExecutionQualityCooldowns(nowMs: number): void {
+  if (liveExecutionQualityCooldowns.size <= 100) return;
+  for (const [mint, state] of liveExecutionQualityCooldowns) {
+    if (state.untilMs <= nowMs) liveExecutionQualityCooldowns.delete(mint);
+  }
+}
+
+function markLiveExecutionQualityCooldown(tokenMint: string, reason: string): void {
+  if (!config.kolHunterLiveExecutionQualityCooldownEnabled) return;
+  const cooldownMs = config.kolHunterLiveExecutionQualityCooldownMs;
+  if (cooldownMs <= 0) return;
+  const nowMs = Date.now();
+  const untilMs = nowMs + cooldownMs;
+  setLiveExecutionQualityCooldown(tokenMint, untilMs, reason);
+  pruneLiveExecutionQualityCooldowns(nowMs);
+  log.warn(
+    `[KOL_HUNTER_LIVE_QUALITY_COOLDOWN_SET] ${tokenMint.slice(0, 8)} ` +
+    `reason=${reason} cooldown=${Math.round(cooldownMs / 1000)}s`
+  );
+}
+
+function setLiveExecutionQualityCooldown(tokenMint: string, untilMs: number, reason: string): void {
+  const current = liveExecutionQualityCooldowns.get(tokenMint);
+  if (current && current.untilMs > untilMs) return;
+  liveExecutionQualityCooldowns.set(tokenMint, { untilMs, reason });
+}
+
+function isInLiveExecutionQualityCooldown(
+  tokenMint: string
+): { blocked: boolean; remainingMs: number; reason?: string } {
+  if (!config.kolHunterLiveExecutionQualityCooldownEnabled) return { blocked: false, remainingMs: 0 };
+  const state = liveExecutionQualityCooldowns.get(tokenMint);
+  if (!state) return { blocked: false, remainingMs: 0 };
+  const nowMs = Date.now();
+  if (state.untilMs <= nowMs) {
+    liveExecutionQualityCooldowns.delete(tokenMint);
+    return { blocked: false, remainingMs: 0 };
+  }
+  return { blocked: true, remainingMs: state.untilMs - nowMs, reason: state.reason };
+}
+
+function parseJsonlRows<T>(raw: string): T[] {
+  const rows: T[] = [];
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      rows.push(JSON.parse(trimmed) as T);
+    } catch {
+      // 한 줄 오염이 startup hydrate 전체를 막지 않게 한다.
+    }
+  }
+  return rows;
+}
+
+function liveExecutionQualityReasonFromBuyRecord(record: LiveExecutionQualityBuyRecord): string | null {
+  const reasons: string[] = [];
+  if (record.partialFillDataMissing === true) {
+    reasons.push(record.partialFillDataReason ?? 'partial_fill_data_missing');
+  }
+  const entryAdvantageReason = liveExecutionQualityEntryAdvantageReason(
+    record.plannedEntryPrice,
+    record.actualEntryPrice
+  );
+  if (entryAdvantageReason) reasons.push(entryAdvantageReason);
+  if (
+    config.kolHunterLiveExecutionQualityMaxBuyLagMs > 0 &&
+    (
+      (typeof record.buyExecutionMs === 'number' && Number.isFinite(record.buyExecutionMs)) ||
+      (typeof record.signalTimeSec === 'number' && !!record.recordedAt)
+    )
+  ) {
+    const explicitBuyExecutionMs =
+      typeof record.buyExecutionMs === 'number' && Number.isFinite(record.buyExecutionMs)
+        ? record.buyExecutionMs
+        : null;
+    let buyLagMs = explicitBuyExecutionMs;
+    if (buyLagMs == null && typeof record.signalTimeSec === 'number' && record.recordedAt) {
+      const recordedMs = new Date(record.recordedAt).getTime();
+      if (Number.isFinite(recordedMs)) buyLagMs = recordedMs - record.signalTimeSec * 1000;
+    }
+    if (buyLagMs != null && buyLagMs >= config.kolHunterLiveExecutionQualityMaxBuyLagMs) {
+      reasons.push(`${explicitBuyExecutionMs == null ? 'buy_lag_ms' : 'buy_execution_ms'}=${buyLagMs}`);
+    }
+  }
+  return reasons.length > 0 ? reasons.join('+') : null;
+}
+
+function liveExecutionQualityEntryAdvantageReason(
+  plannedEntryPrice?: number,
+  actualEntryPrice?: number
+): string | null {
+  const threshold = config.kolHunterLiveExecutionQualityMaxEntryAdvantageAbsPct;
+  if (threshold <= 0) return null;
+  if (
+    typeof plannedEntryPrice !== 'number' ||
+    typeof actualEntryPrice !== 'number' ||
+    !Number.isFinite(plannedEntryPrice) ||
+    !Number.isFinite(actualEntryPrice) ||
+    plannedEntryPrice <= 0 ||
+    actualEntryPrice <= 0
+  ) {
+    return null;
+  }
+  const entryAdvantagePct = actualEntryPrice / plannedEntryPrice - 1;
+  if (Math.abs(entryAdvantagePct) < threshold) return null;
+  return `entry_advantage_pct=${entryAdvantagePct.toFixed(6)}`;
+}
+
+export function hydrateLiveExecutionQualityCooldownsFromBuyRecords(
+  records: LiveExecutionQualityBuyRecord[],
+  nowMs = Date.now()
+): LiveExecutionQualityHydrationSummary {
+  if (!config.kolHunterLiveExecutionQualityCooldownEnabled) {
+    return { loaded: records.length, hydrated: 0, skippedExpired: 0 };
+  }
+  const cooldownMs = config.kolHunterLiveExecutionQualityCooldownMs;
+  if (cooldownMs <= 0) return { loaded: records.length, hydrated: 0, skippedExpired: 0 };
+
+  let hydrated = 0;
+  let skippedExpired = 0;
+  for (const record of records) {
+    if (record.strategy && record.strategy !== LANE_STRATEGY) continue;
+    const tokenMint = record.pairAddress ?? record.tokenMint;
+    if (!tokenMint) continue;
+    const reason = liveExecutionQualityReasonFromBuyRecord(record);
+    if (!reason) continue;
+    const eventMs = record.recordedAt ? new Date(record.recordedAt).getTime() : NaN;
+    const fallbackEventMs = typeof record.signalTimeSec === 'number' ? record.signalTimeSec * 1000 : NaN;
+    const baseMs = Number.isFinite(eventMs) ? eventMs : fallbackEventMs;
+    if (!Number.isFinite(baseMs)) continue;
+    const untilMs = baseMs + cooldownMs;
+    if (untilMs <= nowMs) {
+      skippedExpired += 1;
+      continue;
+    }
+    setLiveExecutionQualityCooldown(tokenMint, untilMs, reason);
+    hydrated += 1;
+  }
+  pruneLiveExecutionQualityCooldowns(nowMs);
+  return { loaded: records.length, hydrated, skippedExpired };
+}
+
+export async function hydrateLiveExecutionQualityCooldownsFromLedger(
+  ledgerDir = config.realtimeDataDir
+): Promise<LiveExecutionQualityHydrationSummary> {
+  try {
+    const raw = await readFile(path.join(ledgerDir, 'executed-buys.jsonl'), 'utf8');
+    const rows = parseJsonlRows<LiveExecutionQualityBuyRecord>(raw);
+    const summary = hydrateLiveExecutionQualityCooldownsFromBuyRecords(rows);
+    if (summary.hydrated > 0) {
+      log.warn(
+        `[KOL_HUNTER_LIVE_QUALITY_COOLDOWN_HYDRATE] ` +
+        `loaded=${summary.loaded} hydrated=${summary.hydrated} expired=${summary.skippedExpired}`
+      );
+    }
+    return summary;
+  } catch (err) {
+    const code = (err as { code?: string })?.code;
+    if (code !== 'ENOENT') {
+      log.warn(`[KOL_HUNTER_LIVE_QUALITY_COOLDOWN_HYDRATE] failed: ${err}`);
+    }
+    return { loaded: 0, hydrated: 0, skippedExpired: 0 };
+  }
+}
+
+/** 테스트용 reset. */
+export function resetLiveExecutionQualityCooldownForTests(): void {
+  liveExecutionQualityCooldowns.clear();
 }
 
 // 2026-04-29 (P0-2 손실 방어 layer 0): KOL alpha decay cooldown.
@@ -477,6 +675,102 @@ let ownedGateCache: GateCacheManager | undefined;
 let botCtx: BotContext | undefined;
 
 export const kolHunterEvents = new EventEmitter();           // 외부 관측용 (test/index)
+
+const KOL_POLICY_DECISIONS_FILE = 'kol-policy-decisions.jsonl';
+
+function currentRecentJupiter429(): number {
+  return getJupiter429Stats().reduce((sum, stat) => sum + stat.sinceLastSummary, 0);
+}
+
+function enrichPolicyParticipants(
+  participants: Array<Pick<KolPolicyParticipant, 'id' | 'tier' | 'timestamp'>>
+): KolPolicyParticipant[] {
+  return participants.map((p) => ({
+    ...p,
+    style: getKolTradingStyle(p.id),
+  }));
+}
+
+function extractStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string');
+}
+
+async function appendKolPolicyDecision(decision: KolPolicyDecision): Promise<void> {
+  try {
+    const dir = config.realtimeDataDir;
+    await mkdir(dir, { recursive: true });
+    await appendFile(path.join(dir, KOL_POLICY_DECISIONS_FILE), JSON.stringify(decision) + '\n', 'utf8');
+  } catch (err) {
+    log.debug(`[KOL_HUNTER_POLICY] decision append failed: ${String(err)}`);
+  }
+}
+
+function emitKolShadowPolicy(
+  input: Omit<KolPolicyInput, 'participatingKols'> & {
+    participatingKols: Array<Pick<KolPolicyParticipant, 'id' | 'tier' | 'timestamp'>>;
+  }
+): void {
+  const decision = evaluateKolShadowPolicy({
+    ...input,
+    participatingKols: enrichPolicyParticipants(input.participatingKols),
+  });
+  void appendKolPolicyDecision(decision);
+}
+
+function emitKolPositionPolicy(
+  pos: PaperPosition,
+  eventKind: KolPolicyInput['eventKind'],
+  currentAction: KolPolicyInput['currentAction'],
+  extras: Partial<Omit<KolPolicyInput, 'eventKind' | 'tokenMint' | 'currentAction' | 'participatingKols'>> = {}
+): void {
+  const ref = pos.marketReferencePrice > 0 ? pos.marketReferencePrice : pos.entryPrice;
+  const mfePct = ref > 0 ? (pos.peakPrice - ref) / ref : undefined;
+  const maePct = ref > 0 ? (pos.troughPrice - ref) / ref : undefined;
+  const peakDriftPct = pos.peakPrice > 0 ? (pos.peakPrice - pos.lastPrice) / pos.peakPrice : undefined;
+  emitKolShadowPolicy({
+    eventKind,
+    tokenMint: pos.tokenMint,
+    currentAction,
+    isLive: pos.isLive === true,
+    isShadowArm: pos.isShadowArm,
+    armName: pos.armName,
+    entryReason: pos.kolEntryReason,
+    independentKolCount: pos.independentKolCount,
+    effectiveIndependentCount: pos.independentKolCount,
+    kolScore: pos.kolScore,
+    participatingKols: pos.participatingKols,
+    survivalFlags: pos.survivalFlags,
+    recentJupiter429: currentRecentJupiter429(),
+    mfePct,
+    maePct,
+    peakDriftPct,
+    holdSec: Math.max(0, Math.floor(Date.now() / 1000) - pos.entryTimeSec),
+    ...extras,
+  });
+}
+
+function emitKolLiveFallbackPolicy(
+  tokenMint: string,
+  score: KolDiscoveryScore,
+  survivalFlags: string[],
+  extras: Partial<Omit<KolPolicyInput, 'eventKind' | 'tokenMint' | 'currentAction' | 'participatingKols'>> = {}
+): void {
+  emitKolShadowPolicy({
+    eventKind: 'entry',
+    tokenMint,
+    currentAction: 'enter',
+    isLive: true,
+    isShadowArm: false,
+    independentKolCount: score.independentKolCount,
+    effectiveIndependentCount: score.effectiveIndependentCount,
+    kolScore: score.finalScore,
+    participatingKols: score.participatingKols,
+    survivalFlags,
+    recentJupiter429: currentRecentJupiter429(),
+    ...extras,
+  });
+}
 
 // ─── Swing-v2 arm 판정 (2026-04-26) ─────────────────────
 
@@ -1206,13 +1500,42 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       await enterPaperPosition(cand.tokenMint, cand, score, smart.preEntryFlags, entryOptions);
       return;
     }
+    const qualityCooldown = isInLiveExecutionQualityCooldown(cand.tokenMint);
+    if (qualityCooldown.blocked) {
+      const policyFlags = [
+        ...smart.preEntryFlags,
+        'LIVE_EXEC_QUALITY_COOLDOWN',
+      ];
+      log.warn(
+        `[KOL_HUNTER_LIVE_QUALITY_COOLDOWN] ${cand.tokenMint.slice(0, 8)} smart-v3 trigger — ` +
+        `${qualityCooldown.reason ?? 'execution_quality'} ` +
+        `remaining=${Math.round(qualityCooldown.remainingMs / 1000)}s. fallback paper.`
+      );
+      emitKolLiveFallbackPolicy(cand.tokenMint, score, policyFlags, {
+        entryReason: entryOptions.entryReason,
+        armName: entryOptions.parameterVersion ? armNameForVersion(entryOptions.parameterVersion) : undefined,
+      });
+      await enterPaperPosition(cand.tokenMint, cand, score, policyFlags, {
+        ...entryOptions,
+        skipPolicyEntry: true,
+      });
+      return;
+    }
     const liveGate = evaluateKolLiveCanaryGate(score, smart.preEntryFlags);
     if (!liveGate.allowLive) {
+      const policyFlags = [...smart.preEntryFlags, ...liveGate.flags];
       log.warn(
         `[KOL_HUNTER_YELLOW_ZONE] ${cand.tokenMint.slice(0, 8)} smart-v3 trigger — ` +
         `${liveGate.reason}. fallback paper.`
       );
-      await enterPaperPosition(cand.tokenMint, cand, score, [...smart.preEntryFlags, ...liveGate.flags], entryOptions);
+      emitKolLiveFallbackPolicy(cand.tokenMint, score, policyFlags, {
+        entryReason: entryOptions.entryReason,
+        armName: entryOptions.parameterVersion ? armNameForVersion(entryOptions.parameterVersion) : undefined,
+      });
+      await enterPaperPosition(cand.tokenMint, cand, score, policyFlags, {
+        ...entryOptions,
+        skipPolicyEntry: true,
+      });
       return;
     }
     await enterLivePosition(
@@ -1318,13 +1641,30 @@ async function resolveStalk(tokenMint: string): Promise<void> {
       });
       return;
     }
+    const qualityCooldown = isInLiveExecutionQualityCooldown(tokenMint);
+    if (qualityCooldown.blocked) {
+      const policyFlags = [
+        ...preEntry.flags,
+        'LIVE_EXEC_QUALITY_COOLDOWN',
+      ];
+      log.warn(
+        `[KOL_HUNTER_LIVE_QUALITY_COOLDOWN] ${tokenMint.slice(0, 8)} signal — ` +
+        `${qualityCooldown.reason ?? 'execution_quality'} ` +
+        `remaining=${Math.round(qualityCooldown.remainingMs / 1000)}s. fallback paper.`
+      );
+      emitKolLiveFallbackPolicy(tokenMint, score, policyFlags);
+      await enterPaperPosition(tokenMint, cand, score, policyFlags, { skipPolicyEntry: true });
+      return;
+    }
     const liveGate = evaluateKolLiveCanaryGate(score, preEntry.flags);
     if (!liveGate.allowLive) {
+      const policyFlags = [...preEntry.flags, ...liveGate.flags];
       log.warn(
         `[KOL_HUNTER_YELLOW_ZONE] ${tokenMint.slice(0, 8)} signal ignored — ` +
         `${liveGate.reason}. fallback paper.`
       );
-      await enterPaperPosition(tokenMint, cand, score, [...preEntry.flags, ...liveGate.flags]);
+      emitKolLiveFallbackPolicy(tokenMint, score, policyFlags);
+      await enterPaperPosition(tokenMint, cand, score, policyFlags, { skipPolicyEntry: true });
       return;
     }
     await enterLivePosition(tokenMint, cand, score, preEntry.flags, botCtx);
@@ -1742,6 +2082,9 @@ async function enterPaperPosition(
 
   for (const pos of positions) {
     setActivePosition(pos);  // P1 #5: index 동기화 (Map + activeByMint Set)
+    if (!options.skipPolicyEntry) {
+      emitKolPositionPolicy(pos, 'entry', 'enter', { routeFound: true });
+    }
     log.info(
       `[KOL_HUNTER_PAPER_ENTER] ${pos.positionId} ${tokenMint.slice(0, 8)} ` +
       `arm=${pos.armName}${pos.isShadowArm ? ' shadow' : ''} ` +
@@ -1756,6 +2099,8 @@ async function enterPaperPosition(
   for (const pos of positions) kolHunterEvents.emit('paper_entry', pos);
 }
 
+const KOL_ENTRY_TICK_MAX_AGE_MS = 10_000;                    // PaperPriceFeed 8s poll 기준 stale cache 1회만 허용
+
 /**
  * 2026-04-26 P1 fix: 첫 tick 전체 (price + outputDecimals) 반환.
  * 기존 waitForFirstPrice 는 price 만 반환 → decimals 유실 → missed_alpha decimals_unknown.
@@ -1764,10 +2109,12 @@ async function enterPaperPosition(
 async function waitForFirstTick(
   tokenMint: string,
   timeoutMs: number
-): Promise<{ price: number; outputDecimals: number | null } | null> {
+): Promise<{ price: number; outputDecimals: number | null; timestamp: number } | null> {
   if (!priceFeed) return null;
   const cached = priceFeed.getLastTick?.(tokenMint);
-  if (cached) return { price: cached.price, outputDecimals: cached.outputDecimals };
+  if (cached && Date.now() - cached.timestamp <= KOL_ENTRY_TICK_MAX_AGE_MS) {
+    return { price: cached.price, outputDecimals: cached.outputDecimals, timestamp: cached.timestamp };
+  }
 
   return new Promise((resolve) => {
     const timeout = setTimeout(() => {
@@ -1778,10 +2125,62 @@ async function waitForFirstTick(
       if (tick.tokenMint !== tokenMint) return;
       clearTimeout(timeout);
       priceFeed?.off('price', handler);
-      resolve({ price: tick.price, outputDecimals: tick.outputDecimals });
+      resolve({ price: tick.price, outputDecimals: tick.outputDecimals, timestamp: tick.timestamp });
     };
     priceFeed?.on('price', handler);
   });
+}
+
+interface LiveFreshReferenceCheck {
+  tick: { price: number; outputDecimals: number | null; timestamp: number };
+  initialToFreshReferencePct?: number;
+  rejected: boolean;
+  reason?: string;
+}
+
+async function refreshLiveEntryReference(
+  tokenMint: string,
+  initialTick: { price: number; outputDecimals: number | null; timestamp: number }
+): Promise<LiveFreshReferenceCheck> {
+  if (!config.kolHunterLiveFreshReferenceGuardEnabled) {
+    return { tick: initialTick, rejected: false };
+  }
+  const freshTick = await priceFeed?.refreshNow(tokenMint);
+  if (!freshTick || freshTick.price <= 0 || !Number.isFinite(freshTick.price)) {
+    return {
+      tick: initialTick,
+      rejected: true,
+      reason: 'live_fresh_reference_unavailable',
+    };
+  }
+  const freshAgeMs = Math.max(0, Date.now() - freshTick.timestamp);
+  if (
+    config.kolHunterLiveFreshReferenceMaxAgeMs > 0 &&
+    freshAgeMs >= config.kolHunterLiveFreshReferenceMaxAgeMs
+  ) {
+    return {
+      tick: freshTick,
+      rejected: true,
+      reason: `live_fresh_reference_stale_ms=${freshAgeMs}`,
+    };
+  }
+  const initialToFreshReferencePct = initialTick.price > 0
+    ? freshTick.price / initialTick.price - 1
+    : undefined;
+  const maxAdverseDrift = config.kolHunterLiveFreshReferenceMaxAdverseDriftPct;
+  if (
+    maxAdverseDrift > 0 &&
+    typeof initialToFreshReferencePct === 'number' &&
+    initialToFreshReferencePct >= maxAdverseDrift
+  ) {
+    return {
+      tick: freshTick,
+      initialToFreshReferencePct,
+      rejected: true,
+      reason: `live_fresh_reference_drift_pct=${initialToFreshReferencePct.toFixed(6)}`,
+    };
+  }
+  return { tick: freshTick, initialToFreshReferencePct, rejected: false };
 }
 
 function ensurePriceListener(tokenMint: string): void {
@@ -2091,6 +2490,12 @@ function closePosition(
     // pos.state = previousState 가 의미 있는 복원이 됨. 이전 코드는 mutation 후 capture 라
     // sell 실패 시 영구 'CLOSED' 잠금 (DB 는 OPEN 으로 남음 → orphan 상태 누적).
     const previousState = pos.state;
+    emitKolPositionPolicy(pos, 'close', 'exit', {
+      closeReason: reason,
+      mfePct: mfePctAtClose,
+      maePct: maePctAtClose,
+      holdSec: nowSec - pos.entryTimeSec,
+    });
     pos.state = 'CLOSED';
     void closeLivePosition(pos, exitPrice, reason, nowSec, mfePctAtClose, maePctAtClose, previousState);
     return;
@@ -2101,6 +2506,12 @@ function closePosition(
   const netPct = (exitPrice - pos.entryPrice) / pos.entryPrice;
   const paperRoundTripCostPct = config.kolHunterPaperRoundTripCostPct;
   const netSol = pos.ticketSol * (netPct - paperRoundTripCostPct);
+  emitKolPositionPolicy(pos, 'close', 'exit', {
+    closeReason: reason,
+    mfePct: mfePctAtClose,
+    maePct: maePctAtClose,
+    holdSec,
+  });
 
   log.info(
     `[KOL_HUNTER_PAPER_CLOSE] ${pos.positionId} reason=${reason} ` +
@@ -2109,55 +2520,53 @@ function closePosition(
     `t2=${pos.t2VisitAtSec ? 'y' : 'n'} t3=${pos.t3VisitAtSec ? 'y' : 'n'}`
   );
 
-  // Observer 훅 (5 close category + 3 winner category)
-  const observerCategory: MissedAlphaEvent['rejectCategory'] =
-    reason === 'probe_hard_cut' ? 'probe_hard_cut'
-    : reason === 'probe_reject_timeout' ? 'probe_reject_timeout'
-    : reason === 'probe_flat_cut' ? 'probe_flat_cut'
-    : reason === 'quick_reject_classifier_exit' ? 'quick_reject_classifier_exit'
-    : reason === 'hold_phase_sentinel_degraded_exit' ? 'hold_phase_sentinel_degraded_exit'
-    : 'other';
-
-  trackRejectForMissedAlpha(
-    {
-      rejectCategory: observerCategory,
-      rejectReason: reason,
-      tokenMint: pos.tokenMint,
-      lane: LANE_STRATEGY,
-      signalPrice: pos.marketReferencePrice,
-      probeSolAmount: pos.ticketSol,
-      // 2026-04-26 P1 fix: decimals_unknown 차단 — entry 시 stash 한 값 전파
-      tokenDecimals: pos.tokenDecimals,
-      signalSource: `kol_hunter:${pos.participatingKols.map((k) => k.id).join(',')}`,
-      extras: {
-        closeState: pos.state,
-        elapsedSecAtClose: holdSec,
-        mfePctAtClose,
-        maePctAtClose,
-        entryPrice: pos.entryPrice,
-        exitPrice,
-        peakPrice: pos.peakPrice,
-        troughPrice: pos.troughPrice,
-        t1VisitAtSec: pos.t1VisitAtSec ?? null,
-        t2VisitAtSec: pos.t2VisitAtSec ?? null,
-        t3VisitAtSec: pos.t3VisitAtSec ?? null,
-        kolScore: pos.kolScore,
-        armName: pos.armName,
-        parameterVersion: pos.parameterVersion,
-        isShadowArm: pos.isShadowArm,
-        parentPositionId: pos.parentPositionId ?? null,
-        kolEntryReason: pos.kolEntryReason,
-        kolConvictionLevel: pos.kolConvictionLevel,
-        kolReinforcementCount: pos.kolReinforcementCount,
-        t1MfeOverride: pos.t1MfeOverride ?? null,
-        t1TrailPctOverride: pos.t1TrailPctOverride ?? null,
-        t1ProfitFloorMult: pos.t1ProfitFloorMult ?? null,
-        probeFlatTimeoutSec: pos.probeFlatTimeoutSec ?? null,
-        tokenDecimalsSource: pos.tokenDecimalsSource ?? null,
+  // 2026-04-30 (B1 refactor): KOL close-site 는 모두 'kol_close' 로 통일.
+  //   세부 분기는 rejectReason 으로 보존 (winner-kill-analyzer 등이 reason 별 cohort 분리 가능).
+  //   이전: 5 close reason 별 enum 매핑 → reject-side 와 enum 공유로 close vs reject 구분 약함.
+  if (!pos.isShadowArm) {
+    trackRejectForMissedAlpha(
+      {
+        rejectCategory: 'kol_close',
+        rejectReason: reason,
+        tokenMint: pos.tokenMint,
+        lane: LANE_STRATEGY,
+        signalPrice: pos.marketReferencePrice,
+        probeSolAmount: pos.ticketSol,
+        // 2026-04-26 P1 fix: decimals_unknown 차단 — entry 시 stash 한 값 전파
+        tokenDecimals: pos.tokenDecimals,
+        signalSource: `kol_hunter:${pos.participatingKols.map((k) => k.id).join(',')}`,
+        extras: {
+          positionId: pos.positionId,
+          closeState: pos.state,
+          elapsedSecAtClose: holdSec,
+          mfePctAtClose,
+          maePctAtClose,
+          entryPrice: pos.entryPrice,
+          exitPrice,
+          peakPrice: pos.peakPrice,
+          troughPrice: pos.troughPrice,
+          t1VisitAtSec: pos.t1VisitAtSec ?? null,
+          t2VisitAtSec: pos.t2VisitAtSec ?? null,
+          t3VisitAtSec: pos.t3VisitAtSec ?? null,
+          kolScore: pos.kolScore,
+          armName: pos.armName,
+          parameterVersion: pos.parameterVersion,
+          isLive: false,
+          isShadowArm: pos.isShadowArm,
+          parentPositionId: pos.parentPositionId ?? null,
+          kolEntryReason: pos.kolEntryReason,
+          kolConvictionLevel: pos.kolConvictionLevel,
+          kolReinforcementCount: pos.kolReinforcementCount,
+          t1MfeOverride: pos.t1MfeOverride ?? null,
+          t1TrailPctOverride: pos.t1TrailPctOverride ?? null,
+          t1ProfitFloorMult: pos.t1ProfitFloorMult ?? null,
+          probeFlatTimeoutSec: pos.probeFlatTimeoutSec ?? null,
+          tokenDecimalsSource: pos.tokenDecimalsSource ?? null,
+        },
       },
-    },
-    buildObserverConfig()
-  );
+      buildObserverConfig()
+    );
+  }
 
   // Paper ledger append
   void appendPaperLedger(pos, exitPrice, reason, holdSec, mfePctAtClose, maePctAtClose, netSol, netPct);
@@ -2195,6 +2604,59 @@ function closePosition(
  *    (현재 P0/P1 cohort 는 laneName × armName × discoverySource 만 — entryReason 차원은
  *    armName 인코딩으로 흡수한다.)
  */
+/**
+ * Paper / live ledger 의 공통 record schema (2026-04-30 A1 refactor).
+ * 두 ledger 모두 DSR validator 입력 schema 정합 — paper-only / live-only 5-7 필드만 분기로 추가.
+ */
+function buildKolBaseLedgerRecord(
+  pos: PaperPosition,
+  exitPrice: number,
+  reason: CloseReason,
+  holdSec: number,
+  mfePct: number,
+  maePct: number,
+  netSol: number,
+  netPct: number,
+): Record<string, unknown> {
+  return {
+    positionId: pos.positionId,
+    strategy: LANE_STRATEGY,
+    tokenMint: pos.tokenMint,
+    entryPrice: pos.entryPrice,
+    exitPrice,
+    marketReferencePrice: pos.marketReferencePrice,
+    peakPrice: pos.peakPrice,
+    troughPrice: pos.troughPrice,
+    mfePctPeak: mfePct,
+    maePct,
+    netPct,
+    netSol,
+    holdSec,
+    exitReason: reason,
+    t1VisitAtSec: pos.t1VisitAtSec ?? null,
+    t2VisitAtSec: pos.t2VisitAtSec ?? null,
+    t3VisitAtSec: pos.t3VisitAtSec ?? null,
+    kols: pos.participatingKols,
+    kolScore: pos.kolScore,
+    // MISSION_CONTROL §Control 5 telemetry — arm identity + discovery context + parameter trace.
+    lane: LANE_STRATEGY,
+    armName: pos.armName,
+    parameterVersion: pos.parameterVersion,
+    isShadowArm: pos.isShadowArm,
+    parentPositionId: pos.parentPositionId ?? null,
+    kolEntryReason: pos.kolEntryReason,
+    kolConvictionLevel: pos.kolConvictionLevel,
+    kolReinforcementCount: pos.kolReinforcementCount,
+    detectorVersion: pos.detectorVersion,
+    independentKolCount: pos.independentKolCount,
+    survivalFlags: pos.survivalFlags,
+    isShadowKol: pos.isShadowKol ?? false,
+    tokenDecimals: pos.tokenDecimals ?? null,
+    tokenDecimalsSource: pos.tokenDecimalsSource ?? null,
+    closedAt: new Date().toISOString(),
+  };
+}
+
 async function appendPaperLedger(
   pos: PaperPosition,
   exitPrice: number,
@@ -2208,46 +2670,13 @@ async function appendPaperLedger(
   try {
     const dir = config.realtimeDataDir;
     await mkdir(dir, { recursive: true });
+    // paper-only 필드 (t1*Override / probeFlatTimeoutSec) 추가.
     const record = {
-      positionId: pos.positionId,
-      strategy: LANE_STRATEGY,
-      tokenMint: pos.tokenMint,
-      entryPrice: pos.entryPrice,
-      exitPrice,
-      marketReferencePrice: pos.marketReferencePrice,
-      peakPrice: pos.peakPrice,
-      troughPrice: pos.troughPrice,
-      mfePctPeak: mfePct,
-      maePct,
-      netPct,
-      netSol,
-      holdSec,
-      exitReason: reason,
-      t1VisitAtSec: pos.t1VisitAtSec ?? null,
-      t2VisitAtSec: pos.t2VisitAtSec ?? null,
-      t3VisitAtSec: pos.t3VisitAtSec ?? null,
-      kols: pos.participatingKols,
-      kolScore: pos.kolScore,
-      // MISSION_CONTROL §Control 5 telemetry — arm identity + discovery context + parameter trace.
-      lane: LANE_STRATEGY,
-      armName: pos.armName,
-      parameterVersion: pos.parameterVersion,
-      isShadowArm: pos.isShadowArm,
-      parentPositionId: pos.parentPositionId ?? null,
-      kolEntryReason: pos.kolEntryReason,
-      kolConvictionLevel: pos.kolConvictionLevel,
-      kolReinforcementCount: pos.kolReinforcementCount,
+      ...buildKolBaseLedgerRecord(pos, exitPrice, reason, holdSec, mfePct, maePct, netSol, netPct),
       t1MfeOverride: pos.t1MfeOverride ?? null,
       t1TrailPctOverride: pos.t1TrailPctOverride ?? null,
       t1ProfitFloorMult: pos.t1ProfitFloorMult ?? null,
       probeFlatTimeoutSec: pos.probeFlatTimeoutSec ?? null,
-      detectorVersion: pos.detectorVersion,
-      independentKolCount: pos.independentKolCount,
-      survivalFlags: pos.survivalFlags,
-      isShadowKol: pos.isShadowKol ?? false,  // 2026-04-28: shadow 분리 marker.
-      tokenDecimals: pos.tokenDecimals ?? null,
-      tokenDecimalsSource: pos.tokenDecimalsSource ?? null,
-      closedAt: new Date().toISOString(),
     };
     // 2026-04-28: inactive KOL paper trade 결과는 별도 ledger 로 분리. active 분포 무결성 유지.
     const fileName = pos.isShadowKol
@@ -2282,47 +2711,14 @@ async function appendLiveLedger(
   try {
     const dir = config.realtimeDataDir;
     await mkdir(dir, { recursive: true });
+    // live-only 필드 (isLive / dbTradeId / tx signatures / ticketSol) 추가.
     const record = {
-      positionId: pos.positionId,
-      strategy: LANE_STRATEGY,
-      tokenMint: pos.tokenMint,
-      entryPrice: pos.entryPrice,
-      exitPrice,
-      marketReferencePrice: pos.marketReferencePrice,
-      peakPrice: pos.peakPrice,
-      troughPrice: pos.troughPrice,
-      mfePctPeak: mfePct,
-      maePct,
-      netPct,
-      netSol,
-      holdSec,
-      exitReason: reason,
-      t1VisitAtSec: pos.t1VisitAtSec ?? null,
-      t2VisitAtSec: pos.t2VisitAtSec ?? null,
-      t3VisitAtSec: pos.t3VisitAtSec ?? null,
-      kols: pos.participatingKols,
-      kolScore: pos.kolScore,
-      lane: LANE_STRATEGY,
-      armName: pos.armName,
-      parameterVersion: pos.parameterVersion,
-      isShadowArm: pos.isShadowArm,
-      parentPositionId: pos.parentPositionId ?? null,
-      kolEntryReason: pos.kolEntryReason,
-      kolConvictionLevel: pos.kolConvictionLevel,
-      kolReinforcementCount: pos.kolReinforcementCount,
-      detectorVersion: pos.detectorVersion,
-      independentKolCount: pos.independentKolCount,
-      survivalFlags: pos.survivalFlags,
-      isShadowKol: pos.isShadowKol ?? false,
-      tokenDecimals: pos.tokenDecimals ?? null,
-      tokenDecimalsSource: pos.tokenDecimalsSource ?? null,
-      // live-only fields:
+      ...buildKolBaseLedgerRecord(pos, exitPrice, reason, holdSec, mfePct, maePct, netSol, netPct),
       isLive: true,
       dbTradeId: pos.dbTradeId ?? null,
       entryTxSignature: pos.entryTxSignature ?? null,
       exitTxSignature: exitTxSignature ?? null,
       ticketSol: pos.ticketSol,
-      closedAt: new Date().toISOString(),
     };
     await appendFile(path.join(dir, 'kol-live-trades.jsonl'), JSON.stringify(record) + '\n', 'utf8');
   } catch (err) {
@@ -2371,7 +2767,37 @@ async function enterLivePosition(
     });
     return;
   }
-  const referencePrice = firstTick.price;
+  const freshReferenceCheck = await refreshLiveEntryReference(tokenMint, firstTick);
+  if (freshReferenceCheck.rejected) {
+    const reason = freshReferenceCheck.reason ?? 'live_fresh_reference_reject';
+    const policyFlags = [
+      ...survivalFlags,
+      'LIVE_FRESH_REFERENCE_REJECT',
+      reason.toUpperCase(),
+    ];
+    log.warn(
+      `[KOL_HUNTER_LIVE_FRESH_REFERENCE_REJECT] ${tokenMint.slice(0, 8)} ${reason}. fallback paper.`
+    );
+    const decimals = freshReferenceCheck.tick.outputDecimals ?? firstTick.outputDecimals ?? undefined;
+    emitKolLiveFallbackPolicy(tokenMint, score, policyFlags, {
+      entryReason: options.entryReason,
+      armName: options.parameterVersion ? armNameForVersion(options.parameterVersion) : undefined,
+    });
+    await enterPaperPosition(tokenMint, cand, score, policyFlags, {
+      ...options,
+      tokenDecimals: options.tokenDecimals ?? decimals,
+      tokenDecimalsSource: options.tokenDecimalsSource ?? (decimals == null ? undefined : 'jupiter_quote'),
+      skipPolicyEntry: true,
+    });
+    return;
+  }
+  const referenceTick = freshReferenceCheck.tick;
+  const referencePrice = referenceTick.price;
+  const referenceResolvedAtMs = Date.now();
+  const referenceAgeMs = Math.max(0, referenceResolvedAtMs - referenceTick.timestamp);
+  const signalToReferenceMs = Number.isFinite(cand.firstKolEntryMs)
+    ? Math.max(0, referenceResolvedAtMs - cand.firstKolEntryMs)
+    : undefined;
   const ticketSol = config.kolHunterTicketSol;
   const plannedQty = referencePrice > 0 ? ticketSol / referencePrice : 0;
   if (plannedQty <= 0) {
@@ -2393,8 +2819,25 @@ async function enterLivePosition(
   let entryTxSignature = 'KOL_LIVE_PENDING';
   let entrySlippageBps = 0;
   let partialFillDataMissing = false;
+  let partialFillDataReason: PartialFillDataReason | undefined;
+  let expectedInAmount: string | undefined;
+  let actualInputAmount: string | undefined;
+  let actualInputUiAmount: number | undefined;
+  let inputDecimals: number | undefined;
+  let expectedOutAmount: string | undefined;
+  let actualOutAmount: string | undefined;
+  let actualOutUiAmount: number | undefined;
+  let outputDecimals: number | undefined;
+  let entryFillOutputRatio: number | undefined;
+  let swapQuoteEntryPrice: number | undefined;
+  let swapQuoteEntryAdvantagePct: number | undefined;
+  let referenceToSwapQuotePct: number | undefined;
+  let entryAdvantageReason: string | null = null;
   const nowSec = Math.floor(Date.now() / 1000);
   const positionId = `kolh-live-${tokenMint.slice(0, 8)}-${nowSec}`;
+  const buyStartedAtMs = Date.now();
+  let buyCompletedAtMs = buyStartedAtMs;
+  let buyExecutionMs = 0;
 
   try {
     const buyExecutor = getKolHunterExecutor(ctx);
@@ -2411,15 +2854,68 @@ async function enterLivePosition(
     };
     const buyResult = await buyExecutor.executeBuy(order);
     const metrics = resolveActualEntryMetrics(order, buyResult);
+    expectedInAmount = buyResult.expectedInAmount?.toString();
+    actualInputAmount = buyResult.actualInputAmount?.toString();
+    actualInputUiAmount = buyResult.actualInputUiAmount;
+    inputDecimals = buyResult.inputDecimals;
+    expectedOutAmount = buyResult.expectedOutAmount?.toString();
+    actualOutAmount = buyResult.actualOutAmount?.toString();
+    actualOutUiAmount = buyResult.actualOutUiAmount;
+    outputDecimals = buyResult.outputDecimals;
+    if (
+      buyResult.actualOutAmount != null &&
+      buyResult.expectedOutAmount != null &&
+      buyResult.expectedOutAmount > 0n
+    ) {
+      entryFillOutputRatio = Number(buyResult.actualOutAmount) / Number(buyResult.expectedOutAmount);
+    } else if (
+      typeof buyResult.actualInputUiAmount === 'number' &&
+      typeof buyResult.actualOutUiAmount === 'number' &&
+      referencePrice > 0
+    ) {
+      const expectedQtyFromInput = buyResult.actualInputUiAmount / referencePrice;
+      if (expectedQtyFromInput > 0) entryFillOutputRatio = buyResult.actualOutUiAmount / expectedQtyFromInput;
+    }
     actualEntryPrice = metrics.entryPrice;
     actualQuantity = metrics.quantity;
     actualNotionalSol = metrics.actualEntryNotionalSol;
+    if (
+      buyResult.expectedInAmount != null &&
+      buyResult.expectedOutAmount != null &&
+      typeof inputDecimals === 'number' &&
+      typeof outputDecimals === 'number' &&
+      buyResult.expectedOutAmount > 0n
+    ) {
+      const expectedInUi = Number(buyResult.expectedInAmount) / Math.pow(10, inputDecimals);
+      const expectedOutUi = Number(buyResult.expectedOutAmount) / Math.pow(10, outputDecimals);
+      if (Number.isFinite(expectedInUi) && Number.isFinite(expectedOutUi) && expectedOutUi > 0) {
+        swapQuoteEntryPrice = expectedInUi / expectedOutUi;
+        referenceToSwapQuotePct = referencePrice > 0 ? swapQuoteEntryPrice / referencePrice - 1 : undefined;
+        swapQuoteEntryAdvantagePct = actualEntryPrice > 0 ? actualEntryPrice / swapQuoteEntryPrice - 1 : undefined;
+      }
+    }
     entryTxSignature = buyResult.txSignature;
     entrySlippageBps = buyResult.slippageBps;
     partialFillDataMissing = metrics.partialFillDataMissing;
+    partialFillDataReason = metrics.partialFillDataReason;
+    buyCompletedAtMs = Date.now();
+    buyExecutionMs = buyCompletedAtMs - buyStartedAtMs;
+    const qualityReasons: string[] = [];
+    if (partialFillDataMissing) qualityReasons.push(partialFillDataReason ?? 'partial_fill_data_missing');
+    entryAdvantageReason = liveExecutionQualityEntryAdvantageReason(referencePrice, actualEntryPrice);
+    if (entryAdvantageReason) qualityReasons.push(entryAdvantageReason);
+    if (
+      config.kolHunterLiveExecutionQualityMaxBuyLagMs > 0 &&
+      buyExecutionMs >= config.kolHunterLiveExecutionQualityMaxBuyLagMs
+    ) {
+      qualityReasons.push(`buy_execution_ms=${buyExecutionMs}`);
+    }
+    if (qualityReasons.length > 0) {
+      markLiveExecutionQualityCooldown(tokenMint, qualityReasons.join('+'));
+    }
     log.info(
       `[KOL_HUNTER_LIVE_BUY] ${positionId} sig=${entryTxSignature.slice(0, 12)} ` +
-      `slip=${entrySlippageBps}bps qty=${actualQuantity.toFixed(2)}`
+      `slip=${entrySlippageBps}bps qty=${actualQuantity.toFixed(2)} buyMs=${buyExecutionMs}`
     );
   } catch (buyErr) {
     log.warn(`[KOL_HUNTER_LIVE_BUY] ${positionId} buy failed: ${buyErr}`);
@@ -2462,10 +2958,36 @@ async function enterLivePosition(
       plannedEntryPrice: referencePrice,
       actualEntryPrice,
       actualQuantity,
+      expectedInAmount,
+      actualInputAmount,
+      actualInputUiAmount,
+      inputDecimals,
+      expectedOutAmount,
+      actualOutAmount,
+      actualOutUiAmount,
+      outputDecimals,
+      entryFillOutputRatio,
+      swapQuoteEntryPrice,
+      swapQuoteEntryAdvantagePct,
+      referenceToSwapQuotePct,
+      initialReferencePrice: firstTick.price,
+      initialReferenceTimestampMs: firstTick.timestamp,
+      freshReferencePrice: referenceTick.price,
+      freshReferenceTimestampMs: referenceTick.timestamp,
+      initialToFreshReferencePct: freshReferenceCheck.initialToFreshReferencePct,
+      freshReferenceGuardEnabled: config.kolHunterLiveFreshReferenceGuardEnabled,
+      referencePriceTimestampMs: referenceTick.timestamp,
+      referenceResolvedAtMs,
+      referenceAgeMs,
+      signalToReferenceMs,
+      buyStartedAtMs,
+      buyCompletedAtMs,
+      buyExecutionMs,
       slippageBps: entrySlippageBps,
       signalTimeSec: nowSec,
       signalPrice: referencePrice,
       partialFillDataMissing,
+      partialFillDataReason,
       kolScore: score.finalScore,
       independentKolCount: score.independentKolCount,
     },
@@ -2487,7 +3009,7 @@ async function enterLivePosition(
     : {};
   const liveDecimals = typeof options.tokenDecimals === 'number'
     ? options.tokenDecimals
-    : firstTick.outputDecimals ?? undefined;
+    : referenceTick.outputDecimals ?? undefined;
   const liveDecimalsSource = options.tokenDecimalsSource;
   const position: PaperPosition = {
     positionId,
@@ -2497,10 +3019,12 @@ async function enterLivePosition(
     entryTimeSec: nowSec,
     ticketSol,
     quantity: actualQuantity,
-    marketReferencePrice: referencePrice,
-    peakPrice: referencePrice,
-    troughPrice: referencePrice,
-    lastPrice: referencePrice,
+    // live state-machine 판정은 pre-buy probe 기준가가 아니라 wallet fill truth 를 기준으로 한다.
+    // probe 기준가는 entry-quality 분석용으로 executed-buys.plannedEntryPrice 에 보존.
+    marketReferencePrice: actualEntryPrice,
+    peakPrice: actualEntryPrice,
+    troughPrice: actualEntryPrice,
+    lastPrice: actualEntryPrice,
     participatingKols: score.participatingKols.map((k) => ({ ...k })),
     kolScore: score.finalScore,
     armName,
@@ -2528,7 +3052,31 @@ async function enterLivePosition(
   };
 
   setActivePosition(position);
+  emitKolPositionPolicy(position, 'entry', 'enter', {
+    routeFound: true,
+    entryAdvantagePct: actualEntryPrice / referencePrice - 1,
+    swapQuoteEntryAdvantagePct,
+    referenceToSwapQuotePct,
+    buyExecutionMs,
+  });
   ensurePriceListener(tokenMint);
+
+  if (entryAdvantageReason) {
+    log.warn(
+      `[KOL_HUNTER_LIVE_ENTRY_ADVANTAGE_EXIT] ${positionId} ${tokenMint.slice(0, 8)} ` +
+      `${entryAdvantageReason} — emergency close before shadow/open notification`
+    );
+    await closeLivePosition(
+      position,
+      referencePrice,
+      'entry_advantage_emergency_exit',
+      nowSec,
+      0,
+      0,
+      'PROBE'
+    );
+    return;
+  }
 
   // 2026-04-28 fix: swing-v2 paper shadow 는 main arm 이 live 이더라도 paired observation
   // 으로 paper 진입 (실 자산 영향 없음). enterPaperPosition 의 logic 과 정합 (line 1103-1167).
@@ -2546,10 +3094,10 @@ async function enterLivePosition(
       entryTimeSec: nowSec,
       ticketSol,
       quantity: actualQuantity,
-      marketReferencePrice: referencePrice,
-      peakPrice: referencePrice,
-      troughPrice: referencePrice,
-      lastPrice: referencePrice,
+      marketReferencePrice: actualEntryPrice,
+      peakPrice: actualEntryPrice,
+      troughPrice: actualEntryPrice,
+      lastPrice: actualEntryPrice,
       participatingKols: score.participatingKols.map((k) => ({ ...k })),
       kolScore: score.finalScore,
       armName: armNameForVersion(config.kolHunterSwingV2ParameterVersion),
@@ -2571,6 +3119,7 @@ async function enterLivePosition(
       isLive: false,  // ← shadow 는 paper. main arm 만 live.
     };
     setActivePosition(swingPos);
+    emitKolPositionPolicy(swingPos, 'entry', 'enter', { routeFound: true });
     // 2026-04-28 QA fix: paired shadow 도 paper_entry emit 해야 kolPaperNotifier 의
     // hourly digest + 5x anomaly alert 에 포함됨 (enterPaperPosition line 1216 와 정합).
     kolHunterEvents.emit('paper_entry', swingPos);
@@ -2604,6 +3153,7 @@ async function enterLivePosition(
       // 2026-04-29: RPC 측정 wallet delta + partial-fill flag 전파.
       actualNotionalSol,
       partialFillDataMissing,
+      partialFillDataReason,
     }, entryTxSignature).catch((err) => {
       log.warn(`[KOL_HUNTER_LIVE_NOTIFY_OPEN_FAIL] ${positionId} ${err}`);
     });
@@ -2874,10 +3424,13 @@ async function closeLivePosition(
   // shadow arm 은 fire 금지 (pure_ws 패턴 정합).
   if (!pos.isShadowArm) {
     trackKolClose({
+      positionId: pos.positionId,
       tokenMint: pos.tokenMint,
       closeReason: effectiveReason,
       signalPrice: pos.marketReferencePrice,
       ticketSol: pos.ticketSol,
+      tokenDecimals: pos.tokenDecimals,
+      tokenDecimalsSource: pos.tokenDecimalsSource,
       state: pos.state,
       entryTimeSec: pos.entryTimeSec,
       nowSec,
@@ -2931,6 +3484,24 @@ function fireRejectObserver(
   score: KolDiscoveryScore,
   extras: Record<string, unknown> = {}
 ): void {
+  const survivalFlags = extractStringArray(extras.survivalFlags);
+  emitKolShadowPolicy({
+    eventKind: 'reject',
+    tokenMint,
+    currentAction: 'block',
+    isLive: false,
+    isShadowArm: false,
+    entryReason: typeof extras.entryReason === 'string' ? extras.entryReason : undefined,
+    rejectReason: reason,
+    independentKolCount: score.independentKolCount,
+    effectiveIndependentCount: score.effectiveIndependentCount,
+    kolScore: score.finalScore,
+    participatingKols: score.participatingKols,
+    survivalFlags,
+    recentJupiter429: currentRecentJupiter429(),
+    routeFound: survivalFlags.includes('NO_SELL_ROUTE') ? false : undefined,
+  });
+
   // Pre-entry reject — 진입 안 된 pair 의 trajectory 관측
   trackRejectForMissedAlpha(
     {
@@ -2970,6 +3541,36 @@ function buildObserverConfig() {
   };
 }
 
+function trackRecoveredKolClose(trade: Trade, closeReason: string): void {
+  const entryTimeSec = Math.floor(trade.createdAt.getTime() / 1000);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const signalPrice = trade.plannedEntryPrice ?? trade.entryPrice;
+  const peakPrice = trade.highWaterMark ?? signalPrice;
+  const troughPrice = Math.min(signalPrice, trade.entryPrice);
+  const mfePct = signalPrice > 0 ? (peakPrice - signalPrice) / signalPrice : 0;
+  const maePct = signalPrice > 0 ? (troughPrice - signalPrice) / signalPrice : 0;
+  const ticketSol = trade.entryPrice * trade.quantity;
+
+  trackKolClose({
+    positionId: `kolh-recovery-${trade.id}`,
+    tokenMint: trade.pairAddress,
+    closeReason,
+    signalPrice,
+    ticketSol,
+    state: 'RECOVERY_ORPHAN',
+    entryTimeSec,
+    nowSec,
+    mfePct,
+    maePct,
+    entryPrice: trade.entryPrice,
+    exitPrice: trade.entryPrice,
+    peakPrice,
+    troughPrice,
+    isLive: true,
+    armName: trade.sourceLabel ?? 'recovery',
+  });
+}
+
 // ─── Recovery (2026-04-28, Sprint 2A) ────────────────────
 //
 // Why: 봇 크래시 / 재시작 시 DB 의 OPEN status kol_hunter trade 가 in-memory active map 에서
@@ -3005,7 +3606,7 @@ export async function recoverKolHunterOpenPositions(ctx: BotContext): Promise<nu
             `[KOL_HUNTER_RECOVERY_ORPHAN] trade=${trade.id.slice(0, 8)} pair=${trade.pairAddress.slice(0, 12)} ` +
             `zero token balance — closing DB with 0 pnl, skipping in-memory load`
           );
-          await ctx.tradeStore.closeTrade({
+          const closePersisted = await ctx.tradeStore.closeTrade({
             id: trade.id,
             exitPrice: trade.entryPrice,
             pnl: 0,
@@ -3013,7 +3614,11 @@ export async function recoverKolHunterOpenPositions(ctx: BotContext): Promise<nu
             exitReason: 'ORPHAN_NO_BALANCE',
             exitSlippageBps: undefined,
             decisionPrice: trade.entryPrice,
-          }).catch((err) => log.error(`[KOL_HUNTER_RECOVERY_ORPHAN] DB close failed for ${trade.id}: ${err}`));
+          }).then(() => true).catch((err) => {
+            log.error(`[KOL_HUNTER_RECOVERY_ORPHAN] DB close failed for ${trade.id}: ${err}`);
+            return false;
+          });
+          if (closePersisted) trackRecoveredKolClose(trade, 'ORPHAN_NO_BALANCE');
           await ctx.notifier.sendCritical(
             'kol_hunter_recovery_orphan',
             `KOL recovery: ${trade.id.slice(0, 8)} ${trade.pairAddress} zero balance — DB closed, not loaded`
@@ -3025,7 +3630,7 @@ export async function recoverKolHunterOpenPositions(ctx: BotContext): Promise<nu
             `[KOL_HUNTER_RECOVERY_DUST] trade=${trade.id.slice(0, 8)} pair=${trade.pairAddress.slice(0, 12)} ` +
             `dust balance ${onchainBalance.toString()} < 1000 raw — closing DB with 0 pnl`
           );
-          await ctx.tradeStore.closeTrade({
+          const closePersisted = await ctx.tradeStore.closeTrade({
             id: trade.id,
             exitPrice: trade.entryPrice,
             pnl: 0,
@@ -3033,7 +3638,11 @@ export async function recoverKolHunterOpenPositions(ctx: BotContext): Promise<nu
             exitReason: 'ORPHAN_DUST_BALANCE',
             exitSlippageBps: undefined,
             decisionPrice: trade.entryPrice,
-          }).catch((err) => log.error(`[KOL_HUNTER_RECOVERY_DUST] DB close failed for ${trade.id}: ${err}`));
+          }).then(() => true).catch((err) => {
+            log.error(`[KOL_HUNTER_RECOVERY_DUST] DB close failed for ${trade.id}: ${err}`);
+            return false;
+          });
+          if (closePersisted) trackRecoveredKolClose(trade, 'ORPHAN_DUST_BALANCE');
           continue;
         }
       } catch (balanceErr) {

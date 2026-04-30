@@ -2,7 +2,7 @@ import { GateEvaluationResult } from '../gate';
 import { config } from '../utils/config';
 import { FAKE_FILL_SLIPPAGE_BPS_THRESHOLD } from '../utils/constants';
 import { createModuleLogger } from '../utils/logger';
-import { Candle, CloseReason, Order, Signal, Trade, isSandboxStrategy } from '../utils/types';
+import { Candle, CloseReason, Order, PartialFillDataReason, Signal, Trade, isSandboxStrategy } from '../utils/types';
 import { bpsToDecimal, decimalToBps } from '../utils/units';
 import { calcATR, calcAdaptiveTrailingStop, checkExhaustion } from '../strategy';
 import { PositionStore } from '../state';
@@ -238,8 +238,9 @@ export interface EntryExecutionSummary {
    * 2026-04-25 Phase 1 P0-3 — buyResult 의 actualIn / actualOut 한쪽이 null 이라
    * planned 로 강제된 경우 true. canary-eval / equity-decomposition 가 이 trade 를
    * "데이터 품질 의심" 으로 분리해 집계할 수 있도록 ledger 까지 전파.
-   */
+  */
   partialFillDataMissing?: boolean;
+  partialFillDataReason?: PartialFillDataReason;
 }
 
 /** trade.id → DegradedState (실제 트리거된 거래만 포함) */
@@ -993,6 +994,8 @@ export async function recordOpenedTrade(
         expectedOutAmount: executionSummary.expectedOutAmount,
         actualOutAmount: executionSummary.actualOutAmount,
         outputDecimals: executionSummary.outputDecimals,
+        partialFillDataMissing: executionSummary.partialFillDataMissing,
+        partialFillDataReason: executionSummary.partialFillDataReason,
         effectiveRR: executionSummary.effectiveRR,
         roundTripCost: executionSummary.roundTripCost,
       },
@@ -1049,6 +1052,8 @@ export async function recordOpenedTrade(
       actualEntryPrice: openedOrder.price,
       actualQuantity: openedOrder.quantity,
       slippageBps: executionSummary.entrySlippageBps,
+      partialFillDataMissing: executionSummary.partialFillDataMissing,
+      partialFillDataReason: executionSummary.partialFillDataReason,
     },
     notifierKey: `${integrityLane}_open_persist`,
     buildNotifierMessage: (err) =>
@@ -1069,6 +1074,8 @@ export async function recordOpenedTrade(
     ...openedOrder,
     tradeId,
     plannedEntryPrice: executionSummary.plannedEntryPrice,
+    partialFillDataMissing: executionSummary.partialFillDataMissing,
+    partialFillDataReason: executionSummary.partialFillDataReason,
   }, txSignature);
   await ctx.auditLogger.logSignal({
     ...buildSignalAuditBase(signal, lastCandle, gateResult, postSizeExecution),

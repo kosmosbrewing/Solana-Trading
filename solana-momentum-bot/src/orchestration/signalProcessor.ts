@@ -4,7 +4,7 @@ import { buildFibPullbackOrder, buildMomentumTriggerOrder, buildVolumeSpikeOrder
 import { checkStaleSignal } from '../state';
 import { config } from '../utils/config';
 import { createModuleLogger } from '../utils/logger';
-import { Candle, Order, Signal, isVolumeSpikeFamilyStrategy } from '../utils/types';
+import { Candle, Order, PartialFillDataReason, Signal, isVolumeSpikeFamilyStrategy } from '../utils/types';
 import {
   buildSignalAuditBase,
   EntryExecutionSummary,
@@ -414,7 +414,13 @@ const ENTRY_PRICE_SAFE_RATIO_MAX = 2.0;
 export function resolveActualEntryMetrics(
   order: Order,
   buyResult?: SwapResult
-): { entryPrice: number; quantity: number; actualEntryNotionalSol: number; partialFillDataMissing: boolean } {
+): {
+  entryPrice: number;
+  quantity: number;
+  actualEntryNotionalSol: number;
+  partialFillDataMissing: boolean;
+  partialFillDataReason?: PartialFillDataReason;
+} {
   const plannedEntryNotionalSol = order.quantity * order.price;
   const hasActualOut =
     buyResult?.actualOutUiAmount != null && buyResult.actualOutUiAmount > 0;
@@ -422,22 +428,34 @@ export function resolveActualEntryMetrics(
     buyResult?.actualInputUiAmount != null && buyResult.actualInputUiAmount > 0;
 
   const OUTPUT_SANITY_MULTIPLIER = 5;
+  const OUTPUT_SANITY_MIN_RATIO = 1 / OUTPUT_SANITY_MULTIPLIER;
   let quantity: number;
   let actualEntryNotionalSol: number;
   // 2026-04-25 Phase 1 P0-3 — partial fill data missing flag.
   // 한쪽만 가용한 swap 결과를 planned 로 강제 복원했음을 ledger 에 명시한다.
   let partialFillDataMissing = false;
+  let partialFillDataReason: PartialFillDataReason | undefined;
   if (hasActualIn && hasActualOut) {
     const expectedQty = order.price > 0 ? buyResult!.actualInputUiAmount! / order.price : 0;
-    if (expectedQty > 0 && buyResult!.actualOutUiAmount! > expectedQty * OUTPUT_SANITY_MULTIPLIER) {
+    const outputRatio = expectedQty > 0 ? buyResult!.actualOutUiAmount! / expectedQty : 1;
+    if (
+      expectedQty > 0 &&
+      (
+        outputRatio > OUTPUT_SANITY_MULTIPLIER ||
+        outputRatio < OUTPUT_SANITY_MIN_RATIO
+      )
+    ) {
       log.error(
-        `[MULTI_ACCOUNT_RISK] actualOut ${buyResult!.actualOutUiAmount!.toFixed(4)} >> ` +
-        `expected ${expectedQty.toFixed(4)} (${(buyResult!.actualOutUiAmount! / expectedQty).toFixed(1)}x) ` +
+        `[MULTI_ACCOUNT_RISK] actualOut ${buyResult!.actualOutUiAmount!.toFixed(4)} != ` +
+        `expected ${expectedQty.toFixed(4)} (${outputRatio.toFixed(4)}x) ` +
         `pair=${order.pairAddress} — forcing planned to avoid ratio distortion`
       );
       quantity = order.quantity;
       actualEntryNotionalSol = plannedEntryNotionalSol;
       partialFillDataMissing = true; // sanity reject 도 데이터 품질 이슈
+      partialFillDataReason = outputRatio > OUTPUT_SANITY_MULTIPLIER
+        ? 'output_sanity_high'
+        : 'output_sanity_low';
     } else {
       quantity = buyResult!.actualOutUiAmount!;
       actualEntryNotionalSol = buyResult!.actualInputUiAmount!;
@@ -452,13 +470,14 @@ export function resolveActualEntryMetrics(
         `forcing both to planned to avoid ratio distortion`
       );
       partialFillDataMissing = true;
+      partialFillDataReason = hasActualOut ? 'missing_actual_input' : 'missing_actual_output';
     }
     quantity = order.quantity;
     actualEntryNotionalSol = plannedEntryNotionalSol;
   }
 
   const entryPrice = quantity > 0 ? actualEntryNotionalSol / quantity : order.price;
-  return { entryPrice, quantity, actualEntryNotionalSol, partialFillDataMissing };
+  return { entryPrice, quantity, actualEntryNotionalSol, partialFillDataMissing, partialFillDataReason };
 }
 
 export function buildEntryExecutionSummary(
@@ -475,8 +494,14 @@ export function buildEntryExecutionSummary(
   // GRIFFAIN 사례: 682 tokens received vs expected 27.25 = 25x 초과 → entryPrice 25x 왜곡
   // → Phase A3 ratio 0.04 → PRICE_ANOMALY_BLOCK (per-token 80% 차단의 주요 원인 — TD-16).
   // Fix: actualOut 이 expected 의 5x 를 초과하면 force-to-planned 으로 전환.
-  const { entryPrice, quantity: actualQuantity, actualEntryNotionalSol, partialFillDataMissing } =
-    resolveActualEntryMetrics(order, buyResult);
+  const metrics = resolveActualEntryMetrics(order, buyResult);
+  const {
+    entryPrice,
+    quantity: actualQuantity,
+    actualEntryNotionalSol,
+    partialFillDataMissing,
+    partialFillDataReason,
+  } = metrics;
   const hasActualOut =
     buyResult?.actualOutUiAmount != null && buyResult.actualOutUiAmount > 0;
   const hasActualIn =
@@ -532,6 +557,7 @@ export function buildEntryExecutionSummary(
     effectiveRR: actualExecution.effectiveRR,
     roundTripCost: actualExecution.roundTripCost,
     partialFillDataMissing,
+    partialFillDataReason,
   };
 }
 

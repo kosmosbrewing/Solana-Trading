@@ -115,6 +115,8 @@ describe('buildEntryExecutionSummary (Phase A2 guard)', () => {
     expect(summary.entryPrice).toBeCloseTo(1.0, 8);
     expect(summary.quantity).toBe(10);
     expect(summary.actualEntryNotionalSol).toBe(10);
+    expect(summary.partialFillDataMissing).toBe(true);
+    expect(summary.partialFillDataReason).toBe('missing_actual_input');
   });
 
   it('forces both sides to planned when only actualInputUiAmount is provided', () => {
@@ -127,6 +129,8 @@ describe('buildEntryExecutionSummary (Phase A2 guard)', () => {
 
     expect(summary.entryPrice).toBeCloseTo(1.0, 8);
     expect(summary.quantity).toBe(10);
+    expect(summary.partialFillDataMissing).toBe(true);
+    expect(summary.partialFillDataReason).toBe('missing_actual_output');
   });
 
   it('falls back to planned entirely when buyResult is undefined (paper mode)', () => {
@@ -184,5 +188,23 @@ describe('buildEntryExecutionSummary (Phase A2 guard)', () => {
     // Guard 발동 → force-to-planned: entryPrice = order.price, quantity = order.quantity
     expect(summary.entryPrice).toBeCloseTo(1.0, 8);
     expect(summary.quantity).toBe(10);
+    expect(summary.partialFillDataReason).toBe('output_sanity_high');
+  });
+
+  it('forces planned when actualOut is 5x+ smaller than expected (bad-fill guard)', () => {
+    // 2026-04-30 live canary: actualOut 이 극단적으로 작으면 entryPrice/plannedEntryPrice 가
+    // 1000x+로 튀어 ref/actual MFE가 분리된다. 이 경우도 planned 복원 대상으로 본다.
+    const summary = buildEntryExecutionSummary(baseOrder, baseExecution, {
+      actualInputUiAmount: 10,
+      actualOutUiAmount: 1.5, // expected=10, ratio=0.15 → guard 발동
+      outputDecimals: 6,
+      slippageBps: 0,
+      txSignature: 'TX_LOW_OUT',
+    } as any);
+
+    expect(summary.entryPrice).toBeCloseTo(1.0, 8);
+    expect(summary.quantity).toBe(10);
+    expect(summary.partialFillDataMissing).toBe(true);
+    expect(summary.partialFillDataReason).toBe('output_sanity_low');
   });
 });

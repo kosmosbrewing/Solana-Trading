@@ -30,15 +30,19 @@ jest.mock('@solana/web3.js', () => {
 import { HeliusPoolDiscovery, looksLikePoolInitLogs } from '../src/realtime';
 
 describe('HeliusPoolDiscovery', () => {
+  const discoveries: HeliusPoolDiscovery[] = [];
+
   beforeEach(() => {
     jest.useFakeTimers();
     jest.clearAllMocks();
+    discoveries.length = 0;
     mockOnLogs.mockReturnValue(1);
     mockRemoveOnLogsListener.mockResolvedValue(undefined);
     mockGetMultipleAccountsInfo.mockResolvedValue([]);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await Promise.all(discoveries.map((discovery) => discovery.stop()));
     jest.useRealTimers();
   });
 
@@ -52,6 +56,7 @@ describe('HeliusPoolDiscovery', () => {
       rateLimitCooldownMs: 1_000,
       transientFailureCooldownMs: 100,
     });
+    discoveries.push(discovery);
     const errors: Array<{ rateLimited?: boolean; cooldownMs?: number }> = [];
 
     mockGetParsedTransaction
@@ -97,6 +102,7 @@ describe('HeliusPoolDiscovery', () => {
       requestSpacingMs: 1_000,
       queueLimit: 2,
     });
+    discoveries.push(discovery);
 
     mockGetParsedTransaction.mockResolvedValue(null);
     const capacityEvents: Array<{ source?: string; reason?: string; detail?: string }> = [];

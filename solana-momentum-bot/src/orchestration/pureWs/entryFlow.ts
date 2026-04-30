@@ -5,7 +5,7 @@
 // 모든 exit path (정상/실패/early return) 는 finally 절에서 inflight mutex 해제.
 
 import { config } from '../../utils/config';
-import { Order, Signal } from '../../utils/types';
+import { Order, PartialFillDataReason, Signal } from '../../utils/types';
 import type { MicroCandleBuilder } from '../../realtime';
 import { evaluateCupseySignalGate, CupseySignalGateConfig } from '../../strategy/cupseySignalGate';
 import { checkProbeViabilityFloor } from '../../gate/probeViabilityFloor';
@@ -429,6 +429,7 @@ export async function handlePureWsSignal(
   let entrySlippageBps = 0;
   // Phase 1 P0-3 (2026-04-25): true 면 actualIn/actualOut 한쪽만 가용 → planned 강제 복원됨.
   let partialFillDataMissing = false;
+  let partialFillDataReason: PartialFillDataReason | undefined;
 
   if (ctx.tradingMode === 'live') {
     // Block 3 paper-first enforcement (2026-04-18 QA fix):
@@ -490,6 +491,7 @@ export async function handlePureWsSignal(
       entrySlippageBps = buyResult.slippageBps;
       // Phase 1 P0-3: partial fill data missing flag for downstream ledger.
       partialFillDataMissing = metrics.partialFillDataMissing;
+      partialFillDataReason = metrics.partialFillDataReason;
       log.info(
         `[PUREWS_LIVE_BUY] ${positionId} immediate PROBE sig=${entryTxSignature.slice(0, 12)} ` +
         `slip=${entrySlippageBps}bps`
@@ -545,6 +547,7 @@ export async function handlePureWsSignal(
       signalPrice: signal.price,
       // Phase 1 P0-3: 데이터 품질 flag 를 ledger 까지 전파.
       partialFillDataMissing,
+      partialFillDataReason,
     },
     notifierKey: 'purews_open_persist',
     buildNotifierMessage: (err) =>
@@ -623,6 +626,7 @@ export async function handlePureWsSignal(
       // 2026-04-29: RPC 측정 wallet delta + partial-fill flag.
       actualNotionalSol,
       partialFillDataMissing,
+      partialFillDataReason,
     }, entryTxSignature).then(() => {
       funnelStats.notifierOpenSent++;
     }).catch((err) => {

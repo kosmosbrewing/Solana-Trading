@@ -133,6 +133,17 @@ export class PaperPriceFeed extends EventEmitter {
     return this.subscriptions.size;
   }
 
+  /**
+   * Live entry 직전 reference sanity check 용 one-shot quote.
+   * 기존 subscription cache 를 갱신하고 price event 도 emit 해서 paper/live state 와 같은 축을 유지한다.
+   */
+  async refreshNow(tokenMint: string): Promise<PriceTick | null> {
+    const tick = await this.fetchTick(tokenMint);
+    if (!tick) return null;
+    this.storeAndEmitTick(tick);
+    return tick;
+  }
+
   stopAll(): void {
     for (const sub of this.subscriptions.values()) {
       clearInterval(sub.timer);
@@ -162,7 +173,15 @@ export class PaperPriceFeed extends EventEmitter {
   }
 
   private async fetchAndEmit(tokenMint: string): Promise<void> {
+    const tick = await this.fetchTick(tokenMint);
+    if (!tick) return;
+    this.storeAndEmitTick(tick);
+  }
+
+  private async fetchTick(tokenMint: string): Promise<PriceTick | null> {
     try {
+      const now = Date.now();
+      if (now < this.rateLimitedUntilMs) return null;
       const headers: Record<string, string> = {};
       if (this.cfg.jupiterApiKey) headers['X-API-Key'] = this.cfg.jupiterApiKey;
       const amountLamports = BigInt(Math.round(this.cfg.probeSolAmount * LAMPORTS_PER_SOL));
@@ -177,9 +196,9 @@ export class PaperPriceFeed extends EventEmitter {
         timeout: this.cfg.timeoutMs,
       });
       const quote = resp.data;
-      if (!quote || !quote.outAmount) return;
+      if (!quote || !quote.outAmount) return null;
       const outAmountRaw = BigInt(quote.outAmount);
-      if (outAmountRaw <= 0n) return;
+      if (outAmountRaw <= 0n) return null;
       const outputDecimals =
         typeof quote.outputDecimals === 'number' &&
         Number.isFinite(quote.outputDecimals) &&
@@ -192,24 +211,16 @@ export class PaperPriceFeed extends EventEmitter {
       // as a trusted observer hint unless Jupiter/security provided an actual value.
       const priceDecimals = outputDecimals ?? 6;
       const outAmountUi = Number(outAmountRaw) / Math.pow(10, priceDecimals);
-      if (outAmountUi <= 0) return;
+      if (outAmountUi <= 0) return null;
       const price = this.cfg.probeSolAmount / outAmountUi;
-      const now = Date.now();
-      const sub = this.subscriptions.get(tokenMint);
-      if (sub) {
-        sub.lastPrice = price;
-        sub.lastTimestamp = now;
-        sub.lastOutputDecimals = outputDecimals;
-      }
-      const tick: PriceTick = {
+      return {
         tokenMint,
         price,
         outAmountUi,
         outputDecimals,
         probeSolAmount: this.cfg.probeSolAmount,
-        timestamp: now,
+        timestamp: Date.now(),
       };
-      this.emit('price', tick);
     } catch (err) {
       if (is429Error(err)) {
         recordJupiter429('paper_price_feed');
@@ -218,7 +229,18 @@ export class PaperPriceFeed extends EventEmitter {
       } else {
         log.debug(`[PAPER_PRICE] ${tokenMint.slice(0, 8)} poll error: ${String(err)}`);
       }
+      return null;
     }
+  }
+
+  private storeAndEmitTick(tick: PriceTick): void {
+    const sub = this.subscriptions.get(tick.tokenMint);
+    if (sub) {
+      sub.lastPrice = tick.price;
+      sub.lastTimestamp = tick.timestamp;
+      sub.lastOutputDecimals = tick.outputDecimals;
+    }
+    this.emit('price', tick);
   }
 }
 

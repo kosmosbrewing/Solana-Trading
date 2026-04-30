@@ -241,6 +241,41 @@ describe('KolWalletTracker.syncActiveSet (B-fix)', () => {
 
     await tracker.stop();
   });
+
+  it('handleLog clears tx fetch timeout when RPC returns first', async () => {
+    jest.useFakeTimers();
+    try {
+      const conn = {
+        onLogs: jest.fn(),
+        removeOnLogsListener: jest.fn(() => Promise.resolve()),
+        getParsedTransaction: jest.fn().mockResolvedValue(mockTx({
+          walletIdx: 0,
+          preSolLamports: 2 * LAMPORTS_PER_SOL,
+          postSolLamports: 1.9 * LAMPORTS_PER_SOL,
+          postTokens: [{ owner: ADDR_A, mint: TOKEN_MINT, uiAmount: 1000 }],
+          preTokens: [],
+        })),
+      };
+      const tracker = new KolWalletTracker({
+        connection: conn as never,
+        realtimeDataDir: '/tmp/test', logFileName: 'test.jsonl',
+        txFetchTimeoutMs: 1000, enabled: true,
+      });
+      jest
+        .spyOn(tracker as unknown as { appendJsonl: (...a: unknown[]) => Promise<void> }, 'appendJsonl')
+        .mockResolvedValue(undefined);
+      __testInject([makeWallet('a', [ADDR_A])]);
+
+      await (tracker as unknown as {
+        handleLog: (addr: string, sig: string, slot: number) => Promise<void>;
+      }).handleLog(ADDR_A, 'sig-fast-rpc', 1);
+
+      expect(conn.getParsedTransaction).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
 
 // ─── Shadow Track (Option A, 2026-04-27) ──────────────────────────────

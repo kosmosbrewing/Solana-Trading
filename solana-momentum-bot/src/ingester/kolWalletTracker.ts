@@ -342,13 +342,20 @@ export class KolWalletTracker extends EventEmitter {
       : lookupKolByAddress(walletAddress);
     if (!wallet) return; // DB 에서 사라짐 (shadow 도 DB 에서 fully 제거되면 무시)
 
+    let timeout: NodeJS.Timeout | null = null;
+    const timeoutPromise = new Promise<null>((resolve) => {
+      timeout = setTimeout(() => resolve(null), this.config.txFetchTimeoutMs);
+      if (timeout.unref) timeout.unref();
+    });
     const tx = await Promise.race([
       this.config.connection.getParsedTransaction(signature, {
         maxSupportedTransactionVersion: 0,
         commitment: 'confirmed',
       }),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), this.config.txFetchTimeoutMs)),
-    ]);
+      timeoutPromise,
+    ]).finally(() => {
+      if (timeout) clearTimeout(timeout);
+    });
     if (!tx) return;
 
     const swap = detectSwapFromWalletPerspective(tx, walletAddress);

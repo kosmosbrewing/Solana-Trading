@@ -151,6 +151,19 @@ export const kolHunter = {
   kolHunterYellowZonePaperFallbackBelowSol: numEnv('KOL_HUNTER_YELLOW_ZONE_PAPER_FALLBACK_BELOW_SOL', '0.75'),
   kolHunterYellowZoneMinIndependentKol: numEnv('KOL_HUNTER_YELLOW_ZONE_MIN_INDEPENDENT_KOL', '2'),
   kolHunterYellowZoneMaxRecentJupiter429: numEnv('KOL_HUNTER_YELLOW_ZONE_MAX_RECENT_JUPITER_429', '20'),
+  // 2026-04-30: live execution quality cooldown.
+  // partial fill metrics forced-planned 또는 buy lag 장기화가 발생한 mint 는 같은 mint live 재진입만
+  // 일정 시간 paper fallback 으로 낮춘다. 이미 체결된 position 을 건드리지 않고 future exposure 만 축소.
+  kolHunterLiveExecutionQualityCooldownEnabled: boolOptional('KOL_HUNTER_LIVE_EXEC_QUALITY_COOLDOWN_ENABLED', true),
+  kolHunterLiveExecutionQualityCooldownMs: numEnv('KOL_HUNTER_LIVE_EXEC_QUALITY_COOLDOWN_MS', '1800000'),
+  kolHunterLiveExecutionQualityMaxBuyLagMs: numEnv('KOL_HUNTER_LIVE_EXEC_QUALITY_MAX_BUY_LAG_MS', '90000'),
+  kolHunterLiveExecutionQualityMaxEntryAdvantageAbsPct: numEnv('KOL_HUNTER_LIVE_EXEC_QUALITY_MAX_ENTRY_ADVANTAGE_ABS_PCT', '0.5'),
+  // 2026-04-30: live entry 직전 fresh reference guard.
+  // PaperPriceFeed 의 cached/probe reference 와 live 직전 one-shot quote 가 크게 다르면 route/price
+  // 축이 불안정한 상태로 보고 live 대신 paper fallback 한다. ticket/floor/canary 값은 변경하지 않음.
+  kolHunterLiveFreshReferenceGuardEnabled: boolOptional('KOL_HUNTER_LIVE_FRESH_REFERENCE_GUARD_ENABLED', true),
+  kolHunterLiveFreshReferenceMaxAgeMs: numEnv('KOL_HUNTER_LIVE_FRESH_REFERENCE_MAX_AGE_MS', '2000'),
+  kolHunterLiveFreshReferenceMaxAdverseDriftPct: numEnv('KOL_HUNTER_LIVE_FRESH_REFERENCE_MAX_ADVERSE_DRIFT_PCT', '0.20'),
 
   // MISSION_CONTROL §Control 5 — arm identity / detector version.
   kolHunterParameterVersion: process.env.KOL_HUNTER_PARAMETER_VERSION ?? 'v1.0.0',

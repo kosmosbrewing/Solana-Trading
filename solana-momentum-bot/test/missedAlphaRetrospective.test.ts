@@ -140,6 +140,22 @@ describe('missedAlphaRetrospective', () => {
       expect(r.byCategory.has('entry_drift')).toBe(false);
     });
 
+    it('excludes kol_close from default reject retrospective but includes it when explicitly filtered', () => {
+      const records: ProbeRecord[] = [
+        buildRecord({ eventId: 'pre-entry', rejectCategory: 'survival', rejectedAt: inWindow, offsetSec: 1800, deltaPct: -0.1 }),
+        buildRecord({ eventId: 'post-close', rejectCategory: 'kol_close', rejectedAt: inWindow, offsetSec: 1800, deltaPct: 5.0 }),
+      ];
+
+      const defaultReport = analyze(records, { windowDays: 7, nowMs });
+      expect(defaultReport.totalRejects).toBe(1);
+      expect(defaultReport.byCategory.has('kol_close')).toBe(false);
+      expect(defaultReport.overallFalseNegRate).toBe(0);
+
+      const closeReport = analyze(records, { windowDays: 7, nowMs, rejectCategory: 'kol_close' });
+      expect(closeReport.totalRejects).toBe(1);
+      expect(closeReport.byCategory.get('kol_close')?.fivexFalseNeg).toBe(1);
+    });
+
     it('classifies alert level — critical when falseNegRate ≥ 15%', () => {
       // 10 events, 2 winners (≥+50%) → 20% falseNeg → critical
       const records: ProbeRecord[] = [];

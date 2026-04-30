@@ -17,7 +17,7 @@
 import { appendFile, mkdir } from 'fs/promises';
 import path from 'path';
 import { createModuleLogger } from '../utils/logger';
-import { Signal, Order, Trade, CloseReason } from '../utils/types';
+import { Signal, Order, PartialFillDataReason, Trade, CloseReason } from '../utils/types';
 import { config } from '../utils/config';
 import { MicroCandleBuilder } from '../realtime';
 import { evaluateCupseySignalGate, CupseySignalGateConfig, CupseySignalGateResult } from '../strategy/cupseySignalGate';
@@ -624,6 +624,7 @@ export async function updateCupseyPositions(
         let actualQuantity = pos.quantity;
         let actualNotionalSol = currentPrice * pos.quantity;  // 2026-04-29: RPC 측정 wallet delta 전파용
         let partialFillDataMissing = false;
+        let partialFillDataReason: PartialFillDataReason | undefined;
         let entryTxSignature = 'PAPER_TRADE';
         let entrySlippageBps = 0;
 
@@ -651,6 +652,7 @@ export async function updateCupseyPositions(
             actualQuantity = metrics.quantity;
             actualNotionalSol = metrics.actualEntryNotionalSol;
             partialFillDataMissing = metrics.partialFillDataMissing;
+            partialFillDataReason = metrics.partialFillDataReason;
             entryTxSignature = buyResult.txSignature;
             entrySlippageBps = buyResult.slippageBps;
             log.info(
@@ -675,6 +677,8 @@ export async function updateCupseyPositions(
               slippageBps: entrySlippageBps,
               signalTimeSec: pos.signalTimeSec,
               signalPrice: pos.signalPrice,
+              partialFillDataMissing,
+              partialFillDataReason,
             });
           } catch (buyErr) {
             log.warn(`[CUPSEY_LIVE_BUY] ${id} pullback buy failed: ${buyErr}`);
@@ -739,6 +743,7 @@ export async function updateCupseyPositions(
             // 2026-04-29: RPC 측정 wallet delta + partial-fill flag.
             actualNotionalSol,
             partialFillDataMissing,
+            partialFillDataReason,
           }, entryTxSignature).then(() => {
             funnelStats.notifierOpenSent++;
             recordCupseyFunnelSnapshot(ctx);

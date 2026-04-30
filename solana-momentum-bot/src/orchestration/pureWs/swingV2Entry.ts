@@ -18,7 +18,7 @@
 // 코드 default = false. 위반 시 운영자 수동 책임.
 
 import { config } from '../../utils/config';
-import type { Order, Signal } from '../../utils/types';
+import type { Order, PartialFillDataReason, Signal } from '../../utils/types';
 import type { BotContext } from '../types';
 import { acquireCanarySlot, releaseCanarySlot } from '../../risk/canaryConcurrencyGuard';
 import { isEntryHaltActive } from '../entryIntegrity';
@@ -167,6 +167,7 @@ async function openSwingV2Live(input: OpenSwingV2Input): Promise<void> {
   let actualQuantity = probeQuantity;
   let actualNotionalSol = signal.price * probeQuantity;  // 2026-04-29: RPC 측정 wallet delta 전파용
   let partialFillDataMissing = false;
+  let partialFillDataReason: PartialFillDataReason | undefined;
   let entryTxSignature = 'PAPER_TRADE';
   let entrySlippageBps = 0;
   try {
@@ -188,6 +189,7 @@ async function openSwingV2Live(input: OpenSwingV2Input): Promise<void> {
     actualQuantity = metrics.quantity;
     actualNotionalSol = metrics.actualEntryNotionalSol;
     partialFillDataMissing = metrics.partialFillDataMissing;
+    partialFillDataReason = metrics.partialFillDataReason;
     entryTxSignature = buyResult.txSignature;
     entrySlippageBps = buyResult.slippageBps;
     log.info(
@@ -243,6 +245,8 @@ async function openSwingV2Live(input: OpenSwingV2Input): Promise<void> {
       armName: 'pure_ws_swing_v2',
       parameterVersion: config.pureWsSwingV2ParameterVersion,
       parentPositionId: primaryPositionId,
+      partialFillDataMissing,
+      partialFillDataReason,
     },
     notifierKey: 'purews_swingv2_open_persist',
     buildNotifierMessage: (err) =>
@@ -302,6 +306,7 @@ async function openSwingV2Live(input: OpenSwingV2Input): Promise<void> {
       // 2026-04-29: RPC 측정 wallet delta + partial-fill flag.
       actualNotionalSol,
       partialFillDataMissing,
+      partialFillDataReason,
     }, entryTxSignature).catch((err) => {
       log.warn(`[PUREWS_SWING_V2_NOTIFY_OPEN_FAIL] ${livePositionId} ${err}`);
     });

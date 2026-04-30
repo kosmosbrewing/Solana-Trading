@@ -5,7 +5,7 @@
 > **Authority**: `docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md` (ADR) + memory:project_kol_b_decision_ralph_loop_2026_04_28.md
 > **Debate log**: `docs/debates/kol-discovery-debate-2026-04-23.md`
 > **Paradigm**: KOL Wallet Activity = 1st-class Discovery, 자체 Execution = 구조 유지 + 파라미터 재조정
-> **Timeline**: Phase 0-3 완료 / Phase 4 코드 완료 (활성화 gate 부분 미충족) / Phase 5 paper 데이터 누적 후
+> **Timeline**: Phase 0-3 완료 / Phase 4 live canary active / Phase 5 는 live 200 trades 후 SCALE/RETIRE/HOLD 판정
 
 ---
 
@@ -26,28 +26,32 @@
 - [x] **Phase 3.5** (2026-04-26): smart-v3 main + swing-v2 paper shadow — 손익비 정책 A/B. KOL `kol_hunter_smart_v3` (pullback/velocity/both) + `kol_hunter_swing_v2` (multi-KOL long hold).
 - [x] **Phase 3.6** (2026-04-26): pure_ws swing-v2 paper shadow + live canary 코드 — `pure_ws_swing_v2` arm. paper-first → opt-in live (별도 lane / canary slot / budget).
 - [x] **Phase 4 코드** (2026-04-27, commit 1469a08): KOL live canary path 구현 — `enterLivePosition` + `closeLivePosition` + Triple-flag gate (`isLiveCanaryActive`). 7 audit fix 후속.
-- [ ] **Phase 4 활성화**: paper 5x+ winner ≥ 1건 입증 필요. 현재 0건 (가장 가까움 +186% net / +285% mfe = 사명 임계 +400% 의 47-71%).
+- [x] **Phase 4 활성화**: paper 5x+ winner 1건 입증 후 운영자 승인으로 live canary active. 현재 과제는 live 손실 원인 분해 + floor 보호.
 - [ ] **Phase 5**: Live 200 trades → Stage 4 SCALE gate (4주)
 
-### Phase 4 활성화 게이트 (2026-04-27 현황)
+### Phase 4 Live Canary 현황 (2026-04-30)
 
 | Gate | 임계 | 현재 | 충족? |
 |------|------|------|------|
-| Paper trades | ≥ 200 | **212** | ✅ |
-| Paper 5x+ winner (net ≥ 400%) | ≥ 1건 | **0** | ❌ binding |
-| smart-v3 sustained net 양수 | yes | +4.79% (n=133) | ✅ |
-| swing-v2 sustained 양수 | small sample | +7.31% (n=11) | ⚠ small |
-| 코드 (`enterLivePosition`) | 구현 | ✅ | ✅ |
-| 별도 ADR | yes | 없음 | ❌ |
-| Telegram critical ack | `stage4_approved_YYYY_MM_DD` | 없음 | ❌ |
+| Paper trades | ≥ 200 | **469 paper closes** | ✅ |
+| Paper 5x+ winner (MFE ≥ +400%) | ≥ 1건 | **1건 (DF7DAPat, mfe+940%)** | ✅ |
+| KOL live canary | explicit opt-in | `KOL_HUNTER_PAPER_ONLY=false` + `KOL_HUNTER_LIVE_CANARY_ENABLED=true` | ✅ |
+| Live 5x+ winner | ≥ 1건 | **0건** | ❌ binding |
+| Live wallet-truth growth | > 0 | negative so far | ❌ |
+| Live single-KOL gate | independent KOL ≥ 2 | `KOL_HUNTER_LIVE_MIN_INDEPENDENT_KOL=2` | ✅ |
+| Canary budget persistence | restart 후 ledger 복원 | `CANARY_AUTO_HALT_HYDRATE_ON_START=true` | ✅ |
+| 다음 작업 | — | hardcut/slippage root-cause + live/paper divergence deep-dive | ⏳ |
 
-→ **활성화는 운영자 자발적 §3 위반 인지** 상태에서만. 코드 안전망 (canary cap 0.3 SOL / drift halt 0.2 SOL / max consec / triple-flag gate) 으로 wallet 보호.
+→ Phase 4 는 활성 상태. 아직 SCALE 이 아니므로 live canary 는 floor 0.7 / KOL cap 0.2 / independent KOL ≥ 2 / yellow-zone rule / restart budget hydration 안에서만 계속한다.
 
 ### Phase 4 활성화 시 .env
 
 ```bash
 KOL_HUNTER_PAPER_ONLY=false                         # default true → explicit false
 KOL_HUNTER_LIVE_CANARY_ENABLED=true                 # default false → explicit true
+KOL_HUNTER_LIVE_MIN_INDEPENDENT_KOL=2               # single-KOL live 는 paper fallback
+CANARY_AUTO_HALT_HYDRATE_ON_START=true              # restart 시 executed-sells ledger 로 budget 복원
+CANARY_AUTO_HALT_HYDRATE_LOOKBACK_HOURS=72
 # (선택) KOL_HUNTER_TICKET_OVERRIDE_ACK=stage4_approved_YYYY_MM_DD  — ticket > 0.01 시만
 ```
 
@@ -76,9 +80,9 @@ ADR §5 로부터 그대로. 본 문서 모든 Phase 에서 불변.
 
 | 항목 | 값 | 코드 변수 |
 |------|-----|-----------|
-| Wallet floor | 0.8 SOL | `walletStopMinSol` |
+| Wallet floor | 0.7 SOL | `walletStopMinSol` |
 | Canary cumulative loss cap | -0.3 SOL | `canaryMaxBudgetSol` |
-| Fixed ticket | 0.01 SOL | `pureWsLaneTicketSol` (Lane T 도 동일값 사용) |
+| Fixed ticket | pure_ws/cupsey/migration 0.01 SOL / KOL 0.02 SOL | `pureWsLaneTicketSol` / `kolHunterTicketSol` |
 | Max concurrent | 3 | `pureWsMaxConcurrent` (전역) |
 | Wallet delta drift halt | ≥ 0.2 SOL | `walletDeltaHaltSol` |
 | Daily bleed budget alpha | 0.05 | `dailyBleedAlpha` |
@@ -407,9 +411,13 @@ KOL_HUNTER_QUICK_REJECT_FACTOR_COUNT=3
 
 ### 9.1 작업
 
-- [ ] `KOL_HUNTER_PAPER_ONLY=false` (운영자 명시 승인 후)
-- [ ] ticket 0.01 SOL, max concurrent 3 (전역) 유지
-- [ ] Canary budget -0.3 SOL cap (Lane T 전용)
+- [x] `KOL_HUNTER_PAPER_ONLY=false` (운영자 명시 승인)
+- [x] `KOL_HUNTER_LIVE_CANARY_ENABLED=true`
+- [x] KOL ticket 0.02 SOL, max concurrent 3 (전역) 유지
+- [x] Canary budget -0.2 SOL cap (Lane T 전용) ledger-persistent enforcement
+- [x] Live single-KOL paper fallback (`KOL_HUNTER_LIVE_MIN_INDEPENDENT_KOL=2`)
+- [x] Yellow-zone live gate (0.75~0.85 SOL 강화 / 0.70~0.75 SOL paper fallback)
+- [x] KOL live canary report (`npm run kol:live-canary-report`)
 - [ ] Live 50 trade 까지 halt 미발동 시 Phase 5 진행
 - [ ] Telegram notification:
   - [ ] Lane T entry / exit / halt
@@ -421,13 +429,14 @@ KOL_HUNTER_QUICK_REJECT_FACTOR_COUNT=3
 
 - [ ] Live 50 trade 누적
 - [ ] **net 5x+ OR T2 visit ≥ 1건**
-- [ ] 0.8 floor 위반 0건
+- [ ] 0.7 floor 위반 0건
 - [ ] paper vs live gap (slippage / friction) 허용 범위
 - [ ] `canary-eval.ts` Lane T report
 
 ### 9.3 Rollback
 
-- 0.8 floor 근접 (< 0.85) 또는 budget -0.3 소진 → 즉시 halt
+- single-KOL live 시도 → paper fallback (`LIVE_MIN_KOL`)
+- 0.75~0.85 SOL yellow-zone → live 조건 강화 / 0.70~0.75 SOL → paper fallback / budget -0.2 소진 → 즉시 halt
 - 50 trade 내 5x+ winner 0 AND T2 visit 0 → Phase 3 재조정 복귀
 
 ### 9.4 ADR Gate 3 참조
@@ -489,7 +498,10 @@ KOL_HUNTER_QUICK_REJECT_FACTOR_COUNT=3
 | Phase 2 No-go (Gate 1) | 옵션 5 기각 → 본 문서 `_rejected` archive |
 | Phase 3 재조정 2차 실패 (Gate 2) | 동일 |
 | Phase 4 5x+ / T2 visit 0 (Gate 3) | Paper 복귀 → Phase 3 재조정 |
-| Wallet < 0.85 SOL | 즉시 Lane T halt, manual review |
+| KOL live independent KOL < 2 | paper fallback, live entry 금지 |
+| Wallet 0.75~0.85 SOL | yellow-zone live 조건 강화 |
+| Wallet 0.70~0.75 SOL | KOL live paper fallback, manual review |
+| Wallet < 0.70 SOL | 전 lane halt, manual review |
 | KOL DB 해킹 / 유출 | 즉시 Lane T halt, DB 재정제 |
 | Helius rate limit 초과 | tier degrade (S 만 실시간) |
 | 운영자 수동 중단 요청 | 즉시 Lane T halt, paper 유지 |

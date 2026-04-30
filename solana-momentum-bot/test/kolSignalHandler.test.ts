@@ -160,6 +160,12 @@ jest.mock('../src/utils/config', () => ({
     // 에서 통과 가정. Track 2B 회귀 테스트만 explicit override.
     kolHunterRejectOnNoSecurityData: false,
     kolHunterLiveCanaryEnabled: false,
+    kolHunterLiveMinIndependentKol: 2,
+    kolHunterYellowZoneEnabled: true,
+    kolHunterYellowZoneStartSol: 0.85,
+    kolHunterYellowZonePaperFallbackBelowSol: 0.75,
+    kolHunterYellowZoneMinIndependentKol: 2,
+    kolHunterYellowZoneMaxRecentJupiter429: 20,
     // 2026-04-29 (Track 1): default 0 — test 내 same-token 반복 사용 차단 안 함.
     // Track 1 회귀 테스트에서 explicit 으로 override 하여 검증.
     kolHunterReentryCooldownMs: 0,
@@ -221,6 +227,10 @@ describe('kolSignalHandler — state machine', () => {
     resetKolDecayForTests();
     // 2026-04-29 (#5): community cache 도 test 간 격리.
     resetCommunityCacheForTests();
+    const { resetWalletStopGuardForTests } = require('../src/risk/walletStopGuard');
+    resetWalletStopGuardForTests();
+    const { resetJupiter429Metric } = require('../src/observability/jupiterRateLimitMetric');
+    resetJupiter429Metric();
     const mockedConfig = (require('../src/utils/config') as any).config;
     mockedConfig.kolHunterSmartV3Enabled = false;
     mockedConfig.kolHunterSwingV2Enabled = false;
@@ -416,6 +426,51 @@ describe('kolSignalHandler — state machine', () => {
       expect(positions[0].independentKolCount).toBe(2);
     });
 
+    it('first tick 대기 중 같은 mint buy 는 기존 smart-v3 pending 에 합류해 observe 중복을 막는다', async () => {
+      const first = handleKolSwap(buyTx('k1', 'S', MINT_SMART, 120_000));
+      await flushAsync();
+
+      await handleKolSwap(buyTx('k2', 'A', MINT_SMART));
+      stubFeed.emitTick(MINT_SMART, 0.001);
+      await first;
+      await flushAsync();
+
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].parameterVersion).toBe('smart-v3.0.0');
+      expect(positions[0].kolEntryReason).toBe('velocity');
+      expect(positions[0].independentKolCount).toBe(2);
+    });
+
+    it('smart-v3 reentry block 은 pending price subscription 을 정리한다', async () => {
+      mockedConfig.kolHunterReentryCooldownMs = 30 * 60 * 1000;
+
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      stubFeed.emitTick(MINT_SMART, 0.0013);
+      await flushAsync();
+      stubFeed.emitTick(MINT_SMART, 0.00115);
+      await flushAsync();
+
+      const first = __testGetActive()[0];
+      expect(first).toBeDefined();
+      __testTriggerTick(first.positionId, first.entryPrice * 0.89);
+      await flushAsync();
+      expect(__testGetActive()).toHaveLength(0);
+      expect(stubFeed.getActiveSubscriptionCount()).toBe(0);
+
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART, 1_000));
+      stubFeed.emitTick(MINT_SMART, 0.0013);
+      await flushAsync();
+      stubFeed.emitTick(MINT_SMART, 0.00115);
+      await flushAsync();
+
+      expect(__testGetActive()).toHaveLength(0);
+      expect(stubFeed.getActiveSubscriptionCount()).toBe(0);
+      mockedConfig.kolHunterReentryCooldownMs = 0;
+    });
+
     it('trigger 없이 observe 만료되면 진입하지 않는다', async () => {
       stubFeed.setInitialPrice(MINT_SMART, 0.001);
       await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
@@ -426,7 +481,9 @@ describe('kolSignalHandler — state machine', () => {
     it('observe 중 동일 KOL sell 은 pending candidate 를 취소한다', async () => {
       stubFeed.setInitialPrice(MINT_SMART, 0.001);
       await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      expect(stubFeed.getActiveSubscriptionCount()).toBe(1);
       await handleKolSwap({ ...buyTx('pain', 'S', MINT_SMART), action: 'sell' });
+      expect(stubFeed.getActiveSubscriptionCount()).toBe(0);
       await __testForceResolveStalk(MINT_SMART);
       expect(__testGetActive()).toHaveLength(0);
     });
@@ -521,7 +578,8 @@ describe('kolSignalHandler — state machine', () => {
       mockedConfig.kolHunterQuickRejectWinnerSafeMfe = 0.05;
       try {
         stubFeed.setInitialPrice(MINT_SMART, 0.001);
-        await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+        await handleKolSwap(buyTx('pain', 'S', MINT_SMART, 120_000));
+        await handleKolSwap(buyTx('gorapandeok', 'B', MINT_SMART));
         stubFeed.emitTick(MINT_SMART, 0.0013);
         stubFeed.emitTick(MINT_SMART, 0.00115);
         await flushAsync();
@@ -552,7 +610,8 @@ describe('kolSignalHandler — state machine', () => {
       mockedConfig.kolHunterQuickRejectWinnerSafeMfe = 0.50;  // 50% — 도달 불가능 한 임계
       try {
         stubFeed.setInitialPrice(MINT_SMART, 0.001);
-        await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+        await handleKolSwap(buyTx('pain', 'S', MINT_SMART, 120_000));
+        await handleKolSwap(buyTx('gorapandeok', 'B', MINT_SMART));
         stubFeed.emitTick(MINT_SMART, 0.0013);
         stubFeed.emitTick(MINT_SMART, 0.00115);
         await flushAsync();
@@ -651,7 +710,8 @@ describe('kolSignalHandler — state machine', () => {
 
       try {
         stubFeed.setInitialPrice(MINT_SMART, 0.001);
-        await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+        await handleKolSwap(buyTx('pain', 'S', MINT_SMART, 120_000));
+        await handleKolSwap(buyTx('gorapandeok', 'B', MINT_SMART));
         stubFeed.emitTick(MINT_SMART, 0.0013);
         stubFeed.emitTick(MINT_SMART, 0.00115);
         await flushAsync();
@@ -947,6 +1007,28 @@ describe('kolSignalHandler — state machine', () => {
       return { ctx, executeBuy, insertTrade, sendTradeOpen };
     }
 
+    function buildSecurityClient() {
+      return {
+        getTokenSecurityDetailed: jest.fn().mockResolvedValue({
+          isHoneypot: false,
+          isFreezable: false,
+          isMintable: false,
+          hasTransferFee: false,
+          freezeAuthorityPresent: false,
+          top10HolderPct: 0.10,
+          creatorPct: 0.10,
+          tokenProgram: 'spl-token',
+        }),
+        getExitLiquidity: jest.fn().mockResolvedValue({
+          exitLiquidityUsd: 100_000,
+          sellVolume24h: 50_000,
+          buyVolume24h: 50_000,
+          sellBuyRatio: 1.0,
+        }),
+        getMintDecimals: jest.fn().mockResolvedValue(6),
+      };
+    }
+
     it('triple-flag gate 통과 + smart-v3 pullback trigger → executor.executeBuy 호출 + isLive=true', async () => {
       const { ctx, executeBuy, insertTrade } = buildLiveCtx();
       __testInit({ priceFeed: stubFeed as unknown as never, ctx });
@@ -954,7 +1036,8 @@ describe('kolSignalHandler — state machine', () => {
       mockedConfig.kolHunterLiveCanaryEnabled = true;
 
       stubFeed.setInitialPrice(MINT_SMART, 0.001);
-      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART, 120_000));
+      await handleKolSwap(buyTx('gorapandeok', 'B', MINT_SMART));
       stubFeed.emitTick(MINT_SMART, 0.0013);  // observe 시작
       stubFeed.emitTick(MINT_SMART, 0.00115); // pullback trigger
       await flushAsync();
@@ -972,6 +1055,27 @@ describe('kolSignalHandler — state machine', () => {
       expect(live?.parameterVersion).toBe('smart-v3.0.0');
       expect(live?.kolEntryReason).toBe('pullback');
       expect(live?.entryTxSignature).toBe('KOL_LIVE_BUY_SIG');
+    });
+
+    it('live canary: wallet healthy 여도 single-KOL live 는 paper fallback', async () => {
+      const { ctx, executeBuy } = buildLiveCtx();
+      const { setWalletStopGuardStateForTests } = require('../src/risk/walletStopGuard');
+      setWalletStopGuardStateForTests(false, 'healthy-wallet-test', 1.00);
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx, securityClient: buildSecurityClient() as never });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      stubFeed.emitTick(MINT_SMART, 0.0013);
+      stubFeed.emitTick(MINT_SMART, 0.00115);
+      await flushAsync();
+
+      expect(executeBuy).not.toHaveBeenCalled();
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].isLive).toBeFalsy();
+      expect(positions[0].survivalFlags).toContain('LIVE_MIN_KOL');
     });
 
     // 2026-04-30 (P1.5 회귀): daily-loss halt 시 KOL lane 도 fallback paper.
@@ -996,6 +1100,93 @@ describe('kolSignalHandler — state machine', () => {
       expect(positions).toHaveLength(1);
       expect(positions[0].isLive).toBeFalsy();
       expect(positions[0].armName).toBe('kol_hunter_smart_v3');
+    });
+
+    it('yellow-zone: wallet 0.75 미만이면 live 대신 paper fallback', async () => {
+      const { ctx, executeBuy } = buildLiveCtx();
+      const { setWalletStopGuardStateForTests } = require('../src/risk/walletStopGuard');
+      setWalletStopGuardStateForTests(false, 'yellow-zone-test', 0.74);
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      stubFeed.emitTick(MINT_SMART, 0.0013);
+      stubFeed.emitTick(MINT_SMART, 0.00115);
+      await flushAsync();
+
+      expect(executeBuy).not.toHaveBeenCalled();
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].isLive).toBeFalsy();
+      expect(positions[0].survivalFlags).toContain('YELLOW_ZONE_PAPER_FALLBACK');
+    });
+
+    it('yellow-zone: 0.75~0.85 에서 single-KOL live 는 paper fallback', async () => {
+      const { ctx, executeBuy } = buildLiveCtx();
+      const { setWalletStopGuardStateForTests } = require('../src/risk/walletStopGuard');
+      setWalletStopGuardStateForTests(false, 'yellow-zone-test', 0.80);
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx, securityClient: buildSecurityClient() as never });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      stubFeed.emitTick(MINT_SMART, 0.0013);
+      stubFeed.emitTick(MINT_SMART, 0.00115);
+      await flushAsync();
+
+      expect(executeBuy).not.toHaveBeenCalled();
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].isLive).toBeFalsy();
+      expect(positions[0].survivalFlags).toContain('YELLOW_ZONE_MIN_KOL');
+    });
+
+    it('yellow-zone: multi-KOL + low 429 pressure 는 live 허용', async () => {
+      const { ctx, executeBuy } = buildLiveCtx();
+      const { setWalletStopGuardStateForTests } = require('../src/risk/walletStopGuard');
+      setWalletStopGuardStateForTests(false, 'yellow-zone-test', 0.80);
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx, securityClient: buildSecurityClient() as never });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART, 120_000));
+      await handleKolSwap(buyTx('lexapro', 'A', MINT_SMART));
+      stubFeed.emitTick(MINT_SMART, 0.0013);
+      stubFeed.emitTick(MINT_SMART, 0.00115);
+      await flushAsync();
+
+      expect(executeBuy).toHaveBeenCalledTimes(1);
+      const live = __testGetActive().find((p) => p.isLive === true);
+      expect(live).toBeDefined();
+      expect(live?.independentKolCount).toBe(2);
+    });
+
+    it('yellow-zone: Jupiter 429 pressure 가 높으면 live 대신 paper fallback', async () => {
+      const { ctx, executeBuy } = buildLiveCtx();
+      const { setWalletStopGuardStateForTests } = require('../src/risk/walletStopGuard');
+      const { recordJupiter429 } = require('../src/observability/jupiterRateLimitMetric');
+      setWalletStopGuardStateForTests(false, 'yellow-zone-test', 0.80);
+      for (let i = 0; i < 21; i++) recordJupiter429('paper_price_feed');
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx, securityClient: buildSecurityClient() as never });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART, 120_000));
+      await handleKolSwap(buyTx('lexapro', 'A', MINT_SMART));
+      stubFeed.emitTick(MINT_SMART, 0.0013);
+      stubFeed.emitTick(MINT_SMART, 0.00115);
+      await flushAsync();
+
+      expect(executeBuy).not.toHaveBeenCalled();
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].isLive).toBeFalsy();
+      expect(positions[0].survivalFlags).toContain('YELLOW_ZONE_JUPITER_429');
     });
 
     it('LIVE_CANARY_ENABLED=false → smart-v3 trigger 도 paper 만 (기존 동작 보존)', async () => {
@@ -1349,7 +1540,8 @@ describe('kolSignalHandler — state machine', () => {
     /** smart-v3 pullback trigger 로 live entry 까지 도달 시키는 helper. */
     async function triggerSmartV3LiveEntry(mint: string, kolId = 'pain') {
       stubFeed.setInitialPrice(mint, 0.001);
-      await handleKolSwap(buyTx(kolId, 'S', mint));
+      await handleKolSwap(buyTx(kolId, 'S', mint, 120_000));
+      await handleKolSwap(buyTx(`${kolId}_confirm`, 'B', mint));
       stubFeed.emitTick(mint, 0.0013);   // observe 시작 (peak)
       stubFeed.emitTick(mint, 0.00115);  // pullback trigger
       await flushAsync();

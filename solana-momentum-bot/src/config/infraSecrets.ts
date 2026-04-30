@@ -12,7 +12,6 @@ export const infraSecrets = {
   solanaRpcUrl: required('SOLANA_RPC_URL'),
   walletPrivateKey: required('WALLET_PRIVATE_KEY'),
   databaseUrl: required('DATABASE_URL'),
-  birdeyeApiKey: optional('BIRDEYE_API_KEY', ''),
   telegramBotToken: optional('TELEGRAM_BOT_TOKEN', ''),
   telegramChatId: optional('TELEGRAM_CHAT_ID', ''),
   telegramAdminUserId: optional('TELEGRAM_ADMIN_USER_ID', ''),

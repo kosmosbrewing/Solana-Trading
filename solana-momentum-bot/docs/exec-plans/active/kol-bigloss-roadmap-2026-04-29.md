@@ -37,7 +37,18 @@
 
 → 사용자 직관 **정확** — big-loss 차단 시 cum +84%, 5x winner 보호. 단 1KOL_lowS ticket 축소는 winner 동반 차단으로 역효과.
 
-### 1.4 직관 vs 현 P0/P1/P2 효과 격차
+### 1.4 Live canary 1차 반영 (2026-04-30)
+
+최근 live canary ledger 에서는 single-KOL live cohort 가 손실 대부분을 차지했다. 따라서 ticket 축소가 아니라 **single-KOL live 금지 + paper fallback** 으로 반영한다.
+
+| Guard | 값 | 근거 |
+|---|---|---|
+| `KOL_HUNTER_LIVE_MIN_INDEPENDENT_KOL` | `2` | single-KOL live cohort net negative |
+| Yellow-zone live gate | 0.75~0.85 SOL 조건 강화 / 0.70~0.75 SOL paper fallback | floor 0.7 보호 |
+| Canary budget hydration | restart 시 `executed-sells.jsonl` replay | budget reset hole 차단 |
+| Daily report | `npm run kol:live-canary-report` | live/paper divergence 추적 |
+
+### 1.5 직관 vs 현 P0/P1/P2 효과 격차
 
 | Sprint | cum 효과 | IDEAL 달성률 |
 |--------|--------|---------|
@@ -47,7 +58,7 @@
 | **Combined P0+P1+P2** | **+10%** | **12%** |
 | **IDEAL** | **+84%** | 100% |
 
-### 1.5 Critical gap — Entry-time predictor 부재
+### 1.6 Critical gap — Entry-time predictor 부재
 
 | Entry-time signal | mfe<1% rate (baseline 46%) | 예측력 |
 |---|---|---|
@@ -167,7 +178,7 @@ Day 21-35 : Track 4 (tick-level + live mfe)      IDEAL 60% → 80%
 
 | 사명 조건 | Track 영향 |
 |---------|---------|
-| 0.8 SOL floor 유지 | Track 1+2 가 직접 보호 (big-loss 차단 = floor 사수) |
+| 0.7 SOL floor 유지 | Track 1+2 가 직접 보호 (big-loss 차단 = floor 사수) |
 | 200 paper trades | 이미 438건 충족 — Track 3 의 데이터 기반 |
 | 5x winner ≥ 1 | paper 1건 ✓, **live 0건** — Track 4 의 live mfe schema 후 정확 측정 |
 | ADR + Telegram critical ack | Track 1+2 완료 + live 5x winner 1건 입증 후 작성 권고 |

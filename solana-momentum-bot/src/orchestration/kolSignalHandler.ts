@@ -52,7 +52,8 @@ import { trackKolClose } from './kolMissedAlpha';
 import { evaluateSecurityGate } from '../gate/securityGate';
 import { evaluateSellQuoteProbe } from '../gate/sellQuoteProbe';
 import type { OnchainSecurityClient } from '../ingester/onchainSecurity';
-import type { GateCacheManager } from '../gate/gateCacheManager';
+import { GateCacheManager } from '../gate/gateCacheManager';
+import { getJupiter429Stats } from '../observability/jupiterRateLimitMetric';
 import { resolveTokenSymbol, lookupCachedSymbol } from '../ingester/tokenSymbolResolver';
 // 2026-04-27 (KOL live canary): pure_ws live path 와 동일 패턴.
 import type { Order, Trade } from '../utils/types';
@@ -226,6 +227,7 @@ interface PendingCandidate {
 
 const pending = new Map<string, PendingCandidate>();        // tokenMint → pending
 const active = new Map<string, PaperPosition>();            // positionId → position
+const SMART_V3_ADMISSION_TIMEOUT_MS = 30_000;
 
 /**
  * 2026-04-29 (Track 1): Same-token re-entry cooldown.
@@ -469,6 +471,7 @@ const inflightLiveEntry = new Set<string>();
  */
 let securityClient: OnchainSecurityClient | undefined;
 let gateCache: GateCacheManager | undefined;
+let ownedGateCache: GateCacheManager | undefined;
 // 2026-04-27 (KOL live canary): ctx 보존 — closePosition 등 deep call site 에서 사용.
 // initKolHunter 시 주입. paper-only 경로에선 unused (graceful null check).
 let botCtx: BotContext | undefined;
@@ -594,14 +597,24 @@ export function initKolHunter(
     ctx?: BotContext;
   } = {}
 ): void {
+  if (ownedGateCache) {
+    ownedGateCache.destroy();
+    ownedGateCache = undefined;
+  }
   priceFeed = options.priceFeed ?? new PaperPriceFeed({
     jupiterApiUrl: config.jupiterApiUrl,
     jupiterApiKey: config.jupiterApiKey,
-    pollIntervalMs: 3_000,
     probeSolAmount: 0.01,
   });
   securityClient = options.securityClient;
-  gateCache = options.gateCache;
+  if (options.gateCache) {
+    gateCache = options.gateCache;
+  } else if (securityClient) {
+    ownedGateCache = new GateCacheManager(30_000);
+    gateCache = ownedGateCache;
+  } else {
+    gateCache = undefined;
+  }
   // 2026-04-27 (KOL live canary): ctx 주입 — live path (executeBuy/executeSell, DB persist) 에 필요.
   // paper-only 경로는 ctx 없어도 동작. live 가능 여부는 isLiveCanaryEnabled() 가 ctx 존재 + 3 flag 모두 검증.
   botCtx = options.ctx;
@@ -653,6 +666,13 @@ export function stopKolHunter(): void {
   recentKolTxs.length = 0;
   pushesSinceLastPrune = 0;
   scoreCache.clear();     // P1 #7: score cache 동기화
+  if (ownedGateCache) {
+    ownedGateCache.destroy();
+    ownedGateCache = undefined;
+  }
+  gateCache = undefined;
+  securityClient = undefined;
+  botCtx = undefined;
 }
 
 export function getKolHunterState(): {
@@ -811,9 +831,13 @@ export function evaluateInsiderExitDecision(
 
 function handleKolSellSignal(tx: KolTx): void {
   const cand = pending.get(tx.tokenMint);
-  if (cand?.smartV3 && cand.kolTxs.some((buy) => buy.kolId === tx.kolId)) {
-    cleanupPendingCandidate(cand, true);
+  if (
+    cand &&
+    (cand.smartV3 || config.kolHunterSmartV3Enabled) &&
+    cand.kolTxs.some((buy) => buy.kolId === tx.kolId)
+  ) {
     pending.delete(tx.tokenMint);
+    cleanupPendingCandidate(cand, true);
     const score = computeKolDiscoveryScoreCached(tx.tokenMint, Date.now());  // P1 #7
     log.info(`[KOL_HUNTER_SMART_V3_CANCEL] ${tokenMint(tx)} kol=${tx.kolId} sell during observe`);
     fireRejectObserver(tx.tokenMint, 'smart_v3_kol_sell_cancel', cand, score);
@@ -896,22 +920,48 @@ async function registerSmartV3Pending(tx: KolTx): Promise<void> {
   }
 
   const nowMs = Date.now();
+  const existing = pending.get(tokenMint);
+  if (existing) {
+    existing.kolTxs.push(tx);
+    if (existing.smartV3) {
+      await evaluateSmartV3Triggers(existing);
+    }
+    return;
+  }
+
+  const admissionExpiresAtMs = nowMs + SMART_V3_ADMISSION_TIMEOUT_MS;
+  const cand: PendingCandidate = {
+    tokenMint,
+    firstKolEntryMs: tx.timestamp,
+    stalkExpiresAtMs: admissionExpiresAtMs,
+    timer: setTimeout(() => {
+      const current = pending.get(tokenMint);
+      if (current !== cand || current.smartV3) return;
+      pending.delete(tokenMint);
+      cleanupPendingCandidate(current, true);
+      log.warn(
+        `[KOL_HUNTER_SMART_V3_ADMISSION_TIMEOUT] ${tokenMint.slice(0, 8)} ` +
+        `pre-observe setup exceeded ${Math.round(SMART_V3_ADMISSION_TIMEOUT_MS / 1000)}s — reject`
+      );
+      const timeoutScore = computeKolDiscoveryScoreCached(tokenMint, Date.now());
+      fireRejectObserver(tokenMint, 'smart_v3_price_timeout', current, timeoutScore, { smartV3: true });
+    }, SMART_V3_ADMISSION_TIMEOUT_MS),
+    kolTxs: [tx],
+  };
+  if (cand.timer.unref) cand.timer.unref();
+  pending.set(tokenMint, cand);
+
   const score = computeKolDiscoveryScoreCached(tokenMint, nowMs);  // P1 #7: 1s bucket cache
   const preEntry = await checkKolSurvivalPreEntry(tokenMint);
+  if (pending.get(tokenMint) !== cand) return;
   if (!preEntry.approved) {
-    const rejected: PendingCandidate = {
-      tokenMint,
-      firstKolEntryMs: tx.timestamp,
-      stalkExpiresAtMs: nowMs,
-      timer: setTimeout(() => undefined, 0),
-      kolTxs: [tx],
-    };
-    clearTimeout(rejected.timer);
+    pending.delete(tokenMint);
+    cleanupPendingCandidate(cand, true);
     log.info(
       `[KOL_HUNTER_SMART_V3_SURVIVAL_REJECT] ${tokenMint.slice(0, 8)} ` +
       `reason=${preEntry.reason ?? 'unknown'} flags=${preEntry.flags.join(',')}`
     );
-    fireRejectObserver(tokenMint, 'stalk_expired_no_consensus', rejected, score, {
+    fireRejectObserver(tokenMint, 'stalk_expired_no_consensus', cand, score, {
       survivalReason: preEntry.reason ?? null,
       survivalFlags: preEntry.flags,
       smartV3: true,
@@ -920,24 +970,25 @@ async function registerSmartV3Pending(tx: KolTx): Promise<void> {
   }
 
   priceFeed.subscribe(tokenMint);
-  // 2026-04-28 P1-A fix: 10s → 5s. PaperPriceFeed pollIntervalMs=3s 라 첫 tick typical 1-3s 도달.
-  // 10s 는 과보수적 — worst case latency 50% 단축. 캐시 hit 은 즉시 반환 (timeout 영향 없음).
+  // PaperPriceFeed 는 subscribe 시 즉시 1회 poll 한다. 캐시 hit 은 즉시 반환.
+  // Periodic poll 은 기본 8s 로 유지해 paper feed 가 Jupiter budget 을 점유하지 않게 한다.
   const firstTick = await waitForFirstTick(tokenMint, 5_000);
+  if (pending.get(tokenMint) !== cand) {
+    unsubscribePriceIfIdle(tokenMint);
+    return;
+  }
   if (firstTick === null) {
-    priceFeed.unsubscribe(tokenMint);
-    const rejected: PendingCandidate = {
-      tokenMint,
-      firstKolEntryMs: tx.timestamp,
-      stalkExpiresAtMs: nowMs,
-      timer: setTimeout(() => undefined, 0),
-      kolTxs: [tx],
-    };
-    clearTimeout(rejected.timer);
-    fireRejectObserver(tokenMint, 'smart_v3_price_timeout', rejected, score, { smartV3: true });
+    pending.delete(tokenMint);
+    cleanupPendingCandidate(cand, true);
+    fireRejectObserver(tokenMint, 'smart_v3_price_timeout', cand, score, { smartV3: true });
     return;
   }
 
   const entryTokenDecimals = await resolveTokenDecimalsForObserver(tokenMint, firstTick.outputDecimals);
+  if (pending.get(tokenMint) !== cand) {
+    unsubscribePriceIfIdle(tokenMint);
+    return;
+  }
   const observeMs = config.kolHunterSmartV3ObserveWindowSec * 1000;
   const expiresAt = Date.now() + observeMs;
   const timer = setTimeout(() => {
@@ -945,28 +996,23 @@ async function registerSmartV3Pending(tx: KolTx): Promise<void> {
   }, observeMs);
   if (timer.unref) timer.unref();
 
-  const cand: PendingCandidate = {
-    tokenMint,
-    firstKolEntryMs: tx.timestamp,
-    stalkExpiresAtMs: expiresAt,
-    timer,
-    kolTxs: [tx],
-    smartV3: {
-      startedAtMs: Date.now(),
-      observeExpiresAtMs: expiresAt,
-      kolEntryPrice: firstTick.price,
-      peakPrice: firstTick.price,
-      currentPrice: firstTick.price,
-      preEntryFlags: [
-        ...preEntry.flags,
-        `DECIMALS_${entryTokenDecimals.source?.toUpperCase() ?? 'UNKNOWN'}`,
-      ],
-      tokenDecimals: entryTokenDecimals.value,
-      tokenDecimalsSource: entryTokenDecimals.source,
-      resolving: false,
-    },
+  clearTimeout(cand.timer);
+  cand.stalkExpiresAtMs = expiresAt;
+  cand.timer = timer;
+  cand.smartV3 = {
+    startedAtMs: Date.now(),
+    observeExpiresAtMs: expiresAt,
+    kolEntryPrice: firstTick.price,
+    peakPrice: firstTick.price,
+    currentPrice: firstTick.price,
+    preEntryFlags: [
+      ...preEntry.flags,
+      `DECIMALS_${entryTokenDecimals.source?.toUpperCase() ?? 'UNKNOWN'}`,
+    ],
+    tokenDecimals: entryTokenDecimals.value,
+    tokenDecimalsSource: entryTokenDecimals.source,
+    resolving: false,
   };
-  pending.set(tokenMint, cand);
   ensurePendingPriceListener(tokenMint);
   log.info(
     `[KOL_HUNTER_SMART_V3_OBSERVE] ${tokenMint.slice(0, 8)} opened — kol=${tx.kolId} tier=${tx.tier} ` +
@@ -1101,6 +1147,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       survivalFlags: ['REENTRY_COOLDOWN'],
       cooldownRemainingMs: cooldownCheck.remainingMs,
     });
+    cleanupPendingCandidate(cand, true);
     return;
   }
   const decayCheck = checkKolAlphaDecay(score.participatingKols.map((k) => k.id));
@@ -1110,6 +1157,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       survivalReason: 'kol_alpha_decay',
       survivalFlags: ['KOL_ALPHA_DECAY'],
     });
+    cleanupPendingCandidate(cand, true);
     return;
   }
 
@@ -1156,6 +1204,15 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         `lane halt active. fallback paper.`
       );
       await enterPaperPosition(cand.tokenMint, cand, score, smart.preEntryFlags, entryOptions);
+      return;
+    }
+    const liveGate = evaluateKolLiveCanaryGate(score, smart.preEntryFlags);
+    if (!liveGate.allowLive) {
+      log.warn(
+        `[KOL_HUNTER_YELLOW_ZONE] ${cand.tokenMint.slice(0, 8)} smart-v3 trigger — ` +
+        `${liveGate.reason}. fallback paper.`
+      );
+      await enterPaperPosition(cand.tokenMint, cand, score, [...smart.preEntryFlags, ...liveGate.flags], entryOptions);
       return;
     }
     await enterLivePosition(
@@ -1261,6 +1318,15 @@ async function resolveStalk(tokenMint: string): Promise<void> {
       });
       return;
     }
+    const liveGate = evaluateKolLiveCanaryGate(score, preEntry.flags);
+    if (!liveGate.allowLive) {
+      log.warn(
+        `[KOL_HUNTER_YELLOW_ZONE] ${tokenMint.slice(0, 8)} signal ignored — ` +
+        `${liveGate.reason}. fallback paper.`
+      );
+      await enterPaperPosition(tokenMint, cand, score, [...preEntry.flags, ...liveGate.flags]);
+      return;
+    }
     await enterLivePosition(tokenMint, cand, score, preEntry.flags, botCtx);
     return;
   }
@@ -1268,6 +1334,78 @@ async function resolveStalk(tokenMint: string): Promise<void> {
     log.warn(`[KOL_HUNTER] PAPER_ONLY=false 인데 LIVE_CANARY_ENABLED=false — paper 로만 동작`);
   }
   await enterPaperPosition(tokenMint, cand, score, preEntry.flags);
+}
+
+function evaluateKolLiveCanaryGate(
+  score: KolDiscoveryScore,
+  survivalFlags: string[]
+): { allowLive: boolean; reason?: string; flags: string[] } {
+  const balance = getWalletStopGuardState().lastBalanceSol;
+  const balanceKnown = Number.isFinite(balance) && balance !== Number.POSITIVE_INFINITY;
+
+  if (
+    config.kolHunterYellowZoneEnabled &&
+    balanceKnown &&
+    balance < config.kolHunterYellowZonePaperFallbackBelowSol
+  ) {
+    return {
+      allowLive: false,
+      reason: `wallet ${balance.toFixed(4)} < yellow fallback ${config.kolHunterYellowZonePaperFallbackBelowSol}`,
+      flags: ['YELLOW_ZONE_PAPER_FALLBACK'],
+    };
+  }
+
+  const inYellowZone =
+    config.kolHunterYellowZoneEnabled &&
+    balanceKnown &&
+    balance < config.kolHunterYellowZoneStartSol;
+  if (inYellowZone && score.independentKolCount < config.kolHunterYellowZoneMinIndependentKol) {
+    return {
+      allowLive: false,
+      reason:
+        `wallet ${balance.toFixed(4)} yellow zone requires independentKolCount >= ` +
+        `${config.kolHunterYellowZoneMinIndependentKol}`,
+      flags: ['YELLOW_ZONE_MIN_KOL'],
+    };
+  }
+
+  const liveMinKol = config.kolHunterLiveMinIndependentKol;
+  if (liveMinKol > 1 && score.independentKolCount < liveMinKol) {
+    return {
+      allowLive: false,
+      reason: `live canary requires independentKolCount >= ${liveMinKol}`,
+      flags: ['LIVE_MIN_KOL'],
+    };
+  }
+
+  if (!config.kolHunterYellowZoneEnabled || !balanceKnown || balance >= config.kolHunterYellowZoneStartSol) {
+    return { allowLive: true, flags: [] };
+  }
+
+  const hasMissingSecurity = survivalFlags.some((flag) =>
+    flag === 'NO_SECURITY_DATA' || flag === 'NO_SECURITY_CLIENT'
+  );
+  if (hasMissingSecurity) {
+    return {
+      allowLive: false,
+      reason: `wallet ${balance.toFixed(4)} yellow zone rejects missing security data`,
+      flags: ['YELLOW_ZONE_SECURITY_DATA'],
+    };
+  }
+
+  const maxRecent429 = config.kolHunterYellowZoneMaxRecentJupiter429;
+  if (maxRecent429 > 0) {
+    const recent429 = getJupiter429Stats().reduce((sum, stat) => sum + stat.sinceLastSummary, 0);
+    if (recent429 > maxRecent429) {
+      return {
+        allowLive: false,
+        reason: `wallet ${balance.toFixed(4)} yellow zone Jupiter429 ${recent429} > ${maxRecent429}`,
+        flags: ['YELLOW_ZONE_JUPITER_429'],
+      };
+    }
+  }
+
+  return { allowLive: true, flags: [] };
 }
 
 /**
@@ -1479,8 +1617,8 @@ async function enterPaperPosition(
   // 2026-04-26 P1 fix: price tick 의 known decimals 와 security decimals 를 분리해서 stash.
   // fallback 6 은 observer 로 넘기지 않아 잘못된 post-close delta 를 막는다.
   priceFeed.subscribe(tokenMint);
-  // 2026-04-28 P1-A fix: 10s → 5s. PaperPriceFeed pollIntervalMs=3s 라 첫 tick typical 1-3s 도달.
-  // 10s 는 과보수적 — worst case latency 50% 단축. 캐시 hit 은 즉시 반환 (timeout 영향 없음).
+  // PaperPriceFeed 는 subscribe 시 즉시 1회 poll 한다. 캐시 hit 은 즉시 반환.
+  // Periodic poll 은 기본 8s 로 유지해 paper feed 가 Jupiter budget 을 점유하지 않게 한다.
   const firstTick = await waitForFirstTick(tokenMint, 5_000);
   if (firstTick === null) {
     unsubscribePriceIfIdle(tokenMint);
@@ -2221,8 +2359,8 @@ async function enterLivePosition(
   try {
   // 1. Entry reference price — paper feed 와 동일 (Jupiter probe quote).
   priceFeed.subscribe(tokenMint);
-  // 2026-04-28 P1-A fix: 10s → 5s. PaperPriceFeed pollIntervalMs=3s 라 첫 tick typical 1-3s 도달.
-  // 10s 는 과보수적 — worst case latency 50% 단축. 캐시 hit 은 즉시 반환 (timeout 영향 없음).
+  // PaperPriceFeed 는 subscribe 시 즉시 1회 poll 한다. 캐시 hit 은 즉시 반환.
+  // Periodic poll 은 기본 8s 로 유지해 paper feed 가 Jupiter budget 을 점유하지 않게 한다.
   const firstTick = await waitForFirstTick(tokenMint, 5_000);
   if (firstTick === null) {
     unsubscribePriceIfIdle(tokenMint);
@@ -2978,9 +3116,13 @@ export async function recoverKolHunterOpenPositions(ctx: BotContext): Promise<nu
 // ─── Test utilities ──────────────────────────────────────
 
 /** 테스트 전용: price feed override + 직접 시뮬레이션. */
-export function __testInit(options: { priceFeed: PaperPriceFeed; ctx?: BotContext }): void {
+export function __testInit(options: {
+  priceFeed: PaperPriceFeed;
+  ctx?: BotContext;
+  securityClient?: OnchainSecurityClient;
+}): void {
   stopKolHunter();
-  initKolHunter({ priceFeed: options.priceFeed, ctx: options.ctx });
+  initKolHunter({ priceFeed: options.priceFeed, ctx: options.ctx, securityClient: options.securityClient });
 }
 
 /** 테스트 전용: live canary triple-flag gate 평가 결과 노출. */

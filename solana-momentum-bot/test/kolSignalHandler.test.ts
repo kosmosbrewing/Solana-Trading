@@ -103,6 +103,11 @@ jest.mock('../src/utils/config', () => ({
     kolHunterT3TrailPct: 0.25,
     kolHunterQuickRejectWindowSec: 180,
     kolHunterQuickRejectFactorCount: 3,
+    // 2026-04-30 (P1-1): hardcoded constants → config 승격. test default 는 이전 hardcode 유지.
+    kolHunterQuickRejectMfeLowThreshold: 0.02,
+    kolHunterQuickRejectMfeLowElapsedSec: 30,
+    kolHunterQuickRejectPullbackThreshold: 0.20,
+    kolHunterQuickRejectWinnerSafeMfe: 0.05,
     kolHunterPaperRoundTripCostPct: 0.005,
     kolHunterParameterVersion: 'v1.0.0',
     kolHunterDetectorVersion: 'kol_discovery_v1',
@@ -121,6 +126,9 @@ jest.mock('../src/utils/config', () => ({
     kolHunterSmartV3MaxDrawdownFromKolEntryPct: 0.15,
     kolHunterSmartV3VelocityScoreThreshold: 6.0,
     kolHunterSmartV3VelocityMinIndependentKol: 2,
+    // 2026-04-30 (P1-2): pullback path KOL count gate. test default 1 → 기존 단일 KOL pullback
+    // 진입 테스트 보존. 회귀 테스트만 explicit 2 override.
+    kolHunterSmartV3PullbackMinKolCount: 1,
     kolHunterSmartV3T1ThresholdHigh: 0.40,
     kolHunterSmartV3T1TrailBoth: 0.25,
     kolHunterSmartV3T1TrailPullback: 0.22,
@@ -457,6 +465,106 @@ describe('kolSignalHandler — state machine', () => {
       expect(__testGetActive()).toHaveLength(1);
     });
 
+    // 2026-04-30 (P1-2 회귀): pullback path 의 KOL count gate.
+    //   live 15h n=49 분석 — pullback|kols=1 이 net 의 103% 손실.
+    //   default 1 인 테스트 mock 에서 explicit 2 로 강제 후 검증.
+    it('P1-2: pullback path 가 minKolCount 미달 시 진입을 차단한다', async () => {
+      mockedConfig.kolHunterSmartV3PullbackMinKolCount = 2;
+      try {
+        stubFeed.setInitialPrice(MINT_SMART, 0.001);
+        // kols=1 (pain 단독) 으로 pullback trigger 시도
+        await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+        stubFeed.emitTick(MINT_SMART, 0.0013);
+        stubFeed.emitTick(MINT_SMART, 0.00115);
+        await flushAsync();
+        // P1-2 적용: pullback path reject → 진입 0
+        expect(__testGetActive()).toHaveLength(0);
+      } finally {
+        mockedConfig.kolHunterSmartV3PullbackMinKolCount = 1;
+      }
+    });
+
+    it('P1-2: pullback path 는 minKolCount 충족 시 정상 진입한다', async () => {
+      mockedConfig.kolHunterSmartV3PullbackMinKolCount = 2;
+      try {
+        stubFeed.setInitialPrice(MINT_SMART, 0.001);
+        // kols=2 (pain S + ghost A 합의)
+        await handleKolSwap(buyTx('pain', 'S', MINT_SMART, 60_000));
+        await handleKolSwap(buyTx('ghost', 'A', MINT_SMART));
+        stubFeed.emitTick(MINT_SMART, 0.0013);
+        stubFeed.emitTick(MINT_SMART, 0.00115);
+        await flushAsync();
+        // P1-2 통과 증거: 진입 자체 발생 (velocity 또는 pullback 또는 둘 다 — kols=2 면 velocity 도 fire 가능)
+        const positions = __testGetActive();
+        expect(positions).toHaveLength(1);
+        expect(positions[0].independentKolCount).toBe(2);
+      } finally {
+        mockedConfig.kolHunterSmartV3PullbackMinKolCount = 1;
+      }
+    });
+
+    // 2026-04-30 (P1-1 winner 보호 회귀): mfe>=winnerSafeMfe 도달 후엔 quick reject 비활성.
+    //   live 15h n=49 분석 — mfe>=10% 후 retest 케이스 3건 (avgMae -14%) 보호.
+    it('P1-1: winnerSafeMfe 도달 후 quick reject 비활성화', async () => {
+      // factor count 1 + 매우 빠른 임계 → 기본적으로 fire 하기 쉬운 환경
+      mockedConfig.kolHunterQuickRejectFactorCount = 1;
+      mockedConfig.kolHunterQuickRejectPullbackThreshold = 0.05;
+      mockedConfig.kolHunterQuickRejectWinnerSafeMfe = 0.05;
+      try {
+        stubFeed.setInitialPrice(MINT_SMART, 0.001);
+        await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+        stubFeed.emitTick(MINT_SMART, 0.0013);
+        stubFeed.emitTick(MINT_SMART, 0.00115);
+        await flushAsync();
+        const pos = __testGetActive()[0];
+        expect(pos).toBeDefined();
+        // peak 도달: +20% 까지 올림 (mfe>=5% safe 도달)
+        __testTriggerTick(pos.positionId, pos.entryPrice * 1.20);
+        // peak 후 -10% 되돌림 → pullback 0.10 = factor 1, factor count 1 임계 충족하지만 winner 보호로 비활성
+        let captured: any = null;
+        kolHunterEvents.once('paper_close', (evt) => { captured = evt; });
+        __testTriggerTick(pos.positionId, pos.entryPrice * 1.08);
+        // QR 으로 close 안 됐어야 함 (다른 path 로 close 가능 — 검증은 reason 만)
+        expect(captured?.reason).not.toBe('quick_reject_classifier_exit');
+      } finally {
+        mockedConfig.kolHunterQuickRejectFactorCount = 3;
+        mockedConfig.kolHunterQuickRejectPullbackThreshold = 0.20;
+        mockedConfig.kolHunterQuickRejectWinnerSafeMfe = 0.05;
+      }
+    });
+
+    // 2026-04-30 (P1-1 부정 케이스 회귀): mfe < winnerSafeMfe 상태에서는 QR 정상 fire 해야 한다.
+    //   F1 fix — 이전 winner 보호 테스트 한 방향만 검증 → safeMfe 분기가 영구 true 인 버그도 통과 위험.
+    it('P1-1: winnerSafeMfe 미달 상태에서는 quick reject 가 정상 fire 한다', async () => {
+      // factor 1 + 매우 빠른 임계 → 충족 시 즉시 fire
+      mockedConfig.kolHunterQuickRejectFactorCount = 1;
+      mockedConfig.kolHunterQuickRejectPullbackThreshold = 0.05;
+      mockedConfig.kolHunterQuickRejectMfeLowElapsedSec = 0;  // elapsed > 0 시 mfeLow factor 충족
+      mockedConfig.kolHunterQuickRejectWinnerSafeMfe = 0.50;  // 50% — 도달 불가능 한 임계
+      try {
+        stubFeed.setInitialPrice(MINT_SMART, 0.001);
+        await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+        stubFeed.emitTick(MINT_SMART, 0.0013);
+        stubFeed.emitTick(MINT_SMART, 0.00115);
+        await flushAsync();
+        const pos = __testGetActive()[0];
+        expect(pos).toBeDefined();
+        // mfe 작게 (3% 정도) → safeMfe 미달
+        let captured: any = null;
+        kolHunterEvents.once('paper_close', (evt) => { captured = evt; });
+        // peak 0.00103 (3% mfe) 후 -10% 되돌림 → pullback 0.097 ≥ 0.05 factor 1 충족
+        __testTriggerTick(pos.positionId, pos.entryPrice * 1.03);
+        __testTriggerTick(pos.positionId, pos.entryPrice * 0.93);
+        // safeMfeReached=false → QR fire 해야 함
+        expect(captured?.reason).toBe('quick_reject_classifier_exit');
+      } finally {
+        mockedConfig.kolHunterQuickRejectFactorCount = 3;
+        mockedConfig.kolHunterQuickRejectPullbackThreshold = 0.20;
+        mockedConfig.kolHunterQuickRejectMfeLowElapsedSec = 30;
+        mockedConfig.kolHunterQuickRejectWinnerSafeMfe = 0.05;
+      }
+    });
+
     it('smart-v3 T1 trail 은 entry reason 별 override 를 사용한다', async () => {
       stubFeed.setInitialPrice(MINT_SMART, 0.001);
       await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
@@ -716,6 +824,30 @@ describe('kolSignalHandler — state machine', () => {
       expect(live?.parameterVersion).toBe('smart-v3.0.0');
       expect(live?.kolEntryReason).toBe('pullback');
       expect(live?.entryTxSignature).toBe('KOL_LIVE_BUY_SIG');
+    });
+
+    // 2026-04-30 (P1.5 회귀): daily-loss halt 시 KOL lane 도 fallback paper.
+    //   이전: tradingHaltedReason 은 signalProcessor 5분 lane filter 만 → KOL lane 우회.
+    //   실측: AwuMSrQm trade 가 daily halt -0.1951 SOL 활성 1h 12m 후 live entry → 추가 -0.0099 SOL 손실.
+    it('P1.5: triple-flag 통과해도 ctx.tradingHaltedReason 활성 시 fallback paper', async () => {
+      const { ctx, executeBuy } = buildLiveCtx();
+      ctx.tradingHaltedReason = 'Daily loss limit reached: -0.2050 SOL';  // ⚠ halt 활성
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      stubFeed.emitTick(MINT_SMART, 0.0013);
+      stubFeed.emitTick(MINT_SMART, 0.00115);
+      await flushAsync();
+
+      // live executor 호출 안 됨 — fallback paper
+      expect(executeBuy).not.toHaveBeenCalled();
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].isLive).toBeFalsy();
+      expect(positions[0].armName).toBe('kol_hunter_smart_v3');
     });
 
     it('LIVE_CANARY_ENABLED=false → smart-v3 trigger 도 paper 만 (기존 동작 보존)', async () => {

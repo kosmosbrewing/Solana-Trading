@@ -1203,6 +1203,44 @@ describe('kol-live-canary-report', () => {
     expect(report.phase4Gate.reasons.some((reason) => reason.includes('entry advantage artifacts=1'))).toBe(true);
   });
 
+  it('projects KOL canary budget from all live ledger rows regardless of the report window', () => {
+    const row = liveRoundTrip(1, {}, {
+      recordedAt: new Date(1_120_000).toISOString(),
+      walletDeltaSol: -0.267166268,
+      exitReason: 'probe_hard_cut',
+    });
+    const report = buildKolLiveCanaryReport(
+      [row.buy],
+      [row.sell],
+      new Date(2_000_000),
+      [],
+      [],
+      {
+        canaryBudgetProjection: {
+          walletSol: 0.846,
+          walletFloorSol: 0.7,
+          kolCanaryCapSol: 0.35,
+          kolTicketSol: 0.02,
+        },
+      }
+    );
+
+    expect(report.closedTrades).toBe(0);
+    expect(report.canaryBudgetProjection?.cumulativeKolPnlSol).toBeCloseTo(-0.267166, 6);
+    expect(report.canaryBudgetProjection?.remainingKolBudgetSol).toBeCloseTo(0.082834, 6);
+    expect(report.canaryBudgetProjection?.projectedWalletAtBudgetExhaustionSol).toBeCloseTo(0.763166, 6);
+    expect(report.canaryBudgetProjection?.projectedFloorBufferSol).toBeCloseTo(0.063166, 6);
+    expect(report.canaryBudgetProjection?.approxFullTicketLosers).toBe(4);
+    expect(report.canaryBudgetProjection?.capExhausted).toBe(false);
+    expect(report.canaryBudgetProjection?.verdict).toBe('RESUME_POSSIBLE');
+
+    const md = formatKolLiveCanaryMarkdown(report);
+    expect(md).toContain('## Canary Budget Projection');
+    expect(md).toContain('Verdict: RESUME_POSSIBLE');
+    expect(md).toContain('KOL canary cap: 0.350000 SOL');
+    expect(md).toContain('Remaining KOL budget: 0.082834 SOL');
+  });
+
   it('uses buy fill price for actual MFE when sell entry price is missing', () => {
     const paired = pairKolLiveTrades(
       [buy({ actualEntryPrice: 0.001 })],

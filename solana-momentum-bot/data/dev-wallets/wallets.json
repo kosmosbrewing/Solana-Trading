@@ -1,0 +1,23 @@
+{
+  "//": "Dev Wallet Quality DB — manual edit only. Automatic add is forbidden.",
+  "//schema": "devs[].id = lowercase unique. addresses = deployer/creator/LP wallets. status = allowlist/watchlist/blacklist/unknown. is_active=false excludes lookup.",
+  "//workflow": "운영자가 수동 리서치 후 추가. allowlist 도 security/sell quote/drift guard 우회 금지 (ADR §5).",
+  "//phase": "Phase B observe-only — entry trigger 아님. Phase D paper reject (blacklist) / Phase E live gate 까지 별도 ADR 필수.",
+  "version": "v1",
+  "last_updated": "2026-05-01",
+  "devs": [
+    {
+      "id": "example_dev",
+      "addresses": ["EXAMPLE_DEPLOYER_PLACEHOLDER"],
+      "status": "unknown",
+      "is_active": false,
+      "source": "operator_manual",
+      "added_at": "2026-05-01",
+      "last_verified_at": "2026-05-01",
+      "notes": "scaffold example — replace or remove",
+      "known_projects": [],
+      "risk_notes": [],
+      "success_notes": []
+    }
+  ]
+}

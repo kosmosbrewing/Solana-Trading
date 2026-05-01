@@ -33,6 +33,8 @@ import {
   __testTriggerTick,
   __testIsLiveCanaryActive,
   __testResetStructuralKillCache,
+  __testSpawnTailSubPosition,
+  __testIsPriceKillReason,
   hydrateLiveExecutionQualityCooldownsFromBuyRecords,
   hydrateLiveExecutionQualityCooldownsFromLedger,
   recoverKolHunterOpenPositions,
@@ -153,6 +155,13 @@ jest.mock('../src/utils/config', () => ({
     kolHunterStructuralKillMaxImpactPct: 0.10,
     kolHunterStructuralKillCacheMs: 30000,
     kolHunterStructuralKillPeakDriftTrigger: 0.20,
+    // 2026-05-01 (Phase C): tail retain default disabled in tests — explicit 회귀 테스트만 활성화.
+    kolHunterTailRetainEnabled: false,
+    kolHunterTailRetainPct: 0.15,
+    kolHunterTailTrailPct: 0.30,
+    kolHunterTailMaxHoldSec: 3600,
+    // 2026-05-01 (Phase D): live tail default disabled. paper-shadow 1주 측정 후 별도 ADR 활성.
+    kolHunterTailRetainLiveEnabled: false,
     kolHunterPaperRoundTripCostPct: 0.005,
     kolHunterParameterVersion: 'v1.0.0',
     kolHunterDetectorVersion: 'kol_discovery_v1',
@@ -821,6 +830,124 @@ describe('kolSignalHandler — state machine', () => {
       }
     });
 
+    // 2026-05-01 (Phase C 회귀): tail retain 정책 — price kill 후 sub-position spawn 검증.
+    //   학술 §tail retention 정합. structural / insider 는 spawn 안 됨 (Real Asset Guard).
+    it('Phase C: kolHunterTailRetainEnabled=true + price kill (probe_hard_cut) → tail sub-position spawn', async () => {
+      mockedConfig.kolHunterTailRetainEnabled = true;
+      try {
+        stubFeed.setInitialPrice(MINT_SMART, 0.001);
+        await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+        stubFeed.emitTick(MINT_SMART, 0.0013);
+        stubFeed.emitTick(MINT_SMART, 0.00115);
+        await flushAsync();
+        const pos = __testGetActive().find((p) => !p.isTailPosition);
+        expect(pos).toBeDefined();
+        // probe_hard_cut trigger — mae <= -10%
+        __testTriggerTick(pos!.positionId, pos!.entryPrice * 0.85);
+        await flushAsync();
+        // parent CLOSED + tail spawn 검증
+        const positions = __testGetActive();
+        const tail = positions.find((p) => p.isTailPosition === true);
+        expect(tail).toBeDefined();
+        expect(tail!.state).toBe('TAIL');
+        expect(tail!.parentPositionId).toBe(pos!.positionId);
+        expect(tail!.quantity).toBeCloseTo(pos!.quantity * 0.15, 2);
+        expect(tail!.isShadowArm).toBe(true);  // paper-only
+      } finally {
+        mockedConfig.kolHunterTailRetainEnabled = false;
+      }
+    });
+
+    it('Phase C: tail spawn 안 함 — structural / insider / winner / disabled', async () => {
+      // disabled 상태는 mock default (kolHunterTailRetainEnabled=false)
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      stubFeed.emitTick(MINT_SMART, 0.0013);
+      stubFeed.emitTick(MINT_SMART, 0.00115);
+      await flushAsync();
+      const pos = __testGetActive()[0];
+      expect(pos).toBeDefined();
+      __testTriggerTick(pos.positionId, pos.entryPrice * 0.85);  // probe_hard_cut
+      await flushAsync();
+      // disabled 면 tail 생성 안 됨
+      const tail = __testGetActive().find((p) => p.isTailPosition === true);
+      expect(tail).toBeUndefined();
+    });
+
+    // 2026-05-01 (Phase D 회귀): live flag 분기 — paper parent + live flag → 여전히 paper tail.
+    it('Phase D: parent isLive=false 면 live flag true 여도 paper tail 만 spawn', async () => {
+      mockedConfig.kolHunterTailRetainEnabled = true;
+      mockedConfig.kolHunterTailRetainLiveEnabled = true;
+      try {
+        stubFeed.setInitialPrice(MINT_SMART, 0.001);
+        await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+        stubFeed.emitTick(MINT_SMART, 0.0013);
+        stubFeed.emitTick(MINT_SMART, 0.00115);
+        await flushAsync();
+        const parent = __testGetActive().find((p) => !p.isTailPosition);
+        expect(parent).toBeDefined();
+        expect(parent!.isLive).toBeFalsy();  // paper 진입
+        __testTriggerTick(parent!.positionId, parent!.entryPrice * 0.85);
+        await flushAsync();
+        const tail = __testGetActive().find((p) => p.isTailPosition === true);
+        expect(tail).toBeDefined();
+        // parent 가 paper 면 tail 도 paper (isShadowArm=true)
+        expect(tail!.isShadowArm).toBe(true);
+        expect(tail!.isLive).toBeFalsy();
+      } finally {
+        mockedConfig.kolHunterTailRetainEnabled = false;
+        mockedConfig.kolHunterTailRetainLiveEnabled = false;
+      }
+    });
+
+    it('Phase D: live tail flag 단독 (TailRetainEnabled=false) → spawn 안 됨 (paper precedes live)', async () => {
+      mockedConfig.kolHunterTailRetainEnabled = false;
+      mockedConfig.kolHunterTailRetainLiveEnabled = true;
+      try {
+        stubFeed.setInitialPrice(MINT_SMART, 0.001);
+        await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+        stubFeed.emitTick(MINT_SMART, 0.0013);
+        stubFeed.emitTick(MINT_SMART, 0.00115);
+        await flushAsync();
+        const parent = __testGetActive()[0];
+        __testTriggerTick(parent.positionId, parent.entryPrice * 0.85);
+        await flushAsync();
+        // TailRetainEnabled=false 면 spawn 자체 안 됨 — live flag 무관
+        const tail = __testGetActive().find((p) => p.isTailPosition === true);
+        expect(tail).toBeUndefined();
+      } finally {
+        mockedConfig.kolHunterTailRetainLiveEnabled = false;
+      }
+    });
+
+    it('Phase C: tail sub-position state machine — max hold cap 작동', async () => {
+      mockedConfig.kolHunterTailRetainEnabled = true;
+      mockedConfig.kolHunterTailMaxHoldSec = 1;  // 1초 max — 즉시 만료
+      try {
+        stubFeed.setInitialPrice(MINT_SMART, 0.001);
+        await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+        stubFeed.emitTick(MINT_SMART, 0.0013);
+        stubFeed.emitTick(MINT_SMART, 0.00115);
+        await flushAsync();
+        const parent = __testGetActive().find((p) => !p.isTailPosition);
+        expect(parent).toBeDefined();
+        __testTriggerTick(parent!.positionId, parent!.entryPrice * 0.85);
+        await flushAsync();
+        const tail = __testGetActive().find((p) => p.isTailPosition === true);
+        expect(tail).toBeDefined();
+        // 2초 후 tick — max hold (1초) 만료 → close reason 'tail_max_hold'
+        let captured: any = null;
+        kolHunterEvents.once('paper_close', (evt) => { captured = evt; });
+        // entryTimeSec mutation 으로 시간 경과 시뮬
+        tail!.entryTimeSec -= 10;
+        __testTriggerTick(tail!.positionId, tail!.entryPrice);
+        expect(captured?.reason).toBe('tail_max_hold');
+      } finally {
+        mockedConfig.kolHunterTailRetainEnabled = false;
+        mockedConfig.kolHunterTailMaxHoldSec = 3600;
+      }
+    });
+
     it('Sprint 2.A1: paper 모드에서는 enabled 여도 structural kill fire 안 함 (quote 부담 회피)', async () => {
       mockedConfig.kolHunterStructuralKillEnabled = true;
       mockedConfig.kolHunterStructuralKillMinHoldSec = 0;  // 시간 제약 제거
@@ -1128,6 +1255,115 @@ describe('kolSignalHandler — state machine', () => {
       expect(live?.parameterVersion).toBe('smart-v3.0.0');
       expect(live?.kolEntryReason).toBe('pullback');
       expect(live?.entryTxSignature).toBe('KOL_LIVE_BUY_SIG');
+    });
+
+    // 2026-05-01 (P2-1 회귀, minimal): tail spawn 의 live 분기 + paper 분기를 직접 helper 로 검증.
+    //   codex P0-2 발견 — 이전엔 live close path 에 tail spawn 호출이 없어 잔여 토큰 orphan 위험.
+    //   현재는 closeLivePosition 끝에서 spawnTailSubPosition 호출 (P0-2 fix 검증).
+    //   기존 live entry mock 흐름 (fresh reference / triple-flag) 은 광범위 setup 필요 → helper 직접 호출.
+    it('Phase D P2-1: live parent (isLive=true) → live tail spawn (isLive=true, isShadowArm=false)', () => {
+      mockedConfig.kolHunterTailRetainEnabled = true;
+      mockedConfig.kolHunterTailRetainLiveEnabled = true;
+      try {
+        // live parent fixture
+        const liveParent = {
+          positionId: 'kolh-live-test',
+          tokenMint: 'mint-test',
+          entryPrice: 0.001,
+          marketReferencePrice: 0.001,
+          peakPrice: 0.0013,
+          troughPrice: 0.00085,
+          quantity: 1000,
+          ticketSol: 0.02,
+          state: 'PROBE',
+          isLive: true,
+          isShadowArm: false,
+          isTailPosition: false,
+          armName: 'kol_hunter_smart_v3',
+          parameterVersion: 'smart-v3.0.0',
+          participatingKols: [{ id: 'pain', tier: 'S' as const, walletAddress: 'w' }],
+          kolEntryReason: 'pullback' as const,
+          kolConvictionLevel: 'HIGH' as const,
+          kolReinforcementCount: 0,
+          detectorVersion: 'kol_discovery_v1',
+          independentKolCount: 1,
+          survivalFlags: [],
+          dbTradeId: 'db-test',
+          entryTimeSec: 1700000000,
+          kolScore: 5.0,
+        };
+        const exitPrice = 0.00085;
+        const nowSec = 1700000100;
+        __testSpawnTailSubPosition(liveParent as any, exitPrice, nowSec);
+        const tail = __testGetActive().find((p) => p.isTailPosition === true);
+        expect(tail).toBeDefined();
+        expect(tail!.isLive).toBe(true);  // P0-2 핵심 — live tail 생성
+        expect(tail!.isShadowArm).toBe(false);  // wallet ledger 정합
+        expect(tail!.parentPositionId).toBe('kolh-live-test');
+        expect(tail!.quantity).toBeCloseTo(1000 * 0.15, 4);
+        expect(tail!.entryPrice).toBe(exitPrice);  // tail P&L 기준은 parent close price
+        // P1-1 fix: ticketSol = quantity × exitPrice (정합)
+        expect(tail!.ticketSol).toBeCloseTo(150 * 0.00085, 8);
+        // dbTradeId 분리 — DB row 새로 안 만듦
+        expect(tail!.dbTradeId).toBeUndefined();
+      } finally {
+        mockedConfig.kolHunterTailRetainEnabled = false;
+        mockedConfig.kolHunterTailRetainLiveEnabled = false;
+      }
+    });
+
+    it('Phase D P2-1: live parent + LiveEnabled=false → paper tail (isShadowArm=true)', () => {
+      mockedConfig.kolHunterTailRetainEnabled = true;
+      mockedConfig.kolHunterTailRetainLiveEnabled = false;  // live flag off
+      try {
+        const liveParent = {
+          positionId: 'kolh-live-test2',
+          tokenMint: 'mint-test',
+          entryPrice: 0.001,
+          marketReferencePrice: 0.001,
+          peakPrice: 0.0013,
+          troughPrice: 0.00085,
+          quantity: 1000,
+          ticketSol: 0.02,
+          state: 'PROBE',
+          isLive: true,  // parent 는 live 지만
+          isShadowArm: false,
+          isTailPosition: false,
+          armName: 'kol_hunter_smart_v3',
+          parameterVersion: 'smart-v3.0.0',
+          participatingKols: [{ id: 'pain', tier: 'S' as const, walletAddress: 'w' }],
+          kolEntryReason: 'pullback' as const,
+          kolConvictionLevel: 'HIGH' as const,
+          kolReinforcementCount: 0,
+          detectorVersion: 'kol_discovery_v1',
+          independentKolCount: 1,
+          survivalFlags: [],
+          dbTradeId: 'db-test',
+          entryTimeSec: 1700000000,
+          kolScore: 5.0,
+        };
+        __testSpawnTailSubPosition(liveParent as any, 0.00085, 1700000100);
+        const tail = __testGetActive().find((p) => p.isTailPosition === true);
+        expect(tail).toBeDefined();
+        // LiveEnabled=false → tail 은 paper 강제 (isShadowArm=true, isLive=false)
+        expect(tail!.isLive).toBe(false);
+        expect(tail!.isShadowArm).toBe(true);
+      } finally {
+        mockedConfig.kolHunterTailRetainEnabled = false;
+      }
+    });
+
+    it('Phase D P2-1: isPriceKillReason — price/structural/insider 분류 정확성', () => {
+      // tail retain 의 spawn 조건. structural / insider 는 false 여야 Real Asset Guard 정합.
+      expect(__testIsPriceKillReason('probe_hard_cut')).toBe(true);
+      expect(__testIsPriceKillReason('probe_flat_cut')).toBe(true);
+      expect(__testIsPriceKillReason('probe_reject_timeout')).toBe(true);
+      expect(__testIsPriceKillReason('quick_reject_classifier_exit')).toBe(true);
+      expect(__testIsPriceKillReason('structural_kill_sell_route')).toBe(false);
+      expect(__testIsPriceKillReason('hold_phase_sentinel_degraded_exit')).toBe(false);
+      expect(__testIsPriceKillReason('insider_exit_full')).toBe(false);
+      expect(__testIsPriceKillReason('winner_trailing_t1')).toBe(false);
+      expect(__testIsPriceKillReason('ORPHAN_NO_BALANCE')).toBe(false);
     });
 
     it('live fresh reference guard: pre-buy reference drift 가 크면 live 대신 paper fallback', async () => {

@@ -26,6 +26,19 @@
 - Real Asset Guard (ticket 0.01 / floor 0.8 / canary -0.3 / drift halt 0.2 / max concurrent 3) **변경 금지**
 - `npm run check:strict` (lint + structure 포함) 빨강은 **Phase H2-H4 에서 점진 해소 deferred**, 의도
 
+### 운영 로그 / 거래 분석 표준
+- 운영 분석은 먼저 `bash scripts/sync-vps-data.sh`를 실행해 로컬 `data/`, `logs/`, `reports/`를 같은 시점으로 맞춘다.
+- DB trades dump 는 기본 사용 금지. 필요할 때만 `RUN_TRADES_DUMP=true bash scripts/sync-vps-data.sh`로 opt-in 한다.
+- 분석 기준 산출물은 아래 순서로 본다.
+  1. `reports/sync-health-YYYY-MM-DD.md` — 파일 freshness / row count / missing artifact 확인. `logs/bot.log`가 30분 이상 stale 이면 결론 보류.
+  2. `reports/kol-live-canary-YYYY-MM-DD.md` — live canary wallet-truth, net SOL, actual 5x, Phase 4 gate. `phase4=PAUSE_REVIEW`면 승격 금지.
+  3. `reports/winner-kill-YYYY-MM-DD.md` — close 후 5x winner-kill rate. winner-kill 존재 시 exit/tail 정책을 먼저 검토한다.
+  4. `reports/token-quality-YYYY-MM-DD.md` — token-quality / dev-candidate cohort. `observations=0`이면 dev-quality 결론 금지.
+  5. `reports/kol-paper-arms-YYYY-MM-DD.md` — paper/shadow arm 비교. live 결정보다 낮은 권위.
+- 운영 판정은 wallet truth 를 우선한다. DB PnL 단독 판정 금지.
+- 표준 판정 축: sync freshness, current session 이후 entry 유무, live closed/open/orphan, net SOL / max drawdown, actual MFE/T1/T2/5x, winner-kill, token-quality observations, wallet drift, recent ERROR/WARN.
+- 한 줄 판정은 `OK / WATCH / PAUSE_REVIEW / INVESTIGATE` 중 하나로 끝낸다.
+
 ---
 
 ## 프로젝트 개요

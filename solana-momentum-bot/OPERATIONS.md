@@ -397,17 +397,24 @@ cron 예시:
 
 #### `sync-vps-data.sh` 동작 (2026-04-16 강화 / 2026-05-01 분석 단계 추가)
 
-- **DB URL 자동 해결**: `VPS_DATABASE_URL` 미설정 시 pm2 app(`momentum-bot`)에서 자동으로 `DATABASE_URL` 추출. `VPS_PM2_APP_NAME` env로 app 이름 재정의 가능.
-- **신선도 검증**: 덤프 전 `max(created_at)`를 로컬 `current-session.json`의 `startedAt`과 비교. DB가 현재 세션 시작보다 오래됐으면 에러로 중단.
-- **강제 허용**: `ALLOW_STALE_DB_DUMP=true` 설정 시 신선도 경고만 출력하고 진행.
-- **교차 검증**: 덤프 후 JSONL 내 실제 `dump_max_created`와 DB preflight 값 비교.
+- **DB trades dump opt-in (2026-05-01)**: 기본 sync 는 DB를 사용하지 않고 `data/realtime/*.jsonl` 파일을 truth 로 쓴다. 과거 trades table snapshot 이 필요할 때만 `RUN_TRADES_DUMP=true`로 활성화한다.
+- **DB URL 자동 해결 (opt-in)**: `RUN_TRADES_DUMP=true`이고 `VPS_DATABASE_URL` 미설정 시 pm2 app(`momentum-bot`)에서 자동으로 `DATABASE_URL` 추출. `VPS_PM2_APP_NAME` env로 app 이름 재정의 가능.
+- **DB 신선도 검증 (opt-in)**: 덤프 전 `max(created_at)`를 로컬 `current-session.json`의 `startedAt`과 비교. DB가 현재 세션 시작보다 오래됐으면 에러로 중단.
+- **강제 허용 (opt-in)**: `ALLOW_STALE_DB_DUMP=true` 설정 시 신선도 경고만 출력하고 진행.
+- **교차 검증 (opt-in)**: 덤프 후 JSONL 내 실제 `dump_max_created`와 DB preflight 값 비교.
 - **자동 paper-arm-report (2026-04-26)**: sync 직후 `kol-paper-trades.jsonl` 기준 sub-arm 통계 생성 → `reports/kol-paper-arms-YYYY-MM-DD.md`. Jupiter API 0건 (file-only) — default ON.
 - **자동 token-quality-report (2026-05-01)**: sync 직후 `token-quality-observations.jsonl` + paper/live/missed-alpha + dev-wallet candidate JSON join → `reports/token-quality-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
+- **자동 live-canary-report (2026-05-01)**: sync 직후 live canary wallet-truth / 5x / catastrophic / runner 진단 생성 → `reports/kol-live-canary-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
+- **자동 winner-kill-report (2026-05-01)**: sync 직후 missed-alpha close-site markout 으로 5x winner-kill rate 생성 → `reports/winner-kill-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
+- **자동 sync-health manifest (2026-05-01)**: 핵심 JSONL/log 파일의 row count, bytes, mtime 을 `reports/sync-health-YYYY-MM-DD.md`로 저장. 데이터 공백과 sync 실패 구분용 — default ON.
 - **opt-in shadow-eval (2026-04-26)**: `RUN_SHADOW_EVAL=true` 시 KOL signal raw alpha 측정 (Jupiter forward quote 사용). default OFF — Jupiter quota 영향.
 
 ```bash
-# 기본 사용 (DB URL 자동 해결 + 신선도 검증 + paper-arm-report)
+# 기본 사용 (파일 sync + file-only reports, DB 미사용)
 bash scripts/sync-vps-data.sh
+
+# legacy DB trades snapshot 이 필요할 때만
+RUN_TRADES_DUMP=true bash scripts/sync-vps-data.sh
 
 # pm2 app 이름 재정의
 VPS_PM2_APP_NAME=my-bot bash scripts/sync-vps-data.sh
@@ -423,6 +430,11 @@ SKIP_PAPER_REPORT=true bash scripts/sync-vps-data.sh
 
 # token quality / dev-candidate report 생략
 SKIP_TOKEN_QUALITY_REPORT=true bash scripts/sync-vps-data.sh
+
+# live canary / winner-kill / sync health 생략
+SKIP_LIVE_CANARY_REPORT=true bash scripts/sync-vps-data.sh
+SKIP_WINNER_KILL_REPORT=true bash scripts/sync-vps-data.sh
+SKIP_SYNC_HEALTH=true bash scripts/sync-vps-data.sh
 ```
 
 원칙:

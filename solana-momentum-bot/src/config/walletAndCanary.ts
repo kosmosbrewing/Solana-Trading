@@ -46,7 +46,11 @@ export const walletAndCanary = {
   // Real Asset Guard wallet floor (walletStopGuard) 가 absolute hardstop.
   kolHunterCanaryMaxBudgetSol: numEnv('KOL_HUNTER_CANARY_MAX_BUDGET_SOL', '0.2'),
   kolHunterCanaryMaxConsecLosers: numEnv('KOL_HUNTER_CANARY_MAX_CONSEC_LOSERS', '5'),
-  kolHunterCanaryMaxTrades: numEnv('KOL_HUNTER_CANARY_MAX_TRADES', '50'),
+  // 2026-05-01: 50 → 200 상향. 4-21 mission-refinement §5 의 "200 trade gate (scale/retire decision)"
+  // 직접 정합. 50 은 safety checkpoint 였으나 ledger hydrate 로 실제 누적 152 까지 진행 후
+  // 인지 → review process gap. 200 으로 상향하여 사명 §3 "200 trade + 5x+ winner" 까지 자연 누적.
+  // env override 가능 (보수적 운영자가 50 으로 다시 낮출 수 있음).
+  kolHunterCanaryMaxTrades: numEnv('KOL_HUNTER_CANARY_MAX_TRADES', '200'),
 
   // ─── Block 4 QA fix: wallet-level 전역 concurrency guard ───
   // Why: lane별 maxConcurrent 합계가 mission-pivot 의 "동시 max 3 ticket" 을 초과 가능 (cupsey 5 + pure_ws 3).

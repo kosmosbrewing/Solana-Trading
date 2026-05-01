@@ -1,5 +1,6 @@
 import { Commitment, Connection, ParsedAccountData, PublicKey } from '@solana/web3.js';
 import { createModuleLogger } from '../utils/logger';
+import { computeHolderDistribution } from '../observability/holderDistribution';
 
 const log = createModuleLogger('OnchainSecurity');
 const RATIO_SCALE = 1_000_000n;
@@ -17,6 +18,21 @@ export interface TokenSecurityData {
   // P2-3: Token-2022 classification
   tokenProgram?: string;   // 'spl-token' | 'spl-token-2022'
   extensions?: string[];   // Token-2022 extension 이름 목록
+
+  // 2026-05-01 (Helius Stream B) — holder distribution enrichment
+  // ADR: docs/exec-plans/active/helius-credit-edge-plan-2026-05-01.md §6 Stream B
+  // 정책: observe-only — 신규 hard reject 안 함. tokenQualityInspector + cohort 분석용.
+  // 산출: computeHolderDistribution(largestAccounts, totalSupply) (holderDistribution.ts)
+  /** Top-1 holder 비율 (0-1, e.g. 0.45 = 45%). 산출 실패 시 undefined. */
+  top1HolderPct?: number;
+  /** Top-5 holders 합 비율 (0-1). */
+  top5HolderPct?: number;
+  /** Herfindahl-Hirschman Index (0-1) — sample 안 분포 집중도. 1 = single holder. */
+  holderHhi?: number;
+  /** 산출 sample 의 holder 수 (largestAccounts 반환 row 수, 보통 ≤20). */
+  holderCountApprox?: number;
+  /** 분모 sample 합계 fallback 사용 여부 (true 면 supply 미제공 — 정확도 낮음). */
+  holderSampleBased?: boolean;
 }
 
 export interface ExitLiquidityData {
@@ -28,8 +44,11 @@ export interface ExitLiquidityData {
 
 interface MintSecurityConnection {
   getParsedAccountInfo(pubkey: PublicKey, commitment?: Commitment): Promise<{ value: { data: unknown } | null }>;
+  // 2026-05-01 (Helius Stream B): Solana web3.js Connection 은 `address: PublicKey` 반환,
+  //   test mock 은 `address: string` 으로 mock 가능 — `unknown` 으로 받고 normalize 시 toString().
+  //   detectTopHolderOverlap (holderDistribution) 의 dev/pool overlap 검증 입력.
   getTokenLargestAccounts(pubkey: PublicKey, commitment?: Commitment): Promise<{
-    value: Array<{ amount: string }>;
+    value: Array<{ amount: string; address?: unknown }>;
   }>;
 }
 
@@ -74,6 +93,18 @@ export class OnchainSecurityClient {
       const tokenProgram = typeof accountData?.program === 'string' ? accountData.program : undefined;
       const extensions = parseExtensionNames(mintInfo.extensions);
 
+      // 2026-05-01 (Helius Stream B): holder distribution enrichment.
+      //   기존 top10 산식 (`computeTop10HolderPct`) 은 supply 분모 — 그대로 유지.
+      //   추가로 `computeHolderDistribution` (sampleSum/supply 분모 자동 분기) 호출 → top1/top5/HHI.
+      //   RPC 신규 호출 0 (largestAccounts 재사용).
+      const supplyNum = parseSupplyToNumber(mintInfo.supply);
+      const holderEntries = largestAccounts.value.map((a) => ({
+        amount: parseAmountToNumber(a.amount),
+        // address 는 PublicKey | string | undefined 모두 가능 — string 으로 normalize.
+        address: normalizeAddress(a.address),
+      }));
+      const holderDist = computeHolderDistribution(holderEntries, supplyNum);
+
       return {
         isHoneypot: false,
         isFreezable: freezeAuthorityPresent,
@@ -84,6 +115,12 @@ export class OnchainSecurityClient {
         creatorPct: 0,
         tokenProgram,
         extensions: extensions.length > 0 ? extensions : undefined,
+        // Stream B: holder distribution observe-only enrich
+        top1HolderPct: holderDist.top1HolderPct,
+        top5HolderPct: holderDist.top5HolderPct,
+        holderHhi: holderDist.holderHhi,
+        holderCountApprox: holderDist.holderCountApprox,
+        holderSampleBased: holderDist.sampleBased,
       };
     } catch (error) {
       log.warn(`Onchain security fetch failed for ${tokenMint}: ${error}`);
@@ -167,4 +204,35 @@ function toBigInt(value: string | number | bigint | null | undefined): bigint {
     return 0n;
   }
   return 0n;
+}
+
+/**
+ * 2026-05-01 (Helius Stream B): supply / amount string → number 안전 변환.
+ *   computeHolderDistribution 이 number 분모 — bigint 보다 정밀도 손실 있지만 비율 산출 (top1/5/HHI)
+ *   에는 충분 (token 가량 ≥1e6 이라 1e15 까지 IEEE 754 안전).
+ *   실패 시 0 반환 — caller (computeHolderDistribution) 가 sampleBased fallback 으로 처리.
+ */
+function parseSupplyToNumber(supply: string | undefined): number | undefined {
+  if (typeof supply !== 'string' || supply.length === 0) return undefined;
+  const n = Number(supply);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+function parseAmountToNumber(amount: string): number {
+  const n = Number(amount);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+
+/**
+ * 2026-05-01 (Helius Stream B): largestAccounts 의 address 는 Solana web3.js 가 PublicKey 반환,
+ *   test mock 은 string. 양쪽 모두 string 으로 normalize.
+ */
+function normalizeAddress(address: unknown): string | undefined {
+  if (typeof address === 'string') return address;
+  if (address && typeof (address as { toString?: unknown }).toString === 'function') {
+    const s = String(address);
+    // PublicKey.toString() 은 base58, '[object Object]' 같은 default toString 은 거부
+    if (s && s !== '[object Object]') return s;
+  }
+  return undefined;
 }

@@ -371,6 +371,18 @@ export class KolWalletTracker extends EventEmitter {
       txSignature: signature,
       solAmount: swap.solAmount,
       isShadow,  // 2026-04-28: handler 가 active vs inactive 분기 처리하도록 마킹.
+      // 2026-05-01 (Helius Stream C): WS context 의 slot 보존 + Standard RPC parse provenance.
+      slot,
+      blockTime: tx.blockTime ?? undefined,
+      feeLamports: swap.feeLamports,
+      inputMint: swap.inputMint,
+      outputMint: swap.outputMint,
+      tokenAmount: swap.tokenAmount,
+      // parseSource: getParsedTransaction 의 SOL delta 휴리스틱 — Standard RPC parse 라
+      //   `standard_rpc` 가 정확. 단 swap detection 자체가 SOL delta + token delta 추정이라
+      //   `heuristic` 분류가 더 보수적 — 외부 reader 가 신뢰도 낮게 처리.
+      parseSource: 'heuristic',
+      routeKind: 'unknown',
     };
 
     if (isShadow) {
@@ -430,6 +442,15 @@ export interface WalletSwapDetection {
   action: KolAction;
   tokenMint: string;
   solAmount: number;
+  // 2026-05-01 (Helius Stream C): provenance enrichment — heuristic-only path 가 채우는 필드들.
+  /** transaction fee (lamports) — meta.fee */
+  feeLamports?: number;
+  /** swap input mint (SOL for buy, tokenMint for sell) */
+  inputMint?: string;
+  /** swap output mint (tokenMint for buy, SOL for sell) */
+  outputMint?: string;
+  /** token amount (UI / normalized) — largest-magnitude token delta */
+  tokenAmount?: number;
 }
 
 /**
@@ -512,9 +533,19 @@ export function detectSwapFromWalletPerspective(
     : null as unknown as KolAction;
   if (action === null) return null;
 
+  // 2026-05-01 (Helius Stream C): tokenAmount + fee + input/output mint 보존.
+  //   parseSource='heuristic' path 의 enrichment — Standard RPC parse 결과만으로 채울 수 있는 정보.
+  const feeLamports = typeof meta.fee === 'number' ? meta.fee : undefined;
+  const inputMint = action === 'buy' ? SOL_MINT : candidateMint;
+  const outputMint = action === 'buy' ? candidateMint : SOL_MINT;
+
   return {
     action,
     tokenMint: candidateMint,
     solAmount: Math.abs(solDeltaLamports) / LAMPORTS_PER_SOL,
+    feeLamports,
+    inputMint,
+    outputMint,
+    tokenAmount: Math.abs(candidateDelta),
   };
 }

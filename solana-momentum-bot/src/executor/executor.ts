@@ -4,6 +4,8 @@ import {
   Keypair,
   PublicKey,
   VersionedTransaction,
+  type LoadedAddresses,
+  type MessageAccountKeys,
 } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { createModuleLogger } from '../utils/logger';
@@ -97,6 +99,24 @@ export interface SwapResult {
    *      submit → waitForConfirmation) 구간. 비측정 (예: 실패 전 throw) 시 undefined.
    */
   landingLatencyMs?: number;
+
+  // ─── 2026-05-01 (Sprint X measurement-only): Cost decomposition ───
+  // Why: actualInputUiAmount = wallet SOL delta = swap input + ATA rent + network fee + Jito tip.
+  //   ATA rent (~0.002 SOL/신규 토큰) 가 entry price 에 inflated 되어 5x peak 측정에서
+  //   "진짜 5x" 를 5x 로 못 잡는 문제 (ticket 0.02 SOL 기준 ~10-20% inflation).
+  // 분해: swap-only input (Jupiter quote 의 raw inAmount) 별도 측정 → token-only entry price 산출.
+  //   ATA rent / network fee / Jito tip 도 cost decomposition log 로 분리.
+  // 거래 행동 변경 0 — measurement-only. ATA close on full sell 은 별도 sprint.
+  /** Jupiter swap quote 의 raw input (ATA rent / network fee / Jito tip 제외). UI amount. */
+  swapInputUiAmount?: number;
+  /** wallet pre/post SOL delta (= swap + rent + fee + tip 모두 합산). 기존 actualInputUiAmount 와 동일 의미. */
+  walletInputUiAmount?: number;
+  /** 신규 토큰 ATA 생성 시 funded SOL (보통 0.00203928). 재진입은 0. */
+  ataRentSol?: number;
+  /** Solana network fee (보통 0.000005 ~ 0.000105 SOL). */
+  networkFeeSol?: number;
+  /** Jito tip (path=jito 일 때만, dynamic). */
+  jitoTipSol?: number;
 }
 
 interface JupiterQuote {
@@ -128,6 +148,108 @@ interface UltraExecuteResponse {
   slot?: number;
   inputAmountResult?: string;
   outputAmountResult?: string;
+}
+
+// ─── 2026-05-01 (Sprint X measurement-only): ATA rent decomposition ───
+// SOL input swap 의 wallet delta = swap input + ATA rent (신규 토큰) + network fee + Jito tip.
+// inner instructions 의 SystemProgram.transfer 또는 createAccount 로 funded 신규 계정 합계 추출.
+// signer 가 SOL 을 보낸 신규 token account = ATA rent.
+interface SwapCostDecomp {
+  swapInputSol: number;     // 실 token swap 에 들어간 SOL (UI amount)
+  ataRentSol: number;       // 신규 ATA 생성 funding (보통 0.00203928, 재진입 0)
+  networkFeeSol: number;    // Solana 네트워크 fee
+  jitoTipSol: number;       // Jito tip (path=jito 일 때만, 추정값)
+  walletInputSol: number;   // wallet pre-post delta total
+}
+
+type MessageWithAccountKeys = {
+  getAccountKeys: (args?: { accountKeysFromLookups?: LoadedAddresses | null }) => MessageAccountKeys;
+};
+
+export function resolveAccountKeysForCostDecomp(
+  message: MessageWithAccountKeys,
+  loadedAddresses?: LoadedAddresses,
+): MessageAccountKeys {
+  if (loadedAddresses) {
+    return message.getAccountKeys({ accountKeysFromLookups: loadedAddresses });
+  }
+  return message.getAccountKeys();
+}
+
+/**
+ * 2026-05-01 (Codex H2 fix): hot-path RPC await 차단.
+ *   기존: `await connection.getTransaction(signature, ...)` 가 timeout 없어 RPC 지연 시
+ *         buy 체결 후 position persist 전에 hot path 가 무한 대기.
+ *   현재: 1500ms timeout race + RPC 실패/timeout 시 fallback (walletInputSol 그대로 사용).
+ *         decomposition 은 측정용이라 missing 해도 wallet truth 영향 0.
+ */
+const DECOMPOSE_RPC_TIMEOUT_MS = 1500;
+
+export async function decomposeSwapCost(
+  connection: Connection,
+  signature: string,
+  walletInputSol: number,
+  declaredJitoTipSol: number = 0
+): Promise<SwapCostDecomp> {
+  // 안전 default — RPC 실패 / timeout 시 기존 wallet delta 그대로 (분해 정보 없음)
+  const fallback: SwapCostDecomp = {
+    swapInputSol: walletInputSol,
+    ataRentSol: 0,
+    networkFeeSol: 0,
+    jitoTipSol: declaredJitoTipSol,
+    walletInputSol,
+  };
+  try {
+    // Codex H2 fix: timeout race — hot path 영향 보호.
+    const txPromise = connection.getTransaction(signature, {
+      maxSupportedTransactionVersion: 0,
+      commitment: 'confirmed',
+    });
+    const tx = await Promise.race([
+      txPromise,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), DECOMPOSE_RPC_TIMEOUT_MS)),
+    ]);
+    if (!tx?.meta) return fallback;
+
+    const fee = tx.meta.fee / 1e9;
+    const accountKeys = resolveAccountKeysForCostDecomp(
+      tx.transaction.message as MessageWithAccountKeys,
+      tx.meta.loadedAddresses,
+    );
+    const signerKey = accountKeys.get(0);
+    if (!signerKey) return fallback;
+    const signerStr = signerKey.toBase58();
+
+    // 신규 funded account: pre=0, post>0, signer 가 아닌 account
+    // 2026-05-01 (F2 sanity): ATA rent 표준 0.00203928 SOL. 한 tx 의 newly-funded 합계가
+    //   0.05 SOL 초과면 ATA 외 다른 funded account (escrow, treasury 등) 포함 의심.
+    //   conservative — sanity 초과 시 분해 신뢰도 낮음, fallback 사용 (분해 0).
+    const preBal = tx.meta.preBalances;
+    const postBal = tx.meta.postBalances;
+    let newlyFundedSol = 0;
+    for (let i = 0; i < accountKeys.length; i++) {
+      const key = accountKeys.get(i);
+      if (!key) continue;
+      if (key.toBase58() === signerStr) continue;
+      if (preBal[i] === 0 && postBal[i] > 0) {
+        newlyFundedSol += postBal[i] / 1e9;
+      }
+    }
+    // F2 sanity: ATA rent 표준 0.00203928 SOL (per ATA), multi-token entry 도 0.05 SOL 미만이 정상.
+    // 0.05 초과 = escrow / treasury 포함 의심 → fallback (분해 신뢰도 낮음, 0 처리).
+    const ATA_RENT_SANITY_CAP_SOL = 0.05;
+    const ataSane = newlyFundedSol <= ATA_RENT_SANITY_CAP_SOL ? newlyFundedSol : 0;
+    const swapInput = walletInputSol - fee - ataSane - declaredJitoTipSol;
+    return {
+      swapInputSol: swapInput > 0 ? swapInput : walletInputSol,
+      ataRentSol: ataSane,
+      networkFeeSol: fee,
+      jitoTipSol: declaredJitoTipSol,
+      walletInputSol,
+    };
+  } catch {
+    return fallback;
+  }
 }
 
 export class Executor {
@@ -326,6 +448,22 @@ export class Executor {
       `actual=${actualOutAmount ?? 'unknown'}, slippage=${actualSlippageBps}bps`
     );
 
+    // 2026-05-01 (Sprint X): SOL input 시점만 ATA rent decomposition.
+    let ultraCostDecomp: SwapCostDecomp | undefined;
+    if (inputMint === SOL_MINT && inputMetrics.actualInputUiAmount != null) {
+      ultraCostDecomp = await decomposeSwapCost(
+        this.connection,
+        result.signature,
+        inputMetrics.actualInputUiAmount,
+        0  // Ultra 의 priority/jito tip 은 inner instruction 의 newly-funded 가 아닌 fee 로 흡수됨
+      );
+      log.info(
+        `[SWAP_COST_DECOMP_ULTRA] sig=${result.signature.slice(0, 12)} ` +
+        `wallet=${ultraCostDecomp.walletInputSol.toFixed(6)} swap=${ultraCostDecomp.swapInputSol.toFixed(6)} ` +
+        `rent=${ultraCostDecomp.ataRentSol.toFixed(6)} fee=${ultraCostDecomp.networkFeeSol.toFixed(6)}`
+      );
+    }
+
     return {
       expectedInAmount: expectedIn,
       actualInputAmount,
@@ -337,6 +475,12 @@ export class Executor {
       slippageBps: actualSlippageBps,
       // 2026-04-30 (Sprint 1.A3): Ultra path landing latency.
       landingLatencyMs: ultraLandingLatencyMs,
+      // 2026-05-01 (Sprint X): cost decomposition.
+      swapInputUiAmount: ultraCostDecomp?.swapInputSol,
+      walletInputUiAmount: ultraCostDecomp?.walletInputSol,
+      ataRentSol: ultraCostDecomp?.ataRentSol,
+      networkFeeSol: ultraCostDecomp?.networkFeeSol,
+      jitoTipSol: ultraCostDecomp?.jitoTipSol,
     };
   }
 
@@ -372,7 +516,12 @@ export class Executor {
           : await this.getTokenBalance(outputMint);
 
         const swapTx = await this.getSwapTransaction(quote);
-        const { signature: txSignature, landingLatencyMs } = await this.sendTransaction(swapTx);
+        const sendResult = await this.sendTransaction(swapTx);
+        const txSignature = sendResult.signature;
+        const landingLatencyMs = sendResult.landingLatencyMs;
+        // 2026-05-01 (Codex H2 fix): Jito 실제 성공 시에만 tip 차감.
+        //   fallback (Jito → standard RPC) 시 tipPaidSol = 0 → token-only entry price 정확.
+        const jitoTipPaidSol = sendResult.viaJito ? sendResult.jitoTipPaidSol : 0;
 
         const inputBalanceAfter = inputMint === SOL_MINT
           ? BigInt(Math.round(await this.getBalance() * 1e9))
@@ -401,6 +550,29 @@ export class Executor {
           `Swap complete: expected=${expectedOut}, actual=${actualOutAmount}, slippage=${actualSlippageBps}bps`
         );
 
+        // 2026-05-01 (Sprint X): SOL input 시점만 ATA rent decomposition. token→SOL (sell) 은 분해 무관.
+        // 2026-05-01 (H2 fix — Codex 권고 + 추가 fix): V6 path 도 Jito 활성 가능 (line 754 useJito 분기).
+        //   Jito tip 은 별도 tx 로 wallet delta 에 들어가지만 swap signature 의 inner instruction 에 안 잡힘.
+        //   → sendResult.jitoTipPaidSol (실 Jito 성공 시에만 > 0) 을 declaredJitoTipSol 로 전달
+        //     → swapInputSol 에서 차감되어 token-only entry price 정확.
+        let costDecomp: SwapCostDecomp | undefined;
+        if (inputMint === SOL_MINT && inputMetrics.actualInputUiAmount != null) {
+          // Codex H2 fix: jitoTipPaidSol 은 sendTransaction 결과 — 실 Jito 성공 시에만 > 0.
+          //   fallback (standard RPC) 시 0 → swapInputSol 에서 tip 안 빠짐 → token-only 정확.
+          costDecomp = await decomposeSwapCost(
+            this.connection,
+            txSignature,
+            inputMetrics.actualInputUiAmount,
+            jitoTipPaidSol
+          );
+          log.info(
+            `[SWAP_COST_DECOMP_V6] sig=${txSignature.slice(0, 12)} ` +
+            `wallet=${costDecomp.walletInputSol.toFixed(6)} swap=${costDecomp.swapInputSol.toFixed(6)} ` +
+            `rent=${costDecomp.ataRentSol.toFixed(6)} fee=${costDecomp.networkFeeSol.toFixed(6)} ` +
+            `jitoTip=${costDecomp.jitoTipSol.toFixed(6)}`
+          );
+        }
+
         return {
           expectedInAmount: expectedIn,
           actualInputAmount: actualInputAmount > 0n ? actualInputAmount : undefined,
@@ -412,6 +584,12 @@ export class Executor {
           slippageBps: actualSlippageBps,
           // 2026-04-30 (Sprint 1.A3): tx submit→confirm latency 전파.
           landingLatencyMs,
+          // 2026-05-01 (Sprint X): cost decomposition.
+          swapInputUiAmount: costDecomp?.swapInputSol,
+          walletInputUiAmount: costDecomp?.walletInputSol,
+          ataRentSol: costDecomp?.ataRentSol,
+          networkFeeSol: costDecomp?.networkFeeSol,
+          jitoTipSol: costDecomp?.jitoTipSol,
         };
       } catch (error) {
         lastError = error as Error;
@@ -613,22 +791,26 @@ export class Executor {
    * 단일 트랜잭션 전송 + 확인 (retry는 executeSwapWithRetry에서 quote 포함 처리)
    * Phase 3: Jito bundle 경로 추가 — MEV 보호.
    */
-  private async sendTransaction(txBuffer: Buffer): Promise<{ signature: string; landingLatencyMs: number }> {
+  private async sendTransaction(txBuffer: Buffer): Promise<{ signature: string; landingLatencyMs: number; viaJito: boolean; jitoTipPaidSol: number }> {
     let tx = VersionedTransaction.deserialize(txBuffer);
     tx.sign([this.wallet]);
 
     // Phase 3: Jito bundle path (C-21: 장애 시 standard RPC fallback)
+    // 2026-05-01 (Codex H2 fix): Jito 실패 → standard RPC fallback 시 jitoTipPaidSol = 0.
+    //   이전: 호출자가 항상 getCurrentTipSol() 차감 → fallback 시 tip 미지불인데 차감 → entry price underestimate.
+    //   현재: viaJito + jitoTipPaidSol 명시 반환 → 호출자가 fallback 인지 차감 결정.
     if (this.useJito && this.jitoClient) {
       try {
         log.info('Submitting via Jito bundle...');
         // 2026-04-30 (Sprint 1.A3): Jito bundle 의 submit→confirmation 구간 측정.
         const jitoStartMs = Date.now();
+        const tipPaidSol = this.jitoClient.getCurrentTipSol();
         const result = await this.jitoClient.submitSingleTx(tx, this.wallet);
         await this.jitoClient.waitForConfirmation(result.bundleId);
         const landingLatencyMs = Date.now() - jitoStartMs;
         const signature = result.txSignatures[0];
-        log.info(`TX confirmed via Jito: ${signature} landing=${landingLatencyMs}ms`);
-        return { signature, landingLatencyMs };
+        log.info(`TX confirmed via Jito: ${signature} landing=${landingLatencyMs}ms tip=${tipPaidSol.toFixed(6)}`);
+        return { signature, landingLatencyMs, viaJito: true, jitoTipPaidSol: tipPaidSol };
       } catch (jitoErr) {
         log.warn(`Jito bundle failed: ${jitoErr}. Falling back to standard RPC.`);
         // TX를 재서명하여 standard RPC로 전송
@@ -656,7 +838,8 @@ export class Executor {
     }
 
     log.info(`TX confirmed: ${signature} landing=${landingLatencyMs}ms`);
-    return { signature, landingLatencyMs };
+    // 2026-05-01 (Codex H2): standard RPC path → jitoTipPaidSol=0 (Jito 미지불).
+    return { signature, landingLatencyMs, viaJito: false, jitoTipPaidSol: 0 };
   }
 }
 

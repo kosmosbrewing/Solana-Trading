@@ -122,6 +122,8 @@ async function fetchRecentSignatures(
   pool: PublicKey,
   limiter: RateLimiter,
   maxSigs: number,
+  // 2026-05-01 (Helius Stream A): pagination 횟수 별도 trace — 호출자가 credit estimate 합산.
+  creditTrace?: { signatureFetchCalls: number },
 ): Promise<string[]> {
   const allSigs: string[] = [];
   let before: string | undefined;
@@ -138,6 +140,8 @@ async function fetchRecentSignatures(
     let batch: ConfirmedSignatureInfo[];
     try {
       batch = await connection.getSignaturesForAddress(pool, options);
+      // 2026-05-01 (Helius Stream A): getSignaturesForAddress = Standard RPC 1 credit per call.
+      if (creditTrace) creditTrace.signatureFetchCalls += 1;
       limiter.onSuccess();
       retries = 0;
     } catch (err: unknown) {
@@ -194,7 +198,11 @@ async function fetchAndParseSwaps(
     const results = await Promise.all(
       batch.map(async (sig) => {
         await limiter.wait();
-        creditEstimate += 100; // getParsedTransaction = 100 credits
+        // 2026-05-01 (Helius Stream A 보정): Standard RPC `getParsedTransaction` = 1 credit.
+        //   이전 100 credits 가정은 Enhanced Transactions API 의 cost — 본 script 는 표준 RPC 사용.
+        //   Source: https://www.helius.dev/docs/billing/credits — Standard RPC 1c, Enhanced parsing 100c.
+        //   결과: 누적 estimate 100배 과대 → 실제 burn 의 1% 수준.
+        creditEstimate += 1; // getParsedTransaction (Standard RPC) = 1 credit
         try {
           const tx = await connection.getParsedTransaction(sig, {
             maxSupportedTransactionVersion: 0,
@@ -637,17 +645,23 @@ async function main() {
 
     // 2. Fetch recent signatures (최신부터 maxTxsPerPool개)
     log('  Fetching recent signatures...');
+    const sigCreditTrace = { signatureFetchCalls: 0 };
     const allSignatures = await fetchRecentSignatures(
       connection,
       new PublicKey(target.poolAddress),
       limiter,
       args.dryRun ? 1000 : args.maxTxsPerPool,
+      sigCreditTrace,
     );
-    totalCreditUsed += Math.ceil(allSignatures.length / 1000);
-    log(`  Collected ${allSignatures.length} signatures`);
+    // 2026-05-01 (Stream A 보정): getSignaturesForAddress = 1 credit per call (Standard RPC).
+    //   이전 산식 `Math.ceil(allSignatures.length / 1000)` 은 정확하지만 lower bound — pagination 실패/빈 page 미반영.
+    //   이제 호출 횟수 직접 trace 로 정확히 합산.
+    totalCreditUsed += sigCreditTrace.signatureFetchCalls;
+    log(`  Collected ${allSignatures.length} signatures (${sigCreditTrace.signatureFetchCalls} pagination calls)`);
 
     if (args.dryRun) {
-      log(`  [dry-run] Would fetch ${args.maxTxsPerPool} txs = ~${args.maxTxsPerPool * 100} credits`);
+      // 2026-05-01 (Stream A 보정): getParsedTransaction = 1 credit (Standard RPC), not 100c.
+      log(`  [dry-run] Would fetch ${args.maxTxsPerPool} txs = ~${args.maxTxsPerPool} credits (Standard RPC 1c each)`);
       continue;
     }
 

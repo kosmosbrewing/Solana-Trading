@@ -35,6 +35,22 @@ interface PaperTradeRecord {
   netSol?: number;
   netPct?: number;
   mfePctPeak?: number;
+  // 2026-05-01 (Sprint Y1 wire): token-only / wallet-based 분리 측정.
+  //   사명 §3 5x judgement 은 mfePctPeakTokenOnly 사용 (paper/live 통일).
+  //   legacy 데이터 (mfePctPeak 만 있는 경우) 는 mfePctPeak fallback.
+  mfePctPeakTokenOnly?: number;
+  mfePctPeakWalletBased?: number;
+  entryPriceTokenOnly?: number;
+  entryPriceWalletDelta?: number;
+  ataRentSol?: number;
+  swapInputSol?: number;
+  // 2026-05-01 (Sprint Z — Codex 권고): netPct/maePct/exitPrice/netSol token-only.
+  //   stop 정책 평가 (winner-kill / hard_cut 보수성 / big-loss 분포) 시 wallet-delta 만 보면 inflation.
+  //   token-only 측정으로 정책 학습 정확도 회복 — wallet floor 보호는 그대로 wallet-delta.
+  exitPriceTokenOnly?: number;
+  maePctTokenOnly?: number;
+  netPctTokenOnly?: number;
+  netSolTokenOnly?: number;
   maePct?: number;
   holdSec?: number;
   exitReason?: string;
@@ -60,6 +76,19 @@ interface ArmSummary {
   avgMaePct: number;
   medianHoldSec: number;
   exitReasons: Record<string, number>;
+  // 2026-05-01 (Sprint Y1): 사명 §3 5x judgement — token-only entry 기반.
+  fivexCountTokenOnly: number;        // mfePctPeakTokenOnly >= 4.0 (사명 §3 정합)
+  fivexCountWalletBased: number;      // mfePctPeakWalletBased >= 4.0 (Real Asset Guard view)
+  // ATA rent inflation 영향 monitor — 두 값 차이가 ATA rent 의 5x peak 측정 영향
+  fivexInflationGap: number;          // tokenOnly - walletBased (양수면 wallet-based 가 winner missed)
+  // 2026-05-01 (Sprint Z — Codex 권고): stop 정책 평가용 token-only metric.
+  //   wallet-delta cum_net 은 ATA rent 분 손실 인플레이션 → 정책 보수화 위험.
+  //   token-only cum_net + big-loss rate 가 실제 token 가격 변동 기반 stop 평가 정확.
+  netSolTokenOnly: number;            // sum (rent 제외)
+  netSolWalletBased: number;          // sum (현재 netSol 과 동일, 명시화)
+  bigLossRateTokenOnly: number;       // netPctTokenOnly ≤ -20% 비율
+  bigLossRateWalletBased: number;     // netPct ≤ -20% 비율 (현재)
+  avgNetPctTokenOnly: number;         // mean(netPctTokenOnly)
 }
 
 function parseArgs(): CliArgs {
@@ -122,6 +151,25 @@ function summarizeArm(armName: string, rows: PaperTradeRecord[]): ArmSummary {
     const reason = r.exitReason ?? 'unknown';
     exitReasons[reason] = (exitReasons[reason] ?? 0) + 1;
   }
+  // 2026-05-01 (Sprint Y1): 사명 §3 5x judgement.
+  //   tokenOnly 우선 (paper/live 통일), legacy row 는 mfePctPeak fallback.
+  const FIVEX_THRESHOLD = 4.0;  // mfe peak ≥ +400% = 5x
+  const fivexTokenOnly = rows.filter((r) => {
+    const v = r.mfePctPeakTokenOnly ?? r.mfePctPeak ?? 0;
+    return v >= FIVEX_THRESHOLD;
+  }).length;
+  const fivexWalletBased = rows.filter((r) => {
+    const v = r.mfePctPeakWalletBased ?? r.mfePctPeak ?? 0;
+    return v >= FIVEX_THRESHOLD;
+  }).length;
+  // 2026-05-01 (Sprint Z): Token-only metric — stop 정책 평가 정확도 회복.
+  //   legacy row (netPctTokenOnly 미기록) 는 netPct fallback. paper 는 두 값 동일.
+  const BIG_LOSS_THRESHOLD = -0.20;
+  const tokenNetPcts = rows.map((r) => r.netPctTokenOnly ?? r.netPct ?? 0);
+  const walletNetPcts = rows.map((r) => r.netPct ?? 0);
+  const tokenNetSols = rows.map((r) => r.netSolTokenOnly ?? r.netSol ?? 0);
+  const bigLossTokenOnlyN = tokenNetPcts.filter((p) => p <= BIG_LOSS_THRESHOLD).length;
+  const bigLossWalletBasedN = walletNetPcts.filter((p) => p <= BIG_LOSS_THRESHOLD).length;
   return {
     armName,
     parameterVersions: [...new Set(rows.map((r) => r.parameterVersion).filter((v): v is string => !!v))].sort(),
@@ -138,6 +186,14 @@ function summarizeArm(armName: string, rows: PaperTradeRecord[]): ArmSummary {
     avgMaePct: mean(rows.map((r) => r.maePct ?? 0)),
     medianHoldSec: quantile(rows.map((r) => r.holdSec ?? 0), 0.5),
     exitReasons,
+    fivexCountTokenOnly: fivexTokenOnly,
+    fivexCountWalletBased: fivexWalletBased,
+    fivexInflationGap: fivexTokenOnly - fivexWalletBased,
+    netSolTokenOnly: sum(tokenNetSols),
+    netSolWalletBased: sum(pnls),
+    bigLossRateTokenOnly: rows.length > 0 ? bigLossTokenOnlyN / rows.length : 0,
+    bigLossRateWalletBased: rows.length > 0 ? bigLossWalletBasedN / rows.length : 0,
+    avgNetPctTokenOnly: mean(tokenNetPcts),
   };
 }
 
@@ -158,13 +214,39 @@ function formatMarkdown(rows: PaperTradeRecord[], summaries: ArmSummary[]): stri
   lines.push(`- Total paper closes: ${rows.length}`);
   lines.push(`- Arms: ${summaries.length}`);
   lines.push('');
-  lines.push('| Arm | Trades | Shadow | Net SOL | Win Rate | Avg Net | T1 | T2 | T3 | Avg MFE | P90 MFE | Avg MAE | Median Hold |');
-  lines.push('|-----|--------|--------|---------|----------|---------|----|----|----|---------|---------|---------|-------------|');
+  lines.push('| Arm | Trades | Shadow | Net SOL | Win Rate | Avg Net | T1 | T2 | T3 | Avg MFE | P90 MFE | Avg MAE | Median Hold | 5x Token | 5x Wallet |');
+  lines.push('|-----|--------|--------|---------|----------|---------|----|----|----|---------|---------|---------|-------------|----------|-----------|');
   for (const s of summaries) {
+    // 2026-05-01 (Sprint Y1): 5x token-only / wallet-based 분리 표시.
+    //   gap > 0 = wallet-based 가 ATA rent inflation 으로 winner missed.
+    const gapMark = s.fivexInflationGap > 0 ? ` ⚠+${s.fivexInflationGap}` : '';
     lines.push(
       `| ${s.armName} | ${s.trades} | ${s.shadowTrades} | ${sol(s.netSol)} | ${pct(s.winRate)} | ` +
       `${pct(s.avgNetPct)} | ${s.t1Visits} | ${s.t2Visits} | ${s.t3Visits} | ${pct(s.avgMfePct)} | ` +
-      `${pct(s.p90MfePct)} | ${pct(s.avgMaePct)} | ${s.medianHoldSec.toFixed(0)}s |`
+      `${pct(s.p90MfePct)} | ${pct(s.avgMaePct)} | ${s.medianHoldSec.toFixed(0)}s | ` +
+      `${s.fivexCountTokenOnly}${gapMark} | ${s.fivexCountWalletBased} |`
+    );
+  }
+  lines.push('');
+  lines.push('> 5x judgement: mfe peak ≥ +400% (사명 §3 정합). Token = entryPriceTokenOnly 기반 (paper/live 통일). Wallet = entryPriceWalletDelta (ATA rent 포함). Gap 양수 = ATA rent inflation 으로 winner missed (Sprint X 측정 fix 효과).');
+  lines.push('');
+
+  // 2026-05-01 (Sprint Z — Codex 권고): Token-only vs Wallet-based 손익 분리 — stop 정책 평가용.
+  // wallet-delta 만 보면 ATA rent inflation 으로 정책이 보수적으로 보임. token-only 가 실 token 가격 변동.
+  lines.push('## Stop Policy Evaluation (Sprint Z — Codex 권고)');
+  lines.push('');
+  lines.push('> wallet-delta 손익 = wallet floor 보호 정합. token-only 손익 = ATA rent 분 차감 안 함, 실 token 가격 변동 = stop 정책 (hard_cut / sentinel / quick_reject) 보수성 평가용.');
+  lines.push('> Big-loss rate gap (wallet > token) = ATA rent 로 인해 정책이 inflated big-loss 학습 위험 (운영자 manual rent 회수 후 재산 변동은 token 기준).');
+  lines.push('');
+  lines.push('| Arm | Net SOL Wallet | Net SOL Token | Big-loss Wallet | Big-loss Token | Big-loss Gap | Avg Net% Wallet | Avg Net% Token |');
+  lines.push('|-----|----------------|---------------|-----------------|----------------|--------------|-----------------|----------------|');
+  for (const s of summaries) {
+    const blGap = s.bigLossRateWalletBased - s.bigLossRateTokenOnly;
+    const blGapMark = blGap > 0.01 ? ` ⚠+${pct(blGap)}` : '';
+    lines.push(
+      `| ${s.armName} | ${sol(s.netSolWalletBased)} | ${sol(s.netSolTokenOnly)} | ` +
+      `${pct(s.bigLossRateWalletBased)} | ${pct(s.bigLossRateTokenOnly)} | ${blGap >= 0 ? '+' : ''}${pct(blGap)}${blGapMark} | ` +
+      `${pct(s.avgNetPct)} | ${pct(s.avgNetPctTokenOnly)} |`
     );
   }
   lines.push('');

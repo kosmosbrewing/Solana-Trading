@@ -80,6 +80,18 @@ interface KolLiveSellLedger {
   holdSec?: number;
   recordedAt?: string;
   mfePctPeak?: number;
+  // 2026-05-01 (Sprint Z M4 — Codex 권고): live canary report 도 token-only 측정 인식.
+  //   live MFE/MAE/netPct 가 ATA rent inflation 으로 stop 정책 평가 시 보수적으로 보이는 문제.
+  mfePctPeakTokenOnly?: number;
+  mfePctPeakWalletBased?: number;
+  maePctTokenOnly?: number;
+  netPctTokenOnly?: number;
+  netSolTokenOnly?: number;
+  exitPriceTokenOnly?: number;
+  entryPriceTokenOnly?: number;
+  entryPriceWalletDelta?: number;
+  ataRentSol?: number;
+  swapInputSol?: number;
   peakPrice?: number;
   troughPrice?: number;
   marketReferencePrice?: number;
@@ -661,14 +673,23 @@ function pairKolLiveTrades(
     if (!buy) orphanSells += 1;
 
     const net = resolveNetSol(buy, sell);
+    // 2026-05-01 (Codex M3 fix): token-only metric 우선 사용 (사명 §3 5x judgement 정합).
+    //   sell ledger 의 *_TokenOnly 필드 (Sprint Z 신규) 우선, 미존재 시 wallet-entry 기반 fallback.
+    //   이전: actualMfePctPeak 가 wallet-delta entryPrice 기반 → ATA rent inflation 으로 5x missed.
     const referenceMfePctPeak = firstKnown(
       sell.mfePctPeak,
       ratioPct(sell.peakPrice, sell.marketReferencePrice)
     ) ?? 0;
     const referenceMaePct = ratioPct(sell.troughPrice, sell.marketReferencePrice);
     const actualEntryPrice = firstKnown(sell.entryPrice, buy?.actualEntryPrice);
-    const actualMfePctPeak = ratioPct(sell.peakPrice, actualEntryPrice ?? undefined);
-    const actualMaePct = ratioPct(sell.troughPrice, actualEntryPrice ?? undefined);
+    const actualMfePctPeak = firstKnown(
+      sell.mfePctPeakTokenOnly,
+      ratioPct(sell.peakPrice, actualEntryPrice ?? undefined)
+    );
+    const actualMaePct = firstKnown(
+      sell.maePctTokenOnly,
+      ratioPct(sell.troughPrice, actualEntryPrice ?? undefined)
+    );
     const entryAdvantagePct = firstKnown(
       buy ? ratioPct(buy.actualEntryPrice, buy.plannedEntryPrice) : null,
       ratioPct(sell.entryPrice, sell.marketReferencePrice)

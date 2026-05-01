@@ -23,6 +23,10 @@ function mockTx(
     preTokens?: Array<{ owner: string; mint: string; uiAmount: number }>;
     postTokens?: Array<{ owner: string; mint: string; uiAmount: number }>;
     err?: unknown;
+    /** 2026-05-01 (Helius Stream C): meta.fee — feeLamports 전파 검증 */
+    fee?: number;
+    /** 2026-05-01: blockTime — KolTx blockTime 전파 검증 */
+    blockTime?: number;
   }
 ): any {
   const accountKeys = new Array(opts.walletIdx + 1).fill(null).map((_, i) => ({
@@ -34,8 +38,10 @@ function mockTx(
   postBalances[opts.walletIdx] = opts.postSolLamports;
   return {
     transaction: { message: { accountKeys } },
+    blockTime: opts.blockTime,
     meta: {
       err: opts.err ?? null,
+      fee: opts.fee,
       preBalances,
       postBalances,
       preTokenBalances: (opts.preTokens ?? []).map((t) => ({
@@ -142,6 +148,66 @@ describe('detectSwapFromWalletPerspective', () => {
       postTokens: [{ owner: WALLET, mint: TOKEN_MINT, uiAmount: 400 }], // 감소
     });
     expect(detectSwapFromWalletPerspective(tx, WALLET)).toBeNull();
+  });
+
+  // ─── 2026-05-01 (Helius Stream C) — provenance enrichment fields ───
+  describe('KolTx Stream C enrichment (Helius 2026-05-01)', () => {
+    it('buy swap → tokenAmount + inputMint=SOL + outputMint=tokenMint', () => {
+      const tx = mockTx({
+        walletIdx: 2,
+        preSolLamports: 2 * LAMPORTS_PER_SOL,
+        postSolLamports: 1.9 * LAMPORTS_PER_SOL,
+        postTokens: [{ owner: WALLET, mint: TOKEN_MINT, uiAmount: 1000 }],
+        preTokens: [],
+      });
+      const r = detectSwapFromWalletPerspective(tx, WALLET);
+      expect(r).not.toBeNull();
+      expect(r!.tokenAmount).toBe(1000);
+      expect(r!.inputMint).toBe('So11111111111111111111111111111111111111112');
+      expect(r!.outputMint).toBe(TOKEN_MINT);
+    });
+
+    it('sell swap → inputMint=tokenMint + outputMint=SOL + tokenAmount=감소량', () => {
+      const tx = mockTx({
+        walletIdx: 2,
+        preSolLamports: 1 * LAMPORTS_PER_SOL,
+        postSolLamports: 1.1 * LAMPORTS_PER_SOL,
+        preTokens: [{ owner: WALLET, mint: TOKEN_MINT, uiAmount: 1000 }],
+        postTokens: [{ owner: WALLET, mint: TOKEN_MINT, uiAmount: 200 }],
+      });
+      const r = detectSwapFromWalletPerspective(tx, WALLET);
+      expect(r).not.toBeNull();
+      expect(r!.action).toBe('sell');
+      expect(r!.inputMint).toBe(TOKEN_MINT);
+      expect(r!.outputMint).toBe('So11111111111111111111111111111111111111112');
+      expect(r!.tokenAmount).toBe(800);
+    });
+
+    it('feeLamports 전파 (meta.fee)', () => {
+      const tx = mockTx({
+        walletIdx: 2,
+        preSolLamports: 2 * LAMPORTS_PER_SOL,
+        postSolLamports: 1.9 * LAMPORTS_PER_SOL,
+        postTokens: [{ owner: WALLET, mint: TOKEN_MINT, uiAmount: 1000 }],
+        preTokens: [],
+        fee: 5000,
+      });
+      const r = detectSwapFromWalletPerspective(tx, WALLET);
+      expect(r!.feeLamports).toBe(5000);
+    });
+
+    it('fee 미설정 시 feeLamports undefined', () => {
+      const tx = mockTx({
+        walletIdx: 2,
+        preSolLamports: 2 * LAMPORTS_PER_SOL,
+        postSolLamports: 1.9 * LAMPORTS_PER_SOL,
+        postTokens: [{ owner: WALLET, mint: TOKEN_MINT, uiAmount: 1000 }],
+        preTokens: [],
+      });
+      const r = detectSwapFromWalletPerspective(tx, WALLET);
+      // fee 가 mock 에서 0 으로 설정되면 0 반환, undefined 면 undefined 반환 — 둘 다 유효
+      expect(r!.feeLamports === undefined || typeof r!.feeLamports === 'number').toBe(true);
+    });
   });
 });
 

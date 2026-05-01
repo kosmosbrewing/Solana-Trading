@@ -559,9 +559,10 @@
       ],
       "tier": "S",
       "added_at": "2026-04-25",
-      "last_verified_at": "2026-04-25",
-      "notes": "Cupsey benchmark. High-frequency reference; inactive in Option 5 DB to avoid noisy direct triggers. cupsey lane separate.",
-      "is_active": false
+      "last_verified_at": "2026-05-01",
+      "notes": "Cupsey benchmark. 2026-05-01 ACTIVATED as observer (Option C — cupsey_lane 동결 + KOL DB shadow observe 통합). cupseyLaneEnabled=false (default) 로 lane 자체 동결 → cupsey 신호는 KOL DB shadow tx ledger 로만 관측. lane_role=observer → kolSignalHandler 가 trigger / close 모두 ignore (entry 안 줌, sell 신호 무시). 1주 후 KOL gate 통과율 / fill rate / PnL 분포 측정 후 active 승격 여부 재검토 (별도 ADR).",
+      "is_active": true,
+      "lane_role": "observer"
     },
     {
       "id": "cented_benchmark",
@@ -976,5 +977,6 @@
   "//workflow_rebalance_2026_04_27_v5_new_candidates": "Operator-supplied 7 new candidate sweep (degenerate_brian / noob_mini / limfork_eth / yenni / fz7 / qavec / cowboybnb). DB 정합 결과: (a) 1 high-confidence A active (degenerate_brian — 5x bucket=1 입증). (b) 3 PROVISIONAL A active (noob_mini Discovery Canary / limfork_eth Copy Core / yenni Discovery Canary — workflow rule #4 deviation, 5x=0). (c) 2 observe-only B (fz7 promotion candidate / cowboybnb 영구 보류 ticket 4.23 SOL hard 충돌). (d) 1 REJECT (qavec — Solana Explorer creator 필드 본 주소 노출 = Doji rejection 패턴, operator/dev overlap, KOL universe 부적합). Active 35 → 39 (S 4 / A 35).",
   "//rejected_candidates_2026_04_27_v5": "qavec (gangJEP5geDHjPVRhDS5dTF5e6GtRvtNogMEEVs91RV) — Kolscan / OKX / Explorer multi-source 노출에도 불구하고 Solana Explorer 검색 결과 creator 필드에 본 주소 직접 노출 → operator/dev overlap 리스크. Doji 와 동일 rejection (사명 §3 KOL universe 부적합). 30d +36.2 SOL / WR 68.47% / ticket 0.47 / 724 tx — KOL 으로 분류되면 강력 후보지만 deployer 성격 무시 불가. score 5.5.",
   "//workflow_rebalance_2026_04_29_v8": "Paper n=464 + Live mirror n=24 분석 후 quality-driven rebalance. Single-winner 의존도 검증 (DF7DAPat 제외 시 trey -0.006 / jijo -0.013 → S 승격 보류). S tier 5x 미입증 KOL 강등 (decu / clukz). paper alpha 통계적 유의 (euris win 46% [29-62%] big 3%) S 유지. 신규 active 3명 (684cvp / orange / daumen) + inactive 4명 (dani / gr3g / sebastian_orellana / wallet_exuzbt) 추가.",
-  "//workflow_rebalance_2026_05_01_v9": "External KOL/source-wallet research applied conservatively. 신규 candidates (sebi / n_o / betman / red) added inactive observation_only only. Provisional single-source active entries matt / nyhrox / gh0stee / earl soft-demoted to inactive observation_only. Existing active jijo / degenerate_brian / letterbomb retained with explicit discovery_canary labels. radiance / sheep_watch kept inactive with refreshed notes. No ticket/guard/live policy changes."
+  "//workflow_rebalance_2026_05_01_v9": "External KOL/source-wallet research applied conservatively. 신규 candidates (sebi / n_o / betman / red) added inactive observation_only only. Provisional single-source active entries matt / nyhrox / gh0stee / earl soft-demoted to inactive observation_only. Existing active jijo / degenerate_brian / letterbomb retained with explicit discovery_canary labels. radiance / sheep_watch kept inactive with refreshed notes. No ticket/guard/live policy changes.",
+  "//cupsey_lane_freeze_2026_05_01": "Option C 채택: cupsey_lane (cupsey_flip_10s) 동결 + cupsey_benchmark KOL active+observer 로 통합. cupseyLaneEnabled=false (default) → live entry/exit 무발화. cupsey_benchmark.lane_role=observer → KOL DB 안에서도 trigger 안 줌 (shadow observe 만). 1주 측정 후 active 승격 ADR 별도 작성 예정. 통합 시 mission-pivot-2026-04-18.md (Cupsey 동결 정책) 도 개정 필요."
 }

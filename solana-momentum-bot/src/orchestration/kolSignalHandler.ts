@@ -79,6 +79,9 @@ export type LaneTState =
   | 'RUNNER_T1'
   | 'RUNNER_T2'
   | 'RUNNER_T3'
+  // 2026-05-01 (Phase C): tail sub-position. price kill 후 retained 비중의 별도 state.
+  // looser trail + max hold cap. paper-only (config.kolHunterTailRetainEnabled=false default).
+  | 'TAIL'
   | 'CLOSED';
 
 export type CloseReason =
@@ -102,7 +105,12 @@ export type CloseReason =
   // 2026-04-30 (Sprint 2.A1): runtime sell quote impact / no-route 시 emergency exit.
   // Why: hardcut/QR 보다 우선 — D-bucket (mae<-30%) 의 root cause 가 sell tx confirm 지연.
   //      "팔 수 있는가" 가 stop 보다 먼저 (학술 §exit two-layer 권고).
-  | 'structural_kill_sell_route';
+  | 'structural_kill_sell_route'
+  // 2026-05-01 (Phase C): tail sub-position 의 close reasons.
+  // price kill 후 15% tail 보존 → 다음 close trigger:
+  | 'tail_trail_close'    // peak 대비 trail 임계 (default 30%) 도달
+  | 'tail_max_hold'       // max hold (default 3600s) 만료 — moonbag 무한 hold 방지
+  | 'tail_winner_capture'; // tail 이 5x+ 도달 후 정상 trail (winner 분리)
 
 export type KolEntryReason =
   | 'legacy_v1'
@@ -188,6 +196,13 @@ export interface PaperPosition {
    * cupsey/pure_ws/migration 패턴 동일 — 마지막 critical 발사 시각 비교.
    */
   lastCloseFailureAtSec?: number;
+  /**
+   * 2026-05-01 (Phase C): tail sub-position 마커. parent 의 price-kill 후 spawn 된 retained
+   * 비중 (default 15%). state 'TAIL' 에서 별도 trail + max hold cap 적용.
+   * - paper-only first (isShadowArm=true 강제) — wallet ledger 영향 0
+   * - 추가 tail spawn 차단 (재귀 방지)
+   */
+  isTailPosition?: boolean;
 }
 
 interface SmartV3PendingState {
@@ -976,7 +991,7 @@ export function getKolHunterState(): {
   tiersByState: Record<LaneTState, number>;
 } {
   const tiersByState: Record<LaneTState, number> = {
-    STALK: 0, PROBE: 0, RUNNER_T1: 0, RUNNER_T2: 0, RUNNER_T3: 0, CLOSED: 0,
+    STALK: 0, PROBE: 0, RUNNER_T1: 0, RUNNER_T2: 0, RUNNER_T3: 0, TAIL: 0, CLOSED: 0,
   };
   for (const pos of active.values()) tiersByState[pos.state] = (tiersByState[pos.state] ?? 0) + 1;
   return {
@@ -2235,6 +2250,18 @@ function shouldRunStructuralKillProbe(pos: PaperPosition, currentPrice: number, 
 }
 
 /** Test 용 — cache 격리. */
+/**
+ * 2026-05-01 (P2-1 회귀): tail spawn 분기 직접 호출 — live entry path 우회.
+ * live parent + price kill 흐름이 mock executor 로 검증 어려워, helper 직접 호출로 검증.
+ */
+export function __testSpawnTailSubPosition(parent: PaperPosition, exitPrice: number, nowSec: number): void {
+  spawnTailSubPosition(parent, exitPrice, nowSec);
+}
+
+export function __testIsPriceKillReason(reason: CloseReason): boolean {
+  return isPriceKillReason(reason);
+}
+
 export function __testResetStructuralKillCache(): void {
   structuralKillCache.clear();
 }
@@ -2376,6 +2403,30 @@ function onPriceTick(positionId: string, tick: PriceTick): void {
       const trailStop = pos.peakPrice * (1 - config.kolHunterT3TrailPct);
       if (currentPrice <= trailStop) {
         closePosition(pos, currentPrice, 'winner_trailing_t3', nowSec, mfePct, maePct);
+        return;
+      }
+      break;
+    }
+
+    // 2026-05-01 (Phase C): tail sub-position state machine.
+    //   parent 의 price-kill close 후 spawn 된 retained 비중 (default 15%).
+    //   학술 §tail retention — convex payoff 기다리되 max hold cap 으로 moonbag 무한 hold 차단.
+    case 'TAIL': {
+      // 1. Max hold expiry — moonbag 무한 hold 방지 (default 3600s)
+      if (elapsedSec >= config.kolHunterTailMaxHoldSec) {
+        closePosition(pos, currentPrice, 'tail_max_hold', nowSec, mfePct, maePct);
+        return;
+      }
+      // 2. Tail trail — peak 대비 looser pullback (default 30% — RUNNER_T1 의 15% 보다 관대)
+      //    tail 의 entry 는 parent close price 이므로 mfe 는 parent close 시점 대비 추가 상승만 측정.
+      const tailTrailStop = pos.peakPrice * (1 - config.kolHunterTailTrailPct);
+      if (currentPrice <= tailTrailStop && pos.peakPrice > pos.entryPrice) {
+        // tail 자체가 5x+ 도달 (mfePct ≥ kolHunterT2Mfe = 4.0) 이면 winner 분리
+        const tailMfe = (pos.peakPrice - pos.entryPrice) / pos.entryPrice;
+        const reason: CloseReason = tailMfe >= config.kolHunterT2Mfe
+          ? 'tail_winner_capture'
+          : 'tail_trail_close';
+        closePosition(pos, currentPrice, reason, nowSec, mfePct, maePct);
         return;
       }
       break;
@@ -2589,6 +2640,87 @@ function closePosition(
     ? (pos.peakPrice - pos.marketReferencePrice) / pos.marketReferencePrice
     : 0;
   kolHunterEvents.emit('paper_close', { pos, reason, exitPrice, netSol, netPct, mfePctPeak, holdSec });
+
+  // 2026-05-01 (Phase C): tail retain — price-kill close 후 별도 sub-position 생성.
+  //   학술 §tail retention (Kaminski-Lo + Taleb + TSMOM) 정합. paper-only first.
+  //   structural_kill / insider_exit_full / winner_trailing / orphan / tail_* 는 spawn 안 함.
+  //   shadow arm (이미 sub-position) 자체에서 tail spawn 안 함 (recursive 차단).
+  if (
+    config.kolHunterTailRetainEnabled &&
+    !pos.isShadowArm &&
+    !pos.isTailPosition &&  // tail 의 close 에서 다시 tail spawn 차단
+    isPriceKillReason(reason)
+  ) {
+    spawnTailSubPosition(pos, exitPrice, nowSec);
+  }
+}
+
+/** Phase C: price-kill close reason 판정 — tail retain 분기 입력. */
+function isPriceKillReason(reason: CloseReason): boolean {
+  return reason === 'probe_hard_cut'
+    || reason === 'probe_flat_cut'
+    || reason === 'probe_reject_timeout'
+    || reason === 'quick_reject_classifier_exit';
+}
+
+/**
+ * Phase C: tail sub-position spawn. parent close 직후 호출.
+ *   - state: 'TAIL'
+ *   - quantity: parent.quantity * kolHunterTailRetainPct (default 15%)
+ *   - tickerSol: parent ticket * retainPct (paper accounting)
+ *   - peak/trough: 현재 exit price 기준 reset (tail 자체 trail)
+ *   - parentPositionId: 추적용
+ */
+function spawnTailSubPosition(parent: PaperPosition, exitPrice: number, nowSec: number): void {
+  const retainPct = config.kolHunterTailRetainPct;
+  if (retainPct <= 0 || retainPct >= 1) return;
+  // Phase D: live tail flag — paper 가 선행 활성 후 live 로 단계 승격.
+  //   `kolHunterTailRetainEnabled=true` (paper) → spawn 자체는 가능
+  //   `kolHunterTailRetainLiveEnabled=true` (live) → parent live 인 경우만 live tail
+  //   parent 가 paper (isLive=false) 면 무조건 paper tail (live flag 무관)
+  const liveTail = config.kolHunterTailRetainLiveEnabled === true && parent.isLive === true;
+  const tailId = `${parent.positionId}-tail`;
+  const tailQuantity = parent.quantity * retainPct;
+  // 2026-05-01 (P1-1 fix): tail.ticketSol 은 quantity * exitPrice 의 SOL 가치 기준.
+  //   이전 (parent.ticketSol * retainPct) 은 parent entry 시 ticketSol 기준이라 close 시점
+  //   가격 변동분 미반영 → tail 의 entry notional 과 ticketSol 불일치.
+  //   현재: ticketSol = tailQuantity * exitPrice → DSR / paper ledger 의 netPct 정합.
+  const tailTicketSol = tailQuantity * exitPrice;
+  const tail: PaperPosition = {
+    ...parent,
+    positionId: tailId,
+    state: 'TAIL',
+    quantity: tailQuantity,
+    ticketSol: tailTicketSol,
+    entryTimeSec: nowSec,
+    peakPrice: exitPrice,
+    troughPrice: exitPrice,
+    entryPrice: exitPrice,  // tail 의 P&L 기준은 parent close price
+    marketReferencePrice: exitPrice,
+    isTailPosition: true,
+    parentPositionId: parent.positionId,
+    // Phase C paper: isShadowArm=true (wallet ledger 영향 0)
+    // Phase D live:  isShadowArm=false (정상 wallet ledger), isLive=true (closeLivePosition 의 sell tx 사용)
+    isShadowArm: !liveTail,
+    isLive: liveTail,
+    // live tail 의 dbTradeId — parent 와 동일 유지 (DB row 분리 안 함, ledger 정합만).
+    //   parent close 시 closeTrade 가 이미 호출되어 status='CLOSED'.
+    //   tail 의 close 는 jsonl ledger (kol-live-trades.jsonl) 만 추가, DB 미기록.
+    //   walletDeltaComparator 는 sells - buys 단순 합산이라 partial sell 두 번도 정합.
+    dbTradeId: liveTail ? undefined : parent.dbTradeId,
+    // RUNNER state 의 timestamp 는 parent 와 분리 — tail 자체 새 lifecycle
+    t1VisitAtSec: undefined,
+    t2VisitAtSec: undefined,
+    t3VisitAtSec: undefined,
+    t2BreakevenLockPrice: undefined,
+  };
+  setActivePosition(tail);
+  log.info(
+    `[KOL_HUNTER_TAIL_SPAWN] ${tailId} parent=${parent.positionId} ` +
+    `qty=${tail.quantity.toFixed(2)} retain=${(retainPct * 100).toFixed(0)}% ` +
+    `exit=${exitPrice.toFixed(8)} maxHold=${config.kolHunterTailMaxHoldSec}s ` +
+    `mode=${liveTail ? 'live' : 'paper-shadow'}`
+  );
 }
 
 /**
@@ -3196,6 +3328,11 @@ async function closeLivePosition(
   let sellCompleted = false;
   let liveReceivedSol = 0;
   let effectiveReason: CloseReason = reason;
+  // 2026-05-01 (Phase D P0-3 fix): soldQuantity / isPriceKillParent 를 함수 scope 로 hoist.
+  //   이전엔 try block scope 안에서만 사용 → DB closeTrade / canary / ledger / notifier 가
+  //   pos.quantity 전체 기준으로 잘못 계산. partial sell 일관 정합 보장.
+  let isPriceKillParent = false;
+  let soldQuantity = pos.quantity;
 
   try {
     const sellExecutor = getKolHunterExecutor(ctx);
@@ -3206,7 +3343,27 @@ async function closeLivePosition(
       sellExecutor.getBalance(),
     ]);
     if (tokenBalance > 0n) {
-      const sellResult = await sellExecutor.executeSell(pos.tokenMint, tokenBalance);
+      // 2026-05-01 (Phase D): tail retain live — parent close 시 partial sell 분기.
+      //   조건: tail retain live enabled + 현재 close 가 parent (not tail) + price kill reason
+      //   sellAmount = tokenBalance × (1 - retainPct), 잔여 = tail position 의 별도 close 에서 처리.
+      //   tail close (isTailPosition=true) 는 100% sell (tokenBalance 가 이미 잔여분).
+      isPriceKillParent =
+        config.kolHunterTailRetainLiveEnabled === true &&
+        config.kolHunterTailRetainEnabled === true &&
+        !pos.isTailPosition &&
+        isPriceKillReason(reason);
+      const retainPct = isPriceKillParent ? config.kolHunterTailRetainPct : 0;
+      const sellAmount = isPriceKillParent
+        ? (tokenBalance * BigInt(Math.round((1 - retainPct) * 10000))) / 10000n
+        : tokenBalance;
+      if (isPriceKillParent) {
+        log.info(
+          `[KOL_HUNTER_LIVE_PARTIAL_SELL] ${pos.positionId} reason=${reason} ` +
+          `sellAmount=${sellAmount.toString()}/${tokenBalance.toString()} ` +
+          `(${((1 - retainPct) * 100).toFixed(0)}% close, ${(retainPct * 100).toFixed(0)}% tail retain)`
+        );
+      }
+      const sellResult = await sellExecutor.executeSell(pos.tokenMint, sellAmount);
       const solAfter = await sellExecutor.getBalance();
       const receivedSol = solAfter - solBefore;
       liveReceivedSol = receivedSol;
@@ -3215,18 +3372,26 @@ async function closeLivePosition(
       //   received tokens 가치) actualExitPrice 가 trigger price 그대로 → DB pnl ↔ wallet 10x drift.
       //   8JH1J6p4 incident 의 PNL_DRIFT 0.0498 SOL 직접 원인.
       // 현재: 항상 receivedSol/qty 로 갱신 → DB/notification pnl = wallet delta 일치.
-      if (pos.quantity > 0) {
-        actualExitPrice = receivedSol / pos.quantity;
+      // 2026-05-01 (Phase D): partial sell 정합 — actualExitPrice 는 sold 비중 기준.
+      //   isPriceKillParent=true 면 pos.quantity 의 (1 - retainPct) 만 sold.
+      //   tail position 의 close 는 pos.quantity 가 이미 retain 분이라 정상 100% 비중.
+      //   wallet ground truth: receivedSol / soldQuantity → actualExitPrice 정확.
+      // P0-3 fix: soldQuantity 는 함수 scope hoisted variable 에 할당 (DB / canary / ledger 일관).
+      soldQuantity = isPriceKillParent ? pos.quantity * (1 - retainPct) : pos.quantity;
+      if (soldQuantity > 0) {
+        actualExitPrice = receivedSol / soldQuantity;
       }
       executionSlippage = bpsToDecimal(sellResult.slippageBps);
       exitTxSignature = sellResult.txSignature;
       sellCompleted = true;
       log.info(
         `[KOL_HUNTER_LIVE_SELL] ${pos.positionId} sig=${sellResult.txSignature.slice(0, 12)} ` +
-        `received=${receivedSol.toFixed(6)} SOL slip=${sellResult.slippageBps}bps`
+        `received=${receivedSol.toFixed(6)} SOL slip=${sellResult.slippageBps}bps ` +
+        `${isPriceKillParent ? `partial=${(retainPct * 100).toFixed(0)}%-retained` : ''}`
       );
-      const solSpentNominal = pos.entryPrice * pos.quantity;
-      const dbPnl = (actualExitPrice - pos.entryPrice) * pos.quantity;
+      // dbPnl / walletDelta 도 sold 비중 기준 — partial sell 의 pnl 정합.
+      const solSpentNominal = pos.entryPrice * soldQuantity;
+      const dbPnl = (actualExitPrice - pos.entryPrice) * soldQuantity;
       const walletDelta = receivedSol - solSpentNominal;
       const dbPnlDrift = dbPnl - walletDelta;
       if (Math.abs(dbPnlDrift) > 0.001) {
@@ -3304,7 +3469,9 @@ async function closeLivePosition(
   void liveReceivedSol;
 
   pos.state = 'CLOSED';
-  const rawPnl = (actualExitPrice - pos.entryPrice) * pos.quantity;
+  // 2026-05-01 (P0-3 fix): pnl 은 sold 비중 기준 — partial sell 시 retained tail 의 pnl 은
+  //   tail position 의 별도 close 에서 산출. canary / DB / notifier / ledger 일관 적용.
+  const rawPnl = (actualExitPrice - pos.entryPrice) * soldQuantity;
   const pnl = rawPnl;  // live: round-trip cost 는 wallet delta 에 이미 반영됨
   const pnlPct = pos.entryPrice > 0
     ? ((actualExitPrice - pos.entryPrice) / pos.entryPrice)
@@ -3360,7 +3527,8 @@ async function closeLivePosition(
       entryPrice: pos.entryPrice,
       plannedEntryPrice: pos.marketReferencePrice,
       exitPrice: actualExitPrice,
-      quantity: pos.quantity,
+      // P0-3 fix: closedTrade.quantity 도 sold 비중 — DB / notifier 일관.
+      quantity: soldQuantity,
       pnl,
       slippage: executionSlippage,
       txSignature: exitTxSignature,
@@ -3473,6 +3641,14 @@ async function closeLivePosition(
     netSol: pnl, netPct: pnlPct, mfePctPeak, holdSec: nowSec - pos.entryTimeSec,
   });
   void exitTxSignature;
+
+  // 2026-05-01 (P0-2 fix): live parent close 후 tail sub-position spawn.
+  //   이전엔 paper close path 의 closePosition 만 spawn → live 시 잔여 토큰 unmanaged orphan.
+  //   조건: isPriceKillParent (위에서 partial sell 수행한 경우) 만 spawn.
+  //   tail 자체는 spawnTailSubPosition 의 isLive 분기로 live 또는 paper 결정.
+  if (isPriceKillParent && !pos.isShadowArm) {
+    spawnTailSubPosition(pos, actualExitPrice, nowSec);
+  }
 }
 
 // ─── Observer (reject side) ──────────────────────────────

@@ -246,6 +246,10 @@ KOL_HUNTER_SMART_V3_PULLBACK_MIN_KOL_COUNT=1
 | 2026-04-30 | RCK (Phase 3) 보류 | DSR FAIL (Prob>0=64.4%, PBO=0.679), 5x winner=1, 데이터 부족 |
 | 2026-04-30 | DRK (Phase 4) 보류 | RCK 후 6개월 검증 |
 | 2026-04-30 | Optimal f 영구 비채택 | 학술 권고대로 fat-tail 과소추정 위험 |
+| **2026-05-01** | **Phase A.1 — winner-kill-classifier** | scripts/winner-kill-classifier.ts. price/structural/insider/winner/orphan/other 6 카테고리. 7일 baseline 결과: **price-kill 비중 66.7% (2/3 winner-kill), avg postMfe 21,882%** → Phase C 진입 정량 근거 충족 |
+| **2026-05-01** | **Phase B — Discovery (sub-position 패턴)** | DB schema 변경 0 결정. walletDeltaComparator (sells - buys ledger) 정합. notifier 영향 0 |
+| **2026-05-01** | **Phase C — tail retain paper-shadow 구현** | `'TAIL'` state 신설 + 3 close reason (`tail_trail_close` / `tail_max_hold` / `tail_winner_capture`) + 4 config (`kolHunterTailRetain*`). default OFF (paper-shadow 1주 측정 후 활성화 ADR). 학술 정합: Kaminski-Lo + Taleb convexity + TSMOM. 회귀 테스트 3건 |
+| **2026-05-01** | **Phase D — live tail 코드 구현 (flag 로 조정)** | `kolHunterTailRetainLiveEnabled` 신규 config (default false). `spawnTailSubPosition` 의 isLive 분기 + `closeLivePosition` 의 partial sell 분기 (sellAmount = tokenBalance × 0.85). actualExitPrice / dbPnl / walletDelta 모두 sold 비중 정합. **paper-shadow 1주 측정 후 flag ON 만으로 live 작동**. live 활성 prerequisite (별도 ADR): paper n≥7day + DSR Prob>0≥95% + wallet floor margin>0.05. 회귀 테스트 2건 (paper precedes live + parent isLive=false 강제) |
 
 ---
 

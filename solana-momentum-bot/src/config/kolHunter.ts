@@ -107,6 +107,36 @@ export const kolHunter = {
   kolHunterStructuralKillCacheMs: numEnv('KOL_HUNTER_STRUCTURAL_KILL_CACHE_MS', '30000'),
   /** peakDrift 가 이 값을 초과해야 sell quote 호출 (rate-limit pre-gate). */
   kolHunterStructuralKillPeakDriftTrigger: numEnv('KOL_HUNTER_STRUCTURAL_KILL_PEAK_DRIFT_TRIGGER', '0.20'),
+
+  // 2026-05-01 (Phase C, 외부 학술 리포트 §tail retain): price-kill 시 일부 비중을 tail
+  // sub-position 으로 보존. 학술 근거: Kaminski-Lo (stop 의 conditional alpha) + Taleb
+  // (convexity / fat-tail capture) + TSMOM (trend-following 의 winner asymmetry).
+  //
+  // 정책:
+  //   - price kill (probe_hard_cut / quick_reject / probe_flat_cut): 85% close + 15% tail
+  //   - structural kill (sell_route / hold_phase_sentinel): 100% close (Real Asset Guard)
+  //   - insider exit_full / winner trail: 100% close (변경 없음)
+  // Tail sub-position:
+  //   - 별도 state 'TAIL' — looser trail (kolHunterTailTrailPct, default 30%)
+  //   - max hold (kolHunterTailMaxHoldSec, default 3600s) — moonbag 무한 hold 방지
+  //   - paper only first (enabled default false — paper-shadow 1주 측정 후 live 도입 ADR)
+  // 실측 baseline (winner-kill-classifier 7일):
+  //   - price-kill 비중 66.7% (2/3 winner-kill), avg postMfe 21,882%
+  //   - 15% tail × 21,882% = ~3,200% upside / 1 winner-kill — convex payoff
+  kolHunterTailRetainEnabled: boolOptional('KOL_HUNTER_TAIL_RETAIN_ENABLED', false),
+  kolHunterTailRetainPct: numEnv('KOL_HUNTER_TAIL_RETAIN_PCT', '0.15'),
+  kolHunterTailTrailPct: numEnv('KOL_HUNTER_TAIL_TRAIL_PCT', '0.30'),
+  kolHunterTailMaxHoldSec: numEnv('KOL_HUNTER_TAIL_MAX_HOLD_SEC', '3600'),
+  // 2026-05-01 (Phase D, live opt-in): tail retain 의 live 적용 — paper-shadow 1주 측정 후 활성화 권고.
+  // - false (default): paper accounting 만 (isShadowArm=true 강제, wallet ledger 영향 0)
+  // - true: live partial sell + tail position 의 별도 live sell. wallet ledger 정합 (sells - buys).
+  // 활성화 prerequisite (별도 ADR 필수):
+  //   1) paper-shadow 1주 측정 → tail capture 효과 정량 확인 (`scripts/winner-kill-classifier.ts --window-days=7`)
+  //   2) DSR Prob>0 ≥ 95% (`scripts/dsr-validator.ts --source=both --window-days=7`)
+  //   3) wallet floor margin > 0.05 SOL 유지
+  //   4) `kolHunterTailRetainEnabled=true` 가 선행 활성 (paper 작동 확인 후만 live 가능)
+  kolHunterTailRetainLiveEnabled: boolOptional('KOL_HUNTER_TAIL_RETAIN_LIVE_ENABLED', false),
+
   // Paper round-trip cost (Jupiter platform fee + MEV + AMM fee). Live 시 wallet delta 에서 직접 차감.
   kolHunterPaperRoundTripCostPct: numEnv('KOL_HUNTER_PAPER_ROUND_TRIP_COST_PCT', '0.005'),
 

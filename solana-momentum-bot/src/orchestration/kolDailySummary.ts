@@ -101,32 +101,33 @@ function buildSummary(records: PaperLedgerRecord[]): string | null {
     if (r.mfePctPeak > s.bestPeakPct) s.bestPeakPct = r.mfePctPeak;
   }
 
+  // 2026-05-01 모바일 wrap fix: 단일 row 가 텔레그램 모바일 폭 (~50 char) 초과 → 줄바꿈 발생.
+  //   해결: arm 별 2-line block 으로 재배치. line1 = 핵심 (arm/n/net/win5x), line2 = 부가 (hold/best).
+  //   source 명시 (paper-only) — live ledger 는 별도 파일이라 운영자 혼동 방지.
   const lines: string[] = [];
-  lines.push(`[KOL DAILY ${new Date().toISOString().slice(0, 10)}]`);
-  lines.push(`  total: ${records.length} closed (last 24h)`);
+  lines.push(`[KOL DAILY ${new Date().toISOString().slice(0, 10)}] (paper-only)`);
+  lines.push(`total: ${records.length} closed · 24h · live ledger 별도`);
   lines.push('');
-  lines.push('  arm                     entries  netSol     win5x  win10x  avgHold  bestNet  bestPeak');
-  lines.push('  ──────────────────────  ───────  ─────────  ─────  ──────  ───────  ───────  ────────');
 
   // 정렬: netSolSum desc → 최고 성과 arm 위로
   const sortedArms = [...byArm.entries()].sort((a, b) => b[1].netSolSum - a[1].netSolSum);
   for (const [arm, s] of sortedArms) {
-    const armPad = arm.padEnd(22);
-    const entriesPad = String(s.entries).padStart(7);
+    const armShort = arm.replace('kol_hunter_', '');
     const netSign = s.netSolSum >= 0 ? '+' : '';
-    const netPad = `${netSign}${s.netSolSum.toFixed(4)}`.padStart(9);
-    const w5xPad = String(s.winners5xByVisit).padStart(5);
-    const w10xPad = String(s.winners10xByVisit).padStart(6);
+    const netStr = `${netSign}${s.netSolSum.toFixed(4)} SOL`;
     const avgHoldMin = s.entries > 0 ? Math.round(s.totalHoldSec / s.entries / 60) : 0;
-    const avgHoldPad = `${avgHoldMin}min`.padStart(7);
     const bestNetSign = s.bestNetPct >= 0 ? '+' : '';
-    const bestNetPad = isFinite(s.bestNetPct)
-      ? `${bestNetSign}${(s.bestNetPct * 100).toFixed(0)}%`.padStart(7)
-      : '   n/a';
-    const bestPeakPad = isFinite(s.bestPeakPct)
-      ? `+${(s.bestPeakPct * 100).toFixed(0)}%`.padStart(8)
-      : '    n/a';
-    lines.push(`  ${armPad}  ${entriesPad}  ${netPad}  ${w5xPad}  ${w10xPad}  ${avgHoldPad}  ${bestNetPad}  ${bestPeakPad}`);
+    const bestNet = isFinite(s.bestNetPct) ? `${bestNetSign}${(s.bestNetPct * 100).toFixed(0)}%` : 'n/a';
+    const bestPeak = isFinite(s.bestPeakPct) ? `+${(s.bestPeakPct * 100).toFixed(0)}%` : 'n/a';
+    // win10x 가 0 이면 생략 (대부분 0 이라 noise)
+    const winSegment = s.winners10xByVisit > 0
+      ? `5x:${s.winners5xByVisit} 10x:${s.winners10xByVisit}`
+      : `5x:${s.winners5xByVisit}`;
+
+    // line1: 핵심 — arm / n / net / 5x
+    lines.push(`▸ ${armShort}  n=${s.entries}  ${netStr}  ${winSegment}`);
+    // line2: 부가 — avg hold / best net / best peak
+    lines.push(`  hold=${avgHoldMin}min  best_net=${bestNet}  best_peak=${bestPeak}`);
   }
 
   // 결정 hint — 가장 net 좋은 arm vs 두번째 비교
@@ -137,7 +138,7 @@ function buildSummary(records: PaperLedgerRecord[]): string | null {
     if (Math.abs(lead) > 0.001) {
       const armShort = topArm.replace('kol_hunter_', '');
       lines.push('');
-      lines.push(`  → ${armShort} lead: +${lead.toFixed(4)} SOL vs runner-up`);
+      lines.push(`→ ${armShort} lead: +${lead.toFixed(4)} SOL vs runner-up`);
     }
   }
 

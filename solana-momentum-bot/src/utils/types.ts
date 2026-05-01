@@ -247,6 +247,13 @@ export interface Order {
   partialFillDataMissing?: boolean;
   /** planned 강제 복원 원인. live canary 데이터 품질을 원인별로 집계한다. */
   partialFillDataReason?: PartialFillDataReason;
+  // 2026-05-01 (Sprint Y2): Telegram 알림 cost decomposition 표시.
+  //   actualNotionalSol = swap + rent + fee + tip 모두 합산. 분리 표시 시 운영자가 외부 explorer
+  //   USD 값과 SOL fill 가격 차이를 즉시 cross-check 가능. ATA rent 자동 회수 정책과 정합.
+  swapInputSol?: number;
+  ataRentSol?: number;
+  networkFeeSol?: number;
+  jitoTipSol?: number;
 }
 
 export interface Trade {
@@ -311,6 +318,10 @@ export interface Trade {
   swapResponseAt?: Date;
   /** swap 호출 직전 realtimeCandleBuilder.getCurrentPrice() (없으면 undefined) */
   preSubmitTickPrice?: number;
+  // 2026-05-01 (Sprint Z+1): 종료 알림에 entry rent 분 손익 포함 visibility.
+  //   Trade.pnl / pnlPct 자체는 wallet-delta 기준 (rent 포함, 변경 없음).
+  //   ataRentSol 보조 line 으로 운영자가 "이 손실 중 rent X SOL" 인지.
+  ataRentSol?: number;
 }
 
 // ─── Position State Machine (v0.3) ───

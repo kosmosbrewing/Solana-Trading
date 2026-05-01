@@ -15,6 +15,9 @@
 | External Strategy Report Analysis (Tier 1 + #5) | `external-strategy-report-analysis-2026-04-29.md` | ✅ Tier 1 + #5 구현 완료 (DSR/CSCV + style classifier + missed-alpha retro + co-buy graph) | 2026-04-29 |
 | **KOL Academic Report Integration ADR** | `kol-academic-report-integration-2026-04-30.md` | ✅ Sprint 1 + Sprint 2.A1 완료 / Phase 3-4 보류 (트리거 조건 명시) | 2026-04-30 |
 | Decu New-Pair Quality Layer | `decu-new-pair-quality-layer-2026-05-01.md` | ✅ Phase A + B (observe-only 골격) 완료 — 5 module + report + dev DB + 67 tests. Enrichment 는 B.1.5 follow-up | 2026-05-01 |
+| **Research Ledger Unification** | `research-ledger-unification-2026-05-01.md` | 🟡 인프라 완성 / S3 보류 — S1+S2+S2.5 ADR + types + validator + writer + quarantine + 85 test 완료 (jest 1481). **S3 dual-write wiring 보류** — 옛 12 ledger 1차 측정 후 재평가. 재개 trigger + 결정 항목 3개 §13 명시 | 2026-05-01 |
+| **Helius Credit-to-Edge Plan** | `../exec-plans/active/helius-credit-edge-plan-2026-05-01.md` | 🟡 Phase 0-4 인프라 완성 / Stream D-G runtime wiring 일부 미완 — Stream A (credit catalog + ledger), B (token quality 7 flag), C (KolTx slot/parseSource) 완료. Stream D/E/F/G helper + tests 완료, runtime wiring partially 진행 (markout `--rpc-url` opt-in, registry inject). Codex P2 4건 follow-up 명시 (close anchor schema / rejectedAt parser / signature pagination / lookup-table). 정책 결정 evidence 보강 필요 | 2026-05-01 |
+| **Helius Phase 4 Policy Candidates Template** | `../exec-plans/active/helius-phase4-policy-candidates-template.md` | 🟡 template — 7-day data 도달 후 채울 4-track 정책 ADR placeholder. Track 1 (token quality hard gate) + Track 2 (pool prewarm) 즉시 / Track 3 (KOL role 자동화) 200-trade gate 까지 대기 / Track 4 (priority fee canary) S3 trigger 정합 | 2026-05-01 |
 | DEX_TRADE Phase 3 (Quick Reject + Hold Sentinel + Ruin Sim) | — | ✅ 구현 완료 (modules + script + tests) | 2026-04-18 |
 
 ## Pre-Pivot (historical — 현재 판정 근거로 사용 금지)

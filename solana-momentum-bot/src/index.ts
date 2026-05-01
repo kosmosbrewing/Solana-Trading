@@ -88,6 +88,7 @@ import {
   handleKolSwap,
   hydrateLiveExecutionQualityCooldownsFromLedger,
   initKolHunter,
+  setHeliusPoolRegistryForKolHunter,
 } from './orchestration/kolSignalHandler';
 import { initKolPaperNotifier } from './orchestration/kolPaperNotifier';
 import { resolveCupseyWalletLabel } from './orchestration/cupseyLaneHandler';
@@ -145,6 +146,9 @@ async function main() {
     log.warn(`Runtime drift warning: ${warning}`);
   }
   const heliusPoolRegistry = new HeliusPoolRegistry();
+  // 2026-05-01 (Helius Stream X1): KOL Hunter 의 token quality observer 가 registry 사용.
+  //   EXIT_LIQUIDITY_UNKNOWN / POOL_NOT_PREWARMED flag 정확도 향상 (registry hit 시 POOL flag 미발사).
+  setHeliusPoolRegistryForKolHunter(heliusPoolRegistry);
   const realtimePoolTargets = new Map<string, string>();
   const realtimePoolAliases = new Map<string, string>();
   const realtimePoolMetadata = new Map<string, RealtimePoolMetadata>();

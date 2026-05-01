@@ -38,6 +38,13 @@ export interface PaperTradeRecord {
   closedAt?: string;
   isShadowKol?: boolean;
   isShadowArm?: boolean;
+  // 2026-05-01 (Sprint Z M4 fix — Codex 권고): token-only 측정. analyzer 가 stop 정책 평가 시
+  //   wallet-delta 만 보면 ATA rent inflation. legacy row 미존재 시 기존 필드 fallback.
+  netSolTokenOnly?: number;
+  netPctTokenOnly?: number;
+  mfePctPeakTokenOnly?: number;
+  maePctTokenOnly?: number;
+  ataRentSol?: number;
 }
 
 export interface SharpeMoments {
@@ -95,7 +102,12 @@ export interface CSCVResult {
 export interface ArmReport {
   armKey: string;
   trades: number;
-  netSol: number;
+  netSol: number;             // wallet-delta 기준 (rent 포함, Real Asset Guard 정합)
+  // 2026-05-01 (Codex M4 fix): DSR returns 는 token-only 기반인데 표 Net SOL 만 wallet 기반이면
+  //   해석 혼선. 두 단위 같이 출력 → 운영자가 ATA rent 영향 정량 확인.
+  // 2026-05-01 (Codex F1 follow-up): optional — 일부 callsite (legacy paper / kelly aggregation)
+  //   가 token-only 측정 불가. 미공급 시 report 'n/a' 표시. 새 source (Sprint X 이후) 는 항상 공급.
+  netSolTokenOnly?: number;   // 시장가 기반 (rent / sell fee / tip 모두 제외) — DSR returns 와 정합
   winRate: number;
   dsr?: DeflatedSharpeResult;
   cscv?: CSCVResult;
@@ -457,9 +469,15 @@ async function readJsonl<T>(file: string): Promise<T[]> {
 function returnsOf(rows: PaperTradeRecord[]): number[] {
   // Use netPct if present (already cost-deducted in paper engine); fall back to netSol/0.01
   // (per-trade SOL ticket is 0.01 → percentage equivalent of SOL pnl). We reject NaN.
+  // 2026-05-01 (Sprint Z M4 — Codex 권고): DSR 은 stop 정책 품질 평가 → token-only 우선.
+  //   wallet-delta 기반 returns 는 ATA rent inflation 으로 정책이 보수적으로 보임.
+  //   legacy row (netPctTokenOnly 미기록) 는 netPct fallback (paper 데이터 보존).
   const out: number[] = [];
   for (const r of rows) {
-    const v = typeof r.netPct === 'number' ? r.netPct : (typeof r.netSol === 'number' ? r.netSol / 0.01 : NaN);
+    const tokenPct = typeof r.netPctTokenOnly === 'number' ? r.netPctTokenOnly : null;
+    const walletPct = typeof r.netPct === 'number' ? r.netPct : null;
+    const fallbackFromSol = typeof r.netSol === 'number' ? r.netSol / 0.01 : NaN;
+    const v = tokenPct ?? walletPct ?? fallbackFromSol;
     if (Number.isFinite(v)) out.push(v);
   }
   return out;
@@ -522,13 +540,21 @@ function renderReport(args: CliArgs, all: PaperTradeRecord[], reports: ArmReport
 
   lines.push('## Arm summary');
   lines.push('');
-  lines.push('| Arm | Trades | Net SOL | Win Rate | DSR Prob | Verdict |');
-  lines.push('|-----|--------|---------|----------|----------|---------|');
+  // 2026-05-01 (Codex M4 fix): 컬럼명 명시 (Net SOL Wallet) + Net SOL Token 추가.
+  //   DSR returns 는 token-only 기반인데 표 손익 wallet 만 보면 해석 혼선.
+  lines.push('| Arm | Trades | Net SOL Wallet | Net SOL Token | Win Rate | DSR Prob | Verdict |');
+  lines.push('|-----|--------|----------------|---------------|----------|----------|---------|');
   for (const r of reports) {
     const dsrProb = r.dsr ? fmtPct(r.dsr.dsrProbability) : 'n/a';
     const verdict = r.dsr ? (r.dsr.dsrProbability >= 0.95 ? 'PASS' : 'FAIL') : 'INSUFFICIENT';
-    lines.push(`| ${r.armKey} | ${r.trades} | ${r.netSol.toFixed(6)} | ${fmtPct(r.winRate)} | ${dsrProb} | ${verdict} |`);
+    // 2026-05-01 (Codex F1 follow-up): netSolTokenOnly optional — 미공급 시 'n/a' 표시.
+    const netTokenOnlyStr = typeof r.netSolTokenOnly === 'number' ? r.netSolTokenOnly.toFixed(6) : 'n/a';
+    lines.push(`| ${r.armKey} | ${r.trades} | ${r.netSol.toFixed(6)} | ${netTokenOnlyStr} | ${fmtPct(r.winRate)} | ${dsrProb} | ${verdict} |`);
   }
+  lines.push('');
+  lines.push('> Net SOL Wallet = wallet-delta 기준 (rent + sell fee + tip 포함, Real Asset Guard 정합).');
+  lines.push('> Net SOL Token = 시장가 기반 (rent / sell fee / tip 제외, DSR returns 와 정합).');
+  lines.push('> DSR returns 는 token-only `netPctTokenOnly` 우선 사용 — stop 정책 평가 정확도 회복.');
   lines.push('');
   lines.push('## Detail');
   lines.push('');
@@ -583,17 +609,21 @@ async function main(): Promise<void> {
     ];
     const dsrA = computeDSR(ra, trialsSr, 2);
     const dsrB = computeDSR(rb, trialsSr, 2);
+    const rsA = groups.get(a) ?? [];
+    const rsB = groups.get(b) ?? [];
     const reportA: ArmReport = {
       armKey: a,
       trades: ra.length,
-      netSol: (groups.get(a) ?? []).reduce((s, r) => s + (r.netSol ?? 0), 0),
+      netSol: rsA.reduce((s, r) => s + (r.netSol ?? 0), 0),
+      netSolTokenOnly: rsA.reduce((s, r) => s + (r.netSolTokenOnly ?? r.netSol ?? 0), 0),
       winRate: ra.length ? ra.filter((x) => x > 0).length / ra.length : 0,
       dsr: dsrA,
     };
     const reportB: ArmReport = {
       armKey: b,
       trades: rb.length,
-      netSol: (groups.get(b) ?? []).reduce((s, r) => s + (r.netSol ?? 0), 0),
+      netSol: rsB.reduce((s, r) => s + (r.netSol ?? 0), 0),
+      netSolTokenOnly: rsB.reduce((s, r) => s + (r.netSolTokenOnly ?? r.netSol ?? 0), 0),
       winRate: rb.length ? rb.filter((x) => x > 0).length / rb.length : 0,
       dsr: dsrB,
     };
@@ -617,13 +647,18 @@ async function main(): Promise<void> {
 
   const reports: ArmReport[] = [];
 
+  // 2026-05-01 (Codex M4 fix): netSolTokenOnly 도 같이 합산. legacy row → netSol fallback.
+  const sumNetSolWallet = (rs: PaperTradeRecord[]) => rs.reduce((s, r) => s + (r.netSol ?? 0), 0);
+  const sumNetSolTokenOnly = (rs: PaperTradeRecord[]) =>
+    rs.reduce((s, r) => s + (r.netSolTokenOnly ?? r.netSol ?? 0), 0);
   if (args.byArm) {
     for (const e of armEntries) {
       if (e.returns.length < 5) {
         reports.push({
           armKey: e.key,
           trades: e.returns.length,
-          netSol: e.rs.reduce((s, r) => s + (r.netSol ?? 0), 0),
+          netSol: sumNetSolWallet(e.rs),
+          netSolTokenOnly: sumNetSolTokenOnly(e.rs),
           winRate: e.returns.length ? e.returns.filter((x) => x > 0).length / e.returns.length : 0,
         });
         continue;
@@ -632,7 +667,8 @@ async function main(): Promise<void> {
       reports.push({
         armKey: e.key,
         trades: e.returns.length,
-        netSol: e.rs.reduce((s, r) => s + (r.netSol ?? 0), 0),
+        netSol: sumNetSolWallet(e.rs),
+        netSolTokenOnly: sumNetSolTokenOnly(e.rs),
         winRate: e.returns.filter((x) => x > 0).length / e.returns.length,
         dsr,
       });
@@ -645,6 +681,7 @@ async function main(): Promise<void> {
         armKey: '__overall_cscv__',
         trades: eligible.reduce((s, e) => s + e.returns.length, 0),
         netSol: 0,
+        netSolTokenOnly: 0,
         winRate: 0,
         cscv,
       });
@@ -657,7 +694,8 @@ async function main(): Promise<void> {
       reports.push({
         armKey: '__pooled__',
         trades: allReturns.length,
-        netSol: filtered.reduce((s, r) => s + (r.netSol ?? 0), 0),
+        netSol: sumNetSolWallet(filtered),
+        netSolTokenOnly: sumNetSolTokenOnly(filtered),
         winRate: allReturns.filter((x) => x > 0).length / allReturns.length,
         dsr,
       });
@@ -665,7 +703,8 @@ async function main(): Promise<void> {
       reports.push({
         armKey: '__pooled__',
         trades: allReturns.length,
-        netSol: filtered.reduce((s, r) => s + (r.netSol ?? 0), 0),
+        netSol: sumNetSolWallet(filtered),
+        netSolTokenOnly: sumNetSolTokenOnly(filtered),
         winRate: allReturns.length ? allReturns.filter((x) => x > 0).length / allReturns.length : 0,
       });
     }

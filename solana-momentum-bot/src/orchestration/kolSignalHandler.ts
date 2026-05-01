@@ -59,6 +59,12 @@ import { resolveDevStatus } from '../observability/devWalletRegistry';
 import { evaluateSecurityGate } from '../gate/securityGate';
 import { evaluateSellQuoteProbe } from '../gate/sellQuoteProbe';
 import type { OnchainSecurityClient } from '../ingester/onchainSecurity';
+// 2026-05-01 (Helius Stream B PR 2A close-out): holder risk flag wiring 입력
+import { computeHolderRiskFlags } from '../observability/holderDistribution';
+// 2026-05-01 (Helius Stream X3): EXIT_LIQUIDITY_UNKNOWN / POOL_NOT_PREWARMED flag wiring
+import { joinExitabilityEvidence } from '../observability/exitabilityEvidence';
+// 2026-05-01 (Helius Stream X1): pool prewarm admission check
+import type { HeliusPoolRegistry } from '../scanner/heliusPoolRegistry';
 import { GateCacheManager } from '../gate/gateCacheManager';
 import { getJupiter429Stats } from '../observability/jupiterRateLimitMetric';
 import { resolveTokenSymbol, lookupCachedSymbol } from '../ingester/tokenSymbolResolver';
@@ -139,6 +145,15 @@ export interface PaperPosition {
   entryTimeSec: number;
   ticketSol: number;
   quantity: number;             // 가상 수량 (ticketSol / entryPrice)
+  // 2026-05-01 (Sprint X measurement-only): ATA rent 분리. token-only entry price 별도 저장.
+  // - entryPriceTokenOnly: Jupiter swap input / received qty (사명 §3 5x peak 측정 — paper/live 통일)
+  // - entryPriceWalletDelta: wallet pre/post delta / received qty (실 wallet 손익 측정 — Real Asset Guard)
+  // paper 는 ATA rent 없음 → 두 값 동일. live 의 신규 토큰 첫 진입 시 ~0.002 SOL 차이 발생.
+  // entryPrice 는 backward-compat 으로 유지 (= entryPriceWalletDelta).
+  entryPriceTokenOnly?: number;
+  entryPriceWalletDelta?: number;
+  ataRentSol?: number;          // 신규 ATA 생성 funded SOL (재진입 시 0). live 만.
+  swapInputSol?: number;        // 실 swap 에 들어간 SOL (ATA rent / fee / tip 제외). live 만.
   // market reference (MAE/MFE 계산 기준)
   marketReferencePrice: number;
   peakPrice: number;
@@ -709,6 +724,20 @@ const inflightLiveEntry = new Set<string>();
 let securityClient: OnchainSecurityClient | undefined;
 let gateCache: GateCacheManager | undefined;
 let ownedGateCache: GateCacheManager | undefined;
+// 2026-05-01 (Helius Stream X1 wiring): pool registry inject — recordTokenQualityObservation 가
+//   poolRegistry?.getTokenPairs(tokenMint) 호출해 EXIT_LIQUIDITY_UNKNOWN / POOL_NOT_PREWARMED
+//   flag 정확도 향상. inject 안 되면 default emit (X3 minimal mode).
+let heliusPoolRegistry: HeliusPoolRegistry | undefined;
+
+/**
+ * 2026-05-01 (Helius Stream X1): 별도 setter — initKolHunter 시 BotContext 미경유 inject path.
+ *   index.ts 에서 `setHeliusPoolRegistryForKolHunter(registry)` 호출 → registry 가 token quality
+ *   observation 의 EXIT/POOL flag 정확도 향상.
+ *   미주입 시 default emit (모든 token 에 양 flag 기록 — sparse cohort).
+ */
+export function setHeliusPoolRegistryForKolHunter(registry: HeliusPoolRegistry | undefined): void {
+  heliusPoolRegistry = registry;
+}
 // 2026-04-27 (KOL live canary): ctx 보존 — closePosition 등 deep call site 에서 사용.
 // initKolHunter 시 주입. paper-only 경로에선 unused (graceful null check).
 let botCtx: BotContext | undefined;
@@ -928,12 +957,18 @@ export function initKolHunter(
     securityClient?: OnchainSecurityClient;
     gateCache?: GateCacheManager;
     ctx?: BotContext;
+    // 2026-05-01 (Helius Stream X1): pool registry inject for EXIT/POOL flag accuracy.
+    heliusPoolRegistry?: HeliusPoolRegistry;
   } = {}
 ): void {
   if (ownedGateCache) {
     ownedGateCache.destroy();
     ownedGateCache = undefined;
   }
+  if (options.heliusPoolRegistry) {
+    heliusPoolRegistry = options.heliusPoolRegistry;
+  }
+  // 기존에 set 된 registry 는 유지 (setHeliusPoolRegistry 로 별도 inject 가능).
   priceFeed = options.priceFeed ?? new PaperPriceFeed({
     jupiterApiUrl: config.jupiterApiUrl,
     jupiterApiKey: config.jupiterApiKey,
@@ -2852,6 +2887,13 @@ function spawnTailSubPosition(parent: PaperPosition, exitPrice: number, nowSec: 
     peakPrice: exitPrice,
     troughPrice: exitPrice,
     entryPrice: exitPrice,  // tail 의 P&L 기준은 parent close price
+    // 2026-05-01 (M3 fix — Codex 권고): tail 의 token-only / wallet-delta entry 도 close price 로 갱신.
+    //   parent 값 spread 로 물려받으면 tail 측정이 parent entry 기반으로 오염.
+    //   tail 은 parent close price = exitPrice 가 새 baseline. ATA rent 는 parent 가 이미 부담 → tail 은 0.
+    entryPriceTokenOnly: exitPrice,
+    entryPriceWalletDelta: exitPrice,
+    ataRentSol: 0,
+    swapInputSol: tailTicketSol,
     marketReferencePrice: exitPrice,
     isTailPosition: true,
     parentPositionId: parent.positionId,
@@ -2905,20 +2947,78 @@ function buildKolBaseLedgerRecord(
   maePct: number,
   netSol: number,
   netPct: number,
+  // 2026-05-01 (Codex H1 — live ledger fix): token-only override.
+  //   live close 시 exitPrice = actualExitPrice (wallet-delta = receivedSol/qty) 인데
+  //   token-only metric 은 정책 trigger 가 본 시장가격 기준이어야 함.
+  //   appendLiveLedger 가 별도 tokenMarketExitPrice 전달 → 여기서 override.
+  //   paper 호출 시 미전달 → exitPrice 그대로 (paper 는 시장가 = wallet-delta 동일).
+  tokenMarketExitPrice?: number,
+  tokenMarketSoldQuantity?: number,
 ): Record<string, unknown> {
+  // 2026-05-01 (Sprint X F3 fix): paper ledger 도 token-only / wallet-based 분리 표기.
+  //   paper 는 ATA rent 없음 → 두 값 동일이지만 schema 일관성 + 후속 analyzer 의 코드 단순화.
+  const tokenEntryRefP = pos.entryPriceTokenOnly && pos.entryPriceTokenOnly > 0
+    ? pos.entryPriceTokenOnly
+    : pos.marketReferencePrice;
+  const walletEntryRefP = pos.entryPriceWalletDelta && pos.entryPriceWalletDelta > 0
+    ? pos.entryPriceWalletDelta
+    : pos.entryPrice;
+  const mfePctPeakTokenOnlyP = tokenEntryRefP > 0
+    ? (pos.peakPrice - tokenEntryRefP) / tokenEntryRefP
+    : 0;
+  const mfePctPeakWalletBasedP = walletEntryRefP > 0
+    ? (pos.peakPrice - walletEntryRefP) / walletEntryRefP
+    : 0;
+  // 2026-05-01 (Sprint Z — Codex 권고): paper ledger 도 netPct/maePct/netSol token-only 분리.
+  //   paper 는 ATA rent 없음 → 두 값 동일이지만 schema 정합 + analyzer 코드 단순화.
+  const maePctTokenOnlyP = tokenEntryRefP > 0
+    ? (pos.troughPrice - tokenEntryRefP) / tokenEntryRefP
+    : 0;
+  // 2026-05-01 (Codex F4 fix): partial take 시 token-only netPct 도 합산 정합.
+  //   기존: `(exitPrice - tokenEntryRefP) / tokenEntryRefP` 가 runner 전용 → partial 합산 안 함 →
+  //         winner/PnL 분석 underreport. close path 의 effectiveNetPct 와 동일 정합 적용.
+  //   수정: partial realized SOL 합산 → effectiveTicketSol 기준 netPct 산출.
+  // 2026-05-01 (Codex H1 — live ledger fix): live 의 경우 tokenMarketExitPrice 사용.
+  //   live close: exitPrice = actualExitPrice (wallet-delta) 인데 token-only metric 은 시장가 기반이어야 함.
+  //   appendLiveLedger 가 별도 tokenMarketExitPrice 전달 → 여기서 override.
+  const tokenExitPriceForMetric = tokenMarketExitPrice && tokenMarketExitPrice > 0
+    ? tokenMarketExitPrice
+    : exitPrice;
+  const tokenSoldQty = tokenMarketSoldQuantity && tokenMarketSoldQuantity > 0
+    ? tokenMarketSoldQuantity
+    : pos.quantity;
+  const partialRealizedTokenOnlyP = pos.partialTakeRealizedSol ?? 0;
+  const partialLockedTicketTokenOnlyP = pos.partialTakeLockedTicketSol ?? 0;
+  const runnerNetSolTokenOnlyP = (tokenExitPriceForMetric - tokenEntryRefP) * tokenSoldQty;
+  const netSolTokenOnlyP = runnerNetSolTokenOnlyP + partialRealizedTokenOnlyP;
+  const effectiveTicketTokenOnlyP =
+    (pos.ticketSol ?? 0) + partialLockedTicketTokenOnlyP;
+  const netPctTokenOnlyP = effectiveTicketTokenOnlyP > 0
+    ? netSolTokenOnlyP / effectiveTicketTokenOnlyP
+    : (tokenEntryRefP > 0 ? (tokenExitPriceForMetric - tokenEntryRefP) / tokenEntryRefP : 0);
   return {
     positionId: pos.positionId,
     strategy: LANE_STRATEGY,
     tokenMint: pos.tokenMint,
     entryPrice: pos.entryPrice,
+    entryPriceTokenOnly: pos.entryPriceTokenOnly,
+    entryPriceWalletDelta: pos.entryPriceWalletDelta,
+    ataRentSol: pos.ataRentSol,
+    swapInputSol: pos.swapInputSol,
     exitPrice,
+    exitPriceTokenOnly: tokenExitPriceForMetric,  // live 시 시장가 (override), paper 시 exitPrice (wallet-delta = 시장가)
     marketReferencePrice: pos.marketReferencePrice,
     peakPrice: pos.peakPrice,
     troughPrice: pos.troughPrice,
     mfePctPeak: mfePct,
+    mfePctPeakTokenOnly: mfePctPeakTokenOnlyP,
+    mfePctPeakWalletBased: mfePctPeakWalletBasedP,
     maePct,
+    maePctTokenOnly: maePctTokenOnlyP,
     netPct,
+    netPctTokenOnly: netPctTokenOnlyP,
     netSol,
+    netSolTokenOnly: netSolTokenOnlyP,
     holdSec,
     exitReason: reason,
     t1VisitAtSec: pos.t1VisitAtSec ?? null,
@@ -2957,6 +3057,62 @@ async function recordTokenQualityObservation(pos: PaperPosition): Promise<void> 
   // pos.participatingKols 는 KOL id/tier/timestamp 만 — wallet address 는 별도 lookup 필요.
   // Phase B.6 는 observation 자체만 기록, dev address resolution 은 follow-up enrichment.
   const operatorDevStatus = resolveDevStatus(undefined);
+
+  // 2026-05-01 (Helius Stream B PR 2A close-out, QA F3 fix): holder risk flag wiring.
+  //   gateCache 에 cache 된 tokenSecurityData (entry 시 survival gate 가 호출) 에서 top1/5/10/HHI 추출 →
+  //   computeHolderRiskFlags 로 4 flag 산출. RPC 신규 호출 0.
+  //   acceptance ("token-quality records are not empty for KOL candidates") 충족 입력.
+  //   exitability (EXIT_LIQUIDITY_UNKNOWN/POOL_NOT_PREWARMED) + dev/vamp/fee enrichment 는 PR 3+ follow-up.
+  const cached = gateCache?.get(pos.tokenMint);
+  const sec = cached?.tokenSecurityData;
+  const riskFlags: string[] = [];
+  let top1HolderPct: number | undefined;
+  let top5HolderPct: number | undefined;
+  let top10HolderPct: number | undefined;
+  let holderHhi: number | undefined;
+  let holderCountApprox: number | undefined;
+  if (sec) {
+    top1HolderPct = sec.top1HolderPct;
+    top5HolderPct = sec.top5HolderPct;
+    top10HolderPct = sec.top10HolderPct;
+    holderHhi = sec.holderHhi;
+    holderCountApprox = sec.holderCountApprox;
+    riskFlags.push(...computeHolderRiskFlags({
+      top1HolderPct: sec.top1HolderPct,
+      top5HolderPct: sec.top5HolderPct,
+      top10HolderPct: sec.top10HolderPct,
+      holderHhi: sec.holderHhi,
+      sampleSize: sec.holderCountApprox ?? 0,
+    }));
+  } else {
+    // Token-2022 cache 미적중 — provenance flag (Helius Stream B 의 7 flag 중 1개)
+    riskFlags.push('NO_HELIUS_PROVENANCE');
+  }
+
+  // 2026-05-01 (Helius Stream X3 + X1): exitability evidence — EXIT_LIQUIDITY_UNKNOWN / POOL_NOT_PREWARMED.
+  //   pool registry inject 됐으면 (initKolHunter 옵션) registry 조회 → poolRegistry input 채움.
+  //   sellQuote evidence 는 별도 sprint (sellQuoteProbe 결과 cache 필요). 현재는 registry only.
+  //   registry 미주입 / 미적중 시 default emit (X3 minimal mode).
+  let knownPoolCount = 0;
+  let primaryPool: string | undefined;
+  if (heliusPoolRegistry) {
+    try {
+      const pairs = await heliusPoolRegistry.getTokenPairs(pos.tokenMint);
+      knownPoolCount = pairs.length;
+      primaryPool = pairs[0]?.pairAddress;
+    } catch {
+      // fail-open — registry 호출 실패 시 default emit
+    }
+  }
+  const exitEvidence = joinExitabilityEvidence({
+    poolRegistry: heliusPoolRegistry
+      ? { knownPoolCount, primaryPool }
+      : undefined,
+  });
+  for (const f of exitEvidence.riskFlags) {
+    if (!riskFlags.includes(f)) riskFlags.push(f);
+  }
+
   const record: TokenQualityRecord = {
     schemaVersion: 'token-quality/v1',
     tokenMint: pos.tokenMint,
@@ -2964,7 +3120,13 @@ async function recordTokenQualityObservation(pos: PaperPosition): Promise<void> 
     creatorAddress: undefined,  // follow-up — onchainSecurity 결과 enrichment 가능
     devWallet: undefined,
     operatorDevStatus,
-    riskFlags: [],  // follow-up worker 가 enrich (holder / vamp / fee)
+    // Stream B holder enrichment
+    top1HolderPct,
+    top5HolderPct,
+    top10HolderPct,
+    holderHhi,
+    holderCountApprox,
+    riskFlags,
     observationContext: {
       armName: pos.armName,
       parameterVersion: pos.parameterVersion,
@@ -3031,14 +3193,21 @@ async function appendLiveLedger(
   maePct: number,
   netSol: number,
   netPct: number,
-  exitTxSignature?: string
+  exitTxSignature?: string,
+  // 2026-05-01 (Codex H1 fix): token-only metric 은 시장가 (정책 trigger 가 본 가격) 기반.
+  //   exitPrice (= actualExitPrice = receivedSol/qty wallet-delta) 와 분리.
+  tokenMarketExitPrice?: number,
+  tokenMarketSoldQuantity?: number,
 ): Promise<void> {
   try {
     const dir = config.realtimeDataDir;
     await mkdir(dir, { recursive: true });
     // live-only 필드 (isLive / dbTradeId / tx signatures / ticketSol) 추가.
     const record = {
-      ...buildKolBaseLedgerRecord(pos, exitPrice, reason, holdSec, mfePct, maePct, netSol, netPct),
+      ...buildKolBaseLedgerRecord(
+        pos, exitPrice, reason, holdSec, mfePct, maePct, netSol, netPct,
+        tokenMarketExitPrice, tokenMarketSoldQuantity
+      ),
       isLive: true,
       dbTradeId: pos.dbTradeId ?? null,
       entryTxSignature: pos.entryTxSignature ?? null,
@@ -3153,6 +3322,14 @@ async function enterLivePosition(
   let actualOutAmount: string | undefined;
   let actualOutUiAmount: number | undefined;
   let outputDecimals: number | undefined;
+  // 2026-05-01 (Sprint X): cost decomposition + token-only entry price.
+  let swapInputUiAmount: number | undefined;
+  let walletInputUiAmount: number | undefined;
+  let ataRentSol: number | undefined;
+  let networkFeeSol: number | undefined;
+  let jitoTipSol: number | undefined;
+  let entryPriceTokenOnly: number | undefined;
+  let entryPriceWalletDelta: number | undefined;
   let entryFillOutputRatio: number | undefined;
   let swapQuoteEntryPrice: number | undefined;
   let swapQuoteEntryAdvantagePct: number | undefined;
@@ -3187,6 +3364,28 @@ async function enterLivePosition(
     actualOutAmount = buyResult.actualOutAmount?.toString();
     actualOutUiAmount = buyResult.actualOutUiAmount;
     outputDecimals = buyResult.outputDecimals;
+    // 2026-05-01 (Sprint X): cost decomposition 전파 + token-only entry price 산출.
+    swapInputUiAmount = buyResult.swapInputUiAmount;
+    walletInputUiAmount = buyResult.walletInputUiAmount;
+    ataRentSol = buyResult.ataRentSol;
+    networkFeeSol = buyResult.networkFeeSol;
+    jitoTipSol = buyResult.jitoTipSol;
+    if (
+      typeof buyResult.swapInputUiAmount === 'number' &&
+      typeof buyResult.actualOutUiAmount === 'number' &&
+      buyResult.actualOutUiAmount > 0 &&
+      buyResult.swapInputUiAmount > 0
+    ) {
+      entryPriceTokenOnly = buyResult.swapInputUiAmount / buyResult.actualOutUiAmount;
+    }
+    if (
+      typeof buyResult.walletInputUiAmount === 'number' &&
+      typeof buyResult.actualOutUiAmount === 'number' &&
+      buyResult.actualOutUiAmount > 0 &&
+      buyResult.walletInputUiAmount > 0
+    ) {
+      entryPriceWalletDelta = buyResult.walletInputUiAmount / buyResult.actualOutUiAmount;
+    }
     if (
       buyResult.actualOutAmount != null &&
       buyResult.expectedOutAmount != null &&
@@ -3295,6 +3494,14 @@ async function enterLivePosition(
       swapQuoteEntryPrice,
       swapQuoteEntryAdvantagePct,
       referenceToSwapQuotePct,
+      // 2026-05-01 (Sprint X measurement-only): cost decomposition + token-only entry price.
+      swapInputUiAmount,
+      walletInputUiAmount,
+      ataRentSol,
+      networkFeeSol,
+      jitoTipSol,
+      entryPriceTokenOnly,
+      entryPriceWalletDelta,
       initialReferencePrice: firstTick.price,
       initialReferenceTimestampMs: firstTick.timestamp,
       freshReferencePrice: referenceTick.price,
@@ -3341,6 +3548,14 @@ async function enterLivePosition(
     tokenMint,
     state: 'PROBE',
     entryPrice: actualEntryPrice,
+    // 2026-05-01 (Sprint X measurement-only): token-only / wallet-delta entry price 분리 저장.
+    // entryPriceTokenOnly = swap input / qty (사명 §3 5x peak 측정 — paper/live 통일).
+    // entryPriceWalletDelta = wallet delta / qty (실 wallet 손익 — Real Asset Guard).
+    // 둘 중 swap 분해 실패 시 actualEntryPrice 로 fallback.
+    entryPriceTokenOnly: entryPriceTokenOnly ?? actualEntryPrice,
+    entryPriceWalletDelta: entryPriceWalletDelta ?? actualEntryPrice,
+    ataRentSol,
+    swapInputSol: swapInputUiAmount,
     entryTimeSec: nowSec,
     ticketSol,
     quantity: actualQuantity,
@@ -3484,6 +3699,11 @@ async function enterLivePosition(
       actualNotionalSol,
       partialFillDataMissing,
       partialFillDataReason,
+      // 2026-05-01 (Sprint Y2): Telegram 알림 cost decomposition.
+      swapInputSol: swapInputUiAmount,
+      ataRentSol,
+      networkFeeSol,
+      jitoTipSol,
     }, entryTxSignature).catch((err) => {
       log.warn(`[KOL_HUNTER_LIVE_NOTIFY_OPEN_FAIL] ${positionId} ${err}`);
     });
@@ -3601,6 +3821,46 @@ async function closeLivePosition(
       const mfePctPeak = pos.marketReferencePrice > 0
         ? (pos.peakPrice - pos.marketReferencePrice) / pos.marketReferencePrice
         : 0;
+      // 2026-05-01 (Sprint X): token-only / wallet-based MFE peak 분리.
+      //   사명 §3 5x judgement = mfePctPeakTokenOnly >= 4.0 (paper/live 통일)
+      //   wallet net loss/gain = walletDeltaSol 그대로 (Real Asset Guard 정합)
+      const tokenEntryRef = pos.entryPriceTokenOnly && pos.entryPriceTokenOnly > 0
+        ? pos.entryPriceTokenOnly
+        : pos.marketReferencePrice;
+      const walletEntryRef = pos.entryPriceWalletDelta && pos.entryPriceWalletDelta > 0
+        ? pos.entryPriceWalletDelta
+        : pos.entryPrice;
+      const mfePctPeakTokenOnly = tokenEntryRef > 0
+        ? (pos.peakPrice - tokenEntryRef) / tokenEntryRef
+        : 0;
+      const mfePctPeakWalletBased = walletEntryRef > 0
+        ? (pos.peakPrice - walletEntryRef) / walletEntryRef
+        : 0;
+      // 2026-05-01 (Sprint Z — Codex 권고): netPct/maePct/exitPrice/netSol token-only 분리 측정.
+      //   stop 정책 평가 시 wallet-delta 만 보면 ATA rent inflation 으로 정책이 보수적으로 보임.
+      //   token-only 측정으로 사후 분석 (winner-kill / DSR / arm A/B) 정확. 정책 trigger 는 wallet-delta 그대로.
+      // 2026-05-01 (H1 fix — Codex 권고): token-only 지표는 close 함수 인자 `exitPrice` 기반.
+      //   이전: receivedSol / soldQuantity 사용 → sell fee + Jito tip + 향후 ATA refund 섞여서 "rent 제외 실현값"
+      //   현재: 정책 trigger 가 보는 시장 가격 (exitPrice) 기준 → 순수 token 가격 변동만 측정
+      // 2026-05-01 (M3 fix — Codex 권고): partial/tail 의 swapInputSol 비례 차감.
+      //   parent partial close 시 sold 비중만 차감 (전체 swapInputSol 차감하면 손실 inflated).
+      const soldRatio = pos.quantity > 0 ? soldQuantity / pos.quantity : 1;
+      const swapInputSoldShare = pos.swapInputSol != null && pos.swapInputSol > 0
+        ? pos.swapInputSol * soldRatio
+        : null;
+      const maePctTokenOnly = tokenEntryRef > 0
+        ? (pos.troughPrice - tokenEntryRef) / tokenEntryRef
+        : 0;
+      // exitPriceTokenOnly = 정책 trigger 가 본 시장 가격. wallet-delta 와 동일 단위지만 의미는 token 시장 가격.
+      const exitPriceTokenOnly = exitPrice;
+      const netPctTokenOnly = tokenEntryRef > 0
+        ? (exitPrice - tokenEntryRef) / tokenEntryRef
+        : 0;
+      // netSolTokenOnly = (exitPrice - tokenEntryRef) × soldQuantity. 시장 가격 기반 손익 (rent / sell fee / tip 모두 제외).
+      //   분해 실패 시 walletDelta fallback (보수적).
+      const netSolTokenOnly = swapInputSoldShare != null
+        ? (exitPrice - tokenEntryRef) * soldQuantity
+        : walletDelta;
       await appendEntryLedger('sell', {
         positionId: pos.positionId,
         dbTradeId: pos.dbTradeId,
@@ -3616,6 +3876,18 @@ async function closeLivePosition(
         entryPrice: pos.entryPrice,
         holdSec: nowSec - pos.entryTimeSec,
         mfePctPeak,
+        // 2026-05-01 (Sprint X): 분리 측정 ledger 전파.
+        mfePctPeakTokenOnly,
+        mfePctPeakWalletBased,
+        // 2026-05-01 (Sprint Z): netPct/maePct/exit/netSol token-only 분리 측정.
+        maePctTokenOnly,
+        exitPriceTokenOnly,
+        netPctTokenOnly,
+        netSolTokenOnly,
+        entryPriceTokenOnly: pos.entryPriceTokenOnly,
+        entryPriceWalletDelta: pos.entryPriceWalletDelta,
+        ataRentSol: pos.ataRentSol,
+        swapInputSol: pos.swapInputSol,
         peakPrice: pos.peakPrice,
         troughPrice: pos.troughPrice,
         marketReferencePrice: pos.marketReferencePrice,
@@ -3755,6 +4027,8 @@ async function closeLivePosition(
       decisionPrice: exitPrice,
       sourceLabel: pos.armName,
       discoverySource: 'kol_discovery_v1',
+      // 2026-05-01 (Sprint Z+1): rent visibility 보조 — trade.pnl 자체는 wallet-delta 그대로.
+      ataRentSol: pos.ataRentSol,
     };
     void ctx.notifier.sendTradeClose(closedTrade)
       .catch((err) => log.warn(`[KOL_HUNTER_LIVE_NOTIFY_CLOSE_FAIL] ${pos.positionId} ${err}`));
@@ -3790,7 +4064,11 @@ async function closeLivePosition(
       maePctAtClose,
       pnl,
       pnlPct,
-      exitTxSignature
+      exitTxSignature,
+      // 2026-05-01 (Codex H1): token-only metric 은 정책 trigger 가 본 시장가 `exitPrice` 기반.
+      //   actualExitPrice (= receivedSol/qty wallet-delta) 가 아닌 closeLivePosition 인자.
+      exitPrice,
+      soldQuantity
     ).catch(() => {});
   }
 
@@ -4068,6 +4346,11 @@ export async function recoverKolHunterOpenPositions(ctx: BotContext): Promise<nu
       tokenMint: trade.pairAddress,
       state: inferredState,
       entryPrice: trade.entryPrice,
+      // 2026-05-01 (Sprint X F1 fix): recovery path 도 명시적 hydrate.
+      //   trade.entryPrice 는 wallet-delta 기반 (이미 commit 된 값). cost decomp 은 buy ledger
+      //   에서 별도 hydrate 필요 (후속 sprint). 현 단계는 두 값 동일로 fallback — 측정 안전.
+      entryPriceTokenOnly: trade.entryPrice,
+      entryPriceWalletDelta: trade.entryPrice,
       entryTimeSec,
       ticketSol: recoveredTicketSol,
       quantity: trade.quantity,

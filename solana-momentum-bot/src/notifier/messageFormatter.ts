@@ -124,9 +124,24 @@ export function buildTradeOpenMessage(order: Order, txSignature?: string): strin
 
   const headline = `🟢 <b>진입</b> <b>${escapeHtml(symbol)}</b>${shortTradeId ? ` <code>${escapeHtml(shortTradeId)}</code>` : ''}`;
   const detail = `${entryNotionalSol.toFixed(4)} SOL @ ${order.price.toFixed(8)} · SL ${slPct.toFixed(0)}% / TP +${tp1Pct.toFixed(0)}% / +${tp2Pct.toFixed(0)}%${fallbackFlag}`;
+  // 2026-05-01 (Sprint Y2): cost decomposition. swap + rent + fee 분리 표시 → 외부 explorer USD 비교 정합.
+  //   ATA rent 자동 회수 정책 (운영자 manual) 정합 — 실 token 가격은 swap-only 기준 분명히.
+  //   ataRent === 0 (재진입) 또는 분해 실패 시 단순 표시 (이전 동작 유지).
+  // 2026-05-01 (Y2 G1 fix): partialFillDataMissing 시 costLine 미표시.
+  //   entryNotionalSol 이 planned 로 fallback 됐는데 swap/rent/fee 는 실측 → 합계 mismatch 발생.
+  //   운영자 혼선 차단 위해 partial fill 데이터 정합 안 될 때는 detail 만 표시 (⚠ planned flag 유지).
+  let costLine: string | null = null;
+  if (
+    !order.partialFillDataMissing &&
+    typeof order.swapInputSol === 'number' && order.swapInputSol > 0 &&
+    typeof order.ataRentSol === 'number' && order.ataRentSol > 0
+  ) {
+    const fee = (order.networkFeeSol ?? 0) + (order.jitoTipSol ?? 0);
+    costLine = `└ swap ${order.swapInputSol.toFixed(4)} + rent ${order.ataRentSol.toFixed(4)}${fee > 0 ? ` + fee ${fee.toFixed(4)}` : ''} SOL`;
+  }
   const linkLine = `<code>${escapeHtml(order.pairAddress)}</code>${txShort ? ` · tx <code>${escapeHtml(txShort)}</code>` : ''}`;
 
-  return [headline, detail, linkLine].join('\n');
+  return [headline, detail, costLine, linkLine].filter((l): l is string => l != null).join('\n');
 }
 
 export function buildTradeCloseMessage(trade: Trade): string {
@@ -143,9 +158,15 @@ export function buildTradeCloseMessage(trade: Trade): string {
   const headline = `🔴 <b>종료</b> <b>${escapeHtml(symbol)}</b> <code>${escapeHtml(shortId)}</code> · ${pnlText}`;
   const meta = [reasonText, duration ? `보유 ${duration}` : '', `${trade.entryPrice.toFixed(8)} → ${exit}`]
     .filter(Boolean).join(' · ');
+  // 2026-05-01 (Sprint Z+1): entry rent 분 visibility 보조 line.
+  //   pnl / pnlPct 자체는 wallet-delta 기준 (rent 포함, 사용자 권고 정합).
+  //   ataRentSol > 0 (신규 토큰 첫 진입) 시 손실/이익 중 rent 분 SOL 명시 → 운영자 manual 회수 결정 보조.
+  const rentLine = (trade.ataRentSol != null && trade.ataRentSol > 0)
+    ? `└ entry rent ${trade.ataRentSol.toFixed(4)} SOL 포함 (회수 시 환급 가능)`
+    : null;
   const linkLine = `<code>${escapeHtml(trade.pairAddress)}</code>${txShort ? ` · tx <code>${escapeHtml(txShort)}</code>` : ''}`;
 
-  return [headline, escapeHtml(meta), linkLine].join('\n');
+  return [headline, escapeHtml(meta), rentLine, linkLine].filter((l): l is string => l != null).join('\n');
 }
 
 // 2026-04-29 간소화: buildCloseProfitLine / buildClosePriceLine / buildExitGapLine /

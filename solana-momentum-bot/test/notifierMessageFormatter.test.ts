@@ -236,6 +236,63 @@ describe('messageFormatter', () => {
     expect(message).not.toContain('Exit gap');
   });
 
+  // 2026-05-01 (Sprint Y2): Telegram 알림 cost decomposition 회귀 테스트.
+  describe('Sprint Y2 — cost decomposition line', () => {
+    function makeOrder(extra: Partial<Order> = {}): Order {
+      return {
+        tradeId: 'trade-y2',
+        pairAddress: 'CstjV3Bd7SoMSvvJUS5dHb8x9wGgjrNufQpJsKeLpump',
+        strategy: 'kol_hunter',
+        side: 'BUY',
+        tokenSymbol: 'KIKI',
+        price: 0.00000028,
+        quantity: 79362,
+        stopLoss: 0.000000252,
+        takeProfit1: 0.00000042,
+        takeProfit2: 0.0000014,
+        timeStopMinutes: 3,
+        actualNotionalSol: 0.022179,
+        ...extra,
+      };
+    }
+
+    it('shows swap + rent + fee breakdown when ATA rent > 0 (신규 토큰 첫 진입)', () => {
+      const message = buildTradeOpenMessage(makeOrder({
+        swapInputSol: 0.020,
+        ataRentSol: 0.002074,
+        networkFeeSol: 0.000105,
+      }));
+      expect(message).toContain('└ swap 0.0200 + rent 0.0021 + fee 0.0001 SOL');
+    });
+
+    it('hides cost line on re-entry (ataRentSol === 0)', () => {
+      const message = buildTradeOpenMessage(makeOrder({
+        swapInputSol: 0.022074,
+        ataRentSol: 0,
+        networkFeeSol: 0.000105,
+      }));
+      expect(message).not.toContain('└ swap');
+      expect(message).not.toContain('rent');
+    });
+
+    it('hides cost line when partialFillDataMissing=true (G1 fix — entryNotionalSol planned ↔ swap/rent 합계 mismatch 차단)', () => {
+      const message = buildTradeOpenMessage(makeOrder({
+        swapInputSol: 0.020,
+        ataRentSol: 0.002074,
+        networkFeeSol: 0.000105,
+        partialFillDataMissing: true,
+      }));
+      expect(message).not.toContain('└ swap');
+      // partialFillDataMissing flag 자체는 detail 라인에 유지
+      expect(message).toContain('⚠ planned (RPC 측정 누락)');
+    });
+
+    it('hides cost line when decomposition failed (swapInputSol/ataRentSol both undefined)', () => {
+      const message = buildTradeOpenMessage(makeOrder());
+      expect(message).not.toContain('└ swap');
+    });
+  });
+
   it('falls back to contract label and hides invalid stop-loss math in alerts', () => {
     const order: Order = {
       pairAddress: 'PAIR1234567890ABCDEFG',

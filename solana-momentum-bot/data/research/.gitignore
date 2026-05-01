@@ -1,0 +1,13 @@
+# Research Ledger Unification — derived dataset (snapshot) directory.
+# ADR: docs/design-docs/research-ledger-unification-2026-05-01.md
+#
+# 정책: 운영자 download 전용. 원천 ledger 가 아니라 derived dataset 이라 언제든 재생성 가능.
+# git 에 commit 금지 — repo 비대 방지.
+
+# 모든 jsonl / csv / md 산출물 ignore
+*.jsonl
+*.csv
+*.md
+
+# .gitignore 자체는 trace
+!.gitignore

@@ -63,8 +63,25 @@ export interface KolDbFile {
 export type KolAction = 'buy' | 'sell';
 
 /**
+ * 2026-05-01 (Helius Stream C): KolTx parse source 분류.
+ *   - `standard_rpc`: Solana web3.js 의 getParsedTransaction Standard RPC parse 결과
+ *   - `enhanced_tx`: Helius Enhanced Transactions API parse 결과 (100c, sample/backfill 만)
+ *   - `heuristic`: SOL delta 추정 (현 fallback) — 가장 약한 evidence
+ */
+export type KolTxParseSource = 'standard_rpc' | 'enhanced_tx' | 'heuristic';
+
+/**
+ * 2026-05-01 (Helius Stream C): swap route 분류 — direct pool vs aggregator.
+ */
+export type KolTxRouteKind = 'direct_pool' | 'aggregator' | 'unknown';
+
+/**
  * KOL 이 발행한 swap tx 이벤트 — Discovery trigger 의 primary input.
  * anti-correlation / scoring / logging 전 단계.
+ *
+ * 2026-05-01 (Helius Stream C): slot/dex/pool/token amount/fee/parseSource 신규 11 필드 추가.
+ *   모두 optional + backward-compatible — old row reader 영향 0.
+ *   ADR: docs/exec-plans/active/helius-credit-edge-plan-2026-05-01.md §6 Stream C
  */
 export interface KolTx {
   kolId: string;
@@ -83,6 +100,32 @@ export interface KolTx {
    * 분포 측정 무결성 — active 의 paper trade 결과와 섞이지 않도록 handler 가 분기 처리.
    */
   isShadow?: boolean;
+
+  // ─── 2026-05-01 (Helius Stream C) — provenance / route enrichment ───
+  /** Slot from WebSocket log context — KolWalletTracker 가 onLogs callback ctx.slot 에서 보존 */
+  slot?: number;
+  /** Block time (epoch seconds) — getParsedTransaction 의 blockTime */
+  blockTime?: number;
+  /** Pool address (direct_pool route 시) */
+  poolAddress?: string;
+  /** DEX 식별자 (e.g. 'pumpswap', 'raydium', 'meteora', 'orca') */
+  dexId?: string;
+  /** Program ID (parsed transaction 의 instruction program) */
+  dexProgram?: string;
+  /** swap input mint (e.g. SOL = So11111111... or USDC) */
+  inputMint?: string;
+  /** swap output mint */
+  outputMint?: string;
+  /** token amount (raw 또는 normalized — caller 가 결정) */
+  tokenAmount?: number;
+  /** transaction fee (lamports) */
+  feeLamports?: number;
+  /** priority fee paid (lamports) — execution copyability 측정 input */
+  priorityFeeLamports?: number;
+  /** parse 출처 — heuristic = 가장 약함 (SOL delta 추정만) */
+  parseSource?: KolTxParseSource;
+  /** route 종류 — direct pool vs Jupiter aggregator */
+  routeKind?: KolTxRouteKind;
 }
 
 /**

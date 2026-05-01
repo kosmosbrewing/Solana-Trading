@@ -6,6 +6,213 @@
 
 ---
 
+## 2026-05-01 (evening) — Helius Credit-to-Edge plan + Research Ledger Unification 통합 sprint
+
+### 산출 (~3,625 LOC + 2 ADR + 다수 후속 보정)
+- **Research Ledger Unification ADR**: `docs/design-docs/research-ledger-unification-2026-05-01.md` (13 §, schema v1 동결, S3 보류 명시)
+  - `src/research/researchLedger*.ts` (writer + types + validator + quarantine) ~700 LOC
+  - 85 신규 jest case (paper/live/shadow/tail fixture + dedupe + truth alias)
+  - Codex 22건 보정 누적 (eventId 정책 / netSol truth alias / boolean strict / non-empty string conditional)
+- **Helius Credit-to-Edge plan**: `docs/exec-plans/active/helius-credit-edge-plan-2026-05-01.md` (14 §, Stream A-G + Phase 4 template)
+  - Phase 0 (Stream A credit catalog + ledger): `heliusCreditCost.ts` + `heliusCreditLedger.ts` + `fetch-historical-swaps.ts` 보정 (100c → 1c) + 42 test
+  - Phase 1 (Stream B holder + Stream C KolTx slot/parseSource): `onchainSecurity` 확장 + `exitabilityEvidence.ts` 신설 + KolTx 11 신규 필드 + parser provenance + F3 close-out (holder risk flag wiring)
+  - Phase 2 (Stream D pool prewarm + Stream E markout): `poolPrewarmContext.ts` + `heliusMarkoutTypes.ts` + `kol-helius-markout-backfill.ts` ~400 LOC + 43 test
+  - Phase 3 (Stream F priority fee + telemetry): `heliusPriorityFeeClient.ts` + `executionTelemetry.ts` ~370 LOC + 29 test
+  - Phase 4 (Stream G wallet style backfill): `kol-wallet-style-backfill.ts` ~395 LOC + 24 test (KOL DB auto-mutation 0)
+  - X-sprint (runtime wiring): EXIT/POOL flag wiring + `setHeliusPoolRegistryForKolHunter` inject + markout `--rpc-url` opt-in + Phase 4 정책 ADR template
+- **Helius cycle 정정**: 사용 1.31M / 잔여 8.69M (이전 framing 87%→13% 반전, plan-anniversary cycle Apr 24 - May 23, 22 days remaining)
+- **cupsey_lane 동결 + cupsey_benchmark KOL active+observer 통합** (Option C)
+
+### 운영자 결정 4건 답변
+1. Helius reset: plan-anniversary 5/23 (사용 13%, 여유 충분)
+2. Allocation 재조정: token quality 30% / markout 30% / KOL style 20% / pool 10% / exec 5% / reserve 5%
+3. Stream G KOL DB auto-mutation: 0 (rollout rule 4) — diff report only, 운영자 수동 편집 + script 가 `data/kol/` write 시 hard fail
+4. Phase 4 ADR: 4-track 분리 — token quality / pool prewarm 즉시, KOL role 200-trade gate 까지 대기, priority fee canary S3 trigger 정합
+
+### Codex 보정 누적 (35건+)
+- **S1 (9건)**: eventId 정책 / netSol alias / boolean strict / mode-conditional error / kolEntryReason nullable / 명칭 단축 / participatingKols / t-visit timestamps / writer 미포함
+- **S2 (5건)**: VALID_EVENT_TYPES enum / survivalFlags strict array / quarantineAppendFailed boolean / types 주석 / ticket > 0
+- **S2.5 (2건)**: boolean type / non-empty string conditional
+- **PR 1-4 QA (5건)**: F1 `--rpc-url` wiring / F2 executor RPC timeout 1500ms / F3 wallet-style fail-open append / F4 paper partial take token-only PnL / F5 acceptance 표현 보정
+- **추가 (5건)**: check:fast 복구 (sendTransaction return type / dsr-validator netSolTokenOnly optional) / Jito fallback tip 정합 / live outcome ledger token market exit price / token-only MFE / Net SOL 분리 표기
+- **잔여 P2 4건 (병합 가능, follow-up 명시)**:
+  - **Stream E P2-E1**: close anchor `entryTimeSec`/`exitTimeSec` 미존재 → backfill 이 모든 close row skip. **현재 운영 데이터에서 close anchor 0건**. fix: ledger writer 추가 emit 또는 backfill 이 `closedAt - holdSec` 추정 (외부 보정 일부 적용됨).
+  - **Stream E P2-E2**: missed-alpha `rejectedAt` ISO timestamp parser 누락 → reject anchor 0건 (false-negative 5x 측정 불가). fix 필요.
+  - **Stream E P2-E3**: signature pagination cap → 거래량 많은 mint / 오래된 anchor 면 coverage 0. `before` pagination 필요 (외부 보정 일부 적용됨).
+  - **Executor P2-A1**: Jupiter v0 lookup-table tx 의 `getAccountKeys()` throw → decomposition fallback (token-only inflation 그대로). fix: `tx.meta.loadedAddresses` supply.
+
+### 검증
+- tsc clean
+- jest 1656/1656 pass
+- env:check PASS (301 keys, 신규 env 0)
+- Real Asset Guard 변경: 0 (wallet floor 0.7 / KOL ticket 0.02 / max concurrent 3 / NO_SECURITY_DATA Track 2B)
+- KOL DB auto-mutation: 0
+- 운영 path 영향: minimal (executor RPC timeout 추가로 hot path 무한 대기 risk 제거 — 개선)
+
+### 잔여 follow-up (별도 sprint, 운영자 결정 대기)
+- Research Ledger S3 dual-write wiring (live close 100 row trigger)
+- Helius Stream E pool-based + paginated trajectory (정책 결정 evidence 보강)
+- Helius Stream D admission ledger reason tag wiring
+- Helius Stream F executor priority fee call wiring (S3 trigger 정합)
+- Helius Stream G `getTransactionsForAddress` Helius Wallet API wiring
+- Executor lookup-table key resolve (P2-A1 fix)
+- Phase 4 ADR 채움 (7-day evidence 도달 후)
+
+---
+
+## 2026-05-01 — Sprint X+Y+Z 통합: ATA rent token-only 측정 분리 + Codex 4 finding fix + R1 regression
+
+### 외부 입력 — 사용자 + Codex 분석
+KIKI / STEWARD live trade 의 외부 explorer USD ↔ wallet SOL 손익 mismatch 추적. 사용자 가설 "ATA rent 0.004 누적" 정확 검증:
+- KIKI tx (2Ts53vVuXs1A) wallet -0.022179 = swap 0.020 + ATA rent 0.002074 + fee 0.000105
+- ticket 0.02 SOL 기준 ATA rent overhead **20%** → token-only 5x 가 wallet 기준 +316.7% 로 측정 (**5x missed risk**)
+- 외부 explorer 와의 USD 단가 차이 (entry +14% SOL implied) = SOL/USD ratio source 차이 + ATA rent 분담 정합 검증
+
+### Codex 핵심 권고 정합 (5 항목)
+1. live 정책 trigger 는 wallet-delta 유지 (사명 §3 floor 정합)
+2. ledger token-only 추가 (entry/exit/mfe/mae/netPct/netSol/ataRent)
+3. 리포트/분석 token-only 기반 stop 평가
+4. wallet floor / 실손익 wallet-delta 유지
+5. ATA close/refund 별도 sprint — 운영자 manual 회수 정책 → 보류 (Y3)
+
+### Sprint X — Measurement-only ATA rent decomposition
+- `executor.ts` SwapResult schema 5 신규 필드: `swapInputUiAmount` / `walletInputUiAmount` / `ataRentSol` / `networkFeeSol` / `jitoTipSol`
+- `decomposeSwapCost()` helper — RPC `connection.getTransaction(sig)` inner instructions 의 newly-funded account 합계 = ATA rent
+- F2 sanity: `ATA_RENT_SANITY_CAP_SOL = 0.05` 초과 시 escrow 의심 → fallback (rent 0)
+- V6 + Ultra path 양쪽 SOL→token buy 자동 분해 + `[SWAP_COST_DECOMP_*]` log
+- `kolSignalHandler.ts:PaperPosition` schema 4 신규: `entryPriceTokenOnly` / `entryPriceWalletDelta` / `ataRentSol` / `swapInputSol`
+- `enterLivePosition` buyResult 처리에서 token-only / wallet-delta entry price 분리 산출
+- F1 (recovery hydrate `trade.entryPrice` 명시) + F3 (paper ledger 정합 schema)
+
+### Sprint Y1 — 5x judgement wire (analyzer)
+- `scripts/kol-paper-arm-report.ts` — `ArmSummary` 에 `fivexCountTokenOnly` / `fivexCountWalletBased` / `fivexInflationGap` 추가
+- 5x 판정 = `mfePctPeakTokenOnly ≥ 4.0` (legacy row → mfePctPeak fallback)
+- markdown 표에 `5x Token \| 5x Wallet` 컬럼 + gap 양수 시 `⚠+N` 표시 (ATA rent 로 winner missed 정량)
+
+### Sprint Y2 — Telegram 알림 cost visibility
+- `Order` schema 4 신규: `swapInputSol` / `ataRentSol` / `networkFeeSol` / `jitoTipSol`
+- `buildTradeOpenMessage` cost decomposition 보조 line: `└ swap 0.0200 + rent 0.0021 + fee 0.0001 SOL`
+- G1 fix: `partialFillDataMissing=true` 시 costLine 미표시 (entryNotionalSol planned ↔ swap/rent 합계 mismatch 차단)
+- 회귀 테스트 4 신규 (cost decomp 표시 / 재진입 / partial fill / 분해 실패)
+- `Trade` schema 신규 `ataRentSol` + `buildTradeCloseMessage` 종료 알림 보조 line: `└ entry rent 0.0021 SOL 포함 (회수 시 환급 가능)`
+
+### Sprint Y3 — 보류 (운영자 manual 회수 정합)
+운영자가 주기적 ATA close 처리 중 → 자동화 가치 작음. tx behavior 변경 = Track 1+2B 측정 confound 위험. 백로그 보존.
+
+### Sprint Z — token-only stop 정책 평가 분리 (Codex 권고)
+- close ledger 에 `maePctTokenOnly` / `exitPriceTokenOnly` / `netPctTokenOnly` / `netSolTokenOnly` 추가 (live + paper 양쪽)
+- `kol-paper-arm-report.ts` 신규 `Stop Policy Evaluation` 섹션 — `Net SOL Wallet \| Net SOL Token \| Big-loss Wallet \| Big-loss Token \| Big-loss Gap` 컬럼
+- gap > 1% 시 ⚠ 표시 — ATA rent inflation 으로 정책이 보수화 학습 위험 가시화
+
+### Codex 4 finding fix (Sprint Z 후속)
+- **H1** (live ledger 시장가 기반): `buildKolBaseLedgerRecord` 에 `tokenMarketExitPrice` / `tokenMarketSoldQuantity` optional 인자. `appendLiveLedger` 가 closeLivePosition 의 정책 시장가 `exitPrice` 전달 → kol-live-trades.jsonl 의 `exitPriceTokenOnly` / `netPctTokenOnly` 가 시장가 기반 (이전: `actualExitPrice` = wallet-delta)
+- **H2** (Jito fallback tip): `sendTransaction` 반환에 `viaJito` / `jitoTipPaidSol` 추가. Jito 성공 시 tip > 0, fallback 시 tip = 0. `executeSwapV6` 가 `sendResult.jitoTipPaidSol` 만 decomposition 에 전달 → 실 미지불 시 차감 안 됨
+- **M3** (live canary report): `actualMfePctPeak` / `actualMaePct` 가 `sell.mfePctPeakTokenOnly` / `sell.maePctTokenOnly` 우선 + legacy fallback
+- **M4** (DSR Net SOL): `ArmReport.netSolTokenOnly` 추가. 표 컬럼 `Net SOL Wallet` / `Net SOL Token` 분리 + 해석 가이드 line
+
+### M3 추가 fix — partial/tail token-only 정합
+- partial sell 시 `swapInputSol × (soldQuantity / pos.quantity)` 비례 차감
+- tail spawn 시 `entryPriceTokenOnly: exitPrice` / `swapInputSol: tailTicketSol` / `ataRentSol: 0` 명시 갱신 (parent 값 spread 오염 차단)
+
+### R1 — Codex regression test (즉시)
+- `decomposeSwapCost` export 추가
+- `test/executorSwapCostDecomp.test.ts` 신규 6 tests:
+  - 정상 path / Jito 성공 시 tip 차감 / **Jito fallback 시 tip=0** (R1 핵심) / F2 sanity / RPC 실패 fallback / 재진입 rent=0
+
+### R2 — 후속 백로그 (Codex 권고)
+**Task #110** Stream E markout backfill — `scripts/kol-helius-markout-backfill.ts:255` `getSignaturesForAddress(tokenMint, {limit})` 가 최신 signature 일부만 → 오래된 anchor / 거래량 많은 mint 의 7d coverage 0 가까움. credit method attribution 부정확. **거래 행동 영향 0** (offline 분석), 7-day winner-kill 정책 결정 근거 사용 전 pool-based pagination + 별도 method 카운터 필요.
+
+### 검증
+- `npm run check:fast` ✓ — typecheck + scripts typecheck + env catalog drift + jest **165 suites / 1656 tests pass**
+- 거래 행동 변경 0 (Sprint X 부터 measurement-only 원칙)
+- Track 1+2B 측정 sprint confound 0
+
+### 사명 §3 정합
+
+| 영역 | 단위 | 적용 |
+|------|------|------|
+| 거래 trigger (hard_cut / sentinel / trail / quick_reject / structural_kill) | wallet-delta entryPrice | ❌ 변경 없음 |
+| 종료 % (Telegram) / dbPnl / walletDelta | wallet-delta | ❌ 변경 없음 (rent 포함, 사용자 권고 정합) |
+| Wallet floor 0.7 SOL / Real Asset Guard | wallet-delta | ❌ 변경 없음 |
+| **5x peak (사명 §3 winner)** | **token-only `mfePctPeakTokenOnly`** | ✅ paper/live 통일 |
+| **stop 정책 평가 (DSR / kol-paper-arm-report)** | **token-only `netPctTokenOnly`** | ✅ Sprint Z 정확도 fix |
+| **Jito tip 분해** | wallet delta - swap - rent - fee - 실 jitoTip | ✅ H2 fix |
+| **Live ledger token-only** | 정책 시장가 기반 | ✅ H1 fix |
+| **Partial / tail token-only** | sold 비중 비례 + tail 새 baseline | ✅ M3 fix |
+| **DSR Net SOL 표시** | wallet / token 둘 다 + 해석 line | ✅ M4 fix |
+
+### 운영 영향 (배포 후)
+
+다음 buy tx 마다:
+- `[SWAP_COST_DECOMP_*]` log breakdown
+- Telegram 진입 알림 cost decomposition line (신규 토큰 첫 진입 시)
+- 종료 알림 entry rent visibility line (해당 시)
+- `kol-live-trades.jsonl` + `kol-paper-trades.jsonl` 에 token-only 8 컬럼 추가
+
+24-48h 누적 후:
+- `kol-paper-arms-{date}.md` 의 `Stop Policy Evaluation` 섹션 — Token vs Wallet 비교 + ATA rent inflation 정량
+- DSR validator token-only return 기반 계산 + Net SOL Wallet/Token 분리 표시
+- live canary report actual5x 가 token-only 기반
+
+---
+
+## 2026-05-01 — Sprint X (ATA rent decomposition) + Y1+Y2 wire — Y3 보류
+
+### 외부 입력 (사용자 + Codex 분석)
+KIKI / STEWARD live trade 의 외부 explorer USD ↔ 우리 SOL 단위 손익 mismatch (entry +14% SOL implied) 추적. 사용자 가설 "ATA rent 0.004 누적" 정확 검증:
+- KIKI buy tx: wallet -0.022179 = swap 0.020 + ATA rent 0.002074 + fee 0.000105 → entry price wallet-delta 기반 +10.9% inflation
+- ticket 0.02 SOL 기준 ATA rent overhead 20% → token-only 5x 가 wallet 기준 +316.7% 로 측정 (5x missed risk)
+
+### Sprint X (measurement-only) — 적용
+- `executor.ts` SwapResult schema 확장: `swapInputUiAmount` / `walletInputUiAmount` / `ataRentSol` / `networkFeeSol` / `jitoTipSol`
+- `decomposeSwapCost()` helper — RPC inner instructions parse → newly-funded account 합계 = ATA rent
+- F2 sanity: 0.05 SOL 초과 newly-funded → ATA 외 escrow 의심, fallback (분해 0)
+- V6 + Ultra path 양쪽 SOL→token buy 시 자동 분해 + `[SWAP_COST_DECOMP_*]` log
+- `kolSignalHandler.ts` PaperPosition schema 확장: `entryPriceTokenOnly` / `entryPriceWalletDelta` / `ataRentSol` / `swapInputSol`
+- `enterLivePosition` 의 buyResult 처리에서 분리 산출
+- closeLivePosition + appendPaperLedger 의 close ledger 에 `mfePctPeakTokenOnly` / `mfePctPeakWalletBased` 분리 기록
+- Recovery path (F1) 에서 `trade.entryPrice` 명시 hydrate (정합)
+- 거래 행동 변경 0 — measurement-only
+
+### Sprint Y1 — 5x judgement wire (analyzer 가 token-only 사용)
+- `kol-paper-arm-report.ts`: ArmSummary 에 `fivexCountTokenOnly` / `fivexCountWalletBased` / `fivexInflationGap` 추가
+- 5x 판정 = `mfePctPeakTokenOnly ≥ 4.0` (paper/live 통일)
+- legacy row (mfePctPeak only) 는 fallback
+- markdown 표 `5x Token | 5x Wallet` 컬럼 + gap 양수 시 ⚠ 표시 (ATA rent inflation 으로 winner missed)
+
+### Sprint Y2 — Telegram 알림 분리 표시
+- `messageFormatter.ts:buildTradeOpenMessage` — cost decomposition 보조 line:
+  `└ swap 0.0200 + rent 0.0021 + fee 0.0001 SOL`
+- `Order` schema 에 `swapInputSol` / `ataRentSol` / `networkFeeSol` / `jitoTipSol` 전파 채널
+- `kolSignalHandler` 의 `sendTradeOpen` 호출에서 cost decomposition 전달
+- 외부 explorer 비교 시 운영자 cross-check 정합 + ATA rent visibility
+
+### Sprint Y3 (ATA close on full sell) — 보류 (운영자 manual 정합)
+- 운영자가 주기적으로 ATA close 처리 중 → 자동화 가치 작음
+- tx behavior 변경 = Track 1+2B 측정 confound 위험
+- complexity M 도 굳이 진행 사유 없음
+- 운영자 정책 변경 시 백로그에서 활성 가능
+
+### 검증
+- typecheck ✓
+- jest **158 suites / 1543 tests pass**
+- 거래 행동 변경 0 (Track 1+2B 측정 sprint confound 없음)
+
+### 사명 §3 정합
+| KPI | 영향 |
+|---|---|
+| Wallet floor 0.7 SOL | 변경 없음 — wallet delta 기반 측정 그대로 |
+| 200 trade gate | 변경 없음 |
+| **5x+ winner ≥1** | ✅ token-only 기반 측정 정확도 회복 — 이전 ATA rent inflation 으로 winner missed (DF7DAPat 같은 case 의 paper/live 비교 정합) |
+| Real Asset Guard 위반 | 0 |
+
+### 운영 영향 (배포 후)
+- 다음 buy tx 마다 `[SWAP_COST_DECOMP_V6/ULTRA]` log + Telegram 알림 cost line 표시
+- `kol-paper-arms-{date}.md` report 의 `5x Token | 5x Wallet` 컬럼 — gap > 0 = ATA rent 로 winner missed 정량
+- 24-48h 누적 후 winner-kill analyzer + DSR validator 가 token-only 기준 5x 측정 → DF7DAPat 같은 winner 가 wallet-rent inflation 으로 missed 됐는지 retrospective 검증
+
+---
+
 ## 2026-05-01 — Canary cap 상향 + Phase 2.A2 partial take + Phase D live wiring + Decu Phase B + codex fix
 
 **Authority**:

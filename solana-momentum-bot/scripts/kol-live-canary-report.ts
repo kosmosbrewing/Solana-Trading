@@ -19,6 +19,10 @@ interface CliArgs {
   since?: Date;
   md?: string;
   json?: string;
+  walletSol?: number;
+  walletFloorSol: number;
+  kolCanaryCapSol: number;
+  kolTicketSol: number;
 }
 
 interface KolLiveBuyLedger {
@@ -317,6 +321,30 @@ type KolLivePostCloseMissedAlphaRecord = MissedAlphaLedgerRecord & {
 };
 
 type Phase4GateVerdict = 'CONTINUE_SAMPLE' | 'PHASE5_READY' | 'HOLD_REVIEW' | 'PAUSE_REVIEW';
+type CanaryBudgetProjectionVerdict = 'BLOCKED' | 'RESUME_POSSIBLE' | 'FLOOR_RISK';
+
+interface CanaryBudgetProjectionInput {
+  walletSol: number;
+  walletFloorSol: number;
+  kolCanaryCapSol: number;
+  kolTicketSol: number;
+}
+
+interface CanaryBudgetProjection {
+  walletSol: number;
+  walletFloorSol: number;
+  walletRoomSol: number;
+  kolCanaryCapSol: number;
+  cumulativeKolPnlSol: number;
+  remainingKolBudgetSol: number;
+  projectedWalletAtBudgetExhaustionSol: number;
+  projectedFloorBufferSol: number;
+  kolTicketSol: number;
+  approxFullTicketLosers: number;
+  capExhausted: boolean;
+  verdict: CanaryBudgetProjectionVerdict;
+  reason: string;
+}
 
 interface Phase4GateSummary {
   verdict: Phase4GateVerdict;
@@ -399,6 +427,11 @@ interface KolLiveCanaryReport {
   executionQualityCooldown: PaperFallbackSummary;
   freshReferenceReject: PaperFallbackSummary;
   phase4Gate: Phase4GateSummary;
+  canaryBudgetProjection?: CanaryBudgetProjection;
+}
+
+interface BuildKolLiveCanaryReportOptions {
+  canaryBudgetProjection?: CanaryBudgetProjectionInput;
 }
 
 function parseArgs(): CliArgs {
@@ -413,7 +446,17 @@ function parseArgs(): CliArgs {
     since: resolveSinceArg(argv),
     md: get('--md') ?? path.resolve(process.cwd(), `reports/kol-live-canary-${today}.md`),
     json: get('--json') ?? path.resolve(process.cwd(), `reports/kol-live-canary-${today}.json`),
+    walletSol: parseOptionalNumber(get('--wallet-sol')),
+    walletFloorSol: parseOptionalNumber(get('--wallet-floor-sol')) ?? 0.7,
+    kolCanaryCapSol: parseOptionalNumber(get('--kol-canary-cap-sol')) ?? 0.2,
+    kolTicketSol: parseOptionalNumber(get('--kol-ticket-sol')) ?? 0.02,
   };
+}
+
+function parseOptionalNumber(value: string | undefined): number | undefined {
+  if (value == null) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function resolveSinceArg(argv: string[], nowMs = Date.now()): Date | undefined {
@@ -1354,14 +1397,63 @@ function evaluatePhase4Gate(metrics: {
   };
 }
 
+function buildCanaryBudgetProjection(
+  allKolLiveTrades: PairedKolLiveTrade[],
+  input: CanaryBudgetProjectionInput
+): CanaryBudgetProjection {
+  const cumulativeKolPnlSol = allKolLiveTrades.reduce((acc, trade) => acc + trade.netSol, 0);
+  const walletRoomSol = Math.max(0, input.walletSol - input.walletFloorSol);
+  const remainingKolBudgetSol = Math.max(0, input.kolCanaryCapSol + cumulativeKolPnlSol);
+  const projectedWalletAtBudgetExhaustionSol = input.walletSol - remainingKolBudgetSol;
+  const projectedFloorBufferSol = projectedWalletAtBudgetExhaustionSol - input.walletFloorSol;
+  const approxFullTicketLosers = input.kolTicketSol > 0
+    ? Math.floor(remainingKolBudgetSol / input.kolTicketSol)
+    : 0;
+  const capExhausted = cumulativeKolPnlSol <= -input.kolCanaryCapSol;
+  const minFloorBufferSol = Math.max(0.02, input.kolTicketSol);
+
+  let verdict: CanaryBudgetProjectionVerdict;
+  let reason: string;
+  if (capExhausted) {
+    verdict = 'BLOCKED';
+    reason = `KOL canary cumulative PnL ${sol(cumulativeKolPnlSol)} is at or below cap -${sol(input.kolCanaryCapSol)}.`;
+  } else if (projectedFloorBufferSol < minFloorBufferSol) {
+    verdict = 'FLOOR_RISK';
+    reason = `Projected floor buffer ${sol(projectedFloorBufferSol)} is below minimum buffer ${sol(minFloorBufferSol)}.`;
+  } else {
+    verdict = 'RESUME_POSSIBLE';
+    reason = `Projected floor buffer ${sol(projectedFloorBufferSol)} remains above minimum buffer ${sol(minFloorBufferSol)}.`;
+  }
+
+  return {
+    walletSol: input.walletSol,
+    walletFloorSol: input.walletFloorSol,
+    walletRoomSol,
+    kolCanaryCapSol: input.kolCanaryCapSol,
+    cumulativeKolPnlSol,
+    remainingKolBudgetSol,
+    projectedWalletAtBudgetExhaustionSol,
+    projectedFloorBufferSol,
+    kolTicketSol: input.kolTicketSol,
+    approxFullTicketLosers,
+    capExhausted,
+    verdict,
+    reason,
+  };
+}
+
 function buildKolLiveCanaryReport(
   buys: KolLiveBuyLedger[],
   sells: KolLiveSellLedger[],
   since?: Date,
   paperTrades: KolPaperTradeLedger[] = [],
-  missedAlphaRecords: MissedAlphaLedgerRecord[] = []
+  missedAlphaRecords: MissedAlphaLedgerRecord[] = [],
+  options: BuildKolLiveCanaryReportOptions = {}
 ): KolLiveCanaryReport {
   const { trades, openBuys, orphanSells } = pairKolLiveTrades(buys, sells, since);
+  const allKolLiveTrades = options.canaryBudgetProjection
+    ? pairKolLiveTrades(buys, sells).trades
+    : [];
   const executionQualityCooldown = summarizeExecutionQualityCooldownFallbacks(paperTrades, since);
   const freshReferenceReject = summarizeFreshReferenceRejectFallbacks(paperTrades, since);
   const postCloseAlpha = summarizePostCloseAlphaDiagnostics(trades, missedAlphaRecords, since);
@@ -1496,6 +1588,9 @@ function buildKolLiveCanaryReport(
     executionQualityCooldown,
     freshReferenceReject,
     phase4Gate,
+    canaryBudgetProjection: options.canaryBudgetProjection
+      ? buildCanaryBudgetProjection(allKolLiveTrades, options.canaryBudgetProjection)
+      : undefined,
   };
 }
 
@@ -1589,6 +1684,28 @@ function formatPhase4GateSection(gate: Phase4GateSummary): string[] {
     `- Fresh-reference reject T2/5x: ${gate.freshReferenceRejectT2Visits}/${gate.freshReferenceRejectFiveXVisits}`,
     '- Reasons:',
     ...gate.reasons.map((reason) => `  - ${reason}`),
+    '',
+  ];
+}
+
+function formatCanaryBudgetProjectionSection(projection: CanaryBudgetProjection | undefined): string[] {
+  if (!projection) return [];
+  return [
+    '## Canary Budget Projection',
+    '',
+    '> Uses all KOL live closed ledger rows, not only the `--since` window, because canary hydrate restores cumulative lane PnL from the ledger.',
+    '',
+    `- Verdict: ${projection.verdict}`,
+    `- Wallet / floor / room: ${sol(projection.walletSol)} / ${sol(projection.walletFloorSol)} / ${sol(projection.walletRoomSol)} SOL`,
+    `- KOL canary cap: ${sol(projection.kolCanaryCapSol)} SOL`,
+    `- KOL cumulative PnL: ${sol(projection.cumulativeKolPnlSol)} SOL`,
+    `- Remaining KOL budget: ${sol(projection.remainingKolBudgetSol)} SOL`,
+    `- Ticket / approx full-ticket losers left: ${sol(projection.kolTicketSol)} SOL / ${projection.approxFullTicketLosers}`,
+    `- Projected wallet at KOL budget exhaustion: ${sol(projection.projectedWalletAtBudgetExhaustionSol)} SOL`,
+    `- Projected floor buffer: ${sol(projection.projectedFloorBufferSol)} SOL`,
+    `- Cap exhausted at this cap: ${projection.capExhausted ? 'yes' : 'no'}`,
+    `- Reason: ${projection.reason}`,
+    '- Restart note: after changing canary cap or wallet floor env, restart the bot with updated env so the hydrated canary and in-memory entry halt are rebuilt.',
     '',
   ];
 }
@@ -1844,7 +1961,11 @@ function formatKolLiveCanaryMarkdown(report: KolLiveCanaryReport): string {
     `- Execution-quality cooldown paper fallbacks: ${report.executionQualityCooldown.closedPaperFallbacks}`,
     `- Fresh-reference reject paper fallbacks: ${report.freshReferenceReject.closedPaperFallbacks}`,
     `- Phase 4 gate: ${report.phase4Gate.verdict}`,
+    ...(report.canaryBudgetProjection
+      ? [`- Canary budget projection: ${report.canaryBudgetProjection.verdict}`]
+      : []),
     '',
+    ...formatCanaryBudgetProjectionSection(report.canaryBudgetProjection),
     ...formatPhase4GateSection(report.phase4Gate),
     ...formatRunnerDiagnosticsSection(report.runnerDiagnostics, report.runnerCandidateTrades),
     ...formatRunnerlessQuarantineCandidatesSection(report.runnerlessQuarantineCandidates),
@@ -1927,7 +2048,16 @@ async function main(): Promise<void> {
   const sells = await readJsonlMaybe<KolLiveSellLedger>(path.join(args.ledgerDir, 'executed-sells.jsonl'));
   const paperTrades = await readJsonlMaybe<KolPaperTradeLedger>(path.join(args.ledgerDir, 'kol-paper-trades.jsonl'));
   const missedAlphaRecords = await readJsonlMaybe<MissedAlphaLedgerRecord>(path.join(args.ledgerDir, 'missed-alpha.jsonl'));
-  const report = buildKolLiveCanaryReport(buys, sells, args.since, paperTrades, missedAlphaRecords);
+  const report = buildKolLiveCanaryReport(buys, sells, args.since, paperTrades, missedAlphaRecords, {
+    canaryBudgetProjection: args.walletSol == null
+      ? undefined
+      : {
+          walletSol: args.walletSol,
+          walletFloorSol: args.walletFloorSol,
+          kolCanaryCapSol: args.kolCanaryCapSol,
+          kolTicketSol: args.kolTicketSol,
+        },
+  });
 
   if (args.md) {
     await mkdir(path.dirname(args.md), { recursive: true });
@@ -1944,7 +2074,8 @@ async function main(): Promise<void> {
     `ref5x=${report.fiveXVisits} actual5x=${report.actualFiveXVisits} ` +
     `eqCooldownFallbacks=${report.executionQualityCooldown.closedPaperFallbacks} ` +
     `freshReferenceRejectFallbacks=${report.freshReferenceReject.closedPaperFallbacks} ` +
-    `phase4=${report.phase4Gate.verdict}`
+    `phase4=${report.phase4Gate.verdict}` +
+    (report.canaryBudgetProjection ? ` canaryBudget=${report.canaryBudgetProjection.verdict}` : '')
   );
 }
 
@@ -1969,4 +2100,7 @@ export {
   type PairedKolLiveTrade,
   type Phase4GateSummary,
   type Phase4GateVerdict,
+  type CanaryBudgetProjection,
+  type CanaryBudgetProjectionInput,
+  type CanaryBudgetProjectionVerdict,
 };

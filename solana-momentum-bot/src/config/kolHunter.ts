@@ -137,6 +137,43 @@ export const kolHunter = {
   //   4) `kolHunterTailRetainEnabled=true` 가 선행 활성 (paper 작동 확인 후만 live 가능)
   kolHunterTailRetainLiveEnabled: boolOptional('KOL_HUNTER_TAIL_RETAIN_LIVE_ENABLED', false),
 
+  // 2026-05-01 (Phase 2.A2 P0): Partial Take @ T1 promote — 학술 §convexity (Taleb) +
+  // §trend-following (Carver, Moskowitz et al.) 권고 정합. RUNNER_T1 promote (mfe ≥ 50%)
+  // 시점에 일부 비중 lock-in, 나머지 runner trail 로 5x+ 추구.
+  // 실측 baseline (7일 paper Top 10 mfePeak 기준):
+  //   - 10건 중 8건이 retreat 70%+ (peak 평균 290% / net 평균 205% gap)
+  //   - peak 246% / net 108% (drift 138%) 같은 케이스에서 30% partial 시 +25% lock-in 효과
+  // 정책:
+  //   - PROBE → RUNNER_T1 promote 시 1회 partial sell (재실행 방지 marker)
+  //   - paper: pos.quantity *= (1 - takePct), ticketSol 도 동일 비율로 축소
+  //   - live: closeLivePosition 패턴 재사용 (별도 partial sell tx, DB row 유지)
+  //   - structural / quick reject / probe_hard_cut 등 PROBE 단계 close 와 무관
+  // paper-only first (default OFF — 1주 측정 후 별도 ADR 로 live 활성).
+  kolHunterPartialTakeEnabled: boolOptional('KOL_HUNTER_PARTIAL_TAKE_ENABLED', false),
+  kolHunterPartialTakePct: numEnv('KOL_HUNTER_PARTIAL_TAKE_PCT', '0.30'),  // T1 promote 시 30% lock-in
+  kolHunterPartialTakeLiveEnabled: boolOptional('KOL_HUNTER_PARTIAL_TAKE_LIVE_ENABLED', false),
+
+  // 2026-05-01 (Decu Quality Layer Phase B): observe-only token quality inspector.
+  // ADR: docs/design-docs/decu-new-pair-quality-layer-2026-05-01.md
+  // entry critical path 영향 0 — fire-and-forget, dedup cache + RPC cap.
+  tokenQualityObserverEnabled: boolOptional('TOKEN_QUALITY_OBSERVER_ENABLED', true),
+  /** Vamp lint (IPFS fetch + pHash). default OFF — IPFS gateway 부담. */
+  tokenQualityVampLintEnabled: boolOptional('TOKEN_QUALITY_VAMP_LINT_ENABLED', false),
+  /** Global fee proxy. RPC / 가격 데이터 0 — 안전 default ON. */
+  tokenQualityFeeProxyEnabled: boolOptional('TOKEN_QUALITY_FEE_PROXY_ENABLED', true),
+  /**
+   * Helius RPC 호출 cap (per minute). ADR §9 R5 정합.
+   * 2026-05-01 (codex F3): 현 sprint enrichment 미연결 — RPC 호출 0. cap 은 enrich sprint 에서
+   *   실 enforce (rate-limiter 추가 시점). 현재는 placeholder, env 만 노출.
+   */
+  tokenQualityHeliusRpcCapPerMin: numEnv('TOKEN_QUALITY_HELIUS_RPC_CAP_PER_MIN', '100'),
+  /** observation dedup TTL (h). 동일 mint 1h 내 재기록 차단. */
+  tokenQualityObservationTtlHours: numEnv('TOKEN_QUALITY_OBSERVATION_TTL_HOURS', '24'),
+
+  // Dev wallet DB
+  devWalletDbPath: optional('DEV_WALLET_DB_PATH', path.resolve(process.cwd(), 'data/dev-wallets/wallets.json')),
+  devWalletHotReloadIntervalMs: numEnv('DEV_WALLET_HOT_RELOAD_INTERVAL_MS', '60000'),
+
   // Paper round-trip cost (Jupiter platform fee + MEV + AMM fee). Live 시 wallet delta 에서 직접 차감.
   kolHunterPaperRoundTripCostPct: numEnv('KOL_HUNTER_PAPER_ROUND_TRIP_COST_PCT', '0.005'),
 

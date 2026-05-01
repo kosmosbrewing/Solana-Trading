@@ -51,6 +51,11 @@ import type { KolPolicyDecision, KolPolicyInput, KolPolicyParticipant } from '..
 import { PaperPriceFeed, type PriceTick } from '../kol/paperPriceFeed';
 import { trackRejectForMissedAlpha, type MissedAlphaEvent } from '../observability/missedAlphaObserver';
 import { trackKolClose } from './kolMissedAlpha';
+import {
+  appendTokenQualityObservation,
+  type TokenQualityRecord,
+} from '../observability/tokenQualityInspector';
+import { resolveDevStatus } from '../observability/devWalletRegistry';
 import { evaluateSecurityGate } from '../gate/securityGate';
 import { evaluateSellQuoteProbe } from '../gate/sellQuoteProbe';
 import type { OnchainSecurityClient } from '../ingester/onchainSecurity';
@@ -203,6 +208,25 @@ export interface PaperPosition {
    * - 추가 tail spawn 차단 (재귀 방지)
    */
   isTailPosition?: boolean;
+  /**
+   * 2026-05-01 (Phase 2.A2 P0): partial take 발화 시각 (재실행 방지).
+   * RUNNER_T1 promote 시 1회만 partial sell — pos.quantity 가 줄어든 후에도 재 promote 시 중복 차단.
+   * partial sell 비율은 config.kolHunterPartialTakePct (default 30%).
+   */
+  partialTakeAtSec?: number;
+  /**
+   * 2026-05-01 (codex F-A fix): partial take 시 lock-in 된 SOL 손익 누적.
+   * close 시 runner netSol 에 합산 → appendPaperLedger / markKolClosed / DSR validator 가 보는
+   * `netSol` 이 trade 전체 PnL (runner + partial) 을 정확히 반영.
+   * 이전: kol-partial-takes.jsonl 별도 jsonl 만 기록 → 어떤 reader 도 join 안 함 → 부분익절 winner
+   *       전부 underreport. 이제 close 시 합산 + 별도 jsonl 도 유지 (cohort 분석용).
+   */
+  partialTakeRealizedSol?: number;
+  /**
+   * 2026-05-01 (codex F-A fix): partial take 시 lock-in 된 ticket size (effectiveTicketSol 산출용).
+   * runnerNetPct = runnerNetSol/runnerTicket vs totalNetPct = totalNetSol/originalTicket 구분.
+   */
+  partialTakeLockedTicketSol?: number;
 }
 
 interface SmartV3PendingState {
@@ -2106,6 +2130,11 @@ async function enterPaperPosition(
       `entry=${entryPrice.toFixed(8)} ticket=${ticketSol}SOL kols=${score.independentKolCount} ` +
       `score=${score.finalScore.toFixed(2)}`
     );
+    // 2026-05-01 (Decu Quality Layer Phase B.6): observe-only token quality record.
+    //   fire-and-forget — entry critical path 영향 0. shadow arm 도 fire (cohort 분석 입력).
+    if (config.tokenQualityObserverEnabled && !pos.isTailPosition) {
+      void recordTokenQualityObservation(pos).catch(() => {});
+    }
   }
 
   // 2. price listener 등록 — token 별 fan-out 으로 v1/v2 shadow arm 을 동시에 평가
@@ -2339,6 +2368,16 @@ function onPriceTick(positionId: string, tick: PriceTick): void {
         pos.state = 'RUNNER_T1';
         pos.t1VisitAtSec = nowSec;
         log.info(`[KOL_HUNTER_T1] ${pos.positionId} promoted MFE=${(mfePct * 100).toFixed(2)}%`);
+        // 2026-05-01 (Phase 2.A2 P0): T1 promote 시 partial take — 학술 §convexity 권고.
+        //   structural / quick reject / probe_hard_cut 등 PROBE 단계 close 와 분리 — winner 진입 시점에만.
+        //   재실행 방지: partialTakeAtSec marker. tail position / shadow arm 은 spawn 안 함.
+        if (
+          config.kolHunterPartialTakeEnabled &&
+          !pos.isTailPosition &&
+          pos.partialTakeAtSec == null
+        ) {
+          executePartialTake(pos, currentPrice, nowSec, mfePct);
+        }
       }
       break;
     }
@@ -2556,7 +2595,16 @@ function closePosition(
   const holdSec = nowSec - pos.entryTimeSec;
   const netPct = (exitPrice - pos.entryPrice) / pos.entryPrice;
   const paperRoundTripCostPct = config.kolHunterPaperRoundTripCostPct;
-  const netSol = pos.ticketSol * (netPct - paperRoundTripCostPct);
+  const runnerNetSol = pos.ticketSol * (netPct - paperRoundTripCostPct);
+  // 2026-05-01 (codex F-A fix): partial take realized PnL 을 close netSol 에 합산.
+  //   readers (appendPaperLedger / markKolClosed / DSR validator / kol-paper-arm-report / decay
+  //   tracker) 가 모두 close netSol 만 본다 → 부분익절 분 합산 안 하면 winner systematic underreport.
+  //   netPct 도 effective (original ticket 대비) 로 재계산.
+  const partialNetSol = pos.partialTakeRealizedSol ?? 0;
+  const partialTicketSol = pos.partialTakeLockedTicketSol ?? 0;
+  const netSol = runnerNetSol + partialNetSol;
+  const effectiveTicketSol = pos.ticketSol + partialTicketSol;
+  const effectiveNetPct = effectiveTicketSol > 0 ? netSol / effectiveTicketSol : netPct;
   emitKolPositionPolicy(pos, 'close', 'exit', {
     closeReason: reason,
     mfePct: mfePctAtClose,
@@ -2567,8 +2615,11 @@ function closePosition(
   log.info(
     `[KOL_HUNTER_PAPER_CLOSE] ${pos.positionId} reason=${reason} ` +
     `hold=${holdSec}s mfe=${(mfePctAtClose * 100).toFixed(2)}% mae=${(maePctAtClose * 100).toFixed(2)}% ` +
-    `net=${(netPct * 100).toFixed(2)}% t1=${pos.t1VisitAtSec ? 'y' : 'n'} ` +
-    `t2=${pos.t2VisitAtSec ? 'y' : 'n'} t3=${pos.t3VisitAtSec ? 'y' : 'n'}`
+    `net=${(effectiveNetPct * 100).toFixed(2)}% t1=${pos.t1VisitAtSec ? 'y' : 'n'} ` +
+    `t2=${pos.t2VisitAtSec ? 'y' : 'n'} t3=${pos.t3VisitAtSec ? 'y' : 'n'}` +
+    (partialNetSol !== 0
+      ? ` partial=${partialNetSol >= 0 ? '+' : ''}${partialNetSol.toFixed(6)}SOL runner_net=${(netPct * 100).toFixed(2)}%`
+      : '')
   );
 
   // 2026-04-30 (B1 refactor): KOL close-site 는 모두 'kol_close' 로 통일.
@@ -2620,7 +2671,8 @@ function closePosition(
   }
 
   // Paper ledger append
-  void appendPaperLedger(pos, exitPrice, reason, holdSec, mfePctAtClose, maePctAtClose, netSol, netPct);
+  // 2026-05-01 (codex F-A fix): netPct 도 effective (partial + runner 합산 / original ticket) 로 전달.
+  void appendPaperLedger(pos, exitPrice, reason, holdSec, mfePctAtClose, maePctAtClose, netSol, effectiveNetPct);
 
   deleteActivePosition(pos.positionId);  // P1 #5: index 동기화
 
@@ -2639,7 +2691,8 @@ function closePosition(
   const mfePctPeak = pos.marketReferencePrice > 0
     ? (pos.peakPrice - pos.marketReferencePrice) / pos.marketReferencePrice
     : 0;
-  kolHunterEvents.emit('paper_close', { pos, reason, exitPrice, netSol, netPct, mfePctPeak, holdSec });
+  // 2026-05-01 (codex F-A fix): netPct → effectiveNetPct (partial 합산 기준).
+  kolHunterEvents.emit('paper_close', { pos, reason, exitPrice, netSol, netPct: effectiveNetPct, mfePctPeak, holdSec });
 
   // 2026-05-01 (Phase C): tail retain — price-kill close 후 별도 sub-position 생성.
   //   학술 §tail retention (Kaminski-Lo + Taleb + TSMOM) 정합. paper-only first.
@@ -2671,6 +2724,109 @@ function isPriceKillReason(reason: CloseReason): boolean {
  *   - peak/trough: 현재 exit price 기준 reset (tail 자체 trail)
  *   - parentPositionId: 추적용
  */
+/**
+ * 2026-05-01 (Phase 2.A2 P0): T1 promote 시 partial take.
+ *
+ * 동작:
+ *   - takePct (default 30%) 비중을 lock-in (paper accounting 또는 live partial sell)
+ *   - pos.quantity / ticketSol 을 (1 - takePct) 배수로 축소 (잔여 runner)
+ *   - partialTakeAtSec marker 로 재실행 방지
+ *   - paper: 가상 lock-in (ledger jsonl 별도 record)
+ *   - live (kolHunterPartialTakeLiveEnabled=true + isLive=true): closeLivePosition 패턴 재사용
+ *
+ * 학술 정합:
+ *   - Taleb (2007) convexity — 일부 lock-in + nominal upside 추구
+ *   - Carver (2015) Systematic Trading — 1/3 at +N, 1/3 at +2N, 1/3 trail 권고 변형
+ *   - Moskowitz et al. TSMOM — winner truncation 위험 차단 (전량 close 회피)
+ */
+function executePartialTake(pos: PaperPosition, currentPrice: number, nowSec: number, mfePct: number): void {
+  const takePct = config.kolHunterPartialTakePct;
+  if (takePct <= 0 || takePct >= 1) return;
+
+  // 2026-05-01 (F2 critical fix): live wiring 미구현 — flag 활성화되어도 isLive parent 면 차단.
+  //   이전 코드는 warn log + paper accounting 만 적용 → 실제 sell tx 없이 quantity 가 줄어든
+  //   상태로 close 되면 wallet ledger 와 코드 상태 drift 발생.
+  //   현 sprint 는 paper-shadow only — live wiring 별도 sprint 후 본 차단 제거.
+  //   ⚠ mutation 전에 차단 (이전 fix 위치 오류 — quantity 줄어든 후 return 시 wallet drift).
+  if (pos.isLive === true) {
+    if (config.kolHunterPartialTakeLiveEnabled === true) {
+      log.error(
+        `[KOL_HUNTER_PARTIAL_TAKE_LIVE_BLOCKED] ${pos.positionId} flag enabled 됐으나 live wiring ` +
+        `미구현 — wallet drift 방지 위해 partial take 발화 차단. 별도 sprint 후 코드 변경 필수.`
+      );
+    } else {
+      log.debug(
+        `[KOL_HUNTER_PARTIAL_TAKE_PAPER_ONLY] ${pos.positionId} live parent — partial take skip (paper-only sprint).`
+      );
+    }
+    return;
+  }
+
+  const lockedQuantity = pos.quantity * takePct;
+  const lockedTicketSol = pos.ticketSol * takePct;
+  const lockedNetPct = (currentPrice - pos.entryPrice) / pos.entryPrice;
+  const lockedNetSol = lockedTicketSol * (lockedNetPct - config.kolHunterPaperRoundTripCostPct);
+
+  // paper accounting: pos.quantity / ticketSol 축소 (잔여 runner)
+  pos.quantity *= (1 - takePct);
+  pos.ticketSol *= (1 - takePct);
+  pos.partialTakeAtSec = nowSec;
+  // 2026-05-01 (codex F-A fix): close netSol 합산용 누적. 다중 partial 발화 시 누적 가능 (현 정책은
+  //   1회만이지만, 향후 multi-tier partial 채택 시에도 정합).
+  pos.partialTakeRealizedSol = (pos.partialTakeRealizedSol ?? 0) + lockedNetSol;
+  pos.partialTakeLockedTicketSol = (pos.partialTakeLockedTicketSol ?? 0) + lockedTicketSol;
+
+  log.info(
+    `[KOL_HUNTER_PARTIAL_TAKE] ${pos.positionId} mfe=${(mfePct * 100).toFixed(2)}% ` +
+    `take=${(takePct * 100).toFixed(0)}% locked_qty=${lockedQuantity.toFixed(2)} ` +
+    `locked_net=${(lockedNetPct * 100).toFixed(2)}% remaining_qty=${pos.quantity.toFixed(2)} ` +
+    `mode=paper-shadow`
+  );
+
+  // Paper ledger 의 partial record 별도 jsonl entry — DSR / winner-kill 분석 시 partial 따로 cohort 가능.
+  void appendPartialTakeLedger(pos, currentPrice, nowSec, mfePct, lockedQuantity, lockedTicketSol, lockedNetPct, lockedNetSol).catch(() => {});
+}
+
+/** Phase 2.A2 P0: partial take 별도 ledger jsonl writer. */
+async function appendPartialTakeLedger(
+  pos: PaperPosition,
+  exitPrice: number,
+  nowSec: number,
+  mfePct: number,
+  lockedQuantity: number,
+  lockedTicketSol: number,
+  lockedNetPct: number,
+  lockedNetSol: number,
+): Promise<void> {
+  try {
+    const dir = config.realtimeDataDir;
+    await mkdir(dir, { recursive: true });
+    const record = {
+      positionId: pos.positionId,
+      strategy: LANE_STRATEGY,
+      tokenMint: pos.tokenMint,
+      armName: pos.armName,
+      parameterVersion: pos.parameterVersion,
+      isShadowArm: pos.isShadowArm,
+      isLive: pos.isLive ?? false,
+      eventType: 'partial_take' as const,
+      promotedAt: new Date(nowSec * 1000).toISOString(),
+      mfePctAtTake: mfePct,
+      exitPrice,
+      entryPrice: pos.entryPrice,
+      lockedQuantity,
+      lockedTicketSol,
+      lockedNetPct,
+      lockedNetSol,
+      remainingQuantity: pos.quantity,
+      remainingTicketSol: pos.ticketSol,
+    };
+    await appendFile(path.join(dir, 'kol-partial-takes.jsonl'), JSON.stringify(record) + '\n', 'utf8');
+  } catch (err) {
+    log.debug(`[KOL_HUNTER] partial take ledger append failed: ${String(err)}`);
+  }
+}
+
 function spawnTailSubPosition(parent: PaperPosition, exitPrice: number, nowSec: number): void {
   const retainPct = config.kolHunterTailRetainPct;
   if (retainPct <= 0 || retainPct >= 1) return;
@@ -2787,6 +2943,43 @@ function buildKolBaseLedgerRecord(
     tokenDecimalsSource: pos.tokenDecimalsSource ?? null,
     closedAt: new Date().toISOString(),
   };
+}
+
+/**
+ * 2026-05-01 (Decu Quality Layer Phase B.6): observe-only token quality record.
+ * Entry 직후 fire-and-forget — RPC / IPFS 호출 0 (현 sprint 는 KOL 메타만 기록,
+ * holder/vamp/fee 는 별도 worker 나 follow-up sprint 에서 enrich).
+ *
+ * critical path 영향 0 — caller 가 await 안 함.
+ */
+async function recordTokenQualityObservation(pos: PaperPosition): Promise<void> {
+  if (!config.tokenQualityObserverEnabled) return;
+  // pos.participatingKols 는 KOL id/tier/timestamp 만 — wallet address 는 별도 lookup 필요.
+  // Phase B.6 는 observation 자체만 기록, dev address resolution 은 follow-up enrichment.
+  const operatorDevStatus = resolveDevStatus(undefined);
+  const record: TokenQualityRecord = {
+    schemaVersion: 'token-quality/v1',
+    tokenMint: pos.tokenMint,
+    observedAt: new Date().toISOString(),
+    creatorAddress: undefined,  // follow-up — onchainSecurity 결과 enrichment 가능
+    devWallet: undefined,
+    operatorDevStatus,
+    riskFlags: [],  // follow-up worker 가 enrich (holder / vamp / fee)
+    observationContext: {
+      armName: pos.armName,
+      parameterVersion: pos.parameterVersion,
+      isLive: pos.isLive ?? false,
+      isShadowArm: pos.isShadowArm,
+      positionId: pos.positionId,
+      entryPrice: pos.entryPrice,
+      ticketSol: pos.ticketSol,
+    },
+  };
+  await appendTokenQualityObservation(record, {
+    enabled: config.tokenQualityObserverEnabled,
+    observationTtlHours: config.tokenQualityObservationTtlHours,
+    outputFile: path.join(config.realtimeDataDir, 'token-quality-observations.jsonl'),
+  });
 }
 
 async function appendPaperLedger(
@@ -3191,6 +3384,11 @@ async function enterLivePosition(
     referenceToSwapQuotePct,
     buyExecutionMs,
   });
+  // 2026-05-01 (F6 fix): Decu Quality Layer Phase B.6 — live entry record.
+  //   enterPaperPosition 만 wired 였으나 live 도 동일 cohort 분석 필요. fire-and-forget.
+  if (config.tokenQualityObserverEnabled && !position.isTailPosition) {
+    void recordTokenQualityObservation(position).catch(() => {});
+  }
   ensurePriceListener(tokenMint);
 
   if (entryAdvantageReason) {
@@ -3472,10 +3670,19 @@ async function closeLivePosition(
   // 2026-05-01 (P0-3 fix): pnl 은 sold 비중 기준 — partial sell 시 retained tail 의 pnl 은
   //   tail position 의 별도 close 에서 산출. canary / DB / notifier / ledger 일관 적용.
   const rawPnl = (actualExitPrice - pos.entryPrice) * soldQuantity;
-  const pnl = rawPnl;  // live: round-trip cost 는 wallet delta 에 이미 반영됨
-  const pnlPct = pos.entryPrice > 0
-    ? ((actualExitPrice - pos.entryPrice) / pos.entryPrice)
-    : 0;
+  const runnerPnl = rawPnl;  // live: round-trip cost 는 wallet delta 에 이미 반영됨
+  // 2026-05-01 (codex F-A fix): partial take realized PnL 합산.
+  //   현재 live partial 은 차단 상태 (kolHunterPartialTake live wiring 미구현) 라 partialTake* 는
+  //   live position 에서 항상 0 — 그러나 paper→live promotion 과 future Phase 정합 위해 aggregation 적용.
+  //   DB closeTrade.pnl / appendLiveLedger / markKolClosed / canary / sendTradeClose 모두 aggregatedPnl 사용.
+  const partialNetSol = pos.partialTakeRealizedSol ?? 0;
+  const partialTicketSol = pos.partialTakeLockedTicketSol ?? 0;
+  const pnl = runnerPnl + partialNetSol;
+  const soldTicketSol = pos.entryPrice * soldQuantity;
+  const effectiveTicketSol = soldTicketSol + partialTicketSol;
+  const pnlPct = effectiveTicketSol > 0
+    ? pnl / effectiveTicketSol
+    : (pos.entryPrice > 0 ? (actualExitPrice - pos.entryPrice) / pos.entryPrice : 0);
 
   // DB closeTrade.
   let dbCloseSucceeded = false;
@@ -3572,7 +3779,8 @@ async function closeLivePosition(
   // 2026-04-30 (Sprint 1.B3): live trade outcome 을 jsonl 로 persist (DSR validator 입력).
   if (!pos.isShadowArm) {
     const liveHoldSec = nowSec - pos.entryTimeSec;
-    const liveNetPct = pos.entryPrice > 0 ? (actualExitPrice - pos.entryPrice) / pos.entryPrice : 0;
+    // 2026-05-01 (codex F-A fix): liveNetPct → pnlPct (aggregated, partial 합산 기준).
+    //   paper appendPaperLedger 와 schema 정합 — DSR validator 입력 일관성.
     void appendLiveLedger(
       pos,
       actualExitPrice,
@@ -3581,7 +3789,7 @@ async function closeLivePosition(
       mfePctAtClose,
       maePctAtClose,
       pnl,
-      liveNetPct,
+      pnlPct,
       exitTxSignature
     ).catch(() => {});
   }
@@ -3883,6 +4091,13 @@ export async function recoverKolHunterOpenPositions(ctx: BotContext): Promise<nu
       dbTradeId: trade.id,
       entryTxSignature: trade.txSignature,
       entrySlippageBps: trade.entrySlippageBps,
+      // 2026-05-01 (F1 fix): partial take marker — recovery 시 보수적으로 entryTimeSec 으로 set
+      // 하여 재진입 후 추가 partial take 차단. 실제로 partial take 이미 발생했는지 DB 에는 정보 없음
+      // (parent quantity 와 현 token balance 비교가 정확하나 schema 변경 필요).
+      // 보수적 fallback — RUNNER_T1 이상 inferredState 만 marker set (PROBE 는 미발생 가정).
+      partialTakeAtSec: (inferredState === 'RUNNER_T1' || inferredState === 'RUNNER_T2' || inferredState === 'RUNNER_T3')
+        ? entryTimeSec
+        : undefined,
     };
 
     setActivePosition(position);

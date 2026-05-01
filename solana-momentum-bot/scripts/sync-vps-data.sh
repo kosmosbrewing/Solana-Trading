@@ -11,6 +11,7 @@
 #   SKIP_FILES=true bash scripts/sync-vps-data.sh    # logs + trades + report 만
 #   SKIP_LOGS=true bash scripts/sync-vps-data.sh     # files + trades + report 만
 #   SKIP_PAPER_REPORT=true bash scripts/sync-vps-data.sh   # paper arm report 생략
+#   SKIP_TOKEN_QUALITY_REPORT=true bash scripts/sync-vps-data.sh  # dev candidate quality report 생략
 #   RUN_SHADOW_EVAL=true bash scripts/sync-vps-data.sh     # KOL shadow eval 추가 (Jupiter API 사용)
 #
 # Required for trades step:
@@ -42,8 +43,11 @@ SKIP_LOGS="${SKIP_LOGS:-false}"
 SKIP_TRADES="${SKIP_TRADES:-${SKIP_DB:-false}}"  # legacy SKIP_DB 호환
 # 2026-04-26 — sync 직후 자동 분석 단계.
 # paper-arm-report: 파일 only (Jupiter API 0건) → default ON.
+# token-quality-report: 파일 only (Jupiter/API 0건) → default ON. dev-wallet candidate JSON join 포함.
 # shadow-eval: Jupiter forward quote 호출 다수 → quota 절약을 위해 default OFF (opt-in).
 SKIP_PAPER_REPORT="${SKIP_PAPER_REPORT:-false}"
+SKIP_TOKEN_QUALITY_REPORT="${SKIP_TOKEN_QUALITY_REPORT:-false}"
+TOKEN_QUALITY_WINDOW_DAYS="${TOKEN_QUALITY_WINDOW_DAYS:-7}"
 RUN_SHADOW_EVAL="${RUN_SHADOW_EVAL:-false}"
 
 to_epoch() {
@@ -255,7 +259,23 @@ else
   echo "[sync-vps-data] paper-arm-report: SKIPPED (SKIP_PAPER_REPORT=true)"
 fi
 
-# ─── 5. Shadow eval (Jupiter API 호출, opt-in) ───
+# ─── 5. Token quality report (file-only, dev candidate join) ───
+# Why: sync 와 같은 시점의 token-quality-observations / paper / live / missed-alpha 를 join.
+# dev-wallet 후보 JSON 은 운영 DB 가 아니라 paper-only label 이며, Jupiter / RPC 호출 0건.
+# 실패해도 sync 자체는 OK 로 종료 (분석은 보조 단계).
+if [ "$SKIP_TOKEN_QUALITY_REPORT" != "true" ]; then
+  TOKEN_QUALITY_OUT="${ROOT_DIR}/reports/token-quality-$(date +%Y-%m-%d).md"
+  echo "[sync-vps-data] token-quality-report: generating ${TOKEN_QUALITY_WINDOW_DAYS}d report"
+  if (cd "${ROOT_DIR}" && npx ts-node scripts/token-quality-report.ts --window-days="${TOKEN_QUALITY_WINDOW_DAYS}" --output="${TOKEN_QUALITY_OUT}" 2>&1 | tail -8); then
+    echo "[sync-vps-data] token-quality-report: ok → ${TOKEN_QUALITY_OUT}"
+  else
+    echo "[sync-vps-data] token-quality-report: WARN — generation failed (sync 자체는 정상)"
+  fi
+else
+  echo "[sync-vps-data] token-quality-report: SKIPPED (SKIP_TOKEN_QUALITY_REPORT=true)"
+fi
+
+# ─── 6. Shadow eval (Jupiter API 호출, opt-in) ───
 # Why: KOL signal 자체의 raw alpha (smart-v3 logic 무관) 측정 — Jupiter forward quote 사용.
 # Phase 2 go/no-go 판정용. Jupiter quota 영향 있어 default OFF.
 if [ "$RUN_SHADOW_EVAL" = "true" ]; then

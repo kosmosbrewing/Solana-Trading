@@ -6,6 +6,90 @@
 
 ---
 
+## 2026-05-01 — Canary cap 상향 + Phase 2.A2 partial take + Phase D live wiring + Decu Phase B + codex fix
+
+**Authority**:
+- [`docs/design-docs/kol-academic-report-integration-2026-04-30.md`](./docs/design-docs/kol-academic-report-integration-2026-04-30.md) §7 의사결정 이력
+- [`docs/design-docs/decu-new-pair-quality-layer-2026-05-01.md`](./docs/design-docs/decu-new-pair-quality-layer-2026-05-01.md) (신규 ADR)
+
+### 운영 incident — Canary halt cascade
+
+```
+2026-04-30 03:28 UTC — 마지막 live close (5emtWrz7 +0.033 SOL)
+2026-04-30 04:53 UTC (KST 13:53) — ⭐ canary budget exhausted halt (-0.2672 <= -0.2)
+                                    auto-reset 거부 (자산 보호 정책 — checkAndAutoResetHalt)
+2026-04-30 ~ 5-1 00:54 — 영구 halt active, ~20시간 trade 0건
+2026-05-01 00:54 UTC — 재시작 + hydrate (72h lookback) → 152 trade count 도 복원
+                       → "canary trade count reached 152 >= 50" 두 번째 halt 사유 추가
+```
+
+### Root cause
+- **Budget cap**: `kolHunterCanaryMaxBudgetSol=0.2` 한도 도달 (cumulativePnl -0.2672)
+- **Trade count**: 4-28 commit `ce33e68` 가 KOL 전용 cap 50 신규 도입. 이전엔 공용 200 사용 → 152 누적 가능. 5-1 첫 재시작 시 hydrate 가 152 복원하여 halt 발화
+
+### 해결 (운영자 적용)
+```bash
+# .env 갱신
+KOL_HUNTER_CANARY_MAX_TRADES=200       # 50 → 200 (사명 §5 의 200 trade gate 정합)
+KOL_HUNTER_CANARY_MAX_BUDGET_SOL=0.3   # 0.2 → 0.3 (cumulativePnl -0.2672 + margin 0.03)
+pm2 restart bot
+```
+
+→ 재시작 시 hydrate 152 + 신규 한도 200 비교 → `auto_after_cooldown` 자동 클리어.
+
+### 코드 sprint 산출 (~1,800 LOC, 1387/1387 jest pass)
+
+#### Phase 2.A2 P0 — Partial Take @ T1 promote
+- `kolHunterPartialTake*` 3 config (default false, paper-shadow first)
+- T1 promote 시 30% lock-in + 70% runner 유지. `partialTakeAtSec` marker 재실행 방지
+- `appendPartialTakeLedger` 별도 jsonl
+- F1 fix (recovery RUNNER_T1+ 의 marker set) + F2 fix (live wiring 미구현 시 차단)
+- 회귀 테스트 4건. 학술 §convexity (Taleb / Carver / Moskowitz TSMOM)
+- 7일 paper Top 10 retreat 패턴 (8/10 = 70%+) 직접 차단 lever
+
+#### Phase D — live tail 코드 구현 (flag 로 조정)
+- `kolHunterTailRetainLiveEnabled` 신규 (default false)
+- `spawnTailSubPosition` 의 isLive 분기 + `closeLivePosition` partial sell 분기
+- soldQuantity / dbPnl / walletDelta 정합 (P0-3 fix)
+- live wiring 미구현 시 명시 차단 (wallet drift 0 보장)
+
+#### Decu Quality Layer Phase B (observe-only 골격, 신규 ADR)
+- 8 sub-task 병렬: 5 observability module + report + dev DB + boot wiring + 5 단위 테스트
+- 7 신규 env (`TOKEN_QUALITY_*` / `DEV_WALLET_*`)
+- codex F1 fix: dedup key positionId 기반 (paper/live/shadow cohort 분리 보장)
+- codex F2 fix: report 4-jsonl join + cohort group + missed-alpha winnerKill
+- codex F3 fix: RPC cap placeholder 명시 (enrich sprint 에서 실 enforce)
+- 회귀 테스트 67건 (paper/live/shadow cohort 분리 검증 포함)
+
+### 신규 운영 default 변경
+```
+KOL_HUNTER_CANARY_MAX_TRADES: 50 → 200 (default)
+KOL_HUNTER_CANARY_MAX_BUDGET_SOL: 0.2 → 0.3 (.env 운영자 적용)
+TOKEN_QUALITY_OBSERVER_ENABLED=true (default ON, observe-only 안전)
+TOKEN_QUALITY_FEE_PROXY_ENABLED=true (default ON, RPC 0)
+```
+
+### 사명 §3 정합
+| KPI | 현 상태 |
+|---|---|
+| Wallet floor 0.7 | ✅ 0.846 SOL (margin 0.146) |
+| 200 trade 누적 | 🟡 196 (live 152 + 24h 44 paper) — 거의 도달 |
+| 5x+ winner | ✅ 1건 (paper 4-27 DF7DAPat 940% perfect capture) |
+| Real Asset Guard | ✅ 변경 없음 (wallet floor / ticket / canary cap 모두 보수적) |
+
+### 검증 후속 (1주)
+1. `npx ts-node scripts/winner-kill-classifier.ts --window-days=7` — Phase 2.A2 partial take 효과
+2. `npx ts-node scripts/dsr-validator.ts --source=both --window-days=7` — DSR Prob>0 (현재 64.4% FAIL)
+3. `npx ts-node scripts/token-quality-report.ts --window-days=7` — 4-jsonl cohort × flag 매트릭스
+4. partial-takes.jsonl 빈도 + lockedNetPct 분포
+
+### 후속 sprint
+- **Decu Phase B.1.5**: holder/vamp/fee enrichment + caller wiring (현 sprint 는 schema + cohort context 만)
+- **Phase 2.A2 live wiring**: paper 1주 측정 후 별도 ADR + closeLivePosition partial branch 통합
+- **Phase 3 RCK**: paper n≥1000 + 5x≥3 + DSR Prob>0≥95% prerequisite
+
+---
+
 ## 2026-04-30 — 학술 리포트 통합: Sprint 1 + Sprint 2.A1 + 품질 fix (P0~Sprint 2)
 
 **Authority**: [`docs/design-docs/kol-academic-report-integration-2026-04-30.md`](./docs/design-docs/kol-academic-report-integration-2026-04-30.md) (영구 ADR — 11개 권고 결정 매트릭스 + 보류 트리거 조건)

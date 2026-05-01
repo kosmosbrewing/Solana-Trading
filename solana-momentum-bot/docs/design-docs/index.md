@@ -14,6 +14,7 @@
 | Lane Edge Controller — Conservative Kelly / Payoff Control | `lane-edge-controller-kelly-2026-04-25.md` | 🟡 제안 — Kelly를 sizing이 아닌 lane/cohort throttle로 사용 | 2026-04-25 |
 | External Strategy Report Analysis (Tier 1 + #5) | `external-strategy-report-analysis-2026-04-29.md` | ✅ Tier 1 + #5 구현 완료 (DSR/CSCV + style classifier + missed-alpha retro + co-buy graph) | 2026-04-29 |
 | **KOL Academic Report Integration ADR** | `kol-academic-report-integration-2026-04-30.md` | ✅ Sprint 1 + Sprint 2.A1 완료 / Phase 3-4 보류 (트리거 조건 명시) | 2026-04-30 |
+| Decu New-Pair Quality Layer | `decu-new-pair-quality-layer-2026-05-01.md` | ✅ Phase A + B (observe-only 골격) 완료 — 5 module + report + dev DB + 67 tests. Enrichment 는 B.1.5 follow-up | 2026-05-01 |
 | DEX_TRADE Phase 3 (Quick Reject + Hold Sentinel + Ruin Sim) | — | ✅ 구현 완료 (modules + script + tests) | 2026-04-18 |
 
 ## Pre-Pivot (historical — 현재 판정 근거로 사용 금지)

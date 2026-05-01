@@ -81,6 +81,7 @@ import { startJupiter429SummaryLoop } from './observability/jupiterRateLimitMetr
 // 2026-04-23 Option 5: KOL Discovery
 import { Connection } from '@solana/web3.js';
 import { initKolDb, getKolDbStats } from './kol/db';
+import { initDevWalletRegistry, getDevWalletRegistryStats } from './observability/devWalletRegistry';
 import { KolWalletTracker } from './ingester/kolWalletTracker';
 import { startKolTrackerWithPreparedHunter } from './init/kolHunterStartup';
 import {
@@ -1200,6 +1201,22 @@ async function main() {
   // 2026-04-23 Option 5: KOL Discovery Layer (Phase 1 passive logging)
   // ADR: docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md
   // env gate: KOL_TRACKER_ENABLED=true 일 때만 활성. Phase 0 DB 정제 완료 후 켤 것.
+  // 2026-05-01 (Decu Quality Layer Phase B.5): Dev Wallet Registry — observe-only.
+  //   tokenQualityObserverEnabled=true (default) 이거나 dev DB 가 존재하면 init.
+  //   fail-open — load 실패 시 빈 DB (Gate pipeline 중단 금지).
+  if (config.tokenQualityObserverEnabled) {
+    await initDevWalletRegistry({
+      path: config.devWalletDbPath,
+      hotReloadIntervalMs: config.devWalletHotReloadIntervalMs,
+    });
+    const devStats = getDevWalletRegistryStats();
+    log.info(
+      `[BOOT] dev wallet registry: ${devStats.activeEntries}/${devStats.totalEntries} active, ` +
+      `addresses=${devStats.addressCount}, allowlist=${devStats.byStatus.allowlist}, ` +
+      `blacklist=${devStats.byStatus.blacklist}`
+    );
+  }
+
   let kolTracker: KolWalletTracker | null = null;
   if (config.kolTrackerEnabled) {
     await initKolDb({

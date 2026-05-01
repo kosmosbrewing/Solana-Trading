@@ -395,13 +395,14 @@ cron 예시:
 | `scripts/restart-timescaledb.sh` | TimescaleDB 컨테이너 재기동 | DB 컨테이너 장애 시 수동 복구 |
 | `scripts/sync-vps-data.sh` | VPS `data/`를 로컬로 회수 | 세션/리포트 분석용 수동 동기화 |
 
-#### `sync-vps-data.sh` 동작 (2026-04-16 강화 / 2026-04-26 분석 단계 추가)
+#### `sync-vps-data.sh` 동작 (2026-04-16 강화 / 2026-05-01 분석 단계 추가)
 
 - **DB URL 자동 해결**: `VPS_DATABASE_URL` 미설정 시 pm2 app(`momentum-bot`)에서 자동으로 `DATABASE_URL` 추출. `VPS_PM2_APP_NAME` env로 app 이름 재정의 가능.
 - **신선도 검증**: 덤프 전 `max(created_at)`를 로컬 `current-session.json`의 `startedAt`과 비교. DB가 현재 세션 시작보다 오래됐으면 에러로 중단.
 - **강제 허용**: `ALLOW_STALE_DB_DUMP=true` 설정 시 신선도 경고만 출력하고 진행.
 - **교차 검증**: 덤프 후 JSONL 내 실제 `dump_max_created`와 DB preflight 값 비교.
 - **자동 paper-arm-report (2026-04-26)**: sync 직후 `kol-paper-trades.jsonl` 기준 sub-arm 통계 생성 → `reports/kol-paper-arms-YYYY-MM-DD.md`. Jupiter API 0건 (file-only) — default ON.
+- **자동 token-quality-report (2026-05-01)**: sync 직후 `token-quality-observations.jsonl` + paper/live/missed-alpha + dev-wallet candidate JSON join → `reports/token-quality-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
 - **opt-in shadow-eval (2026-04-26)**: `RUN_SHADOW_EVAL=true` 시 KOL signal raw alpha 측정 (Jupiter forward quote 사용). default OFF — Jupiter quota 영향.
 
 ```bash
@@ -419,6 +420,9 @@ RUN_SHADOW_EVAL=true bash scripts/sync-vps-data.sh
 
 # paper arm report 생략 (rsync 만 필요할 때)
 SKIP_PAPER_REPORT=true bash scripts/sync-vps-data.sh
+
+# token quality / dev-candidate report 생략
+SKIP_TOKEN_QUALITY_REPORT=true bash scripts/sync-vps-data.sh
 ```
 
 원칙:

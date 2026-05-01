@@ -35,15 +35,15 @@ describe('sparseOpsSummary', () => {
     const summary = loadSparseOpsSummary(root, 4, 2);
     const message = buildSparseOpsSummaryMessage(summary);
 
-    expect(message).toContain('희박 거래 점검 (4h)');
-    expect(message).toContain('- 신호 0건 | 실제 진입 0건 | 진단 이벤트 8건');
-    expect(message).toContain('- 트리거: 평가 9843회 | 신호 0건 | 희박 데이터 부족 9758회 | sparse 신호 0건 | 부스트 0건');
+    expect(message).toContain('희박 거래: 신호 없음 (4h)');
+    expect(message).toContain('- 신호 0건 → live 0건');
     expect(message).toContain('- 판단: 희박 거래 데이터 부족이 우세함');
-    expect(message).toContain('- cupsey funnel: signals=12 gate_pass=4 stalk=4 entry=1 tx_ok=1 db_ok=1 notif_ok=1 closed=1');
-    expect(message).toContain('AhuQ6rsn...Ktta 2건');
-    expect(message).toContain('7Ccf3PNR...NzVe 1건');
-    expect(message).toContain('idle_evicted=2');
-    expect(message).toContain('top idle-evicted tickers: idle-token-1 2건');
+    expect(message).toContain('- 후보: seen 0 · admSkip 0 · idleEvict 2');
+    expect(message).toContain('- 병목: idle evict 2 (idle-token-1)');
+    expect(message).not.toContain('진단 이벤트');
+    expect(message).not.toContain('alias miss');
+    expect(message).not.toContain('Freshness');
+    expect(message).not.toContain('Cohort funnel');
   });
 
   it('partitions cohort funnel counts by cohort label and stage', () => {

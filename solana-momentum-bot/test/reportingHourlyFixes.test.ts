@@ -4,6 +4,8 @@
 // Q3: tradeStore fetch 실패 시 batch 손실 방지 (degraded line + buffer-only digest)
 
 import {
+  buildHourlyDigest,
+  type HourlyLine,
   resetHourlyBaselineForTests,
   resetReportSchedulerForTests,
 } from '../src/orchestration/reporting';
@@ -73,5 +75,55 @@ describe('Q3: degraded digest — buffer 보존 정합', () => {
     resetHourlyBaselineForTests();
     // (실제 buildHourlyDigest 는 export 안 돼 있어 직접 호출 불가 — invariant assertion 만)
     expect(true).toBe(true);
+  });
+});
+
+describe('Q4: mobile compact hourly digest', () => {
+  const kstMidnightUtcMs = Date.UTC(2026, 3, 30, 15, 0, 0, 0); // 2026-05-01 00:00 KST
+
+  function hourly(
+    kstHour: number,
+    balanceSol: number,
+    opts: Partial<Pick<HourlyLine, 'liveClosed' | 'liveWinners' | 'liveLosers' | 'liveCumPnl'>> = {},
+    minute = 0
+  ): HourlyLine {
+    const liveClosed = opts.liveClosed ?? 0;
+    const liveWinners = opts.liveWinners ?? 0;
+    const liveLosers = opts.liveLosers ?? 0;
+    const liveCumPnl = opts.liveCumPnl ?? 0;
+    const closeText = liveClosed === 0
+      ? 'close 0건'
+      : `close ${liveClosed}건 (${liveWinners}W/${liveLosers}L) net ${liveCumPnl >= 0 ? '+' : ''}${liveCumPnl.toFixed(4)}`;
+    return {
+      kstHour,
+      capturedAtMs: kstMidnightUtcMs + kstHour * 60 * 60 * 1000 + minute * 60 * 1000,
+      text: `- ${kstHour.toString().padStart(2, '0')}:00 · ${balanceSol.toFixed(4)} SOL (+0.0000) · ${closeText}`,
+      balanceSol,
+      liveClosed,
+      liveWinners,
+      liveLosers,
+      liveCumPnl,
+      fivexWinners: 0,
+      fivexCaptured: 0,
+      fivexKilled: 0,
+    };
+  }
+
+  it('unchanged balance rows are compressed into a range and duplicate hours keep the latest row', () => {
+    const lines: HourlyLine[] = [];
+    for (let h = 0; h <= 12; h++) lines.push(hourly(h, 0.8460));
+    lines.push(hourly(13, 0.8411, { liveClosed: 1, liveWinners: 0, liveLosers: 1, liveCumPnl: -0.0049 }, 0));
+    lines.push(hourly(13, 0.8572, { liveClosed: 6, liveWinners: 2, liveLosers: 4, liveCumPnl: 0.0184 }, 30));
+    lines.push(hourly(14, 0.8572, { liveClosed: 6, liveWinners: 2, liveLosers: 4, liveCumPnl: 0.0184 }, 0));
+    lines.push(hourly(14, 1.0142, {}, 30));
+
+    const digest = buildHourlyDigest(lines, null);
+
+    expect(digest).toContain('📊 <b>오늘 요약</b> KST 00:00→14:00');
+    expect(digest).toContain('- 00-12 · 0.8460 SOL · close 0건');
+    expect(digest).toContain('- 13:00 · 0.8572 SOL (+0.0112) · close 6건 (2W/4L) net +0.0184');
+    expect(digest).toContain('- 14:00 · 1.0142 SOL (+0.1570) · 잔고 변화');
+    expect(digest).toContain('· 합계 close 6건 (2W/4L) net +0.0184 SOL');
+    expect(digest).not.toContain('0.8411 SOL');
   });
 });

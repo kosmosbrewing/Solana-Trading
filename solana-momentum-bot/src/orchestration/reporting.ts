@@ -138,10 +138,12 @@ function formatKstHour(now: Date): string {
 //   - scheduler startup 시 lastFlushAtMs 이후의 entries 만 in-memory rehydrate
 //   - heartbeat / daily flush 시 lastFlushAtMs 갱신 → 다음 batch 는 새 window 만
 //   → 봇 재기동 시점 무관 24h 전체 (또는 last-flush 기준 window) 정확 출력.
-interface HourlyLine {
+export interface HourlyLine {
   kstHour: number;
   capturedAtMs: number;  // restart-resilient persistence + cross-day filter
   text: string;
+  balanceSol?: number;       // 2026-05-01: compact digest 용 structured balance.
+  balanceDeltaSol?: number;  // 직전 capture 대비 변화. legacy row 는 text parse fallback.
   liveClosed: number;
   liveWinners: number;
   liveLosers: number;
@@ -313,8 +315,10 @@ async function captureHourlySnapshot(ctx: BotContext): Promise<HourlyLine> {
     : await ctx.executor.getBalance();
 
   let deltaStr = '';
+  let balanceDeltaSol: number | undefined;
   if (hourlyBaseline != null) {
     const delta = balance - hourlyBaseline.balanceSol;
+    balanceDeltaSol = delta;
     const sign = delta >= 0 ? '+' : '';
     deltaStr = ` (${sign}${delta.toFixed(4)})`;
   }
@@ -379,6 +383,8 @@ async function captureHourlySnapshot(ctx: BotContext): Promise<HourlyLine> {
     kstHour,
     capturedAtMs: now.getTime(),
     text,
+    balanceSol: balance,
+    balanceDeltaSol,
     liveClosed: liveClosedCount,
     liveWinners,
     liveLosers,
@@ -408,13 +414,123 @@ async function bufferHourlySnapshot(ctx: BotContext): Promise<void> {
   }
 }
 
+const BALANCE_EQUAL_EPS = 0.00005;  // 4dp 표시 기준 같은 잔고로 취급
+
+function balanceFromHourlyLine(line: HourlyLine): number | null {
+  if (typeof line.balanceSol === 'number' && Number.isFinite(line.balanceSol)) return line.balanceSol;
+  const match = line.text.match(/·\s*([0-9]+(?:\.[0-9]+)?)\s*SOL/);
+  if (!match) return null;
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? value : null;
+}
+
+function isSameBalance(a: number | null, b: number | null): boolean {
+  if (a == null || b == null) return false;
+  return Math.abs(a - b) < BALANCE_EQUAL_EPS;
+}
+
+function kstHourKey(line: HourlyLine): string {
+  // KST date-hour key. 같은 hour 에 여러 번 capture 된 row 는 최신 row 만 사용한다.
+  return new Date(line.capturedAtMs + 9 * 60 * 60 * 1000).toISOString().slice(0, 13);
+}
+
+function dedupeHourlyLinesByKstHour(lines: HourlyLine[]): HourlyLine[] {
+  const byHour = new Map<string, HourlyLine>();
+  for (const line of [...lines].sort((a, b) => a.capturedAtMs - b.capturedAtMs)) {
+    const key = kstHourKey(line);
+    const current = byHour.get(key);
+    if (!current || line.capturedAtMs >= current.capturedAtMs) byHour.set(key, line);
+  }
+  return [...byHour.values()].sort((a, b) => a.capturedAtMs - b.capturedAtMs);
+}
+
+function hasHourlyActivity(line: HourlyLine): boolean {
+  if (line.liveClosed > 0) return true;
+  if ((line.fivexCaptured ?? 0) > 0 || (line.fivexKilled ?? 0) > 0 || (line.fivexWinners ?? 0) > 0) return true;
+  return line.text.includes('DB unavailable');
+}
+
+function formatBalanceDelta(current: number | null, previous: number | null): string {
+  if (current == null || previous == null) return '';
+  const delta = current - previous;
+  if (Math.abs(delta) < BALANCE_EQUAL_EPS) return '';
+  return ` (${delta >= 0 ? '+' : ''}${delta.toFixed(4)})`;
+}
+
+function formatHourLabel(line: HourlyLine): string {
+  return `${line.kstHour.toString().padStart(2, '0')}:00`;
+}
+
+function formatQuietRange(start: HourlyLine, end: HourlyLine, balance: number | null): string {
+  const startHour = start.kstHour.toString().padStart(2, '0');
+  const endHour = end.kstHour.toString().padStart(2, '0');
+  const range = startHour === endHour ? `${startHour}:00` : `${startHour}-${endHour}`;
+  const balanceText = balance == null ? '잔고 n/a' : `${balance.toFixed(4)} SOL`;
+  return `- ${range} · ${balanceText} · close 0건`;
+}
+
+function formatActiveHourlyLine(line: HourlyLine, previousBalance: number | null): string {
+  const balance = balanceFromHourlyLine(line);
+  const balanceText = balance == null ? '잔고 n/a' : `${balance.toFixed(4)} SOL${formatBalanceDelta(balance, previousBalance)}`;
+  const closeText = line.liveClosed > 0
+    ? `close ${line.liveClosed}건 (${line.liveWinners}W/${line.liveLosers}L) net ${line.liveCumPnl >= 0 ? '+' : ''}${line.liveCumPnl.toFixed(4)}`
+    : line.text.includes('DB unavailable')
+      ? 'close ?건 (DB unavailable)'
+      : '잔고 변화';
+  const fivexParts: string[] = [];
+  if ((line.fivexCaptured ?? 0) > 0) fivexParts.push(`🎯 5x capture ${line.fivexCaptured}`);
+  if ((line.fivexKilled ?? 0) > 0) fivexParts.push(`⚠ 5x killed ${line.fivexKilled}`);
+  if (line.fivexCaptured == null && line.fivexKilled == null && (line.fivexWinners ?? 0) > 0) {
+    fivexParts.push(`5x peak ${line.fivexWinners}`);
+  }
+  const fivexText = fivexParts.length > 0 ? ` · ${fivexParts.join(' · ')}` : '';
+  return `- ${formatHourLabel(line)} · ${balanceText} · ${closeText}${fivexText}`;
+}
+
+function formatCompactHourlyLines(lines: HourlyLine[]): string[] {
+  const out: string[] = [];
+  let quietStart: HourlyLine | null = null;
+  let quietEnd: HourlyLine | null = null;
+  let quietBalance: number | null = null;
+  let previousBalance: number | null = null;
+
+  const flushQuiet = () => {
+    if (quietStart && quietEnd) out.push(formatQuietRange(quietStart, quietEnd, quietBalance));
+    quietStart = null;
+    quietEnd = null;
+    quietBalance = null;
+  };
+
+  for (const line of lines) {
+    const balance = balanceFromHourlyLine(line);
+    const active = hasHourlyActivity(line);
+    const balanceChanged = previousBalance != null && balance != null && !isSameBalance(balance, previousBalance);
+
+    if (!active && !balanceChanged) {
+      if (!quietStart) {
+        quietStart = line;
+        quietBalance = balance;
+      }
+      quietEnd = line;
+      previousBalance = balance ?? previousBalance;
+      continue;
+    }
+
+    flushQuiet();
+    out.push(formatActiveHourlyLine(line, previousBalance));
+    previousBalance = balance ?? previousBalance;
+  }
+
+  flushQuiet();
+  return out;
+}
+
 /**
  * 2026-04-29 (Q3 fix): currentHour 가 null 이어도 buffer 만으로 digest 생성.
  * 2026-04-30 (사용자 권고): KST 00:00 부터 누적 — buffer 가 아닌 priorLines (disk persisted KST-midnight-anchored).
- * 이전: lastFlushAtMs 기반 buffer 만 (2-3h window).
- * 수정: priorLines (KST midnight 부터) + currentHour 결합. capturedAtMs dedup.
+ * 2026-05-01: 모바일 가독성 — 같은 KST hour 중복 row 는 최신만 사용하고, 잔고/close 변화 없는 구간은 range 로 압축.
  */
-function buildHourlyDigest(priorLines: HourlyLine[], currentHour: HourlyLine | null): string {
+export function buildHourlyDigest(priorLines: HourlyLine[], currentHour: HourlyLine | null): string {
   const merged: HourlyLine[] = [...priorLines];
   if (currentHour != null) {
     // dedup — 같은 capturedAtMs 가 prior 에도 있으면 skip (replay 방어)
@@ -422,24 +538,24 @@ function buildHourlyDigest(priorLines: HourlyLine[], currentHour: HourlyLine | n
     if (!dup) merged.push(currentHour);
   }
   if (merged.length === 0) return '';
-  merged.sort((a, b) => a.capturedAtMs - b.capturedAtMs);
+  const compacted = dedupeHourlyLinesByKstHour(merged);
+  if (compacted.length === 0) return '';
 
-  const totalClosed = merged.reduce((s, l) => s + l.liveClosed, 0);
-  const totalW = merged.reduce((s, l) => s + l.liveWinners, 0);
-  const totalL = merged.reduce((s, l) => s + l.liveLosers, 0);
-  const totalNet = merged.reduce((s, l) => s + l.liveCumPnl, 0);
+  const totalClosed = compacted.reduce((s, l) => s + l.liveClosed, 0);
+  const totalW = compacted.reduce((s, l) => s + l.liveWinners, 0);
+  const totalL = compacted.reduce((s, l) => s + l.liveLosers, 0);
+  const totalNet = compacted.reduce((s, l) => s + l.liveCumPnl, 0);
   // 2026-04-30: 5x peak capture vs killed 분리 합계. legacy entries (fivexCaptured 미기록) 는 fivexWinners 를 unknown 으로 처리.
-  const totalCaptured = merged.reduce((s, l) => s + (l.fivexCaptured ?? 0), 0);
-  const totalKilled = merged.reduce((s, l) => s + (l.fivexKilled ?? 0), 0);
-  const totalFivexLegacy = merged.reduce((s, l) => {
+  const totalCaptured = compacted.reduce((s, l) => s + (l.fivexCaptured ?? 0), 0);
+  const totalKilled = compacted.reduce((s, l) => s + (l.fivexKilled ?? 0), 0);
+  const totalFivexLegacy = compacted.reduce((s, l) => {
     if (l.fivexCaptured == null && l.fivexKilled == null) return s + (l.fivexWinners ?? 0);
     return s;
   }, 0);
-  const startHour = merged[0].kstHour.toString().padStart(2, '0');
-  const endHour = merged[merged.length - 1].kstHour.toString().padStart(2, '0');
-  const span = merged.length;
+  const startHour = compacted[0].kstHour.toString().padStart(2, '0');
+  const endHour = compacted[compacted.length - 1].kstHour.toString().padStart(2, '0');
 
-  const headline = `📊 <b>${span}h 요약</b> (KST ${startHour}:00 → ${endHour}:00, today)`;
+  const headline = `📊 <b>오늘 요약</b> KST ${startHour}:00→${endHour}:00`;
   const fivexParts: string[] = [];
   if (totalCaptured > 0) fivexParts.push(`🎯 5x capture ${totalCaptured}`);
   if (totalKilled > 0) fivexParts.push(`⚠ 5x killed ${totalKilled}`);
@@ -449,7 +565,7 @@ function buildHourlyDigest(priorLines: HourlyLine[], currentHour: HourlyLine | n
     ? `· 합계 close ${totalClosed}건 (${totalW}W/${totalL}L) net ${totalNet >= 0 ? '+' : ''}${totalNet.toFixed(4)} SOL${fivexSummary}`
     : `· 합계 close 0건 (해당 구간 거래 없음)`;
 
-  return [headline, ...merged.map((l) => l.text), aggregateLine].join('\n');
+  return [headline, ...formatCompactHourlyLines(compacted), aggregateLine].join('\n');
 }
 
 async function flushHourlyBuffer(): Promise<void> {

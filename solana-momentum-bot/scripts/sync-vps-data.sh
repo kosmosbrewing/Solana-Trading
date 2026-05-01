@@ -6,15 +6,18 @@
 # 파일 기반은 read-only · gitignore 가능 · 스키마 변화 자동 흡수.
 #
 # Usage:
-#   bash scripts/sync-vps-data.sh                    # files + logs + trades + paper-arm-report
-#   SKIP_TRADES=true bash scripts/sync-vps-data.sh   # rsync (files + logs) + report 만
-#   SKIP_FILES=true bash scripts/sync-vps-data.sh    # logs + trades + report 만
-#   SKIP_LOGS=true bash scripts/sync-vps-data.sh     # files + trades + report 만
+#   bash scripts/sync-vps-data.sh                    # files + logs + file-only reports
+#   RUN_TRADES_DUMP=true bash scripts/sync-vps-data.sh  # legacy DB trades snapshot opt-in
+#   SKIP_FILES=true bash scripts/sync-vps-data.sh    # logs + reports 만
+#   SKIP_LOGS=true bash scripts/sync-vps-data.sh     # files + reports 만
 #   SKIP_PAPER_REPORT=true bash scripts/sync-vps-data.sh   # paper arm report 생략
 #   SKIP_TOKEN_QUALITY_REPORT=true bash scripts/sync-vps-data.sh  # dev candidate quality report 생략
+#   SKIP_LIVE_CANARY_REPORT=true bash scripts/sync-vps-data.sh    # live canary report 생략
+#   SKIP_WINNER_KILL_REPORT=true bash scripts/sync-vps-data.sh    # winner-kill report 생략
+#   SKIP_SYNC_HEALTH=true bash scripts/sync-vps-data.sh           # sync health manifest 생략
 #   RUN_SHADOW_EVAL=true bash scripts/sync-vps-data.sh     # KOL shadow eval 추가 (Jupiter API 사용)
 #
-# Required for trades step:
+# Required only for RUN_TRADES_DUMP=true:
 #   export VPS_DATABASE_URL='postgresql://user:pw@host:port/dbname'
 #   (VPS pm2 env에서 확인: ssh $REMOTE_HOST 'pm2 env 0 | grep DATABASE_URL')
 #
@@ -24,8 +27,8 @@
 # Output:
 #   data/realtime/sessions/...           (rsync from VPS data/)
 #   logs/bot-out.log, logs/bot-error.log ... (rsync from VPS logs/)
-#   data/vps-trades-latest.jsonl         (one JSON object per row, gitignored)
-#   data/vps-trades-${STAMP}.jsonl       (timestamped snapshot)
+#   data/vps-trades-latest.jsonl         (opt-in, one JSON object per row, gitignored)
+#   data/vps-trades-${STAMP}.jsonl       (opt-in timestamped snapshot)
 
 set -euo pipefail
 
@@ -40,14 +43,27 @@ ALLOW_STALE_DB_DUMP="${ALLOW_STALE_DB_DUMP:-false}"
 
 SKIP_FILES="${SKIP_FILES:-false}"
 SKIP_LOGS="${SKIP_LOGS:-false}"
-SKIP_TRADES="${SKIP_TRADES:-${SKIP_DB:-false}}"  # legacy SKIP_DB 호환
-# 2026-04-26 — sync 직후 자동 분석 단계.
+# 2026-05-01: DB trades snapshot 은 기본 OFF. 운영 분석은 data/realtime JSONL 을 truth 로 사용한다.
+# 필요할 때만 RUN_TRADES_DUMP=true 또는 SKIP_TRADES=false 로 opt-in.
+RUN_TRADES_DUMP="${RUN_TRADES_DUMP:-false}"
+SKIP_TRADES="${SKIP_TRADES:-${SKIP_DB:-true}}"  # legacy SKIP_DB 호환
+if [ "$RUN_TRADES_DUMP" = "true" ]; then
+  SKIP_TRADES="false"
+fi
+# 2026-04-26~05-01 — sync 직후 자동 분석 단계.
 # paper-arm-report: 파일 only (Jupiter API 0건) → default ON.
 # token-quality-report: 파일 only (Jupiter/API 0건) → default ON. dev-wallet candidate JSON join 포함.
+# live-canary-report: 파일 only → default ON. live canary wallet-truth / 5x / catastrophic summary.
+# winner-kill-report: 파일 only → default ON. missed-alpha close-site 기반 tail-retain feedback.
+# sync-health: 파일 only → default ON. 핵심 JSONL row count / mtime manifest.
 # shadow-eval: Jupiter forward quote 호출 다수 → quota 절약을 위해 default OFF (opt-in).
 SKIP_PAPER_REPORT="${SKIP_PAPER_REPORT:-false}"
 SKIP_TOKEN_QUALITY_REPORT="${SKIP_TOKEN_QUALITY_REPORT:-false}"
+SKIP_LIVE_CANARY_REPORT="${SKIP_LIVE_CANARY_REPORT:-false}"
+SKIP_WINNER_KILL_REPORT="${SKIP_WINNER_KILL_REPORT:-false}"
+SKIP_SYNC_HEALTH="${SKIP_SYNC_HEALTH:-false}"
 TOKEN_QUALITY_WINDOW_DAYS="${TOKEN_QUALITY_WINDOW_DAYS:-7}"
+WINNER_KILL_WINDOW_DAYS="${WINNER_KILL_WINDOW_DAYS:-7}"
 RUN_SHADOW_EVAL="${RUN_SHADOW_EVAL:-false}"
 
 to_epoch() {
@@ -75,6 +91,77 @@ handle_stale_db() {
     echo "[sync-vps-data]   override: ALLOW_STALE_DB_DUMP=true bash scripts/sync-vps-data.sh"
     exit 1
   fi
+}
+
+jsonl_rows() {
+  local file="$1"
+  if [ ! -f "$file" ]; then
+    echo "missing"
+    return
+  fi
+  grep -cve '^[[:space:]]*$' "$file" 2>/dev/null || echo 0
+}
+
+file_bytes() {
+  local file="$1"
+  if [ ! -f "$file" ]; then
+    echo "missing"
+    return
+  fi
+  wc -c < "$file" | tr -d ' '
+}
+
+file_mtime_epoch() {
+  local file="$1"
+  if [ ! -f "$file" ]; then
+    echo ""
+    return
+  fi
+  stat -f "%m" "$file" 2>/dev/null || stat -c "%Y" "$file" 2>/dev/null || echo ""
+}
+
+file_mtime_iso() {
+  local file="$1"
+  local epoch
+  epoch="$(file_mtime_epoch "$file")"
+  if [ -z "$epoch" ]; then
+    echo "missing"
+    return
+  fi
+  date -u -r "$epoch" "+%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || \
+  date -u -d "@$epoch" "+%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "$epoch"
+}
+
+write_sync_health_report() {
+  local out_file="$1"
+  mkdir -p "$(dirname "$out_file")"
+  {
+    echo "# Sync Health ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+    echo ""
+    echo "| Artifact | Rows | Bytes | Modified UTC |"
+    echo "|---|---:|---:|---|"
+    for rel in \
+      "data/realtime/current-session.json" \
+      "data/realtime/kol-paper-trades.jsonl" \
+      "data/realtime/kol-live-trades.jsonl" \
+      "data/realtime/token-quality-observations.jsonl" \
+      "data/realtime/missed-alpha.jsonl" \
+      "data/realtime/executed-buys.jsonl" \
+      "data/realtime/executed-sells.jsonl" \
+      "logs/bot.log" \
+      "logs/bot-out.log" \
+      "logs/bot-error.log"
+    do
+      local abs="${ROOT_DIR}/${rel}"
+      local rows
+      if [[ "$rel" == *.jsonl || "$rel" == *.log ]]; then
+        rows="$(jsonl_rows "$abs")"
+      else
+        rows="-"
+      fi
+      echo "| ${rel} | ${rows} | $(file_bytes "$abs") | $(file_mtime_iso "$abs") |"
+    done
+  } > "$out_file"
 }
 
 # ─── 1. Files (jsonl, raw-swaps, micro-candles, sessions) ───
@@ -124,7 +211,7 @@ fi
 # ─── 3. Trades snapshot (JSONL, no local DB) ───
 TRADES_SKIPPED=false
 if [ "$SKIP_TRADES" = "true" ]; then
-  echo "[sync-vps-data] trades: SKIPPED (SKIP_TRADES=true)"
+  echo "[sync-vps-data] trades: SKIPPED (DB dump default off; set RUN_TRADES_DUMP=true to enable)"
   TRADES_SKIPPED=true
 fi
 
@@ -275,7 +362,52 @@ else
   echo "[sync-vps-data] token-quality-report: SKIPPED (SKIP_TOKEN_QUALITY_REPORT=true)"
 fi
 
-# ─── 6. Shadow eval (Jupiter API 호출, opt-in) ───
+# ─── 6. KOL live canary report (file-only) ───
+# Why: sync 직후 live canary wallet-truth / 5x / catastrophic / runner diagnostics 확인.
+# DB 미사용, Jupiter/RPC 호출 0건.
+if [ "$SKIP_LIVE_CANARY_REPORT" != "true" ]; then
+  LIVE_CANARY_MD="${ROOT_DIR}/reports/kol-live-canary-$(date +%Y-%m-%d).md"
+  LIVE_CANARY_JSON="${ROOT_DIR}/reports/kol-live-canary-$(date +%Y-%m-%d).json"
+  echo "[sync-vps-data] live-canary-report: generating"
+  if (cd "${ROOT_DIR}" && npm run -s kol:live-canary-report -- --ledger-dir data/realtime --md "${LIVE_CANARY_MD}" --json "${LIVE_CANARY_JSON}" 2>&1 | tail -8); then
+    echo "[sync-vps-data] live-canary-report: ok → ${LIVE_CANARY_MD}"
+  else
+    echo "[sync-vps-data] live-canary-report: WARN — generation failed (sync 자체는 정상)"
+  fi
+else
+  echo "[sync-vps-data] live-canary-report: SKIPPED (SKIP_LIVE_CANARY_REPORT=true)"
+fi
+
+# ─── 7. Winner-kill report (file-only) ───
+# Why: missed-alpha close-site markout 으로 early cut 이 5x winner 를 죽이는지 추적.
+# tail-retain / partial-take 측정 sprint 의 핵심 feedback.
+if [ "$SKIP_WINNER_KILL_REPORT" != "true" ]; then
+  WINNER_KILL_OUT="${ROOT_DIR}/reports/winner-kill-$(date +%Y-%m-%d).md"
+  mkdir -p "$(dirname "${WINNER_KILL_OUT}")"
+  echo "[sync-vps-data] winner-kill-report: generating ${WINNER_KILL_WINDOW_DAYS}d report"
+  if (cd "${ROOT_DIR}" && npx ts-node scripts/winner-kill-analyzer.ts --window-days="${WINNER_KILL_WINDOW_DAYS}" > "${WINNER_KILL_OUT}"); then
+    echo "[sync-vps-data] winner-kill-report: ok → ${WINNER_KILL_OUT}"
+  else
+    echo "[sync-vps-data] winner-kill-report: WARN — generation failed (sync 자체는 정상)"
+  fi
+else
+  echo "[sync-vps-data] winner-kill-report: SKIPPED (SKIP_WINNER_KILL_REPORT=true)"
+fi
+
+# ─── 8. Sync health manifest (file-only) ───
+if [ "$SKIP_SYNC_HEALTH" != "true" ]; then
+  SYNC_HEALTH_OUT="${ROOT_DIR}/reports/sync-health-$(date +%Y-%m-%d).md"
+  echo "[sync-vps-data] sync-health: generating"
+  if write_sync_health_report "${SYNC_HEALTH_OUT}"; then
+    echo "[sync-vps-data] sync-health: ok → ${SYNC_HEALTH_OUT}"
+  else
+    echo "[sync-vps-data] sync-health: WARN — generation failed (sync 자체는 정상)"
+  fi
+else
+  echo "[sync-vps-data] sync-health: SKIPPED (SKIP_SYNC_HEALTH=true)"
+fi
+
+# ─── 9. Shadow eval (Jupiter API 호출, opt-in) ───
 # Why: KOL signal 자체의 raw alpha (smart-v3 logic 무관) 측정 — Jupiter forward quote 사용.
 # Phase 2 go/no-go 판정용. Jupiter quota 영향 있어 default OFF.
 if [ "$RUN_SHADOW_EVAL" = "true" ]; then

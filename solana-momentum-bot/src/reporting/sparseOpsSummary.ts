@@ -216,26 +216,20 @@ export function buildCohortFunnelBreakdown(
 export function buildSparseOpsSummaryMessage(summary: SparseOpsSummary | undefined): string | undefined {
   if (!summary) return undefined;
 
+  const status = summary.executedLiveSignals > 0
+    ? `live ${summary.executedLiveSignals}건`
+    : summary.totalSignals > 0
+      ? '진입 없음'
+      : '신호 없음';
   const lines = [
-    `희박 거래 점검 (${summary.windowHours}h)`,
-    `- 신호 ${summary.totalSignals}건 | 실제 진입 ${summary.executedLiveSignals}건 | 진단 이벤트 ${summary.diagnosticEvents}건`,
+    `희박 거래: ${status} (${summary.windowHours}h)`,
+    `- 신호 ${summary.totalSignals}건 → live ${summary.executedLiveSignals}건`,
   ];
 
   if (summary.latestTriggerStats) {
     const trigger = summary.latestTriggerStats;
-    const parts = [
-      typeof trigger.evaluations === 'number' ? `평가 ${trigger.evaluations}회` : '',
-      typeof trigger.signals === 'number' ? `신호 ${trigger.signals}건` : '',
-      typeof trigger.sparseInsufficient === 'number' ? `희박 데이터 부족 ${trigger.sparseInsufficient}회` : '',
-      typeof trigger.sparseSignals === 'number' ? `sparse 신호 ${trigger.sparseSignals}건` : '',
-      typeof trigger.boostedSignals === 'number' ? `부스트 ${trigger.boostedSignals}건` : '',
-      typeof trigger.idlePairSkipped === 'number' ? `idle skip ${trigger.idlePairSkipped}회` : '',
-    ].filter(Boolean);
-    if (parts.length > 0) {
-      lines.push(`- 트리거: ${parts.join(' | ')}`);
-    }
     if (typeof trigger.activePairCount === 'number' || typeof trigger.sparseDominantPairCount === 'number') {
-      lines.push(`- 활성 pair ${trigger.activePairCount ?? '?'}개 | sparse 지배 pair ${trigger.sparseDominantPairCount ?? '?'}개`);
+      lines.push(`- 상태: 활성 pair ${trigger.activePairCount ?? '?'} · sparse pair ${trigger.sparseDominantPairCount ?? '?'}`);
     }
     const diagnosis = diagnoseSparseState(trigger);
     if (diagnosis) {
@@ -243,48 +237,32 @@ export function buildSparseOpsSummaryMessage(summary: SparseOpsSummary | undefin
     }
   }
 
-  if (summary.latestCupseyFunnel) {
-    lines.push(`- cupsey funnel: ${summary.latestCupseyFunnel}`);
-  }
-
-  if (summary.aliasMissTop.length > 0) {
-    const aliasSummary = summary.aliasMissTop
-      .map((entry) => `${shortenAddress(normalizeAliasLabel(entry.label))} ${entry.count}건`)
-      .join(', ');
-    lines.push(`- alias miss 상위: ${aliasSummary}`);
-  }
-
-  // ─── Freshness 블록 ───
   if (summary.freshness) {
     const f = summary.freshness;
-    lines.push('');
-    lines.push(`Freshness (${summary.windowHours}h)`);
-    lines.push(`- idleSkip delta: ${f.idleSkipDelta.toLocaleString()} | unique signaled tickers: ${f.uniqueSignaledTickers}`);
-    lines.push(`- candidate turnover: seen=${f.candidateSeen} evicted=${f.candidateEvicted} idle_evicted=${f.idleEvicted} | admission_skip=${f.admissionSkip}`);
-    if (f.admissionSkipByReason.length > 0) {
-      const reasons = f.admissionSkipByReason.map((r) => `${r.reason}=${r.count}`).join(', ');
-      lines.push(`- admission skip 사유: ${reasons}`);
-    }
-    if (f.topIdleEvictedTickers.length > 0) {
-      const evicted = f.topIdleEvictedTickers
-        .map((o) => `${shortenAddress(o.tokenMint)} ${o.count}건`)
-        .join(', ');
-      lines.push(`- top idle-evicted tickers: ${evicted}`);
-    }
-    if (f.topIdleOffenders.length > 0) {
-      const offenders = f.topIdleOffenders.map((o) => `${shortenAddress(o.pair)} ${o.count.toLocaleString()}회`).join(', ');
-      lines.push(`- top idle offenders: ${offenders}`);
-    }
-    // Phase 1: cohort breakdown block (fresh / mid / mature / unknown)
-    const cohortLines = formatCohortBreakdownLines(f.byCohort);
-    if (cohortLines.length > 0) {
-      lines.push('');
-      lines.push(`Cohort funnel (${summary.windowHours}h)`);
-      lines.push(...cohortLines);
-    }
+    lines.push(
+      `- 후보: seen ${f.candidateSeen} · admSkip ${f.admissionSkip} · idleEvict ${f.idleEvicted}`
+    );
+    const bottleneck = formatPrimarySparseBottleneck(f);
+    if (bottleneck) lines.push(`- 병목: ${bottleneck}`);
   }
 
   return lines.join('\n');
+}
+
+function formatPrimarySparseBottleneck(freshness: FreshnessSummary): string | undefined {
+  if (freshness.admissionSkipByReason.length > 0) {
+    return freshness.admissionSkipByReason
+      .slice(0, 3)
+      .map((r) => `${r.reason} ${r.count}`)
+      .join(', ');
+  }
+  if (freshness.topIdleEvictedTickers.length > 0) {
+    return `idle evict ${freshness.topIdleEvictedTickers[0].count} (${shortenAddress(freshness.topIdleEvictedTickers[0].tokenMint)})`;
+  }
+  const cohortLines = formatCohortBreakdownLines(freshness.byCohort)
+    .filter((line) => !line.startsWith('- unknown:'));
+  if (cohortLines.length > 0) return cohortLines.slice(0, 2).join(' / ');
+  return undefined;
 }
 
 function formatCohortBreakdownLines(
@@ -346,10 +324,6 @@ function parseTriggerStats(detail?: string): ParsedTriggerStats | undefined {
 function parseTriggerStat(detail: string, pattern: RegExp): number | undefined {
   const match = detail.match(pattern);
   return match ? Number(match[1]) : undefined;
-}
-
-function normalizeAliasLabel(label: string): string {
-  return label.startsWith('pool=') ? label.slice(5) : label;
 }
 
 function countBy<T>(items: T[], keyFn: (item: T) => string): Record<string, number> {

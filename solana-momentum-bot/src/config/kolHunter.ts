@@ -281,7 +281,7 @@ export const kolHunter = {
   kolHunterRotationV1MaxLastBuyAgeSec: numEnv('KOL_HUNTER_ROTATION_V1_MAX_LAST_BUY_AGE_SEC', '15'),
   kolHunterRotationV1MinBuyCount: numEnv('KOL_HUNTER_ROTATION_V1_MIN_BUY_COUNT', '3'),
   kolHunterRotationV1MinSmallBuyCount: numEnv('KOL_HUNTER_ROTATION_V1_MIN_SMALL_BUY_COUNT', '2'),
-  kolHunterRotationV1SmallBuyMaxSol: numEnv('KOL_HUNTER_ROTATION_V1_SMALL_BUY_MAX_SOL', '0.061'),
+  kolHunterRotationV1SmallBuyMaxSol: numEnv('KOL_HUNTER_ROTATION_V1_SMALL_BUY_MAX_SOL', '0.12'),
   kolHunterRotationV1MinGrossBuySol: numEnv('KOL_HUNTER_ROTATION_V1_MIN_GROSS_BUY_SOL', '1.0'),
   kolHunterRotationV1MaxRecentSellSec: numEnv('KOL_HUNTER_ROTATION_V1_MAX_RECENT_SELL_SEC', '60'),
   kolHunterRotationV1MinPriceResponsePct: numEnv('KOL_HUNTER_ROTATION_V1_MIN_PRICE_RESPONSE_PCT', '0.01'),
@@ -296,7 +296,7 @@ export const kolHunter = {
   // Rotation is a fast-compound lane. Primary validation horizons are immediate continuation (15s),
   // DOA/failure classification (30s), and short continuation (60s). Long-tail 300/1800s stays global.
   kolHunterRotationV1MarkoutOffsetsSec: parseSecondsList(optional('KOL_HUNTER_ROTATION_V1_MARKOUT_OFFSETS_SEC', '15,30,60')),
-  kolHunterRotationV1ParameterVersion: process.env.KOL_HUNTER_ROTATION_V1_PARAMETER_VERSION ?? 'rotation-v1.0.0',
+  kolHunterRotationV1ParameterVersion: process.env.KOL_HUNTER_ROTATION_V1_PARAMETER_VERSION ?? 'rotation-v1.0.1',
 
   // ─── 2026-04-26: kol_hunter_smart_v3 main paper entry logic ───
   // 운영자 결정: 돈을 번 적 없는 v1 single-KOL wait entry 대신 smart-v3 trigger 를 main 으로 사용.

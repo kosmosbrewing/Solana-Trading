@@ -20,6 +20,8 @@
     "kol:live-canary-report": "ts-node scripts/kol-live-canary-report.ts",
     "kol:policy-report": "ts-node scripts/kol-policy-report.ts",
     "kol:rotation-report": "ts-node scripts/rotation-lane-report.ts",
+    "purews:botflow-report": "ts-node scripts/pure-ws-botflow-report.ts",
+    "purews:botflow-paper": "ts-node scripts/pure-ws-botflow-report.ts",
     "ops:trade-markout-audit": "ts-node scripts/trade-markout-audit.ts",
     "lane:reconcile": "ts-node scripts/reconcile-lane-outcomes.ts",
     "lane:edge-report": "ts-node scripts/lane-edge-report.ts",

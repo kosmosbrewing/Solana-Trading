@@ -163,6 +163,128 @@ describe('tradeMarkoutObserver', () => {
     expect(records.map((row) => row.anchorTxSignature).sort()).toEqual(['sell-sig-1', 'sell-sig-2']);
   });
 
+  it('retries inflight-cap probes instead of writing a final rate_limited row immediately', async () => {
+    let resolveFirst: (value: unknown) => void = () => {};
+    mockAxiosGet
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }))
+      .mockResolvedValue({
+        data: { outAmount: String(2_000_000), outputDecimals: 6 },
+      });
+
+    for (const positionId of ['pos-cap-1', 'pos-cap-2']) {
+      trackTradeMarkout(
+        {
+          anchorType: 'buy',
+          positionId,
+          tokenMint: 'MintCap111111111111111111111111111111111',
+          anchorTxSignature: `${positionId}-sig`,
+          anchorAtMs: Date.now(),
+          anchorPrice: 0.01,
+          anchorPriceKind: 'entry_token_only',
+          probeSolAmount: 0.02,
+          tokenDecimals: 6,
+        },
+        { ...BASE_CFG, maxInflight: 1 },
+      );
+    }
+
+    await jest.advanceTimersByTimeAsync(30_001);
+    await flushAsync();
+
+    expect(mockAppendFile).not.toHaveBeenCalled();
+    expect(getTradeMarkoutObserverStats().scheduled).toBe(1);
+
+    resolveFirst({
+      data: { outAmount: String(2_000_000), outputDecimals: 6 },
+    });
+    await flushAsync();
+    expect(mockAppendFile).toHaveBeenCalledTimes(1);
+
+    await jest.advanceTimersByTimeAsync(5_001);
+    await flushAsync();
+
+    expect(mockAppendFile).toHaveBeenCalledTimes(2);
+    const records = mockAppendFile.mock.calls.map(([, payload]) => JSON.parse(String(payload).trim()));
+    expect(records.every((row) => row.quoteStatus === 'ok')).toBe(true);
+    expect(records.some((row) => row.quoteReason === 'observer_inflight_cap')).toBe(false);
+  });
+
+  it('writes observer_inflight_cap_exhausted after retry window is exhausted', async () => {
+    mockAxiosGet.mockImplementationOnce(() => new Promise(() => {}));
+
+    for (const positionId of ['pos-exhaust-hold', 'pos-exhaust-cap']) {
+      trackTradeMarkout(
+        {
+          anchorType: 'buy',
+          positionId,
+          tokenMint: 'MintCap222222222222222222222222222222222',
+          anchorTxSignature: `${positionId}-sig`,
+          anchorAtMs: Date.now(),
+          anchorPrice: 0.01,
+          anchorPriceKind: 'entry_token_only',
+          probeSolAmount: 0.02,
+          tokenDecimals: 6,
+        },
+        { ...BASE_CFG, maxInflight: 1 },
+      );
+    }
+
+    await jest.advanceTimersByTimeAsync(30_001);
+    await flushAsync();
+    expect(mockAppendFile).not.toHaveBeenCalled();
+
+    await jest.advanceTimersByTimeAsync(35_001);
+    await flushAsync();
+
+    expect(mockAppendFile).toHaveBeenCalledTimes(1);
+    const record = JSON.parse(String(mockAppendFile.mock.calls[0][1]).trim());
+    expect(record.positionId).toBe('pos-exhaust-cap');
+    expect(record.quoteStatus).toBe('rate_limited');
+    expect(record.quoteReason).toBe('observer_inflight_cap_exhausted');
+  });
+
+  it('does not hydrate exhausted rate-limited rows as retryable existing markouts', async () => {
+    mockReadFile.mockImplementation(async (file: string) => {
+      if (file.endsWith('executed-buys.jsonl')) {
+        return JSON.stringify({
+          strategy: 'kol_hunter',
+          positionId: 'pos-exhausted-existing',
+          pairAddress: 'MintExhausted111111111111111111111111',
+          txSignature: 'buy-sig-exhausted',
+          recordedAt: '2026-05-02T00:59:30.000Z',
+          buyCompletedAtMs: Date.parse('2026-05-02T00:59:30.000Z'),
+          actualEntryPrice: 0.01,
+          entryPriceTokenOnly: 0.01,
+          swapInputUiAmount: 0.02,
+          outputDecimals: 6,
+        }) + '\n';
+      }
+      if (file.endsWith('trade-markouts.jsonl')) {
+        return JSON.stringify({
+          positionId: 'pos-exhausted-existing',
+          anchorType: 'buy',
+          anchorTxSignature: 'buy-sig-exhausted',
+          anchorAt: '2026-05-02T00:59:30.000Z',
+          horizonSec: 30,
+          quoteStatus: 'rate_limited',
+          quoteReason: 'observer_inflight_cap_exhausted',
+          recordedAt: '2026-05-02T01:01:00.000Z',
+        }) + '\n';
+      }
+      return '';
+    });
+
+    const summary = await hydrateTradeMarkoutSchedulesFromLedger({
+      realtimeDir: '/tmp/realtime',
+      config: BASE_CFG,
+      lookbackHours: 2,
+    });
+
+    expect(summary.loadedBuys).toBe(1);
+    expect(summary.skippedExisting).toBe(1);
+    expect(summary.scheduled).toBe(0);
+  });
+
   it('writes an anchor ledger row before delayed markout probes', async () => {
     mockAxiosGet.mockResolvedValue({
       data: { outAmount: String(2_000_000), outputDecimals: 6 },

@@ -121,6 +121,10 @@ function markoutKey(row: JsonRow): string {
   return `${anchorKey(row)}:${String(row.horizonSec ?? '')}`;
 }
 
+function isOkMarkout(row: JsonRow): boolean {
+  return str(row.quoteStatus) === 'ok' && num(row.observedPrice) != null && num(row.deltaPct) != null;
+}
+
 function anchorKey(row: JsonRow): string {
   const anchorId = str(row.anchorTxSignature) || String(secondMs(timeMs(row.anchorAt)) || 'na');
   return `${str(row.positionId)}:${str(row.anchorType)}:${anchorId}`;
@@ -216,7 +220,13 @@ async function main(): Promise<void> {
   for (const row of recentMarkouts) {
     const key = markoutKey(row);
     const current = latestByKey.get(key);
-    if (!current || timeMs(row.recordedAt) >= timeMs(current.recordedAt)) {
+    const rowOk = isOkMarkout(row);
+    const currentOk = current ? isOkMarkout(current) : false;
+    if (
+      !current ||
+      (rowOk && !currentOk) ||
+      (rowOk === currentOk && timeMs(row.recordedAt) >= timeMs(current.recordedAt))
+    ) {
       latestByKey.set(key, row);
     }
   }
@@ -227,29 +237,35 @@ async function main(): Promise<void> {
   const latest = [...latestByKey.entries()]
     .filter(([key]) => expectedMarkoutKeys.size === 0 || expectedMarkoutKeys.has(key))
     .map(([, row]) => row);
+  const latestOk = latest.filter(isOkMarkout);
   const expected = expectedMarkoutKeys.size;
-  const coverage = expected > 0 ? latest.length / expected : 0;
+  const rowCoverage = expected > 0 ? latest.length / expected : 0;
+  const okCoverage = expected > 0 ? latestOk.length / expected : 0;
   const horizonCoverage = args.horizonsSec.map((horizonSec) => {
     const observedRows = latest.filter((row) => num(row.horizonSec) === horizonSec).length;
+    const okRows = latestOk.filter((row) => num(row.horizonSec) === horizonSec).length;
     const expectedRows = expectedAnchors.size;
     return {
       horizonSec,
       expectedRows,
       observedRows,
-      coveragePct: expectedRows > 0 ? (observedRows / expectedRows) * 100 : 0,
+      okRows,
+      rowCoveragePct: expectedRows > 0 ? (observedRows / expectedRows) * 100 : 0,
+      okCoveragePct: expectedRows > 0 ? (okRows / expectedRows) * 100 : 0,
+      coveragePct: expectedRows > 0 ? (okRows / expectedRows) * 100 : 0,
     };
   });
 
-  const bestAfterSell = latest
-    .filter((row) => row.anchorType === 'sell' && num(row.deltaPct) != null)
+  const bestAfterSell = latestOk
+    .filter((row) => row.anchorType === 'sell')
     .sort((a, b) => (num(b.deltaPct) ?? -Infinity) - (num(a.deltaPct) ?? -Infinity))
     .slice(0, 10)
     .map((row) =>
       `${str(row.positionId).slice(0, 24)} ${str(row.tokenMint).slice(0, 8)} ` +
       `T+${row.horizonSec}s delta=${((num(row.deltaPct) ?? 0) * 100).toFixed(1)}%`
     );
-  const worstAfterBuy = latest
-    .filter((row) => row.anchorType === 'buy' && num(row.deltaPct) != null)
+  const worstAfterBuy = latestOk
+    .filter((row) => row.anchorType === 'buy')
     .sort((a, b) => (num(a.deltaPct) ?? Infinity) - (num(b.deltaPct) ?? Infinity))
     .slice(0, 10)
     .map((row) =>
@@ -270,8 +286,11 @@ async function main(): Promise<void> {
       fallbackLiveSells: recentSells.length,
       expectedRows: expected,
       observedLatestRows: latest.length,
-      coveragePct: coverage * 100,
-      fiveXAfterSellRows: latest.filter((row) => row.anchorType === 'sell' && (num(row.deltaPct) ?? -Infinity) >= 4).length,
+      okLatestRows: latestOk.length,
+      rowCoveragePct: rowCoverage * 100,
+      okCoveragePct: okCoverage * 100,
+      coveragePct: okCoverage * 100,
+      fiveXAfterSellRows: latestOk.filter((row) => row.anchorType === 'sell' && (num(row.deltaPct) ?? -Infinity) >= 4).length,
     },
     counts: {
       anchorMode: countBy([...expectedAnchors.values()], (row) => row.mode),

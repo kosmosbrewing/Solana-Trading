@@ -10,6 +10,10 @@ export interface HorizonCoverage {
   horizonSec: number;
   expectedRows: number;
   observedRows: number;
+  okRows: number;
+  rowCoveragePct: number;
+  okCoveragePct: number;
+  /** Backward-compatible alias for okCoveragePct. */
   coveragePct: number;
 }
 
@@ -26,6 +30,10 @@ export interface AuditReport {
     fallbackLiveSells: number;
     expectedRows: number;
     observedLatestRows: number;
+    okLatestRows: number;
+    rowCoveragePct: number;
+    okCoveragePct: number;
+    /** Backward-compatible alias for okCoveragePct. */
     coveragePct: number;
     fiveXAfterSellRows: number;
   };
@@ -52,8 +60,9 @@ export function formatPct(value: number): string {
 export function verdictFor(report: Pick<AuditReport, 'summary'>): AuditReport['verdict'] {
   if (report.summary.fiveXAfterSellRows > 0) return 'PAUSE_REVIEW';
   if (report.summary.expectedRows === 0) return 'WATCH';
-  if (report.summary.coveragePct < 50) return 'INVESTIGATE';
-  if (report.summary.coveragePct < 80) return 'WATCH';
+  const okCoveragePct = report.summary.okCoveragePct ?? report.summary.coveragePct;
+  if (okCoveragePct < 50) return 'INVESTIGATE';
+  if (okCoveragePct < 80) return 'WATCH';
   return 'OK';
 }
 
@@ -70,7 +79,9 @@ export function renderText(report: AuditReport): string {
     `- anchors=${report.summary.anchors} anchorRows=${report.summary.anchorRows} fallbackLiveBuys=${report.summary.fallbackLiveBuys} fallbackLiveSells=${report.summary.fallbackLiveSells}`,
     `- anchorMode=${formatCounts(report.counts.anchorMode)}`,
     `- anchorEvent=${formatCounts(report.counts.anchorEvent, 8)}`,
-    `- expectedRows=${report.summary.expectedRows} observedLatestRows=${report.summary.observedLatestRows} coverage=${formatPct(report.summary.coveragePct)}`,
+    `- expectedRows=${report.summary.expectedRows} observedLatestRows=${report.summary.observedLatestRows} ` +
+      `okLatestRows=${report.summary.okLatestRows} rowCoverage=${formatPct(report.summary.rowCoveragePct)} ` +
+      `okCoverage=${formatPct(report.summary.okCoveragePct)}`,
     `- status=${formatCounts(report.counts.status)}`,
     `- anchorType=${formatCounts(report.counts.anchorType)}`,
     `- quoteReason=${formatCounts(report.counts.quoteReason, 8)}`,
@@ -78,7 +89,10 @@ export function renderText(report: AuditReport): string {
   if (report.horizonCoverage.length > 0) {
     lines.push('', 'Coverage by horizon:');
     for (const row of report.horizonCoverage) {
-      lines.push(`- T+${row.horizonSec}s expected=${row.expectedRows} observed=${row.observedRows} coverage=${formatPct(row.coveragePct)}`);
+      lines.push(
+        `- T+${row.horizonSec}s expected=${row.expectedRows} observed=${row.observedRows} ok=${row.okRows} ` +
+        `rowCoverage=${formatPct(row.rowCoveragePct)} okCoverage=${formatPct(row.okCoveragePct)}`
+      );
     }
   }
   if (report.topAfterSellPositive.length > 0) {
@@ -113,16 +127,21 @@ export function renderMarkdown(report: AuditReport): string {
     `| fallbackLiveSells | ${report.summary.fallbackLiveSells} |`,
     `| expectedRows | ${report.summary.expectedRows} |`,
     `| observedLatestRows | ${report.summary.observedLatestRows} |`,
-    `| coverage | ${formatPct(report.summary.coveragePct)} |`,
+    `| okLatestRows | ${report.summary.okLatestRows} |`,
+    `| rowCoverage | ${formatPct(report.summary.rowCoveragePct)} |`,
+    `| okCoverage | ${formatPct(report.summary.okCoveragePct)} |`,
     `| fiveXAfterSellRows | ${report.summary.fiveXAfterSellRows} |`,
     '',
     '## Horizon Coverage',
     '',
-    '| horizon | expected | observed | coverage |',
-    '|---:|---:|---:|---:|',
+    '| horizon | expected | observed | ok | rowCoverage | okCoverage |',
+    '|---:|---:|---:|---:|---:|---:|',
   ];
   for (const row of report.horizonCoverage) {
-    lines.push(`| T+${row.horizonSec}s | ${row.expectedRows} | ${row.observedRows} | ${formatPct(row.coveragePct)} |`);
+    lines.push(
+      `| T+${row.horizonSec}s | ${row.expectedRows} | ${row.observedRows} | ${row.okRows} | ` +
+      `${formatPct(row.rowCoveragePct)} | ${formatPct(row.okCoveragePct)} |`
+    );
   }
   lines.push(
     '',

@@ -13,6 +13,7 @@ import path from 'path';
 import { config } from '../../utils/config';
 import { Trade, CloseReason } from '../../utils/types';
 import { bpsToDecimal } from '../../utils/units';
+import { escapeHtml, shortenAddress } from '../../notifier/formatting';
 import { reportCanaryClose } from '../../risk/canaryAutoHalt';
 import { releaseCanarySlot } from '../../risk/canaryConcurrencyGuard';
 import { reportBleed } from '../../risk/dailyBleedBudget';
@@ -47,10 +48,10 @@ async function closePureWsPositionSerialized(
 ): Promise<void> {
   if (pos.state === 'CLOSED') return;
 
-  // Paper-only arm — DB persist / live sell / notifier 모두 우회.
+  // Paper-only arm — DB persist / live sell 모두 우회.
   // wallet 영향 0. live 운영 중 pure_ws primary paper 검증과 swing-v2 shadow 모두 여기로 온다.
   if (pos.isShadowArm === true || pos.paperOnlyReason != null) {
-    await closePaperOnlyPosition(id, pos, exitPrice, reason);
+    await closePaperOnlyPosition(id, pos, exitPrice, reason, ctx);
     return;
   }
 
@@ -324,7 +325,7 @@ async function closePureWsPositionSerialized(
  *  - DB persist / closeTrade 안 함 (별도 paper ledger)
  *  - canary slot release 안 함 (애초에 acquire 안 함)
  *  - bleed budget 누적 안 함 (paper 손실은 실제 wallet 영향 없음)
- *  - notifier 안 보냄 (Telegram noise 방지)
+ *  - primary paper-only 만 lightweight notifier 발송 가능 (shadow 는 중복 방지)
  *
  * 산출물: `data/realtime/pure-ws-paper-trades.jsonl` — paper-arm-report 가 sub-arm 통계 산출.
  */
@@ -332,7 +333,8 @@ async function closePaperOnlyPosition(
   id: string,
   pos: PureWsPosition,
   exitPrice: number,
-  reason: CloseReason
+  reason: CloseReason,
+  ctx: BotContext
 ): Promise<void> {
   pos.state = 'CLOSED';
   const holdSec = Math.floor(Date.now() / 1000) - pos.entryTimeSec;
@@ -366,6 +368,17 @@ async function closePaperOnlyPosition(
     `hold=${holdSec}s mfe=${(mfePct * 100).toFixed(2)}% mae=${(maePct * 100).toFixed(2)}% ` +
     `t1=${pos.t1VisitAtSec ? 'y' : 'n'} t2=${pos.t2VisitAtSec ? 'y' : 'n'} t3=${pos.t3VisitAtSec ? 'y' : 'n'}`
   );
+  if (config.pureWsPaperNotifyEnabled && !isShadow) {
+    const symbol = pos.tokenSymbol ?? shortenAddress(pos.pairAddress);
+    void ctx.notifier.sendMessage([
+      `🟣 <b>pure_ws paper 종료</b> <b>${escapeHtml(symbol)}</b> <code>${escapeHtml(id.slice(0, 12))}</code> · ${pnl >= 0 ? '+' : ''}${pnl.toFixed(6)} SOL`,
+      `${reason} · 보유 ${holdSec}s · net ${(netPct * 100).toFixed(2)}% · token-only ${(tokenOnlyNetPct * 100).toFixed(2)}%`,
+      `MFE ${(mfePct * 100).toFixed(2)}% · MAE ${(maePct * 100).toFixed(2)}%`,
+      `<code>${escapeHtml(pos.pairAddress)}</code>`,
+    ].join('\n')).catch((err) => {
+      log.warn(`[PUREWS_PAPER_NOTIFY_CLOSE_FAIL] ${id} ${err}`);
+    });
+  }
 
   // Paper ledger — kol-paper-trades.jsonl 패턴 동일.
   try {

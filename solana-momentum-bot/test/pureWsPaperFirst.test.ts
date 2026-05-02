@@ -62,6 +62,7 @@ function makeCtx(mode: 'live' | 'paper'): {
     sendTradeOpen: jest.fn(async () => {}),
     sendTradeClose: jest.fn(async () => {}),
     sendInfo: jest.fn(async () => {}),
+    sendMessage: jest.fn(async () => {}),
   };
   const tradeStore = {
     insertTrade: jest.fn(async () => 'db-1'),
@@ -96,6 +97,7 @@ describe('Block 3 QA — paper-first enforcement', () => {
     override('pureWsSellQuoteProbeEnabled', false);
     override('missedAlphaObserverEnabled', false);
     override('pureWsPaperShadowEnabled', true);
+    override('pureWsPaperNotifyEnabled', true);
     override('pureWsSwingV2Enabled', false);
     override('pureWsSwingV2LiveCanaryEnabled', false);
   });
@@ -104,7 +106,7 @@ describe('Block 3 QA — paper-first enforcement', () => {
     override('pureWsLiveCanaryEnabled', false);
     const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'purews-paper-'));
     override('realtimeDataDir', tmpDir);
-    const { ctx, executor, tradeStore } = makeCtx('live');
+    const { ctx, notifier, executor, tradeStore } = makeCtx('live');
     const builder = makeBuilder();
 
     await handlePureWsSignal(
@@ -121,12 +123,16 @@ describe('Block 3 QA — paper-first enforcement', () => {
     expect(positions[0].executionMode).toBe('paper');
     expect(positions[0].paperOnlyReason).toBe('live_canary_disabled');
     expect(positions[0].canarySlotAcquired).toBe(false);
+    expect(notifier.sendMessage).toHaveBeenCalledTimes(1);
+    expect(notifier.sendMessage.mock.calls[0][0]).toContain('pure_ws paper 진입');
 
     await updatePureWsPositions(ctx, makePriceBuilder(0.9));
 
     expect(getActivePureWsPositions().size).toBe(0);
     expect(executor.executeSell).not.toHaveBeenCalled();
     expect(tradeStore.closeTrade).not.toHaveBeenCalled();
+    expect(notifier.sendMessage).toHaveBeenCalledTimes(2);
+    expect(notifier.sendMessage.mock.calls[1][0]).toContain('pure_ws paper 종료');
     const paperRows = (await readFile(path.join(tmpDir, 'pure-ws-paper-trades.jsonl'), 'utf8'))
       .trim()
       .split('\n')
@@ -149,7 +155,7 @@ describe('Block 3 QA — paper-first enforcement', () => {
     override('pureWsPaperShadowEnabled', true);
     override('pureWsSwingV2Enabled', true);
     override('pureWsSwingV2LiveCanaryEnabled', true);
-    const { ctx, executor, tradeStore } = makeCtx('live');
+    const { ctx, notifier, executor, tradeStore } = makeCtx('live');
     const builder = makeBuilder();
 
     await handlePureWsSignal(
@@ -168,12 +174,14 @@ describe('Block 3 QA — paper-first enforcement', () => {
     expect(primary?.paperOnlyReason).toBe('live_canary_disabled');
     expect(swing?.isShadowArm).toBe(true);
     expect(swing?.executionMode).toBeUndefined();
+    expect(notifier.sendMessage).toHaveBeenCalledTimes(1);
+    expect(notifier.sendMessage.mock.calls[0][0]).toContain('pure_ws paper 진입');
   });
 
   it('live mode + paper shadow disabled keeps old log-only suppression', async () => {
     override('pureWsLiveCanaryEnabled', false);
     override('pureWsPaperShadowEnabled', false);
-    const { ctx, executor, tradeStore } = makeCtx('live');
+    const { ctx, notifier, executor, tradeStore } = makeCtx('live');
     const builder = makeBuilder();
 
     await handlePureWsSignal(
@@ -185,6 +193,7 @@ describe('Block 3 QA — paper-first enforcement', () => {
     expect(executor.executeBuy).not.toHaveBeenCalled();
     expect(tradeStore.insertTrade).not.toHaveBeenCalled();
     expect(getActivePureWsPositions().size).toBe(0);
+    expect(notifier.sendMessage).not.toHaveBeenCalled();
   });
 
   it('live mode + PUREWS_LIVE_CANARY_ENABLED=true: live buy proceeds', async () => {

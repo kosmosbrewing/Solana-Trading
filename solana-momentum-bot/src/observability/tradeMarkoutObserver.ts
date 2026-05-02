@@ -132,6 +132,7 @@ const DEFAULT_CONFIG: TradeMarkoutObserverConfig = {
 interface ScheduledMarkout {
   key: string;
   timer: NodeJS.Timeout;
+  retryAttempt: number;
 }
 
 const recentAnchorKeys = new Map<string, number>();
@@ -258,6 +259,7 @@ export async function hydrateTradeMarkoutSchedulesFromLedger(options: {
     const anchorType = stringField(row.anchorType);
     const horizonSec = numberField(row.horizonSec);
     if (id && anchorType && horizonSec != null) {
+      if (isRetryableExistingMarkout(row)) continue;
       const anchorTxSignature = stringField(row.anchorTxSignature);
       const anchorAtMs = timeField(row.anchorAt);
       existingKeys.add(
@@ -333,28 +335,45 @@ export async function hydrateTradeMarkoutSchedulesFromLedger(options: {
   return summary;
 }
 
+function isRetryableExistingMarkout(row: Record<string, unknown>): boolean {
+  if (stringField(row.quoteStatus) !== 'rate_limited') return false;
+  const reason = stringField(row.quoteReason);
+  if (!isRetryableQuoteReason(reason)) return false;
+  const horizonSec = numberField(row.horizonSec);
+  const anchorAtMs = timeField(row.anchorAt);
+  if (horizonSec == null || anchorAtMs == null) return false;
+  return Date.now() <= anchorAtMs + horizonSec * 1000 + maxRetryLateMs(horizonSec);
+}
+
+function isRetryableQuoteReason(reason: string | null): boolean {
+  if (!reason || reason.endsWith('_exhausted')) return false;
+  return reason === 'observer_inflight_cap' || reason === 'observer_cooldown' || /429|rate[_ ]?limit/i.test(reason);
+}
+
 function scheduleProbe(
   anchor: TradeMarkoutAnchor,
   cfg: TradeMarkoutObserverConfig,
   horizonSec: number,
   delayMs: number,
+  retryAttempt = 0,
 ): void {
   const key = markoutKey(anchor, horizonSec);
   if (scheduled.has(key)) return;
 
   const timer = setTimeout(() => {
     scheduled.delete(key);
-    runProbe(anchor, cfg, horizonSec)
+    runProbe(anchor, cfg, horizonSec, retryAttempt)
       .catch((err) => log.debug(`[TRADE_MARKOUT] probe error: ${String(err)}`));
   }, delayMs);
   if (timer.unref) timer.unref();
-  scheduled.set(key, { key, timer });
+  scheduled.set(key, { key, timer, retryAttempt });
 }
 
 async function runProbe(
   anchor: TradeMarkoutAnchor,
   cfg: TradeMarkoutObserverConfig,
   horizonSec: number,
+  retryAttempt = 0,
 ): Promise<void> {
   const firedAtMs = Date.now();
   let observedPrice: number | null = null;
@@ -366,9 +385,13 @@ async function runProbe(
   if (firedAtMs < rateLimitedUntilMs) {
     quoteStatus = 'rate_limited';
     quoteReason = 'observer_cooldown';
+    if (scheduleRetryableProbe(anchor, cfg, horizonSec, firedAtMs, retryAttempt, quoteReason)) return;
+    quoteReason = exhaustedQuoteReason(quoteReason);
   } else if (cfg.maxInflight > 0 && inflightProbes >= cfg.maxInflight) {
     quoteStatus = 'rate_limited';
     quoteReason = 'observer_inflight_cap';
+    if (scheduleRetryableProbe(anchor, cfg, horizonSec, firedAtMs, retryAttempt, quoteReason)) return;
+    quoteReason = exhaustedQuoteReason(quoteReason);
   } else {
     inflightProbes += 1;
     try {
@@ -401,6 +424,8 @@ async function runProbe(
         if (cfg.rateLimitCooldownMs > 0) {
           rateLimitedUntilMs = Date.now() + cfg.rateLimitCooldownMs;
         }
+        if (scheduleRetryableProbe(anchor, cfg, horizonSec, Date.now(), retryAttempt, 'jupiter_429')) return;
+        quoteReason = exhaustedQuoteReason('jupiter_429');
       }
     } finally {
       inflightProbes = Math.max(0, inflightProbes - 1);
@@ -437,6 +462,43 @@ async function runProbe(
     recordedAt: new Date().toISOString(),
   };
   await writeRecord(cfg.outputFile, record);
+}
+
+function exhaustedQuoteReason(reason: string): string {
+  if (reason.endsWith('_exhausted')) return reason;
+  return `${reason}_exhausted`;
+}
+
+function scheduleRetryableProbe(
+  anchor: TradeMarkoutAnchor,
+  cfg: TradeMarkoutObserverConfig,
+  horizonSec: number,
+  firedAtMs: number,
+  retryAttempt: number,
+  reason: string,
+): boolean {
+  const retryDelayMs = computeRetryDelayMs(cfg, retryAttempt);
+  const targetMs = (anchor.anchorAtMs ?? firedAtMs) + horizonSec * 1000;
+  const maxRetryUntilMs = targetMs + maxRetryLateMs(horizonSec);
+  if (firedAtMs + retryDelayMs > maxRetryUntilMs) return false;
+  scheduleProbe(anchor, cfg, horizonSec, retryDelayMs, retryAttempt + 1);
+  log.debug(
+    `[TRADE_MARKOUT_RETRY] ${anchor.positionId} ${anchor.anchorType} T+${horizonSec}s ` +
+    `reason=${reason} retry=${retryAttempt + 1} delayMs=${retryDelayMs}`
+  );
+  return true;
+}
+
+function computeRetryDelayMs(cfg: TradeMarkoutObserverConfig, retryAttempt: number): number {
+  const baseMs = Math.max(1_000, cfg.rateLimitCooldownMs > 0 ? cfg.rateLimitCooldownMs : 5_000);
+  const multiplier = Math.pow(2, Math.min(4, Math.max(0, retryAttempt)));
+  return Math.min(60_000, Math.round(baseMs * multiplier));
+}
+
+function maxRetryLateMs(horizonSec: number): number {
+  if (horizonSec <= 60) return 60_000;
+  if (horizonSec <= 300) return 180_000;
+  return 600_000;
 }
 
 interface ForwardQuote {

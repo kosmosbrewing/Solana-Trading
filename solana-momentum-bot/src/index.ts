@@ -77,6 +77,7 @@ import { isPumpSwapDexId } from './realtime/pumpSwapParser';
 import { logAdmissionSkipDex } from './realtime/admissionSkipLogger';
 import { startWalletStopGuard } from './risk/walletStopGuard';
 import { startWalletDeltaComparator } from './risk/walletDeltaComparator';
+import { createWalletExternalDeltaClassifier } from './risk/walletExternalDeltaClassifier';
 import { startJupiter429SummaryLoop } from './observability/jupiterRateLimitMetric';
 // 2026-04-23 Option 5: KOL Discovery
 import { Connection } from '@solana/web3.js';
@@ -123,6 +124,26 @@ import { runLaneRecoveries } from './init/runLaneRecoveries';
 import { setupShutdown } from './init/setupShutdown';
 
 const log = createModuleLogger('Main');
+
+async function realtimeCandleStage<T>(stage: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof Error) {
+      (err as Error & { realtimeCandleStage?: string }).realtimeCandleStage = stage;
+    }
+    throw err;
+  }
+}
+
+function withRealtimeCandleStage(error: unknown): unknown {
+  if (!(error instanceof Error)) return error;
+  const stage = (error as Error & { realtimeCandleStage?: string }).realtimeCandleStage;
+  if (!stage) return error;
+  const staged = new Error(`stage=${stage}: ${error.message}`);
+  staged.stack = error.stack;
+  return staged;
+}
 
 async function main() {
   const tradingMode = config.tradingMode;
@@ -572,8 +593,12 @@ async function main() {
     `[REAL_ASSET_GUARD] walletFloor=${config.walletStopMinSol} ` +
     `canaryLossCap=-${config.canaryMaxBudgetSol} ` +
     `canaryMaxTrades=${config.canaryMaxTrades} ` +
+    `kolCanaryLossCap=-${config.kolHunterCanaryMaxBudgetSol} ` +
+    `kolCanaryMaxTrades=${config.kolHunterCanaryMaxTrades} ` +
     `maxConcurrent=${config.pureWsMaxConcurrent} ` +
     `ticketSol=${config.pureWsLaneTicketSol} ` +
+    `kolTicketSol=${config.kolHunterTicketSol} ` +
+    `canaryHydrateLookbackH=${config.canaryAutoHaltHydrateLookbackHours} ` +
     `mode=${tradingMode}${config.pureWsLiveCanaryEnabled ? '_canary' : ''}`
   );
 
@@ -1180,6 +1205,15 @@ async function main() {
   // Why: 2026-04-17 wallet-reconcile 에서 DB pnl 허수 drift +18.34 SOL 사후 발견.
   // 운영 중 상시 감지 경로를 추가한다. live 모드에서만 작동 (paper 는 wallet 변화 없음).
   if (config.walletDeltaComparatorEnabled && tradingMode === 'live') {
+    const walletProfile = walletManager.getWallet(config.walletStopWalletName);
+    const externalDeltaClassifier = walletProfile
+      ? createWalletExternalDeltaClassifier({
+        connection: new Connection(config.solanaRpcUrl, 'confirmed'),
+        walletName: config.walletStopWalletName,
+        walletPublicKey: walletProfile.keypair.publicKey,
+        realtimeDataDir: config.realtimeDataDir,
+      })
+      : undefined;
     void startWalletDeltaComparator(walletManager, notifier, {
       enabled: true,
       pollIntervalMs: config.walletDeltaPollIntervalMs,
@@ -1191,6 +1225,7 @@ async function main() {
       // Sprint A1 (2026-04-28): warn alert dedup
       warnAlertCooldownMs: config.walletDeltaWarnAlertCooldownMs,
       warnDriftDeltaToleranceSol: config.walletDeltaWarnDriftDeltaToleranceSol,
+      externalDeltaClassifier,
     });
   } else {
     log.info(
@@ -1581,14 +1616,16 @@ async function main() {
       try {
         // Why: 99% zero-volume synthetic candle → disk 비대화 방지. in-memory 처리는 유지.
         if (realtimeReplayStore && candle.tradeCount > 0) {
-          await realtimeReplayStore.appendCandle({
+          await realtimeCandleStage('replay_store_append', () => realtimeReplayStore.appendCandle({
             ...candle,
             tokenMint: candle.pairAddress,
-          });
+          }));
         }
-        await realtimeOutcomeTracker?.onCandle(candle);
+        await realtimeCandleStage('outcome_tracker', async () => {
+          await realtimeOutcomeTracker?.onCandle(candle);
+        });
         if (candle.intervalSec >= 60) {
-          await candleStore.insertCandles([candle]);
+          await realtimeCandleStage('candle_store_insert', () => candleStore.insertCandles([candle]));
         }
         // Why: cap hit pair의 trigger eval 낭비 방지 — candle은 쌓되 eval은 skip
         if (ctx.riskManager.isCapSuppressed(candle.pairAddress)) {
@@ -1599,27 +1636,35 @@ async function main() {
         }
         // Trigger evaluation: tick mode에서는 swap handler에서 이미 평가 → candle trigger skip
         if (config.realtimeTriggerMode !== 'tick') {
-          const signal = trigger.onCandle(candle, realtimeCandleBuilder!);
+          const signal = await realtimeCandleStage('trigger_eval', async () =>
+            trigger.onCandle(candle, realtimeCandleBuilder!)
+          );
           if (signal) {
             log.info(`🎯 Signal fired: ${signal.strategy} ${signal.pairAddress.slice(0, 12)}… price=${signal.price} vr=${signal.meta.volumeRatio?.toFixed(1)}`);
-            await handleRealtimeSignal(signal, realtimeCandleBuilder!, ctx);
+            await realtimeCandleStage('handle_realtime_signal', () =>
+              handleRealtimeSignal(signal, realtimeCandleBuilder!, ctx)
+            );
             // Path A (2026-04-11): cupsey-inspired lane — 같은 signal, 별도 post-entry state machine.
             // 기존 handleRealtimeSignal 과 독립적으로 실행. sandbox ticket, main core 오염 없음.
             if (config.cupseyLaneEnabled) {
-              await handleCupseyLaneSignal(signal, realtimeCandleBuilder!, ctx);
+              await realtimeCandleStage('handle_cupsey_signal', () =>
+                handleCupseyLaneSignal(signal, realtimeCandleBuilder!, ctx)
+              );
             }
             // Block 3 (2026-04-18): pure_ws_breakout lane — convexity-aligned separate state machine.
             if (config.pureWsLaneEnabled) {
-              await handlePureWsSignal(signal, realtimeCandleBuilder!, ctx);
+              await realtimeCandleStage('handle_pure_ws_signal', () =>
+                handlePureWsSignal(signal, realtimeCandleBuilder!, ctx)
+              );
             }
           }
         }
         // Path A: cupsey position monitoring (매 candle tick 마다)
         if (config.cupseyLaneEnabled) {
-          await updateCupseyPositions(ctx, realtimeCandleBuilder!);
+          await realtimeCandleStage('cupsey_update', () => updateCupseyPositions(ctx, realtimeCandleBuilder!));
         }
         if (config.pureWsLaneEnabled) {
-          await updatePureWsPositions(ctx, realtimeCandleBuilder!);
+          await realtimeCandleStage('pure_ws_update', () => updatePureWsPositions(ctx, realtimeCandleBuilder!));
         }
         // DEX_TRADE Phase 1.3: v2 detector 독립 scan (candle close 마다 watchlist 전체 평가)
         // bootstrap signal 과 별개 경로. pureWsV2Enabled=true + pureWsLaneEnabled=true 일 때만 작동.
@@ -1629,17 +1674,20 @@ async function main() {
           const symByPair = new Map<string, string | undefined>(
             watchlistEntries.map((e) => [e.pairAddress, e.symbol])
           );
-          await scanPureWsV2Burst(ctx, realtimeCandleBuilder!, pairs, symByPair).catch((err) => {
+          await realtimeCandleStage('pure_ws_v2_scan', () =>
+            scanPureWsV2Burst(ctx, realtimeCandleBuilder!, pairs, symByPair)
+          ).catch((err) => {
             log.warn(`Pure WS v2 scan failed: ${err}`);
           });
         }
         // Tier 1 (2026-04-17): migration handoff reclaim lane. candle tick 경로만 사용 (race 예방).
         if (config.migrationLaneEnabled) {
-          await updateMigrationPositions(ctx, realtimeCandleBuilder!);
+          await realtimeCandleStage('migration_update', () => updateMigrationPositions(ctx, realtimeCandleBuilder!));
         }
       } catch (error) {
-        log.error(`Realtime candle handling failed: ${error}`);
-        await notifier.sendError('realtime_candle', error).catch(() => {});
+        const stagedError = withRealtimeCandleStage(error);
+        log.error(`Realtime candle handling failed: ${stagedError}`);
+        await notifier.sendError('realtime_candle', stagedError).catch(() => {});
       }
     });
   }

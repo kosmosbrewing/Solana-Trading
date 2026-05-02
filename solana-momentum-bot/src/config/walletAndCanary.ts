@@ -37,20 +37,20 @@ export const walletAndCanary = {
 
   // ─── KOL hunter live canary 별도 cap (Sprint 2, 2026-04-28) ───
   // 2026-04-28 B안: ticket 0.03 → 0.02 후퇴 + wallet floor 0.8 → 0.7. cap 도 비례 조정.
-  //   - cap 0.3 → 0.2 SOL: wallet floor 도달 전에 KOL lane 자체 차단
+  // 2026-05-02: 운영자 결정 — cap 0.35 / 300 trades 로 canary 연장. wallet floor 가 최종 hardstop.
+  //   - cap 0.35 SOL: 0.7 SOL floor 기준 wallet room 을 넘기지 않는 범위에서 KOL 표본 확장
   //   - max consec losers 5 유지: 0.02 × 5 = 0.10 SOL streak halt (cap 절반)
-  //   - max trades 50 유지: first checkpoint
+  //   - max trades 300: 200 trade mission checkpoint 이후 추가 표본 확보
   //   - drawdown budget = wallet - floor = 1.0 - 0.7 = 0.3 SOL
-  //     KOL cap 0.2 < 0.3 budget → KOL 단독으로 floor 위반 불가
+  //     KOL cap 은 운영 wallet 과 floor buffer 를 함께 확인해야 함
   //     단 cupsey/migration 동시 운영 시 합산 cap 0.5 SOL → wallet floor 가 최종 차단
   // Real Asset Guard wallet floor (walletStopGuard) 가 absolute hardstop.
-  kolHunterCanaryMaxBudgetSol: numEnv('KOL_HUNTER_CANARY_MAX_BUDGET_SOL', '0.2'),
+  kolHunterCanaryMaxBudgetSol: numEnv('KOL_HUNTER_CANARY_MAX_BUDGET_SOL', '0.35'),
   kolHunterCanaryMaxConsecLosers: numEnv('KOL_HUNTER_CANARY_MAX_CONSEC_LOSERS', '5'),
-  // 2026-05-01: 50 → 200 상향. 4-21 mission-refinement §5 의 "200 trade gate (scale/retire decision)"
-  // 직접 정합. 50 은 safety checkpoint 였으나 ledger hydrate 로 실제 누적 152 까지 진행 후
-  // 인지 → review process gap. 200 으로 상향하여 사명 §3 "200 trade + 5x+ winner" 까지 자연 누적.
+  // 2026-05-01: 50 → 200 상향. 2026-05-02: 200 → 300 상향.
+  // 200 은 mission checkpoint, 300 은 정책 승격 전 추가 표본 구간.
   // env override 가능 (보수적 운영자가 50 으로 다시 낮출 수 있음).
-  kolHunterCanaryMaxTrades: numEnv('KOL_HUNTER_CANARY_MAX_TRADES', '200'),
+  kolHunterCanaryMaxTrades: numEnv('KOL_HUNTER_CANARY_MAX_TRADES', '300'),
 
   // ─── Block 4 QA fix: wallet-level 전역 concurrency guard ───
   // Why: lane별 maxConcurrent 합계가 mission-pivot 의 "동시 max 3 ticket" 을 초과 가능 (cupsey 5 + pure_ws 3).

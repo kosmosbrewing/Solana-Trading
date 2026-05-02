@@ -31,12 +31,13 @@
 - DB trades dump 는 기본 사용 금지. 필요할 때만 `RUN_TRADES_DUMP=true bash scripts/sync-vps-data.sh`로 opt-in 한다.
 - 분석 기준 산출물은 아래 순서로 본다.
   1. `reports/sync-health-YYYY-MM-DD.md` — 파일 freshness / row count / missing artifact 확인. `logs/bot.log`가 30분 이상 stale 이면 결론 보류.
-  2. `reports/kol-live-canary-YYYY-MM-DD.md` — live canary wallet-truth, net SOL, actual 5x, Phase 4 gate. `phase4=PAUSE_REVIEW`면 승격 금지.
-  3. `reports/winner-kill-YYYY-MM-DD.md` — close 후 5x winner-kill rate. winner-kill 존재 시 exit/tail 정책을 먼저 검토한다.
-  4. `reports/token-quality-YYYY-MM-DD.md` — token-quality / dev-candidate cohort. `observations=0`이면 dev-quality 결론 금지.
-  5. `reports/kol-paper-arms-YYYY-MM-DD.md` — paper/shadow arm 비교. live 결정보다 낮은 권위.
+  2. `reports/trade-markout-YYYY-MM-DD.md` — 실제 buy/sell/paper anchor 이후 T+30/60/300/1800 관측률과 continuation. `coverage < 80%`이면 T+ 기반 결론은 보류한다.
+  3. `reports/kol-live-canary-YYYY-MM-DD.md` — live canary wallet-truth, net SOL, actual 5x, Phase 4 gate. `phase4=PAUSE_REVIEW`면 승격 금지.
+  4. `reports/winner-kill-YYYY-MM-DD.md` — close 후 5x winner-kill rate. winner-kill 존재 시 exit/tail 정책을 먼저 검토한다.
+  5. `reports/token-quality-YYYY-MM-DD.md` — token-quality / dev-candidate cohort. `observations=0`이면 dev-quality 결론 금지.
+  6. `reports/kol-paper-arms-YYYY-MM-DD.md` — paper/shadow arm 비교. live 결정보다 낮은 권위.
 - 운영 판정은 wallet truth 를 우선한다. DB PnL 단독 판정 금지.
-- 표준 판정 축: sync freshness, current session 이후 entry 유무, live closed/open/orphan, net SOL / max drawdown, actual MFE/T1/T2/5x, winner-kill, token-quality observations, wallet drift, recent ERROR/WARN.
+- 표준 판정 축: sync freshness, current session 이후 entry 유무, live closed/open/orphan, net SOL / max drawdown, actual MFE/T1/T2/5x, buy/sell T+ markout coverage/continuation, winner-kill, token-quality observations, wallet drift, recent ERROR/WARN.
 - 한 줄 판정은 `OK / WATCH / PAUSE_REVIEW / INVESTIGATE` 중 하나로 끝낸다.
 
 ---

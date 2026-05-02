@@ -405,6 +405,7 @@ cron 예시:
 - **자동 paper-arm-report (2026-04-26)**: sync 직후 `kol-paper-trades.jsonl` 기준 sub-arm 통계 생성 → `reports/kol-paper-arms-YYYY-MM-DD.md`. Jupiter API 0건 (file-only) — default ON.
 - **자동 token-quality-report (2026-05-01)**: sync 직후 `token-quality-observations.jsonl` + paper/live/missed-alpha + dev-wallet candidate JSON join → `reports/token-quality-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
 - **자동 live-canary-report (2026-05-01)**: sync 직후 live canary wallet-truth / 5x / catastrophic / runner 진단 생성 → `reports/kol-live-canary-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
+- **자동 trade-markout-report (2026-05-02)**: sync 직후 `trade-markout-anchors.jsonl` + `trade-markouts.jsonl` 로 실제 buy/sell/paper anchor 의 T+30/60/300/1800 coverage / continuation 진단 생성 → `reports/trade-markout-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
 - **자동 winner-kill-report (2026-05-01)**: sync 직후 missed-alpha close-site markout 으로 5x winner-kill rate 생성 → `reports/winner-kill-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
 - **자동 sync-health manifest (2026-05-01)**: 핵심 JSONL/log 파일의 row count, bytes, mtime 을 `reports/sync-health-YYYY-MM-DD.md`로 저장. 데이터 공백과 sync 실패 구분용 — default ON.
 - **opt-in shadow-eval (2026-04-26)**: `RUN_SHADOW_EVAL=true` 시 KOL signal raw alpha 측정 (Jupiter forward quote 사용). default OFF — Jupiter quota 영향.
@@ -431,8 +432,9 @@ SKIP_PAPER_REPORT=true bash scripts/sync-vps-data.sh
 # token quality / dev-candidate report 생략
 SKIP_TOKEN_QUALITY_REPORT=true bash scripts/sync-vps-data.sh
 
-# live canary / winner-kill / sync health 생략
+# live canary / trade markout / winner-kill / sync health 생략
 SKIP_LIVE_CANARY_REPORT=true bash scripts/sync-vps-data.sh
+SKIP_TRADE_MARKOUT_REPORT=true bash scripts/sync-vps-data.sh
 SKIP_WINNER_KILL_REPORT=true bash scripts/sync-vps-data.sh
 SKIP_SYNC_HEALTH=true bash scripts/sync-vps-data.sh
 ```

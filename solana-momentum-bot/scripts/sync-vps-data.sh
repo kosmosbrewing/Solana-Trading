@@ -13,6 +13,7 @@
 #   SKIP_PAPER_REPORT=true bash scripts/sync-vps-data.sh   # paper arm report 생략
 #   SKIP_TOKEN_QUALITY_REPORT=true bash scripts/sync-vps-data.sh  # dev candidate quality report 생략
 #   SKIP_LIVE_CANARY_REPORT=true bash scripts/sync-vps-data.sh    # live canary report 생략
+#   SKIP_TRADE_MARKOUT_REPORT=true bash scripts/sync-vps-data.sh  # buy/sell T+ markout report 생략
 #   SKIP_WINNER_KILL_REPORT=true bash scripts/sync-vps-data.sh    # winner-kill report 생략
 #   SKIP_SYNC_HEALTH=true bash scripts/sync-vps-data.sh           # sync health manifest 생략
 #   RUN_SHADOW_EVAL=true bash scripts/sync-vps-data.sh     # KOL shadow eval 추가 (Jupiter API 사용)
@@ -54,15 +55,18 @@ fi
 # paper-arm-report: 파일 only (Jupiter API 0건) → default ON.
 # token-quality-report: 파일 only (Jupiter/API 0건) → default ON. dev-wallet candidate JSON join 포함.
 # live-canary-report: 파일 only → default ON. live canary wallet-truth / 5x / catastrophic summary.
+# trade-markout-report: 파일 only → default ON. 실제 buy/sell 이후 T+30/60/300/1800 coverage / continuation.
 # winner-kill-report: 파일 only → default ON. missed-alpha close-site 기반 tail-retain feedback.
 # sync-health: 파일 only → default ON. 핵심 JSONL row count / mtime manifest.
 # shadow-eval: Jupiter forward quote 호출 다수 → quota 절약을 위해 default OFF (opt-in).
 SKIP_PAPER_REPORT="${SKIP_PAPER_REPORT:-false}"
 SKIP_TOKEN_QUALITY_REPORT="${SKIP_TOKEN_QUALITY_REPORT:-false}"
 SKIP_LIVE_CANARY_REPORT="${SKIP_LIVE_CANARY_REPORT:-false}"
+SKIP_TRADE_MARKOUT_REPORT="${SKIP_TRADE_MARKOUT_REPORT:-false}"
 SKIP_WINNER_KILL_REPORT="${SKIP_WINNER_KILL_REPORT:-false}"
 SKIP_SYNC_HEALTH="${SKIP_SYNC_HEALTH:-false}"
 TOKEN_QUALITY_WINDOW_DAYS="${TOKEN_QUALITY_WINDOW_DAYS:-7}"
+TRADE_MARKOUT_SINCE="${TRADE_MARKOUT_SINCE:-24h}"
 WINNER_KILL_WINDOW_DAYS="${WINNER_KILL_WINDOW_DAYS:-7}"
 RUN_SHADOW_EVAL="${RUN_SHADOW_EVAL:-false}"
 
@@ -146,6 +150,8 @@ write_sync_health_report() {
       "data/realtime/kol-live-trades.jsonl" \
       "data/realtime/token-quality-observations.jsonl" \
       "data/realtime/missed-alpha.jsonl" \
+      "data/realtime/trade-markout-anchors.jsonl" \
+      "data/realtime/trade-markouts.jsonl" \
       "data/realtime/executed-buys.jsonl" \
       "data/realtime/executed-sells.jsonl" \
       "logs/bot.log" \
@@ -378,7 +384,23 @@ else
   echo "[sync-vps-data] live-canary-report: SKIPPED (SKIP_LIVE_CANARY_REPORT=true)"
 fi
 
-# ─── 7. Winner-kill report (file-only) ───
+# ─── 7. Trade markout report (file-only) ───
+# Why: actual buy/sell/paper anchors 이후 T+30/60/300/1800 quote trajectory 를 sync 표준 산출물로 고정.
+# DB 미사용, Jupiter/RPC 호출 0건. trade-markout runtime observer 가 남긴 파일만 읽는다.
+if [ "$SKIP_TRADE_MARKOUT_REPORT" != "true" ]; then
+  TRADE_MARKOUT_MD="${ROOT_DIR}/reports/trade-markout-$(date +%Y-%m-%d).md"
+  TRADE_MARKOUT_JSON="${ROOT_DIR}/reports/trade-markout-$(date +%Y-%m-%d).json"
+  echo "[sync-vps-data] trade-markout-report: generating since=${TRADE_MARKOUT_SINCE}"
+  if (cd "${ROOT_DIR}" && npm run -s ops:trade-markout-audit -- --since "${TRADE_MARKOUT_SINCE}" --realtime-dir data/realtime --md "${TRADE_MARKOUT_MD}" --json "${TRADE_MARKOUT_JSON}" 2>&1 | tail -12); then
+    echo "[sync-vps-data] trade-markout-report: ok → ${TRADE_MARKOUT_MD}"
+  else
+    echo "[sync-vps-data] trade-markout-report: WARN — generation failed (sync 자체는 정상)"
+  fi
+else
+  echo "[sync-vps-data] trade-markout-report: SKIPPED (SKIP_TRADE_MARKOUT_REPORT=true)"
+fi
+
+# ─── 8. Winner-kill report (file-only) ───
 # Why: missed-alpha close-site markout 으로 early cut 이 5x winner 를 죽이는지 추적.
 # tail-retain / partial-take 측정 sprint 의 핵심 feedback.
 if [ "$SKIP_WINNER_KILL_REPORT" != "true" ]; then
@@ -394,7 +416,7 @@ else
   echo "[sync-vps-data] winner-kill-report: SKIPPED (SKIP_WINNER_KILL_REPORT=true)"
 fi
 
-# ─── 8. Sync health manifest (file-only) ───
+# ─── 9. Sync health manifest (file-only) ───
 if [ "$SKIP_SYNC_HEALTH" != "true" ]; then
   SYNC_HEALTH_OUT="${ROOT_DIR}/reports/sync-health-$(date +%Y-%m-%d).md"
   echo "[sync-vps-data] sync-health: generating"
@@ -407,7 +429,7 @@ else
   echo "[sync-vps-data] sync-health: SKIPPED (SKIP_SYNC_HEALTH=true)"
 fi
 
-# ─── 9. Shadow eval (Jupiter API 호출, opt-in) ───
+# ─── 10. Shadow eval (Jupiter API 호출, opt-in) ───
 # Why: KOL signal 자체의 raw alpha (smart-v3 logic 무관) 측정 — Jupiter forward quote 사용.
 # Phase 2 go/no-go 판정용. Jupiter quota 영향 있어 default OFF.
 if [ "$RUN_SHADOW_EVAL" = "true" ]; then

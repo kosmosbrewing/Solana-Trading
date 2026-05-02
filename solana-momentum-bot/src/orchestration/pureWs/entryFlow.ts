@@ -20,6 +20,7 @@ import {
   isQuarantined as pairQuarantineIsQuarantined,
 } from '../../risk/pairQuarantineTracker';
 import { uiAmountToRaw } from '../../utils/units';
+import { escapeHtml, shortenAddress } from '../../notifier/formatting';
 import {
   recordEntry as recordTokenSessionEntry,
   evaluateContinuation as evaluateTokenSessionContinuation,
@@ -463,6 +464,16 @@ export async function handlePureWsSignal(
         `signal_price=${signal.price.toFixed(8)}` +
         (swingLiveMayEnter ? ' swing-v2 live canary may still enter.' : '')
       );
+      if (config.pureWsPaperNotifyEnabled) {
+        const symbol = signal.tokenSymbol ?? shortenAddress(signal.pairAddress);
+        void ctx.notifier.sendMessage([
+          `🟣 <b>pure_ws paper 진입</b> <b>${escapeHtml(symbol)}</b> <code>${escapeHtml(positionId.slice(0, 12))}</code>`,
+          `${actualNotionalSol.toFixed(4)} SOL @ ${signal.price.toFixed(8)} · live buy suppressed`,
+          `<code>${escapeHtml(signal.pairAddress)}</code>`,
+        ].join('\n')).catch((err) => {
+          log.warn(`[PUREWS_PAPER_NOTIFY_OPEN_FAIL] ${positionId} ${err}`);
+        });
+      }
     }
   }
 

@@ -75,6 +75,13 @@ export function trackKolClose(input: {
   t1VisitAtSec?: number;
   t2VisitAtSec?: number;
   t3VisitAtSec?: number;
+  rotationAnchorKols?: string[] | null;
+  rotationEntryAtMs?: number | null;
+  rotationAnchorPrice?: number | null;
+  rotationFirstBuyAtMs?: number | null;
+  rotationLastBuyAtMs?: number | null;
+  rotationLastBuyAgeMs?: number | null;
+  rotationScore?: number | null;
 }): void {
   trackRejectForMissedAlpha(
     {
@@ -103,6 +110,13 @@ export function trackKolClose(input: {
         t1VisitAtSec: input.t1VisitAtSec ?? null,
         t2VisitAtSec: input.t2VisitAtSec ?? null,
         t3VisitAtSec: input.t3VisitAtSec ?? null,
+        rotationAnchorKols: input.rotationAnchorKols ?? null,
+        rotationEntryAtMs: input.rotationEntryAtMs ?? null,
+        rotationAnchorPrice: input.rotationAnchorPrice ?? null,
+        rotationFirstBuyAtMs: input.rotationFirstBuyAtMs ?? null,
+        rotationLastBuyAtMs: input.rotationLastBuyAtMs ?? null,
+        rotationLastBuyAgeMs: input.rotationLastBuyAgeMs ?? null,
+        rotationScore: input.rotationScore ?? null,
       },
     },
     buildMissedAlphaConfig()

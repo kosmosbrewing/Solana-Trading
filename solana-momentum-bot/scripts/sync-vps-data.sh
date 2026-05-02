@@ -56,6 +56,7 @@ fi
 # token-quality-report: 파일 only (Jupiter/API 0건) → default ON. dev-wallet candidate JSON join 포함.
 # live-canary-report: 파일 only → default ON. live canary wallet-truth / 5x / catastrophic summary.
 # trade-markout-report: 파일 only → default ON. 실제 buy/sell 이후 T+30/60/300/1800 coverage / continuation.
+# rotation-report: 파일 only → default ON. rotation lane T+15/30/60 entry/exit/no-trade feedback.
 # winner-kill-report: 파일 only → default ON. missed-alpha close-site 기반 tail-retain feedback.
 # sync-health: 파일 only → default ON. 핵심 JSONL row count / mtime manifest.
 # shadow-eval: Jupiter forward quote 호출 다수 → quota 절약을 위해 default OFF (opt-in).
@@ -63,10 +64,12 @@ SKIP_PAPER_REPORT="${SKIP_PAPER_REPORT:-false}"
 SKIP_TOKEN_QUALITY_REPORT="${SKIP_TOKEN_QUALITY_REPORT:-false}"
 SKIP_LIVE_CANARY_REPORT="${SKIP_LIVE_CANARY_REPORT:-false}"
 SKIP_TRADE_MARKOUT_REPORT="${SKIP_TRADE_MARKOUT_REPORT:-false}"
+SKIP_ROTATION_REPORT="${SKIP_ROTATION_REPORT:-false}"
 SKIP_WINNER_KILL_REPORT="${SKIP_WINNER_KILL_REPORT:-false}"
 SKIP_SYNC_HEALTH="${SKIP_SYNC_HEALTH:-false}"
 TOKEN_QUALITY_WINDOW_DAYS="${TOKEN_QUALITY_WINDOW_DAYS:-7}"
 TRADE_MARKOUT_SINCE="${TRADE_MARKOUT_SINCE:-24h}"
+ROTATION_REPORT_ROUND_TRIP_COST_PCT="${ROTATION_REPORT_ROUND_TRIP_COST_PCT:-0.005}"
 WINNER_KILL_WINDOW_DAYS="${WINNER_KILL_WINDOW_DAYS:-7}"
 RUN_SHADOW_EVAL="${RUN_SHADOW_EVAL:-false}"
 
@@ -400,7 +403,22 @@ else
   echo "[sync-vps-data] trade-markout-report: SKIPPED (SKIP_TRADE_MARKOUT_REPORT=true)"
 fi
 
-# ─── 8. Winner-kill report (file-only) ───
+# ─── 8. Rotation lane report (file-only) ───
+# Why: rotation lane 은 T+15/30/60 이 primary horizon. trade-markouts + missed-alpha 파일만 읽는다.
+if [ "$SKIP_ROTATION_REPORT" != "true" ]; then
+  ROTATION_MD="${ROOT_DIR}/reports/rotation-lane-$(date +%Y-%m-%d).md"
+  ROTATION_JSON="${ROOT_DIR}/reports/rotation-lane-$(date +%Y-%m-%d).json"
+  echo "[sync-vps-data] rotation-report: generating since=${TRADE_MARKOUT_SINCE} roundTripCost=${ROTATION_REPORT_ROUND_TRIP_COST_PCT}"
+  if (cd "${ROOT_DIR}" && npm run -s kol:rotation-report -- --since "${TRADE_MARKOUT_SINCE}" --realtime-dir data/realtime --round-trip-cost-pct "${ROTATION_REPORT_ROUND_TRIP_COST_PCT}" --md "${ROTATION_MD}" --json "${ROTATION_JSON}" 2>&1 | tail -12); then
+    echo "[sync-vps-data] rotation-report: ok → ${ROTATION_MD}"
+  else
+    echo "[sync-vps-data] rotation-report: WARN — generation failed (sync 자체는 정상)"
+  fi
+else
+  echo "[sync-vps-data] rotation-report: SKIPPED (SKIP_ROTATION_REPORT=true)"
+fi
+
+# ─── 9. Winner-kill report (file-only) ───
 # Why: missed-alpha close-site markout 으로 early cut 이 5x winner 를 죽이는지 추적.
 # tail-retain / partial-take 측정 sprint 의 핵심 feedback.
 if [ "$SKIP_WINNER_KILL_REPORT" != "true" ]; then
@@ -416,7 +434,7 @@ else
   echo "[sync-vps-data] winner-kill-report: SKIPPED (SKIP_WINNER_KILL_REPORT=true)"
 fi
 
-# ─── 9. Sync health manifest (file-only) ───
+# ─── 10. Sync health manifest (file-only) ───
 if [ "$SKIP_SYNC_HEALTH" != "true" ]; then
   SYNC_HEALTH_OUT="${ROOT_DIR}/reports/sync-health-$(date +%Y-%m-%d).md"
   echo "[sync-vps-data] sync-health: generating"

@@ -48,14 +48,27 @@ export async function openSwingV2Arm(input: OpenSwingV2Input): Promise<void> {
   const { signal, ctx, primaryPositionId, primaryEntryPrice, primaryQuantity,
     marketReferencePrice, buyRatioAtEntry, txCountAtEntry, nowSec } = input;
 
-  // Live canary mode 결정 (paper-first 강제 — 명시 opt-in 만 허용)
+  // Live canary mode 결정 (paper-first 강제 — 명시 opt-in 만 허용).
+  // live 운영에서 primary pure_ws 를 paper-only 로 돌리는 경우에는 하위 swing-v2 도 paper 로 고정한다.
+  // PUREWS_PAPER_SHADOW_ENABLED=false 를 명시한 legacy swing-only canary 조합만 예외적으로 live 허용.
+  const primaryPureWsPaperOnly =
+    ctx.tradingMode === 'live' &&
+    !config.pureWsLiveCanaryEnabled &&
+    config.pureWsPaperShadowEnabled;
   const liveCanary =
     config.pureWsSwingV2LiveCanaryEnabled &&
-    ctx.tradingMode === 'live';
+    ctx.tradingMode === 'live' &&
+    !primaryPureWsPaperOnly;
 
   if (liveCanary) {
     await openSwingV2Live(input);
   } else {
+    if (primaryPureWsPaperOnly && config.pureWsSwingV2LiveCanaryEnabled) {
+      log.info(
+        `[PUREWS_SWING_V2_PAPER_ONLY] ${primaryPositionId} live canary suppressed — ` +
+        `primary pure_ws is paper-only`
+      );
+    }
     openSwingV2Shadow({
       signal, primaryPositionId, primaryEntryPrice, primaryQuantity,
       marketReferencePrice, buyRatioAtEntry, txCountAtEntry, nowSec,

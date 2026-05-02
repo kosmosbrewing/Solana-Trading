@@ -18,6 +18,10 @@ interface LiveExecutionQualityHydrationSummary {
   skippedExpired: number;
 }
 
+interface TradeMarkoutHydrationSummary {
+  scheduled: number;
+}
+
 interface KolHunterStartupRuntime {
   initKolHunter(options: {
     securityClient?: BotContext['onchainSecurityClient'];
@@ -25,6 +29,7 @@ interface KolHunterStartupRuntime {
     ctx?: BotContext;
   }): void;
   hydrateLiveExecutionQualityCooldownsFromLedger(): Promise<LiveExecutionQualityHydrationSummary>;
+  hydrateTradeMarkoutsFromLedger?(): Promise<TradeMarkoutHydrationSummary>;
   handleKolSwap(tx: KolTx): Promise<void>;
   initKolPaperNotifier(notifier: Notifier): void;
 }
@@ -47,6 +52,7 @@ export async function startKolTrackerWithPreparedHunter(
   const {
     initKolHunter,
     hydrateLiveExecutionQualityCooldownsFromLedger,
+    hydrateTradeMarkoutsFromLedger,
     handleKolSwap,
     initKolPaperNotifier,
   } = options.runtime;
@@ -69,6 +75,14 @@ export async function startKolTrackerWithPreparedHunter(
         `hydrated=${qualityCooldownHydration.hydrated} ` +
         `expired=${qualityCooldownHydration.skippedExpired}`
       );
+      if (hydrateTradeMarkoutsFromLedger) {
+        const tradeMarkoutHydration = await hydrateTradeMarkoutsFromLedger();
+        if (tradeMarkoutHydration.scheduled > 0) {
+          options.log.info(
+            `[KOL_HUNTER] trade markout hydration scheduled=${tradeMarkoutHydration.scheduled}`
+          );
+        }
+      }
     }
     // RPC subscription 전 handler/listener 를 먼저 붙여 startup 직후 signal drop/live cooldown race 를 막는다.
     options.tracker.on('kol_swap', (tx: KolTx) => {

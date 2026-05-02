@@ -59,6 +59,15 @@ export const kolHunter = {
   kolHunterKolDecayCooldownMs: numEnv('KOL_HUNTER_KOL_DECAY_COOLDOWN_MS', '14400000'),  // 4h
   kolHunterKolDecayMinCloses: numEnv('KOL_HUNTER_KOL_DECAY_MIN_CLOSES', '3'),  // 직전 N close 평가
   kolHunterKolDecayLossRatioThreshold: numEnv('KOL_HUNTER_KOL_DECAY_LOSS_RATIO', '0.66'),  // 2/3 이상 손실
+  // 2026-05-02: Post-distribution live block.
+  // 최근 live/paper 확장 점검 결과, smart-v3 entry 직전 5분 sell wave
+  // (gross sell >= 2 SOL && sell KOL >= 2) 는 최근 구간 n=7 전부 loser/T1=0.
+  // paper/live 동일하게 공통 pre-entry 에서 block 하고 missed-alpha 로 false negative 를 측정.
+  kolHunterPostDistributionGuardEnabled: boolOptional('KOL_HUNTER_POST_DISTRIBUTION_GUARD_ENABLED', true),
+  kolHunterPostDistributionWindowSec: numEnv('KOL_HUNTER_POST_DISTRIBUTION_WINDOW_SEC', '300'),
+  kolHunterPostDistributionMinGrossSellSol: numEnv('KOL_HUNTER_POST_DISTRIBUTION_MIN_GROSS_SELL_SOL', '2'),
+  kolHunterPostDistributionMinSellKols: numEnv('KOL_HUNTER_POST_DISTRIBUTION_MIN_SELL_KOLS', '2'),
+  kolHunterPostDistributionCancelQuarantineSec: numEnv('KOL_HUNTER_POST_DISTRIBUTION_CANCEL_QUARANTINE_SEC', '600'),
   // 2026-04-28 B안: 운영자 결정 — live 24h n=44 데이터 (ROI -2.55%, catastrophic 4.5%) 도착 후
   // 0.03 → 0.02 SOL 후퇴. policyGuards POLICY_TICKET_MAX_SOL_BY_LANE.kol_hunter = 0.02 정합.
   // 200 trade 여정 시뮬: catastrophic 9건 + bleed 0.102 = 0.282 drawdown → wallet 0.718 (floor 0.7 +0.018 margin).

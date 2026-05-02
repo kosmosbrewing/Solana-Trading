@@ -47,11 +47,10 @@ async function closePureWsPositionSerialized(
 ): Promise<void> {
   if (pos.state === 'CLOSED') return;
 
-  // 2026-04-26: shadow arm (swing-v2 paper) — DB persist / live sell / notifier 모두 우회.
-  // primary 의 canary slot/budget 도 별도. paper close ledger 에만 기록.
-  // wallet 영향 0 — 사명 §3 (paper-first 강제) 정합.
-  if (pos.isShadowArm === true) {
-    await closeShadowArmPaper(id, pos, exitPrice, reason);
+  // Paper-only arm — DB persist / live sell / notifier 모두 우회.
+  // wallet 영향 0. live 운영 중 pure_ws primary paper 검증과 swing-v2 shadow 모두 여기로 온다.
+  if (pos.isShadowArm === true || pos.paperOnlyReason != null) {
+    await closePaperOnlyPosition(id, pos, exitPrice, reason);
     return;
   }
 
@@ -290,14 +289,15 @@ async function closePureWsPositionSerialized(
 
   // Block 4: canary auto-halt feed
   // 2026-04-26: swing-v2 live canary 는 별도 lane ('pure_ws_swing_v2') 으로 보고 — primary 와
-  // budget / consec losers 분리. shadow (paper) 는 isShadowArm=true 라 closeShadowArmPaper 에서
+  // budget / consec losers 분리. shadow (paper) 는 isShadowArm=true 라 closePaperOnlyPosition 에서
   // 이미 분기되었으므로 여기 도달 안 함.
   const closeLane = (pos.armName === 'pure_ws_swing_v2' && pos.isShadowArm === false)
     ? 'pure_ws_swing_v2'
     : LANE_STRATEGY;
   reportCanaryClose(closeLane, pnl);
   // Block 4 QA fix: 전역 concurrency slot 해제 (acquire 대응)
-  releaseCanarySlot(closeLane);
+  // legacy recovered position 은 flag 가 없을 수 있어 기존 동작 유지.
+  if (pos.canarySlotAcquired !== false) releaseCanarySlot(closeLane);
 
   // DEX_TRADE Phase 2: daily bleed budget 누적
   // Why: close 직후 실제 발생한 loss 를 budget 에 반영. winner 는 budget 영향 없음 (spend 0).
@@ -317,7 +317,7 @@ async function closePureWsPositionSerialized(
 }
 
 /**
- * 2026-04-26: pure_ws swing-v2 shadow paper close.
+ * pure_ws paper-only close.
  *
  * 단순 paper-only 회수 — wallet/DB 모두 미접촉:
  *  - live sell 안 함 (paper 가격으로 가상 체결)
@@ -328,7 +328,7 @@ async function closePureWsPositionSerialized(
  *
  * 산출물: `data/realtime/pure-ws-paper-trades.jsonl` — paper-arm-report 가 sub-arm 통계 산출.
  */
-async function closeShadowArmPaper(
+async function closePaperOnlyPosition(
   id: string,
   pos: PureWsPosition,
   exitPrice: number,
@@ -339,19 +339,30 @@ async function closeShadowArmPaper(
 
   // Paper PnL — KOL paper 와 동일 비용 모델 (왕복 cost 차감).
   const rawPnl = (exitPrice - pos.entryPrice) * pos.quantity;
-  const paperCost = pos.entryPrice * pos.quantity * (config.defaultAmmFeePct + config.defaultMevMarginPct);
+  const ticketSol = pos.entryPrice * pos.quantity;
+  const paperCost = ticketSol * (config.defaultAmmFeePct + config.defaultMevMarginPct);
   const pnl = rawPnl - paperCost;
-  const pnlPct = pos.entryPrice > 0
-    ? ((exitPrice - pos.entryPrice) / pos.entryPrice) * 100
+  const tokenOnlyNetPct = pos.entryPrice > 0
+    ? (exitPrice - pos.entryPrice) / pos.entryPrice
     : 0;
+  const netPct = ticketSol > 0 ? pnl / ticketSol : tokenOnlyNetPct;
 
   const ref = pos.marketReferencePrice;
   const mfePct = ref > 0 ? (pos.peakPrice - ref) / ref : 0;
   const maePct = ref > 0 ? (pos.troughPrice - ref) / ref : 0;
+  const isShadow = pos.isShadowArm === true;
+  const strategy = isShadow ? 'pure_ws_swing_v2' : LANE_STRATEGY;
+  const armName = pos.armName ?? strategy;
+  const tag = isShadow ? 'PUREWS_SWING_V2_PAPER_CLOSE' : 'PUREWS_PAPER_CLOSE';
+
+  if (config.tokenSessionTrackerEnabled) {
+    recordTokenSessionClose({ tokenMint: pos.pairAddress, netPct });
+  }
+  if (!isShadow) funnelStats.closedTrades++;
 
   log.info(
-    `[PUREWS_SWING_V2_PAPER_CLOSE] ${id} reason=${reason} ` +
-    `pnl=${pnl >= 0 ? '+' : ''}${pnl.toFixed(6)} SOL (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%) ` +
+    `[${tag}] ${id} reason=${reason} ` +
+    `pnl=${pnl >= 0 ? '+' : ''}${pnl.toFixed(6)} SOL (${netPct >= 0 ? '+' : ''}${(netPct * 100).toFixed(2)}%) ` +
     `hold=${holdSec}s mfe=${(mfePct * 100).toFixed(2)}% mae=${(maePct * 100).toFixed(2)}% ` +
     `t1=${pos.t1VisitAtSec ? 'y' : 'n'} t2=${pos.t2VisitAtSec ? 'y' : 'n'} t3=${pos.t3VisitAtSec ? 'y' : 'n'}`
   );
@@ -360,27 +371,36 @@ async function closeShadowArmPaper(
   try {
     const dir = config.realtimeDataDir;
     await mkdir(dir, { recursive: true });
+    const closedAt = new Date();
     const record = {
       positionId: id,
-      strategy: 'pure_ws_swing_v2',
+      strategy,
       lane: LANE_STRATEGY,
-      armName: pos.armName ?? 'pure_ws_swing_v2',
-      parameterVersion: pos.parameterVersion ?? config.pureWsSwingV2ParameterVersion,
-      isShadowArm: true,
+      armName,
+      parameterVersion: pos.parameterVersion ?? (isShadow ? config.pureWsSwingV2ParameterVersion : 'pure-ws-v1.0.0'),
+      isShadowArm: isShadow,
       parentPositionId: pos.parentPositionId ?? null,
+      executionMode: pos.executionMode ?? 'paper',
+      paperOnlyReason: pos.paperOnlyReason ?? (isShadow ? 'shadow_arm' : null),
       pairAddress: pos.pairAddress,
       tokenSymbol: pos.tokenSymbol ?? null,
       sourceLabel: pos.sourceLabel ?? null,
       discoverySource: pos.discoverySource ?? null,
+      ticketSol,
       entryPrice: pos.entryPrice,
       exitPrice,
+      entryTimeSec: pos.entryTimeSec,
+      exitTimeSec: Math.floor(closedAt.getTime() / 1000),
+      entryAt: new Date(pos.entryTimeSec * 1000).toISOString(),
       marketReferencePrice: ref,
       peakPrice: pos.peakPrice,
       troughPrice: pos.troughPrice,
       mfePctPeak: mfePct,
       maePct,
-      netPct: pnlPct / 100,
+      netPct,
+      netPctTokenOnly: tokenOnlyNetPct,
       netSol: pnl,
+      netSolTokenOnly: rawPnl,
       holdSec,
       exitReason: reason,
       t1VisitAtSec: pos.t1VisitAtSec ?? null,
@@ -390,7 +410,7 @@ async function closeShadowArmPaper(
       probeHardCutPct: pos.probeHardCutPctOverride ?? null,
       t1TrailPct: pos.t1TrailPctOverride ?? null,
       t1ProfitFloorMult: pos.t1ProfitFloorMultOverride ?? null,
-      closedAt: new Date().toISOString(),
+      closedAt: closedAt.toISOString(),
     };
     await appendFile(
       path.join(dir, 'pure-ws-paper-trades.jsonl'),
@@ -398,7 +418,7 @@ async function closeShadowArmPaper(
       'utf8'
     );
   } catch (err) {
-    log.debug(`[PUREWS_SWING_V2] paper ledger append failed: ${err}`);
+    log.debug(`[${tag}] paper ledger append failed: ${err}`);
   }
 
   // 메모리 정리만 — primary 의 livePriceTracker 는 primary close 가 처리.

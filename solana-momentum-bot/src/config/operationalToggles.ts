@@ -44,4 +44,7 @@ export const operationalToggles = {
   pureWsLaneWalletMode: (process.env.PUREWS_WALLET_MODE ?? 'auto') as 'auto' | 'main' | 'sandbox',
   // Why: PUREWS_LANE_ENABLED + TRADING_MODE=live 만으로 자동 live 가 되지 않게 하기 위함.
   pureWsLiveCanaryEnabled: boolOptional('PUREWS_LIVE_CANARY_ENABLED', false),
+  // live 운영 중에도 pure_ws primary 를 paper-only 로 계속 검증한다.
+  // false 로 두면 예전처럼 PUREWS_LIVE_CANARY_ENABLED=false 에서 로그만 남기고 return.
+  pureWsPaperShadowEnabled: boolOptional('PUREWS_PAPER_SHADOW_ENABLED', true),
 } as const;

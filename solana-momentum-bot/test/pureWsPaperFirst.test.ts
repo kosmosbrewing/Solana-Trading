@@ -9,10 +9,15 @@
 import { createBlockedAxiosMock } from './__helpers__/network';
 jest.mock('axios', () => createBlockedAxiosMock());
 
+import { mkdtemp, readFile } from 'fs/promises';
+import os from 'os';
+import path from 'path';
 import {
   handlePureWsSignal,
+  updatePureWsPositions,
   resetPureWsLaneStateForTests,
   getActivePureWsPositions,
+  getPureWsFunnelStats,
 } from '../src/orchestration/pureWsBreakoutHandler';
 import { resetAllEntryHaltsForTests } from '../src/orchestration/entryIntegrity';
 import { resetWalletStopGuardForTests } from '../src/risk/walletStopGuard';
@@ -33,7 +38,19 @@ function makeBuilder(): MicroCandleBuilder {
   } as unknown as MicroCandleBuilder;
 }
 
-function makeCtx(mode: 'live' | 'paper'): { ctx: BotContext; notifier: any; executor: { executeBuy: jest.Mock }; tradeStore: { insertTrade: jest.Mock } } {
+function makePriceBuilder(price: number): MicroCandleBuilder {
+  return {
+    getCurrentPrice: () => price,
+    getRecentCandles: () => [],
+  } as unknown as MicroCandleBuilder;
+}
+
+function makeCtx(mode: 'live' | 'paper'): {
+  ctx: BotContext;
+  notifier: any;
+  executor: { executeBuy: jest.Mock; executeSell: jest.Mock };
+  tradeStore: { insertTrade: jest.Mock; closeTrade: jest.Mock };
+} {
   const executor = {
     executeBuy: jest.fn(async () => ({ txSignature: 'sig1', slippageBps: 10, actualInputUiAmount: 0.01, actualOutUiAmount: 100 })),
     getBalance: jest.fn(async () => 1.0),
@@ -77,15 +94,90 @@ describe('Block 3 QA — paper-first enforcement', () => {
     override('pureWsRunSellQuoteProbe', false);
     override('pureWsEntryDriftGuardEnabled', false);
     override('pureWsSellQuoteProbeEnabled', false);
+    override('missedAlphaObserverEnabled', false);
+    override('pureWsPaperShadowEnabled', true);
+    override('pureWsSwingV2Enabled', false);
+    override('pureWsSwingV2LiveCanaryEnabled', false);
   });
 
-  it('live mode + PUREWS_LIVE_CANARY_ENABLED=false: live buy suppressed, no position opened', async () => {
+  it('live mode + PUREWS_LIVE_CANARY_ENABLED=false: opens primary paper-only position, no live buy', async () => {
     override('pureWsLiveCanaryEnabled', false);
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'purews-paper-'));
+    override('realtimeDataDir', tmpDir);
     const { ctx, executor, tradeStore } = makeCtx('live');
     const builder = makeBuilder();
 
     await handlePureWsSignal(
       { pairAddress: 'PAIR1', strategy: 'bootstrap_10s', price: 1.0 } as any,
+      builder,
+      ctx
+    );
+
+    expect(executor.executeBuy).not.toHaveBeenCalled();
+    expect(tradeStore.insertTrade).not.toHaveBeenCalled();
+    const positions = [...getActivePureWsPositions().values()];
+    expect(positions).toHaveLength(1);
+    expect(positions[0].armName).toBe('pure_ws_breakout');
+    expect(positions[0].executionMode).toBe('paper');
+    expect(positions[0].paperOnlyReason).toBe('live_canary_disabled');
+    expect(positions[0].canarySlotAcquired).toBe(false);
+
+    await updatePureWsPositions(ctx, makePriceBuilder(0.9));
+
+    expect(getActivePureWsPositions().size).toBe(0);
+    expect(executor.executeSell).not.toHaveBeenCalled();
+    expect(tradeStore.closeTrade).not.toHaveBeenCalled();
+    const paperRows = (await readFile(path.join(tmpDir, 'pure-ws-paper-trades.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    expect(paperRows).toHaveLength(1);
+    expect(paperRows[0]).toMatchObject({
+      strategy: 'pure_ws_breakout',
+      armName: 'pure_ws_breakout',
+      isShadowArm: false,
+      executionMode: 'paper',
+      paperOnlyReason: 'live_canary_disabled',
+      exitReason: 'REJECT_HARD_CUT',
+    });
+    expect(paperRows[0].netPct).toBeLessThan(paperRows[0].netPctTokenOnly);
+    expect(getPureWsFunnelStats().closedTrades).toBe(1);
+  });
+
+  it('live pure_ws paper-only mode suppresses swing-v2 live canary as paper shadow', async () => {
+    override('pureWsLiveCanaryEnabled', false);
+    override('pureWsPaperShadowEnabled', true);
+    override('pureWsSwingV2Enabled', true);
+    override('pureWsSwingV2LiveCanaryEnabled', true);
+    const { ctx, executor, tradeStore } = makeCtx('live');
+    const builder = makeBuilder();
+
+    await handlePureWsSignal(
+      { pairAddress: 'PAIR_PAPER_ONLY_SWING', strategy: 'bootstrap_10s', price: 1.0 } as any,
+      builder,
+      ctx
+    );
+
+    expect(executor.executeBuy).not.toHaveBeenCalled();
+    expect(tradeStore.insertTrade).not.toHaveBeenCalled();
+    const positions = [...getActivePureWsPositions().values()];
+    expect(positions).toHaveLength(2);
+    const primary = positions.find((p) => p.armName === 'pure_ws_breakout');
+    const swing = positions.find((p) => p.armName === 'pure_ws_swing_v2');
+    expect(primary?.executionMode).toBe('paper');
+    expect(primary?.paperOnlyReason).toBe('live_canary_disabled');
+    expect(swing?.isShadowArm).toBe(true);
+    expect(swing?.executionMode).toBeUndefined();
+  });
+
+  it('live mode + paper shadow disabled keeps old log-only suppression', async () => {
+    override('pureWsLiveCanaryEnabled', false);
+    override('pureWsPaperShadowEnabled', false);
+    const { ctx, executor, tradeStore } = makeCtx('live');
+    const builder = makeBuilder();
+
+    await handlePureWsSignal(
+      { pairAddress: 'PAIR1B', strategy: 'bootstrap_10s', price: 1.0 } as any,
       builder,
       ctx
     );

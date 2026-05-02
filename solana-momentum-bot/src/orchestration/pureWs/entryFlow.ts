@@ -50,6 +50,10 @@ export async function handlePureWsSignal(
   if (!config.pureWsLaneEnabled) return;
 
   funnelStats.signalsReceived++;
+  const livePrimaryPaperMode =
+    ctx.tradingMode === 'live' &&
+    !config.pureWsLiveCanaryEnabled &&
+    config.pureWsPaperShadowEnabled;
 
   // 2026-04-29: token symbol prefetch (Helius DAS + pump.fun, 24h cache).
   // F3 fix: cache hit 시 함수 진입 skip.
@@ -58,7 +62,7 @@ export async function handlePureWsSignal(
   }
 
   // Hard guards
-  if (isEntryHaltActive(LANE_STRATEGY)) {
+  if (isEntryHaltActive(LANE_STRATEGY) && !livePrimaryPaperMode) {
     log.warn('[PUREWS_ENTRY_HALT] signal ignored — integrity halt active');
     return;
   }
@@ -430,29 +434,34 @@ export async function handlePureWsSignal(
   // Phase 1 P0-3 (2026-04-25): true 면 actualIn/actualOut 한쪽만 가용 → planned 강제 복원됨.
   let partialFillDataMissing = false;
   let partialFillDataReason: PartialFillDataReason | undefined;
+  let primaryPaperOnly = false;
+  let canarySlotAcquired = false;
 
   if (ctx.tradingMode === 'live') {
     // Block 3 paper-first enforcement (2026-04-18 QA fix):
     // PUREWS_LANE_ENABLED=true + TRADING_MODE=live 만으로는 live buy 금지.
     // 운영자가 paper 관측 후 PUREWS_LIVE_CANARY_ENABLED=true 로 명시 opt-in 해야 함.
     //
-    // 2026-04-26: PUREWS_SWING_V2_LIVE_CANARY_ENABLED 단독 활성 시 (primary live canary 는 off)
-    // primary 는 paper 시뮬만 + swing-v2 만 live entry 하는 카나리 replacing pattern 지원.
-    // 이 경우 entire return 하지 말고 primary 는 paper-first 로 두고 swing-v2 분기에서 live 진입.
+    // 2026-05-02: live 운영 중 pure_ws paper 검증을 기본값으로 유지.
+    // PUREWS_PAPER_SHADOW_ENABLED=true 이면 swing-v2 live flag 가 켜져 있어도 하위 arm 도 paper shadow.
+    // legacy swing-only live canary 는 PUREWS_PAPER_SHADOW_ENABLED=false 를 명시한 경우만 허용.
     if (!config.pureWsLiveCanaryEnabled) {
       const swingOnlyLive =
         config.pureWsSwingV2Enabled && config.pureWsSwingV2LiveCanaryEnabled;
-      if (!swingOnlyLive) {
+      const swingLiveMayEnter = swingOnlyLive && !config.pureWsPaperShadowEnabled;
+      if (!config.pureWsPaperShadowEnabled && !swingOnlyLive) {
         log.info(
           `[PUREWS_PAPER_FIRST] ${positionId} live buy suppressed — PUREWS_LIVE_CANARY_ENABLED=false. ` +
           `signal observed, no tx submitted. signal_price=${signal.price.toFixed(8)}`
         );
         return;
       }
-      // swing-v2 only live mode: primary 는 paper 처리 (effectiveMode 변경 효과 — actualEntryPrice/quantity
-      // 는 signal price 로 유지, executeBuy 호출 안 함). 함수 끝까지 진행하여 swing-v2 분기 도달.
+      primaryPaperOnly = true;
       log.info(
-        `[PUREWS_SWING_V2_ONLY_LIVE] ${positionId} primary paper-first, swing-v2 만 live entry 시도`
+        `[PUREWS_PAPER_OPEN] ${positionId} live buy suppressed — ` +
+        `primary paper-only position opened (PUREWS_LIVE_CANARY_ENABLED=false). ` +
+        `signal_price=${signal.price.toFixed(8)}` +
+        (swingLiveMayEnter ? ' swing-v2 live canary may still enter.' : '')
       );
     }
   }
@@ -460,14 +469,17 @@ export async function handlePureWsSignal(
   // Block 4 QA fix: wallet-level 전역 canary concurrency guard (opt-in).
   // lane 별 cap 보다 엄격할 수 있음 — gate + paper-first pass 이후 시점에서 acquire.
   // 어느 실패 경로에서도 누수 방지를 위해 release 를 반드시 대응하여 호출한다.
-  if (!acquireCanarySlot(LANE_STRATEGY)) {
-    log.debug(`[PUREWS_SKIP] global canary slot full`);
-    return;
+  if (!primaryPaperOnly) {
+    if (!acquireCanarySlot(LANE_STRATEGY)) {
+      log.debug(`[PUREWS_SKIP] global canary slot full`);
+      return;
+    }
+    canarySlotAcquired = true;
   }
 
   // 2026-04-26: primary live executeBuy 는 PUREWS_LIVE_CANARY_ENABLED=true 일 때만.
   // swing-v2 only live mode 는 primary paper-first 로 우회 (executeBuy 호출 안 함).
-  if (ctx.tradingMode === 'live' && config.pureWsLiveCanaryEnabled) {
+  if (ctx.tradingMode === 'live' && config.pureWsLiveCanaryEnabled && !primaryPaperOnly) {
     try {
       const buyExecutor = getPureWsExecutor(ctx);
       const order: Order = {
@@ -499,7 +511,7 @@ export async function handlePureWsSignal(
       funnelStats.txSuccess++;
     } catch (buyErr) {
       log.warn(`[PUREWS_LIVE_BUY] ${positionId} buy failed: ${buyErr}`);
-      releaseCanarySlot(LANE_STRATEGY); // QA fix — 누수 방지
+      if (canarySlotAcquired) releaseCanarySlot(LANE_STRATEGY); // QA fix — 누수 방지
       return;
     }
   }
@@ -507,52 +519,54 @@ export async function handlePureWsSignal(
   funnelStats.entry++;
 
   // DB persist with integrity halt protection
-  const persistResult = await persistOpenTradeWithIntegrity({
-    ctx,
-    lane: LANE_STRATEGY,
-    tradeData: {
-      pairAddress: signal.pairAddress,
-      strategy: LANE_STRATEGY,
-      side: 'BUY',
-      tokenSymbol: signal.tokenSymbol,
-      sourceLabel: signal.sourceLabel,
-      discoverySource: signal.discoverySource,
-      entryPrice: actualEntryPrice,
-      plannedEntryPrice: signal.price,
-      quantity: actualQuantity,
-      stopLoss: actualEntryPrice * (1 - config.pureWsProbeHardCutPct),
-      takeProfit1: actualEntryPrice * (1 + config.pureWsT1MfeThreshold),
-      takeProfit2: actualEntryPrice * (1 + config.pureWsT2MfeThreshold),
-      trailingStop: undefined,
-      highWaterMark: actualEntryPrice,
-      timeStopAt: new Date((nowSec + config.pureWsProbeWindowSec) * 1000),
-      status: 'OPEN',
-      txSignature: entryTxSignature,
-      createdAt: new Date(nowSec * 1000),
-      entrySlippageBps,
-    },
-    ledgerEntry: {
-      signalId: positionId,
-      positionId,
-      txSignature: entryTxSignature,
-      strategy: LANE_STRATEGY,
-      wallet: resolvePureWsWalletLabel(ctx), // Block 1 QA fix: wallet-aware comparator
-      pairAddress: signal.pairAddress,
-      tokenSymbol: signal.tokenSymbol,
-      plannedEntryPrice: signal.price,
-      actualEntryPrice,
-      actualQuantity,
-      slippageBps: entrySlippageBps,
-      signalTimeSec: nowSec,
-      signalPrice: signal.price,
-      // Phase 1 P0-3: 데이터 품질 flag 를 ledger 까지 전파.
-      partialFillDataMissing,
-      partialFillDataReason,
-    },
-    notifierKey: 'purews_open_persist',
-    buildNotifierMessage: (err) =>
-      `${positionId} buy persisted FAILED after tx=${entryTxSignature}: ${err} — NEW POSITIONS HALTED.`,
-  });
+  const persistResult = primaryPaperOnly
+    ? { dbTradeId: null }
+    : await persistOpenTradeWithIntegrity({
+      ctx,
+      lane: LANE_STRATEGY,
+      tradeData: {
+        pairAddress: signal.pairAddress,
+        strategy: LANE_STRATEGY,
+        side: 'BUY',
+        tokenSymbol: signal.tokenSymbol,
+        sourceLabel: signal.sourceLabel,
+        discoverySource: signal.discoverySource,
+        entryPrice: actualEntryPrice,
+        plannedEntryPrice: signal.price,
+        quantity: actualQuantity,
+        stopLoss: actualEntryPrice * (1 - config.pureWsProbeHardCutPct),
+        takeProfit1: actualEntryPrice * (1 + config.pureWsT1MfeThreshold),
+        takeProfit2: actualEntryPrice * (1 + config.pureWsT2MfeThreshold),
+        trailingStop: undefined,
+        highWaterMark: actualEntryPrice,
+        timeStopAt: new Date((nowSec + config.pureWsProbeWindowSec) * 1000),
+        status: 'OPEN',
+        txSignature: entryTxSignature,
+        createdAt: new Date(nowSec * 1000),
+        entrySlippageBps,
+      },
+      ledgerEntry: {
+        signalId: positionId,
+        positionId,
+        txSignature: entryTxSignature,
+        strategy: LANE_STRATEGY,
+        wallet: resolvePureWsWalletLabel(ctx), // Block 1 QA fix: wallet-aware comparator
+        pairAddress: signal.pairAddress,
+        tokenSymbol: signal.tokenSymbol,
+        plannedEntryPrice: signal.price,
+        actualEntryPrice,
+        actualQuantity,
+        slippageBps: entrySlippageBps,
+        signalTimeSec: nowSec,
+        signalPrice: signal.price,
+        // Phase 1 P0-3: 데이터 품질 flag 를 ledger 까지 전파.
+        partialFillDataMissing,
+        partialFillDataReason,
+      },
+      notifierKey: 'purews_open_persist',
+      buildNotifierMessage: (err) =>
+        `${positionId} buy persisted FAILED after tx=${entryTxSignature}: ${err} — NEW POSITIONS HALTED.`,
+    });
 
   // Phase 3: entry 시점 microstructure snapshot (quickReject/holdPhase 기준점)
   const entryCandles = candleBuilder.getRecentCandles(
@@ -602,9 +616,14 @@ export async function handlePureWsSignal(
     continuationProbeWindowSec: continuationDecision?.isContinuation
       ? config.tokenSessionContinuationProbeWindowSec
       : undefined,
+    executionMode: primaryPaperOnly || ctx.tradingMode === 'paper' ? 'paper' : 'live',
+    paperOnlyReason: primaryPaperOnly
+      ? (ctx.tradingMode === 'live' ? 'live_canary_disabled' : 'trading_mode_paper')
+      : undefined,
+    canarySlotAcquired,
   };
 
-  if (persistResult.dbTradeId) {
+  if (persistResult.dbTradeId && !primaryPaperOnly) {
     funnelStats.dbPersisted++;
     // 2026-04-28 P0-B fix: notifier fire-and-forget. Telegram 429 entry path blocking 차단.
     void ctx.notifier.sendTradeOpen({
@@ -675,7 +694,7 @@ export async function handlePureWsSignal(
   }
   // Phase 2 P1-1/P1-2: live 모드에서 reverse-quote tracker subscribe — quote-based MFE 측정.
   // tracker 는 lazy init (config 가 켜져 있을 때만). Decimals 는 RPC fetch (실패 시 fallback 6).
-  if (config.pureWsLivePriceTrackerEnabled && ctx.tradingMode === 'live') {
+  if (config.pureWsLivePriceTrackerEnabled && ctx.tradingMode === 'live' && !primaryPaperOnly) {
     try {
       let decimals: number | null = null;
       if (ctx.onchainSecurityClient && typeof ctx.onchainSecurityClient.getMintDecimals === 'function') {

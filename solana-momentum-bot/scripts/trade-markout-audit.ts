@@ -3,14 +3,25 @@
  *
  * Usage:
  *   npx ts-node scripts/trade-markout-audit.ts --since 24h --realtime-dir data/realtime
+ *   npx ts-node scripts/trade-markout-audit.ts --since 24h --md reports/trade-markout.md --json reports/trade-markout.json
  */
 import { readFile } from 'fs/promises';
 import path from 'path';
+import {
+  AuditReport,
+  CountEntry,
+  renderMarkdown,
+  renderText,
+  verdictFor,
+  writeOutputFile,
+} from './lib/tradeMarkoutAuditReport';
 
 interface Args {
   realtimeDir: string;
   sinceMs: number;
   horizonsSec: number[];
+  mdOut?: string;
+  jsonOut?: string;
 }
 
 interface JsonRow {
@@ -36,6 +47,8 @@ function parseArgs(argv: string[]): Args {
     if (arg === '--realtime-dir') args.realtimeDir = path.resolve(argv[++i]);
     else if (arg === '--since') args.sinceMs = parseSince(argv[++i]);
     else if (arg === '--horizons') args.horizonsSec = parseHorizons(argv[++i]);
+    else if (arg === '--md') args.mdOut = path.resolve(argv[++i]);
+    else if (arg === '--json') args.jsonOut = path.resolve(argv[++i]);
   }
   return args;
 }
@@ -93,13 +106,15 @@ function str(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-function countBy(rows: JsonRow[], fn: (row: JsonRow) => string): Array<[string, number]> {
+function countBy<T>(rows: T[], fn: (row: T) => string): CountEntry[] {
   const counts = new Map<string, number>();
   for (const row of rows) {
     const key = fn(row) || '(missing)';
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
-  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([key, count]) => ({ key, count }));
 }
 
 function markoutKey(row: JsonRow): string {
@@ -214,6 +229,16 @@ async function main(): Promise<void> {
     .map(([, row]) => row);
   const expected = expectedMarkoutKeys.size;
   const coverage = expected > 0 ? latest.length / expected : 0;
+  const horizonCoverage = args.horizonsSec.map((horizonSec) => {
+    const observedRows = latest.filter((row) => num(row.horizonSec) === horizonSec).length;
+    const expectedRows = expectedAnchors.size;
+    return {
+      horizonSec,
+      expectedRows,
+      observedRows,
+      coveragePct: expectedRows > 0 ? (observedRows / expectedRows) * 100 : 0,
+    };
+  });
 
   const bestAfterSell = latest
     .filter((row) => row.anchorType === 'sell' && num(row.deltaPct) != null)
@@ -232,23 +257,41 @@ async function main(): Promise<void> {
       `T+${row.horizonSec}s delta=${((num(row.deltaPct) ?? 0) * 100).toFixed(1)}%`
     );
 
-  console.log(`Trade Markout Audit since ${new Date(args.sinceMs).toISOString()}`);
-  console.log(`- horizons=${args.horizonsSec.join(',')}s`);
-  console.log(`- anchors=${expectedAnchors.size} anchorRows=${anchorRows.length} fallbackLiveBuys=${recentBuys.length} fallbackLiveSells=${recentSells.length}`);
-  console.log(`- anchorMode=${countBy([...expectedAnchors.values()] as unknown as JsonRow[], (row) => str(row.mode)).map(([k, v]) => `${k}:${v}`).join(', ') || 'none'}`);
-  console.log(`- anchorEvent=${countBy([...expectedAnchors.values()] as unknown as JsonRow[], (row) => str(row.eventType)).slice(0, 8).map(([k, v]) => `${k}:${v}`).join(', ') || 'none'}`);
-  console.log(`- expectedRows=${expected} observedLatestRows=${latest.length} coverage=${(coverage * 100).toFixed(1)}%`);
-  console.log(`- status=${countBy(latest, (row) => str(row.quoteStatus)).map(([k, v]) => `${k}:${v}`).join(', ') || 'none'}`);
-  console.log(`- anchorType=${countBy(latest, (row) => str(row.anchorType)).map(([k, v]) => `${k}:${v}`).join(', ') || 'none'}`);
-  console.log(`- quoteReason=${countBy(latest, (row) => str(row.quoteReason)).slice(0, 8).map(([k, v]) => `${k}:${v}`).join(', ') || 'none'}`);
-  if (bestAfterSell.length > 0) {
-    console.log('\nTop after-sell positive markouts:');
-    for (const line of bestAfterSell) console.log(`- ${line}`);
-  }
-  if (worstAfterBuy.length > 0) {
-    console.log('\nWorst after-buy markouts:');
-    for (const line of worstAfterBuy) console.log(`- ${line}`);
-  }
+  const reportWithoutVerdict = {
+    generatedAt: new Date().toISOString(),
+    since: new Date(args.sinceMs).toISOString(),
+    realtimeDir: args.realtimeDir,
+    horizonsSec: args.horizonsSec,
+    verdict: 'WATCH' as AuditReport['verdict'],
+    summary: {
+      anchors: expectedAnchors.size,
+      anchorRows: anchorRows.length,
+      fallbackLiveBuys: recentBuys.length,
+      fallbackLiveSells: recentSells.length,
+      expectedRows: expected,
+      observedLatestRows: latest.length,
+      coveragePct: coverage * 100,
+      fiveXAfterSellRows: latest.filter((row) => row.anchorType === 'sell' && (num(row.deltaPct) ?? -Infinity) >= 4).length,
+    },
+    counts: {
+      anchorMode: countBy([...expectedAnchors.values()], (row) => row.mode),
+      anchorEvent: countBy([...expectedAnchors.values()], (row) => row.eventType),
+      status: countBy(latest, (row) => str(row.quoteStatus)),
+      anchorType: countBy(latest, (row) => str(row.anchorType)),
+      quoteReason: countBy(latest, (row) => str(row.quoteReason)),
+    },
+    horizonCoverage,
+    topAfterSellPositive: bestAfterSell,
+    worstAfterBuy,
+  };
+  const report: AuditReport = {
+    ...reportWithoutVerdict,
+    verdict: verdictFor(reportWithoutVerdict),
+  };
+
+  console.log(renderText(report));
+  if (args.mdOut) await writeOutputFile(args.mdOut, renderMarkdown(report));
+  if (args.jsonOut) await writeOutputFile(args.jsonOut, JSON.stringify(report, null, 2));
 }
 
 main().catch((err) => {

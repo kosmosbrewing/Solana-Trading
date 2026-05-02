@@ -31,6 +31,37 @@ Implication: copying size is wrong for our wallet, but copying the state pattern
 4. use tighter T1, trail, and probe timeout;
 5. keep the 5x lane intact.
 
+### Candidate and Threshold Review - 2026-05-02
+
+Latest synced local KOL data (`kol-tx.jsonl` + `kol-shadow-tx.jsonl`) covered
+2026-04-25 08:05:58 UTC to 2026-05-02 07:34:08 UTC, 57,215 KOL tx rows.
+Rotation trade/no-trade markout rows were still zero, so this review is a
+candidate-formation review, not realized edge proof.
+
+`KOL_HUNTER_ROTATION_V1_MIN_BUY_COUNT=3` remains the right default. With the
+current `smallBuys>=2` and `gross>=1 SOL` constraints, `buy>=2` and `buy>=3`
+produced the same candidate count in the latest data. Raising to `buy>=4`
+cut formation materially and risks arriving late for a short continuation lane.
+
+`KOL_HUNTER_ROTATION_V1_SMALL_BUY_MAX_SOL=0.061` was too tightly fit to dv/decu.
+It kept dv/decu coverage high but suppressed other active rotation-like KOLs
+whose top-ups cluster closer to 0.10-0.12 SOL. Default is now `0.12`. Do not
+raise directly to `0.25` without post-cost markout evidence because that starts
+to capture broader KOL chasing rather than small top-up rotation.
+
+Current candidate tiers:
+
+- core live interpretation: `dv`, `decu`, `jijo`, `kadenox`;
+- live watch/canary interpretation: `heyitsyolo`, `noob_mini`, `chester`,
+  `letterbomb`, `theo`, `yenni`, `domy`;
+- shadow/promotion watch only: `west_ratwizardx`, `cupsey_benchmark`, `sebi`,
+  `scharo`, `esee06257`.
+
+`KOL_HUNTER_ROTATION_V1_KOL_IDS` remains a seed-score boost, not a hard allowlist.
+The lane should keep using active KOL DB metadata unless a future ADR introduces
+a separate include-list. Shadow and observer KOLs remain ineligible for live
+triggering.
+
 ## Policy
 
 Rotation v1 triggers during the existing smart-v3 observe window without consuming smart-v3:

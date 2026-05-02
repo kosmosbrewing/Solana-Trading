@@ -6,6 +6,7 @@ import {
   resetWalletDeltaComparatorForTests,
   getWalletDeltaComparatorState,
 } from '../src/risk/walletDeltaComparator';
+import type { WalletExternalDeltaSummary } from '../src/risk/walletExternalDeltaClassifier';
 import { resetAllEntryHaltsForTests, isEntryHaltActive } from '../src/orchestration/entryIntegrity';
 
 function makeWalletManager(balances: number[]): { getBalance: jest.Mock } {
@@ -20,7 +21,10 @@ function makeWalletManager(balances: number[]): { getBalance: jest.Mock } {
 }
 
 function makeNotifier() {
-  return { sendCritical: jest.fn(async () => {}) };
+  return {
+    sendCritical: jest.fn(async (_scope: string, _message: string) => {}),
+    sendWarning: jest.fn(async (_scope: string, _message: string) => {}),
+  };
 }
 
 async function prepareLedgerDir(): Promise<string> {
@@ -59,6 +63,26 @@ describe('walletDeltaComparator', () => {
     minSamplesBeforeAlert: 1,
     walletName: 'main',
     realtimeDataDir: dir,
+    ...overrides,
+  });
+
+  const makeExternalSummary = (overrides: Partial<WalletExternalDeltaSummary> = {}): WalletExternalDeltaSummary => ({
+    schemaVersion: 'wallet-external-delta/v1',
+    walletName: 'main',
+    walletAddress: 'wallet',
+    windowStartMs: Date.now() - 60_000,
+    windowEndMs: Date.now(),
+    rawDriftSol: 0.06,
+    knownBotTxCount: 0,
+    externalTxCount: 1,
+    rentReclaimSol: 0,
+    manualTransferInSol: 0,
+    manualTransferOutSol: 0,
+    feeOnlySol: 0,
+    unloggedBotTxSol: 0,
+    unknownExternalSol: 0,
+    safeAdjustmentSol: 0,
+    txs: [],
     ...overrides,
   });
 
@@ -102,6 +126,131 @@ describe('walletDeltaComparator', () => {
     for (const lane of ['cupsey', 'migration', 'main', 'strategy_d', 'pure_ws_breakout'] as const) {
       expect(isEntryHaltActive(lane)).toBe(false);
     }
+  });
+
+  it('downgrades positive drift when rent reclaim explains the safe external delta', async () => {
+    const walletManager = makeWalletManager([1.0, 1.0, 1.0]);
+    const notifier = makeNotifier();
+    const externalDeltaClassifier = {
+      classify: jest.fn(async () => ({
+        schemaVersion: 'wallet-external-delta/v1' as const,
+        walletName: 'main',
+        walletAddress: 'wallet',
+        windowStartMs: Date.now() - 60_000,
+        windowEndMs: Date.now(),
+        rawDriftSol: 0.06,
+        knownBotTxCount: 0,
+        externalTxCount: 1,
+        rentReclaimSol: 0.06,
+        manualTransferInSol: 0,
+        manualTransferOutSol: 0,
+        feeOnlySol: 0,
+        unloggedBotTxSol: 0,
+        unknownExternalSol: 0,
+        safeAdjustmentSol: 0.06,
+        txs: [],
+      })),
+    };
+
+    await runWalletDeltaCheckOnceForTests(walletManager as any, notifier as any, baseCfg({
+      externalDeltaClassifier,
+    }));
+    await writeBuy(dir, 1.0, 0.06, 'buy-after-baseline');
+    const result = await runWalletDeltaCheckOnceForTests(walletManager as any, notifier as any, baseCfg({
+      externalDeltaClassifier,
+    }));
+
+    expect(result.lastDrift).toBeCloseTo(0.06, 6);
+    expect(result.lastRiskDrift).toBeCloseTo(0, 6);
+    expect(notifier.sendCritical).not.toHaveBeenCalled();
+    expect(notifier.sendWarning).toHaveBeenCalledWith('wallet_delta_reconciled', expect.any(String));
+    expect(notifier.sendWarning).not.toHaveBeenCalledWith('wallet_external_transfer', expect.any(String));
+  });
+
+  it('keeps warning path and emits wallet_external_transfer when unsafe external delta is present', async () => {
+    const walletManager = makeWalletManager([1.0, 1.0, 1.0]);
+    const notifier = makeNotifier();
+    const externalDeltaClassifier = {
+      classify: jest.fn(async () => ({
+        schemaVersion: 'wallet-external-delta/v1' as const,
+        walletName: 'main',
+        walletAddress: 'wallet',
+        windowStartMs: Date.now() - 60_000,
+        windowEndMs: Date.now(),
+        rawDriftSol: 0.06,
+        knownBotTxCount: 0,
+        externalTxCount: 2,
+        rentReclaimSol: 0.06,
+        manualTransferInSol: 0.01,
+        manualTransferOutSol: 0,
+        feeOnlySol: 0,
+        unloggedBotTxSol: 0,
+        unknownExternalSol: 0,
+        safeAdjustmentSol: 0.06,
+        txs: [],
+      })),
+    };
+
+    await runWalletDeltaCheckOnceForTests(walletManager as any, notifier as any, baseCfg({
+      externalDeltaClassifier,
+    }));
+    await writeBuy(dir, 1.0, 0.06, 'buy-after-baseline');
+    const result = await runWalletDeltaCheckOnceForTests(walletManager as any, notifier as any, baseCfg({
+      externalDeltaClassifier,
+    }));
+
+    expect(result.lastDrift).toBeCloseTo(0.06, 6);
+    expect(result.lastRiskDrift).toBeCloseTo(0.06, 6);
+    expect(notifier.sendWarning).toHaveBeenCalledWith('wallet_external_transfer', expect.any(String));
+    expect(notifier.sendCritical).toHaveBeenCalledWith('wallet_delta_warn', expect.any(String));
+  });
+
+  it('emits wallet_external_transfer immediately even when wallet_delta_warn waits for more samples', async () => {
+    const walletManager = makeWalletManager([1.0, 1.0, 1.0]);
+    const notifier = makeNotifier();
+    const externalDeltaClassifier = {
+      classify: jest.fn(async () => makeExternalSummary({
+        manualTransferInSol: 0.01,
+      })),
+    };
+
+    await runWalletDeltaCheckOnceForTests(walletManager as any, notifier as any, baseCfg({
+      minSamplesBeforeAlert: 2,
+      externalDeltaClassifier,
+    }));
+    await writeBuy(dir, 1.0, 0.06, 'buy-after-baseline');
+    const result = await runWalletDeltaCheckOnceForTests(walletManager as any, notifier as any, baseCfg({
+      minSamplesBeforeAlert: 2,
+      externalDeltaClassifier,
+    }));
+
+    expect(result.consecutiveDriftBreaches).toBe(1);
+    expect(notifier.sendWarning).toHaveBeenCalledWith('wallet_external_transfer', expect.any(String));
+    expect(notifier.sendCritical).not.toHaveBeenCalled();
+  });
+
+  it('does not dedupe opposite-direction external transfers with the same absolute amount', async () => {
+    const walletManager = makeWalletManager([1.0, 1.0, 1.0, 1.0]);
+    const notifier = makeNotifier();
+    const externalDeltaClassifier = {
+      classify: jest.fn()
+        .mockResolvedValueOnce(makeExternalSummary({ manualTransferInSol: 0.01 }))
+        .mockResolvedValueOnce(makeExternalSummary({ manualTransferOutSol: -0.01 })),
+    };
+    const cfg = baseCfg({
+      warnAlertCooldownMs: 1_800_000,
+      warnDriftDeltaToleranceSol: 0.005,
+      externalDeltaClassifier,
+    });
+
+    await runWalletDeltaCheckOnceForTests(walletManager as any, notifier as any, cfg);
+    await writeBuy(dir, 1.0, 0.06, 'buy-after-baseline');
+    await runWalletDeltaCheckOnceForTests(walletManager as any, notifier as any, cfg);
+    await runWalletDeltaCheckOnceForTests(walletManager as any, notifier as any, cfg);
+
+    const externalTransferCalls = notifier.sendWarning.mock.calls
+      .filter(([scope]) => scope === 'wallet_external_transfer');
+    expect(externalTransferCalls).toHaveLength(2);
   });
 
   it('halts all lanes when drift exceeds halt threshold', async () => {

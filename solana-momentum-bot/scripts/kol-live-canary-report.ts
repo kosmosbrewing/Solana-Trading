@@ -460,7 +460,7 @@ function parseArgs(): CliArgs {
     json: get('--json') ?? path.resolve(process.cwd(), `reports/kol-live-canary-${today}.json`),
     walletSol: parseOptionalNumber(get('--wallet-sol')),
     walletFloorSol: parseOptionalNumber(get('--wallet-floor-sol')) ?? 0.7,
-    kolCanaryCapSol: parseOptionalNumber(get('--kol-canary-cap-sol')) ?? 0.2,
+    kolCanaryCapSol: parseOptionalNumber(get('--kol-canary-cap-sol')) ?? 0.35,
     kolTicketSol: parseOptionalNumber(get('--kol-ticket-sol')) ?? 0.02,
   };
 }

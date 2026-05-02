@@ -36,6 +36,7 @@ import { Notifier } from '../notifier/notifier';
 import { WalletManager } from '../executor/walletManager';
 import { config } from '../utils/config';
 import { triggerEntryHalt, type EntryLane } from '../state/entryHaltState';
+import type { WalletExternalDeltaClassifier, WalletExternalDeltaSummary } from './walletExternalDeltaClassifier';
 
 const log = createModuleLogger('WalletDeltaComparator');
 
@@ -60,6 +61,11 @@ export interface WalletDeltaComparatorConfig {
    * Default 0.005 SOL.
    */
   warnDriftDeltaToleranceSol?: number;
+  /**
+   * 2026-05-02: drift 발생 시 wallet tx 를 조회하여 rent reclaim 등 설명 가능한 외부 delta 를 분류한다.
+   * 실패하면 기존 raw drift 정책으로 fail-open.
+   */
+  externalDeltaClassifier?: WalletExternalDeltaClassifier;
 }
 
 interface LedgerLineCount {
@@ -74,7 +80,10 @@ interface ComparatorState {
   lastObservedDelta: number;
   lastExpectedDelta: number;
   lastDrift: number;
+  lastRiskDrift: number;
+  lastExternalDeltaSummary: WalletExternalDeltaSummary | null;
   lastCheckAt: Date | null;
+  currentDriftBreachStartedAt: Date | null;
   consecutiveDriftBreaches: number;
   consecutiveRpcFailures: number;
   haltTriggered: boolean;
@@ -82,6 +91,13 @@ interface ComparatorState {
   lastWarnAlertAtMs: number;
   /** 2026-04-28 (Sprint A1): 마지막 warn alert 의 drift 값. cooldown 중 동일성 비교용. */
   lastWarnAlertDrift: number;
+  /** 2026-05-02: 설명 가능한 rent reclaim 으로 downgrade 된 wallet drift 알림 dedup. */
+  lastReconciledAlertAtMs: number;
+  lastReconciledRawDrift: number;
+  /** 2026-05-02: manual/unknown/unlogged external wallet delta 별도 알림 dedup. */
+  lastExternalTransferAlertAtMs: number;
+  lastExternalTransferAlertAmount: number;
+  lastExternalTransferAlertFingerprint: string;
 }
 
 const state: ComparatorState = {
@@ -91,13 +107,23 @@ const state: ComparatorState = {
   lastObservedDelta: 0,
   lastExpectedDelta: 0,
   lastDrift: 0,
+  lastRiskDrift: 0,
+  lastExternalDeltaSummary: null,
   lastCheckAt: null,
+  currentDriftBreachStartedAt: null,
   consecutiveDriftBreaches: 0,
   consecutiveRpcFailures: 0,
   haltTriggered: false,
   lastWarnAlertAtMs: 0,
   lastWarnAlertDrift: 0,
+  lastReconciledAlertAtMs: 0,
+  lastReconciledRawDrift: 0,
+  lastExternalTransferAlertAtMs: 0,
+  lastExternalTransferAlertAmount: 0,
+  lastExternalTransferAlertFingerprint: '',
 };
+
+const EXTERNAL_DELTA_DUST_SOL = 0.0005;
 
 let pollerHandle: ReturnType<typeof setInterval> | null = null;
 
@@ -173,6 +199,141 @@ async function computeExpectedDelta(cfg: WalletDeltaComparatorConfig): Promise<n
   return sellsSol - buysSol;
 }
 
+function applySafeExternalAdjustment(drift: number, summary: WalletExternalDeltaSummary | null): number {
+  if (!summary || drift <= 0) return drift;
+  if (hasUnsafeExternalDelta(summary)) return drift;
+  const safeAdjustment = Math.min(drift, Math.max(0, summary.safeAdjustmentSol));
+  return drift - safeAdjustment;
+}
+
+function unsafeExternalAbsSol(summary: WalletExternalDeltaSummary): number {
+  return (
+    Math.abs(summary.manualTransferInSol) +
+    Math.abs(summary.manualTransferOutSol) +
+    Math.abs(summary.unloggedBotTxSol) +
+    Math.abs(summary.unknownExternalSol)
+  );
+}
+
+function hasUnsafeExternalDelta(summary: WalletExternalDeltaSummary): boolean {
+  return unsafeExternalAbsSol(summary) >= EXTERNAL_DELTA_DUST_SOL;
+}
+
+function formatExternalDeltaSuffix(summary: WalletExternalDeltaSummary | null, riskDrift: number): string {
+  if (!summary) return '';
+  return (
+    ` riskDrift=${riskDrift.toFixed(4)} ` +
+    `rentReclaim=${summary.rentReclaimSol.toFixed(4)} ` +
+    `manualIn=${summary.manualTransferInSol.toFixed(4)} ` +
+    `manualOut=${summary.manualTransferOutSol.toFixed(4)} ` +
+    `unloggedBot=${summary.unloggedBotTxSol.toFixed(4)} ` +
+    `unknown=${summary.unknownExternalSol.toFixed(4)} ` +
+    `externalTx=${summary.externalTxCount}.`
+  );
+}
+
+function externalTransferAlertFingerprint(summary: WalletExternalDeltaSummary, tolerance: number): string {
+  const bucketSize = Math.max(EXTERNAL_DELTA_DUST_SOL, tolerance);
+  const bucket = (value: number): string => {
+    if (Math.abs(value) < EXTERNAL_DELTA_DUST_SOL) return '0';
+    return String(Math.round(value / bucketSize));
+  };
+  return [
+    `manualIn=${bucket(summary.manualTransferInSol)}`,
+    `manualOut=${bucket(summary.manualTransferOutSol)}`,
+    `unloggedBot=${bucket(summary.unloggedBotTxSol)}`,
+    `unknown=${bucket(summary.unknownExternalSol)}`,
+    `tx=${summary.externalTxCount}`,
+  ].join('|');
+}
+
+async function classifyExternalDeltaIfConfigured(
+  cfg: WalletDeltaComparatorConfig,
+  drift: number,
+  windowStartMs: number,
+  windowEndMs: number,
+): Promise<WalletExternalDeltaSummary | null> {
+  if (!cfg.externalDeltaClassifier) return null;
+  try {
+    return await cfg.externalDeltaClassifier.classify({
+      sinceMs: windowStartMs,
+      untilMs: windowEndMs,
+      rawDriftSol: drift,
+    });
+  } catch (err) {
+    log.warn(`[WALLET_DELTA_EXTERNAL] classification failed: ${String(err)} — raw drift policy retained`);
+    return null;
+  }
+}
+
+async function sendReconciledWarningIfNeeded(
+  notifier: Notifier,
+  cfg: WalletDeltaComparatorConfig,
+  drift: number,
+  riskDrift: number,
+  observedDelta: number,
+  expectedDelta: number,
+  summary: WalletExternalDeltaSummary,
+): Promise<void> {
+  const cooldownMs = Math.max(0, Number.isFinite(cfg.warnAlertCooldownMs) ? cfg.warnAlertCooldownMs! : 1_800_000);
+  const tolerance = Math.max(0, Number.isFinite(cfg.warnDriftDeltaToleranceSol) ? cfg.warnDriftDeltaToleranceSol! : 0.005);
+  const nowMs = Date.now();
+  const sinceLastAlertMs = nowMs - state.lastReconciledAlertAtMs;
+  const driftChanged = Math.abs(drift - state.lastReconciledRawDrift) >= tolerance;
+  const shouldSend =
+    state.lastReconciledAlertAtMs === 0 ||
+    sinceLastAlertMs >= cooldownMs ||
+    driftChanged;
+  if (!shouldSend) return;
+  state.lastReconciledAlertAtMs = nowMs;
+  state.lastReconciledRawDrift = drift;
+  await Promise.resolve(notifier.sendWarning?.(
+    'wallet_delta_reconciled',
+    `Wallet delta raw drift ${drift.toFixed(4)} SOL was explained by safe external delta. ` +
+    `riskDrift=${riskDrift.toFixed(4)} observed=${observedDelta.toFixed(4)} expected=${expectedDelta.toFixed(4)}. ` +
+    `rentReclaim=${summary.rentReclaimSol.toFixed(4)} externalTx=${summary.externalTxCount}.`
+  )).catch(() => {});
+}
+
+async function sendExternalTransferWarningIfNeeded(
+  notifier: Notifier,
+  cfg: WalletDeltaComparatorConfig,
+  drift: number,
+  riskDrift: number,
+  observedDelta: number,
+  expectedDelta: number,
+  summary: WalletExternalDeltaSummary,
+): Promise<void> {
+  const unsafeAmount = unsafeExternalAbsSol(summary);
+  if (unsafeAmount < EXTERNAL_DELTA_DUST_SOL) return;
+  const cooldownMs = Math.max(0, Number.isFinite(cfg.warnAlertCooldownMs) ? cfg.warnAlertCooldownMs! : 1_800_000);
+  const tolerance = Math.max(EXTERNAL_DELTA_DUST_SOL, Number.isFinite(cfg.warnDriftDeltaToleranceSol) ? cfg.warnDriftDeltaToleranceSol! : 0.005);
+  const fingerprint = externalTransferAlertFingerprint(summary, tolerance);
+  const nowMs = Date.now();
+  const sinceLastAlertMs = nowMs - state.lastExternalTransferAlertAtMs;
+  const amountChanged = Math.abs(unsafeAmount - state.lastExternalTransferAlertAmount) >= tolerance;
+  const fingerprintChanged = fingerprint !== state.lastExternalTransferAlertFingerprint;
+  // External wallet transfers are event-level evidence, not drift-confidence evidence.
+  // Emit immediately even when wallet_delta_warn is still waiting for minSamplesBeforeAlert.
+  const shouldSend =
+    state.lastExternalTransferAlertAtMs === 0 ||
+    sinceLastAlertMs >= cooldownMs ||
+    amountChanged ||
+    fingerprintChanged;
+  if (!shouldSend) return;
+  state.lastExternalTransferAlertAtMs = nowMs;
+  state.lastExternalTransferAlertAmount = unsafeAmount;
+  state.lastExternalTransferAlertFingerprint = fingerprint;
+  await Promise.resolve(notifier.sendWarning?.(
+    'wallet_external_transfer',
+    `Wallet external transfer/change detected during delta reconciliation. ` +
+    `manualIn=${summary.manualTransferInSol.toFixed(4)} manualOut=${summary.manualTransferOutSol.toFixed(4)} ` +
+    `unloggedBot=${summary.unloggedBotTxSol.toFixed(4)} unknown=${summary.unknownExternalSol.toFixed(4)} ` +
+    `rawDrift=${drift.toFixed(4)} riskDrift=${riskDrift.toFixed(4)} ` +
+    `observed=${observedDelta.toFixed(4)} expected=${expectedDelta.toFixed(4)} externalTx=${summary.externalTxCount}.`
+  )).catch(() => {});
+}
+
 /** Block entries on all lanes. Called when drift exceeds halt threshold. */
 function haltAllLanes(reason: string): void {
   // 2026-04-27 fix: KOL live canary + swing-v2 누락 사명 §3 위반.
@@ -224,33 +385,78 @@ export async function startWalletDeltaComparator(
     return;
   }
 
+  let checkInFlight = false;
   const check = async (): Promise<void> => {
+    if (checkInFlight) {
+      log.warn('[WALLET_DELTA] previous check still running — skip overlapping poll');
+      return;
+    }
+    checkInFlight = true;
     try {
+      const checkAt = new Date();
+      const previousCheckAtMs =
+        state.lastCheckAt?.getTime() ??
+        state.baselineAt?.getTime() ??
+        checkAt.getTime() - cfg.pollIntervalMs;
       const currentBalance = await walletManager.getBalance(cfg.walletName);
       const observedDelta = currentBalance - (state.baselineBalanceSol ?? currentBalance);
       const expectedDelta = await computeExpectedDelta(cfg);
       const drift = observedDelta - expectedDelta;
       const absDrift = Math.abs(drift);
+      if (absDrift >= cfg.driftWarnSol && !state.currentDriftBreachStartedAt) {
+        state.currentDriftBreachStartedAt = new Date(previousCheckAtMs);
+      }
+      const externalSummary = absDrift >= cfg.driftWarnSol
+        ? await classifyExternalDeltaIfConfigured(
+          cfg,
+          drift,
+          state.currentDriftBreachStartedAt?.getTime() ?? previousCheckAtMs,
+          checkAt.getTime(),
+        )
+        : null;
+      const riskDrift = applySafeExternalAdjustment(drift, externalSummary);
+      const absRiskDrift = Math.abs(riskDrift);
+      if (externalSummary) {
+        await sendExternalTransferWarningIfNeeded(
+          notifier,
+          cfg,
+          drift,
+          riskDrift,
+          observedDelta,
+          expectedDelta,
+          externalSummary,
+        );
+      }
 
       state.lastObservedDelta = observedDelta;
       state.lastExpectedDelta = expectedDelta;
       state.lastDrift = drift;
-      state.lastCheckAt = new Date();
+      state.lastRiskDrift = riskDrift;
+      state.lastExternalDeltaSummary = externalSummary;
+      state.lastCheckAt = checkAt;
       state.consecutiveRpcFailures = 0;
 
       log.info(
         `[WALLET_DELTA] observed=${observedDelta.toFixed(6)} expected=${expectedDelta.toFixed(6)} ` +
-        `drift=${drift.toFixed(6)} SOL`
+        `drift=${drift.toFixed(6)} riskDrift=${riskDrift.toFixed(6)} SOL`
       );
 
       if (absDrift < cfg.driftWarnSol) {
         state.consecutiveDriftBreaches = 0;
+        state.currentDriftBreachStartedAt = null;
+        state.lastRiskDrift = drift;
+        state.lastExternalDeltaSummary = null;
         // 2026-04-28 (Sprint A1 QA Q9): drift 회복 시 warn dedup state 도 reset.
         // Why: 회복 후 같은 drift 값이 재발생하면 cooldown 안에서 skip 되어 운영자가 incident
         // 재발생을 인지 못 한다 (real incident risk). 회복 시 dedup state 초기화하여
         // 다음 breach 시 즉시 alert.
         state.lastWarnAlertAtMs = 0;
         state.lastWarnAlertDrift = 0;
+        state.lastReconciledAlertAtMs = 0;
+        state.lastReconciledRawDrift = 0;
+        state.lastExternalTransferAlertAtMs = 0;
+        state.lastExternalTransferAlertAmount = 0;
+        state.lastExternalTransferAlertFingerprint = '';
         // 2026-04-26 fix: drift 복구 시 haltTriggered flag 도 reset.
         // 이전: state.haltTriggered 가 한 번 true 되면 영구 → 운영자 수동 reset 후 재halt 불가.
         // 수정: drift 가 warn threshold 미만으로 복구되면 자동 reset → 다음 breach 감지 가능.
@@ -266,30 +472,53 @@ export async function startWalletDeltaComparator(
         return;
       }
 
+      if (absRiskDrift < cfg.driftWarnSol && externalSummary) {
+        state.consecutiveDriftBreaches = 0;
+        state.currentDriftBreachStartedAt = null;
+        log.warn(
+          `[WALLET_DELTA_RECONCILED] rawDrift=${drift.toFixed(6)} riskDrift=${riskDrift.toFixed(6)} ` +
+          `rentReclaim=${externalSummary.rentReclaimSol.toFixed(6)} externalTx=${externalSummary.externalTxCount}`
+        );
+        await sendReconciledWarningIfNeeded(
+          notifier,
+          cfg,
+          drift,
+          riskDrift,
+          observedDelta,
+          expectedDelta,
+          externalSummary,
+        );
+        return;
+      }
+
       state.consecutiveDriftBreaches++;
       if (state.consecutiveDriftBreaches < cfg.minSamplesBeforeAlert) {
+        if (externalSummary) state.currentDriftBreachStartedAt = new Date(checkAt.getTime());
         log.debug(
-          `[WALLET_DELTA] drift ${drift.toFixed(6)} SOL above warn but below sample count ` +
+          `[WALLET_DELTA] riskDrift ${riskDrift.toFixed(6)} SOL above warn but below sample count ` +
           `(${state.consecutiveDriftBreaches}/${cfg.minSamplesBeforeAlert}) — suppressing alert`
         );
         return;
       }
 
-      if (absDrift >= cfg.driftHaltSol && !state.haltTriggered) {
+      if (absRiskDrift >= cfg.driftHaltSol && !state.haltTriggered) {
         const reason =
-          `wallet delta drift ${drift.toFixed(6)} SOL >= halt threshold ${cfg.driftHaltSol}. ` +
-          `observed=${observedDelta.toFixed(6)} expected=${expectedDelta.toFixed(6)}`;
+          `wallet delta riskDrift ${riskDrift.toFixed(6)} SOL >= halt threshold ${cfg.driftHaltSol}. ` +
+          `rawDrift=${drift.toFixed(6)} observed=${observedDelta.toFixed(6)} expected=${expectedDelta.toFixed(6)}` +
+          formatExternalDeltaSuffix(externalSummary, riskDrift);
         log.error(`[WALLET_DELTA_HALT] ${reason}`);
         haltAllLanes(reason);
         await notifier.sendCritical(
           'wallet_delta_halt',
-          `Wallet delta HALT — drift ${drift.toFixed(4)} SOL (>= ${cfg.driftHaltSol}). ` +
-          `All lanes entry-blocked. observed=${observedDelta.toFixed(4)} expected=${expectedDelta.toFixed(4)}. ` +
+          `Wallet delta HALT — riskDrift ${riskDrift.toFixed(4)} SOL (>= ${cfg.driftHaltSol}). ` +
+          `rawDrift=${drift.toFixed(4)} observed=${observedDelta.toFixed(4)} expected=${expectedDelta.toFixed(4)}.` +
+          formatExternalDeltaSuffix(externalSummary, riskDrift) + ' ' +
           `Run ops:reconcile:wallet, inspect ledger and DB, then reset lane halts.`
         ).catch(() => {});
-      } else if (absDrift >= cfg.driftWarnSol) {
+      } else if (absRiskDrift >= cfg.driftWarnSol) {
         log.warn(
-          `[WALLET_DELTA_WARN] drift ${drift.toFixed(6)} SOL >= warn threshold ${cfg.driftWarnSol} ` +
+          `[WALLET_DELTA_WARN] riskDrift ${riskDrift.toFixed(6)} SOL >= warn threshold ${cfg.driftWarnSol} ` +
+          `rawDrift=${drift.toFixed(6)} ` +
           `(x${state.consecutiveDriftBreaches})`
         );
         // 2026-04-28 (Sprint A1): warn alert dedup.
@@ -301,31 +530,37 @@ export async function startWalletDeltaComparator(
         const tolerance = Math.max(0, Number.isFinite(cfg.warnDriftDeltaToleranceSol) ? cfg.warnDriftDeltaToleranceSol! : 0.005);
         const nowMs = Date.now();
         const sinceLastAlertMs = nowMs - state.lastWarnAlertAtMs;
-        const driftChanged = Math.abs(drift - state.lastWarnAlertDrift) >= tolerance;
+        const driftChanged = Math.abs(riskDrift - state.lastWarnAlertDrift) >= tolerance;
         const shouldSendAlert =
           state.lastWarnAlertAtMs === 0 ||  // 처음 발동
           sinceLastAlertMs >= cooldownMs ||  // cooldown 경과
           driftChanged;                       // 새 drift 값
         if (shouldSendAlert) {
           state.lastWarnAlertAtMs = nowMs;
-          state.lastWarnAlertDrift = drift;
+          state.lastWarnAlertDrift = riskDrift;
           await notifier.sendCritical(
             'wallet_delta_warn',
-            `Wallet delta drift ${drift.toFixed(4)} SOL (warn ≥ ${cfg.driftWarnSol}). ` +
-            `observed=${observedDelta.toFixed(4)} expected=${expectedDelta.toFixed(4)}. ` +
+            `Wallet delta riskDrift ${riskDrift.toFixed(4)} SOL (warn ≥ ${cfg.driftWarnSol}). ` +
+            `rawDrift=${drift.toFixed(4)} observed=${observedDelta.toFixed(4)} expected=${expectedDelta.toFixed(4)}.` +
+            formatExternalDeltaSuffix(externalSummary, riskDrift) + ' ' +
             `Run ops:reconcile:wallet to investigate.`
           ).catch(() => {});
         } else {
           log.debug(
-            `[WALLET_DELTA_WARN_DEDUP] drift=${drift.toFixed(6)} ` +
+            `[WALLET_DELTA_WARN_DEDUP] riskDrift=${riskDrift.toFixed(6)} ` +
             `last=${state.lastWarnAlertDrift.toFixed(6)} elapsed=${Math.round(sinceLastAlertMs/1000)}s ` +
             `cooldown=${Math.round(cooldownMs/1000)}s — alert suppressed`
           );
         }
       }
+      if (externalSummary) {
+        state.currentDriftBreachStartedAt = new Date(checkAt.getTime());
+      }
     } catch (err) {
       state.consecutiveRpcFailures++;
       log.warn(`[WALLET_DELTA] check failed (${state.consecutiveRpcFailures}): ${err}`);
+    } finally {
+      checkInFlight = false;
     }
   };
 
@@ -352,12 +587,20 @@ export function resetWalletDeltaComparatorForTests(): void {
   state.lastObservedDelta = 0;
   state.lastExpectedDelta = 0;
   state.lastDrift = 0;
+  state.lastRiskDrift = 0;
+  state.lastExternalDeltaSummary = null;
   state.lastCheckAt = null;
+  state.currentDriftBreachStartedAt = null;
   state.consecutiveDriftBreaches = 0;
   state.consecutiveRpcFailures = 0;
   state.haltTriggered = false;
   state.lastWarnAlertAtMs = 0;
   state.lastWarnAlertDrift = 0;
+  state.lastReconciledAlertAtMs = 0;
+  state.lastReconciledRawDrift = 0;
+  state.lastExternalTransferAlertAtMs = 0;
+  state.lastExternalTransferAlertAmount = 0;
+  state.lastExternalTransferAlertFingerprint = '';
   stopWalletDeltaComparator();
 }
 
@@ -367,30 +610,89 @@ export async function runWalletDeltaCheckOnceForTests(
   notifier: Notifier,
   cfg: WalletDeltaComparatorConfig
 ): Promise<Readonly<ComparatorState>> {
+  const checkAt = new Date();
   if (state.baselineBalanceSol == null) {
     const balance = await walletManager.getBalance(cfg.walletName);
     state.baselineBalanceSol = balance;
     state.baselineAt = new Date();
     state.baselineLedgerOffsets = await countLedgerLines(cfg.realtimeDataDir);
   }
+  const previousCheckAtMs =
+    state.lastCheckAt?.getTime() ??
+    state.baselineAt?.getTime() ??
+    checkAt.getTime() - cfg.pollIntervalMs;
   const currentBalance = await walletManager.getBalance(cfg.walletName);
   const observedDelta = currentBalance - state.baselineBalanceSol;
   const expectedDelta = await computeExpectedDelta(cfg);
   const drift = observedDelta - expectedDelta;
+  const absDrift = Math.abs(drift);
+  if (absDrift >= cfg.driftWarnSol && !state.currentDriftBreachStartedAt) {
+    state.currentDriftBreachStartedAt = new Date(previousCheckAtMs);
+  }
+  const externalSummary = absDrift >= cfg.driftWarnSol
+    ? await classifyExternalDeltaIfConfigured(
+      cfg,
+      drift,
+      state.currentDriftBreachStartedAt?.getTime() ?? previousCheckAtMs,
+      checkAt.getTime(),
+    )
+    : null;
+  const riskDrift = applySafeExternalAdjustment(drift, externalSummary);
+  const absRiskDrift = Math.abs(riskDrift);
+  if (externalSummary) {
+    await sendExternalTransferWarningIfNeeded(
+      notifier,
+      cfg,
+      drift,
+      riskDrift,
+      observedDelta,
+      expectedDelta,
+      externalSummary,
+    );
+  }
   state.lastObservedDelta = observedDelta;
   state.lastExpectedDelta = expectedDelta;
   state.lastDrift = drift;
-  state.lastCheckAt = new Date();
+  state.lastRiskDrift = riskDrift;
+  state.lastExternalDeltaSummary = externalSummary;
+  state.lastCheckAt = checkAt;
 
-  const absDrift = Math.abs(drift);
-  if (absDrift >= cfg.driftWarnSol) {
+  if (absDrift < cfg.driftWarnSol) {
+    state.consecutiveDriftBreaches = 0;
+    state.currentDriftBreachStartedAt = null;
+    state.lastWarnAlertAtMs = 0;
+    state.lastWarnAlertDrift = 0;
+    state.lastReconciledAlertAtMs = 0;
+    state.lastReconciledRawDrift = 0;
+    state.lastExternalTransferAlertAtMs = 0;
+    state.lastExternalTransferAlertAmount = 0;
+    state.lastExternalTransferAlertFingerprint = '';
+    return state;
+  }
+
+  if (absRiskDrift < cfg.driftWarnSol && externalSummary) {
+    state.consecutiveDriftBreaches = 0;
+    state.currentDriftBreachStartedAt = null;
+    await sendReconciledWarningIfNeeded(
+      notifier,
+      cfg,
+      drift,
+      riskDrift,
+      observedDelta,
+      expectedDelta,
+      externalSummary,
+    );
+    return state;
+  }
+
+  if (absRiskDrift >= cfg.driftWarnSol) {
     state.consecutiveDriftBreaches++;
     if (
       state.consecutiveDriftBreaches >= cfg.minSamplesBeforeAlert &&
-      absDrift >= cfg.driftHaltSol &&
+      absRiskDrift >= cfg.driftHaltSol &&
       !state.haltTriggered
     ) {
-      const reason = `test drift ${drift.toFixed(6)} SOL >= halt ${cfg.driftHaltSol}`;
+      const reason = `test riskDrift ${riskDrift.toFixed(6)} SOL >= halt ${cfg.driftHaltSol}`;
       haltAllLanes(reason);
       await notifier.sendCritical('wallet_delta_halt', reason).catch(() => {});
     } else if (state.consecutiveDriftBreaches >= cfg.minSamplesBeforeAlert) {
@@ -400,22 +702,20 @@ export async function runWalletDeltaCheckOnceForTests(
       const tolerance = Math.max(0, Number.isFinite(cfg.warnDriftDeltaToleranceSol) ? cfg.warnDriftDeltaToleranceSol! : 0.005);
       const nowMs = Date.now();
       const sinceLastAlertMs = nowMs - state.lastWarnAlertAtMs;
-      const driftChanged = Math.abs(drift - state.lastWarnAlertDrift) >= tolerance;
+      const driftChanged = Math.abs(riskDrift - state.lastWarnAlertDrift) >= tolerance;
       const shouldSendAlert =
         state.lastWarnAlertAtMs === 0 ||
         sinceLastAlertMs >= cooldownMs ||
         driftChanged;
       if (shouldSendAlert) {
         state.lastWarnAlertAtMs = nowMs;
-        state.lastWarnAlertDrift = drift;
-        await notifier.sendCritical('wallet_delta_warn', `drift ${drift.toFixed(6)}`).catch(() => {});
+        state.lastWarnAlertDrift = riskDrift;
+        await notifier.sendCritical('wallet_delta_warn', `riskDrift ${riskDrift.toFixed(6)}`).catch(() => {});
       }
     }
-  } else {
-    state.consecutiveDriftBreaches = 0;
-    // 2026-04-28 (Sprint A1 QA Q9): drift 회복 시 dedup state reset (production check 와 정합).
-    state.lastWarnAlertAtMs = 0;
-    state.lastWarnAlertDrift = 0;
+  }
+  if (externalSummary) {
+    state.currentDriftBreachStartedAt = new Date(checkAt.getTime());
   }
   return state;
 }

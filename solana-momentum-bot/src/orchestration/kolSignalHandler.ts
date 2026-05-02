@@ -800,6 +800,9 @@ function pruneRecentKolTxsByCutoff(cutoffMs: number): void {
 // recentKolTxs 가 push/splice 될 때마다 length 가 바뀌므로 자동 invalidation.
 const SCORE_CACHE_BUCKET_MS = 1000;  // 1s bucket — 같은 second 내 중복 호출만 캐시 hit
 const scoreCache = new Map<string, { recentTxsLen: number; nowBucket: number; score: KolDiscoveryScore }>();
+const rotationV1RecentTxsByMint = new Map<string, KolTx[]>();
+const rotationV1PreObserveBlockLogKeys = new Set<string>();
+let rotationV1ConfigLogged = false;
 
 // 2026-04-29: Co-buy graph community 캐시 (외부 전략 리포트 권고 #5).
 // recentKolTxs 로 community 빌드 → effectiveIndependentCount 산출 시 활용.
@@ -1206,6 +1209,9 @@ export function stopKolHunter(): void {
   recentKolTxs.length = 0;
   pushesSinceLastPrune = 0;
   scoreCache.clear();     // P1 #7: score cache 동기화
+  rotationV1RecentTxsByMint.clear();
+  rotationV1PreObserveBlockLogKeys.clear();
+  rotationV1ConfigLogged = false;
   smartV3SellCancelByMint.clear();
   if (ownedGateCache) {
     ownedGateCache.destroy();
@@ -1241,6 +1247,8 @@ export function getKolHunterState(): {
  */
 export async function handleKolSwap(tx: KolTx): Promise<void> {
   if (!config.kolHunterEnabled) return;
+  logRotationV1ConfigOnce();
+  recordRotationV1Intake(tx);
 
   // 2026-04-26 paper notifier L1: discovery 카운팅 (kolPaperNotifier 가 hourly digest 에 사용)
   kolHunterEvents.emit('discovery', tx);
@@ -1527,6 +1535,7 @@ async function registerSmartV3Pending(tx: KolTx): Promise<void> {
   const preEntry = await checkKolSurvivalPreEntry(tokenMint);
   if (pending.get(tokenMint) !== cand) return;
   if (!preEntry.approved) {
+    maybeLogRotationV1PreObserveBlock(cand, score, preEntry);
     pending.delete(tokenMint);
     cleanupPendingCandidate(cand, true);
     log.info(
@@ -1745,6 +1754,21 @@ function ensureRotationV1State(cand: PendingCandidate): NonNullable<PendingCandi
   return cand.rotationV1;
 }
 
+function logRotationV1ConfigOnce(): void {
+  if (rotationV1ConfigLogged) return;
+  rotationV1ConfigLogged = true;
+  log.info(
+    `[KOL_HUNTER_ROTATION_V1_CONFIG] enabled=${config.kolHunterRotationV1Enabled} ` +
+    `live=${config.kolHunterRotationV1LiveEnabled} minKols=${config.kolHunterRotationV1MinIndependentKol} ` +
+    `minScore=${config.kolHunterRotationV1MinKolScore} window=${config.kolHunterRotationV1WindowSec}s ` +
+    `buys>=${config.kolHunterRotationV1MinBuyCount} smallBuys>=${config.kolHunterRotationV1MinSmallBuyCount} ` +
+    `gross>=${config.kolHunterRotationV1MinGrossBuySol}SOL recentSellBlock=${config.kolHunterRotationV1MaxRecentSellSec}s ` +
+    `priceResponse>=${(config.kolHunterRotationV1MinPriceResponsePct * 100).toFixed(2)}% ` +
+    `seeds=${config.kolHunterRotationV1KolIds || 'none'} excludes=${config.kolHunterRotationV1ExcludeKolIds || 'none'} ` +
+    `offsets=${rotationV1MarkoutOffsetsSec().join(',')}`
+  );
+}
+
 function rotationV1KolScore(tx: KolTx, seedKolIds: Set<string>, excludedKolIds: Set<string>): number {
   const kolId = tx.kolId.toLowerCase();
   if (tx.isShadow === true) return 0;
@@ -1769,6 +1793,127 @@ function rotationV1KolScore(tx: KolTx, seedKolIds: Set<string>, excludedKolIds: 
   else if (style === 'swing') score += 0.05;
 
   return Math.min(1, score);
+}
+
+interface RotationV1IntakeSnapshot {
+  buyCount: number;
+  smallBuyCount: number;
+  grossBuySol: number;
+  distinctRotationKols: number;
+  recentSellCount: number;
+  anchorKols: string[];
+  firstBuyAtMs: number | null;
+  lastBuyAtMs: number | null;
+  lastBuyAgeMs: number | null;
+  rotationScore: number;
+}
+
+function recordRotationV1Intake(tx: KolTx): void {
+  if (!config.kolHunterRotationV1Enabled) return;
+  if (tx.action !== 'buy' && tx.action !== 'sell') return;
+
+  const nowMs = Date.now();
+  const retainMs = Math.max(
+    config.kolHunterRotationV1WindowSec,
+    config.kolHunterRotationV1MaxRecentSellSec
+  ) * 1000;
+  const rows = rotationV1RecentTxsByMint.get(tx.tokenMint) ?? [];
+  rows.push(tx);
+  const cutoffMs = nowMs - retainMs;
+  const retained = rows.filter((row) => row.timestamp >= cutoffMs);
+  rotationV1RecentTxsByMint.set(tx.tokenMint, retained);
+
+  if (rotationV1RecentTxsByMint.size > 500) {
+    for (const [mint, mintRows] of rotationV1RecentTxsByMint) {
+      const nextRows = mintRows.filter((row) => row.timestamp >= cutoffMs);
+      if (nextRows.length === 0) rotationV1RecentTxsByMint.delete(mint);
+      else rotationV1RecentTxsByMint.set(mint, nextRows);
+    }
+  }
+}
+
+function buildRotationV1IntakeSnapshot(tokenMint: string, nowMs: number): RotationV1IntakeSnapshot {
+  const seedKolIds = parseRotationV1KolIds();
+  const excludedKolIds = parseRotationV1ExcludeKolIds();
+  const windowStartMs = nowMs - config.kolHunterRotationV1WindowSec * 1000;
+  const recentSellStartMs = nowMs - config.kolHunterRotationV1MaxRecentSellSec * 1000;
+  const rows = rotationV1RecentTxsByMint.get(tokenMint) ?? [];
+  const scoredRotationBuys = rows
+    .filter((tx) => tx.action === 'buy' && tx.timestamp >= windowStartMs)
+    .map((tx) => ({ tx, score: rotationV1KolScore(tx, seedKolIds, excludedKolIds) }))
+    .filter((row) => row.score > 0);
+  const rotationBuys = scoredRotationBuys.map((row) => row.tx);
+  const smallBuyCount = rotationBuys.filter((tx) => {
+    const sol = typeof tx.solAmount === 'number' ? tx.solAmount : 0;
+    return Number.isFinite(sol) && sol > 0 && sol <= config.kolHunterRotationV1SmallBuyMaxSol;
+  }).length;
+  const grossBuySol = rotationBuys.reduce((sum, tx) => {
+    const sol = typeof tx.solAmount === 'number' ? tx.solAmount : 0;
+    return sum + (Number.isFinite(sol) && sol > 0 ? sol : 0);
+  }, 0);
+  const recentSellCount = rows.filter((tx) => tx.action === 'sell' && tx.timestamp >= recentSellStartMs).length;
+  const firstBuyAtMs = rotationBuys.reduce<number | null>(
+    (min, tx) => min === null ? tx.timestamp : Math.min(min, tx.timestamp),
+    null
+  );
+  const lastBuyAtMs = rotationBuys.reduce<number | null>(
+    (max, tx) => max === null ? tx.timestamp : Math.max(max, tx.timestamp),
+    null
+  );
+  const anchorKols = [...new Set(rotationBuys.map((tx) => tx.kolId))];
+  return {
+    buyCount: rotationBuys.length,
+    smallBuyCount,
+    grossBuySol,
+    distinctRotationKols: new Set(rotationBuys.map((tx) => tx.kolId.toLowerCase())).size,
+    recentSellCount,
+    anchorKols,
+    firstBuyAtMs,
+    lastBuyAtMs,
+    lastBuyAgeMs: lastBuyAtMs === null ? null : nowMs - lastBuyAtMs,
+    rotationScore: scoredRotationBuys.reduce((max, row) => Math.max(max, row.score), 0),
+  };
+}
+
+function rotationV1IntakePassesCoreSignal(snapshot: RotationV1IntakeSnapshot): boolean {
+  const minKolScore = config.kolHunterRotationV1MinKolScore ?? 0.45;
+  const minIndependentKol = config.kolHunterRotationV1MinIndependentKol ?? 1;
+  const maxLastBuyAgeSec = config.kolHunterRotationV1MaxLastBuyAgeSec ?? 15;
+  return snapshot.buyCount >= config.kolHunterRotationV1MinBuyCount &&
+    snapshot.smallBuyCount >= config.kolHunterRotationV1MinSmallBuyCount &&
+    snapshot.grossBuySol >= config.kolHunterRotationV1MinGrossBuySol &&
+    snapshot.rotationScore >= minKolScore &&
+    snapshot.distinctRotationKols >= minIndependentKol &&
+    snapshot.recentSellCount === 0 &&
+    (snapshot.lastBuyAgeMs === null || snapshot.lastBuyAgeMs <= maxLastBuyAgeSec * 1000);
+}
+
+function maybeLogRotationV1PreObserveBlock(
+  cand: PendingCandidate,
+  score: KolDiscoveryScore,
+  preEntry: { reason?: string | null; flags: string[] }
+): void {
+  if (!config.kolHunterRotationV1Enabled) return;
+  const nowMs = Date.now();
+  const snapshot = buildRotationV1IntakeSnapshot(cand.tokenMint, nowMs);
+  if (!rotationV1IntakePassesCoreSignal(snapshot)) return;
+  const lastBuyAtMs = snapshot.lastBuyAtMs ?? 0;
+  const logKey = `${cand.tokenMint}:${preEntry.reason ?? 'unknown'}:${lastBuyAtMs}:${snapshot.buyCount}:${snapshot.smallBuyCount}`;
+  if (rotationV1PreObserveBlockLogKeys.has(logKey)) return;
+  rotationV1PreObserveBlockLogKeys.add(logKey);
+  if (rotationV1PreObserveBlockLogKeys.size > 1000) {
+    rotationV1PreObserveBlockLogKeys.clear();
+    rotationV1PreObserveBlockLogKeys.add(logKey);
+  }
+  log.info(
+    `[KOL_HUNTER_ROTATION_V1_PREOBSERVE_BLOCK] ${cand.tokenMint.slice(0, 8)} ` +
+    `reason=${preEntry.reason ?? 'unknown'} flags=${preEntry.flags.join(',')} ` +
+    `buys=${snapshot.buyCount} smallBuys=${snapshot.smallBuyCount} ` +
+    `gross=${snapshot.grossBuySol.toFixed(4)}SOL kols=${snapshot.distinctRotationKols} ` +
+    `score=${snapshot.rotationScore.toFixed(2)} lastBuyAge=${Math.round((snapshot.lastBuyAgeMs ?? 0) / 1000)}s ` +
+    `anchors=${snapshot.anchorKols.join(',') || 'none'} ` +
+    `policy=blocked_before_price_observe smartScore=${score.finalScore.toFixed(2)}`
+  );
 }
 
 function evaluateRotationV1TriggerState(cand: PendingCandidate, nowMs: number): RotationV1TriggerResult {

@@ -50,6 +50,11 @@ import { evaluateKolShadowPolicy } from '../kol/policy';
 import type { KolPolicyDecision, KolPolicyInput, KolPolicyParticipant } from '../kol/policyTypes';
 import { PaperPriceFeed, type PriceTick } from '../kol/paperPriceFeed';
 import { trackRejectForMissedAlpha, type MissedAlphaEvent } from '../observability/missedAlphaObserver';
+import {
+  buildTradeMarkoutConfigFromGlobal,
+  hydrateTradeMarkoutSchedulesFromLedger,
+  trackTradeMarkout,
+} from '../observability/tradeMarkoutObserver';
 import { trackKolClose } from './kolMissedAlpha';
 import {
   appendTokenQualityObservation,
@@ -509,6 +514,92 @@ export async function hydrateLiveExecutionQualityCooldownsFromLedger(
     }
     return { loaded: 0, hydrated: 0, skippedExpired: 0 };
   }
+}
+
+function buildTradeMarkoutObserverConfig() {
+  return buildTradeMarkoutConfigFromGlobal({
+    realtimeDataDir: config.realtimeDataDir,
+    enabled: config.tradeMarkoutObserverEnabled,
+    offsetsSec: config.tradeMarkoutObserverOffsetsSec,
+    jitterPct: config.tradeMarkoutObserverJitterPct,
+    maxInflight: config.tradeMarkoutObserverMaxInflight,
+    dedupWindowSec: config.tradeMarkoutObserverDedupWindowSec,
+    jupiterApiUrl: config.jupiterApiUrl,
+    jupiterApiKey: config.jupiterApiKey,
+  });
+}
+
+function trackPaperPositionMarkout(
+  pos: PaperPosition,
+  anchorType: 'buy' | 'sell',
+  anchorPrice: number,
+  probeSolAmount: number,
+  anchorAtMs: number,
+  extras: Record<string, unknown> = {}
+): void {
+  trackTradeMarkout(
+    {
+      anchorType,
+      positionId: pos.positionId,
+      tokenMint: pos.tokenMint,
+      anchorTxSignature: null,
+      anchorAtMs,
+      anchorPrice,
+      anchorPriceKind: anchorType === 'buy' ? 'entry_token_only' : 'exit_token_only',
+      probeSolAmount,
+      tokenDecimals: pos.tokenDecimals,
+      signalSource: pos.armName,
+      extras: {
+        mode: pos.isLive === true ? 'live' : 'paper',
+        armName: pos.armName,
+        parameterVersion: pos.parameterVersion,
+        isShadowArm: pos.isShadowArm,
+        isShadowKol: pos.isShadowKol ?? false,
+        isTailPosition: pos.isTailPosition ?? false,
+        parentPositionId: pos.parentPositionId ?? null,
+        entryReason: pos.kolEntryReason,
+        convictionLevel: pos.kolConvictionLevel,
+        kolScore: pos.kolScore,
+        independentKolCount: pos.independentKolCount,
+        ...extras,
+      },
+    },
+    buildTradeMarkoutObserverConfig()
+  );
+}
+
+export async function hydrateTradeMarkoutsFromLedger(
+  ledgerDir = config.realtimeDataDir
+) {
+  if (!config.tradeMarkoutObserverHydrateOnStart) {
+    return {
+      loadedBuys: 0,
+      loadedSells: 0,
+      loadedAnchorRecords: 0,
+      loadedPaperCloses: 0,
+      loadedPartialTakes: 0,
+      existingMarkouts: 0,
+      scheduled: 0,
+      skippedExisting: 0,
+      skippedExpired: 0,
+    };
+  }
+  const summary = await hydrateTradeMarkoutSchedulesFromLedger({
+    realtimeDir: ledgerDir,
+    config: buildTradeMarkoutObserverConfig(),
+    lookbackHours: config.tradeMarkoutObserverHydrateLookbackHours,
+  });
+  if (summary.scheduled > 0) {
+    log.info(
+      `[KOL_HUNTER_TRADE_MARKOUT_HYDRATE] ` +
+      `buys=${summary.loadedBuys} sells=${summary.loadedSells} ` +
+      `anchors=${summary.loadedAnchorRecords} ` +
+      `paper=${summary.loadedPaperCloses} partial=${summary.loadedPartialTakes} ` +
+      `existing=${summary.existingMarkouts} scheduled=${summary.scheduled} ` +
+      `expired=${summary.skippedExpired}`
+    );
+  }
+  return summary;
 }
 
 /** 테스트용 reset. */
@@ -2170,6 +2261,17 @@ async function enterPaperPosition(
     if (config.tokenQualityObserverEnabled && !pos.isTailPosition) {
       void recordTokenQualityObservation(pos).catch(() => {});
     }
+    trackPaperPositionMarkout(
+      pos,
+      'buy',
+      pos.entryPriceTokenOnly ?? pos.entryPrice,
+      pos.swapInputSol ?? pos.ticketSol,
+      pos.entryTimeSec * 1000,
+      {
+        eventType: 'paper_entry',
+        survivalFlags: pos.survivalFlags,
+      }
+    );
   }
 
   // 2. price listener 등록 — token 별 fan-out 으로 v1/v2 shadow arm 을 동시에 평가
@@ -2656,6 +2758,25 @@ function closePosition(
       ? ` partial=${partialNetSol >= 0 ? '+' : ''}${partialNetSol.toFixed(6)}SOL runner_net=${(netPct * 100).toFixed(2)}%`
       : '')
   );
+  trackPaperPositionMarkout(
+    pos,
+    'sell',
+    exitPrice,
+    pos.swapInputSol ?? pos.ticketSol,
+    nowSec * 1000,
+    {
+      eventType: 'paper_close',
+      exitReason: reason,
+      closeState: pos.state,
+      holdSec,
+      mfePctAtClose,
+      maePctAtClose,
+      netSol,
+      netPct: effectiveNetPct,
+      partialNetSol,
+      partialTicketSol,
+    }
+  );
 
   // 2026-04-30 (B1 refactor): KOL close-site 는 모두 'kol_close' 로 통일.
   //   세부 분기는 rejectReason 으로 보존 (winner-kill-analyzer 등이 reason 별 cohort 분리 가능).
@@ -2815,7 +2936,24 @@ function executePartialTake(pos: PaperPosition, currentPrice: number, nowSec: nu
     `[KOL_HUNTER_PARTIAL_TAKE] ${pos.positionId} mfe=${(mfePct * 100).toFixed(2)}% ` +
     `take=${(takePct * 100).toFixed(0)}% locked_qty=${lockedQuantity.toFixed(2)} ` +
     `locked_net=${(lockedNetPct * 100).toFixed(2)}% remaining_qty=${pos.quantity.toFixed(2)} ` +
-    `mode=paper-shadow`
+      `mode=paper-shadow`
+  );
+  trackPaperPositionMarkout(
+    pos,
+    'sell',
+    currentPrice,
+    lockedTicketSol,
+    nowSec * 1000,
+    {
+      eventType: 'paper_partial_take',
+      mfePctAtTake: mfePct,
+      lockedQuantity,
+      lockedTicketSol,
+      lockedNetPct,
+      lockedNetSol,
+      remainingQuantity: pos.quantity,
+      remainingTicketSol: pos.ticketSol,
+    }
   );
 
   // Paper ledger 의 partial record 별도 jsonl entry — DSR / winner-kill 분석 시 partial 따로 cohort 가능.
@@ -2842,6 +2980,8 @@ async function appendPartialTakeLedger(
       tokenMint: pos.tokenMint,
       armName: pos.armName,
       parameterVersion: pos.parameterVersion,
+      tokenDecimals: pos.tokenDecimals ?? null,
+      tokenDecimalsSource: pos.tokenDecimalsSource ?? null,
       isShadowArm: pos.isShadowArm,
       isLive: pos.isLive ?? false,
       eventType: 'partial_take' as const,
@@ -2913,6 +3053,18 @@ function spawnTailSubPosition(parent: PaperPosition, exitPrice: number, nowSec: 
     t2BreakevenLockPrice: undefined,
   };
   setActivePosition(tail);
+  trackPaperPositionMarkout(
+    tail,
+    'buy',
+    tail.entryPriceTokenOnly ?? tail.entryPrice,
+    tail.swapInputSol ?? tail.ticketSol,
+    nowSec * 1000,
+    {
+      eventType: liveTail ? 'live_tail_entry' : 'paper_tail_entry',
+      parentPositionId: parent.positionId,
+      retainPct,
+    }
+  );
   log.info(
     `[KOL_HUNTER_TAIL_SPAWN] ${tailId} parent=${parent.positionId} ` +
     `qty=${tail.quantity.toFixed(2)} retain=${(retainPct * 100).toFixed(0)}% ` +
@@ -3000,6 +3152,7 @@ function buildKolBaseLedgerRecord(
     positionId: pos.positionId,
     strategy: LANE_STRATEGY,
     tokenMint: pos.tokenMint,
+    ticketSol: pos.ticketSol,
     entryPrice: pos.entryPrice,
     entryPriceTokenOnly: pos.entryPriceTokenOnly,
     entryPriceWalletDelta: pos.entryPriceWalletDelta,
@@ -3041,7 +3194,7 @@ function buildKolBaseLedgerRecord(
     isShadowKol: pos.isShadowKol ?? false,
     tokenDecimals: pos.tokenDecimals ?? null,
     tokenDecimalsSource: pos.tokenDecimalsSource ?? null,
-    closedAt: new Date().toISOString(),
+    closedAt: new Date((pos.entryTimeSec + holdSec) * 1000).toISOString(),
   };
 }
 
@@ -3604,6 +3757,27 @@ async function enterLivePosition(
   if (config.tokenQualityObserverEnabled && !position.isTailPosition) {
     void recordTokenQualityObservation(position).catch(() => {});
   }
+  trackTradeMarkout(
+    {
+      anchorType: 'buy',
+      positionId: position.positionId,
+      tokenMint: position.tokenMint,
+      anchorTxSignature: entryTxSignature,
+      anchorAtMs: buyCompletedAtMs,
+      anchorPrice: position.entryPriceTokenOnly ?? actualEntryPrice,
+      anchorPriceKind: position.entryPriceTokenOnly ? 'entry_token_only' : 'wallet_delta_fallback',
+      probeSolAmount: position.swapInputSol ?? ticketSol,
+      tokenDecimals: position.tokenDecimals,
+      signalSource: position.armName,
+      extras: {
+        entryReason: position.kolEntryReason,
+        convictionLevel: position.kolConvictionLevel,
+        kolScore: position.kolScore,
+        independentKolCount: position.independentKolCount,
+      },
+    },
+    buildTradeMarkoutObserverConfig()
+  );
   ensurePriceListener(tokenMint);
 
   if (entryAdvantageReason) {
@@ -3904,6 +4078,29 @@ async function closeLivePosition(
         armName: pos.armName,
         parameterVersion: pos.parameterVersion,
       });
+      trackTradeMarkout(
+        {
+          anchorType: 'sell',
+          positionId: pos.positionId,
+          tokenMint: pos.tokenMint,
+          anchorTxSignature: exitTxSignature,
+          anchorAtMs: Date.now(),
+          anchorPrice: exitPriceTokenOnly,
+          anchorPriceKind: 'exit_token_only',
+          probeSolAmount: swapInputSoldShare ?? Math.max(0.000001, pos.ticketSol * soldRatio),
+          tokenDecimals: pos.tokenDecimals,
+          signalSource: pos.armName,
+          extras: {
+            exitReason: effectiveReason,
+            closeState: pos.state,
+            holdSec: nowSec - pos.entryTimeSec,
+            mfePctAtClose: mfePctAtClose,
+            maePctAtClose: maePctAtClose,
+            netSolTokenOnly,
+          },
+        },
+        buildTradeMarkoutObserverConfig()
+      );
     } else {
       // ORPHAN_NO_BALANCE — pure_ws 패턴 동일.
       log.warn(

@@ -3,7 +3,14 @@
 // - Token Session Tracker (Phase 3 P1-8, 2026-04-25): winner 후 sliced 재진입 차단.
 // - Missed Alpha Observer (P0+P2, 2026-04-22): reject 이후 T+N초 Jupiter price 관측.
 
-import { boolOptional, numEnv } from './helpers';
+import { boolOptional, numEnv, optional } from './helpers';
+
+function parseSecondsList(raw: string): number[] {
+  return raw
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
 
 export const pairAndSession = {
   // Phase 4 P2-3 (2026-04-25): Pair quarantine.
@@ -34,9 +41,19 @@ export const pairAndSession = {
   // 2026-04-29 (external strategy report addendum): T+2h(7200s) 추가 — long-tail trajectory
   // 측정. T+30m 이후 추가 상승 (5x+ winner late breakout) 을 capture, retrospective false-neg
   // rate 분포 산출의 분모 확장. observer fire-and-forget 이라 trade 결정 영향 없음.
-  missedAlphaObserverOffsetsSec: (process.env.MISSED_ALPHA_OBSERVER_OFFSETS_SEC ?? '30,60,300,1800,7200')
-    .split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0),
+  missedAlphaObserverOffsetsSec: parseSecondsList(optional('MISSED_ALPHA_OBSERVER_OFFSETS_SEC', '30,60,300,1800,7200')),
   missedAlphaObserverJitterPct: numEnv('MISSED_ALPHA_OBSERVER_JITTER_PCT', '0.1'),
   missedAlphaObserverMaxInflight: numEnv('MISSED_ALPHA_OBSERVER_MAX_INFLIGHT', '50'),
   missedAlphaObserverDedupWindowSec: numEnv('MISSED_ALPHA_OBSERVER_DEDUP_WINDOW_SEC', '30'),
+
+  // 2026-05-02: Trade Markout Observer.
+  // executed-buys / executed-sells 이후 T+N초 가격을 별도 sidecar 로 기록한다.
+  // 출력: `${realtimeDataDir}/trade-markouts.jsonl`; trade decision 에 간섭하지 않는다.
+  tradeMarkoutObserverEnabled: boolOptional('TRADE_MARKOUT_OBSERVER_ENABLED', true),
+  tradeMarkoutObserverOffsetsSec: parseSecondsList(optional('TRADE_MARKOUT_OBSERVER_OFFSETS_SEC', '30,60,300,1800')),
+  tradeMarkoutObserverJitterPct: numEnv('TRADE_MARKOUT_OBSERVER_JITTER_PCT', '0.05'),
+  tradeMarkoutObserverMaxInflight: numEnv('TRADE_MARKOUT_OBSERVER_MAX_INFLIGHT', '32'),
+  tradeMarkoutObserverDedupWindowSec: numEnv('TRADE_MARKOUT_OBSERVER_DEDUP_WINDOW_SEC', '30'),
+  tradeMarkoutObserverHydrateOnStart: boolOptional('TRADE_MARKOUT_OBSERVER_HYDRATE_ON_START', true),
+  tradeMarkoutObserverHydrateLookbackHours: numEnv('TRADE_MARKOUT_OBSERVER_HYDRATE_LOOKBACK_HOURS', '2'),
 } as const;

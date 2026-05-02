@@ -125,6 +125,21 @@ function buyTx(kolId: string, tier: 'S' | 'A' | 'B', tokenMint: string, offsetMs
   };
 }
 
+function sellTx(
+  kolId: string,
+  tier: 'S' | 'A' | 'B',
+  tokenMint: string,
+  solAmount: number,
+  offsetMs = 0
+): KolTx {
+  return {
+    ...buyTx(kolId, tier, tokenMint, offsetMs),
+    action: 'sell',
+    solAmount,
+    txSignature: `sell_${kolId}_${tokenMint}_${offsetMs}`,
+  };
+}
+
 // Config override — tests 마다 env 가 다르게 동작하지 않도록 기본값 확실히.
 jest.mock('../src/utils/config', () => ({
   config: {
@@ -238,6 +253,12 @@ jest.mock('../src/utils/config', () => ({
     kolHunterKolDecayCooldownMs: 14_400_000,
     kolHunterKolDecayMinCloses: 3,
     kolHunterKolDecayLossRatioThreshold: 0.66,
+    // 2026-05-02: post-distribution sell-wave live guard. default ON 은 production 과 동일.
+    kolHunterPostDistributionGuardEnabled: true,
+    kolHunterPostDistributionWindowSec: 300,
+    kolHunterPostDistributionMinGrossSellSol: 2,
+    kolHunterPostDistributionMinSellKols: 2,
+    kolHunterPostDistributionCancelQuarantineSec: 600,
     // 2026-04-29 (외부 전략 리포트 #5): community detection default disabled.
     kolHunterCommunityDetectionEnabled: false,
     kolHunterCommunityWindowMs: 300_000,
@@ -1316,6 +1337,12 @@ describe('kolSignalHandler — state machine', () => {
       mockedConfig.kolHunterSmartV3Enabled = false;
       mockedConfig.kolHunterPaperOnly = true;
       mockedConfig.kolHunterLiveCanaryEnabled = false;
+      mockedConfig.kolHunterSmartV3PullbackMinKolCount = 1;
+      mockedConfig.kolHunterPostDistributionGuardEnabled = true;
+      mockedConfig.kolHunterPostDistributionWindowSec = 300;
+      mockedConfig.kolHunterPostDistributionMinGrossSellSol = 2;
+      mockedConfig.kolHunterPostDistributionMinSellKols = 2;
+      mockedConfig.kolHunterPostDistributionCancelQuarantineSec = 600;
     });
 
     function buildLiveCtx(opts: { executeBuy?: jest.Mock } = {}) {
@@ -1388,6 +1415,57 @@ describe('kolSignalHandler — state machine', () => {
       expect(live?.parameterVersion).toBe('smart-v3.0.0');
       expect(live?.kolEntryReason).toBe('pullback');
       expect(live?.entryTxSignature).toBe('KOL_LIVE_BUY_SIG');
+    });
+
+    it('post-distribution sell wave 뒤 pullback trigger 는 live/paper entry 없이 reject 로 기록', async () => {
+      const { ctx, executeBuy, insertTrade } = buildLiveCtx();
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterSmartV3PullbackMinKolCount = 2;
+
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART, 240_000));
+      await handleKolSwap(buyTx('gorapandeok', 'B', MINT_SMART, 170_000));
+      await handleKolSwap(sellTx('seller_alpha', 'A', MINT_SMART, 1.50, 90_000));
+      await handleKolSwap(sellTx('seller_beta', 'B', MINT_SMART, 1.20, 80_000));
+      stubFeed.emitTick(MINT_SMART, 0.0013);
+      stubFeed.emitTick(MINT_SMART, 0.00115);
+      await flushAsync();
+
+      expect(executeBuy).not.toHaveBeenCalled();
+      expect(insertTrade).not.toHaveBeenCalled();
+
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(0);
+      const policies = policyRecordsWithFlag('POST_DISTRIBUTION_ENTRY_BLOCK');
+      expect(policies.length).toBeGreaterThan(0);
+      expect(policies[0].currentAction).toBe('block');
+      expect(policies[0].riskFlags).toEqual(expect.arrayContaining([
+        'POST_DISTRIBUTION_SELL_WAVE',
+        'POST_DISTRIBUTION_ENTRY_BLOCK',
+      ]));
+    });
+
+    it('paper-only mode 도 post-distribution sell wave 뒤 smart-v3 entry 를 동일하게 차단', async () => {
+      const { ctx, executeBuy } = buildLiveCtx();
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx });
+      mockedConfig.kolHunterPaperOnly = true;
+      mockedConfig.kolHunterLiveCanaryEnabled = false;
+      mockedConfig.kolHunterSmartV3PullbackMinKolCount = 2;
+
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART, 240_000));
+      await handleKolSwap(buyTx('gorapandeok', 'B', MINT_SMART, 170_000));
+      await handleKolSwap(sellTx('seller_alpha', 'A', MINT_SMART, 1.50, 90_000));
+      await handleKolSwap(sellTx('seller_beta', 'B', MINT_SMART, 1.20, 80_000));
+      stubFeed.emitTick(MINT_SMART, 0.0013);
+      stubFeed.emitTick(MINT_SMART, 0.00115);
+      await flushAsync();
+
+      expect(executeBuy).not.toHaveBeenCalled();
+      expect(__testGetActive()).toHaveLength(0);
+      expect(policyRecordsWithFlag('POST_DISTRIBUTION_ENTRY_BLOCK').length).toBeGreaterThan(0);
     });
 
     // 2026-05-01 (P2-1 회귀, minimal): tail spawn 의 live 분기 + paper 분기를 직접 helper 로 검증.

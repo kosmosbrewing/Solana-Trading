@@ -48,6 +48,9 @@ import { computeKolDiscoveryScore } from '../kol/scoring';
 import { getKolLaneRole, getKolTradingStyle } from '../kol/db';
 import { evaluateKolShadowPolicy } from '../kol/policy';
 import type { KolPolicyDecision, KolPolicyInput, KolPolicyParticipant } from '../kol/policyTypes';
+import {
+  evaluatePostDistributionGuard,
+} from '../kol/postDistributionGuard';
 import { PaperPriceFeed, type PriceTick } from '../kol/paperPriceFeed';
 import { trackRejectForMissedAlpha, type MissedAlphaEvent } from '../observability/missedAlphaObserver';
 import {
@@ -109,6 +112,7 @@ export type CloseReason =
   | 'smart_v3_no_trigger'
   | 'smart_v3_price_timeout'
   | 'smart_v3_kol_sell_cancel'
+  | 'post_distribution_entry_block'
   | 'insider_exit_full'
   | 'entry_advantage_emergency_exit'
   | 'winner_trailing_t1'
@@ -325,6 +329,25 @@ function isInReentryCooldown(tokenMint: string): { blocked: boolean; remainingMs
 /** 테스트용 reset. */
 export function resetReentryCooldownForTests(): void {
   recentClosedTokens.clear();
+}
+
+const smartV3SellCancelByMint = new Map<string, number>();
+
+function markSmartV3SellCancel(tokenMint: string, nowMs = Date.now()): void {
+  smartV3SellCancelByMint.set(tokenMint, nowMs);
+  if (smartV3SellCancelByMint.size <= 1000) return;
+  const pruneBeforeMs = nowMs - config.kolHunterPostDistributionCancelQuarantineSec * 1000 * 4;
+  for (const [mint, ts] of smartV3SellCancelByMint) {
+    if (ts < pruneBeforeMs) smartV3SellCancelByMint.delete(mint);
+  }
+}
+
+function recentSmartV3SellCancelAt(tokenMint: string, nowMs = Date.now()): number | null {
+  const ts = smartV3SellCancelByMint.get(tokenMint);
+  if (ts == null) return null;
+  const quarantineMs = config.kolHunterPostDistributionCancelQuarantineSec * 1000;
+  if (quarantineMs <= 0 || nowMs - ts > quarantineMs) return null;
+  return ts;
 }
 
 interface LiveExecutionQualityCooldown {
@@ -1125,6 +1148,7 @@ export function stopKolHunter(): void {
   recentKolTxs.length = 0;
   pushesSinceLastPrune = 0;
   scoreCache.clear();     // P1 #7: score cache 동기화
+  smartV3SellCancelByMint.clear();
   if (ownedGateCache) {
     ownedGateCache.destroy();
     ownedGateCache = undefined;
@@ -1298,6 +1322,7 @@ function handleKolSellSignal(tx: KolTx): void {
     pending.delete(tx.tokenMint);
     cleanupPendingCandidate(cand, true);
     const score = computeKolDiscoveryScoreCached(tx.tokenMint, Date.now());  // P1 #7
+    markSmartV3SellCancel(tx.tokenMint);
     log.info(`[KOL_HUNTER_SMART_V3_CANCEL] ${tokenMint(tx)} kol=${tx.kolId} sell during observe`);
     fireRejectObserver(tx.tokenMint, 'smart_v3_kol_sell_cancel', cand, score);
     return;
@@ -1627,6 +1652,44 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     tokenDecimals: smart.tokenDecimals,
     tokenDecimalsSource: smart.tokenDecimalsSource,
   };
+  const postDistribution = evaluatePostDistributionGuard({
+    tokenMint: cand.tokenMint,
+    nowMs: Date.now(),
+    recentKolTxs,
+    participatingKols: score.participatingKols,
+    priorKolSellCancelAtMs: recentSmartV3SellCancelAt(cand.tokenMint),
+    config: {
+      enabled: config.kolHunterPostDistributionGuardEnabled,
+      windowMs: config.kolHunterPostDistributionWindowSec * 1000,
+      minGrossSellSol: config.kolHunterPostDistributionMinGrossSellSol,
+      minDistinctSellKols: config.kolHunterPostDistributionMinSellKols,
+      cancelQuarantineMs: config.kolHunterPostDistributionCancelQuarantineSec * 1000,
+    },
+  });
+  const smartEntryFlags = [
+    ...smart.preEntryFlags,
+    ...postDistribution.flags,
+  ];
+  if (postDistribution.blocked) {
+    log.warn(
+      `[KOL_HUNTER_POST_DISTRIBUTION_BLOCK] ${cand.tokenMint.slice(0, 8)} smart-v3 trigger — ` +
+      `${postDistribution.reason} grossSell=${postDistribution.telemetry.sellSol.toFixed(3)}SOL ` +
+      `netSell=${postDistribution.telemetry.netSellSol.toFixed(3)}SOL ` +
+      `sellKols=${postDistribution.telemetry.distinctSellKols} ` +
+      `freshBuyKols=${postDistribution.telemetry.freshIndependentBuyKols}. no entry.`
+    );
+    fireRejectObserver(cand.tokenMint, 'post_distribution_entry_block', cand, score, {
+      survivalReason: postDistribution.reason,
+      survivalFlags: smartEntryFlags,
+      postDistributionGuard: postDistribution.telemetry,
+      entryReason: entryOptions.entryReason,
+      parameterVersion: entryOptions.parameterVersion,
+      signalPrice: smart.currentPrice,
+      tokenDecimals: smart.tokenDecimals,
+    });
+    cleanupPendingCandidate(cand, true);
+    return;
+  }
 
   // 2026-04-28 fix: smart-v3 main arm 이 live canary 의 1st-class entry path. 이전에는
   // enterPaperPosition 만 호출하여 KOL_HUNTER_LIVE_CANARY_ENABLED=true 환경에서도
@@ -1686,9 +1749,9 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       });
       return;
     }
-    const liveGate = evaluateKolLiveCanaryGate(score, smart.preEntryFlags);
+    const liveGate = evaluateKolLiveCanaryGate(score, smartEntryFlags);
     if (!liveGate.allowLive) {
-      const policyFlags = [...smart.preEntryFlags, ...liveGate.flags];
+      const policyFlags = [...smartEntryFlags, ...liveGate.flags];
       log.warn(
         `[KOL_HUNTER_YELLOW_ZONE] ${cand.tokenMint.slice(0, 8)} smart-v3 trigger — ` +
         `${liveGate.reason}. fallback paper.`
@@ -1707,13 +1770,13 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       cand.tokenMint,
       cand,
       score,
-      smart.preEntryFlags,
+      smartEntryFlags,
       botCtx,
       entryOptions
     );
     return;
   }
-  await enterPaperPosition(cand.tokenMint, cand, score, smart.preEntryFlags, entryOptions);
+  await enterPaperPosition(cand.tokenMint, cand, score, smartEntryFlags, entryOptions);
 }
 
 async function resolveStalk(tokenMint: string): Promise<void> {
@@ -4344,6 +4407,12 @@ function fireRejectObserver(
   extras: Record<string, unknown> = {}
 ): void {
   const survivalFlags = extractStringArray(extras.survivalFlags);
+  const signalPrice = typeof extras.signalPrice === 'number' && Number.isFinite(extras.signalPrice) && extras.signalPrice > 0
+    ? extras.signalPrice
+    : 0.01;
+  const tokenDecimals = typeof extras.tokenDecimals === 'number' && Number.isFinite(extras.tokenDecimals)
+    ? extras.tokenDecimals
+    : undefined;
   emitKolShadowPolicy({
     eventKind: 'reject',
     tokenMint,
@@ -4368,8 +4437,9 @@ function fireRejectObserver(
       rejectReason: reason,
       tokenMint,
       lane: LANE_STRATEGY,
-      signalPrice: 0.01, // unknown — use probe sol
+      signalPrice,
       probeSolAmount: config.kolHunterTicketSol,
+      tokenDecimals,
       signalSource: `kol_hunter_stalk:${cand.kolTxs[0]?.kolId ?? 'unknown'}`,
       extras: {
         stalkDurationMs: Date.now() - cand.firstKolEntryMs,

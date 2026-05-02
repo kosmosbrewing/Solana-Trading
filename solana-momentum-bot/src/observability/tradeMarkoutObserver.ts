@@ -197,6 +197,14 @@ export function trackTradeMarkout(
 ): void {
   const cfg = resolveConfig(config);
   if (!cfg.enabled || !isValidAnchor(anchor, cfg)) return;
+  const scheduledOffsetsSec = [...cfg.offsetsSec];
+  const scheduledAnchor: TradeMarkoutAnchor = {
+    ...anchor,
+    extras: {
+      ...(anchor.extras ?? {}),
+      markoutOffsetsSec: scheduledOffsetsSec,
+    },
+  };
 
   const nowMs = Date.now();
   const anchorKey = `${anchor.anchorType}:${anchor.positionId}:${anchor.anchorTxSignature ?? anchor.anchorAtMs ?? ''}`;
@@ -205,12 +213,12 @@ export function trackTradeMarkout(
   recentAnchorKeys.set(anchorKey, nowMs);
   pruneRecentAnchorKeys(nowMs, cfg.dedupWindowSec);
   if (cfg.anchorOutputFile) {
-    void writeAnchorRecord(cfg.anchorOutputFile, anchor).catch(() => {});
+    void writeAnchorRecord(cfg.anchorOutputFile, scheduledAnchor).catch(() => {});
   }
 
-  for (const horizonSec of cfg.offsetsSec) {
+  for (const horizonSec of scheduledOffsetsSec) {
     const jitterMs = computeJitterMs(horizonSec, cfg.jitterPct);
-    scheduleProbe(anchor, cfg, horizonSec, Math.max(0, horizonSec * 1000 + jitterMs));
+    scheduleProbe(scheduledAnchor, cfg, horizonSec, Math.max(0, horizonSec * 1000 + jitterMs));
   }
 }
 
@@ -313,7 +321,7 @@ export async function hydrateTradeMarkoutSchedulesFromLedger(options: {
   }
 
   for (const anchor of anchors) {
-    for (const horizonSec of cfg.offsetsSec) {
+    for (const horizonSec of markoutOffsetsForAnchor(anchor, cfg)) {
       const key = markoutKey(anchor, horizonSec);
       const legacyKey = legacyMarkoutKey(anchor.positionId, anchor.anchorType, horizonSec);
       const hasUniqueAnchor = Boolean(anchor.anchorTxSignature || anchor.anchorAtMs != null);
@@ -333,6 +341,15 @@ export async function hydrateTradeMarkoutSchedulesFromLedger(options: {
   }
 
   return summary;
+}
+
+function markoutOffsetsForAnchor(anchor: TradeMarkoutAnchor, cfg: TradeMarkoutObserverConfig): number[] {
+  const raw = anchor.extras?.markoutOffsetsSec;
+  if (!Array.isArray(raw)) return cfg.offsetsSec;
+  const parsed = raw
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  return parsed.length > 0 ? [...new Set(parsed)].sort((a, b) => a - b) : cfg.offsetsSec;
 }
 
 function isRetryableExistingMarkout(row: Record<string, unknown>): boolean {

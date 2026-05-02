@@ -7,6 +7,13 @@
 import path from 'path';
 import { boolOptional, numEnv, optional } from './helpers';
 
+function parseSecondsList(raw: string): number[] {
+  return raw
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
+
 export const kolHunter = {
   // ─── KOL Wallet Tracker (Phase 1 passive logging) ───
   kolTrackerEnabled: boolOptional('KOL_TRACKER_ENABLED', false),
@@ -256,6 +263,40 @@ export const kolHunter = {
   kolHunterSwingV2T1TrailPct: numEnv('KOL_HUNTER_SWING_V2_T1_TRAIL_PCT', '0.25'),
   kolHunterSwingV2T1ProfitFloorMult: numEnv('KOL_HUNTER_SWING_V2_T1_PROFIT_FLOOR_MULT', '1.10'),
   kolHunterSwingV2ParameterVersion: process.env.KOL_HUNTER_SWING_V2_PARAMETER_VERSION ?? 'swing-v2.0.0',
+
+  // ─── 2026-05-02: kol_hunter_rotation_v1 fast-compound lane ───
+  // ADR: docs/design-docs/kol-hunter-rotation-v1-2026-05-02.md
+  // Mission fit: smart-v3 의 5x+ convex lane 은 유지하되, dv/decu 로그에서 관측된
+  // opener + small top-up + 빠른 sell 회전 패턴을 별도 opt-in lane 으로 측정한다.
+  // 기본값은 운영 무영향. live 는 별도 flag 를 요구하고 기존 canary gate 를 그대로 통과해야 한다.
+  kolHunterRotationV1Enabled: boolOptional('KOL_HUNTER_ROTATION_V1_ENABLED', false),
+  kolHunterRotationV1LiveEnabled: boolOptional('KOL_HUNTER_ROTATION_V1_LIVE_ENABLED', false),
+  // Rotation is allowed to be a true single-KOL lane; smart-v3 keeps the global live min-KOL gate.
+  kolHunterRotationV1MinIndependentKol: numEnv('KOL_HUNTER_ROTATION_V1_MIN_INDEPENDENT_KOL', '1'),
+  // Seed ids are a score boost, not a hard allowlist. Active KOL DB metadata drives eligibility.
+  kolHunterRotationV1KolIds: optional('KOL_HUNTER_ROTATION_V1_KOL_IDS', 'dv,decu'),
+  kolHunterRotationV1ExcludeKolIds: optional('KOL_HUNTER_ROTATION_V1_EXCLUDE_KOL_IDS', ''),
+  kolHunterRotationV1MinKolScore: numEnv('KOL_HUNTER_ROTATION_V1_MIN_KOL_SCORE', '0.45'),
+  kolHunterRotationV1WindowSec: numEnv('KOL_HUNTER_ROTATION_V1_WINDOW_SEC', '45'),
+  kolHunterRotationV1MaxLastBuyAgeSec: numEnv('KOL_HUNTER_ROTATION_V1_MAX_LAST_BUY_AGE_SEC', '15'),
+  kolHunterRotationV1MinBuyCount: numEnv('KOL_HUNTER_ROTATION_V1_MIN_BUY_COUNT', '3'),
+  kolHunterRotationV1MinSmallBuyCount: numEnv('KOL_HUNTER_ROTATION_V1_MIN_SMALL_BUY_COUNT', '2'),
+  kolHunterRotationV1SmallBuyMaxSol: numEnv('KOL_HUNTER_ROTATION_V1_SMALL_BUY_MAX_SOL', '0.061'),
+  kolHunterRotationV1MinGrossBuySol: numEnv('KOL_HUNTER_ROTATION_V1_MIN_GROSS_BUY_SOL', '1.0'),
+  kolHunterRotationV1MaxRecentSellSec: numEnv('KOL_HUNTER_ROTATION_V1_MAX_RECENT_SELL_SEC', '60'),
+  kolHunterRotationV1MinPriceResponsePct: numEnv('KOL_HUNTER_ROTATION_V1_MIN_PRICE_RESPONSE_PCT', '0.01'),
+  kolHunterRotationV1T1Mfe: numEnv('KOL_HUNTER_ROTATION_V1_T1_MFE', '0.12'),
+  kolHunterRotationV1T1TrailPct: numEnv('KOL_HUNTER_ROTATION_V1_T1_TRAIL_PCT', '0.08'),
+  kolHunterRotationV1ProfitFloorMult: numEnv('KOL_HUNTER_ROTATION_V1_PROFIT_FLOOR_MULT', '1.08'),
+  kolHunterRotationV1ProbeTimeoutSec: numEnv('KOL_HUNTER_ROTATION_V1_PROBE_TIMEOUT_SEC', '90'),
+  kolHunterRotationV1DoaWindowSec: numEnv('KOL_HUNTER_ROTATION_V1_DOA_WINDOW_SEC', '30'),
+  kolHunterRotationV1DoaMinMfePct: numEnv('KOL_HUNTER_ROTATION_V1_DOA_MIN_MFE_PCT', '0.03'),
+  kolHunterRotationV1DoaMaxMaePct: numEnv('KOL_HUNTER_ROTATION_V1_DOA_MAX_MAE_PCT', '0.06'),
+  kolHunterRotationV1FreshBuyGraceSec: numEnv('KOL_HUNTER_ROTATION_V1_FRESH_BUY_GRACE_SEC', '15'),
+  // Rotation is a fast-compound lane. Primary validation horizons are immediate continuation (15s),
+  // DOA/failure classification (30s), and short continuation (60s). Long-tail 300/1800s stays global.
+  kolHunterRotationV1MarkoutOffsetsSec: parseSecondsList(optional('KOL_HUNTER_ROTATION_V1_MARKOUT_OFFSETS_SEC', '15,30,60')),
+  kolHunterRotationV1ParameterVersion: process.env.KOL_HUNTER_ROTATION_V1_PARAMETER_VERSION ?? 'rotation-v1.0.0',
 
   // ─── 2026-04-26: kol_hunter_smart_v3 main paper entry logic ───
   // 운영자 결정: 돈을 번 적 없는 v1 single-KOL wait entry 대신 smart-v3 trigger 를 main 으로 사용.

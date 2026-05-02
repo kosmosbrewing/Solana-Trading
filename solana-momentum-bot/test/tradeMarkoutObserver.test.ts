@@ -358,6 +358,47 @@ describe('tradeMarkoutObserver', () => {
     expect(record.anchorType).toBe('buy');
   });
 
+  it('hydrates anchor-specific markout horizons when the anchor ledger recorded them', async () => {
+    mockReadFile.mockImplementation(async (file: string) => {
+      if (file.endsWith('trade-markout-anchors.jsonl')) {
+        return JSON.stringify({
+          schemaVersion: 'trade-markout-anchor/v1',
+          anchorType: 'buy',
+          positionId: 'rotation-open-pos',
+          tokenMint: 'MintRotationOpen1111111111111111111111',
+          anchorAt: '2026-05-02T00:59:40.000Z',
+          anchorPrice: 0.01,
+          anchorPriceKind: 'entry_token_only',
+          probeSolAmount: 0.02,
+          tokenDecimals: 6,
+          signalSource: 'kol_hunter_rotation_v1',
+          extras: { markoutOffsetsSec: [15, 30, 60] },
+        }) + '\n';
+      }
+      return '';
+    });
+    mockAxiosGet.mockResolvedValue({
+      data: { outAmount: String(2_000_000), outputDecimals: 6 },
+    });
+
+    const summary = await hydrateTradeMarkoutSchedulesFromLedger({
+      realtimeDir: '/tmp/realtime',
+      config: { ...BASE_CFG, anchorOutputFile: '/tmp/realtime/trade-markout-anchors.jsonl' },
+      lookbackHours: 2,
+    });
+
+    expect(summary.loadedAnchorRecords).toBe(1);
+    expect(summary.scheduled).toBe(3);
+
+    await jest.advanceTimersByTimeAsync(60_001);
+    await flushAsync();
+
+    const horizons = mockAppendFile.mock.calls
+      .map(([, payload]) => JSON.parse(String(payload).trim()).horizonSec)
+      .sort((a, b) => a - b);
+    expect(horizons).toEqual([15, 30, 60]);
+  });
+
   it('hydrates missing markouts from executed ledgers without duplicate existing rows', async () => {
     mockReadFile.mockImplementation(async (file: string) => {
       if (file.endsWith('executed-buys.jsonl')) {

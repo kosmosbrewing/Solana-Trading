@@ -11,6 +11,9 @@ export interface HorizonCoverage {
   expectedRows: number;
   observedRows: number;
   okRows: number;
+  positivePostCostRows: number;
+  medianDeltaPct: number | null;
+  medianPostCostDeltaPct: number | null;
   rowCoveragePct: number;
   okCoveragePct: number;
   /** Backward-compatible alias for okCoveragePct. */
@@ -21,6 +24,7 @@ export interface AuditReport {
   generatedAt: string;
   since: string;
   realtimeDir: string;
+  lane?: 'kol_hunter' | 'pure_ws' | 'all';
   horizonsSec: number[];
   verdict: 'OK' | 'WATCH' | 'PAUSE_REVIEW' | 'INVESTIGATE';
   summary: {
@@ -57,6 +61,10 @@ export function formatPct(value: number): string {
   return `${value.toFixed(1)}%`;
 }
 
+export function formatNullablePct(value: number | null): string {
+  return value == null ? 'n/a' : `${(value * 100).toFixed(1)}%`;
+}
+
 export function verdictFor(report: Pick<AuditReport, 'summary'>): AuditReport['verdict'] {
   if (report.summary.fiveXAfterSellRows > 0) return 'PAUSE_REVIEW';
   if (report.summary.expectedRows === 0) return 'WATCH';
@@ -75,6 +83,7 @@ export function renderText(report: AuditReport): string {
   const lines = [
     `Trade Markout Audit since ${report.since}`,
     `- verdict=${report.verdict}`,
+    `- lane=${report.lane ?? 'kol_hunter'}`,
     `- horizons=${report.horizonsSec.join(',')}s`,
     `- anchors=${report.summary.anchors} anchorRows=${report.summary.anchorRows} fallbackLiveBuys=${report.summary.fallbackLiveBuys} fallbackLiveSells=${report.summary.fallbackLiveSells}`,
     `- anchorMode=${formatCounts(report.counts.anchorMode)}`,
@@ -91,6 +100,8 @@ export function renderText(report: AuditReport): string {
     for (const row of report.horizonCoverage) {
       lines.push(
         `- T+${row.horizonSec}s expected=${row.expectedRows} observed=${row.observedRows} ok=${row.okRows} ` +
+        `postCostPositive=${row.positivePostCostRows}/${row.okRows} ` +
+        `median=${formatNullablePct(row.medianDeltaPct)} postCostMedian=${formatNullablePct(row.medianPostCostDeltaPct)} ` +
         `rowCoverage=${formatPct(row.rowCoveragePct)} okCoverage=${formatPct(row.okCoveragePct)}`
       );
     }
@@ -114,6 +125,7 @@ export function renderMarkdown(report: AuditReport): string {
     `- generatedAt: ${report.generatedAt}`,
     `- since: ${report.since}`,
     `- realtimeDir: \`${report.realtimeDir}\``,
+    `- lane: \`${report.lane ?? 'kol_hunter'}\``,
     `- horizons: ${report.horizonsSec.map((horizon) => `T+${horizon}s`).join(', ')}`,
     `- one-line verdict: **${report.verdict}**`,
     '',
@@ -134,13 +146,14 @@ export function renderMarkdown(report: AuditReport): string {
     '',
     '## Horizon Coverage',
     '',
-    '| horizon | expected | observed | ok | rowCoverage | okCoverage |',
-    '|---:|---:|---:|---:|---:|---:|',
+    '| horizon | expected | observed | ok | pc+ | median | pc median | rowCoverage | okCoverage |',
+    '|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
   ];
   for (const row of report.horizonCoverage) {
     lines.push(
       `| T+${row.horizonSec}s | ${row.expectedRows} | ${row.observedRows} | ${row.okRows} | ` +
-      `${formatPct(row.rowCoveragePct)} | ${formatPct(row.okCoveragePct)} |`
+      `${row.positivePostCostRows}/${row.okRows} | ${formatNullablePct(row.medianDeltaPct)} | ` +
+      `${formatNullablePct(row.medianPostCostDeltaPct)} | ${formatPct(row.rowCoveragePct)} | ${formatPct(row.okCoveragePct)} |`
     );
   }
   lines.push(

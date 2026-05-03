@@ -18,6 +18,7 @@ export interface PureWsPosition {
   marketReferencePrice: number;
   entryTimeSec: number;
   quantity: number;
+  tokenDecimals?: number | null;
   state: PureWsTradeState;
   peakPrice: number;
   troughPrice: number;
@@ -63,6 +64,7 @@ export interface PureWsPosition {
   // 정의되어 있으면 tickMonitor 가 우선 사용, 없으면 config.pureWs* default.
   probeWindowSecOverride?: number;
   probeHardCutPctOverride?: number;
+  probeTrailingPctOverride?: number;
   t1TrailPctOverride?: number;
   t1ProfitFloorMultOverride?: number;
 }

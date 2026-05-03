@@ -88,4 +88,31 @@ export const dexTradeDetector = {
   canarySwingV2MaxBudgetSol: numEnv('CANARY_SWING_V2_MAX_BUDGET_SOL', '0.1'),            // -0.1 SOL 누적 시 halt
   canarySwingV2MaxConsecLosers: numEnv('CANARY_SWING_V2_MAX_CONSEC_LOSERS', '5'),        // 연속 5 loser → halt
   canarySwingV2MaxTrades: numEnv('CANARY_SWING_V2_MAX_TRADES', '50'),                    // 50 trade 후 promotion review
+
+  // ─── 2026-05-03: pure_ws paper-only parameter arms ───
+  // 목적: 현재 primary/swing-v2 가 비용 후 음수인 상황에서 live 영향 없이
+  // "더 엄격히 고르고, 더 빨리 실패 판별하고, 작은 winner를 비용 후 수확"하는 후보를 병렬 측정한다.
+  pureWsPaperParamArmsEnabled: boolOptional('PUREWS_PAPER_PARAM_ARMS_ENABLED', true),
+
+  pureWsPaperCostGuardEnabled: boolOptional('PUREWS_PAPER_COST_GUARD_ENABLED', true),
+  pureWsPaperCostGuardMinBuyRatio: numEnv('PUREWS_PAPER_COST_GUARD_MIN_BUY_RATIO', '0.62'),
+  pureWsPaperCostGuardMinTxCount: numEnv('PUREWS_PAPER_COST_GUARD_MIN_TX_COUNT', '5'),
+  pureWsPaperCostGuardPairCooldownSec: numEnv('PUREWS_PAPER_COST_GUARD_PAIR_COOLDOWN_SEC', '3600'),
+  pureWsPaperCostGuardProbeWindowSec: numEnv('PUREWS_PAPER_COST_GUARD_PROBE_WINDOW_SEC', '15'),
+  pureWsPaperCostGuardProbeHardCutPct: numEnv('PUREWS_PAPER_COST_GUARD_PROBE_HARD_CUT_PCT', '0.008'),
+  pureWsPaperCostGuardProbeTrailPct: numEnv('PUREWS_PAPER_COST_GUARD_PROBE_TRAIL_PCT', '0.006'),
+  pureWsPaperCostGuardT1Mfe: numEnv('PUREWS_PAPER_COST_GUARD_T1_MFE', '0.012'),
+  pureWsPaperCostGuardT1TrailPct: numEnv('PUREWS_PAPER_COST_GUARD_T1_TRAIL_PCT', '0.006'),
+  pureWsPaperCostGuardProfitFloorMult: numEnv('PUREWS_PAPER_COST_GUARD_PROFIT_FLOOR_MULT', '1.006'),
+
+  pureWsPaperConfirm60Enabled: boolOptional('PUREWS_PAPER_CONFIRM60_ENABLED', true),
+  pureWsPaperConfirm60MinBuyRatio: numEnv('PUREWS_PAPER_CONFIRM60_MIN_BUY_RATIO', '0.58'),
+  pureWsPaperConfirm60MinTxCount: numEnv('PUREWS_PAPER_CONFIRM60_MIN_TX_COUNT', '3'),
+  pureWsPaperConfirm60PairCooldownSec: numEnv('PUREWS_PAPER_CONFIRM60_PAIR_COOLDOWN_SEC', '1800'),
+  pureWsPaperConfirm60ProbeWindowSec: numEnv('PUREWS_PAPER_CONFIRM60_PROBE_WINDOW_SEC', '60'),
+  pureWsPaperConfirm60ProbeHardCutPct: numEnv('PUREWS_PAPER_CONFIRM60_PROBE_HARD_CUT_PCT', '0.015'),
+  pureWsPaperConfirm60ProbeTrailPct: numEnv('PUREWS_PAPER_CONFIRM60_PROBE_TRAIL_PCT', '0.012'),
+  pureWsPaperConfirm60T1Mfe: numEnv('PUREWS_PAPER_CONFIRM60_T1_MFE', '0.020'),
+  pureWsPaperConfirm60T1TrailPct: numEnv('PUREWS_PAPER_CONFIRM60_T1_TRAIL_PCT', '0.012'),
+  pureWsPaperConfirm60ProfitFloorMult: numEnv('PUREWS_PAPER_CONFIRM60_PROFIT_FLOOR_MULT', '1.010'),
 } as const;

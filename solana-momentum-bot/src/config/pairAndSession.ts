@@ -51,6 +51,7 @@ export const pairAndSession = {
   // 출력: `${realtimeDataDir}/trade-markouts.jsonl`; trade decision 에 간섭하지 않는다.
   tradeMarkoutObserverEnabled: boolOptional('TRADE_MARKOUT_OBSERVER_ENABLED', true),
   tradeMarkoutObserverOffsetsSec: parseSecondsList(optional('TRADE_MARKOUT_OBSERVER_OFFSETS_SEC', '30,60,300,1800')),
+  pureWsPaperMarkoutOffsetsSec: parseSecondsList(optional('PUREWS_PAPER_MARKOUT_OFFSETS_SEC', '15,30,60,180,300,1800')),
   tradeMarkoutObserverJitterPct: numEnv('TRADE_MARKOUT_OBSERVER_JITTER_PCT', '0.05'),
   tradeMarkoutObserverMaxInflight: numEnv('TRADE_MARKOUT_OBSERVER_MAX_INFLIGHT', '32'),
   tradeMarkoutObserverDedupWindowSec: numEnv('TRADE_MARKOUT_OBSERVER_DEDUP_WINDOW_SEC', '30'),

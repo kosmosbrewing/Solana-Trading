@@ -23,12 +23,17 @@ import { resetAllEntryHaltsForTests } from '../src/orchestration/entryIntegrity'
 import { resetWalletStopGuardForTests } from '../src/risk/walletStopGuard';
 import { resetCanaryConcurrencyGuardForTests } from '../src/risk/canaryConcurrencyGuard';
 import { resetAllCanaryStatesForTests } from '../src/risk/canaryAutoHalt';
+import { resetTradeMarkoutObserverState } from '../src/observability/tradeMarkoutObserver';
 import type { BotContext } from '../src/orchestration/types';
 import type { MicroCandleBuilder } from '../src/realtime';
 import { config } from '../src/utils/config';
 
 function override(key: string, value: unknown): void {
   Object.defineProperty(config, key, { value, writable: true, configurable: true });
+}
+
+async function flushAsync(): Promise<void> {
+  for (let i = 0; i < 20; i += 1) await Promise.resolve();
 }
 
 function makeBuilder(): MicroCandleBuilder {
@@ -98,8 +103,14 @@ describe('Block 3 QA — paper-first enforcement', () => {
     override('missedAlphaObserverEnabled', false);
     override('pureWsPaperShadowEnabled', true);
     override('pureWsPaperNotifyEnabled', true);
+    override('pureWsPaperNotifyIndividualEnabled', true);
+    override('pureWsPaperParamArmsEnabled', false);
     override('pureWsSwingV2Enabled', false);
     override('pureWsSwingV2LiveCanaryEnabled', false);
+    override('tradeMarkoutObserverEnabled', false);
+  });
+  afterEach(() => {
+    resetTradeMarkoutObserverState();
   });
 
   it('live mode + PUREWS_LIVE_CANARY_ENABLED=false: opens primary paper-only position, no live buy', async () => {
@@ -194,6 +205,85 @@ describe('Block 3 QA — paper-first enforcement', () => {
     expect(tradeStore.insertTrade).not.toHaveBeenCalled();
     expect(getActivePureWsPositions().size).toBe(0);
     expect(notifier.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('pure_ws paper-only open/close writes trade markout anchors with fast horizons', async () => {
+    override('pureWsLiveCanaryEnabled', false);
+    override('tradeMarkoutObserverEnabled', true);
+    override('tradeMarkoutObserverJitterPct', 0);
+    override('pureWsPaperMarkoutOffsetsSec', [15, 30, 60, 180, 300, 1800]);
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'purews-markout-'));
+    override('realtimeDataDir', tmpDir);
+    const { ctx } = makeCtx('live');
+
+    await handlePureWsSignal(
+      { pairAddress: 'PAIR_MARKOUT', strategy: 'bootstrap_10s', price: 1.0 } as any,
+      makeBuilder(),
+      ctx
+    );
+    await flushAsync();
+
+    await updatePureWsPositions(ctx, makePriceBuilder(0.9));
+    await flushAsync();
+
+    const anchors = (await readFile(path.join(tmpDir, 'trade-markout-anchors.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    expect(anchors).toHaveLength(2);
+    expect(anchors.map((row) => row.anchorType).sort()).toEqual(['buy', 'sell']);
+    expect(anchors.every((row) => row.extras.lane === 'pure_ws')).toBe(true);
+    expect(anchors.every((row) => row.extras.markoutOffsetsSec.join(',') === '15,30,60,180,300,1800')).toBe(true);
+  });
+
+  it('can run stricter pure_ws paper parameter arms in parallel without live side effects', async () => {
+    override('pureWsLiveCanaryEnabled', false);
+    override('pureWsPaperParamArmsEnabled', true);
+    override('pureWsPaperCostGuardEnabled', true);
+    override('pureWsPaperConfirm60Enabled', true);
+    override('pureWsPaperCostGuardMinBuyRatio', 0.6);
+    override('pureWsPaperConfirm60MinBuyRatio', 0.6);
+    override('pureWsPaperCostGuardMinTxCount', 5);
+    override('pureWsPaperConfirm60MinTxCount', 5);
+    const { ctx, executor, tradeStore } = makeCtx('live');
+    const candle = {
+      pairAddress: 'PAIR_ARMS',
+      timestamp: new Date(),
+      intervalSec: 10,
+      open: 1,
+      high: 1,
+      low: 1,
+      close: 1,
+      volume: 10,
+      buyVolume: 7,
+      sellVolume: 3,
+      tradeCount: 8,
+    };
+    const builder = {
+      getCurrentPrice: () => null,
+      getRecentCandles: () => [candle],
+    } as unknown as MicroCandleBuilder;
+
+    await handlePureWsSignal(
+      { pairAddress: 'PAIR_ARMS', strategy: 'bootstrap_10s', price: 1.0 } as any,
+      builder,
+      ctx
+    );
+
+    const positions = [...getActivePureWsPositions().values()];
+    expect(executor.executeBuy).not.toHaveBeenCalled();
+    expect(tradeStore.insertTrade).not.toHaveBeenCalled();
+    expect(positions.map((p) => p.armName).sort()).toEqual([
+      'pure_ws_breakout',
+      'pure_ws_confirm60_v1',
+      'pure_ws_cost_guard_v1',
+    ]);
+    const costGuard = positions.find((p) => p.armName === 'pure_ws_cost_guard_v1');
+    expect(costGuard?.isShadowArm).toBe(true);
+    expect(costGuard?.executionMode).toBe('paper');
+    expect(costGuard?.paperOnlyReason).toBe('paper_param_arm');
+    expect(costGuard?.probeWindowSecOverride).toBe(config.pureWsPaperCostGuardProbeWindowSec);
+    expect(costGuard?.continuationT1Threshold).toBe(config.pureWsPaperCostGuardT1Mfe);
   });
 
   it('live mode + PUREWS_LIVE_CANARY_ENABLED=true: live buy proceeds', async () => {

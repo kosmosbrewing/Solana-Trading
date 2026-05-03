@@ -10,6 +10,7 @@ import { v1LastEntrySecByPair, v2LastTriggerSecByPair } from './cooldowns';
 import { inflightEntryByPair } from './inflight';
 import { clearTokenSessionConfigured } from './tokenSession';
 import { clearPairQuarantineConfigured } from './pairQuarantine';
+import { resetPureWsPaperParamArmsForTests } from './paperParamArms';
 
 export function resetPureWsLaneStateForTests(): void {
   activePositions.clear();
@@ -22,6 +23,7 @@ export function resetPureWsLaneStateForTests(): void {
   // Phase 4 — pair quarantine state 초기화.
   clearPairQuarantineConfigured();
   resetPairQuarantineForTests();
+  resetPureWsPaperParamArmsForTests();
   funnelStats.signalsReceived = 0;
   funnelStats.gatePass = 0;
   funnelStats.entry = 0;

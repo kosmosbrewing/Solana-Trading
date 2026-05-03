@@ -20,6 +20,7 @@ interface Args {
   realtimeDir: string;
   sinceMs: number;
   horizonsSec: number[];
+  lane: 'kol_hunter' | 'pure_ws' | 'all';
   mdOut?: string;
   jsonOut?: string;
 }
@@ -41,16 +42,23 @@ function parseArgs(argv: string[]): Args {
     realtimeDir: path.resolve(process.cwd(), 'data/realtime'),
     sinceMs: Date.now() - 24 * 3600_000,
     horizonsSec: [30, 60, 300, 1800],
+    lane: 'kol_hunter',
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--realtime-dir') args.realtimeDir = path.resolve(argv[++i]);
     else if (arg === '--since') args.sinceMs = parseSince(argv[++i]);
     else if (arg === '--horizons') args.horizonsSec = parseHorizons(argv[++i]);
+    else if (arg === '--lane') args.lane = parseLane(argv[++i]);
     else if (arg === '--md') args.mdOut = path.resolve(argv[++i]);
     else if (arg === '--json') args.jsonOut = path.resolve(argv[++i]);
   }
   return args;
+}
+
+function parseLane(raw: string): Args['lane'] {
+  if (raw === 'kol_hunter' || raw === 'pure_ws' || raw === 'all') return raw;
+  throw new Error(`invalid --lane: ${raw}`);
 }
 
 function parseSince(raw: string): number {
@@ -102,6 +110,13 @@ function num(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+function median(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+
 function str(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
@@ -115,6 +130,24 @@ function countBy<T>(rows: T[], fn: (row: T) => string): CountEntry[] {
   return [...counts.entries()]
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .map(([key, count]) => ({ key, count }));
+}
+
+function extrasOf(row: JsonRow): JsonRow {
+  return typeof row.extras === 'object' && row.extras != null ? row.extras as JsonRow : {};
+}
+
+function laneOfRow(row: JsonRow): 'kol_hunter' | 'pure_ws' | 'unknown' {
+  const extras = extrasOf(row);
+  const lane = str(extras.lane) || str(row.lane);
+  const strategy = str(row.strategy) || str(extras.strategy);
+  const source = str(row.signalSource);
+  if (lane === 'pure_ws' || strategy.startsWith('pure_ws') || source.startsWith('pure_ws')) return 'pure_ws';
+  if (lane === 'kol_hunter' || strategy === 'kol_hunter' || source.startsWith('kol_hunter')) return 'kol_hunter';
+  return 'unknown';
+}
+
+function laneMatches(row: JsonRow, lane: Args['lane']): boolean {
+  return lane === 'all' || laneOfRow(row) === lane;
 }
 
 function markoutKey(row: JsonRow): string {
@@ -146,30 +179,51 @@ function paperCloseAnchors(row: JsonRow): Array<{ anchorType: 'buy' | 'sell'; at
   ];
 }
 
+function pureWsPaperCloseAnchors(row: JsonRow): Array<{ anchorType: 'buy' | 'sell'; atMs: number; positionId: string }> {
+  const positionId = str(row.positionId);
+  const entryAt = timeMs(row.entryAt) || ((num(row.entryTimeSec) ?? NaN) * 1000);
+  const exitAt = timeMs(row.closedAt) || ((num(row.exitTimeSec) ?? NaN) * 1000);
+  if (!positionId || !Number.isFinite(entryAt) || !Number.isFinite(exitAt)) return [];
+  return [
+    { positionId, anchorType: 'buy', atMs: secondMs(entryAt) },
+    { positionId, anchorType: 'sell', atMs: secondMs(exitAt) },
+  ];
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  const [anchorRows, buys, sells, paperCloses, shadowPaperCloses, partialTakes, markouts] = await Promise.all([
+  const [anchorRows, buys, sells, paperCloses, shadowPaperCloses, pureWsPaperCloses, partialTakes, markouts] = await Promise.all([
     readJsonl(path.join(args.realtimeDir, 'trade-markout-anchors.jsonl')),
     readJsonl(path.join(args.realtimeDir, 'executed-buys.jsonl')),
     readJsonl(path.join(args.realtimeDir, 'executed-sells.jsonl')),
     readJsonl(path.join(args.realtimeDir, 'kol-paper-trades.jsonl')),
     readJsonl(path.join(args.realtimeDir, 'kol-shadow-paper-trades.jsonl')),
+    readJsonl(path.join(args.realtimeDir, 'pure-ws-paper-trades.jsonl')),
     readJsonl(path.join(args.realtimeDir, 'kol-partial-takes.jsonl')),
     readJsonl(path.join(args.realtimeDir, 'trade-markouts.jsonl')),
   ]);
 
-  const recentBuys = buys.filter((row) => str(row.strategy) === 'kol_hunter' && timeMs(row.recordedAt) >= args.sinceMs);
-  const recentSells = sells.filter((row) => str(row.strategy) === 'kol_hunter' && timeMs(row.recordedAt) >= args.sinceMs);
+  const recentBuys = buys.filter((row) => laneMatches(row, args.lane) && timeMs(row.recordedAt) >= args.sinceMs);
+  const recentSells = sells.filter((row) => laneMatches(row, args.lane) && timeMs(row.recordedAt) >= args.sinceMs);
   const paperCloseAnchorsFromLedger = [...paperCloses, ...shadowPaperCloses]
+    .filter((row) => args.lane === 'all' || args.lane === 'kol_hunter')
     .filter((row) => str(row.strategy) === 'kol_hunter')
     .flatMap(paperCloseAnchors)
     .filter((anchor) => anchor.atMs >= args.sinceMs);
+  const pureWsPaperCloseAnchorsFromLedger = pureWsPaperCloses
+    .filter((row) => args.lane === 'all' || args.lane === 'pure_ws')
+    .flatMap(pureWsPaperCloseAnchors)
+    .filter((anchor) => anchor.atMs >= args.sinceMs);
   const partialAnchors = partialTakes
-    .filter((row) => str(row.strategy) === 'kol_hunter' && timeMs(row.promotedAt) >= args.sinceMs);
-  const recentMarkouts = markouts.filter((row) => timeMs(row.recordedAt) >= args.sinceMs || timeMs(row.firedAt) >= args.sinceMs);
+    .filter((row) => (args.lane === 'all' || args.lane === 'kol_hunter') && str(row.strategy) === 'kol_hunter' && timeMs(row.promotedAt) >= args.sinceMs);
+  const recentMarkouts = markouts.filter((row) =>
+    laneMatches(row, args.lane) &&
+    (timeMs(row.recordedAt) >= args.sinceMs || timeMs(row.firedAt) >= args.sinceMs)
+  );
+  const laneAnchorRows = anchorRows.filter((row) => laneMatches(row, args.lane));
 
   const expectedAnchors = new Map<string, ExpectedAnchor>();
-  for (const row of anchorRows) {
+  for (const row of laneAnchorRows) {
     const atMs = timeMs(row.anchorAt);
     const anchorType = str(row.anchorType);
     const positionId = str(row.positionId);
@@ -208,6 +262,16 @@ async function main(): Promise<void> {
       eventType: `paper_close_${anchor.anchorType}_fallback`,
     });
   }
+  for (const anchor of pureWsPaperCloseAnchorsFromLedger) {
+    const key = anchorKeyFromParts(anchor.positionId, anchor.anchorType, anchor.atMs);
+    if (!expectedAnchors.has(key)) expectedAnchors.set(key, {
+      key,
+      anchorType: anchor.anchorType,
+      atMs: anchor.atMs,
+      mode: 'paper',
+      eventType: `pure_ws_paper_close_${anchor.anchorType}_fallback`,
+    });
+  }
   for (const row of partialAnchors) {
     const positionId = str(row.positionId);
     const atMs = timeMs(row.promotedAt);
@@ -242,14 +306,22 @@ async function main(): Promise<void> {
   const rowCoverage = expected > 0 ? latest.length / expected : 0;
   const okCoverage = expected > 0 ? latestOk.length / expected : 0;
   const horizonCoverage = args.horizonsSec.map((horizonSec) => {
-    const observedRows = latest.filter((row) => num(row.horizonSec) === horizonSec).length;
-    const okRows = latestOk.filter((row) => num(row.horizonSec) === horizonSec).length;
+    const horizonRows = latest.filter((row) => num(row.horizonSec) === horizonSec);
+    const horizonOkRows = latestOk.filter((row) => num(row.horizonSec) === horizonSec);
+    const observedRows = horizonRows.length;
+    const okRows = horizonOkRows.length;
+    const roundTripCostPct = 0.0045;
+    const postCostDeltas = horizonOkRows
+      .map((row) => (num(row.deltaPct) ?? 0) - roundTripCostPct);
     const expectedRows = expectedAnchors.size;
     return {
       horizonSec,
       expectedRows,
       observedRows,
       okRows,
+      positivePostCostRows: postCostDeltas.filter((value) => value > 0).length,
+      medianDeltaPct: median(horizonOkRows.map((row) => num(row.deltaPct)).filter((v): v is number => v != null)),
+      medianPostCostDeltaPct: median(postCostDeltas),
       rowCoveragePct: expectedRows > 0 ? (observedRows / expectedRows) * 100 : 0,
       okCoveragePct: expectedRows > 0 ? (okRows / expectedRows) * 100 : 0,
       coveragePct: expectedRows > 0 ? (okRows / expectedRows) * 100 : 0,
@@ -277,11 +349,12 @@ async function main(): Promise<void> {
     generatedAt: new Date().toISOString(),
     since: new Date(args.sinceMs).toISOString(),
     realtimeDir: args.realtimeDir,
+    lane: args.lane,
     horizonsSec: args.horizonsSec,
     verdict: 'WATCH' as AuditReport['verdict'],
     summary: {
       anchors: expectedAnchors.size,
-      anchorRows: anchorRows.length,
+      anchorRows: laneAnchorRows.length,
       fallbackLiveBuys: recentBuys.length,
       fallbackLiveSells: recentSells.length,
       expectedRows: expected,

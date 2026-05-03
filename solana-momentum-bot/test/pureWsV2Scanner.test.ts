@@ -105,6 +105,32 @@ function buildBurstyCandles(pair: string): Candle[] {
   return [...baseline, ...recent];
 }
 
+function buildColdStartCandles(pair: string): Candle[] {
+  const baseline: Candle[] = Array.from({ length: 6 }, () =>
+    candle({
+      pairAddress: pair,
+      volume: 0,
+      buyVolume: 0,
+      sellVolume: 0,
+      tradeCount: 0,
+      open: 1.0,
+      close: 1.0,
+    })
+  );
+  const recent: Candle[] = Array.from({ length: 3 }, (_, i) =>
+    candle({
+      pairAddress: pair,
+      volume: 700,
+      buyVolume: 560,
+      sellVolume: 140,
+      tradeCount: 8,
+      open: i === 0 ? 1.0 : 1.02,
+      close: i === 2 ? 1.08 : 1.02,
+    })
+  );
+  return [...baseline, ...recent];
+}
+
 describe('Phase 1.3 — scanPureWsV2Burst', () => {
   beforeEach(() => {
     resetPureWsLaneStateForTests();
@@ -172,6 +198,21 @@ describe('Phase 1.3 — scanPureWsV2Burst', () => {
     expect(calls.length).toBeGreaterThan(0);
     const inserted = calls[0][0];
     expect(inserted.strategy).toBe('pure_ws_breakout');
+    expect(inserted.sourceLabel).toBe('ws_burst_v2');
+    expect(getActivePureWsPositions().size).toBe(1);
+  });
+
+  it('v2 enabled + cold-start new pair activity → Signal synthesized', async () => {
+    const pair = 'PAIR_COLD_START';
+    const candles = buildColdStartCandles(pair);
+    const builder = makeBuilder(new Map([[pair, candles]]), new Map([[pair, 1.08]]));
+    const { ctx, tradeStore } = makeCtx('paper');
+
+    await scanPureWsV2Burst(ctx, builder, [pair]);
+
+    expect(tradeStore.insertTrade).toHaveBeenCalledTimes(1);
+    const calls = tradeStore.insertTrade.mock.calls as unknown as any[][];
+    const inserted = calls[0][0];
     expect(inserted.sourceLabel).toBe('ws_burst_v2');
     expect(getActivePureWsPositions().size).toBe(1);
   });

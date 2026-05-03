@@ -45,6 +45,10 @@ import { openSwingV2Arm } from './swingV2Entry';
 import type { PureWsPosition } from './types';
 import { trackPureWsPaperMarkout } from './markout';
 
+function isPureWsV2Signal(signal: Signal): boolean {
+  return (signal.sourceLabel ?? '').startsWith('ws_burst_v2');
+}
+
 export async function handlePureWsSignal(
   signal: Signal,
   candleBuilder: MicroCandleBuilder,
@@ -133,7 +137,7 @@ export async function handlePureWsSignal(
 
   // 2026-04-21 P1: v1 (bootstrap) 경로 per-pair cooldown.
   // v2 sourced signal (ws_burst_v2) 은 scanner 가 cooldown 관리하므로 여기선 v1 만 적용.
-  if (signal.sourceLabel !== 'ws_burst_v2') {
+  if (!isPureWsV2Signal(signal)) {
     const nowSecForCooldown = Math.floor(Date.now() / 1000);
     const lastEntrySec = v1LastEntrySecByPair.get(signal.pairAddress) ?? 0;
     const cooldown = config.pureWsV1PerPairCooldownSec;
@@ -155,7 +159,7 @@ export async function handlePureWsSignal(
   }
 
   // V2 detector-sourced signal 은 v1 gate 재평가 skip (factor set 다름 → double-reject 방지).
-  const skipV1Gate = signal.sourceLabel === 'ws_burst_v2';
+  const skipV1Gate = isPureWsV2Signal(signal);
 
   // Loose signal gate (factor set reuse, threshold 완화)
   if (config.pureWsGateEnabled && !skipV1Gate) {
@@ -185,29 +189,44 @@ export async function handlePureWsSignal(
   }
 
   const ticketSol = config.pureWsLaneTicketSol;
-  const quantity = signal.price > 0 ? ticketSol / signal.price : 0;
+  const originalSignalPrice = signal.price;
+  let entrySignalPrice = originalSignalPrice;
+  let quantity = entrySignalPrice > 0 ? ticketSol / entrySignalPrice : 0;
   if (quantity <= 0) return;
   let entryTokenDecimals: number | undefined;
+  const paperObserveReasons: string[] = [];
 
   // 2026-04-21 Survival Layer (P0 mission-refinement): rug / honeypot / Token-2022 dangerous ext /
   // top-holder / exit liquidity 검사. paper 모드도 동일하게 체크 (관측 data 정합성 유지).
   if (config.pureWsSurvivalCheckEnabled) {
     const survival = await checkPureWsSurvival(signal.pairAddress, ctx);
     if (!survival.approved) {
-      log.info(
-        `[PUREWS_SURVIVAL_REJECT] ${signal.pairAddress.slice(0, 12)} ` +
-        `reason=${survival.reason ?? 'unknown'} flags=[${survival.flags.join(',')}]`
-      );
-      trackPureWsReject({
-        rejectCategory: 'survival',
-        rejectReason: survival.reason ?? 'unknown',
-        tokenMint: signal.pairAddress,
-        signalPrice: signal.price,
-        probeSolAmount: ticketSol,
-        signalSource: signal.sourceLabel,
-        extras: { flags: survival.flags },
-      });
-      return;
+      if (
+        livePrimaryPaperMode &&
+        survival.reason === 'security_data_unavailable' &&
+        survival.flags.includes('NO_SECURITY_DATA')
+      ) {
+        paperObserveReasons.push('security_data_unavailable_observe');
+        log.info(
+          `[PUREWS_SURVIVAL_PAPER_OBSERVE] ${signal.pairAddress.slice(0, 12)} ` +
+          `NO_SECURITY_DATA — paper-only observation continues, live remains blocked`
+        );
+      } else {
+        log.info(
+          `[PUREWS_SURVIVAL_REJECT] ${signal.pairAddress.slice(0, 12)} ` +
+          `reason=${survival.reason ?? 'unknown'} flags=[${survival.flags.join(',')}]`
+        );
+        trackPureWsReject({
+          rejectCategory: 'survival',
+          rejectReason: survival.reason ?? 'unknown',
+          tokenMint: signal.pairAddress,
+          signalPrice: signal.price,
+          probeSolAmount: ticketSol,
+          signalSource: signal.sourceLabel,
+          extras: { flags: survival.flags },
+        });
+        return;
+      }
     }
     if (survival.flags.length > 0) {
       log.debug(
@@ -312,48 +331,68 @@ export async function handlePureWsSignal(
       );
     }
     if (!driftResult.approved) {
-      log.info(
-        `[PUREWS_ENTRY_DRIFT_REJECT] ${signal.pairAddress.slice(0, 12)} ${driftResult.reason ?? 'drift'}`
-      );
-      // Phase 4 P2-1: drift reject burst counter — threshold 도달 시 60분 quarantine.
-      if (config.pairQuarantineEnabled) {
-        const isFavorable = (driftResult.reason ?? '').includes('favorable');
-        const result = isFavorable
-          ? pairQuarantineRecordFavorableDrift({ pair: signal.pairAddress })
-          : pairQuarantineRecordDriftReject({ pair: signal.pairAddress });
-        if (result.triggered) {
-          log.warn(
-            `[PUREWS_PAIR_QUARANTINE_FIRED] ${signal.pairAddress.slice(0, 12)} ` +
-            `→ quarantined for ${Math.round((result.quarantinedUntilMs - Date.now()) / 60_000)}min ` +
-            `(reason=${isFavorable ? 'favorable_drift' : 'drift_reject'} burst)`
-          );
-          // Phase 4 P2-4: telemetry append (best-effort, fire-and-forget).
-          appendPairQuarantineLedger({
-            firedAt: new Date().toISOString(),
-            pair: signal.pairAddress,
-            reason: isFavorable ? 'favorable_drift_burst' : 'drift_reject_burst',
-            quarantinedUntilMs: result.quarantinedUntilMs,
-            durationMin: config.pairQuarantineDurationMin,
-            triggerReason: driftResult.reason ?? null,
-            observedDriftPct: driftResult.observedDriftPct ?? null,
-          }).catch(() => {});
+      const repairPrice = driftResult.expectedFillPrice;
+      if (
+        livePrimaryPaperMode &&
+        driftResult.routeFound &&
+        !driftResult.quoteFailed &&
+        repairPrice != null &&
+        Number.isFinite(repairPrice) &&
+        repairPrice > 0
+      ) {
+        entrySignalPrice = repairPrice;
+        quantity = ticketSol / entrySignalPrice;
+        if (!Number.isFinite(quantity) || quantity <= 0) return;
+        paperObserveReasons.push('entry_drift_quote_repriced');
+        log.info(
+          `[PUREWS_ENTRY_DRIFT_PAPER_REPRICE] ${signal.pairAddress.slice(0, 12)} ` +
+          `${driftResult.reason ?? 'drift'} — paper entry repriced ` +
+          `${originalSignalPrice.toFixed(8)} → ${entrySignalPrice.toFixed(8)}`
+        );
+      } else {
+        log.info(
+          `[PUREWS_ENTRY_DRIFT_REJECT] ${signal.pairAddress.slice(0, 12)} ${driftResult.reason ?? 'drift'}`
+        );
+        // Phase 4 P2-1: drift reject burst counter — threshold 도달 시 60분 quarantine.
+        if (config.pairQuarantineEnabled) {
+          const isFavorable = (driftResult.reason ?? '').includes('favorable');
+          const result = isFavorable
+            ? pairQuarantineRecordFavorableDrift({ pair: signal.pairAddress })
+            : pairQuarantineRecordDriftReject({ pair: signal.pairAddress });
+          if (result.triggered) {
+            log.warn(
+              `[PUREWS_PAIR_QUARANTINE_FIRED] ${signal.pairAddress.slice(0, 12)} ` +
+              `→ quarantined for ${Math.round((result.quarantinedUntilMs - Date.now()) / 60_000)}min ` +
+              `(reason=${isFavorable ? 'favorable_drift' : 'drift_reject'} burst)`
+            );
+            // Phase 4 P2-4: telemetry append (best-effort, fire-and-forget).
+            appendPairQuarantineLedger({
+              firedAt: new Date().toISOString(),
+              pair: signal.pairAddress,
+              reason: isFavorable ? 'favorable_drift_burst' : 'drift_reject_burst',
+              quarantinedUntilMs: result.quarantinedUntilMs,
+              durationMin: config.pairQuarantineDurationMin,
+              triggerReason: driftResult.reason ?? null,
+              observedDriftPct: driftResult.observedDriftPct ?? null,
+            }).catch(() => {});
+          }
         }
+        trackPureWsReject({
+          rejectCategory: 'entry_drift',
+          rejectReason: driftResult.reason ?? 'drift',
+          tokenMint: signal.pairAddress,
+          signalPrice: signal.price,
+          probeSolAmount,
+          tokenDecimals: entryTokenDecimals,
+          signalSource: signal.sourceLabel,
+          extras: {
+            expectedFillPrice: driftResult.expectedFillPrice,
+            observedDriftPct: driftResult.observedDriftPct,
+            routeFound: driftResult.routeFound,
+          },
+        });
+        return;
       }
-      trackPureWsReject({
-        rejectCategory: 'entry_drift',
-        rejectReason: driftResult.reason ?? 'drift',
-        tokenMint: signal.pairAddress,
-        signalPrice: signal.price,
-        probeSolAmount,
-        tokenDecimals: entryTokenDecimals,
-        signalSource: signal.sourceLabel,
-        extras: {
-          expectedFillPrice: driftResult.expectedFillPrice,
-          observedDriftPct: driftResult.observedDriftPct,
-          routeFound: driftResult.routeFound,
-        },
-      });
-      return;
     }
   }
 
@@ -430,9 +469,9 @@ export async function handlePureWsSignal(
   const positionId = `purews-${signal.pairAddress.slice(0, 8)}-${nowSec}`;
 
   // ─── Immediate PROBE entry (NO STALK) ───
-  let actualEntryPrice = signal.price;
+  let actualEntryPrice = entrySignalPrice;
   let actualQuantity = quantity;
-  let actualNotionalSol = signal.price * quantity;  // 2026-04-29: RPC 측정 wallet delta 전파용
+  let actualNotionalSol = entrySignalPrice * quantity;  // 2026-04-29: RPC 측정 wallet delta 전파용
   let entryTxSignature = 'PAPER_TRADE';
   let entrySlippageBps = 0;
   // Phase 1 P0-3 (2026-04-25): true 면 actualIn/actualOut 한쪽만 가용 → planned 강제 복원됨.
@@ -456,7 +495,7 @@ export async function handlePureWsSignal(
       if (!config.pureWsPaperShadowEnabled && !swingOnlyLive) {
         log.info(
           `[PUREWS_PAPER_FIRST] ${positionId} live buy suppressed — PUREWS_LIVE_CANARY_ENABLED=false. ` +
-          `signal observed, no tx submitted. signal_price=${signal.price.toFixed(8)}`
+          `signal observed, no tx submitted. signal_price=${entrySignalPrice.toFixed(8)}`
         );
         return;
       }
@@ -464,14 +503,14 @@ export async function handlePureWsSignal(
       log.info(
         `[PUREWS_PAPER_OPEN] ${positionId} live buy suppressed — ` +
         `primary paper-only position opened (PUREWS_LIVE_CANARY_ENABLED=false). ` +
-        `signal_price=${signal.price.toFixed(8)}` +
+        `signal_price=${entrySignalPrice.toFixed(8)}` +
         (swingLiveMayEnter ? ' swing-v2 live canary may still enter.' : '')
       );
       if (config.pureWsPaperNotifyEnabled && config.pureWsPaperNotifyIndividualEnabled) {
         const symbol = signal.tokenSymbol ?? shortenAddress(signal.pairAddress);
         void ctx.notifier.sendMessage([
           `🟣 <b>pure_ws paper 진입</b> <b>${escapeHtml(symbol)}</b> <code>${escapeHtml(positionId.slice(0, 12))}</code>`,
-          `${actualNotionalSol.toFixed(4)} SOL @ ${signal.price.toFixed(8)} · live buy suppressed`,
+          `${actualNotionalSol.toFixed(4)} SOL @ ${entrySignalPrice.toFixed(8)} · live buy suppressed`,
           `<code>${escapeHtml(signal.pairAddress)}</code>`,
         ].join('\n')).catch((err) => {
           log.warn(`[PUREWS_PAPER_NOTIFY_OPEN_FAIL] ${positionId} ${err}`);
@@ -500,11 +539,11 @@ export async function handlePureWsSignal(
         pairAddress: signal.pairAddress,
         strategy: LANE_STRATEGY,
         side: 'BUY',
-        price: signal.price,
+        price: entrySignalPrice,
         quantity,
-        stopLoss: signal.price * (1 - config.pureWsProbeHardCutPct),
-        takeProfit1: signal.price * (1 + config.pureWsT1MfeThreshold),
-        takeProfit2: signal.price * (1 + config.pureWsT2MfeThreshold),
+        stopLoss: entrySignalPrice * (1 - config.pureWsProbeHardCutPct),
+        takeProfit1: entrySignalPrice * (1 + config.pureWsT1MfeThreshold),
+        takeProfit2: entrySignalPrice * (1 + config.pureWsT2MfeThreshold),
         timeStopMinutes: Math.ceil(config.pureWsProbeWindowSec / 60),
       };
       const buyResult = await buyExecutor.executeBuy(order);
@@ -546,7 +585,7 @@ export async function handlePureWsSignal(
         sourceLabel: signal.sourceLabel,
         discoverySource: signal.discoverySource,
         entryPrice: actualEntryPrice,
-        plannedEntryPrice: signal.price,
+        plannedEntryPrice: entrySignalPrice,
         quantity: actualQuantity,
         stopLoss: actualEntryPrice * (1 - config.pureWsProbeHardCutPct),
         takeProfit1: actualEntryPrice * (1 + config.pureWsT1MfeThreshold),
@@ -567,12 +606,12 @@ export async function handlePureWsSignal(
         wallet: resolvePureWsWalletLabel(ctx), // Block 1 QA fix: wallet-aware comparator
         pairAddress: signal.pairAddress,
         tokenSymbol: signal.tokenSymbol,
-        plannedEntryPrice: signal.price,
+        plannedEntryPrice: entrySignalPrice,
         actualEntryPrice,
         actualQuantity,
         slippageBps: entrySlippageBps,
         signalTimeSec: nowSec,
-        signalPrice: signal.price,
+        signalPrice: entrySignalPrice,
         // Phase 1 P0-3: 데이터 품질 flag 를 ledger 까지 전파.
         partialFillDataMissing,
         partialFillDataReason,
@@ -600,7 +639,7 @@ export async function handlePureWsSignal(
   // peakPrice/troughPrice 도 signal price 로 초기화 — 첫 tick 에서 신호 가격 대비
   // 이동만 반영 (bad fill 의 entry-to-fill gap 은 배제).
   const marketReferencePrice = config.pureWsUseMarketReferencePrice
-    ? signal.price
+    ? entrySignalPrice
     : actualEntryPrice;
 
   const position: PureWsPosition = {
@@ -618,7 +657,7 @@ export async function handlePureWsSignal(
     tokenSymbol: signal.tokenSymbol,
     sourceLabel: signal.sourceLabel,
     discoverySource: signal.discoverySource,
-    plannedEntryPrice: signal.price,
+    plannedEntryPrice: entrySignalPrice,
     entryTxSignature,
     entrySlippageBps,
     buyRatioAtEntry: entryBuyRatio,
@@ -633,7 +672,9 @@ export async function handlePureWsSignal(
       : undefined,
     executionMode: primaryPaperOnly || ctx.tradingMode === 'paper' ? 'paper' : 'live',
     paperOnlyReason: primaryPaperOnly
-      ? (ctx.tradingMode === 'live' ? 'live_canary_disabled' : 'trading_mode_paper')
+      ? (paperObserveReasons.length > 0
+        ? paperObserveReasons.join('+')
+        : (ctx.tradingMode === 'live' ? 'live_canary_disabled' : 'trading_mode_paper'))
       : undefined,
     canarySlotAcquired,
   };
@@ -649,7 +690,7 @@ export async function handlePureWsSignal(
       // 2026-04-29: signal upstream → resolver cache → undefined fallback.
       tokenSymbol: position.tokenSymbol ?? lookupCachedSymbol(position.pairAddress) ?? undefined,
       price: actualEntryPrice,
-      plannedEntryPrice: signal.price,
+      plannedEntryPrice: entrySignalPrice,
       quantity: actualQuantity,
       sourceLabel: position.sourceLabel,
       discoverySource: position.discoverySource,
@@ -729,7 +770,7 @@ export async function handlePureWsSignal(
   }
   // 2026-04-21 P1: v1 (bootstrap) 경로 entry 성공 시 pair cooldown 기록.
   // v2 sourced signal 은 scanner 가 cooldown 관리하므로 제외.
-  if (signal.sourceLabel !== 'ws_burst_v2') {
+  if (!isPureWsV2Signal(signal)) {
     v1LastEntrySecByPair.set(signal.pairAddress, Math.floor(Date.now() / 1000));
   }
   // Phase 2 P1-1/P1-2: live 모드에서 reverse-quote tracker subscribe — quote-based MFE 측정.

@@ -160,7 +160,12 @@ function computeVolumeAccelZ(
   const baselineStd = stddev(baselineVols);
 
   if (baselineAvg === 0) {
-    // 새로 생긴 pair — z-score 계산 불가
+    const recentTxCount = mean(recent.map((c) => c.tradeCount));
+    if (recentAvg > 0 && recentTxCount >= cfg.txCountAbsoluteFloor) {
+      // 신규 pair cold-start: baseline 이 0인 것은 "신호 없음"이 아니라 "이전 거래 없음"이다.
+      // 절대 recent tx floor 를 만족할 때만 volume factor 를 포화시켜 new-pair 관측 누락을 줄인다.
+      return { raw: cfg.zVolSaturate, normalized: 1 };
+    }
     return { raw: 0, normalized: 0 };
   }
   const z = (recentAvg - baselineAvg) / Math.max(baselineStd, EPS);

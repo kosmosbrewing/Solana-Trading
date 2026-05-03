@@ -61,6 +61,7 @@ import {
 import { trackKolClose } from './kolMissedAlpha';
 import {
   appendTokenQualityObservation,
+  type DevStatus,
   type TokenQualityRecord,
 } from '../observability/tokenQualityInspector';
 import { resolveDevStatus } from '../observability/devWalletRegistry';
@@ -292,6 +293,9 @@ interface PaperEntryOptions {
   rotationLastBuyAtMs?: number;
   rotationLastBuyAgeMs?: number;
   rotationScore?: number;
+  entryIndependentKolCount?: number;
+  entryKolScore?: number;
+  entryParticipatingKols?: KolDiscoveryScore['participatingKols'];
 }
 
 interface DynamicExitParams {
@@ -889,6 +893,182 @@ function computeKolDiscoveryScoreCached(tokenMint: string, nowMs: number): KolDi
     if (firstKey) scoreCache.delete(firstKey);
   }
   return score;
+}
+
+interface SmartV3FreshContext {
+  freshIndependentKolCount: number;
+  freshTierStrongCount: number;
+  freshSignalScore: number;
+  freshBuySol: number;
+  freshParticipatingKols: KolDiscoveryScore['participatingKols'];
+  triggerFreshIndependentKolCount: number;
+  triggerFreshTierStrongCount: number;
+  triggerFreshSignalScore: number;
+  triggerLastFreshBuyAgeMs: number | null;
+  shadowFreshIndependentKolCount: number;
+  shadowFreshTierStrongCount: number;
+  shadowFreshBuySol: number;
+  shadowFreshParticipatingKols: KolDiscoveryScore['participatingKols'];
+  firstFreshBuyAtMs: number | null;
+  lastFreshBuyAtMs: number | null;
+  lastFreshBuyAgeMs: number | null;
+  preEntrySellSol: number;
+  preEntrySellKols: number;
+  lastSellAtMs: number | null;
+  secondsSinceLastSell: number | null;
+  freshBuyKolsAfterLastSell: number;
+  flags: string[];
+}
+
+function mergeRecentAndCandidateTxs(cand: PendingCandidate): KolTx[] {
+  const byKey = new Map<string, KolTx>();
+  for (const tx of [...recentKolTxs, ...cand.kolTxs]) {
+    const key = tx.txSignature || `${tx.kolId}:${tx.tokenMint}:${tx.action}:${tx.timestamp}`;
+    byKey.set(key, tx);
+  }
+  return [...byKey.values()];
+}
+
+function buildSmartV3FreshContext(cand: PendingCandidate, nowMs: number): SmartV3FreshContext {
+  const freshWindowMs = Math.max(1, config.kolHunterSmartV3FreshWindowSec) * 1000;
+  const freshStartMs = nowMs - freshWindowMs;
+  const sellWindowMs = Math.max(freshWindowMs, config.kolHunterPostDistributionWindowSec * 1000);
+  const sellStartMs = nowMs - sellWindowMs;
+  const rows = mergeRecentAndCandidateTxs(cand).filter((tx) =>
+    tx.tokenMint === cand.tokenMint &&
+    tx.timestamp <= nowMs
+  );
+
+  const latestFreshBuyByKol = new Map<string, KolTx>();
+  const latestShadowFreshBuyByKol = new Map<string, KolTx>();
+  let freshBuySol = 0;
+  let shadowFreshBuySol = 0;
+  for (const tx of rows) {
+    if (tx.action !== 'buy' || tx.timestamp < freshStartMs) continue;
+    if (tx.isShadow === true) {
+      const existingShadow = latestShadowFreshBuyByKol.get(tx.kolId);
+      if (!existingShadow || tx.timestamp > existingShadow.timestamp) {
+        latestShadowFreshBuyByKol.set(tx.kolId, tx);
+      }
+      shadowFreshBuySol += Math.max(0, tx.solAmount ?? 0);
+    } else {
+      const existing = latestFreshBuyByKol.get(tx.kolId);
+      if (!existing || tx.timestamp > existing.timestamp) {
+        latestFreshBuyByKol.set(tx.kolId, tx);
+      }
+      freshBuySol += Math.max(0, tx.solAmount ?? 0);
+    }
+  }
+
+  const freshBuys = [...latestFreshBuyByKol.values()].sort((a, b) => a.timestamp - b.timestamp);
+  const shadowFreshBuys = [...latestShadowFreshBuyByKol.values()].sort((a, b) => a.timestamp - b.timestamp);
+  // Live eligibility must never be created by shadow/inactive KOLs. Shadow-only candidates still
+  // produce paper observations, but once any active KOL is present the trigger path uses active KOLs only.
+  const triggerFreshBuys = (freshBuys.length > 0 ? freshBuys : shadowFreshBuys)
+    .sort((a, b) => a.timestamp - b.timestamp);
+  const triggerFreshIndependentKolCount = new Set(triggerFreshBuys.map((tx) => tx.kolId)).size;
+  const firstFreshBuyAtMs = freshBuys[0]?.timestamp ?? null;
+  const lastFreshBuyAtMs = freshBuys[freshBuys.length - 1]?.timestamp ?? null;
+  const lastFreshBuyAgeMs = lastFreshBuyAtMs == null ? null : Math.max(0, nowMs - lastFreshBuyAtMs);
+  const triggerLastFreshBuyAtMs = triggerFreshBuys[triggerFreshBuys.length - 1]?.timestamp ?? null;
+  const triggerLastFreshBuyAgeMs = triggerLastFreshBuyAtMs == null ? null : Math.max(0, nowMs - triggerLastFreshBuyAtMs);
+  const freshTierStrongCount = freshBuys.filter((tx) => tx.tier === 'S' || tx.tier === 'A').length;
+  const shadowFreshTierStrongCount = shadowFreshBuys.filter((tx) => tx.tier === 'S' || tx.tier === 'A').length;
+  const freshParticipatingKols = freshBuys.map((tx) => ({
+    id: tx.kolId,
+    tier: tx.tier,
+    timestamp: tx.timestamp,
+  }));
+  const shadowFreshParticipatingKols = shadowFreshBuys.map((tx) => ({
+    id: tx.kolId,
+    tier: tx.tier,
+    timestamp: tx.timestamp,
+  }));
+  const freshTierScore = freshBuys.reduce((sum, tx) => {
+    if (tx.tier === 'S') return sum + 3.0;
+    if (tx.tier === 'A') return sum + 1.0;
+    return sum + 0.5;
+  }, 0);
+  const freshConsensusBonus =
+    freshBuys.length === 0 ? 0
+    : freshBuys.length === 1 ? 1.0
+    : freshBuys.length <= 4 ? 3.0
+    : 10.0;
+  const freshSignalScore = freshTierScore + freshConsensusBonus;
+  const triggerFreshTierScore = triggerFreshBuys.reduce((sum, tx) => {
+    if (tx.tier === 'S') return sum + 3.0;
+    if (tx.tier === 'A') return sum + 1.0;
+    return sum + 0.5;
+  }, 0);
+  const triggerFreshConsensusBonus =
+    triggerFreshBuys.length === 0 ? 0
+    : triggerFreshBuys.length === 1 ? 1.0
+    : triggerFreshBuys.length <= 4 ? 3.0
+    : 10.0;
+  const triggerFreshSignalScore = triggerFreshTierScore + triggerFreshConsensusBonus;
+
+  let preEntrySellSol = 0;
+  let lastSellAtMs: number | null = null;
+  const sellKols = new Set<string>();
+  for (const tx of rows) {
+    if (tx.action !== 'sell' || tx.timestamp < sellStartMs) continue;
+    preEntrySellSol += Math.max(0, tx.solAmount ?? 0);
+    sellKols.add(tx.kolId);
+    if (lastSellAtMs == null || tx.timestamp > lastSellAtMs) lastSellAtMs = tx.timestamp;
+  }
+
+  const freshBuyKolsAfterLastSell = lastSellAtMs == null
+    ? latestFreshBuyByKol.size
+    : new Set(freshBuys.filter((tx) => tx.timestamp > lastSellAtMs).map((tx) => tx.kolId)).size;
+  const secondsSinceLastSell = lastSellAtMs == null
+    ? null
+    : Math.max(0, Math.floor((nowMs - lastSellAtMs) / 1000));
+
+  const flags = [
+    `SMART_V3_FRESH_KOLS_${latestFreshBuyByKol.size}`,
+    `SMART_V3_FRESH_STRONG_KOLS_${freshTierStrongCount}`,
+    `SMART_V3_FRESH_SCORE_${freshSignalScore.toFixed(1)}`,
+    `SMART_V3_FRESH_AFTER_SELL_KOLS_${freshBuyKolsAfterLastSell}`,
+  ];
+  if (latestShadowFreshBuyByKol.size > 0) {
+    flags.push(`SMART_V3_SHADOW_FRESH_KOLS_${latestShadowFreshBuyByKol.size}`);
+    flags.push(`SMART_V3_SHADOW_FRESH_STRONG_KOLS_${shadowFreshTierStrongCount}`);
+    flags.push('SMART_V3_SHADOW_CONFIRMATION_AUX');
+    flags.push(`SMART_V3_TRIGGER_FRESH_KOLS_${triggerFreshIndependentKolCount}`);
+    flags.push(`SMART_V3_TRIGGER_FRESH_SCORE_${triggerFreshSignalScore.toFixed(1)}`);
+  }
+  if (lastFreshBuyAgeMs !== null) {
+    flags.push(`SMART_V3_LAST_BUY_AGE_${Math.round(lastFreshBuyAgeMs / 1000)}S`);
+  }
+  if (preEntrySellSol > 0) {
+    flags.push(`SMART_V3_PRE_ENTRY_SELL_SOL_${preEntrySellSol.toFixed(2)}`);
+    flags.push(`SMART_V3_PRE_ENTRY_SELL_KOLS_${sellKols.size}`);
+  }
+
+  return {
+    freshIndependentKolCount: latestFreshBuyByKol.size,
+    freshTierStrongCount,
+    freshSignalScore,
+    freshBuySol,
+    freshParticipatingKols,
+    triggerFreshIndependentKolCount,
+    triggerFreshTierStrongCount: freshTierStrongCount + shadowFreshTierStrongCount,
+    triggerFreshSignalScore,
+    triggerLastFreshBuyAgeMs,
+    shadowFreshIndependentKolCount: latestShadowFreshBuyByKol.size,
+    shadowFreshTierStrongCount,
+    shadowFreshBuySol,
+    shadowFreshParticipatingKols,
+    firstFreshBuyAtMs,
+    lastFreshBuyAtMs,
+    lastFreshBuyAgeMs,
+    preEntrySellSol,
+    preEntrySellKols: sellKols.size,
+    lastSellAtMs,
+    secondsSinceLastSell,
+    freshBuyKolsAfterLastSell,
+    flags,
+  };
 }
 let priceFeed: PaperPriceFeed | null = null;
 const priceListeners = new Map<string, (tick: PriceTick) => void>(); // tokenMint → fan-out handler
@@ -1540,7 +1720,11 @@ export function evaluateInsiderExitDecision(
 function handleKolSellSignal(tx: KolTx): void {
   const cand = pending.get(tx.tokenMint);
   const positions = getActivePositionsByMint(tx.tokenMint).filter((p) =>
-    p.participatingKols.some((k) => k.id === tx.kolId)
+    p.participatingKols.some((k) => k.id === tx.kolId) ||
+    (
+      isRotationV1Position(p) &&
+      (p.rotationAnchorKols ?? []).some((id) => id.toLowerCase() === tx.kolId.toLowerCase())
+    )
   );
   if (
     positions.length === 0 &&
@@ -1811,41 +1995,39 @@ interface SmartV3TriggerResult {
   conviction?: Extract<KolConvictionLevel, 'MEDIUM_HIGH' | 'HIGH' | 'HIGH_PLUS'>;
 }
 
-function evaluateSmartV3TriggerState(cand: PendingCandidate, score: KolDiscoveryScore): SmartV3TriggerResult {
+function evaluateSmartV3TriggerState(
+  cand: PendingCandidate,
+  fresh: SmartV3FreshContext
+): SmartV3TriggerResult {
   const smart = cand.smartV3;
   if (!smart) return { pullback: false, velocity: false };
 
   const pullbackPct = (smart.peakPrice - smart.currentPrice) / Math.max(smart.peakPrice, 1e-12);
   const aboveKolDrawdownFloor =
     smart.currentPrice >= smart.kolEntryPrice * (1 - config.kolHunterSmartV3MaxDrawdownFromKolEntryPct);
+  const lastBuyFreshEnough =
+    fresh.triggerLastFreshBuyAgeMs !== null &&
+    fresh.triggerLastFreshBuyAgeMs <= config.kolHunterSmartV3MaxLastBuyAgeSec * 1000;
   // 2026-04-30 (P1-2): pullback path 에 KOL count gate 추가.
   //   live 15h 분석: pullback|kols=1 이 손실의 103% 차지. velocity path 와 동일 강도로 강제.
+  // 2026-05-03: live 연패 분석 이후 24h 누적 score 가 아니라 entry 직전 fresh consensus 를 강제.
+  //   stale 2+ KOL count 로 pullback 이 열리는 케이스를 차단하고, pullback 은 live 에서 별도 fallback.
   const pullback =
     smart.peakPrice > smart.kolEntryPrice &&
     pullbackPct >= config.kolHunterSmartV3MinPullbackPct &&
     aboveKolDrawdownFloor &&
-    score.independentKolCount >= config.kolHunterSmartV3PullbackMinKolCount;
+    fresh.triggerFreshIndependentKolCount >= config.kolHunterSmartV3PullbackMinKolCount;
 
   const velocity =
-    score.finalScore >= config.kolHunterSmartV3VelocityScoreThreshold &&
-    score.independentKolCount >= config.kolHunterSmartV3VelocityMinIndependentKol &&
-    hasSmartV3TierStrength(score.participatingKols);
+    fresh.triggerFreshSignalScore >= config.kolHunterSmartV3VelocityScoreThreshold &&
+    fresh.triggerFreshIndependentKolCount >= config.kolHunterSmartV3VelocityMinIndependentKol &&
+    fresh.triggerFreshTierStrongCount >= 2 &&
+    lastBuyFreshEnough;
 
   if (pullback && velocity) return { pullback, velocity, reason: 'pullback_and_velocity', conviction: 'HIGH_PLUS' };
   if (pullback) return { pullback, velocity, reason: 'pullback', conviction: 'HIGH' };
   if (velocity) return { pullback, velocity, reason: 'velocity', conviction: 'MEDIUM_HIGH' };
   return { pullback, velocity };
-}
-
-function hasSmartV3TierStrength(kols: Array<{ tier: 'S' | 'A' | 'B' }>): boolean {
-  // Velocity path 의 tier 정책 (의도적):
-  //  - "S+A or A+A" 의 실무 해석: S/A급 독립 판단이 2명 이상이면 velocity 신뢰.
-  //  - Tier B 단독 / Tier B + Tier B 는 velocity 진입 영구 reject. (single-wallet 추세를 신호로 보지 않음)
-  //  - Tier B 가 합류해도 S/A ≥ 2 가 충족되어야 velocity 통과.
-  //  - Pullback path 는 evaluateSmartV3TriggerState 안 inline 평가 (별도 evaluator 아님).
-  //    2026-04-30 (P1-2) 이전: 가격 조건만 검사 → Tier B 단독 등 단일 KOL pullback 진입 가능.
-  //    2026-04-30 (P1-2) 이후: kolHunterSmartV3PullbackMinKolCount (default 2) 강제 → 단일 KOL reject.
-  return kols.filter((k) => k.tier === 'S' || k.tier === 'A').length >= 2;
 }
 
 interface RotationV1TriggerResult {
@@ -1878,6 +2060,32 @@ interface KolEntrySignal {
   extraFlags: string[];
   telemetry?: RotationV1TriggerResult['telemetry'];
   rotationAnchorKols?: string[];
+}
+
+function evaluateSmartV3LiveFallback(
+  entrySignal: KolEntrySignal,
+  fresh: SmartV3FreshContext
+): { fallback: boolean; reason?: string; flags: string[] } {
+  if (entrySignal.label !== 'smart-v3') return { fallback: false, flags: [] };
+  const flags: string[] = [];
+  if (entrySignal.entryReason === 'pullback' && !config.kolHunterSmartV3PullbackLiveEnabled) {
+    flags.push('SMART_V3_PULLBACK_LIVE_DISABLED');
+  }
+  const weakPostSellRecovery =
+    fresh.lastSellAtMs !== null &&
+    fresh.preEntrySellSol >= config.kolHunterPostDistributionMinGrossSellSol &&
+    fresh.freshBuyKolsAfterLastSell < config.kolHunterSmartV3MinFreshAfterSellKols;
+  if (weakPostSellRecovery) {
+    flags.push('SMART_V3_POST_SELL_RECOVERY_WEAK');
+  }
+  if (flags.length === 0) return { fallback: false, flags: [] };
+  return {
+    fallback: true,
+    reason: flags.includes('SMART_V3_PULLBACK_LIVE_DISABLED')
+      ? 'smart_v3_pullback_live_disabled'
+      : 'smart_v3_post_sell_recovery_weak',
+    flags,
+  };
 }
 
 function parseRotationV1KolIds(): Set<string> {
@@ -2404,7 +2612,8 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
 
   const nowMs = Date.now();
   const score = computeKolDiscoveryScoreCached(cand.tokenMint, nowMs);  // P1 #7
-  const smartTrigger = evaluateSmartV3TriggerState(cand, score);
+  const smartFresh = buildSmartV3FreshContext(cand, nowMs);
+  const smartTrigger = evaluateSmartV3TriggerState(cand, smartFresh);
   const rotationTrigger = smartTrigger.reason
     ? undefined
     : evaluateRotationV1TriggerState(cand, nowMs);
@@ -2415,7 +2624,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         parameterVersion: config.kolHunterSmartV3ParameterVersion,
         entryReason: smartTrigger.reason,
         conviction: smartTrigger.conviction,
-        extraFlags: [],
+        extraFlags: smartFresh.flags,
       }
     : rotationTrigger?.triggered
       ? {
@@ -2445,6 +2654,10 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     `[${entrySignal.logTag}] ${cand.tokenMint.slice(0, 8)} reason=${entrySignal.entryReason} ` +
     `conviction=${entrySignal.conviction} score=${score.finalScore.toFixed(2)} ` +
     `kols=${score.independentKolCount}` +
+    (entrySignal.label === 'smart-v3'
+      ? ` freshKols=${smartFresh.freshIndependentKolCount} freshStrong=${smartFresh.freshTierStrongCount} ` +
+        `freshScore=${smartFresh.freshSignalScore.toFixed(2)}`
+      : '') +
     (entrySignal.telemetry
       ? ` buys=${entrySignal.telemetry.buyCount} smallBuys=${entrySignal.telemetry.smallBuyCount} ` +
         `grossBuy=${Number(entrySignal.telemetry.grossBuySol).toFixed(3)}SOL`
@@ -2523,7 +2736,25 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     rotationLastBuyAtMs: entrySignal.telemetry?.lastBuyAtMs ?? undefined,
     rotationLastBuyAgeMs: entrySignal.telemetry?.lastBuyAgeMs ?? undefined,
     rotationScore: entrySignal.telemetry?.rotationScore,
+    entryIndependentKolCount: entrySignal.label === 'smart-v3'
+      ? smartFresh.freshIndependentKolCount
+      : undefined,
+    entryKolScore: entrySignal.label === 'smart-v3'
+      ? smartFresh.freshSignalScore
+      : undefined,
+    entryParticipatingKols: entrySignal.label === 'smart-v3'
+      ? (smartFresh.freshParticipatingKols.length > 0
+          ? smartFresh.freshParticipatingKols
+          : smartFresh.shadowFreshParticipatingKols)
+      : undefined,
   };
+  const entryPolicyMetrics = entrySignal.label === 'smart-v3'
+    ? {
+        independentKolCount: smartFresh.freshIndependentKolCount,
+        effectiveIndependentCount: smartFresh.freshIndependentKolCount,
+        kolScore: smartFresh.freshSignalScore,
+      }
+    : {};
   const postDistribution = evaluatePostDistributionGuard({
     tokenMint: cand.tokenMint,
     nowMs: Date.now(),
@@ -2589,6 +2820,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         `fallback paper.`
       );
       emitKolLiveFallbackPolicy(cand.tokenMint, score, policyFlags, {
+        ...entryPolicyMetrics,
         entryReason: entryOptions.entryReason,
         armName: entryOptions.parameterVersion ? armNameForVersion(entryOptions.parameterVersion) : undefined,
       });
@@ -2608,6 +2840,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         `fallback paper.`
       );
       emitKolLiveFallbackPolicy(cand.tokenMint, score, policyFlags, {
+        ...entryPolicyMetrics,
         entryReason: entryOptions.entryReason,
         armName: entryOptions.parameterVersion ? armNameForVersion(entryOptions.parameterVersion) : undefined,
       });
@@ -2657,6 +2890,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         `remaining=${Math.round(qualityCooldown.remainingMs / 1000)}s. fallback paper.`
       );
       emitKolLiveFallbackPolicy(cand.tokenMint, score, policyFlags, {
+        ...entryPolicyMetrics,
         entryReason: entryOptions.entryReason,
         armName: entryOptions.parameterVersion ? armNameForVersion(entryOptions.parameterVersion) : undefined,
       });
@@ -2670,6 +2904,9 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       minIndependentKol: entrySignal.label === 'rotation-v1'
         ? config.kolHunterRotationV1MinIndependentKol
         : undefined,
+      independentKolCountOverride: entrySignal.label === 'smart-v3'
+        ? smartFresh.freshIndependentKolCount
+        : undefined,
     });
     if (!liveGate.allowLive) {
       const policyFlags = [...entryFlags, ...liveGate.flags];
@@ -2678,6 +2915,30 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         `${liveGate.reason}. fallback paper.`
       );
       emitKolLiveFallbackPolicy(cand.tokenMint, score, policyFlags, {
+        ...entryPolicyMetrics,
+        entryReason: entryOptions.entryReason,
+        armName: entryOptions.parameterVersion ? armNameForVersion(entryOptions.parameterVersion) : undefined,
+      });
+      await enterPaperPosition(cand.tokenMint, cand, score, policyFlags, {
+        ...entryOptions,
+        skipPolicyEntry: true,
+      });
+      return;
+    }
+    const smartV3LiveFallback = evaluateSmartV3LiveFallback(entrySignal, smartFresh);
+    if (smartV3LiveFallback.fallback) {
+      const policyFlags = [
+        ...entryFlags,
+        ...smartV3LiveFallback.flags,
+      ];
+      log.warn(
+        `[KOL_HUNTER_SMART_V3_LIVE_FALLBACK] ${cand.tokenMint.slice(0, 8)} reason=${smartV3LiveFallback.reason} ` +
+        `entryReason=${entrySignal.entryReason} freshKols=${smartFresh.freshIndependentKolCount} ` +
+        `freshAfterSell=${smartFresh.freshBuyKolsAfterLastSell} sellSol=${smartFresh.preEntrySellSol.toFixed(3)}. ` +
+        `fallback paper.`
+      );
+      emitKolLiveFallbackPolicy(cand.tokenMint, score, policyFlags, {
+        ...entryPolicyMetrics,
         entryReason: entryOptions.entryReason,
         armName: entryOptions.parameterVersion ? armNameForVersion(entryOptions.parameterVersion) : undefined,
       });
@@ -2828,10 +3089,28 @@ async function resolveStalk(tokenMint: string): Promise<void> {
 function evaluateKolLiveCanaryGate(
   score: KolDiscoveryScore,
   survivalFlags: string[],
-  options: { minIndependentKol?: number } = {}
+  options: { minIndependentKol?: number; independentKolCountOverride?: number } = {}
 ): { allowLive: boolean; reason?: string; flags: string[] } {
   const balance = getWalletStopGuardState().lastBalanceSol;
   const balanceKnown = Number.isFinite(balance) && balance !== Number.POSITIVE_INFINITY;
+  const liveKolCount = options.independentKolCountOverride ?? score.independentKolCount;
+
+  if (config.kolHunterDevWalletLiveGateEnabled) {
+    if (survivalFlags.includes('DEV_WALLET_BLACKLIST')) {
+      return {
+        allowLive: false,
+        reason: 'dev wallet blacklist',
+        flags: ['DEV_WALLET_LIVE_BLOCK'],
+      };
+    }
+    if (survivalFlags.includes('DEV_WALLET_WATCHLIST')) {
+      return {
+        allowLive: false,
+        reason: 'dev wallet watchlist',
+        flags: ['DEV_WALLET_LIVE_BLOCK'],
+      };
+    }
+  }
 
   if (
     config.kolHunterYellowZoneEnabled &&
@@ -2849,21 +3128,21 @@ function evaluateKolLiveCanaryGate(
     config.kolHunterYellowZoneEnabled &&
     balanceKnown &&
     balance < config.kolHunterYellowZoneStartSol;
-  if (inYellowZone && score.independentKolCount < config.kolHunterYellowZoneMinIndependentKol) {
+  if (inYellowZone && liveKolCount < config.kolHunterYellowZoneMinIndependentKol) {
     return {
       allowLive: false,
       reason:
-        `wallet ${balance.toFixed(4)} yellow zone requires independentKolCount >= ` +
+        `wallet ${balance.toFixed(4)} yellow zone requires fresh independentKolCount >= ` +
         `${config.kolHunterYellowZoneMinIndependentKol}`,
       flags: ['YELLOW_ZONE_MIN_KOL'],
     };
   }
 
   const liveMinKol = options.minIndependentKol ?? config.kolHunterLiveMinIndependentKol;
-  if (liveMinKol > 1 && score.independentKolCount < liveMinKol) {
+  if (liveMinKol > 1 && liveKolCount < liveMinKol) {
     return {
       allowLive: false,
-      reason: `live canary requires independentKolCount >= ${liveMinKol}`,
+      reason: `live canary requires fresh independentKolCount >= ${liveMinKol}`,
       flags: ['LIVE_MIN_KOL'],
     };
   }
@@ -2896,6 +3175,27 @@ function evaluateKolLiveCanaryGate(
   }
 
   return { allowLive: true, flags: [] };
+}
+
+function devStatusFlag(status: DevStatus): string | null {
+  if (status === 'allowlist') return 'DEV_WALLET_ALLOWLIST';
+  if (status === 'watchlist') return 'DEV_WALLET_WATCHLIST';
+  if (status === 'blacklist') return 'DEV_WALLET_BLACKLIST';
+  return null;
+}
+
+function resolveDevWalletEntryFlags(tokenSecurityData: unknown): string[] {
+  const sec = tokenSecurityData as { creatorAddress?: string; ownerAddress?: string } | null | undefined;
+  const flags = new Set<string>();
+  for (const address of [sec?.creatorAddress, sec?.ownerAddress]) {
+    const flag = devStatusFlag(resolveDevStatus(address));
+    if (flag) flags.add(flag);
+  }
+  return [
+    'DEV_WALLET_BLACKLIST',
+    'DEV_WALLET_WATCHLIST',
+    'DEV_WALLET_ALLOWLIST',
+  ].filter((flag) => flags.has(flag));
 }
 
 /**
@@ -2982,6 +3282,8 @@ async function checkKolSurvivalPreEntry(
     };
   }
 
+  const devFlags = resolveDevWalletEntryFlags(tokenSecurityData);
+
   const gateResult = evaluateSecurityGate(tokenSecurityData, exitLiquidityData, {
     minExitLiquidityUsd: config.kolHunterSurvivalMinExitLiquidityUsd,
     maxTop10HolderPct: config.kolHunterSurvivalMaxTop10HolderPct,
@@ -2991,13 +3293,13 @@ async function checkKolSurvivalPreEntry(
     return {
       approved: false,
       reason: gateResult.reason,
-      flags: [...flags, ...gateResult.flags],
+      flags: [...flags, ...devFlags, ...gateResult.flags],
     };
   }
 
   return {
     approved: true,
-    flags: [...flags, ...gateResult.flags],
+    flags: [...flags, ...devFlags, ...gateResult.flags],
   };
 }
 
@@ -3126,6 +3428,9 @@ async function enterPaperPosition(
   const positionId = `kolh-${tokenMint.slice(0, 8)}-${nowSec}`;
   const quantity = entryPrice > 0 ? ticketSol / entryPrice : 0;
   const primaryVersion = options.parameterVersion ?? config.kolHunterParameterVersion;
+  const entryParticipatingKols = options.entryParticipatingKols ?? score.participatingKols;
+  const entryKolScore = options.entryKolScore ?? score.finalScore;
+  const entryIndependentKolCount = options.entryIndependentKolCount ?? score.independentKolCount;
 
   // MISSION_CONTROL §KOL Control 2단계 — size-aware sell-quote probe.
   // 0.01 SOL 로 살 plannedQuantity 그대로를 매도 quote 로 검증 (1 token 가짜 probe 가 아님).
@@ -3196,8 +3501,8 @@ async function enterPaperPosition(
       peakPrice: entryPrice,
       troughPrice: entryPrice,
       lastPrice: entryPrice,
-      participatingKols: score.participatingKols.map((k) => ({ ...k })),
-      kolScore: score.finalScore,
+      participatingKols: entryParticipatingKols.map((k) => ({ ...k })),
+      kolScore: entryKolScore,
       armName: armNameForVersion(parameterVersion),
       parameterVersion,
       isShadowArm,
@@ -3221,7 +3526,7 @@ async function enterPaperPosition(
       rotationScore: options.rotationScore,
       kolReinforcementCount: 0,
       detectorVersion: config.kolHunterDetectorVersion,
-      independentKolCount: score.independentKolCount,
+      independentKolCount: entryIndependentKolCount,
       survivalFlags: combinedSurvivalFlags,
       isShadowKol: isShadowKolPosition,  // 2026-04-28: 분포 분리 marker.
       tokenDecimals: entryTokenDecimals.value,
@@ -4547,6 +4852,9 @@ async function enterLivePosition(
   const signalToReferenceMs = Number.isFinite(cand.firstKolEntryMs)
     ? Math.max(0, referenceResolvedAtMs - cand.firstKolEntryMs)
     : undefined;
+  const entryParticipatingKols = options.entryParticipatingKols ?? score.participatingKols;
+  const entryKolScore = options.entryKolScore ?? score.finalScore;
+  const entryIndependentKolCount = options.entryIndependentKolCount ?? score.independentKolCount;
   const ticketSol = config.kolHunterTicketSol;
   const plannedQty = referencePrice > 0 ? ticketSol / referencePrice : 0;
   if (plannedQty <= 0) {
@@ -4711,7 +5019,7 @@ async function enterLivePosition(
       pairAddress: tokenMint,
       strategy: LANE_STRATEGY,
       side: 'BUY',
-      sourceLabel: `kol_hunter:${score.participatingKols.map((k) => k.id).join(',')}`,
+      sourceLabel: `kol_hunter:${entryParticipatingKols.map((k) => k.id).join(',')}`,
       discoverySource: 'kol_discovery_v1',
       entryPrice: actualEntryPrice,
       plannedEntryPrice: referencePrice,
@@ -4775,8 +5083,8 @@ async function enterLivePosition(
       signalPrice: referencePrice,
       partialFillDataMissing,
       partialFillDataReason,
-      kolScore: score.finalScore,
-      independentKolCount: score.independentKolCount,
+      kolScore: entryKolScore,
+      independentKolCount: entryIndependentKolCount,
       entryReason: options.entryReason,
       parameterVersion: options.parameterVersion,
       rotationAnchorKols: options.rotationAnchorKols ?? null,
@@ -4831,8 +5139,8 @@ async function enterLivePosition(
     peakPrice: actualEntryPrice,
     troughPrice: actualEntryPrice,
     lastPrice: actualEntryPrice,
-    participatingKols: score.participatingKols.map((k) => ({ ...k })),
-    kolScore: score.finalScore,
+    participatingKols: entryParticipatingKols.map((k) => ({ ...k })),
+    kolScore: entryKolScore,
     armName,
     parameterVersion: primaryVersion,
     isShadowArm: false,
@@ -4851,7 +5159,7 @@ async function enterLivePosition(
     rotationScore: options.rotationScore,
     kolReinforcementCount: 0,
     detectorVersion: config.kolHunterDetectorVersion,
-    independentKolCount: score.independentKolCount,
+    independentKolCount: entryIndependentKolCount,
     survivalFlags: [
       ...survivalFlags,
       `LIVE_DECIMALS_${liveDecimals ?? 'UNKNOWN'}`,

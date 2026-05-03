@@ -189,6 +189,8 @@ export const kolHunter = {
   // Dev wallet DB
   devWalletDbPath: optional('DEV_WALLET_DB_PATH', path.resolve(process.cwd(), 'data/dev-wallets/wallets.json')),
   devWalletHotReloadIntervalMs: numEnv('DEV_WALLET_HOT_RELOAD_INTERVAL_MS', '60000'),
+  // Dev wallet status is a live eligibility gate only. allowlist never bypasses security/sell-route guards.
+  kolHunterDevWalletLiveGateEnabled: boolOptional('KOL_HUNTER_DEV_WALLET_LIVE_GATE_ENABLED', true),
 
   // Paper round-trip cost (Jupiter platform fee + MEV + AMM fee). Live 시 wallet delta 에서 직접 차감.
   kolHunterPaperRoundTripCostPct: numEnv('KOL_HUNTER_PAPER_ROUND_TRIP_COST_PCT', '0.005'),
@@ -345,8 +347,14 @@ export const kolHunter = {
   kolHunterSmartV3ObserveWindowSec: numEnv('KOL_HUNTER_SMART_V3_OBSERVE_WINDOW_SEC', '120'),
   kolHunterSmartV3MinPullbackPct: numEnv('KOL_HUNTER_SMART_V3_MIN_PULLBACK_PCT', '0.10'),
   kolHunterSmartV3MaxDrawdownFromKolEntryPct: numEnv('KOL_HUNTER_SMART_V3_MAX_DRAWDOWN_FROM_KOL_ENTRY_PCT', '0.15'),
-  kolHunterSmartV3VelocityScoreThreshold: numEnv('KOL_HUNTER_SMART_V3_VELOCITY_SCORE_THRESHOLD', '6.0'),
+  kolHunterSmartV3VelocityScoreThreshold: numEnv('KOL_HUNTER_SMART_V3_VELOCITY_SCORE_THRESHOLD', '5.0'),
   kolHunterSmartV3VelocityMinIndependentKol: numEnv('KOL_HUNTER_SMART_V3_VELOCITY_MIN_INDEPENDENT_KOL', '2'),
+  // Entry eligibility is based on fresh same-mint KOL buys, not the 24h discovery score.
+  kolHunterSmartV3FreshWindowSec: numEnv('KOL_HUNTER_SMART_V3_FRESH_WINDOW_SEC', '60'),
+  kolHunterSmartV3MaxLastBuyAgeSec: numEnv('KOL_HUNTER_SMART_V3_MAX_LAST_BUY_AGE_SEC', '15'),
+  // Pullback is kept as a measured paper fallback by default; live smart-v3 should be fresh velocity/direct consensus.
+  kolHunterSmartV3PullbackLiveEnabled: boolOptional('KOL_HUNTER_SMART_V3_PULLBACK_LIVE_ENABLED', false),
+  kolHunterSmartV3MinFreshAfterSellKols: numEnv('KOL_HUNTER_SMART_V3_MIN_FRESH_AFTER_SELL_KOLS', '2'),
   // 2026-04-30 (P1-2): pullback path 도 KOL count gate 강제.
   // Why: live 운영 15h n=49 trades 의 trigger×kols 분석 — pullback|kols=1 이 31건 (63%) 차지,
   //   net -0.1158 SOL = 전체 net 의 103% (다른 path 합 +0.0037). pullback 평가에 KOL count 조건 누락.

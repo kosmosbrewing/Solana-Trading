@@ -91,9 +91,17 @@ describe('wsBurstDetector — evaluateWsBurst', () => {
       expect(result.factors.rawVolumeZ).toBeGreaterThan(5); // saturated
     });
 
-    it('zero baseline volume → raw 0 (safe fallback)', () => {
+    it('zero baseline volume + enough recent tx → cold-start volume factor saturated', () => {
       const baseline = Array.from({ length: 12 }, () => candle({ volume: 0, tradeCount: 0 }));
       const recent = Array.from({ length: 3 }, () => candle({ volume: 1000, tradeCount: 10 }));
+      const result = evaluateWsBurst(makeSeries(baseline, recent), cfg());
+      expect(result.factors.rawVolumeZ).toBe(DEFAULT_WS_BURST_CONFIG.zVolSaturate);
+      expect(result.factors.volumeAccelZ).toBe(1);
+    });
+
+    it('zero baseline volume + low recent tx → raw 0 (safe fallback)', () => {
+      const baseline = Array.from({ length: 12 }, () => candle({ volume: 0, tradeCount: 0 }));
+      const recent = Array.from({ length: 3 }, () => candle({ volume: 1000, tradeCount: 1 }));
       const result = evaluateWsBurst(makeSeries(baseline, recent), cfg());
       expect(result.factors.rawVolumeZ).toBe(0);
       expect(result.factors.volumeAccelZ).toBe(0);

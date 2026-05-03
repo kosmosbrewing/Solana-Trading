@@ -9,6 +9,7 @@
 import { createBlockedAxiosMock } from './__helpers__/network';
 jest.mock('axios', () => createBlockedAxiosMock());
 
+import axios from 'axios';
 import { mkdtemp, readFile } from 'fs/promises';
 import os from 'os';
 import path from 'path';
@@ -24,6 +25,7 @@ import { resetWalletStopGuardForTests } from '../src/risk/walletStopGuard';
 import { resetCanaryConcurrencyGuardForTests } from '../src/risk/canaryConcurrencyGuard';
 import { resetAllCanaryStatesForTests } from '../src/risk/canaryAutoHalt';
 import { resetTradeMarkoutObserverState } from '../src/observability/tradeMarkoutObserver';
+import { resetEntryDriftGuardState } from '../src/gate/entryDriftGuard';
 import type { BotContext } from '../src/orchestration/types';
 import type { MicroCandleBuilder } from '../src/realtime';
 import { config } from '../src/utils/config';
@@ -58,6 +60,7 @@ function makeCtx(mode: 'live' | 'paper'): {
 } {
   const executor = {
     executeBuy: jest.fn(async () => ({ txSignature: 'sig1', slippageBps: 10, actualInputUiAmount: 0.01, actualOutUiAmount: 100 })),
+    getMintDecimals: jest.fn(async () => 6),
     getBalance: jest.fn(async () => 1.0),
     getTokenBalance: jest.fn(async () => 0n),
     executeSell: jest.fn(async () => ({ txSignature: 'sell1', slippageBps: 10 })),
@@ -90,6 +93,8 @@ describe('Block 3 QA — paper-first enforcement', () => {
     resetWalletStopGuardForTests();
     resetCanaryConcurrencyGuardForTests();
     resetAllCanaryStatesForTests();
+    resetEntryDriftGuardState();
+    jest.clearAllMocks();
     override('pureWsLaneEnabled', true);
     override('pureWsGateEnabled', false); // gate 건너뛰기 (MicroCandleBuilder mock 최소화)
     override('pureWsLaneWalletMode', 'main');
@@ -177,6 +182,7 @@ describe('Block 3 QA — paper-first enforcement', () => {
 
     expect(executor.executeBuy).not.toHaveBeenCalled();
     expect(tradeStore.insertTrade).not.toHaveBeenCalled();
+    expect(axios.get).toHaveBeenCalled();
     const positions = [...getActivePureWsPositions().values()];
     expect(positions).toHaveLength(2);
     const primary = positions.find((p) => p.armName === 'pure_ws_breakout');
@@ -187,6 +193,57 @@ describe('Block 3 QA — paper-first enforcement', () => {
     expect(swing?.executionMode).toBeUndefined();
     expect(notifier.sendMessage).toHaveBeenCalledTimes(1);
     expect(notifier.sendMessage.mock.calls[0][0]).toContain('pure_ws paper 진입');
+  });
+
+  it('live pure_ws paper-only mode observes NO_SECURITY_DATA instead of dropping new-pair samples', async () => {
+    override('pureWsLiveCanaryEnabled', false);
+    override('pureWsSurvivalCheckEnabled', true);
+    override('pureWsSurvivalAllowDataMissing', false);
+    const { ctx, executor, tradeStore } = makeCtx('live');
+    const builder = makeBuilder();
+
+    await handlePureWsSignal(
+      { pairAddress: 'PAIR_NO_SECURITY_PAPER', strategy: 'bootstrap_10s', price: 1.0 } as any,
+      builder,
+      ctx
+    );
+
+    expect(executor.executeBuy).not.toHaveBeenCalled();
+    expect(tradeStore.insertTrade).not.toHaveBeenCalled();
+    const positions = [...getActivePureWsPositions().values()];
+    expect(positions).toHaveLength(1);
+    expect(positions[0].executionMode).toBe('paper');
+    expect(positions[0].paperOnlyReason).toBe('security_data_unavailable_observe');
+  });
+
+  it('live pure_ws paper-only mode reprices entry-drift rejects from Jupiter quote for observation', async () => {
+    override('pureWsLiveCanaryEnabled', false);
+    override('pureWsEntryDriftGuardEnabled', true);
+    const quoteOutRaw = Math.round((config.pureWsLaneTicketSol / 0.5) * 1_000_000);
+    (axios.get as jest.Mock).mockResolvedValueOnce({
+      data: { outAmount: String(quoteOutRaw), outputDecimals: 6 },
+    });
+    const { ctx, executor, tradeStore } = makeCtx('live');
+    const builder = makeBuilder();
+
+    await handlePureWsSignal(
+      {
+        pairAddress: 'PAIR_DRIFT_REPRICE',
+        tokenSymbol: 'DRIFT',
+        strategy: 'bootstrap_10s',
+        price: 1.0,
+      } as any,
+      builder,
+      ctx
+    );
+
+    expect(executor.executeBuy).not.toHaveBeenCalled();
+    expect(tradeStore.insertTrade).not.toHaveBeenCalled();
+    const positions = [...getActivePureWsPositions().values()];
+    expect(positions).toHaveLength(1);
+    expect(positions[0].entryPrice).toBeCloseTo(0.5, 8);
+    expect(positions[0].quantity).toBeCloseTo(config.pureWsLaneTicketSol / 0.5, 8);
+    expect(positions[0].paperOnlyReason).toBe('entry_drift_quote_repriced');
   });
 
   it('live mode + paper shadow disabled keeps old log-only suppression', async () => {

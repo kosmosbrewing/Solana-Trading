@@ -11,7 +11,80 @@ export const v2LastTriggerSecByPair = new Map<string, number>();
 // v2 와 동일 메커니즘으로 close 이후에도 pair-level cooldown 적용 (config.pureWsV1PerPairCooldownSec).
 export const v1LastEntrySecByPair = new Map<string, number>();
 
+export interface PureWsPairOutcomeCooldown {
+  untilSec: number;
+  reason: string;
+  netPct: number;
+  mfePct: number;
+  recordedAtSec: number;
+}
+
+export interface PureWsPairOutcomeCooldownConfig {
+  enabled: boolean;
+  weakMfeThreshold: number;
+  baseCooldownSec: number;
+  weakCooldownSec: number;
+  lossCooldownSec: number;
+  hardCutCooldownSec: number;
+}
+
+export const pairOutcomeCooldownByPair = new Map<string, PureWsPairOutcomeCooldown>();
+
+export function getPureWsPairOutcomeCooldown(
+  pair: string,
+  nowSec: number
+): PureWsPairOutcomeCooldown | null {
+  const cooldown = pairOutcomeCooldownByPair.get(pair);
+  if (!cooldown) return null;
+  if (cooldown.untilSec <= nowSec) {
+    pairOutcomeCooldownByPair.delete(pair);
+    return null;
+  }
+  return cooldown;
+}
+
+export function recordPureWsPairOutcomeCooldown(input: {
+  pair: string;
+  nowSec: number;
+  exitReason: string;
+  netPct: number;
+  mfePct: number;
+  config: PureWsPairOutcomeCooldownConfig;
+}): PureWsPairOutcomeCooldown | null {
+  if (!input.config.enabled) return null;
+
+  let cooldownSec = input.config.baseCooldownSec;
+  let reason = 'base';
+  if (input.exitReason === 'REJECT_HARD_CUT') {
+    cooldownSec = input.config.hardCutCooldownSec;
+    reason = 'hard_cut';
+  } else if (input.netPct <= 0) {
+    cooldownSec = input.config.lossCooldownSec;
+    reason = 'loss';
+  } else if (input.mfePct < input.config.weakMfeThreshold) {
+    cooldownSec = input.config.weakCooldownSec;
+    reason = 'weak_mfe';
+  }
+
+  if (cooldownSec <= 0) return null;
+  const next: PureWsPairOutcomeCooldown = {
+    untilSec: input.nowSec + cooldownSec,
+    reason,
+    netPct: input.netPct,
+    mfePct: input.mfePct,
+    recordedAtSec: input.nowSec,
+  };
+  const prev = pairOutcomeCooldownByPair.get(input.pair);
+  if (!prev || prev.untilSec < next.untilSec) {
+    pairOutcomeCooldownByPair.set(input.pair, next);
+    return next;
+  }
+  return prev;
+}
+
 /** Test helper — scanPureWsV2Burst 이후 cooldown state 초기화 */
 export function resetPureWsV2CooldownForTests(): void {
   v2LastTriggerSecByPair.clear();
+  v1LastEntrySecByPair.clear();
+  pairOutcomeCooldownByPair.clear();
 }

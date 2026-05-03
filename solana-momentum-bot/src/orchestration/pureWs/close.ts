@@ -29,6 +29,7 @@ import { getPureWsExecutor, resolvePureWsWalletLabel } from './wallet';
 import type { PureWsPosition } from './types';
 import { lookupCachedSymbol } from '../../ingester/tokenSymbolResolver';
 import { trackPureWsPaperMarkout } from './markout';
+import { recordPureWsPairOutcomeCooldown } from './cooldowns';
 
 export async function closePureWsPosition(
   id: string,
@@ -297,6 +298,34 @@ async function closePureWsPositionSerialized(
     ? 'pure_ws_swing_v2'
     : LANE_STRATEGY;
   reportCanaryClose(closeLane, pnl);
+  const mfePct = pos.marketReferencePrice > 0
+    ? (pos.peakPrice - pos.marketReferencePrice) / pos.marketReferencePrice
+    : 0;
+  const netPctForCooldown = pos.entryPrice > 0
+    ? (actualExitPrice - pos.entryPrice) / pos.entryPrice
+    : 0;
+  const cooldown = recordPureWsPairOutcomeCooldown({
+    pair: pos.pairAddress,
+    nowSec: Math.floor(Date.now() / 1000),
+    exitReason: reason,
+    netPct: netPctForCooldown,
+    mfePct,
+    config: {
+      enabled: config.pureWsPairOutcomeCooldownEnabled,
+      weakMfeThreshold: config.pureWsPairOutcomeWeakMfeThreshold,
+      baseCooldownSec: config.pureWsPairOutcomeBaseCooldownSec,
+      weakCooldownSec: config.pureWsPairOutcomeWeakCooldownSec,
+      lossCooldownSec: config.pureWsPairOutcomeLossCooldownSec,
+      hardCutCooldownSec: config.pureWsPairOutcomeHardCutCooldownSec,
+    },
+  });
+  if (cooldown) {
+    log.info(
+      `[PUREWS_PAIR_OUTCOME_COOLDOWN_SET] ${pos.pairAddress.slice(0, 12)} ` +
+      `reason=${cooldown.reason} until=${new Date(cooldown.untilSec * 1000).toISOString()} ` +
+      `net=${(cooldown.netPct * 100).toFixed(2)}% mfe=${(cooldown.mfePct * 100).toFixed(2)}%`
+    );
+  }
   // Block 4 QA fix: 전역 concurrency slot 해제 (acquire 대응)
   // legacy recovered position 은 flag 가 없을 수 있어 기존 동작 유지.
   if (pos.canarySlotAcquired !== false) releaseCanarySlot(closeLane);
@@ -391,8 +420,33 @@ async function closePaperOnlyPosition(
     });
   }
 
-  // Paper ledger — kol-paper-trades.jsonl 패턴 동일.
   const closedAt = new Date();
+  if (!isShadow) {
+    const cooldown = recordPureWsPairOutcomeCooldown({
+      pair: pos.pairAddress,
+      nowSec: Math.floor(closedAt.getTime() / 1000),
+      exitReason: reason,
+      netPct,
+      mfePct,
+      config: {
+        enabled: config.pureWsPairOutcomeCooldownEnabled,
+        weakMfeThreshold: config.pureWsPairOutcomeWeakMfeThreshold,
+        baseCooldownSec: config.pureWsPairOutcomeBaseCooldownSec,
+        weakCooldownSec: config.pureWsPairOutcomeWeakCooldownSec,
+        lossCooldownSec: config.pureWsPairOutcomeLossCooldownSec,
+        hardCutCooldownSec: config.pureWsPairOutcomeHardCutCooldownSec,
+      },
+    });
+    if (cooldown) {
+      log.info(
+        `[PUREWS_PAIR_OUTCOME_COOLDOWN_SET] ${pos.pairAddress.slice(0, 12)} ` +
+        `reason=${cooldown.reason} until=${new Date(cooldown.untilSec * 1000).toISOString()} ` +
+        `net=${(cooldown.netPct * 100).toFixed(2)}% mfe=${(cooldown.mfePct * 100).toFixed(2)}%`
+      );
+    }
+  }
+
+  // Paper ledger — kol-paper-trades.jsonl 패턴 동일.
   trackPureWsPaperMarkout(
     pos,
     'sell',

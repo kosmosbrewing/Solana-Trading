@@ -45,6 +45,18 @@ Required analysis before scaling:
 - separate signal quality loss, execution loss, and exit loss in reports;
 - preserve token-only and wallet-delta metrics separately because ATA rent can hide token-only 5x.
 
+Implemented diagnostic transfer from rotation/deep-research work:
+
+- `scripts/smart-v3-evidence-report.ts` reads `smart-v3-paper-trades.jsonl`, `smart-v3-live-trades.jsonl`, and shared `trade-markouts.jsonl`;
+- the report emits cohort verdicts: `COLLECT`, `DATA_GAP`, `COST_REJECT`, `POST_COST_REJECT`, `WATCH`, `PROMOTION_CANDIDATE`;
+- smart-v3 evidence uses 30/60/300/1800 second buy/sell T+ coverage, not rotation's 15/30 second fast-harvest objective;
+- smart-v3 evidence verdict coverage is close-anchor based: each cohort close `positionId` must have ok buy/sell markouts for the required horizon; raw row ok-rate is shown separately and does not promote a cohort;
+- smart-v3 close ledgers now carry `smartV3CopyableEdge` shadow fields so copyable result can use actual per-close drag when available;
+- smart-v3 closed-trade W/L is copyable/wallet-first, with token-only W/L shown separately because token-only wins can still be non-copyable after wallet drag;
+- live smart-v3 buy/sell markout anchors carry `mode`, `armName`, `parameterVersion`, and `entryReason` to avoid paper/live or pullback/velocity cohort bleed;
+- the report adds no runtime strategy env; `SKIP_SMART_V3_EVIDENCE_REPORT=true` is only a sync-script opt-out;
+- verdicts are report-only and must not change live eligibility, hard-cut, trail, or ticket sizing without a separate ADR.
+
 ## 3. rotation-v1 Current Policy
 
 Implemented operating shape:
@@ -128,7 +140,7 @@ Implementation rules:
 - projection write failure is fail-open and must not block trade close or existing ledger append;
 - rotation digest and rotation report prefer `rotation-v1-paper-trades.jsonl`;
 - when projection files are empty, rotation tools fall back to `kol-paper-trades.jsonl` for backward compatibility;
-- `sync-vps-data.sh` reports projection file freshness and row counts in sync health.
+- `sync-vps-data.sh` reports projection file freshness, row counts, and recent 24h W/L/net/last-trade summaries in sync health.
 
 ## 6. Markout Policy
 
@@ -159,11 +171,12 @@ Daily sync should treat these as the primary operating artifacts:
 | Report | Purpose |
 |---|---|
 | `reports/kol-live-canary-YYYY-MM-DD.md` | wallet-truth and smart-v3 live health |
+| `reports/smart-v3-evidence-YYYY-MM-DD.md` | smart-v3 paper/live cohort verdicts using projection ledgers plus shared T+ |
 | `reports/trade-markout-YYYY-MM-DD.md` | shared buy/sell T+ coverage |
 | `reports/rotation-lane-YYYY-MM-DD.md` | rotation control, arms, no-trade markouts, post-cost T+ |
 | `reports/pure-ws-trade-markout-YYYY-MM-DD.md` | pure_ws paper T+ coverage and post-cost behavior |
 | `reports/token-quality-YYYY-MM-DD.md` | dev/token quality joins |
-| `reports/sync-health-YYYY-MM-DD.md` | artifact freshness and row counts |
+| `reports/sync-health-YYYY-MM-DD.md` | artifact freshness, row counts, and lane trade ledger summary |
 
 Promotion decisions should not rely on raw win rate alone. Use post-cost markouts, wallet truth, and lane-specific objectives.
 

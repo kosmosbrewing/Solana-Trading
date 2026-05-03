@@ -6,7 +6,7 @@
 import { resetPairQuarantineForTests } from '../../risk/pairQuarantineTracker';
 import { resetTokenSessionTrackerForTests } from '../tokenSessionTracker';
 import { activePositions, funnelStats } from './positionState';
-import { v1LastEntrySecByPair, v2LastTriggerSecByPair } from './cooldowns';
+import { pairOutcomeCooldownByPair, v1LastEntrySecByPair, v2LastTriggerSecByPair } from './cooldowns';
 import { inflightEntryByPair } from './inflight';
 import { clearTokenSessionConfigured } from './tokenSession';
 import { clearPairQuarantineConfigured } from './pairQuarantine';
@@ -16,6 +16,7 @@ export function resetPureWsLaneStateForTests(): void {
   activePositions.clear();
   v2LastTriggerSecByPair.clear();
   v1LastEntrySecByPair.clear();
+  pairOutcomeCooldownByPair.clear();
   inflightEntryByPair.clear();
   // Phase 3 — token session in-memory state 도 초기화.
   clearTokenSessionConfigured();

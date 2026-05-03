@@ -62,6 +62,17 @@ data/realtime/trade-markout-anchors.jsonl
 data/realtime/trade-markouts.jsonl
 ```
 
+Smart-v3 evidence report:
+
+```bash
+npm run kol:smart-v3-evidence-report -- --since 24h --realtime-dir data/realtime
+```
+
+- Report-only; no live entry, exit, ticket, or guard behavior changes.
+- Verdict T+ coverage is close-anchor based by `positionId × anchorType × horizon`, not just observed-row ok-rate.
+- Closed Trades uses copyable/wallet-first W/L and shows token-only W/L separately.
+- Runtime `.env` change is not required. `SKIP_SMART_V3_EVIDENCE_REPORT=true` only skips sync report generation.
+
 ## Cupsey Benchmark Lane (개조 금지)
 
 `cupsey_flip_10s` 는 현재 유일한 live-proven lane 이며 benchmark 로 유지한다.

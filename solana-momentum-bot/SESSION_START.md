@@ -38,7 +38,7 @@ npm run check:fast
 |------|------|------|------|------|----------|
 | `cupsey_flip_10s` | — | (disabled) | **Benchmark (frozen)** — 개조 금지 | `cupseyLaneHandler.ts` | 변경 0 |
 | `kol_hunter_smart_v3` | main | live canary + paper fallback | **Main 5x lane** | `kolSignalHandler.ts` | fresh active 2+ KOL velocity / pullback live fallback |
-| `kol_hunter_rotation_v1` | control + paper arms | paper measurement, live off until evidence | fast-compound auxiliary | `kolSignalHandler.ts`, `rotationPaperDigest.ts` | T+15/T+30 post-cost / underfill paper-only |
+| `kol_hunter_rotation_v1` | control + paper arms | paper measurement, live off until evidence | fast-compound auxiliary | `kolSignalHandler.ts`, `src/orchestration/rotation/`, `rotationPaperDigest.ts` | T+15/T+30 post-cost / underfill + chase-topup + flow-exit paper-only |
 | `pure_ws botflow` | primary + paper arms | paper/observe-only | new-pair botflow rebuild candidate | `src/orchestration/pureWs/`, `src/observability/pureWsBotflow*.ts` | T+15/30/60/180/300/1800 / 15m digest |
 
 ---
@@ -64,7 +64,7 @@ npm run check:fast
 ## 4. 5 분 안에 알아야 할 것
 
 ### 최근 무엇을 했나
-- **2026-05-03** — **3 strategy operating split + lane projection ledger refactor**. smart-v3 = main 5x lane, rotation-v1 = fast-compound auxiliary, pure_ws botflow = paper/observe-only rebuild candidate 로 문서/리포트 기준 정리. KOL aggregate ledgers 유지 (`kol-paper-trades.jsonl`, `kol-live-trades.jsonl`) + lane projection 추가 (`smart-v3-*`, `rotation-v1-*`, `pure-ws-*`). Shared markout ledger 는 분리하지 않음 (`trade-markout-anchors.jsonl`, `trade-markouts.jsonl`). rotation digest/report 는 `rotation-v1-paper-trades.jsonl` 우선 + aggregate fallback. `sync-vps-data.sh` sync health 에 projection 파일 freshness/row count 추가. 기준 문서: `docs/design-docs/lane-operating-refactor-2026-05-03.md`, `docs/exec-plans/active/20260503_BACKLOG.md`.
+- **2026-05-03** — **3 strategy operating split + lane projection ledger refactor**. smart-v3 = main 5x lane, rotation-v1 = fast-compound auxiliary, pure_ws botflow = paper/observe-only rebuild candidate 로 문서/리포트 기준 정리. KOL aggregate ledgers 유지 (`kol-paper-trades.jsonl`, `kol-live-trades.jsonl`) + lane projection 추가 (`smart-v3-*`, `rotation-v1-*`, `pure-ws-*`). Shared markout ledger 는 분리하지 않음 (`trade-markout-anchors.jsonl`, `trade-markouts.jsonl`). rotation digest/report 는 `rotation-v1-paper-trades.jsonl` 우선 + aggregate fallback. `sync-vps-data.sh` sync health 에 projection 파일 freshness/row count + 최근 24h W/L/net/last trade summary 추가. `smart-v3-evidence-report` 추가: close-anchor 기반 T+30/60/300/1800 coverage, copyable/wallet-first W/L, token-only W/L 분리, report-only verdict (`COLLECT/DATA_GAP/COST_REJECT/POST_COST_REJECT/WATCH/PROMOTION_CANDIDATE`). 운영 `.env` 변경 없음. 기준 문서: `docs/design-docs/lane-operating-refactor-2026-05-03.md`, `docs/exec-plans/active/20260503_BACKLOG.md`.
 - **2026-05-01** — **Sprint X+Y+Z 통합 — ATA rent token-only 측정 분리 + Codex 4 finding fix + R1 regression**. KIKI/STEWARD live trade 외부 explorer 비교에서 사용자 가설 "0.004 rent 누적" 정량 검증 (ticket 0.02 SOL 기준 ATA rent overhead 20% → token-only 5x 가 wallet 기준 +316.7% 로 측정 = **5x missed risk**). **Measurement-only 원칙** (거래 행동 변경 0): SwapResult schema 5 신규 필드 (swap/wallet/rent/fee/jitoTip), `decomposeSwapCost()` RPC inner instruction parse, V6+Ultra 양 path 자동 분해. PaperPosition + 모든 ledger 에 token-only / wallet-delta 분리 (entry/exit/mfe/mae/netPct/netSol). Telegram 진입 알림에 cost decomp line + 종료 알림에 entry rent visibility. analyzer (kol-paper-arm-report / dsr-validator / kol-live-canary-report) 모두 token-only 기반 stop 평가. Codex 4 finding fix: H1 (live ledger 시장가 기반), H2 (Jito fallback tip=0), M3 (live canary actual5x token-only), M4 (DSR Net SOL Wallet/Token 분리). R1 regression test (decomposeSwapCost 6 tests). R2 (Stream E pool pagination) 백로그. **165 suites / 1656 tests pass**.
 - **2026-04-29** — KOL Big-loss Roadmap 채택 (`docs/exec-plans/active/kol-bigloss-roadmap-2026-04-29.md`) — paper n=438 분석에서 big-loss 51건이 all-loser cum 의 41% (IDEAL +84% sim). 4-Track 단계별 IDEAL 12%→25%→45%→60%→80% 도달 계획. **5종 변경 일괄 구현 (working tree, 미commit)**: (1) Track 1 same-token re-entry cooldown 30분 (KOL 진입 직전 reject), (2) Track 2A retro 분석 script (`scripts/kol-token-quality-retro.ts` 신규 — NO_SECURITY_DATA cohort = strong predictor 발견), (3) Track 2B NO_SECURITY_DATA reject default true (IDEAL 25%→35%), (4) Daily loss D+A (Calibration `0.05→0.15` + `RISK_MAX_DAILY_LOSS_OVERRIDE` env, -0.094 halt 사례 대응), (5) reporting.ts Q1+Q2+Q3 (reset helper 통합 / 5x peak 정의 사명 §3 정합 / transient 실패 batch 보존). `reports/` gitignore + 6 파일 untrack. **134 suites / 1122 tests pass**.
 - **2026-04-28** — 24h 동기화 분석에서 **5x winner 1건 첫 돌파** (`DF7DAPat` smart-v3 mfe+940% / net+940% / insider_exit_full / hold 656s). 사명 §3 binding constraint 24h 첫 돌파 ✓. 3 of 4 phase gate 충족. 단 **3대 incident** 동시 발견: missed-alpha observer dead, wallet_delta_warn drift 0.118 SOL spam (5분 × 6회), notifier failures 3건 error 빈 capture. 분석 측정 무결성 — 시간대 정합 규칙 적용 (UTC 기준 일관).
@@ -133,6 +133,7 @@ npm run env:generate            # generated 카탈로그 재생성
 # 운영 / 분석
 npm run ops:canary:eval         # Stage 2/3 trade 결과 평가
 npm run kol:shadow-eval         # Phase 2 KOL Discovery go/no-go
+npm run kol:smart-v3-evidence-report -- --since 24h --realtime-dir data/realtime
 
 # 테스트 단독
 npx jest test/kolSignalHandler  # Lane T state machine
@@ -153,6 +154,8 @@ npx jest test/utils/clock       # Clock interface
 | `smart_v3_price_timeout` 38%+ | entry timing 가설 (B) 보조 증거. missed-alpha probe 로 직접 측정 |
 | jsonl 분석 결과가 daily 와 14배 차이 | 시간대 함정 — 데이터는 UTC `Z`, cutoff 도 `date -u` 사용 (KST 금지) |
 | paper-trades.jsonl 의 positionId 가 `kolh-live-*` | live mirror — paper-only 분석 시 `pid.startsWith('kolh-')` && `!pid.startsWith('kolh-live-')` 필터링 필수 |
+| smart-v3 evidence 의 `minCov=0%` | 해당 cohort close `positionId` 기준 buy/sell T+ markout 이 없음. observed row ok-rate 가 아니라 close-anchor coverage 기준이므로 보수적 판정이 정상 |
+| smart-v3 evidence 의 `copyable W/L` 과 `token W/L` 차이 | token-only 는 이겼지만 wallet/copyable 기준으로는 rent/fee/실체결 drag 때문에 진 케이스. 정책 판단은 copyable/wallet-first |
 | `5x winner` 라는 표현 | **mfe ≥ +400% 정의** (NOT netPct). live 의 received/actualIn 비율은 wallet axis 이지 mfe 아님 — paper mirror record 에서 mfePctPeak 직접 확인 |
 | `logs/bot.log` mtime stale | `bash scripts/sync-vps-data.sh` 미실행. sync script 가 freshness 검증 추가됨 (2026-04-29) — 30분 이상 stale 시 WARNING 출력 |
 | livecanary 활성 후 paper-only 분기 거의 0 | **의도된 정책 효과** (NOT incident) — `evaluateSmartV3Triggers` 의 `isLiveCanaryActive() && botCtx && !candIsShadow` 통과 시 enterLivePosition. paper-only 는 shadow KOL 또는 wallet_stop/entry_halt fallback 만 |

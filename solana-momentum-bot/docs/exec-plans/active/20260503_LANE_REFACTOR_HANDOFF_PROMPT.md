@@ -51,7 +51,14 @@ Ledger/refactor state implemented on 2026-05-03:
   - `data/realtime/trade-markout-anchors.jsonl`
   - `data/realtime/trade-markouts.jsonl`
 - Rotation digest/report should prefer `rotation-v1-paper-trades.jsonl` and fall back to `kol-paper-trades.jsonl` if projection is empty.
-- `scripts/sync-vps-data.sh` sync health now includes lane projection freshness/row counts.
+- `scripts/sync-vps-data.sh` sync health now includes lane projection freshness/row counts and recent 24h W/L/net/last-trade summaries.
+- `scripts/smart-v3-evidence-report.ts` is the current smart-v3 diagnostic report:
+  - command: `npm run kol:smart-v3-evidence-report -- --since 24h --realtime-dir data/realtime`;
+  - reads `smart-v3-paper-trades.jsonl`, `smart-v3-live-trades.jsonl`, and shared `trade-markouts.jsonl`;
+  - verdicts are report-only: `COLLECT`, `DATA_GAP`, `COST_REJECT`, `POST_COST_REJECT`, `WATCH`, `PROMOTION_CANDIDATE`;
+  - T+ coverage for verdicts is close-anchor based by `positionId × anchorType × horizon`; observed row ok-rate is secondary only;
+  - Closed Trades W/L is copyable/wallet-first, with token-only W/L shown separately.
+- No runtime `.env` change is required for the smart-v3 evidence changes. `SKIP_SMART_V3_EVIDENCE_REPORT=true` is only an optional shell opt-out for sync report generation.
 
 Recently changed files include:
 
@@ -59,6 +66,8 @@ Recently changed files include:
 - `src/orchestration/rotationPaperDigest.ts`
 - `scripts/rotation-lane-report.ts`
 - `scripts/sync-vps-data.sh`
+- `scripts/smart-v3-evidence-report.ts`
+- `test/smartV3EvidenceReport.test.ts`
 - `docs/design-docs/lane-operating-refactor-2026-05-03.md`
 - `docs/exec-plans/active/20260503_BACKLOG.md`
 - `STRATEGY.md`
@@ -73,7 +82,7 @@ Verification already run:
 
 - `git diff --check`: pass
 - `npm run check:fast`: pass
-- Jest: `174/174` test suites, `1735/1735` tests pass
+- Jest: `176/176` test suites, `1757/1757` tests pass
 - There is a Jest worker force-exit warning likely from existing timer teardown; it is not a test failure.
 
 Known doc consistency note:
@@ -97,10 +106,11 @@ Then inspect:
 
 1. `reports/sync-health-YYYY-MM-DD.md`
 2. `reports/kol-live-canary-YYYY-MM-DD.md`
-3. `reports/trade-markout-YYYY-MM-DD.md`
-4. `reports/rotation-lane-YYYY-MM-DD.md`
-5. `reports/pure-ws-trade-markout-YYYY-MM-DD.md`
-6. `reports/token-quality-YYYY-MM-DD.md`
+3. `reports/smart-v3-evidence-YYYY-MM-DD.md`
+4. `reports/trade-markout-YYYY-MM-DD.md`
+5. `reports/rotation-lane-YYYY-MM-DD.md`
+6. `reports/pure-ws-trade-markout-YYYY-MM-DD.md`
+7. `reports/token-quality-YYYY-MM-DD.md`
 
 Use wallet truth over DB PnL. End operating verdicts with `OK`, `WATCH`, `PAUSE_REVIEW`, or `INVESTIGATE`.
 ```

@@ -71,6 +71,7 @@ export type RejectCategory =
   | 'viability'
   | 'security_gate'
   | 'v2_pass_baseline'
+  | 'pair_outcome_cooldown'
   // Post-entry (2026-04-22 P2-1b 확장 — LANE_20260422.md §6.1 요구사항)
   | 'probe_hard_cut'
   | 'probe_reject_timeout'

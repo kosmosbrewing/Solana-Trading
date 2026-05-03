@@ -138,6 +138,21 @@ function buyTx(kolId: string, tier: 'S' | 'A' | 'B', tokenMint: string, offsetMs
   };
 }
 
+function buyTxWithFill(
+  kolId: string,
+  tier: 'S' | 'A' | 'B',
+  tokenMint: string,
+  priceSolPerToken: number,
+  solAmount = 0.25,
+  offsetMs = 0
+): KolTx {
+  return {
+    ...buyTx(kolId, tier, tokenMint, offsetMs),
+    solAmount,
+    tokenAmount: solAmount / priceSolPerToken,
+  };
+}
+
 function sellTx(
   kolId: string,
   tier: 'S' | 'A' | 'B',
@@ -268,6 +283,21 @@ jest.mock('../src/utils/config', () => ({
     kolHunterRotationQualityStrictDoaWindowSec: 18,
     kolHunterRotationQualityStrictDoaMinMfePct: 0.025,
     kolHunterRotationQualityStrictDoaMaxMaePct: 0.035,
+    kolHunterRotationUnderfillPaperEnabled: true,
+    kolHunterRotationUnderfillMinKolScore: 0.45,
+    kolHunterRotationUnderfillMaxLastBuyAgeSec: 45,
+    kolHunterRotationUnderfillMaxRecentSellSec: 60,
+    kolHunterRotationUnderfillMinDiscountPct: 0.02,
+    kolHunterRotationUnderfillMaxDiscountPct: 0.12,
+    kolHunterRotationUnderfillT1Mfe: 0.05,
+    kolHunterRotationUnderfillT1TrailPct: 0.025,
+    kolHunterRotationUnderfillProfitFloorMult: 1.02,
+    kolHunterRotationUnderfillProbeTimeoutSec: 30,
+    kolHunterRotationUnderfillHardCutPct: 0.04,
+    kolHunterRotationUnderfillDoaWindowSec: 15,
+    kolHunterRotationUnderfillDoaMinMfePct: 0.015,
+    kolHunterRotationUnderfillDoaMaxMaePct: 0.03,
+    kolHunterRotationUnderfillParameterVersion: 'rotation-underfill-v1.0.0',
     kolHunterRotationPaperAssumedAtaRentSol: 0.00207408,
     kolHunterRotationPaperAssumedNetworkFeeSol: 0.000105,
     // 2026-04-26: smart-v3 는 production main default 이지만 기존 state-machine tests 는 v1 명시.
@@ -468,6 +498,21 @@ describe('kolSignalHandler — state machine', () => {
     mockedConfig.kolHunterRotationQualityStrictDoaWindowSec = 18;
     mockedConfig.kolHunterRotationQualityStrictDoaMinMfePct = 0.025;
     mockedConfig.kolHunterRotationQualityStrictDoaMaxMaePct = 0.035;
+    mockedConfig.kolHunterRotationUnderfillPaperEnabled = true;
+    mockedConfig.kolHunterRotationUnderfillMinKolScore = 0.45;
+    mockedConfig.kolHunterRotationUnderfillMaxLastBuyAgeSec = 45;
+    mockedConfig.kolHunterRotationUnderfillMaxRecentSellSec = 60;
+    mockedConfig.kolHunterRotationUnderfillMinDiscountPct = 0.02;
+    mockedConfig.kolHunterRotationUnderfillMaxDiscountPct = 0.12;
+    mockedConfig.kolHunterRotationUnderfillT1Mfe = 0.05;
+    mockedConfig.kolHunterRotationUnderfillT1TrailPct = 0.025;
+    mockedConfig.kolHunterRotationUnderfillProfitFloorMult = 1.02;
+    mockedConfig.kolHunterRotationUnderfillProbeTimeoutSec = 30;
+    mockedConfig.kolHunterRotationUnderfillHardCutPct = 0.04;
+    mockedConfig.kolHunterRotationUnderfillDoaWindowSec = 15;
+    mockedConfig.kolHunterRotationUnderfillDoaMinMfePct = 0.015;
+    mockedConfig.kolHunterRotationUnderfillDoaMaxMaePct = 0.03;
+    mockedConfig.kolHunterRotationUnderfillParameterVersion = 'rotation-underfill-v1.0.0';
     mockedConfig.kolHunterRotationPaperAssumedAtaRentSol = 0.00207408;
     mockedConfig.kolHunterRotationPaperAssumedNetworkFeeSol = 0.000105;
     mockedConfig.missedAlphaObserverEnabled = false;
@@ -768,9 +813,9 @@ describe('kolSignalHandler — state machine', () => {
       mockedConfig.kolHunterRotationV1Enabled = true;
       stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
 
-      await handleKolSwap({ ...buyTx('dv', 'A', MINT_ROTATION, 3_000), solAmount: 0.95 });
-      await handleKolSwap({ ...buyTx('dv', 'A', MINT_ROTATION, 2_000), solAmount: 0.03 });
-      await handleKolSwap({ ...buyTx('dv', 'A', MINT_ROTATION, 1_000), solAmount: 0.03 });
+      await handleKolSwap(buyTxWithFill('dv', 'A', MINT_ROTATION, 0.001, 0.95, 3_000));
+      await handleKolSwap(buyTxWithFill('dv', 'A', MINT_ROTATION, 0.001, 0.03, 2_000));
+      await handleKolSwap(buyTxWithFill('dv', 'A', MINT_ROTATION, 0.001, 0.03, 1_000));
       stubFeed.emitTick(MINT_ROTATION, 0.00102);
       await flushAsync();
 
@@ -796,9 +841,9 @@ describe('kolSignalHandler — state machine', () => {
       mockedConfig.kolHunterRotationV1MarkoutOffsetsSec = [15, 30, 60];
       stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
 
-      await handleKolSwap({ ...buyTx('dv', 'A', MINT_ROTATION, 3_000), solAmount: 0.95 });
-      await handleKolSwap({ ...buyTx('dv', 'A', MINT_ROTATION, 2_000), solAmount: 0.03 });
-      await handleKolSwap({ ...buyTx('dv', 'A', MINT_ROTATION, 1_000), solAmount: 0.03 });
+      await handleKolSwap(buyTxWithFill('dv', 'A', MINT_ROTATION, 0.001, 0.95, 3_000));
+      await handleKolSwap(buyTxWithFill('dv', 'A', MINT_ROTATION, 0.001, 0.03, 2_000));
+      await handleKolSwap(buyTxWithFill('dv', 'A', MINT_ROTATION, 0.001, 0.03, 1_000));
       stubFeed.emitTick(MINT_ROTATION, 0.00102);
       await flushAsync();
 
@@ -817,9 +862,9 @@ describe('kolSignalHandler — state machine', () => {
       mockedConfig.kolHunterRotationPaperArmsEnabled = true;
       stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
 
-      await handleKolSwap({ ...buyTx('dv', 'A', MINT_ROTATION, 3_000), solAmount: 0.95 });
-      await handleKolSwap({ ...buyTx('dv', 'A', MINT_ROTATION, 2_000), solAmount: 0.03 });
-      await handleKolSwap({ ...buyTx('dv', 'A', MINT_ROTATION, 1_000), solAmount: 0.03 });
+      await handleKolSwap(buyTxWithFill('dv', 'A', MINT_ROTATION, 0.001, 0.95, 3_000));
+      await handleKolSwap(buyTxWithFill('dv', 'A', MINT_ROTATION, 0.001, 0.03, 2_000));
+      await handleKolSwap(buyTxWithFill('dv', 'A', MINT_ROTATION, 0.001, 0.03, 1_000));
       stubFeed.emitTick(MINT_ROTATION, 0.00102);
       await flushAsync();
 
@@ -943,15 +988,125 @@ describe('kolSignalHandler — state machine', () => {
       expect(__testGetActive()).toHaveLength(1);
     });
 
+    it('rotation-underfill: 1 KOL buy 뒤 KOL 기준가보다 낮은 quote 는 paper arm 으로 진입한다', async () => {
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterSmartV3VelocityScoreThreshold = 99;
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].parameterVersion).toBe('rotation-underfill-v1.0.0');
+      expect(positions[0].armName).toBe('rotation_underfill_v1');
+      expect(positions[0].kolEntryReason).toBe('rotation_v1');
+      expect(positions[0].kolConvictionLevel).toBe('MEDIUM_HIGH');
+      expect(positions[0].isShadowArm).toBe(false);
+      expect(positions[0].independentKolCount).toBe(1);
+      expect(positions[0].participatingKols.map((k) => k.id)).toEqual(['decu']);
+      expect(positions[0].survivalFlags).toContain('ROTATION_UNDERFILL_V1');
+      expect(positions[0].survivalFlags).toContain('ROTATION_UNDERFILL_PAPER_ONLY');
+      expect(positions[0].survivalFlags).toContain('ROTATION_UNDERFILL_SA_ONLY');
+      expect(positions[0].survivalFlags).toContain('ROTATION_UNDERFILL_REF_KOL_WEIGHTED_FILL');
+      expect(positions[0].rotationAnchorKols).toEqual(['decu']);
+      expect(positions[0].rotationAnchorPrice).toBe(0.001);
+      expect(positions[0].rotationAnchorPriceSource).toBe('kol_weighted_fill');
+      expect(positions[0].underfillReferenceSolAmount).toBe(0.25);
+      expect(positions[0].underfillReferenceTokenAmount).toBe(250);
+      expect(positions[0].t1MfeOverride).toBe(0.05);
+      expect(positions[0].t1TrailPctOverride).toBe(0.025);
+      expect(positions[0].t1ProfitFloorMult).toBe(1.02);
+      expect(positions[0].probeFlatTimeoutSec).toBe(30);
+      expect(positions[0].probeHardCutPctOverride).toBe(0.04);
+      expect(positions[0].rotationDoaWindowSecOverride).toBe(15);
+    });
+
+    it('rotation-underfill: 할인폭이 너무 깊으면 진입하지 않고 false-negative markout 을 예약한다', async () => {
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.missedAlphaObserverEnabled = true;
+      mockedConfig.kolHunterSmartV3VelocityScoreThreshold = 99;
+      mockedConfig.kolHunterRotationV1MarkoutOffsetsSec = [15, 30, 60];
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00085);
+      await flushAsync();
+
+      expect(__testGetActive()).toHaveLength(0);
+      expect(getMissedAlphaObserverStats().scheduled).toBe(3);
+      const markers = mockAppendFile.mock.calls
+        .filter((call) => typeof call[0] === 'string' && call[0].includes('missed-alpha.jsonl'))
+        .map((call) => JSON.parse(String(call[1]).trim()))
+        .filter((row) => row.extras?.eventType === 'rotation_underfill_no_trade');
+      expect(markers).toHaveLength(1);
+      expect(markers[0].rejectReason).toBe('rotation_underfill_underfill_discount_too_deep');
+      expect(markers[0].signalSource).toBe('rotation_underfill_v1');
+      expect(markers[0].extras.armName).toBe('rotation_underfill_v1');
+      expect(markers[0].extras.noTradeReason).toBe('underfill_discount_too_deep');
+      expect(markers[0].extras.rotationAnchorKols).toEqual(['decu']);
+      expect(markers[0].extras.rotationAnchorPriceSource).toBe('kol_weighted_fill');
+      expect(markers[0].extras.underfillDiscountPct).toBeCloseTo(0.15, 5);
+    });
+
+    it('rotation-underfill: 최근 same-mint KOL sell 이 있으면 1buy underfill 도 진입하지 않는다', async () => {
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterSmartV3VelocityScoreThreshold = 99;
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+
+      await handleKolSwap(sellTx('seller_alpha', 'A', MINT_ROTATION, 0.50, 10_000));
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+
+      expect(__testGetActive()).toHaveLength(0);
+      expect(policyRecordsWithFlag('ROTATION_UNDERFILL_NOTRADE_UNDERFILL_RECENT_SAME_MINT_SELL').length)
+        .toBeGreaterThan(0);
+    });
+
+    it('rotation-underfill: B tier 1buy 는 할인 quote 가 있어도 제외한다', async () => {
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterSmartV3VelocityScoreThreshold = 99;
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+
+      await handleKolSwap(buyTxWithFill('decu', 'B', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+
+      expect(__testGetActive()).toHaveLength(0);
+    });
+
+    it('rotation-underfill: 실제 KOL fill price 가 없으면 quote 기준 fallback 없이 진입하지 않는다', async () => {
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterSmartV3VelocityScoreThreshold = 99;
+      mockedConfig.missedAlphaObserverEnabled = true;
+      mockedConfig.kolHunterRotationV1MarkoutOffsetsSec = [15, 30, 60];
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+
+      await handleKolSwap({ ...buyTx('decu', 'A', MINT_ROTATION, 1_000), solAmount: 0.25 });
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+
+      expect(__testGetActive()).toHaveLength(0);
+      const markers = mockAppendFile.mock.calls
+        .filter((call) => typeof call[0] === 'string' && call[0].includes('missed-alpha.jsonl'))
+        .map((call) => JSON.parse(String(call[1]).trim()))
+        .filter((row) => row.extras?.eventType === 'rotation_underfill_no_trade');
+      expect(markers).toHaveLength(1);
+      expect(markers[0].extras.noTradeReason).toBe('underfill_missing_kol_fill_price');
+      expect(markers[0].extras.rotationAnchorPriceSource).toBe('missing_kol_fill');
+    });
+
     it('rotation-v1: no-trade 는 T+15/30/60 missed-alpha 관측을 예약한다', async () => {
       mockedConfig.kolHunterRotationV1Enabled = true;
       mockedConfig.missedAlphaObserverEnabled = true;
       mockedConfig.kolHunterRotationV1MarkoutOffsetsSec = [15, 30, 60];
       stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
 
-      await handleKolSwap({ ...buyTx('dv', 'A', MINT_ROTATION, 3_000), solAmount: 0.95 });
-      await handleKolSwap({ ...buyTx('dv', 'A', MINT_ROTATION, 2_000), solAmount: 0.03 });
-      await handleKolSwap({ ...buyTx('dv', 'A', MINT_ROTATION, 1_000), solAmount: 0.03 });
+      await handleKolSwap(buyTxWithFill('dv', 'A', MINT_ROTATION, 0.001, 0.95, 3_000));
+      await handleKolSwap(buyTxWithFill('dv', 'A', MINT_ROTATION, 0.001, 0.03, 2_000));
+      await handleKolSwap(buyTxWithFill('dv', 'A', MINT_ROTATION, 0.001, 0.03, 1_000));
       await flushAsync();
 
       expect(__testGetActive()).toHaveLength(0);

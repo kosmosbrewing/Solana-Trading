@@ -54,7 +54,7 @@ Implemented diagnostic transfer from rotation/deep-research work:
 - smart-v3 close ledgers now carry `smartV3CopyableEdge` shadow fields so copyable result can use actual per-close drag when available;
 - smart-v3 closed-trade W/L is copyable/wallet-first, with token-only W/L shown separately because token-only wins can still be non-copyable after wallet drag;
 - live smart-v3 buy/sell markout anchors carry `mode`, `armName`, `parameterVersion`, and `entryReason` to avoid paper/live or pullback/velocity cohort bleed;
-- the report adds no runtime strategy env; `SKIP_SMART_V3_EVIDENCE_REPORT=true` is only a sync-script opt-out;
+- the report adds no runtime strategy env; `SKIP_SMART_V3_EVIDENCE_REPORT` and `SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT` are sync/report-only shell knobs;
 - verdicts are report-only and must not change live eligibility, hard-cut, trail, or ticket sizing without a separate ADR.
 
 ## 3. rotation-v1 Current Policy

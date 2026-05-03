@@ -412,7 +412,7 @@ cron 예시:
 - **자동 winner-kill-report (2026-05-01)**: sync 직후 missed-alpha close-site markout 으로 5x winner-kill rate 생성 → `reports/winner-kill-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
 - **자동 sync-health manifest (2026-05-03)**: 핵심 JSONL/log 파일의 row count, bytes, mtime, lane projection freshness, 최근 24h W/L/net/last-trade summary 를 `reports/sync-health-YYYY-MM-DD.md`로 저장. 데이터 공백과 sync 실패 구분용 — default ON.
 - **opt-in shadow-eval (2026-04-26)**: `RUN_SHADOW_EVAL=true` 시 KOL signal raw alpha 측정 (Jupiter forward quote 사용). default OFF — Jupiter quota 영향.
-- **환경변수 주의**: smart-v3 evidence/report 추가는 운영 `.env` 변경이 필요 없다. `SKIP_SMART_V3_EVIDENCE_REPORT=true` 는 sync report 생략용 shell opt-out 이며 runtime 전략 환경변수가 아니다.
+- **환경변수 주의**: smart-v3 evidence/report 추가는 운영 `.env` 변경이 필요 없다. `SKIP_SMART_V3_EVIDENCE_REPORT` 와 `SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT` 는 sync/report-only shell knob 이며 runtime 전략 환경변수가 아니다.
 
 ```bash
 # 기본 사용 (파일 sync + file-only reports, DB 미사용)
@@ -439,6 +439,7 @@ SKIP_TOKEN_QUALITY_REPORT=true bash scripts/sync-vps-data.sh
 # live canary / smart-v3 evidence / trade markout / winner-kill / sync health 생략
 SKIP_LIVE_CANARY_REPORT=true bash scripts/sync-vps-data.sh
 SKIP_SMART_V3_EVIDENCE_REPORT=true bash scripts/sync-vps-data.sh
+SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT=0.01 bash scripts/sync-vps-data.sh
 SKIP_TRADE_MARKOUT_REPORT=true bash scripts/sync-vps-data.sh
 SKIP_PUREWS_TRADE_MARKOUT_REPORT=true bash scripts/sync-vps-data.sh
 SKIP_ROTATION_REPORT=true bash scripts/sync-vps-data.sh

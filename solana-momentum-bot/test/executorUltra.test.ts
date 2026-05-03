@@ -19,6 +19,7 @@ const mockGetBalance = jest.fn().mockResolvedValue(1_000_000_000); // 1 SOL
 const mockGetTokenAccountsByOwner = jest.fn().mockResolvedValue({ value: [] });
 const mockGetTokenAccountBalance = jest.fn();
 const mockGetParsedAccountInfo = jest.fn();
+const mockGetTransaction = jest.fn();
 
 jest.mock('@solana/web3.js', () => {
   const original = jest.requireActual('@solana/web3.js');
@@ -31,6 +32,7 @@ jest.mock('@solana/web3.js', () => {
       getTokenAccountsByOwner: mockGetTokenAccountsByOwner,
       getTokenAccountBalance: mockGetTokenAccountBalance,
       getParsedAccountInfo: mockGetParsedAccountInfo,
+      getTransaction: mockGetTransaction,
     })),
     Keypair: {
       fromSecretKey: jest.fn().mockReturnValue({
@@ -79,7 +81,11 @@ jest.mock('../src/executor/jitoClient', () => ({
   JitoClient: jest.fn(),
 }));
 
-import { Executor, ExecutorConfig } from '../src/executor/executor';
+import {
+  Executor,
+  ExecutorConfig,
+  resolveSellReceivedSolFromSwapResult,
+} from '../src/executor/executor';
 
 const BASE_CONFIG: ExecutorConfig = {
   solanaRpcUrl: 'https://mock-rpc.solana.com',
@@ -115,6 +121,7 @@ describe('Executor Ultra V3', () => {
     mockGetParsedAccountInfo.mockResolvedValue({
       value: { data: { parsed: { info: { decimals: 6 } } } },
     });
+    mockGetTransaction.mockResolvedValue(null);
   });
 
   it('Ultra disabled → v6 경로만 사용', async () => {
@@ -261,6 +268,157 @@ describe('Executor Ultra V3', () => {
     expect(result.inputDecimals).toBe(9);
   });
 
+  it('v6 buy recovers stale SOL input balance from transaction meta', async () => {
+    mockGetBalance.mockResolvedValue(1_000_000_000);
+    mockGetTokenAccountsByOwner
+      .mockResolvedValueOnce({ value: [] })
+      .mockResolvedValueOnce({ value: [{ pubkey: 'TokenAcct1' }] });
+    mockGetTokenAccountBalance.mockResolvedValue({
+      value: { amount: '102608514495' },
+    });
+    mockGetTransaction.mockResolvedValue(mockSwapTxMeta({
+      preBalances: [987949049, 0],
+      postBalances: [965769969, 2074080],
+      preTokenOwnerAmount: '0',
+      postTokenOwnerAmount: '102608514495',
+    }));
+
+    const executor = new Executor({
+      ...BASE_CONFIG,
+      useJupiterUltra: false,
+    });
+
+    const result = await executor.executeBuy({
+      pairAddress: 'TokenMint1111111111111111111111111111111111',
+      strategy: 'volume_spike',
+      side: 'BUY',
+      price: 0.125,
+      quantity: 2,
+      stopLoss: 0.1,
+      takeProfit1: 0.15,
+      takeProfit2: 0.2,
+      timeStopMinutes: 15,
+    });
+
+    expect(result.actualInputAmount).toBe(22_179_080n);
+    expect(result.actualInputSource).toBe('tx_meta');
+    expect(result.actualInputUiAmount).toBeCloseTo(0.02217908, 10);
+    expect(result.actualOutAmount).toBe(102_608_514_495n);
+    expect(result.actualOutSource).toBe('balance_delta');
+    expect(result.actualOutUiAmount).toBeCloseTo(102_608.514495, 6);
+    expect(result.swapInputUiAmount).toBeCloseTo(0.02, 10);
+    expect(result.ataRentSol).toBeCloseTo(0.00207408, 10);
+  });
+
+  it('v6 sell recovers stale SOL output balance from transaction meta', async () => {
+    mockV6Get.mockResolvedValueOnce({
+      data: {
+        inputMint: 'TokenMint1111111111111111111111111111111111',
+        outputMint: 'So11111111111111111111111111111111111111112',
+        inAmount: '102608514495',
+        outAmount: '18749021',
+        otherAmountThreshold: '18561530',
+        swapMode: 'ExactIn',
+        slippageBps: 100,
+        routePlan: [],
+      },
+    });
+    mockGetBalance.mockResolvedValue(965_769_969);
+    mockGetTokenAccountsByOwner.mockResolvedValue({ value: [{ pubkey: 'TokenAcct1' }] });
+    mockGetTokenAccountBalance
+      .mockResolvedValueOnce({ value: { amount: '102608514495' } })
+      .mockResolvedValueOnce({ value: { amount: '0' } });
+    mockGetTransaction.mockResolvedValue(mockSwapTxMeta({
+      preBalances: [965769969],
+      postBalances: [989251498],
+      preTokenOwnerAmount: '102608514495',
+      postTokenOwnerAmount: '0',
+    }));
+
+    const executor = new Executor({
+      ...BASE_CONFIG,
+      useJupiterUltra: false,
+    });
+
+    const result = await executor.executeSell(
+      'TokenMint1111111111111111111111111111111111',
+      102_608_514_495n
+    );
+
+    expect(result.actualInputAmount).toBe(102_608_514_495n);
+    expect(result.actualInputSource).toBe('balance_delta');
+    expect(result.actualOutAmount).toBe(23_481_529n);
+    expect(result.actualOutSource).toBe('tx_meta');
+    expect(result.actualOutUiAmount).toBeCloseTo(0.023481529, 10);
+    expect(result.slippageBps).toBeLessThan(0);
+  });
+
+  it('common sell received SOL resolver falls back to SwapResult output when balance delta is stale', () => {
+    expect(resolveSellReceivedSolFromSwapResult({
+      balanceDeltaSol: 0,
+      sellResult: {
+        txSignature: 'mock-sig-fallback',
+        actualOutUiAmount: 0.023481529,
+        actualOutSource: 'tx_meta',
+      },
+      context: 'test',
+    })).toBeCloseTo(0.023481529, 10);
+  });
+
+  it('Ultra stale balance recovery prefers tx meta before API amount fallback', async () => {
+    mockGetBalance.mockResolvedValue(1_000_000_000);
+    mockGetTokenAccountsByOwner.mockResolvedValue({ value: [] });
+    mockUltraGet.mockResolvedValue({
+      data: {
+        transaction: Buffer.from('mock-ultra-tx').toString('base64'),
+        requestId: 'req-meta-first',
+        inputMint: 'So11111111111111111111111111111111111111112',
+        outputMint: 'TokenMint1111111111111111111111111111111111',
+        inAmount: '250000000',
+        outAmount: '1250000',
+      },
+    });
+    mockUltraPost.mockResolvedValue({
+      data: {
+        signature: 'ultra-sig-meta-first',
+        status: 'Success',
+        inputAmountResult: '250000000',
+        outputAmountResult: '40000000',
+      },
+    });
+    mockGetTransaction.mockResolvedValue(mockSwapTxMeta({
+      preBalances: [1_000_000_000, 0],
+      postBalances: [749_990_000, 2_074_080],
+      preTokenOwnerAmount: '0',
+      postTokenOwnerAmount: '1250000',
+    }));
+
+    const executor = new Executor({
+      ...BASE_CONFIG,
+      useJupiterUltra: true,
+      jupiterApiKey: 'test-api-key-123',
+      jupiterUltraApiUrl: 'https://api.jup.ag',
+    });
+
+    const result = await executor.executeBuy({
+      pairAddress: 'TokenMint1111111111111111111111111111111111',
+      strategy: 'volume_spike',
+      side: 'BUY',
+      price: 0.2,
+      quantity: 1.25,
+      stopLoss: 0.15,
+      takeProfit1: 0.25,
+      takeProfit2: 0.3,
+      timeStopMinutes: 15,
+    });
+
+    expect(result.actualInputAmount).toBe(250_010_000n);
+    expect(result.actualInputSource).toBe('tx_meta');
+    expect(result.actualOutAmount).toBe(1_250_000n);
+    expect(result.actualOutSource).toBe('tx_meta');
+    expect(result.actualOutUiAmount).toBeCloseTo(1.25, 8);
+  });
+
   it('Ultra 응답 파싱 — SwapResult 정상 구조', () => {
     // Ultra 응답 구조 검증 (타입 레벨)
     const mockUltraResult = {
@@ -331,3 +489,45 @@ describe('Executor Ultra V3', () => {
     expect(result.outputDecimals).toBe(6);
   });
 });
+
+function mockSwapTxMeta(input: {
+  preBalances: number[];
+  postBalances: number[];
+  preTokenOwnerAmount: string;
+  postTokenOwnerAmount: string;
+}) {
+  const wallet = 'MockPublicKey12345678901234567890123456789012';
+  return {
+    meta: {
+      preBalances: input.preBalances,
+      postBalances: input.postBalances,
+      preTokenBalances: [
+        {
+          owner: wallet,
+          mint: 'TokenMint1111111111111111111111111111111111',
+          uiTokenAmount: { amount: input.preTokenOwnerAmount },
+        },
+      ],
+      postTokenBalances: [
+        {
+          owner: wallet,
+          mint: 'TokenMint1111111111111111111111111111111111',
+          uiTokenAmount: { amount: input.postTokenOwnerAmount },
+        },
+      ],
+      loadedAddresses: undefined,
+      fee: 105000,
+    },
+    transaction: {
+      message: {
+        getAccountKeys: () => ({
+          length: input.preBalances.length,
+          get: (index: number) => {
+            if (index === 0) return { toBase58: () => wallet };
+            return { toBase58: () => `Account${index}` };
+          },
+        }),
+      },
+    },
+  };
+}

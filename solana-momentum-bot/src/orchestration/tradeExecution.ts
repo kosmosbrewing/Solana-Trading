@@ -11,6 +11,7 @@ import { BotContext } from './types';
 import { buildGateTraceSnapshot } from './signalTrace';
 import { summarizeTradeObservation } from './tradeMonitoring';
 import { appendEntryLedger, persistOpenTradeWithIntegrity } from './entryIntegrity';
+import { resolveSellReceivedSolFromSwapResult } from '../executor/executor';
 
 const log = createModuleLogger('TradeExecution');
 
@@ -352,7 +353,11 @@ export async function handleDegradedExitPhase1(
       const sellResult = await ctx.executor.executeSell(trade.pairAddress, partialTokenAmount);
       swapResponseAt = new Date();
       const solAfter = await ctx.executor.getBalance();
-      const receivedSol = solAfter - solBefore;
+      const receivedSol = resolveSellReceivedSolFromSwapResult({
+        balanceDeltaSol: solAfter - solBefore,
+        sellResult,
+        context: `degraded_phase1:${trade.id}`,
+      });
 
       const resolved = resolveExitFillOrFakeFill({
         tradeId: trade.id,
@@ -792,7 +797,11 @@ export async function closeTrade(
         txSignature = sellResult.txSignature;
 
         const solAfter = await sellExecutor.getBalance();
-        const receivedSol = solAfter - solBefore;
+        const receivedSol = resolveSellReceivedSolFromSwapResult({
+          balanceDeltaSol: solAfter - solBefore,
+          sellResult,
+          context: `closeTrade:${trade.id}`,
+        });
 
         const resolved = resolveExitFillOrFakeFill({
           tradeId: trade.id,
@@ -1346,7 +1355,11 @@ async function handleTakeProfit1Partial(
       const sellResult = await ctx.executor.executeSell(trade.pairAddress, partialTokenAmount);
       swapResponseAt = new Date();
       const solAfter = await ctx.executor.getBalance();
-      const receivedSol = solAfter - solBefore;
+      const receivedSol = resolveSellReceivedSolFromSwapResult({
+        balanceDeltaSol: solAfter - solBefore,
+        sellResult,
+        context: `tp1_partial:${trade.id}`,
+      });
 
       const resolved = resolveExitFillOrFakeFill({
         tradeId: trade.id,
@@ -1504,7 +1517,11 @@ async function handleRunnerGradeBPartial(
       const sellResult = await ctx.executor.executeSell(trade.pairAddress, partialTokenAmount);
       swapResponseAt = new Date();
       const solAfter = await ctx.executor.getBalance();
-      const receivedSol = solAfter - solBefore;
+      const receivedSol = resolveSellReceivedSolFromSwapResult({
+        balanceDeltaSol: solAfter - solBefore,
+        sellResult,
+        context: `runner_b_partial:${trade.id}`,
+      });
 
       const resolved = resolveExitFillOrFakeFill({
         tradeId: trade.id,

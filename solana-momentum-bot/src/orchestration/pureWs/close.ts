@@ -30,6 +30,7 @@ import type { PureWsPosition } from './types';
 import { lookupCachedSymbol } from '../../ingester/tokenSymbolResolver';
 import { trackPureWsPaperMarkout } from './markout';
 import { recordPureWsPairOutcomeCooldown } from './cooldowns';
+import { resolveSellReceivedSolFromSwapResult } from '../../executor/executor';
 
 export async function closePureWsPosition(
   id: string,
@@ -78,7 +79,11 @@ async function closePureWsPositionSerialized(
       if (tokenBalance > 0n) {
         const sellResult = await sellExecutor.executeSell(pos.pairAddress, tokenBalance);
         const solAfter = await sellExecutor.getBalance();
-        const receivedSol = solAfter - solBefore;
+        const receivedSol = resolveSellReceivedSolFromSwapResult({
+          balanceDeltaSol: solAfter - solBefore,
+          sellResult,
+          context: `pure_ws:${id}`,
+        });
         liveReceivedSol = receivedSol;
         // 2026-04-29: wallet ground truth — receivedSol 부호 무관 항상 wallet 기준.
         if (pos.quantity > 0) {

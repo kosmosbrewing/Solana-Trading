@@ -31,6 +31,7 @@ import { reportCanaryClose } from '../risk/canaryAutoHalt';
 import { acquireCanarySlot, releaseCanarySlot } from '../risk/canaryConcurrencyGuard';
 import { resolveActualEntryMetrics } from './signalProcessor';
 import { resolveTokenSymbol, lookupCachedSymbol } from '../ingester/tokenSymbolResolver';
+import { resolveSellReceivedSolFromSwapResult } from '../executor/executor';
 
 const log = createModuleLogger('CupseyLane');
 
@@ -916,7 +917,11 @@ async function closeCupseyPositionSerialized(
       if (tokenBalance > 0n) {
         const sellResult = await sellExecutor.executeSell(pos.pairAddress, tokenBalance);
         const solAfter = await sellExecutor.getBalance();
-        const receivedSol = solAfter - solBefore;
+        const receivedSol = resolveSellReceivedSolFromSwapResult({
+          balanceDeltaSol: solAfter - solBefore,
+          sellResult,
+          context: `cupsey:${id}`,
+        });
         // 2026-04-29: wallet ground truth — receivedSol 부호 무관 항상 wallet 기준.
         // (sell fees > 가치 시) DB ↔ wallet drift 차단.
         if (pos.quantity > 0) {

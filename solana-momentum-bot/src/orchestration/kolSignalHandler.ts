@@ -77,6 +77,7 @@ import type { HeliusPoolRegistry } from '../scanner/heliusPoolRegistry';
 import { GateCacheManager } from '../gate/gateCacheManager';
 import { getJupiter429Stats } from '../observability/jupiterRateLimitMetric';
 import { resolveTokenSymbol, lookupCachedSymbol } from '../ingester/tokenSymbolResolver';
+import { resolveSellReceivedSolFromSwapResult } from '../executor/executor';
 // 2026-04-27 (KOL live canary): pure_ws live path 와 동일 패턴.
 import type { Order, PartialFillDataReason, Trade } from '../utils/types';
 import type { BotContext } from './types';
@@ -6658,7 +6659,11 @@ async function closeLivePosition(
       }
       const sellResult = await sellExecutor.executeSell(pos.tokenMint, sellAmount);
       const solAfter = await sellExecutor.getBalance();
-      const receivedSol = solAfter - solBefore;
+      const receivedSol = resolveSellReceivedSolFromSwapResult({
+        balanceDeltaSol: solAfter - solBefore,
+        sellResult,
+        context: `kol_hunter:${pos.positionId}`,
+      });
       liveReceivedSol = receivedSol;
       // 2026-04-29: 사명 §3 wallet ground truth — receivedSol 부호 무관 항상 wallet 기준 가격 사용.
       // 이전 (receivedSol > 0 만): sell 시 fees 가 sell 가치 초과하면 (Jito tip + Jupiter fee >

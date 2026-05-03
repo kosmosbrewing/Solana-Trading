@@ -399,6 +399,48 @@ describe('tradeMarkoutObserver', () => {
     expect(horizons).toEqual([15, 30, 60]);
   });
 
+  it('hydrates rotation paper close anchors with T+15 fallback horizons', async () => {
+    mockReadFile.mockImplementation(async (file: string) => {
+      if (file.endsWith('kol-paper-trades.jsonl')) {
+        return JSON.stringify({
+          strategy: 'kol_hunter',
+          positionId: 'rotation-paper-pos',
+          tokenMint: 'MintRotationPaper111111111111111111111',
+          closedAt: '2026-05-02T00:59:40.000Z',
+          holdSec: 20,
+          entryPriceTokenOnly: 0.01,
+          exitPriceTokenOnly: 0.011,
+          ticketSol: 0.02,
+          tokenDecimals: 6,
+          armName: 'rotation_fast15_v1',
+          parameterVersion: 'rotation-fast15-v1.0.0',
+          kolEntryReason: 'rotation_v1',
+        }) + '\n';
+      }
+      return '';
+    });
+    mockAxiosGet.mockResolvedValue({
+      data: { outAmount: String(2_000_000), outputDecimals: 6 },
+    });
+
+    const summary = await hydrateTradeMarkoutSchedulesFromLedger({
+      realtimeDir: '/tmp/realtime',
+      config: BASE_CFG,
+      lookbackHours: 2,
+    });
+
+    expect(summary.loadedPaperCloses).toBe(1);
+    expect(summary.scheduled).toBe(10);
+
+    await jest.advanceTimersByTimeAsync(1_800_001);
+    await flushAsync();
+
+    const records = mockAppendFile.mock.calls.map(([, payload]) => JSON.parse(String(payload).trim()));
+    expect(records).toHaveLength(10);
+    expect([...new Set(records.map((row) => row.horizonSec))].sort((a, b) => a - b)).toEqual([15, 30, 60, 300, 1800]);
+    expect(records.every((row) => row.extras.markoutOffsetsSec.includes(15))).toBe(true);
+  });
+
   it('hydrates missing markouts from executed ledgers without duplicate existing rows', async () => {
     mockReadFile.mockImplementation(async (file: string) => {
       if (file.endsWith('executed-buys.jsonl')) {

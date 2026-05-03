@@ -16,6 +16,7 @@
  */
 import type { Notifier } from '../notifier';
 import { createModuleLogger } from '../utils/logger';
+import { config } from '../utils/config';
 import { kolHunterEvents } from './kolSignalHandler';
 import type { PaperPosition, CloseReason } from './kolSignalHandler';
 import type { KolTx } from '../kol/types';
@@ -168,6 +169,31 @@ function onPaperClose(payload: {
       log.warn(`L2 anomaly send failed: ${err}`);
     });
   }
+
+  if (
+    notifierRef &&
+    config.kolHunterRotationPaperNotifyEnabled &&
+    isRotationPaperPosition(pos) &&
+    mfePctPeak < ANOMALY_MFE_THRESHOLD &&
+    mfePctPeak >= config.kolHunterRotationPaperRareMfePct
+  ) {
+    const message =
+      `[ROTATION PAPER RARE] ${pos.armName} / ${pos.tokenMint.slice(0, 12)}\n` +
+      `  MFE peak: ${mfePctPeak >= 0 ? '+' : ''}${(mfePctPeak * 100).toFixed(1)}%\n` +
+      `  net: ${netPct >= 0 ? '+' : ''}${(netPct * 100).toFixed(2)}% ` +
+      `(${netSol >= 0 ? '+' : ''}${netSol.toFixed(6)} SOL)\n` +
+      `  reason: ${reason} · hold: ${holdSec}s · parent=${pos.parentPositionId ?? 'none'}`;
+    notifierRef.sendInfo(message, 'kol_rotation_paper_rare').catch((err) => {
+      log.warn(`rotation paper rare send failed: ${err}`);
+    });
+  }
+}
+
+function isRotationPaperPosition(pos: PaperPosition): boolean {
+  return pos.kolEntryReason === 'rotation_v1' ||
+    pos.armName === 'kol_hunter_rotation_v1' ||
+    pos.armName.startsWith('rotation_') ||
+    pos.parameterVersion.startsWith('rotation-');
 }
 
 // ─── L1 hourly digest ────────────────────────────────────────────────────────

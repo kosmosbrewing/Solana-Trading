@@ -207,6 +207,10 @@ export interface PaperPosition {
   t1TrailPctOverride?: number;
   t1ProfitFloorMult?: number;
   probeFlatTimeoutSec?: number;
+  probeHardCutPctOverride?: number;
+  rotationDoaWindowSecOverride?: number;
+  rotationDoaMinMfePctOverride?: number;
+  rotationDoaMaxMaePctOverride?: number;
   rotationAnchorKols?: string[];
   rotationEntryAtMs?: number;
   rotationAnchorPrice?: number;
@@ -281,6 +285,7 @@ interface PaperEntryOptions {
   tokenDecimals?: number;
   tokenDecimalsSource?: 'security_client' | 'jupiter_quote';
   skipPolicyEntry?: boolean;
+  rotationTelemetry?: RotationV1TriggerResult['telemetry'];
   rotationAnchorKols?: string[];
   rotationAnchorPrice?: number;
   rotationFirstBuyAtMs?: number;
@@ -294,6 +299,10 @@ interface DynamicExitParams {
   t1TrailPct?: number;
   t1ProfitFloorMult?: number;
   probeFlatTimeoutSec?: number;
+  probeHardCutPct?: number;
+  rotationDoaWindowSec?: number;
+  rotationDoaMinMfePct?: number;
+  rotationDoaMaxMaePct?: number;
 }
 
 interface PendingCandidate {
@@ -568,15 +577,30 @@ function rotationV1MarkoutOffsetsSec(): number[] {
   return uniqSortedSeconds(config.kolHunterRotationV1MarkoutOffsetsSec ?? [15, 30, 60]);
 }
 
-function tradeMarkoutOffsetsSecForPosition(pos?: Pick<PaperPosition, 'parameterVersion'>): number[] {
+function isRotationFamilyMarkoutPosition(
+  pos?: Pick<PaperPosition, 'parameterVersion' | 'kolEntryReason' | 'armName'>
+): boolean {
+  if (!pos) return false;
+  if (pos.parameterVersion === config.kolHunterRotationV1ParameterVersion) return true;
+  if (pos.kolEntryReason === 'rotation_v1') return true;
+  if (pos.armName?.startsWith('rotation_')) return true;
+  if (pos.armName === 'kol_hunter_rotation_v1') return true;
+  return pos.parameterVersion?.startsWith('rotation-') === true;
+}
+
+function tradeMarkoutOffsetsSecForPosition(
+  pos?: Pick<PaperPosition, 'parameterVersion' | 'kolEntryReason' | 'armName'>
+): number[] {
   const base = config.tradeMarkoutObserverOffsetsSec ?? [30, 60, 300, 1800];
-  if (!pos || pos.parameterVersion !== config.kolHunterRotationV1ParameterVersion) {
+  if (!isRotationFamilyMarkoutPosition(pos)) {
     return uniqSortedSeconds(base);
   }
   return uniqSortedSeconds([...base, ...rotationV1MarkoutOffsetsSec()]);
 }
 
-function buildTradeMarkoutObserverConfig(pos?: Pick<PaperPosition, 'parameterVersion'>) {
+function buildTradeMarkoutObserverConfig(
+  pos?: Pick<PaperPosition, 'parameterVersion' | 'kolEntryReason' | 'armName'>
+) {
   return buildTradeMarkoutConfigFromGlobal({
     realtimeDataDir: config.realtimeDataDir,
     enabled: config.tradeMarkoutObserverEnabled,
@@ -1027,7 +1051,7 @@ function isSmartV3Position(pos: PaperPosition): boolean {
 }
 
 function isRotationV1Position(pos: PaperPosition): boolean {
-  return pos.parameterVersion === config.kolHunterRotationV1ParameterVersion;
+  return isRotationFamilyMarkoutPosition(pos);
 }
 
 function armNameForVersion(parameterVersion: string): string {
@@ -1035,6 +1059,125 @@ function armNameForVersion(parameterVersion: string): string {
   if (parameterVersion === config.kolHunterSwingV2ParameterVersion) return 'kol_hunter_swing_v2';
   if (parameterVersion === config.kolHunterRotationV1ParameterVersion) return 'kol_hunter_rotation_v1';
   return 'kol_hunter_v1';
+}
+
+interface RotationPaperArmSpec extends DynamicExitParams {
+  suffix: string;
+  armName: string;
+  parameterVersion: string;
+  enabled: boolean;
+  minPriceResponsePct?: number;
+  strictQuality?: boolean;
+}
+
+function buildRotationPaperArmSpecs(): RotationPaperArmSpec[] {
+  if (!config.kolHunterRotationPaperArmsEnabled) return [];
+  return [
+    {
+      suffix: 'fast15',
+      armName: 'rotation_fast15_v1',
+      parameterVersion: 'rotation-fast15-v1.0.0',
+      enabled: config.kolHunterRotationFast15PaperEnabled,
+      t1Mfe: config.kolHunterRotationFast15T1Mfe,
+      t1TrailPct: config.kolHunterRotationFast15T1TrailPct,
+      t1ProfitFloorMult: config.kolHunterRotationFast15ProfitFloorMult,
+      probeFlatTimeoutSec: config.kolHunterRotationFast15ProbeTimeoutSec,
+      probeHardCutPct: config.kolHunterRotationFast15HardCutPct,
+      rotationDoaWindowSec: config.kolHunterRotationFast15DoaWindowSec,
+      rotationDoaMinMfePct: config.kolHunterRotationFast15DoaMinMfePct,
+      rotationDoaMaxMaePct: config.kolHunterRotationFast15DoaMaxMaePct,
+    },
+    {
+      suffix: 'cost-guard',
+      armName: 'rotation_cost_guard_v1',
+      parameterVersion: 'rotation-cost-guard-v1.0.0',
+      enabled: config.kolHunterRotationCostGuardPaperEnabled,
+      t1Mfe: config.kolHunterRotationCostGuardT1Mfe,
+      t1TrailPct: config.kolHunterRotationCostGuardT1TrailPct,
+      t1ProfitFloorMult: config.kolHunterRotationCostGuardProfitFloorMult,
+      probeFlatTimeoutSec: config.kolHunterRotationCostGuardProbeTimeoutSec,
+      probeHardCutPct: config.kolHunterRotationCostGuardHardCutPct,
+      rotationDoaWindowSec: config.kolHunterRotationCostGuardDoaWindowSec,
+      rotationDoaMinMfePct: config.kolHunterRotationCostGuardDoaMinMfePct,
+      rotationDoaMaxMaePct: config.kolHunterRotationCostGuardDoaMaxMaePct,
+      minPriceResponsePct: config.kolHunterRotationCostGuardMinPriceResponsePct,
+    },
+    {
+      suffix: 'quality-strict',
+      armName: 'rotation_quality_strict_v1',
+      parameterVersion: 'rotation-quality-strict-v1.0.0',
+      enabled: config.kolHunterRotationQualityStrictPaperEnabled,
+      t1Mfe: config.kolHunterRotationQualityStrictT1Mfe,
+      t1TrailPct: config.kolHunterRotationQualityStrictT1TrailPct,
+      t1ProfitFloorMult: config.kolHunterRotationQualityStrictProfitFloorMult,
+      probeFlatTimeoutSec: config.kolHunterRotationQualityStrictProbeTimeoutSec,
+      probeHardCutPct: config.kolHunterRotationQualityStrictHardCutPct,
+      rotationDoaWindowSec: config.kolHunterRotationQualityStrictDoaWindowSec,
+      rotationDoaMinMfePct: config.kolHunterRotationQualityStrictDoaMinMfePct,
+      rotationDoaMaxMaePct: config.kolHunterRotationQualityStrictDoaMaxMaePct,
+      strictQuality: true,
+    },
+  ];
+}
+
+function rotationPriceResponsePct(entryPrice: number, anchorPrice?: number): number | undefined {
+  if (!anchorPrice || anchorPrice <= 0 || !Number.isFinite(anchorPrice)) return undefined;
+  if (!Number.isFinite(entryPrice) || entryPrice <= 0) return undefined;
+  return entryPrice / anchorPrice - 1;
+}
+
+function isRotationStrictQualityRiskFlag(flag: string): boolean {
+  const upper = flag.toUpperCase();
+  return upper === 'EXIT_LIQUIDITY_UNKNOWN' ||
+    upper === 'NO_HELIUS_PROVENANCE' ||
+    upper === 'NO_SECURITY_DATA' ||
+    upper === 'TOKEN_2022' ||
+    upper.startsWith('EXT_') ||
+    upper.startsWith('UNCLEAN_TOKEN') ||
+    upper.startsWith('HOLDER_') ||
+    upper.includes('HIGH_CONCENTRATION') ||
+    upper.includes('RUG') ||
+    upper.includes('NO_SELL_ROUTE');
+}
+
+function rotationPaperArmRejectReason(
+  spec: RotationPaperArmSpec,
+  entryPrice: number,
+  anchorPrice: number | undefined,
+  survivalFlags: string[]
+): string | undefined {
+  if (!spec.enabled) return 'disabled';
+  const priceResponsePct = rotationPriceResponsePct(entryPrice, anchorPrice);
+  if (
+    typeof spec.minPriceResponsePct === 'number' &&
+    (priceResponsePct == null || priceResponsePct < spec.minPriceResponsePct)
+  ) {
+    return 'cost_response_too_low';
+  }
+  if (spec.strictQuality && survivalFlags.some(isRotationStrictQualityRiskFlag)) {
+    return 'quality_risk_flag';
+  }
+  return undefined;
+}
+
+function applyRotationPaperArmSpec(pos: PaperPosition, spec: RotationPaperArmSpec): void {
+  pos.armName = spec.armName;
+  pos.parameterVersion = spec.parameterVersion;
+  pos.kolEntryReason = 'rotation_v1';
+  pos.kolConvictionLevel = 'MEDIUM_HIGH';
+  pos.t1MfeOverride = spec.t1Mfe;
+  pos.t1TrailPctOverride = spec.t1TrailPct;
+  pos.t1ProfitFloorMult = spec.t1ProfitFloorMult;
+  pos.probeFlatTimeoutSec = spec.probeFlatTimeoutSec;
+  pos.probeHardCutPctOverride = spec.probeHardCutPct;
+  pos.rotationDoaWindowSecOverride = spec.rotationDoaWindowSec;
+  pos.rotationDoaMinMfePctOverride = spec.rotationDoaMinMfePct;
+  pos.rotationDoaMaxMaePctOverride = spec.rotationDoaMaxMaePct;
+  pos.survivalFlags = [
+    ...pos.survivalFlags,
+    'ROTATION_V1_PAPER_PARAM_ARM',
+    `ROTATION_V1_PAPER_ARM_${spec.suffix.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}`,
+  ];
 }
 
 function defaultEntryReasonForVersion(parameterVersion: string): KolEntryReason {
@@ -1238,6 +1381,14 @@ export function getKolHunterState(): {
     closed: 0, // in-memory closed 제거, ledger 가 누적
     tiersByState,
   };
+}
+
+export function getActiveKolHunterPositionsSnapshot(): PaperPosition[] {
+  return [...active.values()].map((pos) => ({
+    ...pos,
+    participatingKols: pos.participatingKols.map((kol) => ({ ...kol })),
+    survivalFlags: [...pos.survivalFlags],
+  }));
 }
 
 // ─── Entry Point ─────────────────────────────────────────
@@ -2078,7 +2229,8 @@ function shouldEmitRotationNoTrade(reason?: string): boolean {
     reason === 'insufficient_price_response' ||
     reason === 'stale_last_buy' ||
     reason === 'low_rotation_score' ||
-    reason === 'insufficient_rotation_kol_count';
+    reason === 'insufficient_rotation_kol_count' ||
+    reason === 'kol_alpha_decay';
 }
 
 function buildRotationNoTradeObserverConfig() {
@@ -2112,6 +2264,7 @@ function trackRotationNoTradeMarkout(
       lane: LANE_STRATEGY,
       signalPrice,
       probeSolAmount: config.kolHunterTicketSol,
+      tokenDecimals: cand.smartV3?.tokenDecimals,
       signalSource: 'kol_hunter_rotation_v1',
       extras: {
         positionId: `rotation-notrade-${cand.tokenMint.slice(0, 8)}-${reason}-${nowMs}`,
@@ -2119,6 +2272,7 @@ function trackRotationNoTradeMarkout(
         armName: armNameForVersion(config.kolHunterRotationV1ParameterVersion),
         entryReason: 'rotation_v1',
         parameterVersion: config.kolHunterRotationV1ParameterVersion,
+        tokenDecimalsSource: cand.smartV3?.tokenDecimalsSource ?? null,
         noTradeReason: reason,
         survivalFlags: flags,
         kolCount: cand.kolTxs.length,
@@ -2133,6 +2287,73 @@ function trackRotationNoTradeMarkout(
         rotationLastBuyAgeMs: result.telemetry.lastBuyAgeMs,
         rotationScore: result.telemetry.rotationScore,
         priceResponsePct: result.telemetry.priceResponsePct,
+      },
+    },
+    buildRotationNoTradeObserverConfig()
+  );
+}
+
+function trackRotationPaperArmSkipMarkout(
+  cand: PendingCandidate,
+  score: KolDiscoveryScore,
+  spec: RotationPaperArmSpec,
+  skipReason: string,
+  entryPrice: number,
+  options: PaperEntryOptions,
+  survivalFlags: string[],
+  entryTokenDecimals: { value?: number; source?: 'security_client' | 'jupiter_quote' }
+): void {
+  if (!Number.isFinite(entryPrice) || entryPrice <= 0) return;
+  const nowMs = Date.now();
+  const telemetry = options.rotationTelemetry ?? {
+    buyCount: null,
+    smallBuyCount: null,
+    grossBuySol: null,
+    distinctRotationKols: null,
+    recentSellCount: null,
+    priceResponsePct: rotationPriceResponsePct(entryPrice, options.rotationAnchorPrice) ?? 0,
+    currentPrice: entryPrice,
+    anchorKols: options.rotationAnchorKols ?? [],
+    anchorPrice: options.rotationAnchorPrice ?? 0,
+    firstBuyAtMs: options.rotationFirstBuyAtMs ?? null,
+    lastBuyAtMs: options.rotationLastBuyAtMs ?? null,
+    lastBuyAgeMs: options.rotationLastBuyAgeMs ?? null,
+    rotationScore: options.rotationScore ?? 0,
+  };
+  trackRejectForMissedAlpha(
+    {
+      rejectCategory: 'viability',
+      rejectReason: `rotation_arm_skip_${skipReason}`,
+      tokenMint: cand.tokenMint,
+      lane: LANE_STRATEGY,
+      signalPrice: entryPrice,
+      probeSolAmount: config.kolHunterTicketSol,
+      tokenDecimals: entryTokenDecimals.value,
+      signalSource: spec.armName,
+      extras: {
+        positionId: `rotation-arm-skip-${cand.tokenMint.slice(0, 8)}-${spec.suffix}-${skipReason}-${nowMs}`,
+        eventType: 'rotation_arm_skip',
+        armName: spec.armName,
+        parameterVersion: spec.parameterVersion,
+        parentArmName: armNameForVersion(config.kolHunterRotationV1ParameterVersion),
+        parentParameterVersion: config.kolHunterRotationV1ParameterVersion,
+        entryReason: 'rotation_v1',
+        tokenDecimalsSource: entryTokenDecimals.source ?? null,
+        skipReason,
+        noTradeReason: `${spec.armName}_${skipReason}`,
+        survivalFlags,
+        kolCount: cand.kolTxs.length,
+        independentKolCount: score.independentKolCount,
+        effectiveIndependentCount: score.effectiveIndependentCount,
+        kolScore: score.finalScore,
+        rotationV1: telemetry,
+        rotationAnchorKols: telemetry.anchorKols,
+        rotationAnchorPrice: telemetry.anchorPrice,
+        rotationFirstBuyAtMs: telemetry.firstBuyAtMs,
+        rotationLastBuyAtMs: telemetry.lastBuyAtMs,
+        rotationLastBuyAgeMs: telemetry.lastBuyAgeMs,
+        rotationScore: telemetry.rotationScore,
+        priceResponsePct: telemetry.priceResponsePct,
       },
     },
     buildRotationNoTradeObserverConfig()
@@ -2256,12 +2477,32 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
   const decayCheck = checkKolAlphaDecay(score.participatingKols.map((k) => k.id));
   if (decayCheck.blocked) {
     log.info(`[KOL_HUNTER_ENTRY_DECAY_BLOCK] ${cand.tokenMint.slice(0, 8)} ${entrySignal.label} ${decayCheck.reason} — reject`);
+    if (entrySignal.label === 'rotation-v1' && entrySignal.telemetry) {
+      const rotationState = ensureRotationV1State(cand);
+      if (!rotationState.noTradeReasonsEmitted.has('kol_alpha_decay')) {
+        rotationState.noTradeReasonsEmitted.add('kol_alpha_decay');
+        trackRotationNoTradeMarkout(
+          cand,
+          score,
+          {
+            triggered: false,
+            reason: 'kol_alpha_decay',
+            flags: ['KOL_ALPHA_DECAY'],
+            telemetry: entrySignal.telemetry,
+          },
+          'kol_alpha_decay',
+          ['KOL_ALPHA_DECAY', 'ROTATION_V1_NOTRADE_KOL_ALPHA_DECAY']
+        );
+      }
+    }
     fireRejectObserver(cand.tokenMint, 'smart_v3_no_trigger', cand, score, {
       survivalReason: 'kol_alpha_decay',
       survivalFlags: ['KOL_ALPHA_DECAY'],
       entryReason: entrySignal.entryReason,
       parameterVersion: entrySignal.parameterVersion,
       rotationV1: entrySignal.label === 'rotation-v1' ? entrySignal.telemetry : undefined,
+      signalPrice: smart.currentPrice,
+      tokenDecimals: smart.tokenDecimals,
     });
     if (entrySignal.label === 'smart-v3') {
       cleanupPendingCandidate(cand, true);
@@ -2275,6 +2516,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     convictionLevel: entrySignal.conviction,
     tokenDecimals: smart.tokenDecimals,
     tokenDecimalsSource: smart.tokenDecimalsSource,
+    rotationTelemetry: entrySignal.telemetry,
     rotationAnchorKols: entrySignal.rotationAnchorKols,
     rotationAnchorPrice: entrySignal.telemetry?.anchorPrice,
     rotationFirstBuyAtMs: entrySignal.telemetry?.firstBuyAtMs ?? undefined,
@@ -2966,6 +3208,10 @@ async function enterPaperPosition(
       t1TrailPctOverride: dynamicExit.t1TrailPct,
       t1ProfitFloorMult: dynamicExit.t1ProfitFloorMult,
       probeFlatTimeoutSec: dynamicExit.probeFlatTimeoutSec,
+      probeHardCutPctOverride: dynamicExit.probeHardCutPct,
+      rotationDoaWindowSecOverride: dynamicExit.rotationDoaWindowSec,
+      rotationDoaMinMfePctOverride: dynamicExit.rotationDoaMinMfePct,
+      rotationDoaMaxMaePctOverride: dynamicExit.rotationDoaMaxMaePct,
       rotationAnchorKols: options.rotationAnchorKols,
       rotationEntryAtMs: options.rotationAnchorKols ? Date.now() : undefined,
       rotationAnchorPrice: options.rotationAnchorPrice,
@@ -2996,6 +3242,49 @@ async function enterPaperPosition(
       `stalk=${config.kolHunterSwingV2StalkWindowSec}s trail=${(config.kolHunterSwingV2T1TrailPct * 100).toFixed(0)}% ` +
       `profitFloor=${config.kolHunterSwingV2T1ProfitFloorMult}x`
     );
+  }
+  if (primaryVersion === config.kolHunterRotationV1ParameterVersion) {
+    for (const spec of buildRotationPaperArmSpecs()) {
+      const rejectReason = rotationPaperArmRejectReason(
+        spec,
+        entryPrice,
+        options.rotationAnchorPrice,
+        combinedSurvivalFlags
+      );
+      if (rejectReason) {
+        log.debug(
+          `[KOL_HUNTER_ROTATION_PAPER_ARM_SKIP] ${tokenMint.slice(0, 8)} ` +
+          `arm=${spec.armName} reason=${rejectReason}`
+        );
+        if (rejectReason !== 'disabled') {
+          trackRotationPaperArmSkipMarkout(
+            cand,
+            score,
+            spec,
+            rejectReason,
+            entryPrice,
+            options,
+            combinedSurvivalFlags,
+            entryTokenDecimals
+          );
+        }
+        continue;
+      }
+      const arm = makePosition(
+        `${positionId}-${spec.suffix}`,
+        config.kolHunterRotationV1ParameterVersion,
+        true,
+        positionId
+      );
+      applyRotationPaperArmSpec(arm, spec);
+      positions.push(arm);
+    }
+    if (positions.length > 1) {
+      log.info(
+        `[KOL_HUNTER_ROTATION_PAPER_ARMS] ${positionId} ${tokenMint.slice(0, 8)} ` +
+        `arms=${positions.filter((p) => p.isShadowArm).map((p) => p.armName).join(',') || 'none'}`
+      );
+    }
   }
 
   for (const pos of positions) {
@@ -3207,9 +3496,12 @@ function shouldRotationDeadOnArrival(
   nowMs: number
 ): boolean {
   if (!isRotationV1Position(pos)) return false;
-  if (elapsedSec > config.kolHunterRotationV1DoaWindowSec) return false;
-  if (mfePct >= config.kolHunterRotationV1DoaMinMfePct) return false;
-  if (maePct > -config.kolHunterRotationV1DoaMaxMaePct) return false;
+  const doaWindowSec = pos.rotationDoaWindowSecOverride ?? config.kolHunterRotationV1DoaWindowSec;
+  const doaMinMfePct = pos.rotationDoaMinMfePctOverride ?? config.kolHunterRotationV1DoaMinMfePct;
+  const doaMaxMaePct = pos.rotationDoaMaxMaePctOverride ?? config.kolHunterRotationV1DoaMaxMaePct;
+  if (elapsedSec > doaWindowSec) return false;
+  if (mfePct >= doaMinMfePct) return false;
+  if (maePct > -doaMaxMaePct) return false;
   if (hasFreshRotationAnchorBuy(pos, nowMs)) return false;
   return true;
 }
@@ -3249,7 +3541,8 @@ function onPriceTick(positionId: string, tick: PriceTick): void {
         return;
       }
       // 1. Hard cut (Lane T 파라미터: -10%)
-      if (maePct <= -config.kolHunterHardcutPct) {
+      const probeHardCutPct = pos.probeHardCutPctOverride ?? config.kolHunterHardcutPct;
+      if (maePct <= -probeHardCutPct) {
         closePosition(pos, currentPrice, 'probe_hard_cut', nowSec, mfePct, maePct);
         return;
       }
@@ -4114,6 +4407,10 @@ async function appendPaperLedger(
       t1TrailPctOverride: pos.t1TrailPctOverride ?? null,
       t1ProfitFloorMult: pos.t1ProfitFloorMult ?? null,
       probeFlatTimeoutSec: pos.probeFlatTimeoutSec ?? null,
+      probeHardCutPctOverride: pos.probeHardCutPctOverride ?? null,
+      rotationDoaWindowSecOverride: pos.rotationDoaWindowSecOverride ?? null,
+      rotationDoaMinMfePctOverride: pos.rotationDoaMinMfePctOverride ?? null,
+      rotationDoaMaxMaePctOverride: pos.rotationDoaMaxMaePctOverride ?? null,
       rotationAnchorKols: pos.rotationAnchorKols ?? null,
       rotationEntryAtMs: pos.rotationEntryAtMs ?? null,
       rotationAnchorPrice: pos.rotationAnchorPrice ?? null,
@@ -4121,6 +4418,7 @@ async function appendPaperLedger(
       rotationLastBuyAtMs: pos.rotationLastBuyAtMs ?? null,
       rotationLastBuyAgeMs: pos.rotationLastBuyAgeMs ?? null,
       rotationScore: pos.rotationScore ?? null,
+      markoutOffsetsSec: tradeMarkoutOffsetsSecForPosition(pos),
     };
     // 2026-04-28: inactive KOL paper trade 결과는 별도 ledger 로 분리. active 분포 무결성 유지.
     const fileName = pos.isShadowKol

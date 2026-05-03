@@ -233,6 +233,37 @@ jest.mock('../src/utils/config', () => ({
     kolHunterRotationV1FreshBuyGraceSec: 15,
     kolHunterRotationV1MarkoutOffsetsSec: [15, 30, 60],
     kolHunterRotationV1ParameterVersion: 'rotation-v1.0.0',
+    kolHunterRotationPaperArmsEnabled: false,
+    kolHunterRotationFast15PaperEnabled: true,
+    kolHunterRotationFast15T1Mfe: 0.05,
+    kolHunterRotationFast15T1TrailPct: 0.025,
+    kolHunterRotationFast15ProfitFloorMult: 1.015,
+    kolHunterRotationFast15ProbeTimeoutSec: 20,
+    kolHunterRotationFast15HardCutPct: 0.04,
+    kolHunterRotationFast15DoaWindowSec: 15,
+    kolHunterRotationFast15DoaMinMfePct: 0.015,
+    kolHunterRotationFast15DoaMaxMaePct: 0.025,
+    kolHunterRotationCostGuardPaperEnabled: true,
+    kolHunterRotationCostGuardT1Mfe: 0.12,
+    kolHunterRotationCostGuardT1TrailPct: 0.04,
+    kolHunterRotationCostGuardProfitFloorMult: 1.08,
+    kolHunterRotationCostGuardProbeTimeoutSec: 30,
+    kolHunterRotationCostGuardHardCutPct: 0.06,
+    kolHunterRotationCostGuardDoaWindowSec: 20,
+    kolHunterRotationCostGuardDoaMinMfePct: 0.03,
+    kolHunterRotationCostGuardDoaMaxMaePct: 0.04,
+    kolHunterRotationCostGuardMinPriceResponsePct: 0.01,
+    kolHunterRotationQualityStrictPaperEnabled: true,
+    kolHunterRotationQualityStrictT1Mfe: 0.08,
+    kolHunterRotationQualityStrictT1TrailPct: 0.03,
+    kolHunterRotationQualityStrictProfitFloorMult: 1.04,
+    kolHunterRotationQualityStrictProbeTimeoutSec: 25,
+    kolHunterRotationQualityStrictHardCutPct: 0.05,
+    kolHunterRotationQualityStrictDoaWindowSec: 18,
+    kolHunterRotationQualityStrictDoaMinMfePct: 0.025,
+    kolHunterRotationQualityStrictDoaMaxMaePct: 0.035,
+    kolHunterRotationPaperAssumedAtaRentSol: 0.00207408,
+    kolHunterRotationPaperAssumedNetworkFeeSol: 0.000105,
     // 2026-04-26: smart-v3 는 production main default 이지만 기존 state-machine tests 는 v1 명시.
     kolHunterSmartV3Enabled: false,
     kolHunterSmartV3ObserveWindowSec: 120,
@@ -397,6 +428,37 @@ describe('kolSignalHandler — state machine', () => {
     mockedConfig.kolHunterRotationV1DoaMaxMaePct = 0.06;
     mockedConfig.kolHunterRotationV1FreshBuyGraceSec = 15;
     mockedConfig.kolHunterRotationV1MarkoutOffsetsSec = [15, 30, 60];
+    mockedConfig.kolHunterRotationPaperArmsEnabled = false;
+    mockedConfig.kolHunterRotationFast15PaperEnabled = true;
+    mockedConfig.kolHunterRotationFast15T1Mfe = 0.05;
+    mockedConfig.kolHunterRotationFast15T1TrailPct = 0.025;
+    mockedConfig.kolHunterRotationFast15ProfitFloorMult = 1.015;
+    mockedConfig.kolHunterRotationFast15ProbeTimeoutSec = 20;
+    mockedConfig.kolHunterRotationFast15HardCutPct = 0.04;
+    mockedConfig.kolHunterRotationFast15DoaWindowSec = 15;
+    mockedConfig.kolHunterRotationFast15DoaMinMfePct = 0.015;
+    mockedConfig.kolHunterRotationFast15DoaMaxMaePct = 0.025;
+    mockedConfig.kolHunterRotationCostGuardPaperEnabled = true;
+    mockedConfig.kolHunterRotationCostGuardT1Mfe = 0.12;
+    mockedConfig.kolHunterRotationCostGuardT1TrailPct = 0.04;
+    mockedConfig.kolHunterRotationCostGuardProfitFloorMult = 1.08;
+    mockedConfig.kolHunterRotationCostGuardProbeTimeoutSec = 30;
+    mockedConfig.kolHunterRotationCostGuardHardCutPct = 0.06;
+    mockedConfig.kolHunterRotationCostGuardDoaWindowSec = 20;
+    mockedConfig.kolHunterRotationCostGuardDoaMinMfePct = 0.03;
+    mockedConfig.kolHunterRotationCostGuardDoaMaxMaePct = 0.04;
+    mockedConfig.kolHunterRotationCostGuardMinPriceResponsePct = 0.01;
+    mockedConfig.kolHunterRotationQualityStrictPaperEnabled = true;
+    mockedConfig.kolHunterRotationQualityStrictT1Mfe = 0.08;
+    mockedConfig.kolHunterRotationQualityStrictT1TrailPct = 0.03;
+    mockedConfig.kolHunterRotationQualityStrictProfitFloorMult = 1.04;
+    mockedConfig.kolHunterRotationQualityStrictProbeTimeoutSec = 25;
+    mockedConfig.kolHunterRotationQualityStrictHardCutPct = 0.05;
+    mockedConfig.kolHunterRotationQualityStrictDoaWindowSec = 18;
+    mockedConfig.kolHunterRotationQualityStrictDoaMinMfePct = 0.025;
+    mockedConfig.kolHunterRotationQualityStrictDoaMaxMaePct = 0.035;
+    mockedConfig.kolHunterRotationPaperAssumedAtaRentSol = 0.00207408;
+    mockedConfig.kolHunterRotationPaperAssumedNetworkFeeSol = 0.000105;
     mockedConfig.missedAlphaObserverEnabled = false;
     mockedConfig.missedAlphaObserverOffsetsSec = [60, 300, 1800];
     mockedConfig.tradeMarkoutObserverEnabled = false;
@@ -728,6 +790,70 @@ describe('kolSignalHandler — state machine', () => {
       expect(anchorRows).toHaveLength(1);
       expect(anchorRows[0].extras.armName).toBe('kol_hunter_rotation_v1');
       expect(anchorRows[0].extras.markoutOffsetsSec).toEqual([15, 30, 60, 300, 1800]);
+    });
+
+    it('rotation-v1 paper arms enabled: 동일 trigger 에 fast/cost/quality shadow arms 를 병렬 생성한다', async () => {
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterRotationPaperArmsEnabled = true;
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+
+      await handleKolSwap({ ...buyTx('dv', 'A', MINT_ROTATION, 3_000), solAmount: 0.95 });
+      await handleKolSwap({ ...buyTx('dv', 'A', MINT_ROTATION, 2_000), solAmount: 0.03 });
+      await handleKolSwap({ ...buyTx('dv', 'A', MINT_ROTATION, 1_000), solAmount: 0.03 });
+      stubFeed.emitTick(MINT_ROTATION, 0.00102);
+      await flushAsync();
+
+      const positions = __testGetActive();
+      expect(positions.map((pos) => pos.armName).sort()).toEqual([
+        'kol_hunter_rotation_v1',
+        'rotation_cost_guard_v1',
+        'rotation_fast15_v1',
+        'rotation_quality_strict_v1',
+      ]);
+      const control = positions.find((pos) => pos.armName === 'kol_hunter_rotation_v1');
+      const fast = positions.find((pos) => pos.armName === 'rotation_fast15_v1');
+      expect(fast?.isShadowArm).toBe(true);
+      expect(fast?.parentPositionId).toBe(control?.positionId);
+      expect(fast?.probeHardCutPctOverride).toBe(0.04);
+      expect(fast?.probeFlatTimeoutSec).toBe(20);
+      expect(fast?.t1MfeOverride).toBe(0.05);
+      expect(fast?.rotationDoaWindowSecOverride).toBe(15);
+      expect(fast?.survivalFlags).toContain('ROTATION_V1_PAPER_PARAM_ARM');
+    });
+
+    it('rotation-v1 paper arm skip 은 missed-alpha 로 false-negative 관측을 예약한다', async () => {
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterRotationPaperArmsEnabled = true;
+      mockedConfig.missedAlphaObserverEnabled = true;
+      mockedConfig.kolHunterRotationV1MarkoutOffsetsSec = [15, 30, 60];
+      mockedConfig.kolHunterRotationCostGuardMinPriceResponsePct = 0.08;
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+
+      await handleKolSwap({ ...buyTx('dv', 'A', MINT_ROTATION, 3_000), solAmount: 0.95 });
+      await handleKolSwap({ ...buyTx('dv', 'A', MINT_ROTATION, 2_000), solAmount: 0.03 });
+      await handleKolSwap({ ...buyTx('dv', 'A', MINT_ROTATION, 1_000), solAmount: 0.03 });
+      stubFeed.emitTick(MINT_ROTATION, 0.00102);
+      await flushAsync();
+
+      expect(__testGetActive().map((pos) => pos.armName).sort()).toEqual([
+        'kol_hunter_rotation_v1',
+        'rotation_fast15_v1',
+        'rotation_quality_strict_v1',
+      ]);
+      expect(getMissedAlphaObserverStats().scheduled).toBeGreaterThanOrEqual(3);
+      const markers = mockAppendFile.mock.calls
+        .filter((call) => typeof call[0] === 'string' && call[0].includes('missed-alpha.jsonl'))
+        .map((call) => JSON.parse(String(call[1]).trim()))
+        .filter((row) => row.extras?.eventType === 'rotation_arm_skip');
+      expect(markers).toHaveLength(1);
+      expect(markers[0].rejectReason).toBe('rotation_arm_skip_cost_response_too_low');
+      expect(markers[0].signalSource).toBe('rotation_cost_guard_v1');
+      expect(markers[0].extras.eventType).toBe('rotation_arm_skip');
+      expect(markers[0].extras.armName).toBe('rotation_cost_guard_v1');
+      expect(markers[0].extras.skipReason).toBe('cost_response_too_low');
+      expect(markers[0].extras.noTradeReason).toBe('rotation_cost_guard_v1_cost_response_too_low');
+      expect(markers[0].extras.rotationAnchorKols).toEqual(['dv']);
+      expect(markers[0].probe.outputDecimals).toBe(6);
     });
 
     it('rotation-v1: seed whitelist 밖 KOL 도 DB score 가 충분하면 fast lane 으로 진입한다', async () => {

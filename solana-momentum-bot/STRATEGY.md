@@ -1,9 +1,10 @@
 # STRATEGY.md (post-pivot)
 
 > Status: current quick reference
-> Updated: 2026-04-18
+> Updated: 2026-05-03
 > Purpose: 현재 runtime 에서 읽어야 할 전략 / gate / risk / 핵심 파라미터를 짧게 정리한다.
 > Pivot decision: [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md)
+> Current lane refactor: [`docs/design-docs/lane-operating-refactor-2026-05-03.md`](./docs/design-docs/lane-operating-refactor-2026-05-03.md)
 > Pre-pivot snapshot: [`docs/historical/pre-pivot-2026-04-18/STRATEGY.md`](./docs/historical/pre-pivot-2026-04-18/STRATEGY.md)
 > Forward memo: [`STRATEGY_NOTES.md`](./STRATEGY_NOTES.md)
 
@@ -20,22 +21,46 @@
 > 수단과 방법을 가리지 않고 `1 SOL -> 100 SOL` 달성 확률을 최대화한다.
 > "왜 오르는가"보다 "지금 실제로 폭발하는가"를 본다.
 
-## Runtime Lane Set (2026-04-26 갱신)
+## Runtime Lane Set (2026-05-03 갱신)
 
 | Lane / arm | 상태 | 역할 |
 |---|---|---|
 | **`cupsey_flip_10s`** | **benchmark (frozen, env disabled)** | A/B 비교 기준선. **개조 금지.** |
 | `bootstrap_10s` | **signal-only** | cupsey/pure_ws trigger source. `executionRrReject=99.0` 로 실거래 100% 억제. |
-| **`pure_ws_breakout`** | **live opt-in** (`PUREWS_LIVE_CANARY_ENABLED`) | Lane S 직접 — 30s probe + 15% trail. mission-pivot 첫 lane. |
-| **`pure_ws_swing_v2`** | **paper shadow** (`PUREWS_SWING_V2_ENABLED`) → **live canary opt-in** (`PUREWS_SWING_V2_LIVE_CANARY_ENABLED`) | Lane S long-hold A/B — 600s probe / 25% trail / 1.10 floor. 별도 canary slot + budget −0.1 SOL cap. |
-| **`kol_hunter`** | **paper-default + live canary opt-in (2026-04-27)** | Option 5 active paradigm. KOL Wallet Discovery + state machine. Triple-flag gate. |
-| ↳ `kol_hunter` v1 | paper legacy | 180s stalk / 15% trail / single-KOL wait |
-| ↳ **`kol_hunter` smart-v3** (main) | paper main (`KOL_HUNTER_SMART_V3_ENABLED=true` default) | pullback / velocity / both reason 별 trigger + trail/floor override (20-25% / 1.05-1.10) |
+| **`kol_hunter_smart_v3`** | **main 5x lane / live canary with paper fallback** | Fresh active 2+ KOL velocity 중심. A+A 허용, S+B/A+B 는 fresh S/A strength rule 미통과. Pullback-only / weak post-sell recovery / dev watchlist 는 paper fallback. |
 | ↳ `kol_hunter` swing-v2 | paper shadow (`KOL_HUNTER_SWING_V2_ENABLED`) | multi-KOL S/A ≥2 + score ≥5.0 자격 시 동시 생성. 600s stalk / 25% trail / 1.10 floor. |
-| ↳ `kol_hunter` **live canary** (opt-in) | `KOL_HUNTER_PAPER_ONLY=false` + `KOL_HUNTER_LIVE_CANARY_ENABLED=true` + `tradingMode=live` | enterLivePosition (commit 1469a08). canary cap 0.3 SOL / ticket 0.01 hard lock / drift halt 0.2. 5x+ winner 미입증 시 §3 위반 인지. |
+| **`kol_hunter_rotation_v1`** | **fast-compound auxiliary / live off until evidence** | T+15/T+30 post-cost harvesting 실험. Control + `rotation_fast15_v1` / `rotation_cost_guard_v1` / `rotation_quality_strict_v1` / paper-only `rotation_underfill_v1`. |
+| **`pure_ws botflow`** | **paper/observe-only rebuild candidate** | New-pair / botflow microstructure 관측. Mayhem copy 금지. T+15/30/60/180/300/1800 markout + 15분 digest + paper arms. |
 | `migration_reclaim` | signal-only (env) | Migration Handoff Reclaim. paper 대기. |
 | `volume_spike` / `fib_pullback` / `core_momentum` | **dormant** | 5m 해상도, 밈코인 비적합 |
 | ~~`new_lp_sniper` (Strategy D)~~ | **retired (2026-04-26 cleanup)** | Birdeye WS + sandbox executor 영구 제거 |
+
+### Lane Ledger Layout (2026-05-03)
+
+KOL aggregate ledgers remain the compatibility source:
+
+```text
+data/realtime/kol-paper-trades.jsonl
+data/realtime/kol-live-trades.jsonl
+```
+
+Lane projections are added for operator analysis:
+
+```text
+data/realtime/smart-v3-paper-trades.jsonl
+data/realtime/smart-v3-live-trades.jsonl
+data/realtime/rotation-v1-paper-trades.jsonl
+data/realtime/rotation-v1-live-trades.jsonl
+data/realtime/pure-ws-paper-trades.jsonl
+data/realtime/pure-ws-live-trades.jsonl
+```
+
+Shared markout files remain unsplit:
+
+```text
+data/realtime/trade-markout-anchors.jsonl
+data/realtime/trade-markouts.jsonl
+```
 
 ## Cupsey Benchmark Lane (개조 금지)
 
@@ -239,7 +264,7 @@ env overrides: PUREWS_GATE_* / PUREWS_LANE_TICKET_SOL / PUREWS_MAX_CONCURRENT / 
 
 ### Shared Guardrails (Block 1/2 공유, 불변)
 
-- Wallet Stop Guard `< 0.8 SOL` halt
+- Wallet Stop Guard `< 0.7 SOL` halt
 - Wallet delta comparator halt (Block 1)
 - `entryIntegrity('pure_ws_breakout')` halt
 - Close mutex (`swapSerializer`)
@@ -313,7 +338,7 @@ Close   Sell-side impact
 |---|---|
 | Ticket | `0.01 SOL` fixed |
 | Max concurrent | `3` ticket (canary) |
-| Wallet Stop Guard | `< 0.8 SOL` lane halt |
+| Wallet Stop Guard | `< 0.7 SOL` lane halt |
 | RPC fail-safe | 연속 RPC 실패 시 lane halt |
 | Per-trade loss floor | lane 별 설계 시 확정 |
 

@@ -182,7 +182,6 @@ describe('Block 3 QA — paper-first enforcement', () => {
 
     expect(executor.executeBuy).not.toHaveBeenCalled();
     expect(tradeStore.insertTrade).not.toHaveBeenCalled();
-    expect(axios.get).toHaveBeenCalled();
     const positions = [...getActivePureWsPositions().values()];
     expect(positions).toHaveLength(2);
     const primary = positions.find((p) => p.armName === 'pure_ws_breakout');

@@ -9,6 +9,8 @@ import { createModuleLogger } from '../utils/logger';
 import { getActiveKolHunterPositionsSnapshot, type PaperPosition } from './kolSignalHandler';
 
 const log = createModuleLogger('RotationPaperDigest');
+const ROTATION_PAPER_TRADES_FILE = 'rotation-v1-paper-trades.jsonl';
+const KOL_PAPER_TRADES_FILE = 'kol-paper-trades.jsonl';
 
 interface JsonRow {
   [key: string]: unknown;
@@ -29,6 +31,12 @@ async function readJsonl(file: string): Promise<JsonRow[]> {
   } catch {
     return [];
   }
+}
+
+async function readRotationPaperTrades(): Promise<JsonRow[]> {
+  const projected = await readJsonl(path.join(config.realtimeDataDir, ROTATION_PAPER_TRADES_FILE));
+  if (projected.length > 0) return projected;
+  return readJsonl(path.join(config.realtimeDataDir, KOL_PAPER_TRADES_FILE));
 }
 
 function str(value: unknown): string {
@@ -203,7 +211,7 @@ export async function flushRotationPaperDigest(notifier: Notifier): Promise<void
   windowStartedMs = nowMs;
 
   const [trades, anchors, markouts, missedAlpha] = await Promise.all([
-    readJsonl(path.join(config.realtimeDataDir, 'kol-paper-trades.jsonl')),
+    readRotationPaperTrades(),
     readJsonl(path.join(config.realtimeDataDir, 'trade-markout-anchors.jsonl')),
     readJsonl(path.join(config.realtimeDataDir, 'trade-markouts.jsonl')),
     readJsonl(path.join(config.realtimeDataDir, 'missed-alpha.jsonl')),

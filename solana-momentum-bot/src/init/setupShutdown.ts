@@ -65,6 +65,9 @@ export function setupShutdown(c: ShutdownContext): void {
     if (c.monitoringHandles.pureWsPaperDigestInterval) {
       clearInterval(c.monitoringHandles.pureWsPaperDigestInterval);
     }
+    if (c.monitoringHandles.rotationPaperDigestInterval) {
+      clearInterval(c.monitoringHandles.rotationPaperDigestInterval);
+    }
     // 2026-04-27: 추가 telemetry/scheduler intervals (이전엔 unstored → leak).
     if (c.monitoringHandles.dailySummaryInterval) {
       clearInterval(c.monitoringHandles.dailySummaryInterval);

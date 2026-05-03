@@ -690,6 +690,14 @@ function numberField(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+function numberArrayField(value: unknown): number[] | null {
+  if (!Array.isArray(value)) return null;
+  const parsed = value
+    .map((item) => Number(item))
+    .filter((item) => Number.isFinite(item) && item > 0);
+  return parsed.length > 0 ? [...new Set(parsed)].sort((a, b) => a - b) : null;
+}
+
 function timeField(value: unknown): number | null {
   const direct = numberField(value);
   if (direct != null) return direct < 1e12 ? direct * 1000 : direct;
@@ -702,6 +710,22 @@ function timeField(value: unknown): number | null {
 
 function secondMs(value: number): number {
   return Math.floor(value / 1000) * 1000;
+}
+
+function isRotationPaperCloseRow(row: Record<string, unknown>): boolean {
+  const armName = stringField(row.armName) ?? '';
+  const parameterVersion = stringField(row.parameterVersion) ?? '';
+  const entryReason = stringField(row.kolEntryReason) ?? stringField(row.entryReason) ?? '';
+  return armName === 'kol_hunter_rotation_v1' ||
+    armName.startsWith('rotation_') ||
+    parameterVersion.startsWith('rotation-') ||
+    entryReason === 'rotation_v1';
+}
+
+function markoutOffsetsForPaperCloseRow(row: Record<string, unknown>): number[] | undefined {
+  const explicit = numberArrayField(row.markoutOffsetsSec);
+  if (explicit) return explicit;
+  return isRotationPaperCloseRow(row) ? [15, 30, 60, 300, 1800] : undefined;
 }
 
 function buildAnchorFromAnchorRecord(row: Record<string, unknown>): TradeMarkoutAnchor | null {
@@ -816,6 +840,7 @@ function buildPaperCloseAnchors(row: Record<string, unknown>): TradeMarkoutAncho
     return [];
   }
 
+  const markoutOffsetsSec = markoutOffsetsForPaperCloseRow(row);
   const common = {
     positionId,
     tokenMint,
@@ -834,6 +859,7 @@ function buildPaperCloseAnchors(row: Record<string, unknown>): TradeMarkoutAncho
       parameterVersion: stringField(row.parameterVersion),
       isShadowArm: row.isShadowArm === true,
       parentPositionId: stringField(row.parentPositionId),
+      ...(markoutOffsetsSec ? { markoutOffsetsSec } : {}),
     },
   };
   return [

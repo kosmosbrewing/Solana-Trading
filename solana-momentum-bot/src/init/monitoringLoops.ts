@@ -10,6 +10,7 @@ import { SOL_MINT } from '../utils/constants';
 import { Candle, CandleInterval } from '../utils/types';
 import { flushKolHourlyDigest } from '../orchestration/kolPaperNotifier';
 import { flushPureWsPaperDigest } from '../orchestration/pureWs/paperDigest';
+import { flushRotationPaperDigest } from '../orchestration/rotationPaperDigest';
 
 const log = createModuleLogger('MonitoringLoops');
 
@@ -44,6 +45,7 @@ export interface MonitoringHandles {
   pruneInterval: ReturnType<typeof setInterval>;
   kolHourlyDigestInterval: ReturnType<typeof setInterval> | null;
   pureWsPaperDigestInterval: ReturnType<typeof setInterval> | null;
+  rotationPaperDigestInterval: ReturnType<typeof setInterval> | null;
   // 2026-04-27: shutdown 시 cleanup 위해 main() 에서 startMonitoringLoops 호출 후 직접 set.
   dailySummaryInterval?: ReturnType<typeof setInterval>;
   pureWsV2TelemetryInterval?: ReturnType<typeof setInterval>;
@@ -182,6 +184,30 @@ export async function startMonitoringLoops(deps: MonitoringDeps): Promise<Monito
     }, intervalMs);
     log.info(`pure_ws paper digest scheduled — interval=${intervalMs / 60000}min`);
   }
+  let rotationPaperDigestInterval: ReturnType<typeof setInterval> | null = null;
+  if (
+    config.kolHunterEnabled &&
+    config.kolHunterRotationV1Enabled &&
+    config.kolHunterRotationPaperNotifyEnabled &&
+    config.kolHunterRotationPaperDigestEnabled
+  ) {
+    const intervalMs = Math.max(60_000, config.kolHunterRotationPaperDigestIntervalMs);
+    rotationPaperDigestInterval = setInterval(async () => {
+      try {
+        await flushRotationPaperDigest(deps.notifier);
+      } catch (error) {
+        log.warn(`rotation paper digest failed: ${error}`);
+      }
+    }, intervalMs);
+    log.info(`rotation paper digest scheduled — interval=${intervalMs / 60000}min`);
+  }
 
-  return { positionCheckInterval, regimeInterval, pruneInterval, kolHourlyDigestInterval, pureWsPaperDigestInterval };
+  return {
+    positionCheckInterval,
+    regimeInterval,
+    pruneInterval,
+    kolHourlyDigestInterval,
+    pureWsPaperDigestInterval,
+    rotationPaperDigestInterval,
+  };
 }

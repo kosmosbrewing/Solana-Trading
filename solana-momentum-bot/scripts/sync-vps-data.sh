@@ -14,6 +14,7 @@
 #   SKIP_TOKEN_QUALITY_REPORT=true bash scripts/sync-vps-data.sh  # dev candidate quality report 생략
 #   SKIP_LIVE_CANARY_REPORT=true bash scripts/sync-vps-data.sh    # live canary report 생략
 #   SKIP_TRADE_MARKOUT_REPORT=true bash scripts/sync-vps-data.sh  # buy/sell T+ markout report 생략
+#   SKIP_PUREWS_TRADE_MARKOUT_REPORT=true bash scripts/sync-vps-data.sh  # pure_ws T+ report 생략
 #   SKIP_WINNER_KILL_REPORT=true bash scripts/sync-vps-data.sh    # winner-kill report 생략
 #   SKIP_SYNC_HEALTH=true bash scripts/sync-vps-data.sh           # sync health manifest 생략
 #   RUN_SHADOW_EVAL=true bash scripts/sync-vps-data.sh     # KOL shadow eval 추가 (Jupiter API 사용)
@@ -64,6 +65,7 @@ SKIP_PAPER_REPORT="${SKIP_PAPER_REPORT:-false}"
 SKIP_TOKEN_QUALITY_REPORT="${SKIP_TOKEN_QUALITY_REPORT:-false}"
 SKIP_LIVE_CANARY_REPORT="${SKIP_LIVE_CANARY_REPORT:-false}"
 SKIP_TRADE_MARKOUT_REPORT="${SKIP_TRADE_MARKOUT_REPORT:-false}"
+SKIP_PUREWS_TRADE_MARKOUT_REPORT="${SKIP_PUREWS_TRADE_MARKOUT_REPORT:-false}"
 SKIP_ROTATION_REPORT="${SKIP_ROTATION_REPORT:-false}"
 SKIP_WINNER_KILL_REPORT="${SKIP_WINNER_KILL_REPORT:-false}"
 SKIP_SYNC_HEALTH="${SKIP_SYNC_HEALTH:-false}"
@@ -424,7 +426,7 @@ if [ "$SKIP_ROTATION_REPORT" != "true" ]; then
   ROTATION_MD="${ROOT_DIR}/reports/rotation-lane-$(date +%Y-%m-%d).md"
   ROTATION_JSON="${ROOT_DIR}/reports/rotation-lane-$(date +%Y-%m-%d).json"
   echo "[sync-vps-data] rotation-report: generating since=${TRADE_MARKOUT_SINCE} roundTripCost=${ROTATION_REPORT_ROUND_TRIP_COST_PCT}"
-  if (cd "${ROOT_DIR}" && npm run -s kol:rotation-report -- --since "${TRADE_MARKOUT_SINCE}" --realtime-dir data/realtime --round-trip-cost-pct "${ROTATION_REPORT_ROUND_TRIP_COST_PCT}" --md "${ROTATION_MD}" --json "${ROTATION_JSON}" 2>&1 | tail -12); then
+  if (cd "${ROOT_DIR}" && npm run -s kol:rotation-report -- --since "${TRADE_MARKOUT_SINCE}" --horizons 15,30,60,300,1800 --realtime-dir data/realtime --round-trip-cost-pct "${ROTATION_REPORT_ROUND_TRIP_COST_PCT}" --md "${ROTATION_MD}" --json "${ROTATION_JSON}" 2>&1 | tail -12); then
     echo "[sync-vps-data] rotation-report: ok → ${ROTATION_MD}"
   else
     echo "[sync-vps-data] rotation-report: WARN — generation failed (sync 자체는 정상)"

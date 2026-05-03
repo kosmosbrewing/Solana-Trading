@@ -87,6 +87,29 @@ No-trade outcomes such as stale last buy, recent sell block, low rotation score,
 
 The lane is deliberately same-token sell sensitive. A recent sell means this is likely post-distribution or chop, so rotation v1 should wait for the next token rather than pay spread and slippage.
 
+### Paper-Only Underfill Arm (2026-05-03)
+
+`rotation_underfill_v1` is a separate paper-only arm for the stricter 1 KOL / 1 buy hypothesis:
+
+- the parent `KOL_HUNTER_ROTATION_V1_ENABLED` switch must be on;
+- `KOL_HUNTER_ROTATION_UNDERFILL_PAPER_ENABLED=true`;
+- one or more active S/A KOL buys exist within `KOL_HUNTER_ROTATION_UNDERFILL_MAX_LAST_BUY_AGE_SEC`;
+- the eligible KOL score is at least `KOL_HUNTER_ROTATION_UNDERFILL_MIN_KOL_SCORE`;
+- the KOL buy has an actual fill reference from the incoming `KolTx` (`solAmount / tokenAmount`); no hot-path RPC fallback is used;
+- there is no same-mint KOL sell within `KOL_HUNTER_ROTATION_UNDERFILL_MAX_RECENT_SELL_SEC`;
+- the current quote is below the KOL weighted fill reference by `KOL_HUNTER_ROTATION_UNDERFILL_MIN_DISCOUNT_PCT` to `KOL_HUNTER_ROTATION_UNDERFILL_MAX_DISCOUNT_PCT`.
+
+This arm does not weaken the main rotation control and never routes to live. Its purpose is to test whether "our fill is better than the S/A KOL's actual fill reference, and the KOL has not sold" has positive short-horizon post-cost expectancy. Too-shallow discount, too-deep discount, missing fill price, stale buy, and recent sell decisions are emitted as underfill no-trade markouts so false negatives are measurable.
+
+Default exits are intentionally faster than `kol_hunter_rotation_v1`:
+
+- T1 MFE `5%`;
+- T1 trail `2.5%`;
+- profit floor `1.02x`;
+- probe timeout `30s`;
+- hard cut `4%`;
+- DOA window `15s`.
+
 ## Exit Shape
 
 Rotation v1 uses the common KOL Hunter state machine with lane-specific overrides:

@@ -215,10 +215,13 @@ export interface PaperPosition {
   rotationAnchorKols?: string[];
   rotationEntryAtMs?: number;
   rotationAnchorPrice?: number;
+  rotationAnchorPriceSource?: string;
   rotationFirstBuyAtMs?: number;
   rotationLastBuyAtMs?: number;
   rotationLastBuyAgeMs?: number;
   rotationScore?: number;
+  underfillReferenceSolAmount?: number;
+  underfillReferenceTokenAmount?: number;
   kolReinforcementCount: number;
   detectorVersion: string;
   independentKolCount: number;
@@ -289,10 +292,13 @@ interface PaperEntryOptions {
   rotationTelemetry?: RotationV1TriggerResult['telemetry'];
   rotationAnchorKols?: string[];
   rotationAnchorPrice?: number;
+  rotationAnchorPriceSource?: string;
   rotationFirstBuyAtMs?: number;
   rotationLastBuyAtMs?: number;
   rotationLastBuyAgeMs?: number;
   rotationScore?: number;
+  underfillReferenceSolAmount?: number;
+  underfillReferenceTokenAmount?: number;
   entryIndependentKolCount?: number;
   entryKolScore?: number;
   entryParticipatingKols?: KolDiscoveryScore['participatingKols'];
@@ -319,7 +325,9 @@ interface PendingCandidate {
   rotationV1?: {
     anchorPrice?: number;
     enteredAtMs?: number;
+    underfillEnteredAtMs?: number;
     noTradeReasonsEmitted: Set<string>;
+    underfillNoTradeReasonsEmitted?: Set<string>;
   };
 }
 
@@ -652,10 +660,13 @@ function trackPaperPositionMarkout(
         rotationAnchorKols: pos.rotationAnchorKols ?? null,
         rotationEntryAtMs: pos.rotationEntryAtMs ?? null,
         rotationAnchorPrice: pos.rotationAnchorPrice ?? null,
+        rotationAnchorPriceSource: pos.rotationAnchorPriceSource ?? null,
         rotationFirstBuyAtMs: pos.rotationFirstBuyAtMs ?? null,
         rotationLastBuyAtMs: pos.rotationLastBuyAtMs ?? null,
         rotationLastBuyAgeMs: pos.rotationLastBuyAgeMs ?? null,
         rotationScore: pos.rotationScore ?? null,
+        underfillReferenceSolAmount: pos.underfillReferenceSolAmount ?? null,
+        underfillReferenceTokenAmount: pos.underfillReferenceTokenAmount ?? null,
         ...extras,
       },
     },
@@ -1238,6 +1249,7 @@ function armNameForVersion(parameterVersion: string): string {
   if (parameterVersion === config.kolHunterSmartV3ParameterVersion) return 'kol_hunter_smart_v3';
   if (parameterVersion === config.kolHunterSwingV2ParameterVersion) return 'kol_hunter_swing_v2';
   if (parameterVersion === config.kolHunterRotationV1ParameterVersion) return 'kol_hunter_rotation_v1';
+  if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) return 'rotation_underfill_v1';
   return 'kol_hunter_v1';
 }
 
@@ -1364,6 +1376,7 @@ function defaultEntryReasonForVersion(parameterVersion: string): KolEntryReason 
   if (parameterVersion === config.kolHunterSmartV3ParameterVersion) return 'velocity';
   if (parameterVersion === config.kolHunterSwingV2ParameterVersion) return 'swing_v2';
   if (parameterVersion === config.kolHunterRotationV1ParameterVersion) return 'rotation_v1';
+  if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) return 'rotation_v1';
   return 'legacy_v1';
 }
 
@@ -1371,6 +1384,7 @@ function defaultConvictionForVersion(parameterVersion: string): KolConvictionLev
   if (parameterVersion === config.kolHunterSmartV3ParameterVersion) return 'MEDIUM_HIGH';
   if (parameterVersion === config.kolHunterSwingV2ParameterVersion) return 'HIGH';
   if (parameterVersion === config.kolHunterRotationV1ParameterVersion) return 'MEDIUM_HIGH';
+  if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) return 'MEDIUM_HIGH';
   return 'LOW';
 }
 
@@ -1407,6 +1421,28 @@ function dynamicExitParamsForEntry(reason: KolEntryReason): DynamicExitParams {
     default:
       return {};
   }
+}
+
+function dynamicExitParamsForPosition(parameterVersion: string, reason: KolEntryReason): DynamicExitParams {
+  if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) {
+    return {
+      t1Mfe: config.kolHunterRotationUnderfillT1Mfe,
+      t1TrailPct: config.kolHunterRotationUnderfillT1TrailPct,
+      t1ProfitFloorMult: config.kolHunterRotationUnderfillProfitFloorMult,
+      probeFlatTimeoutSec: config.kolHunterRotationUnderfillProbeTimeoutSec,
+      probeHardCutPct: config.kolHunterRotationUnderfillHardCutPct,
+      rotationDoaWindowSec: config.kolHunterRotationUnderfillDoaWindowSec,
+      rotationDoaMinMfePct: config.kolHunterRotationUnderfillDoaMinMfePct,
+      rotationDoaMaxMaePct: config.kolHunterRotationUnderfillDoaMaxMaePct,
+    };
+  }
+  if (
+    parameterVersion === config.kolHunterSmartV3ParameterVersion ||
+    parameterVersion === config.kolHunterRotationV1ParameterVersion
+  ) {
+    return dynamicExitParamsForEntry(reason);
+  }
+  return {};
 }
 
 function countActivePrimaryPositions(): number {
@@ -2034,6 +2070,7 @@ interface RotationV1TriggerResult {
   triggered: boolean;
   flags: string[];
   reason?: string;
+  participatingKols?: KolDiscoveryScore['participatingKols'];
   telemetry: {
     buyCount: number;
     smallBuyCount: number;
@@ -2044,15 +2081,18 @@ interface RotationV1TriggerResult {
     currentPrice: number;
     anchorKols: string[];
     anchorPrice: number;
+    anchorPriceSource?: string;
     firstBuyAtMs: number | null;
     lastBuyAtMs: number | null;
     lastBuyAgeMs: number | null;
     rotationScore: number;
+    underfillReferenceSolAmount?: number;
+    underfillReferenceTokenAmount?: number;
   };
 }
 
 interface KolEntrySignal {
-  label: 'smart-v3' | 'rotation-v1';
+  label: 'smart-v3' | 'rotation-v1' | 'rotation-underfill';
   logTag: string;
   parameterVersion: string;
   entryReason: KolEntryReason;
@@ -2060,6 +2100,11 @@ interface KolEntrySignal {
   extraFlags: string[];
   telemetry?: RotationV1TriggerResult['telemetry'];
   rotationAnchorKols?: string[];
+  entryParticipatingKols?: KolDiscoveryScore['participatingKols'];
+  entryIndependentKolCount?: number;
+  entryKolScore?: number;
+  paperOnly?: boolean;
+  paperOnlyReason?: string;
 }
 
 function evaluateSmartV3LiveFallback(
@@ -2108,7 +2153,12 @@ function parseRotationV1ExcludeKolIds(): Set<string> {
 
 function ensureRotationV1State(cand: PendingCandidate): NonNullable<PendingCandidate['rotationV1']> {
   if (!cand.rotationV1) {
-    cand.rotationV1 = { noTradeReasonsEmitted: new Set<string>() };
+    cand.rotationV1 = {
+      noTradeReasonsEmitted: new Set<string>(),
+      underfillNoTradeReasonsEmitted: new Set<string>(),
+    };
+  } else if (!cand.rotationV1.underfillNoTradeReasonsEmitted) {
+    cand.rotationV1.underfillNoTradeReasonsEmitted = new Set<string>();
   }
   return cand.rotationV1;
 }
@@ -2152,6 +2202,46 @@ function rotationV1KolScore(tx: KolTx, seedKolIds: Set<string>, excludedKolIds: 
   else if (style === 'swing') score += 0.05;
 
   return Math.min(1, score);
+}
+
+function isRotationUnderfillTierEligible(tx: KolTx): boolean {
+  return tx.tier === 'S' || tx.tier === 'A';
+}
+
+function kolBuyFillPriceSolPerToken(tx: KolTx): number | undefined {
+  const solAmount = typeof tx.solAmount === 'number' && Number.isFinite(tx.solAmount)
+    ? tx.solAmount
+    : 0;
+  const tokenAmount = typeof tx.tokenAmount === 'number' && Number.isFinite(tx.tokenAmount)
+    ? tx.tokenAmount
+    : 0;
+  if (tx.action !== 'buy' || solAmount <= 0 || tokenAmount <= 0) return undefined;
+  return solAmount / tokenAmount;
+}
+
+function buildRotationUnderfillReference(
+  scoredBuys: Array<{ tx: KolTx; score: number }>
+): {
+  price: number;
+  source: 'kol_weighted_fill';
+  solAmount: number;
+  tokenAmount: number;
+} | undefined {
+  let solAmount = 0;
+  let tokenAmount = 0;
+  for (const row of scoredBuys) {
+    const price = kolBuyFillPriceSolPerToken(row.tx);
+    if (price == null || price <= 0) continue;
+    solAmount += Math.max(0, row.tx.solAmount ?? 0);
+    tokenAmount += Math.max(0, row.tx.tokenAmount ?? 0);
+  }
+  if (solAmount <= 0 || tokenAmount <= 0) return undefined;
+  return {
+    price: solAmount / tokenAmount,
+    source: 'kol_weighted_fill',
+    solAmount,
+    tokenAmount,
+  };
 }
 
 interface RotationV1IntakeSnapshot {
@@ -2286,6 +2376,7 @@ function evaluateRotationV1TriggerState(cand: PendingCandidate, nowMs: number): 
     currentPrice: 0,
     anchorKols: [],
     anchorPrice: 0,
+    anchorPriceSource: 'none',
     firstBuyAtMs: null,
     lastBuyAtMs: null,
     lastBuyAgeMs: null,
@@ -2432,6 +2523,204 @@ function evaluateRotationV1TriggerState(cand: PendingCandidate, nowMs: number): 
   };
 }
 
+function buildRotationUnderfillParticipants(
+  scoredBuys: Array<{ tx: KolTx; score: number }>
+): KolDiscoveryScore['participatingKols'] {
+  const latestByKol = new Map<string, { tx: KolTx; score: number }>();
+  for (const row of scoredBuys) {
+    const key = row.tx.kolId.toLowerCase();
+    const current = latestByKol.get(key);
+    if (!current || row.tx.timestamp > current.tx.timestamp) {
+      latestByKol.set(key, row);
+    }
+  }
+  return [...latestByKol.values()]
+    .sort((a, b) => b.tx.timestamp - a.tx.timestamp)
+    .map((row) => ({
+      id: row.tx.kolId,
+      tier: row.tx.tier,
+      timestamp: row.tx.timestamp,
+    }));
+}
+
+function evaluateRotationUnderfillTriggerState(cand: PendingCandidate, nowMs: number): RotationV1TriggerResult {
+  const empty = {
+    buyCount: 0,
+    smallBuyCount: 0,
+    grossBuySol: 0,
+    distinctRotationKols: 0,
+    recentSellCount: 0,
+    priceResponsePct: 0,
+    currentPrice: 0,
+    anchorKols: [],
+    anchorPrice: 0,
+    firstBuyAtMs: null,
+    lastBuyAtMs: null,
+    lastBuyAgeMs: null,
+    rotationScore: 0,
+  };
+  if (!config.kolHunterRotationV1Enabled || !config.kolHunterRotationUnderfillPaperEnabled) {
+    return { triggered: false, flags: [], reason: 'disabled', telemetry: empty };
+  }
+  const rotationState = ensureRotationV1State(cand);
+  if (rotationState.underfillEnteredAtMs) {
+    return { triggered: false, flags: [], reason: 'already_entered', telemetry: empty };
+  }
+  const smart = cand.smartV3;
+  const currentPrice = smart?.currentPrice ?? 0;
+  if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
+    return { triggered: false, flags: [], reason: 'missing_reference_price', telemetry: empty };
+  }
+
+  const seedKolIds = parseRotationV1KolIds();
+  const excludedKolIds = parseRotationV1ExcludeKolIds();
+  const maxLastBuyAgeSec = config.kolHunterRotationUnderfillMaxLastBuyAgeSec;
+  const buyLookbackSec = Math.max(
+    maxLastBuyAgeSec,
+    config.kolHunterRotationV1WindowSec,
+    config.kolHunterRotationUnderfillMaxRecentSellSec
+  );
+  const recentBuyStartMs = nowMs - buyLookbackSec * 1000;
+  const recentSellStartMs = nowMs - config.kolHunterRotationUnderfillMaxRecentSellSec * 1000;
+  const minKolScore = config.kolHunterRotationUnderfillMinKolScore;
+  const scoredBuys = recentKolTxs
+    .filter((tx) =>
+      tx.tokenMint === cand.tokenMint &&
+      tx.action === 'buy' &&
+      isRotationUnderfillTierEligible(tx) &&
+      tx.timestamp >= recentBuyStartMs
+    )
+    .map((tx) => ({ tx, score: rotationV1KolScore(tx, seedKolIds, excludedKolIds) }))
+    .filter((row) => row.score >= minKolScore);
+  const eligibleBuys = scoredBuys.map((row) => row.tx);
+  const recentSameMintSells = recentKolTxs.filter((tx) =>
+    tx.tokenMint === cand.tokenMint &&
+    tx.action === 'sell' &&
+    tx.timestamp >= recentSellStartMs
+  );
+  const grossBuySol = eligibleBuys.reduce((sum, tx) => {
+    const solAmount = typeof tx.solAmount === 'number' && Number.isFinite(tx.solAmount) ? tx.solAmount : 0;
+    return sum + Math.max(0, solAmount);
+  }, 0);
+  const firstBuyAtMs = eligibleBuys.reduce<number | null>(
+    (min, tx) => (min == null || tx.timestamp < min ? tx.timestamp : min),
+    null
+  );
+  const lastBuyAtMs = eligibleBuys.reduce<number | null>(
+    (max, tx) => (max == null || tx.timestamp > max ? tx.timestamp : max),
+    null
+  );
+  const lastBuyAgeMs = lastBuyAtMs == null ? null : Math.max(0, nowMs - lastBuyAtMs);
+  const anchorKols = [...new Set(eligibleBuys.map((tx) => tx.kolId))];
+  const distinctRotationKols = new Set(eligibleBuys.map((tx) => tx.kolId.toLowerCase())).size;
+  const rotationScore = scoredBuys.reduce((max, row) => Math.max(max, row.score), 0);
+  const underfillReference = buildRotationUnderfillReference(scoredBuys);
+  const anchorPrice = underfillReference?.price ?? 0;
+  const discountPct = anchorPrice > 0 ? 1 - currentPrice / anchorPrice : 0;
+  const priceResponsePct = anchorPrice > 0 ? currentPrice / anchorPrice - 1 : 0;
+  const telemetry = {
+    buyCount: eligibleBuys.length,
+    smallBuyCount: eligibleBuys.length,
+    grossBuySol,
+    distinctRotationKols,
+    recentSellCount: recentSameMintSells.length,
+    priceResponsePct,
+    currentPrice,
+    anchorKols,
+    anchorPrice,
+    anchorPriceSource: underfillReference?.source ?? 'missing_kol_fill',
+    firstBuyAtMs,
+    lastBuyAtMs,
+    lastBuyAgeMs,
+    rotationScore,
+    underfillReferenceSolAmount: underfillReference?.solAmount,
+    underfillReferenceTokenAmount: underfillReference?.tokenAmount,
+  };
+
+  if (eligibleBuys.length === 0) {
+    return {
+      triggered: false,
+      flags: [
+        'ROTATION_UNDERFILL_SA_ONLY',
+        `ROTATION_UNDERFILL_LOW_KOL_SCORE_${rotationScore.toFixed(2)}`,
+      ],
+      reason: 'underfill_no_eligible_buy',
+      telemetry,
+    };
+  }
+  if (!underfillReference) {
+    return {
+      triggered: false,
+      flags: [
+        'ROTATION_UNDERFILL_MISSING_KOL_FILL_PRICE',
+        'ROTATION_UNDERFILL_SA_ONLY',
+      ],
+      reason: 'underfill_missing_kol_fill_price',
+      participatingKols: buildRotationUnderfillParticipants(scoredBuys),
+      telemetry,
+    };
+  }
+  if (recentSameMintSells.length > 0) {
+    return {
+      triggered: false,
+      flags: ['ROTATION_UNDERFILL_RECENT_SELL_BLOCK'],
+      reason: 'underfill_recent_same_mint_sell',
+      participatingKols: buildRotationUnderfillParticipants(scoredBuys),
+      telemetry,
+    };
+  }
+  if (lastBuyAgeMs != null && lastBuyAgeMs > maxLastBuyAgeSec * 1000) {
+    return {
+      triggered: false,
+      flags: [`ROTATION_UNDERFILL_STALE_LAST_BUY_${Math.round(lastBuyAgeMs / 1000)}S`],
+      reason: 'underfill_stale_last_buy',
+      participatingKols: buildRotationUnderfillParticipants(scoredBuys),
+      telemetry,
+    };
+  }
+  if (discountPct < config.kolHunterRotationUnderfillMinDiscountPct) {
+    return {
+      triggered: false,
+      flags: [
+        'ROTATION_UNDERFILL_DISCOUNT_TOO_LOW',
+        `ROTATION_UNDERFILL_DISCOUNT_PCT_${discountPct.toFixed(4)}`,
+      ],
+      reason: 'underfill_discount_too_low',
+      participatingKols: buildRotationUnderfillParticipants(scoredBuys),
+      telemetry,
+    };
+  }
+  if (discountPct > config.kolHunterRotationUnderfillMaxDiscountPct) {
+    return {
+      triggered: false,
+      flags: [
+        'ROTATION_UNDERFILL_DISCOUNT_TOO_DEEP',
+        `ROTATION_UNDERFILL_DISCOUNT_PCT_${discountPct.toFixed(4)}`,
+      ],
+      reason: 'underfill_discount_too_deep',
+      participatingKols: buildRotationUnderfillParticipants(scoredBuys),
+      telemetry,
+    };
+  }
+
+  return {
+    triggered: true,
+    flags: [
+      'ROTATION_UNDERFILL_V1',
+      'ROTATION_UNDERFILL_PAPER_ONLY',
+      `ROTATION_UNDERFILL_DISCOUNT_PCT_${discountPct.toFixed(4)}`,
+      `ROTATION_UNDERFILL_KOLS_${distinctRotationKols}`,
+      `ROTATION_UNDERFILL_BUYS_${eligibleBuys.length}`,
+      'ROTATION_UNDERFILL_SA_ONLY',
+      `ROTATION_UNDERFILL_REF_${underfillReference.source.toUpperCase()}`,
+      `ROTATION_UNDERFILL_SCORE_${rotationScore.toFixed(2)}`,
+      `ROTATION_UNDERFILL_LAST_BUY_AGE_${Math.round((lastBuyAgeMs ?? 0) / 1000)}S`,
+    ],
+    participatingKols: buildRotationUnderfillParticipants(scoredBuys),
+    telemetry,
+  };
+}
+
 function shouldEmitRotationNoTrade(reason?: string): boolean {
   return reason === 'recent_same_mint_sell' ||
     reason === 'insufficient_price_response' ||
@@ -2439,6 +2728,14 @@ function shouldEmitRotationNoTrade(reason?: string): boolean {
     reason === 'low_rotation_score' ||
     reason === 'insufficient_rotation_kol_count' ||
     reason === 'kol_alpha_decay';
+}
+
+function shouldEmitRotationUnderfillNoTrade(reason?: string): boolean {
+  return reason === 'underfill_recent_same_mint_sell' ||
+    reason === 'underfill_missing_kol_fill_price' ||
+    reason === 'underfill_discount_too_low' ||
+    reason === 'underfill_discount_too_deep' ||
+    reason === 'underfill_stale_last_buy';
 }
 
 function buildRotationNoTradeObserverConfig() {
@@ -2495,6 +2792,63 @@ function trackRotationNoTradeMarkout(
         rotationLastBuyAgeMs: result.telemetry.lastBuyAgeMs,
         rotationScore: result.telemetry.rotationScore,
         priceResponsePct: result.telemetry.priceResponsePct,
+      },
+    },
+    buildRotationNoTradeObserverConfig()
+  );
+}
+
+function trackRotationUnderfillNoTradeMarkout(
+  cand: PendingCandidate,
+  score: KolDiscoveryScore,
+  result: RotationV1TriggerResult,
+  reason: string,
+  flags: string[]
+): void {
+  const signalPrice =
+    result.telemetry.currentPrice > 0
+      ? result.telemetry.currentPrice
+      : result.telemetry.anchorPrice > 0
+        ? result.telemetry.anchorPrice
+        : cand.smartV3?.currentPrice ?? cand.smartV3?.kolEntryPrice ?? 0;
+  if (!Number.isFinite(signalPrice) || signalPrice <= 0) return;
+  const nowMs = Date.now();
+  trackRejectForMissedAlpha(
+    {
+      rejectCategory: 'viability',
+      rejectReason: `rotation_underfill_${reason}`,
+      tokenMint: cand.tokenMint,
+      lane: LANE_STRATEGY,
+      signalPrice,
+      probeSolAmount: config.kolHunterTicketSol,
+      tokenDecimals: cand.smartV3?.tokenDecimals,
+      signalSource: 'rotation_underfill_v1',
+      extras: {
+        positionId: `rotation-underfill-notrade-${cand.tokenMint.slice(0, 8)}-${reason}-${nowMs}`,
+        eventType: 'rotation_underfill_no_trade',
+        armName: armNameForVersion(config.kolHunterRotationUnderfillParameterVersion),
+        entryReason: 'rotation_v1',
+        parameterVersion: config.kolHunterRotationUnderfillParameterVersion,
+        tokenDecimalsSource: cand.smartV3?.tokenDecimalsSource ?? null,
+        noTradeReason: reason,
+        survivalFlags: flags,
+        kolCount: cand.kolTxs.length,
+        independentKolCount: result.telemetry.distinctRotationKols || score.independentKolCount,
+        effectiveIndependentCount: result.telemetry.distinctRotationKols || score.effectiveIndependentCount,
+        kolScore: result.telemetry.rotationScore || score.finalScore,
+        participatingKols: result.participatingKols ?? [],
+        rotationV1: result.telemetry,
+        rotationAnchorKols: result.telemetry.anchorKols,
+        rotationAnchorPrice: result.telemetry.anchorPrice,
+        rotationAnchorPriceSource: result.telemetry.anchorPriceSource ?? null,
+        rotationFirstBuyAtMs: result.telemetry.firstBuyAtMs,
+        rotationLastBuyAtMs: result.telemetry.lastBuyAtMs,
+        rotationLastBuyAgeMs: result.telemetry.lastBuyAgeMs,
+        rotationScore: result.telemetry.rotationScore,
+        underfillReferenceSolAmount: result.telemetry.underfillReferenceSolAmount ?? null,
+        underfillReferenceTokenAmount: result.telemetry.underfillReferenceTokenAmount ?? null,
+        priceResponsePct: result.telemetry.priceResponsePct,
+        underfillDiscountPct: -result.telemetry.priceResponsePct,
       },
     },
     buildRotationNoTradeObserverConfig()
@@ -2606,6 +2960,46 @@ function emitRotationV1NoTradePolicy(
   trackRotationNoTradeMarkout(cand, score, result, reason, flags);
 }
 
+function emitRotationUnderfillNoTradePolicy(
+  cand: PendingCandidate,
+  score: KolDiscoveryScore,
+  result: RotationV1TriggerResult
+): void {
+  if (!shouldEmitRotationUnderfillNoTrade(result.reason)) return;
+  const discountPct = -result.telemetry.priceResponsePct;
+  if (result.reason === 'underfill_discount_too_low' && discountPct <= 0) return;
+  const rotationState = ensureRotationV1State(cand);
+  const reason = result.reason ?? 'unknown';
+  if (rotationState.underfillNoTradeReasonsEmitted?.has(reason)) return;
+  rotationState.underfillNoTradeReasonsEmitted?.add(reason);
+  const flags = [
+    ...result.flags,
+    `ROTATION_UNDERFILL_NOTRADE_${reason.toUpperCase()}`,
+    `ROTATION_UNDERFILL_DISCOUNT_PCT_${discountPct.toFixed(4)}`,
+    `ROTATION_UNDERFILL_SCORE_${result.telemetry.rotationScore.toFixed(2)}`,
+  ];
+  if (typeof result.telemetry.lastBuyAgeMs === 'number') {
+    flags.push(`ROTATION_UNDERFILL_LAST_BUY_AGE_${Math.round(result.telemetry.lastBuyAgeMs / 1000)}S`);
+  }
+  emitKolShadowPolicy({
+    eventKind: 'reject',
+    tokenMint: cand.tokenMint,
+    currentAction: 'block',
+    isLive: false,
+    isShadowArm: false,
+    armName: armNameForVersion(config.kolHunterRotationUnderfillParameterVersion),
+    entryReason: 'rotation_v1',
+    rejectReason: `rotation_underfill_${reason}`,
+    independentKolCount: result.telemetry.distinctRotationKols || score.independentKolCount,
+    effectiveIndependentCount: result.telemetry.distinctRotationKols || score.effectiveIndependentCount,
+    kolScore: result.telemetry.rotationScore || score.finalScore,
+    participatingKols: result.participatingKols ?? score.participatingKols,
+    survivalFlags: flags,
+    recentJupiter429: currentRecentJupiter429(),
+  });
+  trackRotationUnderfillNoTradeMarkout(cand, score, result, reason, flags);
+}
+
 async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
   const smart = cand.smartV3;
   if (!smart || smart.resolving) return;
@@ -2617,6 +3011,9 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
   const rotationTrigger = smartTrigger.reason
     ? undefined
     : evaluateRotationV1TriggerState(cand, nowMs);
+  const underfillTrigger = smartTrigger.reason || rotationTrigger?.triggered
+    ? undefined
+    : evaluateRotationUnderfillTriggerState(cand, nowMs);
   const entrySignal: KolEntrySignal | undefined = smartTrigger.reason && smartTrigger.conviction
     ? {
         label: 'smart-v3',
@@ -2637,9 +3034,26 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
           telemetry: rotationTrigger.telemetry,
           rotationAnchorKols: rotationTrigger.telemetry.anchorKols,
         }
+      : underfillTrigger?.triggered
+        ? {
+            label: 'rotation-underfill',
+            logTag: 'KOL_HUNTER_ROTATION_UNDERFILL_TRIGGER',
+            parameterVersion: config.kolHunterRotationUnderfillParameterVersion,
+            entryReason: 'rotation_v1' as const,
+            conviction: 'MEDIUM_HIGH' as const,
+            extraFlags: underfillTrigger.flags,
+            telemetry: underfillTrigger.telemetry,
+            rotationAnchorKols: underfillTrigger.telemetry.anchorKols,
+            entryParticipatingKols: underfillTrigger.participatingKols,
+            entryIndependentKolCount: underfillTrigger.telemetry.distinctRotationKols,
+            entryKolScore: underfillTrigger.telemetry.rotationScore,
+            paperOnly: true,
+            paperOnlyReason: 'rotation_underfill_paper_only',
+          }
       : undefined;
   if (!entrySignal) {
     if (rotationTrigger) emitRotationV1NoTradePolicy(cand, score, rotationTrigger);
+    if (underfillTrigger) emitRotationUnderfillNoTradePolicy(cand, score, underfillTrigger);
     return;
   }
 
@@ -2647,8 +3061,10 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     smart.resolving = true;
     pending.delete(cand.tokenMint);
     cleanupPendingCandidate(cand, false);
-  } else {
+  } else if (entrySignal.label === 'rotation-v1') {
     ensureRotationV1State(cand).enteredAtMs = nowMs;
+  } else {
+    ensureRotationV1State(cand).underfillEnteredAtMs = nowMs;
   }
   log.info(
     `[${entrySignal.logTag}] ${cand.tokenMint.slice(0, 8)} reason=${entrySignal.entryReason} ` +
@@ -2660,7 +3076,8 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       : '') +
     (entrySignal.telemetry
       ? ` buys=${entrySignal.telemetry.buyCount} smallBuys=${entrySignal.telemetry.smallBuyCount} ` +
-        `grossBuy=${Number(entrySignal.telemetry.grossBuySol).toFixed(3)}SOL`
+        `grossBuy=${Number(entrySignal.telemetry.grossBuySol).toFixed(3)}SOL ` +
+        `refMove=${(entrySignal.telemetry.priceResponsePct * 100).toFixed(2)}%`
       : '')
   );
 
@@ -2680,32 +3097,43 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       cooldownRemainingMs: cooldownCheck.remainingMs,
       entryReason: entrySignal.entryReason,
       parameterVersion: entrySignal.parameterVersion,
-      rotationV1: entrySignal.label === 'rotation-v1' ? entrySignal.telemetry : undefined,
+      rotationV1: entrySignal.label === 'rotation-v1' || entrySignal.label === 'rotation-underfill'
+        ? entrySignal.telemetry
+        : undefined,
     });
     if (entrySignal.label === 'smart-v3') {
       cleanupPendingCandidate(cand, true);
     }
     return;
   }
-  const decayCheck = checkKolAlphaDecay(score.participatingKols.map((k) => k.id));
+  const decayParticipants = entrySignal.entryParticipatingKols && entrySignal.entryParticipatingKols.length > 0
+    ? entrySignal.entryParticipatingKols
+    : score.participatingKols;
+  const decayCheck = checkKolAlphaDecay(decayParticipants.map((k) => k.id));
   if (decayCheck.blocked) {
     log.info(`[KOL_HUNTER_ENTRY_DECAY_BLOCK] ${cand.tokenMint.slice(0, 8)} ${entrySignal.label} ${decayCheck.reason} — reject`);
-    if (entrySignal.label === 'rotation-v1' && entrySignal.telemetry) {
+    if ((entrySignal.label === 'rotation-v1' || entrySignal.label === 'rotation-underfill') && entrySignal.telemetry) {
       const rotationState = ensureRotationV1State(cand);
-      if (!rotationState.noTradeReasonsEmitted.has('kol_alpha_decay')) {
-        rotationState.noTradeReasonsEmitted.add('kol_alpha_decay');
-        trackRotationNoTradeMarkout(
-          cand,
-          score,
-          {
-            triggered: false,
-            reason: 'kol_alpha_decay',
-            flags: ['KOL_ALPHA_DECAY'],
-            telemetry: entrySignal.telemetry,
-          },
-          'kol_alpha_decay',
-          ['KOL_ALPHA_DECAY', 'ROTATION_V1_NOTRADE_KOL_ALPHA_DECAY']
-        );
+      const emitted = entrySignal.label === 'rotation-underfill'
+        ? rotationState.underfillNoTradeReasonsEmitted
+        : rotationState.noTradeReasonsEmitted;
+      if (!emitted?.has('kol_alpha_decay')) {
+        emitted?.add('kol_alpha_decay');
+        const flags = entrySignal.label === 'rotation-underfill'
+          ? ['KOL_ALPHA_DECAY', 'ROTATION_UNDERFILL_NOTRADE_KOL_ALPHA_DECAY']
+          : ['KOL_ALPHA_DECAY', 'ROTATION_V1_NOTRADE_KOL_ALPHA_DECAY'];
+        const decayResult: RotationV1TriggerResult = {
+          triggered: false,
+          reason: 'kol_alpha_decay',
+          flags: ['KOL_ALPHA_DECAY'],
+          participatingKols: entrySignal.entryParticipatingKols,
+          telemetry: entrySignal.telemetry,
+        };
+        if (entrySignal.label === 'rotation-underfill') {
+          trackRotationUnderfillNoTradeMarkout(cand, score, decayResult, 'kol_alpha_decay', flags);
+        } else {
+          trackRotationNoTradeMarkout(cand, score, decayResult, 'kol_alpha_decay', flags);
+        }
       }
     }
     fireRejectObserver(cand.tokenMint, 'smart_v3_no_trigger', cand, score, {
@@ -2713,7 +3141,9 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       survivalFlags: ['KOL_ALPHA_DECAY'],
       entryReason: entrySignal.entryReason,
       parameterVersion: entrySignal.parameterVersion,
-      rotationV1: entrySignal.label === 'rotation-v1' ? entrySignal.telemetry : undefined,
+      rotationV1: entrySignal.label === 'rotation-v1' || entrySignal.label === 'rotation-underfill'
+        ? entrySignal.telemetry
+        : undefined,
       signalPrice: smart.currentPrice,
       tokenDecimals: smart.tokenDecimals,
     });
@@ -2732,21 +3162,24 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     rotationTelemetry: entrySignal.telemetry,
     rotationAnchorKols: entrySignal.rotationAnchorKols,
     rotationAnchorPrice: entrySignal.telemetry?.anchorPrice,
+    rotationAnchorPriceSource: entrySignal.telemetry?.anchorPriceSource,
     rotationFirstBuyAtMs: entrySignal.telemetry?.firstBuyAtMs ?? undefined,
     rotationLastBuyAtMs: entrySignal.telemetry?.lastBuyAtMs ?? undefined,
     rotationLastBuyAgeMs: entrySignal.telemetry?.lastBuyAgeMs ?? undefined,
     rotationScore: entrySignal.telemetry?.rotationScore,
+    underfillReferenceSolAmount: entrySignal.telemetry?.underfillReferenceSolAmount,
+    underfillReferenceTokenAmount: entrySignal.telemetry?.underfillReferenceTokenAmount,
     entryIndependentKolCount: entrySignal.label === 'smart-v3'
       ? smartFresh.freshIndependentKolCount
-      : undefined,
+      : entrySignal.entryIndependentKolCount,
     entryKolScore: entrySignal.label === 'smart-v3'
       ? smartFresh.freshSignalScore
-      : undefined,
+      : entrySignal.entryKolScore,
     entryParticipatingKols: entrySignal.label === 'smart-v3'
       ? (smartFresh.freshParticipatingKols.length > 0
           ? smartFresh.freshParticipatingKols
           : smartFresh.shadowFreshParticipatingKols)
-      : undefined,
+      : entrySignal.entryParticipatingKols,
   };
   const entryPolicyMetrics = entrySignal.label === 'smart-v3'
     ? {
@@ -2786,7 +3219,9 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       survivalReason: postDistribution.reason,
       survivalFlags: entryFlags,
       postDistributionGuard: postDistribution.telemetry,
-      rotationV1: entrySignal.label === 'rotation-v1' ? entrySignal.telemetry : undefined,
+      rotationV1: entrySignal.label === 'rotation-v1' || entrySignal.label === 'rotation-underfill'
+        ? entrySignal.telemetry
+        : undefined,
       entryReason: entryOptions.entryReason,
       parameterVersion: entryOptions.parameterVersion,
       signalPrice: smart.currentPrice,
@@ -2795,6 +3230,21 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     if (entrySignal.label === 'smart-v3') {
       cleanupPendingCandidate(cand, true);
     }
+    return;
+  }
+
+  if (entrySignal.paperOnly) {
+    const policyFlags = [
+      ...entryFlags,
+      entrySignal.paperOnlyReason?.toUpperCase() ?? 'ROTATION_UNDERFILL_PAPER_ONLY',
+    ];
+    log.warn(
+      `[KOL_HUNTER_ROTATION_UNDERFILL_PAPER_ONLY] ${cand.tokenMint.slice(0, 8)} ` +
+      `discount=${(-Number(entrySignal.telemetry?.priceResponsePct ?? 0) * 100).toFixed(2)}% ` +
+      `kols=${entrySignal.entryIndependentKolCount ?? 0} score=${(entrySignal.entryKolScore ?? 0).toFixed(2)}. ` +
+      `enter paper.`
+    );
+    await enterPaperPosition(cand.tokenMint, cand, score, policyFlags, entryOptions);
     return;
   }
 
@@ -3483,12 +3933,7 @@ async function enterPaperPosition(
     const convictionLevel = parameterVersion === primaryVersion
       ? options.convictionLevel ?? defaultConvictionForVersion(parameterVersion)
       : defaultConvictionForVersion(parameterVersion);
-    const dynamicExit = (
-      parameterVersion === config.kolHunterSmartV3ParameterVersion ||
-      parameterVersion === config.kolHunterRotationV1ParameterVersion
-    )
-      ? dynamicExitParamsForEntry(entryReason)
-      : {};
+    const dynamicExit = dynamicExitParamsForPosition(parameterVersion, entryReason);
     return {
       positionId: id,
       tokenMint,
@@ -3520,10 +3965,13 @@ async function enterPaperPosition(
       rotationAnchorKols: options.rotationAnchorKols,
       rotationEntryAtMs: options.rotationAnchorKols ? Date.now() : undefined,
       rotationAnchorPrice: options.rotationAnchorPrice,
+      rotationAnchorPriceSource: options.rotationAnchorPriceSource,
       rotationFirstBuyAtMs: options.rotationFirstBuyAtMs,
       rotationLastBuyAtMs: options.rotationLastBuyAtMs,
       rotationLastBuyAgeMs: options.rotationLastBuyAgeMs,
       rotationScore: options.rotationScore,
+      underfillReferenceSolAmount: options.underfillReferenceSolAmount,
+      underfillReferenceTokenAmount: options.underfillReferenceTokenAmount,
       kolReinforcementCount: 0,
       detectorVersion: config.kolHunterDetectorVersion,
       independentKolCount: entryIndependentKolCount,
@@ -4206,10 +4654,13 @@ function closePosition(
           rotationAnchorKols: pos.rotationAnchorKols ?? null,
           rotationEntryAtMs: pos.rotationEntryAtMs ?? null,
           rotationAnchorPrice: pos.rotationAnchorPrice ?? null,
+          rotationAnchorPriceSource: pos.rotationAnchorPriceSource ?? null,
           rotationFirstBuyAtMs: pos.rotationFirstBuyAtMs ?? null,
           rotationLastBuyAtMs: pos.rotationLastBuyAtMs ?? null,
           rotationLastBuyAgeMs: pos.rotationLastBuyAgeMs ?? null,
           rotationScore: pos.rotationScore ?? null,
+          underfillReferenceSolAmount: pos.underfillReferenceSolAmount ?? null,
+          underfillReferenceTokenAmount: pos.underfillReferenceTokenAmount ?? null,
           tokenDecimalsSource: pos.tokenDecimalsSource ?? null,
         },
       },
@@ -4719,10 +5170,13 @@ async function appendPaperLedger(
       rotationAnchorKols: pos.rotationAnchorKols ?? null,
       rotationEntryAtMs: pos.rotationEntryAtMs ?? null,
       rotationAnchorPrice: pos.rotationAnchorPrice ?? null,
+      rotationAnchorPriceSource: pos.rotationAnchorPriceSource ?? null,
       rotationFirstBuyAtMs: pos.rotationFirstBuyAtMs ?? null,
       rotationLastBuyAtMs: pos.rotationLastBuyAtMs ?? null,
       rotationLastBuyAgeMs: pos.rotationLastBuyAgeMs ?? null,
       rotationScore: pos.rotationScore ?? null,
+      underfillReferenceSolAmount: pos.underfillReferenceSolAmount ?? null,
+      underfillReferenceTokenAmount: pos.underfillReferenceTokenAmount ?? null,
       markoutOffsetsSec: tradeMarkoutOffsetsSecForPosition(pos),
     };
     // 2026-04-28: inactive KOL paper trade 결과는 별도 ledger 로 분리. active 분포 무결성 유지.
@@ -5107,12 +5561,7 @@ async function enterLivePosition(
   const armName = armNameForVersion(primaryVersion);
   const entryReason = options.entryReason ?? defaultEntryReasonForVersion(primaryVersion);
   const conviction = options.convictionLevel ?? defaultConvictionForVersion(primaryVersion);
-  const dynamicExit = (
-    primaryVersion === config.kolHunterSmartV3ParameterVersion ||
-    primaryVersion === config.kolHunterRotationV1ParameterVersion
-  )
-    ? dynamicExitParamsForEntry(entryReason)
-    : {};
+  const dynamicExit = dynamicExitParamsForPosition(primaryVersion, entryReason);
   const liveDecimals = typeof options.tokenDecimals === 'number'
     ? options.tokenDecimals
     : referenceTick.outputDecimals ?? undefined;

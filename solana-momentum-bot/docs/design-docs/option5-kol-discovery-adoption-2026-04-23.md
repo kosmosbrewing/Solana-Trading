@@ -127,13 +127,19 @@
 
 ## 5. Hard Constraints — 이 결정 이후 불변
 
+> 2026-05-03 정합성 주석: 아래 Real Asset Guard 값은 현재 운영 기준으로 갱신됐다.
+> `MISSION_CONTROL.md` 가 wallet floor `0.7 SOL`, KOL ticket `0.02 SOL`,
+> KOL canary cap `-0.2 SOL` 을 상위 운영값으로 둔다. Option 5 의 핵심 결정
+> 자체는 유지된다: KOL discovery is first-class, execution discipline and guardrails
+> are not bypassed.
+
 ### 5.1 Real Asset Guard (절대 불변)
 
 | 항목 | 값 | 근거 |
 |------|-----|------|
-| Wallet floor | 0.8 SOL | mission-refinement §3 |
-| Canary cumulative loss cap | -0.3 SOL | 동일 |
-| Fixed ticket | 0.01 SOL | 동일 + project_ticket_policy_hard_lock_2026_04_21 |
+| Wallet floor | 0.7 SOL | `MISSION_CONTROL.md` 2026-04-28 B안 |
+| Canary cumulative loss cap | default lane -0.3 SOL / KOL -0.2 SOL | `MISSION_CONTROL.md` |
+| Fixed ticket | pure_ws/cupsey/migration 0.01 SOL / KOL 0.02 SOL | `SESSION_START.md`, `MISSION_CONTROL.md` |
 | Max concurrent | 3 (전역) | 동일 |
 | Wallet delta drift halt | ≥ 0.2 SOL | 동일 |
 | Daily bleed budget | wallet × 0.05 | 동일 |
@@ -190,7 +196,7 @@
 
 **Go 기준**:
 - Live net 5x+ 또는 T2 visit ≥ 1건
-- 0.8 floor 무위반
+- 0.7 floor 무위반
 - paper vs live gap (slippage / friction) 허용 범위
 
 **No-go 시 행동**:
@@ -244,8 +250,11 @@
 
 > "0.8 SOL floor 를 깨지 않고 200 live trades 를 통과하며, 5x+ winner 분포를 실측했다."
 
+2026-05-03 운영 기준으로 floor 는 `0.7 SOL` 로 갱신됐다. 원문 사명은
+"floor 보호 + 200 live trades + 5x+ winner 실측" 구조로 유지한다.
+
 본 결정 이후:
-- 0.8 floor: Real Asset Guard 불변 ✅
+- 0.7 floor: Real Asset Guard 불변 ✅
 - 200 trades: Lane S + Lane T 병행 속도 ≥ 현 pure_ws 단독
 - **5x+ winner**: **구조적 가능**으로 전환 (현 구조: 구조적 불가)
 

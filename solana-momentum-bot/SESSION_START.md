@@ -29,17 +29,17 @@ npm run check:fast
 
 1. **`MISSION_CONTROL.md`** — 6 control framework (survival/universe/payoff/execution/experiment/discipline). 모든 변경의 4-layer reporting 의무.
 2. **`docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md`** — **현 active paradigm**. KOL Wallet = 1st-class Discovery, 자체 Execution 구조 유지 + Lane T 파라미터 재조정.
-3. **`docs/design-docs/mission-refinement-2026-04-21.md`** — 원 사명 정의. 현재 운영 floor 는 2026-04-28 B안으로 **0.7 SOL** 확정 예정 + 200 live trades + 5x+ winner 실측. 100 SOL 은 tail outcome.
+3. **`docs/design-docs/mission-refinement-2026-04-21.md`** — 원 사명 정의. 현재 운영 floor 는 2026-04-28 B안으로 **0.7 SOL** 확정 + 200 live trades + 5x+ winner 실측. 100 SOL 은 tail outcome.
 4. **`REFACTORING_v1.0.md`** — Option 5 의 Phase 0-5 실행 가이드 (현 active sprint).
 
-### Lane 표 (2026-04-26 갱신 — swing-v2 추가)
+### Lane 표 (2026-05-03 갱신 — 3 strategy split)
 
 | Lane | arm | 모드 | 역할 | 코드 | 파라미터 |
 |------|------|------|------|------|----------|
 | `cupsey_flip_10s` | — | (disabled) | **Benchmark (frozen)** — 개조 금지 | `cupseyLaneHandler.ts` | 변경 0 |
-| `pure_ws_breakout` | primary (v1) | live opt-in | Lane S (scalping baseline) | `pureWsBreakoutHandler.ts` | 30s probe / 15% trail |
-| `pure_ws_swing_v2` | shadow / live canary | paper-first → opt-in live | swing 손익비 A/B | `pureWs/swingV2Entry.ts` | 600s probe / 25% trail / 1.10 floor |
-| `kol_hunter` | v1 / smart-v3 / swing-v2 | **live canary active** + paper fallback/shadow | **Lane T (사명 직결)** | `kolSignalHandler.ts` | smart-v3 main + swing-v2 shadow |
+| `kol_hunter_smart_v3` | main | live canary + paper fallback | **Main 5x lane** | `kolSignalHandler.ts` | fresh active 2+ KOL velocity / pullback live fallback |
+| `kol_hunter_rotation_v1` | control + paper arms | paper measurement, live off until evidence | fast-compound auxiliary | `kolSignalHandler.ts`, `rotationPaperDigest.ts` | T+15/T+30 post-cost / underfill paper-only |
+| `pure_ws botflow` | primary + paper arms | paper/observe-only | new-pair botflow rebuild candidate | `src/orchestration/pureWs/`, `src/observability/pureWsBotflow*.ts` | T+15/30/60/180/300/1800 / 15m digest |
 
 ---
 
@@ -64,6 +64,7 @@ npm run check:fast
 ## 4. 5 분 안에 알아야 할 것
 
 ### 최근 무엇을 했나
+- **2026-05-03** — **3 strategy operating split + lane projection ledger refactor**. smart-v3 = main 5x lane, rotation-v1 = fast-compound auxiliary, pure_ws botflow = paper/observe-only rebuild candidate 로 문서/리포트 기준 정리. KOL aggregate ledgers 유지 (`kol-paper-trades.jsonl`, `kol-live-trades.jsonl`) + lane projection 추가 (`smart-v3-*`, `rotation-v1-*`, `pure-ws-*`). Shared markout ledger 는 분리하지 않음 (`trade-markout-anchors.jsonl`, `trade-markouts.jsonl`). rotation digest/report 는 `rotation-v1-paper-trades.jsonl` 우선 + aggregate fallback. `sync-vps-data.sh` sync health 에 projection 파일 freshness/row count 추가. 기준 문서: `docs/design-docs/lane-operating-refactor-2026-05-03.md`, `docs/exec-plans/active/20260503_BACKLOG.md`.
 - **2026-05-01** — **Sprint X+Y+Z 통합 — ATA rent token-only 측정 분리 + Codex 4 finding fix + R1 regression**. KIKI/STEWARD live trade 외부 explorer 비교에서 사용자 가설 "0.004 rent 누적" 정량 검증 (ticket 0.02 SOL 기준 ATA rent overhead 20% → token-only 5x 가 wallet 기준 +316.7% 로 측정 = **5x missed risk**). **Measurement-only 원칙** (거래 행동 변경 0): SwapResult schema 5 신규 필드 (swap/wallet/rent/fee/jitoTip), `decomposeSwapCost()` RPC inner instruction parse, V6+Ultra 양 path 자동 분해. PaperPosition + 모든 ledger 에 token-only / wallet-delta 분리 (entry/exit/mfe/mae/netPct/netSol). Telegram 진입 알림에 cost decomp line + 종료 알림에 entry rent visibility. analyzer (kol-paper-arm-report / dsr-validator / kol-live-canary-report) 모두 token-only 기반 stop 평가. Codex 4 finding fix: H1 (live ledger 시장가 기반), H2 (Jito fallback tip=0), M3 (live canary actual5x token-only), M4 (DSR Net SOL Wallet/Token 분리). R1 regression test (decomposeSwapCost 6 tests). R2 (Stream E pool pagination) 백로그. **165 suites / 1656 tests pass**.
 - **2026-04-29** — KOL Big-loss Roadmap 채택 (`docs/exec-plans/active/kol-bigloss-roadmap-2026-04-29.md`) — paper n=438 분석에서 big-loss 51건이 all-loser cum 의 41% (IDEAL +84% sim). 4-Track 단계별 IDEAL 12%→25%→45%→60%→80% 도달 계획. **5종 변경 일괄 구현 (working tree, 미commit)**: (1) Track 1 same-token re-entry cooldown 30분 (KOL 진입 직전 reject), (2) Track 2A retro 분석 script (`scripts/kol-token-quality-retro.ts` 신규 — NO_SECURITY_DATA cohort = strong predictor 발견), (3) Track 2B NO_SECURITY_DATA reject default true (IDEAL 25%→35%), (4) Daily loss D+A (Calibration `0.05→0.15` + `RISK_MAX_DAILY_LOSS_OVERRIDE` env, -0.094 halt 사례 대응), (5) reporting.ts Q1+Q2+Q3 (reset helper 통합 / 5x peak 정의 사명 §3 정합 / transient 실패 batch 보존). `reports/` gitignore + 6 파일 untrack. **134 suites / 1122 tests pass**.
 - **2026-04-28** — 24h 동기화 분석에서 **5x winner 1건 첫 돌파** (`DF7DAPat` smart-v3 mfe+940% / net+940% / insider_exit_full / hold 656s). 사명 §3 binding constraint 24h 첫 돌파 ✓. 3 of 4 phase gate 충족. 단 **3대 incident** 동시 발견: missed-alpha observer dead, wallet_delta_warn drift 0.118 SOL spam (5분 × 6회), notifier failures 3건 error 빈 capture. 분석 측정 무결성 — 시간대 정합 규칙 적용 (UTC 기준 일관).

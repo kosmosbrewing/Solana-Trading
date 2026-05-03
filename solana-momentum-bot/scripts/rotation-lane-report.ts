@@ -8,6 +8,9 @@ import {
   type DevWalletCandidateIndex,
 } from '../src/observability/devWalletCandidateRegistry';
 
+const ROTATION_PAPER_TRADES_FILE = 'rotation-v1-paper-trades.jsonl';
+const KOL_PAPER_TRADES_FILE = 'kol-paper-trades.jsonl';
+
 interface Args {
   realtimeDir: string;
   sinceMs: number;
@@ -119,7 +122,7 @@ function parseArgs(argv: string[]): Args {
     sinceMs: Date.now() - 24 * 3600_000,
     horizonsSec: [15, 30, 60],
     roundTripCostPct: 0.005,
-    paperTradesFileName: 'kol-paper-trades.jsonl',
+    paperTradesFileName: ROTATION_PAPER_TRADES_FILE,
     assumedAtaRentSol: 0.00207408,
     assumedNetworkFeeSol: 0.000105,
     candidateFile: DEFAULT_DEV_WALLET_CANDIDATE_PATH,
@@ -676,15 +679,18 @@ function renderReport(report: RotationReport): string {
 }
 
 export async function buildRotationLaneReport(args: Args): Promise<RotationReport> {
-  const paperTradesFileName = args.paperTradesFileName ?? 'kol-paper-trades.jsonl';
+  const paperTradesFileName = args.paperTradesFileName ?? ROTATION_PAPER_TRADES_FILE;
   const assumedAtaRentSol = args.assumedAtaRentSol ?? 0.00207408;
   const assumedNetworkFeeSol = args.assumedNetworkFeeSol ?? 0.000105;
-  const [tradeMarkouts, missedAlpha, tokenQuality, paperTrades] = await Promise.all([
+  const [tradeMarkouts, missedAlpha, tokenQuality, projectedPaperTrades] = await Promise.all([
     readJsonl(path.join(args.realtimeDir, 'trade-markouts.jsonl')),
     readJsonl(path.join(args.realtimeDir, 'missed-alpha.jsonl')),
     readJsonl(path.join(args.realtimeDir, 'token-quality-observations.jsonl')),
     readJsonl(path.join(args.realtimeDir, paperTradesFileName)),
   ]);
+  const paperTrades = projectedPaperTrades.length > 0 || paperTradesFileName !== ROTATION_PAPER_TRADES_FILE
+    ? projectedPaperTrades
+    : await readJsonl(path.join(args.realtimeDir, KOL_PAPER_TRADES_FILE));
   const candidateIndex = args.candidateFile
     ? await loadDevWalletCandidateIndex(args.candidateFile)
     : undefined;

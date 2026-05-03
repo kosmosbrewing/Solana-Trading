@@ -149,6 +149,30 @@ Rotation v1 uses a shorter validation clock than the 5x lane:
   dev candidate file to report T+60 `postCostDelta` by dev bucket. This is report-only. Dev candidate
   labels are not entry triggers, not live allowlists, and do not bypass security / sell quote / drift gates.
 
+### Ledger Projection Update (2026-05-03)
+
+Rotation no longer needs to be discovered only by filtering `kol-paper-trades.jsonl`.
+
+The writer now keeps the legacy aggregate ledger and adds lane projections:
+
+```text
+data/realtime/kol-paper-trades.jsonl          # compatibility aggregate
+data/realtime/kol-live-trades.jsonl           # compatibility aggregate
+data/realtime/rotation-v1-paper-trades.jsonl  # rotation projection
+data/realtime/rotation-v1-live-trades.jsonl   # rotation projection
+```
+
+Projection writes are fail-open and never replace the aggregate ledger writes.
+
+Rotation reporting behavior:
+
+- `src/orchestration/rotationPaperDigest.ts` reads `rotation-v1-paper-trades.jsonl` first;
+- `scripts/rotation-lane-report.ts` defaults to `rotation-v1-paper-trades.jsonl`;
+- both paths fall back to `kol-paper-trades.jsonl` when the projection file is empty;
+- shared markout files stay unchanged and are filtered by `armName`, `entryReason`, `mode`, and rotation extras.
+
+This keeps historical reports working while making daily rotation paper review much simpler.
+
 ## Rollout
 
 1. Paper: enable `KOL_HUNTER_ROTATION_V1_ENABLED=true`, leave live disabled when a paper-only shakeout is desired.

@@ -1,6 +1,6 @@
 # Design Docs 카탈로그
 
-> Updated: 2026-04-25 (post-pivot)
+> Updated: 2026-05-03 (post-pivot)
 > Authority: [`mission-pivot-2026-04-18.md`](./mission-pivot-2026-04-18.md) 최상위
 
 ## Post-Pivot Authority (2026-04-18)
@@ -19,6 +19,7 @@
 | **Helius Credit-to-Edge Plan** | `../exec-plans/active/helius-credit-edge-plan-2026-05-01.md` | 🟡 Phase 0-4 인프라 완성 / Stream D-G runtime wiring 일부 미완 — Stream A (credit catalog + ledger), B (token quality 7 flag), C (KolTx slot/parseSource) 완료. Stream D/E/F/G helper + tests 완료, runtime wiring partially 진행 (markout `--rpc-url` opt-in, registry inject). Codex P2 4건 follow-up 명시 (close anchor schema / rejectedAt parser / signature pagination / lookup-table). 정책 결정 evidence 보강 필요 | 2026-05-01 |
 | **Helius Phase 4 Policy Candidates Template** | `../exec-plans/active/helius-phase4-policy-candidates-template.md` | 🟡 template — 7-day data 도달 후 채울 4-track 정책 ADR placeholder. Track 1 (token quality hard gate) + Track 2 (pool prewarm) 즉시 / Track 3 (KOL role 자동화) 200-trade gate 까지 대기 / Track 4 (priority fee canary) S3 trigger 정합 | 2026-05-01 |
 | **Pure WS Bot-Flow Rebuild** | `pure-ws-botflow-rebuild-2026-05-02.md` | 🟡 Phase 2 sidecar paper simulator 구현 — legacy pure_ws breakout 를 new-pair bot-flow microstructure lane 으로 재정의. `purews:botflow-paper` 로 fee-payer bot-flow 후보/마크아웃/context coverage + paper simulation 산출. Live micro-canary 는 evidence gate 후 | 2026-05-02 |
+| **Lane Operating And Ledger Refactor** | `lane-operating-refactor-2026-05-03.md` | ✅ smart-v3 / rotation-v1 / pure_ws 운영 역할 정리 + lane별 trade projection ledger 추가. Aggregate KOL ledgers 유지, shared markout ledger 유지, rotation report/digest projection 우선 + fallback 적용 | 2026-05-03 |
 | DEX_TRADE Phase 3 (Quick Reject + Hold Sentinel + Ruin Sim) | — | ✅ 구현 완료 (modules + script + tests) | 2026-04-18 |
 
 ## Pre-Pivot (historical — 현재 판정 근거로 사용 금지)
@@ -45,7 +46,9 @@ Stage 2 Liquidity / Quote Sanity    — Jupiter quote, TVL, spread
 Stage 3 Exitability                 — sell-side impact probe
 Stage 4 Lane-specific factor gate
           cupsey: cupseyGate (vol + price + buy ratio + trade count, 고정)
-          pure_ws_breakout: loose factor set (cupsey gate factor 재사용, threshold 완화)
+          pure_ws botflow: paper/observe-only new-pair botflow measurement
+          kol_hunter_smart_v3: fresh active KOL velocity / paper fallback
+          kol_hunter_rotation_v1: T+15/T+30 post-cost fast-compound measurement
           bootstrap: vol + buyRatio (signal-only)
 Stage 5 Integrity                    — persistOpenTradeWithIntegrity (lane별 halt)
 Stage 6 Canary                       — auto-halt (loss streak / budget / max trades)

@@ -531,6 +531,46 @@ no floor stress
 - Do not disable sell-route / drift / wallet delta guards.
 - Do not treat 100 SOL as a near-term KPI.
 
+## 11. Runtime Measurement Update (2026-05-03)
+
+The runtime pure_ws paper path is now treated as the live evidence source for this rebuild, separate from the offline botflow parser.
+
+Current measurement behavior:
+
+- paper open/close rows write to `data/realtime/pure-ws-paper-trades.jsonl`;
+- future live rows reserve `data/realtime/pure-ws-live-trades.jsonl`;
+- paper buy/sell anchors feed the shared trade markout observer;
+- default paper markout horizons are `15,30,60,180,300,1800`;
+- digest is summary-first, with 15-minute operating cadence;
+- individual open/close Telegram alerts are not the default operating view;
+- paper parameter arms include:
+  - `pure_ws_cost_guard_v1`;
+  - `pure_ws_confirm60_v1`.
+
+`paperOnlyReason` must stay visible in reports because paper can intentionally observe cases that live must block:
+
+```text
+security_data_unavailable_observe
+entry_drift_quote_repriced
+```
+
+Promotion analysis must separate:
+
+```text
+all paper rows
+live-eligible paper rows
+paper-observe bypass rows
+```
+
+Do not judge pure_ws by gross or token-only positive rows alone. The required view is post-cost result, T+15/T+30/T+60 `okCoverage`, and same-pair concentration.
+
+Shared markout files remain unchanged:
+
+```text
+data/realtime/trade-markout-anchors.jsonl
+data/realtime/trade-markouts.jsonl
+```
+
 ## 10. Final Recommendation
 
 Proceed with the rebuild.

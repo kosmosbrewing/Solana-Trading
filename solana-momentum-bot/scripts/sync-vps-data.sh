@@ -153,6 +153,12 @@ write_sync_health_report() {
       "data/realtime/current-session.json" \
       "data/realtime/kol-paper-trades.jsonl" \
       "data/realtime/kol-live-trades.jsonl" \
+      "data/realtime/smart-v3-paper-trades.jsonl" \
+      "data/realtime/smart-v3-live-trades.jsonl" \
+      "data/realtime/rotation-v1-paper-trades.jsonl" \
+      "data/realtime/rotation-v1-live-trades.jsonl" \
+      "data/realtime/pure-ws-paper-trades.jsonl" \
+      "data/realtime/pure-ws-live-trades.jsonl" \
       "data/realtime/token-quality-observations.jsonl" \
       "data/realtime/missed-alpha.jsonl" \
       "data/realtime/trade-markout-anchors.jsonl" \

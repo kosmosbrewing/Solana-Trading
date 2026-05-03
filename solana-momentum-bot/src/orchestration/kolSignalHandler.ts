@@ -5040,6 +5040,33 @@ function buildKolBaseLedgerRecord(
   };
 }
 
+type KolTradeProjectionMode = 'paper' | 'live';
+
+function kolTradeProjectionFileName(pos: PaperPosition, mode: KolTradeProjectionMode): string | null {
+  if (isRotationFamilyMarkoutPosition(pos)) {
+    return mode === 'paper' ? 'rotation-v1-paper-trades.jsonl' : 'rotation-v1-live-trades.jsonl';
+  }
+  if (isSmartV3Position(pos)) {
+    return mode === 'paper' ? 'smart-v3-paper-trades.jsonl' : 'smart-v3-live-trades.jsonl';
+  }
+  return null;
+}
+
+async function appendKolTradeProjection(
+  dir: string,
+  pos: PaperPosition,
+  mode: KolTradeProjectionMode,
+  record: Record<string, unknown>
+): Promise<void> {
+  const fileName = kolTradeProjectionFileName(pos, mode);
+  if (!fileName) return;
+  try {
+    await appendFile(path.join(dir, fileName), JSON.stringify(record) + '\n', 'utf8');
+  } catch (err) {
+    log.debug(`[KOL_HUNTER] ${mode} lane projection append failed (${fileName}): ${String(err)}`);
+  }
+}
+
 /**
  * 2026-05-01 (Decu Quality Layer Phase B.6): observe-only token quality record.
  * Entry 직후 fire-and-forget — RPC / IPFS 호출 0 (현 sprint 는 KOL 메타만 기록,
@@ -5184,6 +5211,7 @@ async function appendPaperLedger(
       ? config.kolShadowPaperTradesFileName
       : 'kol-paper-trades.jsonl';
     await appendFile(path.join(dir, fileName), JSON.stringify(record) + '\n', 'utf8');
+    await appendKolTradeProjection(dir, pos, 'paper', record);
   } catch (err) {
     log.debug(`[KOL_HUNTER] paper ledger append failed: ${String(err)}`);
   }
@@ -5229,6 +5257,7 @@ async function appendLiveLedger(
       ticketSol: pos.ticketSol,
     };
     await appendFile(path.join(dir, 'kol-live-trades.jsonl'), JSON.stringify(record) + '\n', 'utf8');
+    await appendKolTradeProjection(dir, pos, 'live', record);
   } catch (err) {
     log.debug(`[KOL_HUNTER] live ledger append failed: ${String(err)}`);
   }

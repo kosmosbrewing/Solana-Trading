@@ -28,6 +28,7 @@ import { getPureWsLivePriceTracker } from './livePriceTracker';
 import { getPureWsExecutor, resolvePureWsWalletLabel } from './wallet';
 import type { PureWsPosition } from './types';
 import { lookupCachedSymbol } from '../../ingester/tokenSymbolResolver';
+import { trackPureWsPaperMarkout } from './markout';
 
 export async function closePureWsPosition(
   id: string,
@@ -353,8 +354,8 @@ async function closePaperOnlyPosition(
   const mfePct = ref > 0 ? (pos.peakPrice - ref) / ref : 0;
   const maePct = ref > 0 ? (pos.troughPrice - ref) / ref : 0;
   const isShadow = pos.isShadowArm === true;
-  const strategy = isShadow ? 'pure_ws_swing_v2' : LANE_STRATEGY;
-  const armName = pos.armName ?? strategy;
+  const armName = pos.armName ?? (isShadow ? 'pure_ws_swing_v2' : LANE_STRATEGY);
+  const strategy = armName.startsWith('pure_ws') ? armName : (isShadow ? 'pure_ws_swing_v2' : LANE_STRATEGY);
   const tag = isShadow ? 'PUREWS_SWING_V2_PAPER_CLOSE' : 'PUREWS_PAPER_CLOSE';
 
   if (config.tokenSessionTrackerEnabled) {
@@ -368,7 +369,7 @@ async function closePaperOnlyPosition(
     `hold=${holdSec}s mfe=${(mfePct * 100).toFixed(2)}% mae=${(maePct * 100).toFixed(2)}% ` +
     `t1=${pos.t1VisitAtSec ? 'y' : 'n'} t2=${pos.t2VisitAtSec ? 'y' : 'n'} t3=${pos.t3VisitAtSec ? 'y' : 'n'}`
   );
-  if (config.pureWsPaperNotifyEnabled && !isShadow) {
+  if (config.pureWsPaperNotifyEnabled && config.pureWsPaperNotifyIndividualEnabled && !isShadow) {
     const symbol = pos.tokenSymbol ?? shortenAddress(pos.pairAddress);
     void ctx.notifier.sendMessage([
       `🟣 <b>pure_ws paper 종료</b> <b>${escapeHtml(symbol)}</b> <code>${escapeHtml(id.slice(0, 12))}</code> · ${pnl >= 0 ? '+' : ''}${pnl.toFixed(6)} SOL`,
@@ -379,12 +380,40 @@ async function closePaperOnlyPosition(
       log.warn(`[PUREWS_PAPER_NOTIFY_CLOSE_FAIL] ${id} ${err}`);
     });
   }
+  if (!isShadow && config.pureWsPaperNotifyEnabled && mfePct >= config.pureWsPaperRareMfePct) {
+    const symbol = pos.tokenSymbol ?? shortenAddress(pos.pairAddress);
+    void ctx.notifier.sendInfo([
+      `[PURE_WS_PAPER_RARE_MFE] ${armName} ${symbol} ${id.slice(0, 12)}`,
+      `MFE +${(mfePct * 100).toFixed(2)}% · net ${(netPct * 100).toFixed(2)}% · hold ${holdSec}s`,
+      `reason=${reason} · mint=${pos.pairAddress}`,
+    ].join('\n'), 'pure_ws_paper_rare').catch((err) => {
+      log.warn(`[PUREWS_PAPER_RARE_NOTIFY_FAIL] ${id} ${err}`);
+    });
+  }
 
   // Paper ledger — kol-paper-trades.jsonl 패턴 동일.
+  const closedAt = new Date();
+  trackPureWsPaperMarkout(
+    pos,
+    'sell',
+    exitPrice,
+    Math.max(0.000001, ticketSol),
+    closedAt.getTime(),
+    {
+      exitReason: reason,
+      holdSec,
+      mfePct,
+      maePct,
+      netPct,
+      netPctTokenOnly: tokenOnlyNetPct,
+      netSol: pnl,
+      netSolTokenOnly: rawPnl,
+      closeState: pos.state,
+    }
+  );
   try {
     const dir = config.realtimeDataDir;
     await mkdir(dir, { recursive: true });
-    const closedAt = new Date();
     const record = {
       positionId: id,
       strategy,
@@ -402,6 +431,7 @@ async function closePaperOnlyPosition(
       ticketSol,
       entryPrice: pos.entryPrice,
       exitPrice,
+      tokenDecimals: pos.tokenDecimals ?? null,
       entryTimeSec: pos.entryTimeSec,
       exitTimeSec: Math.floor(closedAt.getTime() / 1000),
       entryAt: new Date(pos.entryTimeSec * 1000).toISOString(),
@@ -421,6 +451,8 @@ async function closePaperOnlyPosition(
       t3VisitAtSec: pos.t3VisitAtSec ?? null,
       probeWindowSec: pos.probeWindowSecOverride ?? null,
       probeHardCutPct: pos.probeHardCutPctOverride ?? null,
+      probeTrailingPct: pos.probeTrailingPctOverride ?? null,
+      t1MfeThreshold: pos.continuationT1Threshold ?? null,
       t1TrailPct: pos.t1TrailPctOverride ?? null,
       t1ProfitFloorMult: pos.t1ProfitFloorMultOverride ?? null,
       closedAt: closedAt.toISOString(),

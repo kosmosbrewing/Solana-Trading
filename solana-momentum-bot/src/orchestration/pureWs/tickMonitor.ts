@@ -61,6 +61,7 @@ export async function updatePureWsPositions(
     const effProbeWindowSec =
       pos.probeWindowSecOverride ?? pos.continuationProbeWindowSec ?? config.pureWsProbeWindowSec;
     const effProbeHardCutPct = pos.probeHardCutPctOverride ?? config.pureWsProbeHardCutPct;
+    const effProbeTrailingPct = pos.probeTrailingPctOverride ?? config.pureWsProbeTrailingPct;
     const effT1TrailPct = pos.t1TrailPctOverride ?? config.pureWsT1TrailingPct;
     const effT1ProfitFloor = pos.t1ProfitFloorMultOverride;
 
@@ -136,7 +137,7 @@ export async function updatePureWsPositions(
         }
         // PROBE trail (flat band 벗어난 후 peak 에서 pullback → trail stop 발동)
         if (pos.peakPrice > pos.entryPrice) {
-          const trailStop = pos.peakPrice * (1 - config.pureWsProbeTrailingPct);
+          const trailStop = pos.peakPrice * (1 - effProbeTrailingPct);
           if (currentPrice <= trailStop) {
             log.info(
               `[PUREWS_PROBE_TRAIL] ${id} peak=${pos.peakPrice.toFixed(8)} ` +

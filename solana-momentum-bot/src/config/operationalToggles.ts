@@ -1,7 +1,7 @@
 // Tier 2: Operational switches (.env 토글 — 배포 없이 변경).
 // trading mode, lane enable/disable, gate enable/disable, runner mode flags.
 
-import { boolOptional, optional, parseTradingMode } from './helpers';
+import { boolOptional, numEnv, optional, parseTradingMode } from './helpers';
 
 const tradingMode = parseTradingMode();
 
@@ -47,6 +47,11 @@ export const operationalToggles = {
   // live 운영 중에도 pure_ws primary 를 paper-only 로 계속 검증한다.
   // false 로 두면 예전처럼 PUREWS_LIVE_CANARY_ENABLED=false 에서 로그만 남기고 return.
   pureWsPaperShadowEnabled: boolOptional('PUREWS_PAPER_SHADOW_ENABLED', true),
-  // pure_ws paper-only 진입/종료를 Telegram 으로 알린다. 운영 검증용이므로 기본 on.
+  // pure_ws paper 관측 알림 master switch. 개별 open/close 는 별도 flag 로 opt-in.
   pureWsPaperNotifyEnabled: boolOptional('PUREWS_PAPER_NOTIFY_ENABLED', true),
+  pureWsPaperNotifyIndividualEnabled: boolOptional('PUREWS_PAPER_NOTIFY_INDIVIDUAL_ENABLED', false),
+  pureWsPaperDigestEnabled: boolOptional('PUREWS_PAPER_DIGEST_ENABLED', true),
+  pureWsPaperDigestIntervalMs: numEnv('PUREWS_PAPER_DIGEST_INTERVAL_MS', '900000'),
+  pureWsPaperRareMfePct: numEnv('PUREWS_PAPER_RARE_MFE_PCT', '0.30'),
+  pureWsPaperRareAfterSellPct: numEnv('PUREWS_PAPER_RARE_AFTER_SELL_PCT', '1.00'),
 } as const;

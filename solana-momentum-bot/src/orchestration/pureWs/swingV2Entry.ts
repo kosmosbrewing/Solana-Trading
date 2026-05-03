@@ -29,6 +29,7 @@ import { activePositions } from './positionState';
 import { getPureWsExecutor, resolvePureWsWalletLabel } from './wallet';
 import type { PureWsPosition } from './types';
 import { lookupCachedSymbol } from '../../ingester/tokenSymbolResolver';
+import { trackPureWsPaperMarkout } from './markout';
 
 const SWING_V2_LANE = 'pure_ws_swing_v2' as const;
 
@@ -42,6 +43,7 @@ interface OpenSwingV2Input {
   buyRatioAtEntry: number;
   txCountAtEntry: number;
   nowSec: number;
+  tokenDecimals?: number | null;
 }
 
 export async function openSwingV2Arm(input: OpenSwingV2Input): Promise<void> {
@@ -72,6 +74,7 @@ export async function openSwingV2Arm(input: OpenSwingV2Input): Promise<void> {
     openSwingV2Shadow({
       signal, primaryPositionId, primaryEntryPrice, primaryQuantity,
       marketReferencePrice, buyRatioAtEntry, txCountAtEntry, nowSec,
+      tokenDecimals: input.tokenDecimals ?? null,
     });
   }
 }
@@ -82,7 +85,7 @@ interface ShadowInput extends Omit<OpenSwingV2Input, 'ctx'> {}
 
 function openSwingV2Shadow(input: ShadowInput): void {
   const { signal, primaryPositionId, primaryEntryPrice, primaryQuantity,
-    marketReferencePrice, buyRatioAtEntry, txCountAtEntry, nowSec } = input;
+    marketReferencePrice, buyRatioAtEntry, txCountAtEntry, nowSec, tokenDecimals } = input;
 
   const shadowId = `${primaryPositionId}-swing-v2`;
   const shadow: PureWsPosition = {
@@ -92,6 +95,7 @@ function openSwingV2Shadow(input: ShadowInput): void {
     marketReferencePrice,
     entryTimeSec: nowSec,
     quantity: primaryQuantity,
+    tokenDecimals: tokenDecimals ?? null,
     state: 'PROBE',
     peakPrice: marketReferencePrice,
     troughPrice: marketReferencePrice,
@@ -111,6 +115,17 @@ function openSwingV2Shadow(input: ShadowInput): void {
     t1ProfitFloorMultOverride: config.pureWsSwingV2T1ProfitFloorMult,
   };
   activePositions.set(shadowId, shadow);
+  trackPureWsPaperMarkout(
+    shadow,
+    'buy',
+    shadow.entryPrice,
+    Math.max(0.000001, shadow.entryPrice * shadow.quantity),
+    shadow.entryTimeSec * 1000,
+    {
+      buyRatioAtEntry: shadow.buyRatioAtEntry ?? null,
+      txCountAtEntry: shadow.txCountAtEntry ?? null,
+    }
+  );
   log.info(
     `[PUREWS_SWING_V2] ${shadowId} ${signal.pairAddress.slice(0, 12)} ` +
     `parent=${primaryPositionId} mode=paper_shadow probe=${config.pureWsSwingV2ProbeWindowSec}s ` +

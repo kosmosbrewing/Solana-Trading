@@ -143,6 +143,7 @@ describe('Phase 1.3 — scanPureWsV2Burst', () => {
     override('pureWsRunSellQuoteProbe', false);
     override('pureWsEntryDriftGuardEnabled', false);
     override('pureWsSellQuoteProbeEnabled', false);
+    override('pureWsPaperParamArmsEnabled', false);
   });
 
   it('v2 disabled (flag off) → no-op scan, no entry', async () => {

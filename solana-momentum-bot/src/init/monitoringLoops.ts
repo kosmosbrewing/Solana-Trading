@@ -9,6 +9,7 @@ import { EventScoreStore } from '../event';
 import { SOL_MINT } from '../utils/constants';
 import { Candle, CandleInterval } from '../utils/types';
 import { flushKolHourlyDigest } from '../orchestration/kolPaperNotifier';
+import { flushPureWsPaperDigest } from '../orchestration/pureWs/paperDigest';
 
 const log = createModuleLogger('MonitoringLoops');
 
@@ -42,6 +43,7 @@ export interface MonitoringHandles {
   regimeInterval: ReturnType<typeof setInterval>;
   pruneInterval: ReturnType<typeof setInterval>;
   kolHourlyDigestInterval: ReturnType<typeof setInterval> | null;
+  pureWsPaperDigestInterval: ReturnType<typeof setInterval> | null;
   // 2026-04-27: shutdown 시 cleanup 위해 main() 에서 startMonitoringLoops 호출 후 직접 set.
   dailySummaryInterval?: ReturnType<typeof setInterval>;
   pureWsV2TelemetryInterval?: ReturnType<typeof setInterval>;
@@ -168,6 +170,18 @@ export async function startMonitoringLoops(deps: MonitoringDeps): Promise<Monito
     }, KOL_HOURLY_DIGEST_INTERVAL_MS);
     log.info(`KOL hourly digest scheduled — interval=${KOL_HOURLY_DIGEST_INTERVAL_MS / 60000}min`);
   }
+  let pureWsPaperDigestInterval: ReturnType<typeof setInterval> | null = null;
+  if (config.pureWsLaneEnabled && config.pureWsPaperNotifyEnabled && config.pureWsPaperDigestEnabled) {
+    const intervalMs = Math.max(60_000, config.pureWsPaperDigestIntervalMs);
+    pureWsPaperDigestInterval = setInterval(async () => {
+      try {
+        await flushPureWsPaperDigest(deps.notifier);
+      } catch (error) {
+        log.warn(`pure_ws paper digest failed: ${error}`);
+      }
+    }, intervalMs);
+    log.info(`pure_ws paper digest scheduled — interval=${intervalMs / 60000}min`);
+  }
 
-  return { positionCheckInterval, regimeInterval, pruneInterval, kolHourlyDigestInterval };
+  return { positionCheckInterval, regimeInterval, pruneInterval, kolHourlyDigestInterval, pureWsPaperDigestInterval };
 }

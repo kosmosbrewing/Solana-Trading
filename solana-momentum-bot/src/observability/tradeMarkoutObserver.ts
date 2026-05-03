@@ -245,13 +245,14 @@ export async function hydrateTradeMarkoutSchedulesFromLedger(options: {
   const nowMs = Date.now();
   const sinceMs = nowMs - Math.max(0, options.lookbackHours) * 3600_000;
   const maxCatchupAgeSec = options.maxCatchupAgeSec ?? 7200;
-  const [anchorRows, buys, sells, closes, paperCloses, shadowPaperCloses, partialTakes, existing] = await Promise.all([
+  const [anchorRows, buys, sells, closes, paperCloses, shadowPaperCloses, pureWsPaperCloses, partialTakes, existing] = await Promise.all([
     readJsonlMaybe(cfg.anchorOutputFile),
     readJsonlMaybe(path.join(options.realtimeDir, 'executed-buys.jsonl')),
     readJsonlMaybe(path.join(options.realtimeDir, 'executed-sells.jsonl')),
     readJsonlMaybe(path.join(options.realtimeDir, 'kol-live-trades.jsonl')),
     readJsonlMaybe(path.join(options.realtimeDir, 'kol-paper-trades.jsonl')),
     readJsonlMaybe(path.join(options.realtimeDir, 'kol-shadow-paper-trades.jsonl')),
+    readJsonlMaybe(path.join(options.realtimeDir, 'pure-ws-paper-trades.jsonl')),
     readJsonlMaybe(path.join(options.realtimeDir, 'kol-partial-takes.jsonl')),
     readJsonlMaybe(cfg.outputFile),
   ]);
@@ -307,6 +308,14 @@ export async function hydrateTradeMarkoutSchedulesFromLedger(options: {
   }
   for (const row of [...paperCloses, ...shadowPaperCloses]) {
     const paperAnchors = buildPaperCloseAnchors(row);
+    if (paperAnchors.length === 0) continue;
+    summary.loadedPaperCloses += 1;
+    for (const anchor of paperAnchors) {
+      if ((anchor.anchorAtMs ?? 0) >= sinceMs) anchors.push(anchor);
+    }
+  }
+  for (const row of pureWsPaperCloses) {
+    const paperAnchors = buildPureWsPaperCloseAnchors(row);
     if (paperAnchors.length === 0) continue;
     summary.loadedPaperCloses += 1;
     for (const anchor of paperAnchors) {
@@ -843,6 +852,70 @@ function buildPaperCloseAnchors(row: Record<string, unknown>): TradeMarkoutAncho
       anchorAtMs: secondMs(closedAtMs),
       anchorPrice: exitPrice,
       anchorPriceKind: numberField(row.exitPriceTokenOnly) != null ? 'exit_token_only' : 'wallet_delta_fallback',
+    },
+  ];
+}
+
+function buildPureWsPaperCloseAnchors(row: Record<string, unknown>): TradeMarkoutAnchor[] {
+  const strategy = stringField(row.strategy);
+  if (!strategy?.startsWith('pure_ws')) return [];
+  const positionId = stringField(row.positionId);
+  const tokenMint = stringField(row.pairAddress);
+  const entryAtMs = timeField(row.entryAt) ?? timeField(row.entryTimeSec);
+  const closedAtMs = timeField(row.closedAt) ?? timeField(row.exitTimeSec);
+  const entryPrice = numberField(row.entryPrice);
+  const exitPrice = numberField(row.exitPrice);
+  const probeSolAmount = numberField(row.ticketSol) ?? inferTicketSol(row);
+  if (
+    !positionId ||
+    !tokenMint ||
+    entryAtMs == null ||
+    closedAtMs == null ||
+    entryPrice == null ||
+    exitPrice == null ||
+    probeSolAmount == null ||
+    probeSolAmount <= 0
+  ) {
+    return [];
+  }
+  const common = {
+    positionId,
+    tokenMint,
+    probeSolAmount,
+    tokenDecimals: numberField(row.tokenDecimals),
+    signalSource: stringField(row.armName) ?? strategy,
+    extras: {
+      lane: 'pure_ws',
+      mode: 'paper',
+      strategy,
+      armName: stringField(row.armName),
+      parameterVersion: stringField(row.parameterVersion),
+      isShadowArm: row.isShadowArm === true,
+      parentPositionId: stringField(row.parentPositionId),
+      executionMode: stringField(row.executionMode),
+      paperOnlyReason: stringField(row.paperOnlyReason),
+      sourceLabel: stringField(row.sourceLabel),
+      discoverySource: stringField(row.discoverySource),
+      exitReason: stringField(row.exitReason),
+      markoutOffsetsSec: [15, 30, 60, 180, 300, 1800],
+    },
+  };
+  return [
+    {
+      ...common,
+      anchorType: 'buy',
+      anchorTxSignature: null,
+      anchorAtMs: secondMs(entryAtMs),
+      anchorPrice: entryPrice,
+      anchorPriceKind: 'entry_token_only',
+    },
+    {
+      ...common,
+      anchorType: 'sell',
+      anchorTxSignature: null,
+      anchorAtMs: secondMs(closedAtMs),
+      anchorPrice: exitPrice,
+      anchorPriceKind: 'exit_token_only',
     },
   ];
 }

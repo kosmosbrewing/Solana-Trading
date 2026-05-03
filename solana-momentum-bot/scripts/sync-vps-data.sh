@@ -394,13 +394,28 @@ if [ "$SKIP_TRADE_MARKOUT_REPORT" != "true" ]; then
   TRADE_MARKOUT_MD="${ROOT_DIR}/reports/trade-markout-$(date +%Y-%m-%d).md"
   TRADE_MARKOUT_JSON="${ROOT_DIR}/reports/trade-markout-$(date +%Y-%m-%d).json"
   echo "[sync-vps-data] trade-markout-report: generating since=${TRADE_MARKOUT_SINCE}"
-  if (cd "${ROOT_DIR}" && npm run -s ops:trade-markout-audit -- --since "${TRADE_MARKOUT_SINCE}" --realtime-dir data/realtime --md "${TRADE_MARKOUT_MD}" --json "${TRADE_MARKOUT_JSON}" 2>&1 | tail -12); then
+  if (cd "${ROOT_DIR}" && npm run -s ops:trade-markout-audit -- --lane kol_hunter --since "${TRADE_MARKOUT_SINCE}" --realtime-dir data/realtime --md "${TRADE_MARKOUT_MD}" --json "${TRADE_MARKOUT_JSON}" 2>&1 | tail -12); then
     echo "[sync-vps-data] trade-markout-report: ok → ${TRADE_MARKOUT_MD}"
   else
     echo "[sync-vps-data] trade-markout-report: WARN — generation failed (sync 자체는 정상)"
   fi
 else
   echo "[sync-vps-data] trade-markout-report: SKIPPED (SKIP_TRADE_MARKOUT_REPORT=true)"
+fi
+
+# ─── 7b. pure_ws paper trade markout report (file-only) ───
+# Why: pure_ws 는 fast-compound 후보라 T+15/30/60/180/300/1800 horizon 을 별도로 본다.
+if [ "$SKIP_PUREWS_TRADE_MARKOUT_REPORT" != "true" ]; then
+  PUREWS_TRADE_MARKOUT_MD="${ROOT_DIR}/reports/pure-ws-trade-markout-$(date +%Y-%m-%d).md"
+  PUREWS_TRADE_MARKOUT_JSON="${ROOT_DIR}/reports/pure-ws-trade-markout-$(date +%Y-%m-%d).json"
+  echo "[sync-vps-data] pure-ws-trade-markout-report: generating since=${TRADE_MARKOUT_SINCE}"
+  if (cd "${ROOT_DIR}" && npm run -s ops:trade-markout-audit -- --lane pure_ws --since "${TRADE_MARKOUT_SINCE}" --horizons 15,30,60,180,300,1800 --realtime-dir data/realtime --md "${PUREWS_TRADE_MARKOUT_MD}" --json "${PUREWS_TRADE_MARKOUT_JSON}" 2>&1 | tail -12); then
+    echo "[sync-vps-data] pure-ws-trade-markout-report: ok → ${PUREWS_TRADE_MARKOUT_MD}"
+  else
+    echo "[sync-vps-data] pure-ws-trade-markout-report: WARN — generation failed (sync 자체는 정상)"
+  fi
+else
+  echo "[sync-vps-data] pure-ws-trade-markout-report: SKIPPED (SKIP_PUREWS_TRADE_MARKOUT_REPORT=true)"
 fi
 
 # ─── 8. Rotation lane report (file-only) ───

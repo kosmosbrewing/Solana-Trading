@@ -40,8 +40,10 @@ import { ensurePairQuarantineConfigured, appendPairQuarantineLedger } from './pa
 import { ensureTokenSessionConfigured } from './tokenSession';
 import { trackPureWsReject } from './missedAlpha';
 import { checkPureWsSurvival } from './survivalCheck';
+import { openPureWsPaperParamArms } from './paperParamArms';
 import { openSwingV2Arm } from './swingV2Entry';
 import type { PureWsPosition } from './types';
+import { trackPureWsPaperMarkout } from './markout';
 
 export async function handlePureWsSignal(
   signal: Signal,
@@ -80,7 +82,7 @@ export async function handlePureWsSignal(
     if (
       pos.pairAddress === signal.pairAddress &&
       pos.state !== 'CLOSED' &&
-      pos.armName !== 'pure_ws_swing_v2'
+      pos.isShadowArm !== true
     ) {
       log.debug(`[PUREWS_SKIP] already holding ${signal.pairAddress.slice(0, 12)}`);
       return;
@@ -146,7 +148,7 @@ export async function handlePureWsSignal(
   }
 
   // Concurrency cap — lane-level
-  const activeCount = [...activePositions.values()].filter((p) => p.state !== 'CLOSED').length;
+  const activeCount = [...activePositions.values()].filter((p) => p.state !== 'CLOSED' && p.isShadowArm !== true).length;
   if (activeCount >= config.pureWsMaxConcurrent) {
     log.debug(`[PUREWS_SKIP] lane max concurrent (${activeCount})`);
     return;
@@ -185,6 +187,7 @@ export async function handlePureWsSignal(
   const ticketSol = config.pureWsLaneTicketSol;
   const quantity = signal.price > 0 ? ticketSol / signal.price : 0;
   if (quantity <= 0) return;
+  let entryTokenDecimals: number | undefined;
 
   // 2026-04-21 Survival Layer (P0 mission-refinement): rug / honeypot / Token-2022 dangerous ext /
   // top-holder / exit liquidity 검사. paper 모드도 동일하게 체크 (관측 data 정합성 유지).
@@ -269,10 +272,9 @@ export async function handlePureWsSignal(
   // 로 사전 해결해서 hint 전달해야 guard 가 실질 동작. cache 내부 적용 — 반복 호출 시 0 RPC.
   if (config.pureWsEntryDriftGuardEnabled && ctx.tradingMode === 'live') {
     const probeSolAmount = ticketSol;
-    let tokenDecimals: number | undefined;
     try {
       const buyExecutor = getPureWsExecutor(ctx);
-      tokenDecimals = await buyExecutor.getMintDecimals(signal.pairAddress);
+      entryTokenDecimals = await buyExecutor.getMintDecimals(signal.pairAddress);
     } catch (err) {
       // 2026-04-26 quality fix: debug → warn. decimals 부재 시 sell quote probe 의
       // probeTokenAmountRaw 계산이 부정확 (decimals 6 가정 fallback). 운영자가 빈도 추적 가능.
@@ -292,7 +294,7 @@ export async function handlePureWsSignal(
         tokenMint: signal.pairAddress,
         signalPrice: signal.price,
         probeSolAmount,
-        tokenDecimals,
+        tokenDecimals: entryTokenDecimals,
       },
       {
         jupiterApiUrl: config.jupiterApiUrl,
@@ -343,7 +345,7 @@ export async function handlePureWsSignal(
         tokenMint: signal.pairAddress,
         signalPrice: signal.price,
         probeSolAmount,
-        tokenDecimals,
+        tokenDecimals: entryTokenDecimals,
         signalSource: signal.sourceLabel,
         extras: {
           expectedFillPrice: driftResult.expectedFillPrice,
@@ -364,6 +366,7 @@ export async function handlePureWsSignal(
       const buyExecutor = getPureWsExecutor(ctx);
       const tokenDecimals = await buyExecutor.getMintDecimals(signal.pairAddress);
       if (tokenDecimals != null && tokenDecimals >= 0 && tokenDecimals <= 18) {
+        entryTokenDecimals = tokenDecimals;
         // probeTokenAmountRaw = 예상 받을 토큰 수 (raw).
         // 2026-04-21 (QA L2): JS number 정밀도 edge 방어.
         // `quantity × 10^decimals` 이 Number.MAX_SAFE_INTEGER(2^53) 초과하면 정밀도 손실.
@@ -464,7 +467,7 @@ export async function handlePureWsSignal(
         `signal_price=${signal.price.toFixed(8)}` +
         (swingLiveMayEnter ? ' swing-v2 live canary may still enter.' : '')
       );
-      if (config.pureWsPaperNotifyEnabled) {
+      if (config.pureWsPaperNotifyEnabled && config.pureWsPaperNotifyIndividualEnabled) {
         const symbol = signal.tokenSymbol ?? shortenAddress(signal.pairAddress);
         void ctx.notifier.sendMessage([
           `🟣 <b>pure_ws paper 진입</b> <b>${escapeHtml(symbol)}</b> <code>${escapeHtml(positionId.slice(0, 12))}</code>`,
@@ -608,6 +611,7 @@ export async function handlePureWsSignal(
     marketReferencePrice,
     entryTimeSec: nowSec,
     quantity: actualQuantity,
+    tokenDecimals: entryTokenDecimals ?? null,
     state: 'PROBE',
     peakPrice: marketReferencePrice,
     troughPrice: marketReferencePrice,
@@ -670,6 +674,19 @@ export async function handlePureWsSignal(
   position.isShadowArm = false;
 
   activePositions.set(positionId, position);
+  if (position.executionMode === 'paper') {
+    trackPureWsPaperMarkout(
+      position,
+      'buy',
+      position.entryPrice,
+      Math.max(0.000001, position.entryPrice * position.quantity),
+      position.entryTimeSec * 1000,
+      {
+        buyRatioAtEntry: position.buyRatioAtEntry ?? null,
+        txCountAtEntry: position.txCountAtEntry ?? null,
+      }
+    );
+  }
 
   // 2026-04-26: pure_ws swing-v2 paper shadow 생성 (KOL swing-v2 와 동일 패턴).
   // 같은 V2 PASS / bootstrap signal 로 long-hold 손익비 정책의 측정용 shadow.
@@ -691,8 +708,20 @@ export async function handlePureWsSignal(
       buyRatioAtEntry: entryBuyRatio,
       txCountAtEntry: entryTxCount,
       nowSec,
+      tokenDecimals: entryTokenDecimals ?? null,
     });
   }
+  openPureWsPaperParamArms({
+    signal,
+    primaryPositionId: positionId,
+    primaryEntryPrice: actualEntryPrice,
+    primaryQuantity: actualQuantity,
+    marketReferencePrice,
+    buyRatioAtEntry: entryBuyRatio,
+    txCountAtEntry: entryTxCount,
+    nowSec,
+    tokenDecimals: entryTokenDecimals ?? null,
+  });
 
   // Phase 3 P1-5: token session entry 기록.
   if (config.tokenSessionTrackerEnabled) {

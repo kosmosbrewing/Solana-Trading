@@ -11,7 +11,7 @@
 ### Stage 1 (5분) — Paradigm authority
 2. **[`MISSION_CONTROL.md`](./MISSION_CONTROL.md)** — 6 control framework (survival/universe/payoff/execution/experiment/discipline)
 3. **[`docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md`](./docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md)** — **현 active paradigm**
-4. **[`docs/design-docs/mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md)** — 사명 정의 (0.8 SOL floor + 200 trades + 5x+ winner)
+4. **[`docs/design-docs/mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md)** — 원 사명 정의 (historical 0.8 SOL; 현재 운영 floor 는 `SESSION_START.md`의 0.7 SOL)
 
 ### Stage 2 (10분) — 현재 작업
 5. **[`REFACTORING_v1.0.md`](./REFACTORING_v1.0.md)** — Option 5 Phase 0-5 진행 상태
@@ -23,21 +23,22 @@
 
 ### 코드 작업 시작 전
 - 1줄 신뢰 명령: `npm run check:fast` (typecheck + jest + env drift)
-- Real Asset Guard (ticket 0.01 / floor 0.8 / canary -0.3 / drift halt 0.2 / max concurrent 3) **변경 금지**
+- Real Asset Guard (wallet floor 0.7 / KOL ticket 0.02 / default ticket 0.01 / default canary -0.3 / KOL canary -0.2 / drift halt 0.2 / max concurrent 3) **변경 금지**
 - `npm run check:strict` (lint + structure 포함) 빨강은 **Phase H2-H4 에서 점진 해소 deferred**, 의도
 
 ### 운영 로그 / 거래 분석 표준
 - 운영 분석은 먼저 `bash scripts/sync-vps-data.sh`를 실행해 로컬 `data/`, `logs/`, `reports/`를 같은 시점으로 맞춘다.
 - DB trades dump 는 기본 사용 금지. 필요할 때만 `RUN_TRADES_DUMP=true bash scripts/sync-vps-data.sh`로 opt-in 한다.
 - 분석 기준 산출물은 아래 순서로 본다.
-  1. `reports/sync-health-YYYY-MM-DD.md` — 파일 freshness / row count / missing artifact 확인. `logs/bot.log`가 30분 이상 stale 이면 결론 보류.
-  2. `reports/trade-markout-YYYY-MM-DD.md` — 실제 buy/sell/paper anchor 이후 T+30/60/300/1800 관측률과 continuation. `coverage < 80%`이면 T+ 기반 결론은 보류한다.
-  3. `reports/kol-live-canary-YYYY-MM-DD.md` — live canary wallet-truth, net SOL, actual 5x, Phase 4 gate. `phase4=PAUSE_REVIEW`면 승격 금지.
-  4. `reports/winner-kill-YYYY-MM-DD.md` — close 후 5x winner-kill rate. winner-kill 존재 시 exit/tail 정책을 먼저 검토한다.
-  5. `reports/token-quality-YYYY-MM-DD.md` — token-quality / dev-candidate cohort. `observations=0`이면 dev-quality 결론 금지.
-  6. `reports/kol-paper-arms-YYYY-MM-DD.md` — paper/shadow arm 비교. live 결정보다 낮은 권위.
+  1. `sync-health` daily report — 파일 freshness / row count / missing artifact 확인. `logs/bot.log`가 30분 이상 stale 이면 결론 보류.
+  2. `kol-live-canary` daily report — live canary wallet-truth, net SOL, actual 5x, Phase 4 gate. `phase4=PAUSE_REVIEW`면 승격 금지.
+  3. `smart-v3-evidence` daily report — smart-v3 projection + shared T+ 기반 cohort verdict. `minCov`는 close-anchor coverage이며, W/L은 copyable/wallet-first다.
+  4. `trade-markout` daily report — 실제 buy/sell/paper anchor 이후 T+30/60/300/1800 관측률과 continuation. `coverage < 80%`이면 T+ 기반 결론은 보류한다.
+  5. `winner-kill` daily report — close 후 5x winner-kill rate. winner-kill 존재 시 exit/tail 정책을 먼저 검토한다.
+  6. `token-quality` daily report — token-quality / dev-candidate cohort. `observations=0`이면 dev-quality 결론 금지.
+  7. `kol-paper-arms` daily report — paper/shadow arm 비교. live 결정보다 낮은 권위.
 - 운영 판정은 wallet truth 를 우선한다. DB PnL 단독 판정 금지.
-- 표준 판정 축: sync freshness, current session 이후 entry 유무, live closed/open/orphan, net SOL / max drawdown, actual MFE/T1/T2/5x, buy/sell T+ markout coverage/continuation, winner-kill, token-quality observations, wallet drift, recent ERROR/WARN.
+- 표준 판정 축: sync freshness, current session 이후 entry 유무, live closed/open/orphan, net SOL / max drawdown, actual MFE/T1/T2/5x, smart-v3 evidence verdict, buy/sell T+ markout coverage/continuation, winner-kill, token-quality observations, wallet drift, recent ERROR/WARN.
 - 한 줄 판정은 `OK / WATCH / PAUSE_REVIEW / INVESTIGATE` 중 하나로 끝낸다.
 
 ---
@@ -52,43 +53,8 @@
 
 ## 현재 우선 문서
 
-### Mission / Pivot 헌장
-| 문서 | 설명 |
-|---|---|
-| [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md) | **pivot decision record (상위 권위)** |
-| [`PLAN.md`](./PLAN.md) | mission charter (convexity) |
-
-### 운영 기준
-| 문서 | 설명 |
-|---|---|
-| [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md) | 현재 active execution plan |
-| [`OPERATIONS.md`](./OPERATIONS.md) | 현재 운영 runbook |
-
-### 구조/정책 기준
-| 문서 | 설명 |
-|---|---|
-| [`ARCHITECTURE.md`](./ARCHITECTURE.md) | 모듈 책임, 의존성 방향, 데이터 흐름 |
-| [`PROJECT.md`](./PROJECT.md) | persona, 목표, 비목표 (post-pivot) |
-| [`MEASUREMENT.md`](./MEASUREMENT.md) | wallet log growth + winner 분포 + ruin probability |
-| [`docs/product-specs/strategy-catalog.md`](./docs/product-specs/strategy-catalog.md) | 전략/Gate/Risk 제품 명세 |
-| [`OPERATIONS.md`](./OPERATIONS.md) | VPS/pm2 운영 가이드와 live 점검 체크포인트 |
-
-### 참조 문서
-| 문서 | 설명 |
-|---|---|
-| [`README.md`](./README.md) | 저장소 개요와 문서 가이드 |
-| [`PLAN.md`](./PLAN.md) | mission charter와 plan hierarchy |
-| [`STRATEGY.md`](./STRATEGY.md) | 현재 전략/Gate/Risk quick reference |
-| [`STRATEGY_NOTES.md`](./STRATEGY_NOTES.md) | 전략 구조적 한계와 다음 전략 가설 memo |
-| [`REALTIME.md`](./REALTIME.md) | realtime shadow / replay 워크플로 |
-| [`BACKTEST.md`](./BACKTEST.md) | batch backtest 워크플로 |
-| [`docs/exec-plans/tech-debt-tracker.md`](./docs/exec-plans/tech-debt-tracker.md) | 현재 기술 부채 목록 |
-
-### historical notes
-| 문서 | 설명 |
-|---|---|
-| [`PLAN_CMPL.md`](./PLAN_CMPL.md) | 완료된 plan / canary history archive |
-| [`docs/historical/pre-pivot-2026-04-18/`](./docs/historical/pre-pivot-2026-04-18/) | 2026-04-18 pivot 이전 PLAN/PROJECT/MEASUREMENT/STRATEGY snapshot |
+- 현재 진입/운영 기준은 `SESSION_START.md`, `MISSION_CONTROL.md`, `STRATEGY.md`, `OPERATIONS.md`, `docs/design-docs/lane-operating-refactor-2026-05-03.md`, `docs/exec-plans/active/20260503_BACKLOG.md`를 우선한다.
+- 오래된 pivot/mission 문서는 historical context 로만 본다. 현재 판단과 충돌하면 최신 lane/refactor 문서를 따른다.
 
 ## 에이전트 작업 규칙
 

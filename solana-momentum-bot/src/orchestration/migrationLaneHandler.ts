@@ -32,6 +32,7 @@ import { serializeClose } from './swapSerializer';
 import { appendEntryLedger, persistOpenTradeWithIntegrity, isEntryHaltActive } from './entryIntegrity';
 import { resolveActualEntryMetrics } from './signalProcessor';
 import { resolveTokenSymbol, lookupCachedSymbol } from '../ingester/tokenSymbolResolver';
+import { resolveSellReceivedSolFromSwapResult } from '../executor/executor';
 
 const log = createModuleLogger('MigrationLane');
 
@@ -603,7 +604,11 @@ async function closeMigrationPositionSerialized(
       if (tokenBalance > 0n) {
         const sellResult = await executor.executeSell(pos.event.pairAddress, tokenBalance);
         const solAfter = await executor.getBalance();
-        const receivedSol = solAfter - solBefore;
+        const receivedSol = resolveSellReceivedSolFromSwapResult({
+          balanceDeltaSol: solAfter - solBefore,
+          sellResult,
+          context: `migration:${id}`,
+        });
         // 2026-04-29: wallet ground truth — receivedSol 부호 무관 항상 wallet 기준.
         if (pos.quantity > 0) {
           actualExitPrice = receivedSol / pos.quantity;

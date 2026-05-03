@@ -117,6 +117,10 @@ export interface SwapResult {
   networkFeeSol?: number;
   /** Jito tip (path=jito 일 때만, dynamic). */
   jitoTipSol?: number;
+  /** Measurement source for actualInputAmount. */
+  actualInputSource?: 'balance_delta' | 'tx_meta' | 'api';
+  /** Measurement source for actualOutAmount. */
+  actualOutSource?: 'balance_delta' | 'tx_meta' | 'api';
 }
 
 interface JupiterQuote {
@@ -166,6 +170,22 @@ type MessageWithAccountKeys = {
   getAccountKeys: (args?: { accountKeysFromLookups?: LoadedAddresses | null }) => MessageAccountKeys;
 };
 
+type TokenBalanceLike = {
+  mint?: string;
+  owner?: string;
+  uiTokenAmount?: {
+    amount?: string;
+  };
+};
+
+type SwapMetaLike = {
+  preBalances: number[];
+  postBalances: number[];
+  preTokenBalances?: TokenBalanceLike[] | null;
+  postTokenBalances?: TokenBalanceLike[] | null;
+  loadedAddresses?: LoadedAddresses | null;
+};
+
 export function resolveAccountKeysForCostDecomp(
   message: MessageWithAccountKeys,
   loadedAddresses?: LoadedAddresses,
@@ -174,6 +194,81 @@ export function resolveAccountKeysForCostDecomp(
     return message.getAccountKeys({ accountKeysFromLookups: loadedAddresses });
   }
   return message.getAccountKeys();
+}
+
+function tokenBalanceRawByOwner(
+  balances: TokenBalanceLike[] | null | undefined,
+  owner: string,
+  mint: string
+): bigint {
+  return (balances ?? [])
+    .filter((balance) => balance.owner === owner && balance.mint === mint)
+    .reduce((sum, balance) => {
+      const amount = balance.uiTokenAmount?.amount;
+      if (!amount) return sum;
+      try {
+        return sum + BigInt(amount);
+      } catch {
+        return sum;
+      }
+    }, 0n);
+}
+
+export function resolveSwapDeltasFromTxMeta(
+  meta: SwapMetaLike,
+  accountKeys: MessageAccountKeys,
+  wallet: PublicKey,
+  inputMint: string,
+  outputMint: string
+): Pick<SwapResult, 'actualInputAmount' | 'actualOutAmount'> {
+  const walletStr = wallet.toBase58();
+  let walletIndex = -1;
+  for (let i = 0; i < accountKeys.length; i++) {
+    const key = accountKeys.get(i);
+    if (key?.toBase58() === walletStr) {
+      walletIndex = i;
+      break;
+    }
+  }
+
+  const solDelta =
+    walletIndex >= 0 &&
+    meta.preBalances[walletIndex] != null &&
+    meta.postBalances[walletIndex] != null
+      ? BigInt(meta.postBalances[walletIndex]) - BigInt(meta.preBalances[walletIndex])
+      : 0n;
+
+  const tokenDelta = (mint: string): bigint => {
+    const pre = tokenBalanceRawByOwner(meta.preTokenBalances, walletStr, mint);
+    const post = tokenBalanceRawByOwner(meta.postTokenBalances, walletStr, mint);
+    return post - pre;
+  };
+
+  const inputDelta = inputMint === SOL_MINT ? solDelta : tokenDelta(inputMint);
+  const outputDelta = outputMint === SOL_MINT ? solDelta : tokenDelta(outputMint);
+
+  return {
+    actualInputAmount: inputDelta < 0n ? -inputDelta : undefined,
+    actualOutAmount: outputDelta > 0n ? outputDelta : undefined,
+  };
+}
+
+export function resolveSellReceivedSolFromSwapResult(params: {
+  balanceDeltaSol: number;
+  sellResult: Pick<SwapResult, 'actualOutUiAmount' | 'actualOutSource' | 'txSignature'>;
+  context: string;
+}): number {
+  const { balanceDeltaSol, sellResult, context } = params;
+  if (balanceDeltaSol > 0) return balanceDeltaSol;
+  if (typeof sellResult.actualOutUiAmount === 'number' && sellResult.actualOutUiAmount > 0) {
+    log.warn(
+      `[SELL_RECEIVED_SOL_FALLBACK] ${context} ` +
+      `balanceDelta=${balanceDeltaSol.toFixed(9)} fallback=${sellResult.actualOutUiAmount.toFixed(9)} ` +
+      `source=${sellResult.actualOutSource ?? 'unknown'} sig=${sellResult.txSignature.slice(0, 12)}`
+    );
+    return sellResult.actualOutUiAmount;
+  }
+  return balanceDeltaSol;
 }
 
 /**
@@ -421,8 +516,41 @@ export class Executor {
 
     const apiInputAmount = result.inputAmountResult ? BigInt(result.inputAmountResult) : undefined;
     const apiOutputAmount = result.outputAmountResult ? BigInt(result.outputAmountResult) : undefined;
-    const actualInputAmount = balanceInputAmount > 0n ? balanceInputAmount : apiInputAmount;
-    const actualOutAmount = balanceOutputAmount > 0n ? balanceOutputAmount : apiOutputAmount;
+    let actualInputAmount = balanceInputAmount > 0n ? balanceInputAmount : undefined;
+    let actualOutAmount = balanceOutputAmount > 0n ? balanceOutputAmount : undefined;
+    let actualInputSource: SwapResult['actualInputSource'] | undefined =
+      actualInputAmount != null ? 'balance_delta' : undefined;
+    let actualOutSource: SwapResult['actualOutSource'] | undefined =
+      actualOutAmount != null ? 'balance_delta' : undefined;
+    if (balanceInputAmount <= 0n || balanceOutputAmount <= 0n) {
+      const metaDeltas = await this.recoverSwapDeltasFromTxMeta(result.signature, inputMint, outputMint);
+      const recovered: string[] = [];
+      if ((actualInputAmount == null || actualInputAmount <= 0n) && metaDeltas.actualInputAmount != null && metaDeltas.actualInputAmount > 0n) {
+        actualInputAmount = metaDeltas.actualInputAmount;
+        actualInputSource = 'tx_meta';
+        recovered.push(`input=${actualInputAmount.toString()}`);
+      }
+      if ((actualOutAmount == null || actualOutAmount <= 0n) && metaDeltas.actualOutAmount != null && metaDeltas.actualOutAmount > 0n) {
+        actualOutAmount = metaDeltas.actualOutAmount;
+        actualOutSource = 'tx_meta';
+        recovered.push(`output=${actualOutAmount.toString()}`);
+      }
+      if (recovered.length > 0) {
+        log.warn(
+          `[SWAP_META_DELTA_RECOVERY_ULTRA] sig=${result.signature.slice(0, 12)} ` +
+          `${recovered.join(' ')} balanceInput=${balanceInputAmount.toString()} ` +
+          `balanceOutput=${balanceOutputAmount.toString()}`
+        );
+      }
+    }
+    if ((actualInputAmount == null || actualInputAmount <= 0n) && apiInputAmount != null && apiInputAmount > 0n) {
+      actualInputAmount = apiInputAmount;
+      actualInputSource = 'api';
+    }
+    if ((actualOutAmount == null || actualOutAmount <= 0n) && apiOutputAmount != null && apiOutputAmount > 0n) {
+      actualOutAmount = apiOutputAmount;
+      actualOutSource = 'api';
+    }
     const actualSlippageBps = actualOutAmount != null && expectedOut > 0n
       ? Number((expectedOut - actualOutAmount) * BPS_DENOMINATOR_BIGINT / expectedOut)
       : 0;
@@ -481,6 +609,8 @@ export class Executor {
       ataRentSol: ultraCostDecomp?.ataRentSol,
       networkFeeSol: ultraCostDecomp?.networkFeeSol,
       jitoTipSol: ultraCostDecomp?.jitoTipSol,
+      actualInputSource,
+      actualOutSource,
     };
   }
 
@@ -530,10 +660,35 @@ export class Executor {
           ? BigInt(Math.round(await this.getBalance() * 1e9))
           : await this.getTokenBalance(outputMint);
 
-        const actualInputAmount = inputBalanceBefore > inputBalanceAfter
+        let actualInputAmount = inputBalanceBefore > inputBalanceAfter
           ? inputBalanceBefore - inputBalanceAfter
           : 0n;
-        const actualOutAmount = balanceAfter - balanceBefore;
+        let actualOutAmount = balanceAfter - balanceBefore;
+        let actualInputSource: SwapResult['actualInputSource'] | undefined =
+          actualInputAmount > 0n ? 'balance_delta' : undefined;
+        let actualOutSource: SwapResult['actualOutSource'] | undefined =
+          actualOutAmount > 0n ? 'balance_delta' : undefined;
+        if (actualInputAmount <= 0n || actualOutAmount <= 0n) {
+          const metaDeltas = await this.recoverSwapDeltasFromTxMeta(txSignature, inputMint, outputMint);
+          const recovered: string[] = [];
+          if (actualInputAmount <= 0n && metaDeltas.actualInputAmount != null && metaDeltas.actualInputAmount > 0n) {
+            actualInputAmount = metaDeltas.actualInputAmount;
+            actualInputSource = 'tx_meta';
+            recovered.push(`input=${actualInputAmount.toString()}`);
+          }
+          if (actualOutAmount <= 0n && metaDeltas.actualOutAmount != null && metaDeltas.actualOutAmount > 0n) {
+            actualOutAmount = metaDeltas.actualOutAmount;
+            actualOutSource = 'tx_meta';
+            recovered.push(`output=${actualOutAmount.toString()}`);
+          }
+          if (recovered.length > 0) {
+            log.warn(
+              `[SWAP_META_DELTA_RECOVERY] sig=${txSignature.slice(0, 12)} ` +
+              `${recovered.join(' ')} balanceInput=${(inputBalanceBefore - inputBalanceAfter).toString()} ` +
+              `balanceOutput=${(balanceAfter - balanceBefore).toString()}`
+            );
+          }
+        }
         const actualSlippageBps = expectedOut > 0n
           ? Number((expectedOut - actualOutAmount) * BPS_DENOMINATOR_BIGINT / expectedOut)
           : 0;
@@ -590,6 +745,8 @@ export class Executor {
           ataRentSol: costDecomp?.ataRentSol,
           networkFeeSol: costDecomp?.networkFeeSol,
           jitoTipSol: costDecomp?.jitoTipSol,
+          actualInputSource,
+          actualOutSource,
         };
       } catch (error) {
         lastError = error as Error;
@@ -656,6 +813,32 @@ export class Executor {
   ): Promise<SwapResult> {
     log.info(`Executing SELL: ${tokenMint} → SOL`);
     return this.executeSwap(tokenMint, SOL_MINT, amountRaw);
+  }
+
+  private async recoverSwapDeltasFromTxMeta(
+    signature: string,
+    inputMint: string,
+    outputMint: string
+  ): Promise<Pick<SwapResult, 'actualInputAmount' | 'actualOutAmount'>> {
+    try {
+      const txPromise = this.connection.getTransaction(signature, {
+        maxSupportedTransactionVersion: 0,
+        commitment: 'confirmed',
+      });
+      const tx = await Promise.race([
+        txPromise,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), DECOMPOSE_RPC_TIMEOUT_MS)),
+      ]);
+      if (!tx?.meta) return {};
+      const accountKeys = resolveAccountKeysForCostDecomp(
+        tx.transaction.message as MessageWithAccountKeys,
+        tx.meta.loadedAddresses,
+      );
+      return resolveSwapDeltasFromTxMeta(tx.meta, accountKeys, this.wallet.publicKey, inputMint, outputMint);
+    } catch (err) {
+      log.warn(`[SWAP_META_DELTA_RECOVERY] failed sig=${signature.slice(0, 12)} err=${String(err)}`);
+      return {};
+    }
   }
 
   /**

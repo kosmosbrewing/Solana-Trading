@@ -58,7 +58,7 @@ Ledger/refactor state implemented on 2026-05-03:
   - verdicts are report-only: `COLLECT`, `DATA_GAP`, `COST_REJECT`, `POST_COST_REJECT`, `WATCH`, `PROMOTION_CANDIDATE`;
   - T+ coverage for verdicts is close-anchor based by `positionId × anchorType × horizon`; observed row ok-rate is secondary only;
   - Closed Trades W/L is copyable/wallet-first, with token-only W/L shown separately.
-- No runtime `.env` change is required for the smart-v3 evidence changes. `SKIP_SMART_V3_EVIDENCE_REPORT=true` is only an optional shell opt-out for sync report generation.
+- No runtime `.env` change is required for the smart-v3 evidence changes. `SKIP_SMART_V3_EVIDENCE_REPORT` and `SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT` are optional sync/report-only shell knobs.
 
 Recently changed files include:
 

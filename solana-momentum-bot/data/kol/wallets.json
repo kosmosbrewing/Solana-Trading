@@ -11,9 +11,7 @@
   "kols": [
     {
       "id": "josim",
-      "addresses": [
-        "5rkP7bqEUqwURvqFmKwLSxT5YkoHEyJLehmXUpUiFHQh"
-      ],
+      "addresses": ["5rkP7bqEUqwURvqFmKwLSxT5YkoHEyJLehmXUpUiFHQh"],
       "tier": "B",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -60,9 +58,7 @@
     },
     {
       "id": "oxsun",
-      "addresses": [
-        "HUpPyLU8KWisCAr3mzWy2FKT6uuxQ2qGgJQxyTpDoes5"
-      ],
+      "addresses": ["HUpPyLU8KWisCAr3mzWy2FKT6uuxQ2qGgJQxyTpDoes5"],
       "tier": "B",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -71,9 +67,7 @@
     },
     {
       "id": "lexapro",
-      "addresses": [
-        "8yJFWmVTQq69p6VJxGwpzW7ii7c5J9GRAtHCNMMQPydj"
-      ],
+      "addresses": ["8yJFWmVTQq69p6VJxGwpzW7ii7c5J9GRAtHCNMMQPydj"],
       "tier": "B",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -82,9 +76,7 @@
     },
     {
       "id": "euris",
-      "addresses": [
-        "DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj"
-      ],
+      "addresses": ["DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj"],
       "tier": "S",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-29",
@@ -95,9 +87,7 @@
     },
     {
       "id": "crypto_d",
-      "addresses": [
-        "G1pRtSyKuWSjTqRDcazzKBDzqEF96i1xSURpiXj3yFcc"
-      ],
+      "addresses": ["G1pRtSyKuWSjTqRDcazzKBDzqEF96i1xSURpiXj3yFcc"],
       "tier": "A",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -107,9 +97,7 @@
     },
     {
       "id": "lebron",
-      "addresses": [
-        "ATmKENkRrL1JQQnoUNAQvkiwgjiHKUkzyncxTGxyzQL1"
-      ],
+      "addresses": ["ATmKENkRrL1JQQnoUNAQvkiwgjiHKUkzyncxTGxyzQL1"],
       "tier": "B",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -118,9 +106,7 @@
     },
     {
       "id": "pain",
-      "addresses": [
-        "HAN61KQbgzjDBC4RpZJ1ET8v32S4zdKAjoD7EApJ96q6"
-      ],
+      "addresses": ["HAN61KQbgzjDBC4RpZJ1ET8v32S4zdKAjoD7EApJ96q6"],
       "tier": "B",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -129,9 +115,7 @@
     },
     {
       "id": "him",
-      "addresses": [
-        "A1ECE86o3tz6UWmwMWicrqZmwRZ7RCRzmYYa9okNQRBw"
-      ],
+      "addresses": ["A1ECE86o3tz6UWmwMWicrqZmwRZ7RCRzmYYa9okNQRBw"],
       "tier": "A",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -139,21 +123,8 @@
       "is_active": true
     },
     {
-      "id": "pasternak",
-      "addresses": [
-        "DjAfkjAV7qD6U2qjjU5RdcuzXwdk1gF3CtiWwGZc8pxJ"
-      ],
-      "tier": "B",
-      "added_at": "2026-04-25",
-      "last_verified_at": "2026-04-27",
-      "notes": "pasternak. 본인 트윗 — Believe ecosystem 지원용 투명성 지갑. project/support 흔적 → 성과 무관 KOL universe 제거 (workflow rule #2). archive.",
-      "is_active": false
-    },
-    {
       "id": "decu",
-      "addresses": [
-        "4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9"
-      ],
+      "addresses": ["4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9"],
       "tier": "A",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-29",
@@ -164,9 +135,7 @@
     },
     {
       "id": "clukz",
-      "addresses": [
-        "G6fUXjMKPJzCY1rveAE6Qm7wy5U3vZgKDJmN1VPAdiZC"
-      ],
+      "addresses": ["G6fUXjMKPJzCY1rveAE6Qm7wy5U3vZgKDJmN1VPAdiZC"],
       "tier": "A",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-29",
@@ -177,9 +146,7 @@
     },
     {
       "id": "west_ratwizardx",
-      "addresses": [
-        "JDd3hy3gQn2V982mi1zqhNqUw1GfV2UL6g76STojCJPN"
-      ],
+      "addresses": ["JDd3hy3gQn2V982mi1zqhNqUw1GfV2UL6g76STojCJPN"],
       "tier": "B",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -188,9 +155,7 @@
     },
     {
       "id": "theo",
-      "addresses": [
-        "Bi4rd5FH5bYEN8scZ7wevxNZyNmKHdaBcvewdPFxYdLt"
-      ],
+      "addresses": ["Bi4rd5FH5bYEN8scZ7wevxNZyNmKHdaBcvewdPFxYdLt"],
       "tier": "A",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -201,9 +166,7 @@
     },
     {
       "id": "scharo",
-      "addresses": [
-        "4sAUSQFdvWRBxR8UoLBYbw8CcXuwXWxnN8pXa4mtm5nU"
-      ],
+      "addresses": ["4sAUSQFdvWRBxR8UoLBYbw8CcXuwXWxnN8pXa4mtm5nU"],
       "tier": "B",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -212,9 +175,7 @@
     },
     {
       "id": "gdaqp3",
-      "addresses": [
-        "Gdaqp3ND6r3HVAWXpawkQU18EuQqwNxpaeeio8ASVAYd"
-      ],
+      "addresses": ["Gdaqp3ND6r3HVAWXpawkQU18EuQqwNxpaeeio8ASVAYd"],
       "tier": "A",
       "added_at": "2026-04-26",
       "last_verified_at": "2026-04-27",
@@ -223,9 +184,7 @@
     },
     {
       "id": "bflg",
-      "addresses": [
-        "BfLgBboMdNZLJFMkm3g89RK5sZ6VPGFQg5xUSoM6bJV8"
-      ],
+      "addresses": ["BfLgBboMdNZLJFMkm3g89RK5sZ6VPGFQg5xUSoM6bJV8"],
       "tier": "S",
       "added_at": "2026-04-26",
       "last_verified_at": "2026-04-26",
@@ -235,9 +194,7 @@
     },
     {
       "id": "ekawy_2",
-      "addresses": [
-        "2Ekawy8GtvEcroUMjdhthP18fUi1ZGFRkMdwtQrGzrH2"
-      ],
+      "addresses": ["2Ekawy8GtvEcroUMjdhthP18fUi1ZGFRkMdwtQrGzrH2"],
       "tier": "A",
       "added_at": "2026-04-26",
       "last_verified_at": "2026-04-26",
@@ -248,9 +205,7 @@
     },
     {
       "id": "dzfk",
-      "addresses": [
-        "DzFkEdqJNVQTri6gVJKvGWyaBx8QY4EuALySpsHxXuUL"
-      ],
+      "addresses": ["DzFkEdqJNVQTri6gVJKvGWyaBx8QY4EuALySpsHxXuUL"],
       "tier": "A",
       "added_at": "2026-04-26",
       "last_verified_at": "2026-04-26",
@@ -261,9 +216,7 @@
     },
     {
       "id": "ftg1",
-      "addresses": [
-        "FTg1gqW7vPm4kdU1LPM7JJnizbgPdRDy2PitKw6mY27j"
-      ],
+      "addresses": ["FTg1gqW7vPm4kdU1LPM7JJnizbgPdRDy2PitKw6mY27j"],
       "tier": "A",
       "added_at": "2026-04-26",
       "last_verified_at": "2026-04-26",
@@ -272,9 +225,7 @@
     },
     {
       "id": "ogantd",
-      "addresses": [
-        "215nhcAHjQQGgwpQSJQ7zR26etbjjtVdW74NLzwEgQjP"
-      ],
+      "addresses": ["215nhcAHjQQGgwpQSJQ7zR26etbjjtVdW74NLzwEgQjP"],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -285,9 +236,7 @@
     },
     {
       "id": "domy",
-      "addresses": [
-        "3LUfv2u5yzsDtUzPdsSJ7ygPBuqwfycMkjpNreRR2Yww"
-      ],
+      "addresses": ["3LUfv2u5yzsDtUzPdsSJ7ygPBuqwfycMkjpNreRR2Yww"],
       "tier": "A",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-27",
@@ -297,9 +246,7 @@
     },
     {
       "id": "chester",
-      "addresses": [
-        "PMJA8UQDyWTFw2Smhyp9jGA6aTaP7jKHR7BPudrgyYN"
-      ],
+      "addresses": ["PMJA8UQDyWTFw2Smhyp9jGA6aTaP7jKHR7BPudrgyYN"],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -310,9 +257,7 @@
     },
     {
       "id": "casino",
-      "addresses": [
-        "8rvAsDKeAcEjEkiZMug9k8v1y8mW6gQQiMobd89Uy7qR"
-      ],
+      "addresses": ["8rvAsDKeAcEjEkiZMug9k8v1y8mW6gQQiMobd89Uy7qR"],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -322,9 +267,7 @@
     },
     {
       "id": "jijo",
-      "addresses": [
-        "4BdKaxN8G6ka4GYtQQWk4G4dZRUTX2vQH9GcXdBREFUk"
-      ],
+      "addresses": ["4BdKaxN8G6ka4GYtQQWk4G4dZRUTX2vQH9GcXdBREFUk"],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-05-01",
@@ -336,9 +279,7 @@
     },
     {
       "id": "johnson",
-      "addresses": [
-        "J9TYAsWWidbrcZybmLSfrLzryANf4CgJBLdvwdGuC8MB"
-      ],
+      "addresses": ["J9TYAsWWidbrcZybmLSfrLzryANf4CgJBLdvwdGuC8MB"],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -349,9 +290,7 @@
     },
     {
       "id": "the_doc",
-      "addresses": [
-        "DYAn4XpAkN5mhiXkRB7dGq4Jadnx6XYgu8L5b3WGhbrt"
-      ],
+      "addresses": ["DYAn4XpAkN5mhiXkRB7dGq4Jadnx6XYgu8L5b3WGhbrt"],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -361,9 +300,7 @@
     },
     {
       "id": "heyitsyolo",
-      "addresses": [
-        "Av3xWHJ5EsoLZag6pr7LKbrGgLRTaykXomDD5kBhL9YQ"
-      ],
+      "addresses": ["Av3xWHJ5EsoLZag6pr7LKbrGgLRTaykXomDD5kBhL9YQ"],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -374,9 +311,7 @@
     },
     {
       "id": "kadenox",
-      "addresses": [
-        "B32QbbdDAyhvUQzjcaM5j6ZVKwjCxAwGH5Xgvb9SJqnC"
-      ],
+      "addresses": ["B32QbbdDAyhvUQzjcaM5j6ZVKwjCxAwGH5Xgvb9SJqnC"],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -386,9 +321,7 @@
     },
     {
       "id": "kev",
-      "addresses": [
-        "BTf4A2exGK9BCVDNzy65b9dUzXgMqB4weVkvTMFQsadd"
-      ],
+      "addresses": ["BTf4A2exGK9BCVDNzy65b9dUzXgMqB4weVkvTMFQsadd"],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -398,9 +331,7 @@
     },
     {
       "id": "matt",
-      "addresses": [
-        "3bzaJd5yZG73EVDz8xosQb7gfZm2LN5auFGh6wnP1n1f"
-      ],
+      "addresses": ["3bzaJd5yZG73EVDz8xosQb7gfZm2LN5auFGh6wnP1n1f"],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-05-01",
@@ -411,9 +342,7 @@
     },
     {
       "id": "naruza",
-      "addresses": [
-        "ASVzakePP6GNg9r95d4LPZHJDMXun6L6E4um4pu5ybJk"
-      ],
+      "addresses": ["ASVzakePP6GNg9r95d4LPZHJDMXun6L6E4um4pu5ybJk"],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -424,9 +353,7 @@
     },
     {
       "id": "nyhrox",
-      "addresses": [
-        "6S8GezkxYUfZy9JPtYnanbcZTMB87Wjt1qx3c6ELajKC"
-      ],
+      "addresses": ["6S8GezkxYUfZy9JPtYnanbcZTMB87Wjt1qx3c6ELajKC"],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-05-01",
@@ -437,9 +364,7 @@
     },
     {
       "id": "gh0stee",
-      "addresses": [
-        "2kv8X2a9bxnBM8NKLc6BBTX2z13GFNRL4oRotMUJRva9"
-      ],
+      "addresses": ["2kv8X2a9bxnBM8NKLc6BBTX2z13GFNRL4oRotMUJRva9"],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-05-01",
@@ -450,9 +375,7 @@
     },
     {
       "id": "gfree",
-      "addresses": [
-        "4yo9CUuTBbds9NFhZd4MzPiZZkUvveXdTnAH8qMsE8ku"
-      ],
+      "addresses": ["4yo9CUuTBbds9NFhZd4MzPiZZkUvveXdTnAH8qMsE8ku"],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -461,9 +384,7 @@
     },
     {
       "id": "earl",
-      "addresses": [
-        "F2SuErm4MviWJ2HzKXk2nuzBC6xe883CFWUDCPz6cyWm"
-      ],
+      "addresses": ["F2SuErm4MviWJ2HzKXk2nuzBC6xe883CFWUDCPz6cyWm"],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-05-01",
@@ -474,9 +395,7 @@
     },
     {
       "id": "giann",
-      "addresses": [
-        "GNrmKZCxYyNiSUsjduwwPJzhed3LATjciiKVuSGrsHEC"
-      ],
+      "addresses": ["GNrmKZCxYyNiSUsjduwwPJzhed3LATjciiKVuSGrsHEC"],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -486,9 +405,7 @@
     },
     {
       "id": "coler",
-      "addresses": [
-        "99xnE2zEFi8YhmKDaikc1EvH6ELTQJppnqUwMzmpLXrs"
-      ],
+      "addresses": ["99xnE2zEFi8YhmKDaikc1EvH6ELTQJppnqUwMzmpLXrs"],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -497,9 +414,7 @@
     },
     {
       "id": "radiance",
-      "addresses": [
-        "FAicXNV5FVqtfbpn4Zccs71XcfGeyxBSGbqLDyDJZjke"
-      ],
+      "addresses": ["FAicXNV5FVqtfbpn4Zccs71XcfGeyxBSGbqLDyDJZjke"],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-05-01",
@@ -510,9 +425,7 @@
     },
     {
       "id": "esee06257",
-      "addresses": [
-        "4uCT4g7YHH4xxfmfNfKUDenwGrRNGoZ9Ay1XFxfUGhQG"
-      ],
+      "addresses": ["4uCT4g7YHH4xxfmfNfKUDenwGrRNGoZ9Ay1XFxfUGhQG"],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -521,9 +434,7 @@
     },
     {
       "id": "putrick",
-      "addresses": [
-        "AVjEtg2ECYKXYeqdRQXvaaAZBjfTjYuSMTR4WLhKoeQN"
-      ],
+      "addresses": ["AVjEtg2ECYKXYeqdRQXvaaAZBjfTjYuSMTR4WLhKoeQN"],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -532,9 +443,7 @@
     },
     {
       "id": "gasp",
-      "addresses": [
-        "xyzfhxfy8NhfeNG3Um3WaUvFXzNuHkrhrZMD8dsStB6"
-      ],
+      "addresses": ["xyzfhxfy8NhfeNG3Um3WaUvFXzNuHkrhrZMD8dsStB6"],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -543,9 +452,7 @@
     },
     {
       "id": "bastille",
-      "addresses": [
-        "3kebnKw7cPdSkLRfiMEALyZJGZ4wdiSRvmoN4rD1yPzV"
-      ],
+      "addresses": ["3kebnKw7cPdSkLRfiMEALyZJGZ4wdiSRvmoN4rD1yPzV"],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -554,9 +461,7 @@
     },
     {
       "id": "cupsey_benchmark",
-      "addresses": [
-        "2fg5QD1eD7rzNNCsvnhmXFm5hqNgwTTG8p7kQ6f3rx6f"
-      ],
+      "addresses": ["2fg5QD1eD7rzNNCsvnhmXFm5hqNgwTTG8p7kQ6f3rx6f"],
       "tier": "S",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-05-01",
@@ -566,9 +471,7 @@
     },
     {
       "id": "cented_benchmark",
-      "addresses": [
-        "CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o"
-      ],
+      "addresses": ["CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o"],
       "tier": "S",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-04-25",
@@ -577,9 +480,7 @@
     },
     {
       "id": "sheep_watch",
-      "addresses": [
-        "78N177fzNJpp8pG49xDv1efYcTMSzo9tPTKEA9mAVkh2"
-      ],
+      "addresses": ["78N177fzNJpp8pG49xDv1efYcTMSzo9tPTKEA9mAVkh2"],
       "tier": "B",
       "added_at": "2026-04-25",
       "last_verified_at": "2026-05-01",
@@ -589,9 +490,7 @@
     },
     {
       "id": "gwyg_watch",
-      "addresses": [
-        "GwyG5FQRNtY1faXYWdTLbcDNZTyW5d2Z63o1UiMUDQDT"
-      ],
+      "addresses": ["GwyG5FQRNtY1faXYWdTLbcDNZTyW5d2Z63o1UiMUDQDT"],
       "tier": "A",
       "added_at": "2026-04-26",
       "last_verified_at": "2026-04-26",
@@ -600,9 +499,7 @@
     },
     {
       "id": "btyi_2_watch",
-      "addresses": [
-        "2btYi2pqVgtgzLqeAXE122FPhN2xBJMQpE1V9CMNv4EH"
-      ],
+      "addresses": ["2btYi2pqVgtgzLqeAXE122FPhN2xBJMQpE1V9CMNv4EH"],
       "tier": "B",
       "added_at": "2026-04-26",
       "last_verified_at": "2026-04-26",
@@ -611,9 +508,7 @@
     },
     {
       "id": "wallet_91e6_watch",
-      "addresses": [
-        "91e6tkWuCikpchersigVKqVtdMCBSfMNMui9LXpdz8qk"
-      ],
+      "addresses": ["91e6tkWuCikpchersigVKqVtdMCBSfMNMui9LXpdz8qk"],
       "tier": "B",
       "added_at": "2026-04-26",
       "last_verified_at": "2026-04-26",
@@ -622,9 +517,7 @@
     },
     {
       "id": "ansem",
-      "addresses": [
-        "AVAZvHLR2PcWpDf8BXY4rVxNHYRBytycHkcB5z5QNXYm"
-      ],
+      "addresses": ["AVAZvHLR2PcWpDf8BXY4rVxNHYRBytycHkcB5z5QNXYm"],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -633,9 +526,7 @@
     },
     {
       "id": "letterbomb",
-      "addresses": [
-        "BtMBMPkoNbnLF9Xn552guQq528KKXcsNBNNBre3oaQtr"
-      ],
+      "addresses": ["BtMBMPkoNbnLF9Xn552guQq528KKXcsNBNNBre3oaQtr"],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-05-01",
@@ -646,9 +537,7 @@
     },
     {
       "id": "dv",
-      "addresses": [
-        "BCagckXeMChUKrHEd6fKFA1uiWDtcmCXMsqaheLiUPJd"
-      ],
+      "addresses": ["BCagckXeMChUKrHEd6fKFA1uiWDtcmCXMsqaheLiUPJd"],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -658,9 +547,7 @@
     },
     {
       "id": "bigwarz",
-      "addresses": [
-        "7bsTkeWcSPG6nzsbXucxV89YUULoSExNJdX2WqfLHwZ4"
-      ],
+      "addresses": ["7bsTkeWcSPG6nzsbXucxV89YUULoSExNJdX2WqfLHwZ4"],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -670,9 +557,7 @@
     },
     {
       "id": "schoen",
-      "addresses": [
-        "5hAgYC8TJCcEZV7LTXAzkTrm7YL29YXyQQJPCNrG84zM"
-      ],
+      "addresses": ["5hAgYC8TJCcEZV7LTXAzkTrm7YL29YXyQQJPCNrG84zM"],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -682,9 +567,7 @@
     },
     {
       "id": "trenchman",
-      "addresses": [
-        "Hw5UKBU5k3YudnGwaykj5E8cYUidNMPuEewRRar5Xoc7"
-      ],
+      "addresses": ["Hw5UKBU5k3YudnGwaykj5E8cYUidNMPuEewRRar5Xoc7"],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -694,9 +577,7 @@
     },
     {
       "id": "jakey",
-      "addresses": [
-        "B3JyPD3t9ufZWfL3namyvoc258KH74JojSxxurUg9jCT"
-      ],
+      "addresses": ["B3JyPD3t9ufZWfL3namyvoc258KH74JojSxxurUg9jCT"],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -706,9 +587,7 @@
     },
     {
       "id": "clown",
-      "addresses": [
-        "EDXHdSFdadFbYFFjxPXBqMe1kCEDFqpPu552uvp48HR8"
-      ],
+      "addresses": ["EDXHdSFdadFbYFFjxPXBqMe1kCEDFqpPu552uvp48HR8"],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -718,9 +597,7 @@
     },
     {
       "id": "trey",
-      "addresses": [
-        "831yhv67QpKqLBJjbmw2xoDUeeFHGUx8RnuRj9imeoEs"
-      ],
+      "addresses": ["831yhv67QpKqLBJjbmw2xoDUeeFHGUx8RnuRj9imeoEs"],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-29",
@@ -730,9 +607,7 @@
     },
     {
       "id": "degenerate_brian",
-      "addresses": [
-        "7pDhG6NqfzQzw5KvtGXJbVRUh4iTBgYAn68BSKjdMNC1"
-      ],
+      "addresses": ["7pDhG6NqfzQzw5KvtGXJbVRUh4iTBgYAn68BSKjdMNC1"],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-05-01",
@@ -743,9 +618,7 @@
     },
     {
       "id": "noob_mini",
-      "addresses": [
-        "AGqjivJr1dSv73TVUvdtqAwogzmThzvYMVXjGWg2FYLm"
-      ],
+      "addresses": ["AGqjivJr1dSv73TVUvdtqAwogzmThzvYMVXjGWg2FYLm"],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -755,9 +628,7 @@
     },
     {
       "id": "limfork_eth",
-      "addresses": [
-        "BQVz7fQ1WsQmSTMY3umdPEPPTm1sdcBcX9sP7o6kPRmB"
-      ],
+      "addresses": ["BQVz7fQ1WsQmSTMY3umdPEPPTm1sdcBcX9sP7o6kPRmB"],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -767,9 +638,7 @@
     },
     {
       "id": "yenni",
-      "addresses": [
-        "5B52w1ZW9tuwUduueP5J7HXz5AcGfruGoX6YoAudvyxG"
-      ],
+      "addresses": ["5B52w1ZW9tuwUduueP5J7HXz5AcGfruGoX6YoAudvyxG"],
       "tier": "A",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -779,9 +648,7 @@
     },
     {
       "id": "fz7",
-      "addresses": [
-        "G2mgnzpr59vYjKpwU9q5zVfS9yQ9HezMwjuqF7LACvR4"
-      ],
+      "addresses": ["G2mgnzpr59vYjKpwU9q5zVfS9yQ9HezMwjuqF7LACvR4"],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -790,9 +657,7 @@
     },
     {
       "id": "cowboybnb",
-      "addresses": [
-        "6EDaVsS6enYgJ81tmhEkiKFcb4HuzPUVFZeom6PHUqN3"
-      ],
+      "addresses": ["6EDaVsS6enYgJ81tmhEkiKFcb4HuzPUVFZeom6PHUqN3"],
       "tier": "B",
       "added_at": "2026-04-27",
       "last_verified_at": "2026-04-27",
@@ -818,9 +683,7 @@
     },
     {
       "id": "wallet_684cvp",
-      "addresses": [
-        "684CvPPziJCNSkzhAq4AxAWS3LU782fKoDMRGJhmPGSf"
-      ],
+      "addresses": ["684CvPPziJCNSkzhAq4AxAWS3LU782fKoDMRGJhmPGSf"],
       "tier": "A",
       "added_at": "2026-04-29",
       "last_verified_at": "2026-04-29",
@@ -832,9 +695,7 @@
     },
     {
       "id": "orange",
-      "addresses": [
-        "2X4H5Y9C4Fy6Pf3wpq8Q4gMvLcWvfrrwDv2bdR8AAwQv"
-      ],
+      "addresses": ["2X4H5Y9C4Fy6Pf3wpq8Q4gMvLcWvfrrwDv2bdR8AAwQv"],
       "tier": "A",
       "added_at": "2026-04-29",
       "last_verified_at": "2026-04-29",
@@ -846,9 +707,7 @@
     },
     {
       "id": "daumen",
-      "addresses": [
-        "8MaVa9kdt3NW4Q5HyNAm1X5LbR8PQRVDc1W8NMVK88D5"
-      ],
+      "addresses": ["8MaVa9kdt3NW4Q5HyNAm1X5LbR8PQRVDc1W8NMVK88D5"],
       "tier": "A",
       "added_at": "2026-04-29",
       "last_verified_at": "2026-04-29",
@@ -860,9 +719,7 @@
     },
     {
       "id": "dani",
-      "addresses": [
-        "AuPp4YTMTyqxYXQnHc5KUc6pUuCSsHQpBJhgnD45yqrf"
-      ],
+      "addresses": ["AuPp4YTMTyqxYXQnHc5KUc6pUuCSsHQpBJhgnD45yqrf"],
       "tier": "A",
       "added_at": "2026-04-29",
       "last_verified_at": "2026-04-29",
@@ -874,9 +731,7 @@
     },
     {
       "id": "gr3g",
-      "addresses": [
-        "J23qr98GjGJJqKq9CBEnyRhHbmkaVxtTJNNxKu597wsA"
-      ],
+      "addresses": ["J23qr98GjGJJqKq9CBEnyRhHbmkaVxtTJNNxKu597wsA"],
       "tier": "B",
       "added_at": "2026-04-29",
       "last_verified_at": "2026-04-29",
@@ -888,9 +743,7 @@
     },
     {
       "id": "sebastian_orellana",
-      "addresses": [
-        "3BLjRcxWGtR7WRshJ3hL25U3RjWr5Ud98wMcczQqk4Ei"
-      ],
+      "addresses": ["3BLjRcxWGtR7WRshJ3hL25U3RjWr5Ud98wMcczQqk4Ei"],
       "tier": "B",
       "added_at": "2026-04-29",
       "last_verified_at": "2026-04-29",
@@ -902,9 +755,7 @@
     },
     {
       "id": "sebi",
-      "addresses": [
-        "DxwDRWxQXDaVZquH3YvCVBQ75nUf16FttQ4q88okn5mc"
-      ],
+      "addresses": ["DxwDRWxQXDaVZquH3YvCVBQ75nUf16FttQ4q88okn5mc"],
       "tier": "B",
       "added_at": "2026-05-01",
       "last_verified_at": "2026-05-01",
@@ -916,9 +767,7 @@
     },
     {
       "id": "n_o",
-      "addresses": [
-        "Di75xbVUg3u1qcmZci3NcZ8rjFMj7tsnYEoFdEMjS4ow"
-      ],
+      "addresses": ["Di75xbVUg3u1qcmZci3NcZ8rjFMj7tsnYEoFdEMjS4ow"],
       "tier": "B",
       "added_at": "2026-05-01",
       "last_verified_at": "2026-05-01",
@@ -930,9 +779,7 @@
     },
     {
       "id": "betman",
-      "addresses": [
-        "BoYHJoKntk3pjkaV8qFojEonSPWmWMfQocZTwDd1bcGG"
-      ],
+      "addresses": ["BoYHJoKntk3pjkaV8qFojEonSPWmWMfQocZTwDd1bcGG"],
       "tier": "B",
       "added_at": "2026-05-01",
       "last_verified_at": "2026-05-01",
@@ -944,9 +791,7 @@
     },
     {
       "id": "red",
-      "addresses": [
-        "7ABz8qEFZTHPkovMDsmQkm64DZWN5wRtU7LEtD2ShkQ6"
-      ],
+      "addresses": ["7ABz8qEFZTHPkovMDsmQkm64DZWN5wRtU7LEtD2ShkQ6"],
       "tier": "B",
       "added_at": "2026-05-01",
       "last_verified_at": "2026-05-01",
@@ -958,9 +803,7 @@
     },
     {
       "id": "wallet_exuzbt",
-      "addresses": [
-        "EXUzBTmHcYYwoHXjVi4zRBrj92iAcbnDRnsjs5SZ5PoC"
-      ],
+      "addresses": ["EXUzBTmHcYYwoHXjVi4zRBrj92iAcbnDRnsjs5SZ5PoC"],
       "tier": "B",
       "added_at": "2026-04-29",
       "last_verified_at": "2026-04-29",

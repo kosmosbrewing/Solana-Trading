@@ -331,6 +331,36 @@ export const kolHunter = {
   kolHunterRotationQualityStrictDoaWindowSec: numEnv('KOL_HUNTER_ROTATION_QUALITY_STRICT_DOA_WINDOW_SEC', '18'),
   kolHunterRotationQualityStrictDoaMinMfePct: numEnv('KOL_HUNTER_ROTATION_QUALITY_STRICT_DOA_MIN_MFE_PCT', '0.025'),
   kolHunterRotationQualityStrictDoaMaxMaePct: numEnv('KOL_HUNTER_ROTATION_QUALITY_STRICT_DOA_MAX_MAE_PCT', '0.035'),
+  // 2026-05-03: inventory-flow paper arm. Existing entries stay unchanged; this arm only changes
+  // paper exit behavior by reading anchor KOL buy/sell size from the already-observed tx stream.
+  kolHunterRotationFlowMetricsLookbackSec: numEnv('KOL_HUNTER_ROTATION_FLOW_METRICS_LOOKBACK_SEC', '180'),
+  kolHunterRotationFlowSellPressureWindowSec: numEnv('KOL_HUNTER_ROTATION_FLOW_SELL_PRESSURE_WINDOW_SEC', '30'),
+  kolHunterRotationFlowFreshTopupSec: numEnv('KOL_HUNTER_ROTATION_FLOW_FRESH_TOPUP_SEC', '60'),
+  kolHunterRotationFlowChaseStepPct: numEnv('KOL_HUNTER_ROTATION_FLOW_CHASE_STEP_PCT', '0.015'),
+  kolHunterRotationExitFlowPaperEnabled: boolOptional('KOL_HUNTER_ROTATION_EXIT_FLOW_PAPER_ENABLED', true),
+  kolHunterRotationExitFlowLightPressure: numEnv('KOL_HUNTER_ROTATION_EXIT_FLOW_LIGHT_PRESSURE', '0.20'),
+  kolHunterRotationExitFlowStrongPressure: numEnv('KOL_HUNTER_ROTATION_EXIT_FLOW_STRONG_PRESSURE', '0.50'),
+  kolHunterRotationExitFlowFullExitPressure: numEnv('KOL_HUNTER_ROTATION_EXIT_FLOW_FULL_EXIT_PRESSURE', '0.80'),
+  kolHunterRotationExitFlowCriticalPressure: numEnv('KOL_HUNTER_ROTATION_EXIT_FLOW_CRITICAL_PRESSURE', '1.20'),
+  kolHunterRotationExitFlowLightReducePct: numEnv('KOL_HUNTER_ROTATION_EXIT_FLOW_LIGHT_REDUCE_PCT', '0.35'),
+  kolHunterRotationExitFlowStrongReducePct: numEnv('KOL_HUNTER_ROTATION_EXIT_FLOW_STRONG_REDUCE_PCT', '0.75'),
+  kolHunterRotationExitFlowResidualHoldSec: numEnv('KOL_HUNTER_ROTATION_EXIT_FLOW_RESIDUAL_HOLD_SEC', '75'),
+  kolHunterRotationExitFlowParameterVersion: process.env.KOL_HUNTER_ROTATION_EXIT_FLOW_PARAMETER_VERSION ?? 'rotation-exit-flow-v1.0.0',
+  kolHunterRotationChaseTopupPaperEnabled: boolOptional('KOL_HUNTER_ROTATION_CHASE_TOPUP_PAPER_ENABLED', true),
+  kolHunterRotationChaseTopupMinBuys: numEnv('KOL_HUNTER_ROTATION_CHASE_TOPUP_MIN_BUYS', '2'),
+  kolHunterRotationChaseTopupMinTopupStrength: numEnv('KOL_HUNTER_ROTATION_CHASE_TOPUP_MIN_TOPUP_STRENGTH', '0.08'),
+  kolHunterRotationChaseTopupMaxRecentSellSec: numEnv('KOL_HUNTER_ROTATION_CHASE_TOPUP_MAX_RECENT_SELL_SEC', '60'),
+  kolHunterRotationChaseTopupParameterVersion: process.env.KOL_HUNTER_ROTATION_CHASE_TOPUP_PARAMETER_VERSION ?? 'rotation-chase-topup-v1.0.0',
+  // 2026-05-03: rotation monetizable-edge shadow gate.
+  // 목적: 신규 paper arm 을 live 후보로 착각하지 않도록 entry 시점의 wallet-realistic cost ratio 를
+  // ledger/report 에 남긴다. 기본은 shadow-only 이며 paper entry 를 막지 않는다.
+  kolHunterRotationEdgeShadowEnabled: boolOptional('KOL_HUNTER_ROTATION_EDGE_SHADOW_ENABLED', true),
+  kolHunterRotationEdgeMaxCostRatio: numEnv('KOL_HUNTER_ROTATION_EDGE_MAX_COST_RATIO', '0.06'),
+  kolHunterRotationEdgeAssumedAtaRentSol: numEnv('KOL_HUNTER_ROTATION_EDGE_ASSUMED_ATA_RENT_SOL', '0.00207408'),
+  kolHunterRotationEdgePriorityFeeSol: numEnv('KOL_HUNTER_ROTATION_EDGE_PRIORITY_FEE_SOL', '0.0001'),
+  kolHunterRotationEdgeTipSol: numEnv('KOL_HUNTER_ROTATION_EDGE_TIP_SOL', '0'),
+  kolHunterRotationEdgeEntrySlippageBps: numEnv('KOL_HUNTER_ROTATION_EDGE_ENTRY_SLIPPAGE_BPS', '50'),
+  kolHunterRotationEdgeQuickExitSlippageBps: numEnv('KOL_HUNTER_ROTATION_EDGE_QUICK_EXIT_SLIPPAGE_BPS', '75'),
   // 2026-05-03: rotation_underfill_v1 paper-only arm.
   // Hypothesis: a single active S/A KOL buy can be worth testing when our quote is below the
   // observed KOL reference price, provided the KOL has not sold. This is not a live lane.

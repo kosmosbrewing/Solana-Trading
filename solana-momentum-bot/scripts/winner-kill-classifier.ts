@@ -45,6 +45,7 @@ export function classifyKillCategory(closeReason: string): KillCategory {
     case 'probe_flat_cut':
     case 'probe_reject_timeout':
     case 'quick_reject_classifier_exit':
+    case 'rotation_flow_residual_timeout':
       return 'price';
     case 'structural_kill_sell_route':
     case 'hold_phase_sentinel_degraded_exit':

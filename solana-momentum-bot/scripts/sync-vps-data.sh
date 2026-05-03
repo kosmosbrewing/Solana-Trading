@@ -13,6 +13,7 @@
 #   SKIP_PAPER_REPORT=true bash scripts/sync-vps-data.sh   # paper arm report 생략
 #   SKIP_TOKEN_QUALITY_REPORT=true bash scripts/sync-vps-data.sh  # dev candidate quality report 생략
 #   SKIP_LIVE_CANARY_REPORT=true bash scripts/sync-vps-data.sh    # live canary report 생략
+#   SKIP_SMART_V3_EVIDENCE_REPORT=true bash scripts/sync-vps-data.sh  # smart-v3 evidence verdict 생략
 #   SKIP_TRADE_MARKOUT_REPORT=true bash scripts/sync-vps-data.sh  # buy/sell T+ markout report 생략
 #   SKIP_PUREWS_TRADE_MARKOUT_REPORT=true bash scripts/sync-vps-data.sh  # pure_ws T+ report 생략
 #   SKIP_WINNER_KILL_REPORT=true bash scripts/sync-vps-data.sh    # winner-kill report 생략
@@ -56,6 +57,7 @@ fi
 # paper-arm-report: 파일 only (Jupiter API 0건) → default ON.
 # token-quality-report: 파일 only (Jupiter/API 0건) → default ON. dev-wallet candidate JSON join 포함.
 # live-canary-report: 파일 only → default ON. live canary wallet-truth / 5x / catastrophic summary.
+# smart-v3-evidence-report: 파일 only → default ON. smart-v3 projection + shared T+ verdict.
 # trade-markout-report: 파일 only → default ON. 실제 buy/sell 이후 T+30/60/300/1800 coverage / continuation.
 # rotation-report: 파일 only → default ON. rotation lane T+15/30/60 entry/exit/no-trade feedback.
 # winner-kill-report: 파일 only → default ON. missed-alpha close-site 기반 tail-retain feedback.
@@ -64,6 +66,7 @@ fi
 SKIP_PAPER_REPORT="${SKIP_PAPER_REPORT:-false}"
 SKIP_TOKEN_QUALITY_REPORT="${SKIP_TOKEN_QUALITY_REPORT:-false}"
 SKIP_LIVE_CANARY_REPORT="${SKIP_LIVE_CANARY_REPORT:-false}"
+SKIP_SMART_V3_EVIDENCE_REPORT="${SKIP_SMART_V3_EVIDENCE_REPORT:-false}"
 SKIP_TRADE_MARKOUT_REPORT="${SKIP_TRADE_MARKOUT_REPORT:-false}"
 SKIP_PUREWS_TRADE_MARKOUT_REPORT="${SKIP_PUREWS_TRADE_MARKOUT_REPORT:-false}"
 SKIP_ROTATION_REPORT="${SKIP_ROTATION_REPORT:-false}"
@@ -71,6 +74,7 @@ SKIP_WINNER_KILL_REPORT="${SKIP_WINNER_KILL_REPORT:-false}"
 SKIP_SYNC_HEALTH="${SKIP_SYNC_HEALTH:-false}"
 TOKEN_QUALITY_WINDOW_DAYS="${TOKEN_QUALITY_WINDOW_DAYS:-7}"
 TRADE_MARKOUT_SINCE="${TRADE_MARKOUT_SINCE:-24h}"
+SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT="${SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT:-0.005}"
 ROTATION_REPORT_ROUND_TRIP_COST_PCT="${ROTATION_REPORT_ROUND_TRIP_COST_PCT:-0.005}"
 WINNER_KILL_WINDOW_DAYS="${WINNER_KILL_WINDOW_DAYS:-7}"
 RUN_SHADOW_EVAL="${RUN_SHADOW_EVAL:-false}"
@@ -141,6 +145,117 @@ file_mtime_iso() {
   date -u -d "@$epoch" "+%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "$epoch"
 }
 
+write_lane_trade_summary_markdown() {
+  if ! command -v node >/dev/null 2>&1; then
+    echo ""
+    echo "## Lane Trade Ledgers"
+    echo ""
+    echo "_node not found — lane trade summary skipped._"
+    return
+  fi
+
+  node - "${ROOT_DIR}" <<'NODE'
+const fs = require('fs');
+const path = require('path');
+
+const root = process.argv[2];
+const nowMs = Date.now();
+const sinceMs = nowMs - 24 * 3600_000;
+const ledgers = [
+  ['smart-v3 paper', 'data/realtime/smart-v3-paper-trades.jsonl'],
+  ['smart-v3 live', 'data/realtime/smart-v3-live-trades.jsonl'],
+  ['rotation-v1 paper', 'data/realtime/rotation-v1-paper-trades.jsonl'],
+  ['rotation-v1 live', 'data/realtime/rotation-v1-live-trades.jsonl'],
+  ['pure_ws paper', 'data/realtime/pure-ws-paper-trades.jsonl'],
+  ['pure_ws live', 'data/realtime/pure-ws-live-trades.jsonl'],
+];
+
+function parseTime(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value < 1e12 ? value * 1000 : value;
+  if (typeof value === 'string' && value) {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : NaN;
+  }
+  return NaN;
+}
+
+function rowTime(row) {
+  const candidates = [
+    parseTime(row.closedAt),
+    parseTime(row.exitAt),
+    parseTime(row.entryAt),
+    parseTime(row.recordedAt),
+    parseTime(row.exitTimeSec),
+    parseTime(row.entryTimeSec),
+  ].filter(Number.isFinite);
+  return candidates.length > 0 ? Math.max(...candidates) : NaN;
+}
+
+function num(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function fmtSol(value) {
+  if (!Number.isFinite(value)) return 'n/a';
+  return `${value >= 0 ? '+' : ''}${value.toFixed(6)}`;
+}
+
+function fmtTime(value) {
+  return Number.isFinite(value) ? new Date(value).toISOString().replace(/\.\d{3}Z$/, 'Z') : 'n/a';
+}
+
+function readRows(rel) {
+  const file = path.join(root, rel);
+  if (!fs.existsSync(file)) return { exists: false, rows: [] };
+  const raw = fs.readFileSync(file, 'utf8');
+  const rows = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      rows.push(JSON.parse(line));
+    } catch {
+      // malformed jsonl row — summary should not fail sync.
+    }
+  }
+  return { exists: true, rows };
+}
+
+console.log('');
+console.log('## Lane Trade Ledgers');
+console.log('');
+console.log('> Net SOL here is ledger realized sum, not wallet truth. Use live-canary/wallet reports for ground truth.');
+console.log('');
+console.log('| Ledger | Rows | Recent 24h | W/L | Net SOL | Token SOL | Last UTC |');
+console.log('|---|---:|---:|---:|---:|---:|---|');
+
+for (const [label, rel] of ledgers) {
+  const { exists, rows } = readRows(rel);
+  if (!exists) {
+    console.log(`| ${label} | missing | missing | n/a | n/a | n/a | missing |`);
+    continue;
+  }
+  const recent = rows.filter((row) => {
+    const t = rowTime(row);
+    return Number.isFinite(t) && t >= sinceMs;
+  });
+  const wins = recent.filter((row) => num(row.netSol) > 0).length;
+  const losses = recent.filter((row) => num(row.netSol) < 0).length;
+  const netSol = recent.reduce((sum, row) => sum + num(row.netSol), 0);
+  const tokenSol = recent.reduce((sum, row) => {
+    const token = typeof row.netSolTokenOnly === 'number' && Number.isFinite(row.netSolTokenOnly)
+      ? row.netSolTokenOnly
+      : row.netSol;
+    return sum + num(token);
+  }, 0);
+  const last = rows.reduce((max, row) => {
+    const t = rowTime(row);
+    return Number.isFinite(t) && t > max ? t : max;
+  }, -Infinity);
+  console.log(`| ${label} | ${rows.length} | ${recent.length} | ${wins}/${losses} | ${fmtSol(netSol)} | ${fmtSol(tokenSol)} | ${fmtTime(last === -Infinity ? NaN : last)} |`);
+}
+NODE
+}
+
 write_sync_health_report() {
   local out_file="$1"
   mkdir -p "$(dirname "$out_file")"
@@ -178,6 +293,7 @@ write_sync_health_report() {
       fi
       echo "| ${rel} | ${rows} | $(file_bytes "$abs") | $(file_mtime_iso "$abs") |"
     done
+    write_lane_trade_summary_markdown
   } > "$out_file"
 }
 
@@ -395,7 +511,22 @@ else
   echo "[sync-vps-data] live-canary-report: SKIPPED (SKIP_LIVE_CANARY_REPORT=true)"
 fi
 
-# ─── 7. Trade markout report (file-only) ───
+# ─── 7. Smart-v3 evidence report (file-only) ───
+# Why: smart-v3 는 5x main lane 이므로 rotation arm discipline 을 policy 가 아니라 evidence verdict 로 먼저 이식한다.
+if [ "$SKIP_SMART_V3_EVIDENCE_REPORT" != "true" ]; then
+  SMART_V3_EVIDENCE_MD="${ROOT_DIR}/reports/smart-v3-evidence-$(date +%Y-%m-%d).md"
+  SMART_V3_EVIDENCE_JSON="${ROOT_DIR}/reports/smart-v3-evidence-$(date +%Y-%m-%d).json"
+  echo "[sync-vps-data] smart-v3-evidence-report: generating since=${TRADE_MARKOUT_SINCE} roundTripCost=${SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT}"
+  if (cd "${ROOT_DIR}" && npm run -s kol:smart-v3-evidence-report -- --since "${TRADE_MARKOUT_SINCE}" --horizons 30,60,300,1800 --realtime-dir data/realtime --round-trip-cost-pct "${SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT}" --md "${SMART_V3_EVIDENCE_MD}" --json "${SMART_V3_EVIDENCE_JSON}" 2>&1 | tail -12); then
+    echo "[sync-vps-data] smart-v3-evidence-report: ok → ${SMART_V3_EVIDENCE_MD}"
+  else
+    echo "[sync-vps-data] smart-v3-evidence-report: WARN — generation failed (sync 자체는 정상)"
+  fi
+else
+  echo "[sync-vps-data] smart-v3-evidence-report: SKIPPED (SKIP_SMART_V3_EVIDENCE_REPORT=true)"
+fi
+
+# ─── 8. Trade markout report (file-only) ───
 # Why: actual buy/sell/paper anchors 이후 T+30/60/300/1800 quote trajectory 를 sync 표준 산출물로 고정.
 # DB 미사용, Jupiter/RPC 호출 0건. trade-markout runtime observer 가 남긴 파일만 읽는다.
 if [ "$SKIP_TRADE_MARKOUT_REPORT" != "true" ]; then
@@ -411,7 +542,7 @@ else
   echo "[sync-vps-data] trade-markout-report: SKIPPED (SKIP_TRADE_MARKOUT_REPORT=true)"
 fi
 
-# ─── 7b. pure_ws paper trade markout report (file-only) ───
+# ─── 8b. pure_ws paper trade markout report (file-only) ───
 # Why: pure_ws 는 fast-compound 후보라 T+15/30/60/180/300/1800 horizon 을 별도로 본다.
 if [ "$SKIP_PUREWS_TRADE_MARKOUT_REPORT" != "true" ]; then
   PUREWS_TRADE_MARKOUT_MD="${ROOT_DIR}/reports/pure-ws-trade-markout-$(date +%Y-%m-%d).md"
@@ -426,7 +557,7 @@ else
   echo "[sync-vps-data] pure-ws-trade-markout-report: SKIPPED (SKIP_PUREWS_TRADE_MARKOUT_REPORT=true)"
 fi
 
-# ─── 8. Rotation lane report (file-only) ───
+# ─── 9. Rotation lane report (file-only) ───
 # Why: rotation lane 은 T+15/30/60 이 primary horizon. trade-markouts + missed-alpha 파일만 읽는다.
 if [ "$SKIP_ROTATION_REPORT" != "true" ]; then
   ROTATION_MD="${ROOT_DIR}/reports/rotation-lane-$(date +%Y-%m-%d).md"
@@ -441,7 +572,7 @@ else
   echo "[sync-vps-data] rotation-report: SKIPPED (SKIP_ROTATION_REPORT=true)"
 fi
 
-# ─── 9. Winner-kill report (file-only) ───
+# ─── 10. Winner-kill report (file-only) ───
 # Why: missed-alpha close-site markout 으로 early cut 이 5x winner 를 죽이는지 추적.
 # tail-retain / partial-take 측정 sprint 의 핵심 feedback.
 if [ "$SKIP_WINNER_KILL_REPORT" != "true" ]; then
@@ -457,7 +588,7 @@ else
   echo "[sync-vps-data] winner-kill-report: SKIPPED (SKIP_WINNER_KILL_REPORT=true)"
 fi
 
-# ─── 10. Sync health manifest (file-only) ───
+# ─── 11. Sync health manifest (file-only) ───
 if [ "$SKIP_SYNC_HEALTH" != "true" ]; then
   SYNC_HEALTH_OUT="${ROOT_DIR}/reports/sync-health-$(date +%Y-%m-%d).md"
   echo "[sync-vps-data] sync-health: generating"
@@ -470,7 +601,7 @@ else
   echo "[sync-vps-data] sync-health: SKIPPED (SKIP_SYNC_HEALTH=true)"
 fi
 
-# ─── 10. Shadow eval (Jupiter API 호출, opt-in) ───
+# ─── 12. Shadow eval (Jupiter API 호출, opt-in) ───
 # Why: KOL signal 자체의 raw alpha (smart-v3 logic 무관) 측정 — Jupiter forward quote 사용.
 # Phase 2 go/no-go 판정용. Jupiter quota 영향 있어 default OFF.
 if [ "$RUN_SHADOW_EVAL" = "true" ]; then

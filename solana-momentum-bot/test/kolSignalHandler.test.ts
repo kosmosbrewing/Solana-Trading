@@ -283,6 +283,31 @@ jest.mock('../src/utils/config', () => ({
     kolHunterRotationQualityStrictDoaWindowSec: 18,
     kolHunterRotationQualityStrictDoaMinMfePct: 0.025,
     kolHunterRotationQualityStrictDoaMaxMaePct: 0.035,
+    kolHunterRotationFlowMetricsLookbackSec: 180,
+    kolHunterRotationFlowSellPressureWindowSec: 30,
+    kolHunterRotationFlowFreshTopupSec: 60,
+    kolHunterRotationFlowChaseStepPct: 0.015,
+    kolHunterRotationExitFlowPaperEnabled: true,
+    kolHunterRotationExitFlowLightPressure: 0.20,
+    kolHunterRotationExitFlowStrongPressure: 0.50,
+    kolHunterRotationExitFlowFullExitPressure: 0.80,
+    kolHunterRotationExitFlowCriticalPressure: 1.20,
+    kolHunterRotationExitFlowLightReducePct: 0.35,
+    kolHunterRotationExitFlowStrongReducePct: 0.75,
+    kolHunterRotationExitFlowResidualHoldSec: 75,
+    kolHunterRotationExitFlowParameterVersion: 'rotation-exit-flow-v1.0.0',
+    kolHunterRotationChaseTopupPaperEnabled: true,
+    kolHunterRotationChaseTopupMinBuys: 2,
+    kolHunterRotationChaseTopupMinTopupStrength: 0.08,
+    kolHunterRotationChaseTopupMaxRecentSellSec: 60,
+    kolHunterRotationChaseTopupParameterVersion: 'rotation-chase-topup-v1.0.0',
+    kolHunterRotationEdgeShadowEnabled: true,
+    kolHunterRotationEdgeMaxCostRatio: 0.06,
+    kolHunterRotationEdgeAssumedAtaRentSol: 0.00207408,
+    kolHunterRotationEdgePriorityFeeSol: 0.0001,
+    kolHunterRotationEdgeTipSol: 0,
+    kolHunterRotationEdgeEntrySlippageBps: 50,
+    kolHunterRotationEdgeQuickExitSlippageBps: 75,
     kolHunterRotationUnderfillPaperEnabled: true,
     kolHunterRotationUnderfillMinKolScore: 0.45,
     kolHunterRotationUnderfillMaxLastBuyAgeSec: 45,
@@ -498,6 +523,24 @@ describe('kolSignalHandler — state machine', () => {
     mockedConfig.kolHunterRotationQualityStrictDoaWindowSec = 18;
     mockedConfig.kolHunterRotationQualityStrictDoaMinMfePct = 0.025;
     mockedConfig.kolHunterRotationQualityStrictDoaMaxMaePct = 0.035;
+    mockedConfig.kolHunterRotationFlowMetricsLookbackSec = 180;
+    mockedConfig.kolHunterRotationFlowSellPressureWindowSec = 30;
+    mockedConfig.kolHunterRotationFlowFreshTopupSec = 60;
+    mockedConfig.kolHunterRotationFlowChaseStepPct = 0.015;
+    mockedConfig.kolHunterRotationExitFlowPaperEnabled = true;
+    mockedConfig.kolHunterRotationExitFlowLightPressure = 0.20;
+    mockedConfig.kolHunterRotationExitFlowStrongPressure = 0.50;
+    mockedConfig.kolHunterRotationExitFlowFullExitPressure = 0.80;
+    mockedConfig.kolHunterRotationExitFlowCriticalPressure = 1.20;
+    mockedConfig.kolHunterRotationExitFlowLightReducePct = 0.35;
+    mockedConfig.kolHunterRotationExitFlowStrongReducePct = 0.75;
+    mockedConfig.kolHunterRotationExitFlowResidualHoldSec = 75;
+    mockedConfig.kolHunterRotationExitFlowParameterVersion = 'rotation-exit-flow-v1.0.0';
+    mockedConfig.kolHunterRotationChaseTopupPaperEnabled = true;
+    mockedConfig.kolHunterRotationChaseTopupMinBuys = 2;
+    mockedConfig.kolHunterRotationChaseTopupMinTopupStrength = 0.08;
+    mockedConfig.kolHunterRotationChaseTopupMaxRecentSellSec = 60;
+    mockedConfig.kolHunterRotationChaseTopupParameterVersion = 'rotation-chase-topup-v1.0.0';
     mockedConfig.kolHunterRotationUnderfillPaperEnabled = true;
     mockedConfig.kolHunterRotationUnderfillMinKolScore = 0.45;
     mockedConfig.kolHunterRotationUnderfillMaxLastBuyAgeSec = 45;
@@ -746,6 +789,42 @@ describe('kolSignalHandler — state machine', () => {
       expect(positions[0].independentKolCount).toBe(2);
     });
 
+    it('smart-v3 close ledger 는 copyable-edge shadow field 를 남긴다', async () => {
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      stubFeed.emitTick(MINT_SMART, 0.0013);
+      await flushAsync();
+      stubFeed.emitTick(MINT_SMART, 0.00115);
+      await flushAsync();
+
+      const pos = __testGetActive()[0];
+      expect(pos.armName).toBe('kol_hunter_smart_v3');
+
+      mockAppendFile.mockClear();
+      __testTriggerTick(pos.positionId, pos.entryPrice * 0.88);
+      await flushAsync();
+      await flushAsync();
+
+      const paperRows = mockAppendFile.mock.calls
+        .filter((call) => typeof call[0] === 'string' && call[0].includes('kol-paper-trades.jsonl'))
+        .map((call) => JSON.parse(String(call[1]).trim()));
+      expect(paperRows).toHaveLength(1);
+      const row = paperRows[0];
+      expect(row.armName).toBe('kol_hunter_smart_v3');
+      expect(row.smartV3CopyableEdge.schemaVersion).toBe('smart-v3-copyable-edge/v1');
+      expect(row.smartV3CopyableEdge.shadowOnly).toBe(true);
+      expect(row.smartV3CopyablePass).toBe(false);
+      expect(row.smartV3CopyableNetSol).toBeLessThan(row.netSolTokenOnly);
+      expect(row.extras.smartV3CopyableEdge.schemaVersion).toBe('smart-v3-copyable-edge/v1');
+      expect(row.extras.smartV3CopyablePass).toBe(false);
+
+      const projectionRows = mockAppendFile.mock.calls
+        .filter((call) => typeof call[0] === 'string' && call[0].includes('smart-v3-paper-trades.jsonl'))
+        .map((call) => JSON.parse(String(call[1]).trim()));
+      expect(projectionRows).toHaveLength(1);
+      expect(projectionRows[0].smartV3CopyableEdge.schemaVersion).toBe('smart-v3-copyable-edge/v1');
+    });
+
     it('first tick 대기 중 같은 mint buy 는 기존 smart-v3 pending 에 합류해 observe 중복을 막는다', async () => {
       mockedConfig.kolHunterSmartV3FreshWindowSec = 120;
       const first = handleKolSwap(buyTx('k1', 'S', MINT_SMART, 70_000));
@@ -872,6 +951,7 @@ describe('kolSignalHandler — state machine', () => {
       expect(positions.map((pos) => pos.armName).sort()).toEqual([
         'kol_hunter_rotation_v1',
         'rotation_cost_guard_v1',
+        'rotation_exit_kol_flow_v1',
         'rotation_fast15_v1',
         'rotation_quality_strict_v1',
       ]);
@@ -902,6 +982,7 @@ describe('kolSignalHandler — state machine', () => {
 
       expect(__testGetActive().map((pos) => pos.armName).sort()).toEqual([
         'kol_hunter_rotation_v1',
+        'rotation_exit_kol_flow_v1',
         'rotation_fast15_v1',
         'rotation_quality_strict_v1',
       ]);
@@ -1015,12 +1096,128 @@ describe('kolSignalHandler — state machine', () => {
       expect(positions[0].rotationAnchorPriceSource).toBe('kol_weighted_fill');
       expect(positions[0].underfillReferenceSolAmount).toBe(0.25);
       expect(positions[0].underfillReferenceTokenAmount).toBe(250);
+      expect(positions[0].rotationMonetizableEdge?.schemaVersion).toBe('rotation-monetizable-edge/v1');
+      expect(positions[0].rotationMonetizableEdge?.pass).toBe(false);
+      expect(positions[0].survivalFlags).toContain('ROTATION_EDGE_SHADOW_FAIL');
       expect(positions[0].t1MfeOverride).toBe(0.05);
       expect(positions[0].t1TrailPctOverride).toBe(0.025);
       expect(positions[0].t1ProfitFloorMult).toBe(1.02);
       expect(positions[0].probeFlatTimeoutSec).toBe(30);
       expect(positions[0].probeHardCutPctOverride).toBe(0.04);
       expect(positions[0].rotationDoaWindowSecOverride).toBe(15);
+    });
+
+    it('rotation-exit-flow: underfill entry 의 anchor sell 을 sellPressure 기반으로 부분 축소한다', async () => {
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterRotationPaperArmsEnabled = true;
+      mockedConfig.kolHunterSmartV3VelocityScoreThreshold = 99;
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+
+      const positions = __testGetActive();
+      expect(positions.map((p) => p.armName).sort()).toEqual([
+        'rotation_exit_kol_flow_v1',
+        'rotation_underfill_v1',
+      ]);
+      const flowBefore = positions.find((p) => p.armName === 'rotation_exit_kol_flow_v1')!;
+      const beforeTicket = flowBefore.ticketSol;
+
+      await handleKolSwap(sellTx('decu', 'A', MINT_ROTATION, 0.06));
+      await flushAsync();
+
+      const activeAfter = __testGetActive();
+      expect(activeAfter.some((p) => p.armName === 'rotation_underfill_v1')).toBe(false);
+      const flowAfter = activeAfter.find((p) => p.armName === 'rotation_exit_kol_flow_v1');
+      expect(flowAfter).toBeDefined();
+      expect(flowAfter?.rotationFlowMetrics?.sellPressure30).toBeCloseTo(0.24);
+      expect(flowAfter?.rotationFlowDecision).toBe('low_sell_pressure');
+      expect(flowAfter?.ticketSol).toBeCloseTo(beforeTicket * 0.65);
+      expect(flowAfter?.rotationFlowReducedAtSec).toBeDefined();
+
+      stubFeed.emitTick(MINT_ROTATION, 0.00097);
+      await flushAsync();
+      expect(__testGetActive().find((p) => p.armName === 'rotation_exit_kol_flow_v1')?.rotationFlowResidualUntilSec)
+        .toBeUndefined();
+
+      stubFeed.emitTick(MINT_ROTATION, 0.00090);
+      await flushAsync();
+      expect(__testGetActive().some((p) => p.armName === 'rotation_exit_kol_flow_v1')).toBe(false);
+    });
+
+    it('rotation-chase-topup: S/A KOL top-up 이 더 높은 fill price 로 붙으면 paper-only 진입한다', async () => {
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterSmartV3VelocityScoreThreshold = 99;
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 1.0, 2_000));
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.00105, 0.2, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00106);
+      await flushAsync();
+
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].armName).toBe('rotation_chase_topup_v1');
+      expect(positions[0].parameterVersion).toBe('rotation-chase-topup-v1.0.0');
+      expect(positions[0].isShadowArm).toBe(false);
+      expect(positions[0].rotationFlowExitEnabled).toBe(true);
+      expect(positions[0].survivalFlags).toContain('ROTATION_CHASE_TOPUP_V1');
+    });
+
+    it('rotation-underfill: close ledger 에 openedAt/entryReason/extras/MFE alias 를 남긴다', async () => {
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterSmartV3VelocityScoreThreshold = 99;
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].armName).toBe('rotation_underfill_v1');
+
+      mockAppendFile.mockClear();
+      stubFeed.emitTick(MINT_ROTATION, 0.00105);
+      await flushAsync();
+      stubFeed.emitTick(MINT_ROTATION, 0.00102);
+      await flushAsync();
+      await flushAsync();
+
+      const paperRows = mockAppendFile.mock.calls
+        .filter((call) => typeof call[0] === 'string' && call[0].includes('kol-paper-trades.jsonl'))
+        .map((call) => JSON.parse(String(call[1]).trim()));
+      expect(paperRows).toHaveLength(1);
+      const row = paperRows[0];
+      expect(row.armName).toBe('rotation_underfill_v1');
+      expect(row.openedAt).toBe(new Date(row.entryTimeSec * 1000).toISOString());
+      expect(row.closedAt).toBe(new Date(row.exitTimeSec * 1000).toISOString());
+      expect(row.entryReason).toBe('rotation_v1');
+      expect(row.kolEntryReason).toBe('rotation_v1');
+      expect(row.mfePct).toBeCloseTo(0.09375, 5);
+      expect(row.mfePctPeak).toBeCloseTo(row.mfePct, 10);
+      expect(row.maxPrice).toBeCloseTo(0.00105, 10);
+      expect(row.peakPrice).toBeCloseTo(0.00105, 10);
+      expect(row.rotationMonetizableEdge.pass).toBe(false);
+      expect(row.rotationMonetizableCostRatio).toBeGreaterThan(0.06);
+      expect(row.extras.entryReason).toBe('rotation_v1');
+      expect(row.extras.armName).toBe('rotation_underfill_v1');
+      expect(row.extras.rotationMonetizableEdge.pass).toBe(false);
+      expect(row.extras.exitPrice).toBeCloseTo(0.00102, 10);
+      expect(row.extras.maxPrice).toBeCloseTo(0.00105, 10);
+      expect(row.extras.rotationAnchorKols).toEqual(['decu']);
+
+      const projectionRows = mockAppendFile.mock.calls
+        .filter((call) => typeof call[0] === 'string' && call[0].includes('rotation-v1-paper-trades.jsonl'))
+        .map((call) => JSON.parse(String(call[1]).trim()));
+      expect(projectionRows).toHaveLength(1);
+      expect(projectionRows[0].openedAt).toBe(row.openedAt);
+      expect(projectionRows[0].entryReason).toBe('rotation_v1');
+      expect(projectionRows[0].mfePct).toBeCloseTo(row.mfePct, 10);
+      expect(projectionRows[0].maxPrice).toBeCloseTo(row.maxPrice, 10);
+      expect(projectionRows[0].extras.armName).toBe('rotation_underfill_v1');
     });
 
     it('rotation-underfill: 할인폭이 너무 깊으면 진입하지 않고 false-negative markout 을 예약한다', async () => {
@@ -1110,14 +1307,17 @@ describe('kolSignalHandler — state machine', () => {
       await flushAsync();
 
       expect(__testGetActive()).toHaveLength(0);
-      expect(getMissedAlphaObserverStats().scheduled).toBe(3);
+      expect(getMissedAlphaObserverStats().scheduled).toBe(6);
       const markers = mockAppendFile.mock.calls
         .filter((call) => typeof call[0] === 'string' && call[0].includes('missed-alpha.jsonl'))
         .map((call) => JSON.parse(String(call[1]).trim()));
-      expect(markers).toHaveLength(1);
-      expect(markers[0].rejectReason).toBe('rotation_v1_insufficient_price_response');
-      expect(markers[0].extras.eventType).toBe('rotation_no_trade');
-      expect(markers[0].extras.rotationAnchorKols).toEqual(['dv']);
+      expect(markers).toHaveLength(2);
+      const rotationMarker = markers.find((row) => row.extras.eventType === 'rotation_no_trade');
+      const chaseMarker = markers.find((row) => row.extras.eventType === 'rotation_chase_topup_no_trade');
+      expect(rotationMarker?.rejectReason).toBe('rotation_v1_insufficient_price_response');
+      expect(rotationMarker?.extras.rotationAnchorKols).toEqual(['dv']);
+      expect(chaseMarker?.rejectReason).toBe('rotation_chase_topup_chase_topup_strength_too_low');
+      expect(chaseMarker?.signalSource).toBe('rotation_chase_topup_v1');
     });
 
     it('rotation-v1: stale last buy 는 policy no-trade 로 기록하고 진입하지 않는다', async () => {

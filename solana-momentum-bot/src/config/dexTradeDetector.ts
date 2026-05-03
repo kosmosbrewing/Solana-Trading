@@ -33,6 +33,15 @@ export const dexTradeDetector = {
   // 2026-04-21 P1: v1 (bootstrap) 경로에도 per-pair cooldown.
   // 2026-04-22 강화: 300s(5분) → 1800s(30분). pippin 한 pair 32회 진입 (평균 18분 간격) — 5분 cooldown 무력.
   pureWsV1PerPairCooldownSec: numEnv('PUREWS_V1_PER_PAIR_COOLDOWN_SEC', '1800'),
+  // 2026-05-03: paper 관측에서 같은 pair 반복 진입이 손실 대부분을 만들었음.
+  // parent signal 기준으로 active shadow 보유 중 재진입을 막고, primary close 결과가 약하면 더 긴 quarantine.
+  pureWsBlockParentWhileAnyArmOpen: boolOptional('PUREWS_BLOCK_PARENT_WHILE_ANY_ARM_OPEN', true),
+  pureWsPairOutcomeCooldownEnabled: boolOptional('PUREWS_PAIR_OUTCOME_COOLDOWN_ENABLED', true),
+  pureWsPairOutcomeBaseCooldownSec: numEnv('PUREWS_PAIR_OUTCOME_BASE_COOLDOWN_SEC', '1800'),
+  pureWsPairOutcomeWeakMfeThreshold: numEnv('PUREWS_PAIR_OUTCOME_WEAK_MFE_THRESHOLD', '0.006'),
+  pureWsPairOutcomeWeakCooldownSec: numEnv('PUREWS_PAIR_OUTCOME_WEAK_COOLDOWN_SEC', '3600'),
+  pureWsPairOutcomeLossCooldownSec: numEnv('PUREWS_PAIR_OUTCOME_LOSS_COOLDOWN_SEC', '3600'),
+  pureWsPairOutcomeHardCutCooldownSec: numEnv('PUREWS_PAIR_OUTCOME_HARD_CUT_COOLDOWN_SEC', '21600'),
 
   // ─── Phase 2: Probe Viability Floor + Daily Bleed Budget ───
   // Why: RR gate retire 대체. viability 하한 + bleed budget 으로 시도 수 통제.

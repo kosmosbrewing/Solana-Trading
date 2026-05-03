@@ -342,6 +342,74 @@ describe('Block 3 QA — paper-first enforcement', () => {
     expect(costGuard?.continuationT1Threshold).toBe(config.pureWsPaperCostGuardT1Mfe);
   });
 
+  it('blocks same-pair re-entry after weak primary paper close', async () => {
+    override('pureWsLiveCanaryEnabled', false);
+    override('pureWsV1PerPairCooldownSec', 0);
+    override('pureWsPairOutcomeCooldownEnabled', true);
+    override('pureWsPairOutcomeHardCutCooldownSec', 3600);
+    override('pureWsPairOutcomeLossCooldownSec', 3600);
+    override('pureWsPairOutcomeWeakCooldownSec', 3600);
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'purews-repeat-'));
+    override('realtimeDataDir', tmpDir);
+    const { ctx, executor, tradeStore } = makeCtx('live');
+    const builder = makeBuilder();
+
+    await handlePureWsSignal(
+      { pairAddress: 'PAIR_REPEAT_BLOCK', strategy: 'bootstrap_10s', price: 1.0 } as any,
+      builder,
+      ctx
+    );
+    await updatePureWsPositions(ctx, makePriceBuilder(0.9));
+
+    expect(getActivePureWsPositions().size).toBe(0);
+    expect(executor.executeBuy).not.toHaveBeenCalled();
+    expect(tradeStore.insertTrade).not.toHaveBeenCalled();
+    expect(getPureWsFunnelStats().entry).toBe(1);
+
+    await handlePureWsSignal(
+      { pairAddress: 'PAIR_REPEAT_BLOCK', strategy: 'bootstrap_10s', price: 1.0 } as any,
+      builder,
+      ctx
+    );
+
+    expect(getActivePureWsPositions().size).toBe(0);
+    expect(getPureWsFunnelStats().entry).toBe(1);
+  });
+
+  it('blocks a new parent signal while same-pair shadow arm is still open', async () => {
+    override('pureWsLiveCanaryEnabled', false);
+    override('pureWsSwingV2Enabled', true);
+    override('pureWsBlockParentWhileAnyArmOpen', true);
+    override('pureWsPairOutcomeCooldownEnabled', false);
+    override('pureWsV1PerPairCooldownSec', 0);
+    const { ctx } = makeCtx('live');
+    const builder = makeBuilder();
+
+    await handlePureWsSignal(
+      { pairAddress: 'PAIR_SHADOW_OPEN', strategy: 'bootstrap_10s', price: 1.0 } as any,
+      builder,
+      ctx
+    );
+    expect([...getActivePureWsPositions().values()].map((p) => p.armName).sort()).toEqual([
+      'pure_ws_breakout',
+      'pure_ws_swing_v2',
+    ]);
+
+    await updatePureWsPositions(ctx, makePriceBuilder(0.96));
+    const remaining = [...getActivePureWsPositions().values()];
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].armName).toBe('pure_ws_swing_v2');
+
+    await handlePureWsSignal(
+      { pairAddress: 'PAIR_SHADOW_OPEN', strategy: 'bootstrap_10s', price: 1.0 } as any,
+      builder,
+      ctx
+    );
+
+    expect([...getActivePureWsPositions().values()]).toHaveLength(1);
+    expect(getPureWsFunnelStats().entry).toBe(1);
+  });
+
   it('live mode + PUREWS_LIVE_CANARY_ENABLED=true: live buy proceeds', async () => {
     override('pureWsLiveCanaryEnabled', true);
     const { ctx, executor, tradeStore } = makeCtx('live');

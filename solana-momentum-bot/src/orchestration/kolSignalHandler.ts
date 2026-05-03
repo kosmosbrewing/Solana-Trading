@@ -87,6 +87,20 @@ import { isWalletStopActive, getWalletStopGuardState } from '../risk/walletStopG
 import { persistOpenTradeWithIntegrity, appendEntryLedger, isEntryHaltActive, triggerEntryHalt } from './entryIntegrity';
 import { resolveActualEntryMetrics } from './signalProcessor';
 import { bpsToDecimal } from '../utils/units';
+import {
+  buildRotationChaseTopupMetrics,
+  buildRotationFlowMetrics,
+  type RotationFlowMetrics,
+} from './rotation/flowMetrics';
+import {
+  decideRotationFlowExit,
+  decideRotationFlowPriceKill,
+  type RotationFlowExitDecision,
+} from './rotation/flowExitPolicy';
+import {
+  buildRotationMonetizableEdgeEstimate,
+  type RotationMonetizableEdgeEstimate,
+} from './rotation/monetizableEdge';
 
 const log = createModuleLogger('KolHunter');
 const LANE_STRATEGY = 'kol_hunter' as const;
@@ -110,6 +124,7 @@ export type CloseReason =
   | 'probe_flat_cut'
   | 'quick_reject_classifier_exit'
   | 'rotation_dead_on_arrival'
+  | 'rotation_flow_residual_timeout'
   | 'hold_phase_sentinel_degraded_exit'
   | 'smart_v3_no_trigger'
   | 'smart_v3_price_timeout'
@@ -222,6 +237,13 @@ export interface PaperPosition {
   rotationScore?: number;
   underfillReferenceSolAmount?: number;
   underfillReferenceTokenAmount?: number;
+  rotationFlowExitEnabled?: boolean;
+  rotationFlowMetrics?: RotationFlowMetrics;
+  rotationFlowDecision?: string;
+  rotationFlowReducedAtSec?: number;
+  rotationFlowResidualUntilSec?: number;
+  rotationFlowLastReducePct?: number;
+  rotationMonetizableEdge?: RotationMonetizableEdgeEstimate | null;
   kolReinforcementCount: number;
   detectorVersion: string;
   independentKolCount: number;
@@ -268,6 +290,24 @@ export interface PaperPosition {
    * runnerNetPct = runnerNetSol/runnerTicket vs totalNetPct = totalNetSol/originalTicket 구분.
    */
   partialTakeLockedTicketSol?: number;
+}
+
+interface SmartV3CopyableEdgeEstimate {
+  schemaVersion: 'smart-v3-copyable-edge/v1';
+  shadowOnly: true;
+  pass: boolean;
+  reason: 'copyable_net_positive' | 'copyable_net_non_positive' | 'invalid_ticket';
+  mode: 'paper' | 'live';
+  ticketSol: number;
+  walletNetSol: number;
+  tokenOnlyNetSol: number;
+  copyableNetSol: number;
+  copyableNetPct: number | null;
+  actualWalletDragSol: number | null;
+  estimatedDragSol: number;
+  assumedAtaRentSol: number;
+  assumedNetworkFeeSol: number;
+  requiredGrossMovePct: number | null;
 }
 
 interface SmartV3PendingState {
@@ -326,8 +366,10 @@ interface PendingCandidate {
     anchorPrice?: number;
     enteredAtMs?: number;
     underfillEnteredAtMs?: number;
+    chaseTopupEnteredAtMs?: number;
     noTradeReasonsEmitted: Set<string>;
     underfillNoTradeReasonsEmitted?: Set<string>;
+    chaseTopupNoTradeReasonsEmitted?: Set<string>;
   };
 }
 
@@ -667,6 +709,13 @@ function trackPaperPositionMarkout(
         rotationScore: pos.rotationScore ?? null,
         underfillReferenceSolAmount: pos.underfillReferenceSolAmount ?? null,
         underfillReferenceTokenAmount: pos.underfillReferenceTokenAmount ?? null,
+        rotationFlowExitEnabled: pos.rotationFlowExitEnabled ?? false,
+        rotationFlowMetrics: pos.rotationFlowMetrics ?? null,
+        rotationFlowDecision: pos.rotationFlowDecision ?? null,
+        rotationFlowReducedAtSec: pos.rotationFlowReducedAtSec ?? null,
+        rotationFlowResidualUntilSec: pos.rotationFlowResidualUntilSec ?? null,
+        rotationFlowLastReducePct: pos.rotationFlowLastReducePct ?? null,
+        rotationMonetizableEdge: pos.rotationMonetizableEdge ?? null,
         ...extras,
       },
     },
@@ -1250,6 +1299,8 @@ function armNameForVersion(parameterVersion: string): string {
   if (parameterVersion === config.kolHunterSwingV2ParameterVersion) return 'kol_hunter_swing_v2';
   if (parameterVersion === config.kolHunterRotationV1ParameterVersion) return 'kol_hunter_rotation_v1';
   if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) return 'rotation_underfill_v1';
+  if (parameterVersion === config.kolHunterRotationExitFlowParameterVersion) return 'rotation_exit_kol_flow_v1';
+  if (parameterVersion === config.kolHunterRotationChaseTopupParameterVersion) return 'rotation_chase_topup_v1';
   return 'kol_hunter_v1';
 }
 
@@ -1260,10 +1311,29 @@ interface RotationPaperArmSpec extends DynamicExitParams {
   enabled: boolean;
   minPriceResponsePct?: number;
   strictQuality?: boolean;
+  flowExit?: boolean;
 }
 
-function buildRotationPaperArmSpecs(): RotationPaperArmSpec[] {
+function buildRotationPaperArmSpecs(primaryVersion: string): RotationPaperArmSpec[] {
   if (!config.kolHunterRotationPaperArmsEnabled) return [];
+  const flowSpec: RotationPaperArmSpec = {
+    suffix: 'exit-flow',
+    armName: 'rotation_exit_kol_flow_v1',
+    parameterVersion: config.kolHunterRotationExitFlowParameterVersion,
+    enabled: config.kolHunterRotationExitFlowPaperEnabled,
+    t1Mfe: config.kolHunterRotationUnderfillT1Mfe,
+    t1TrailPct: config.kolHunterRotationUnderfillT1TrailPct,
+    t1ProfitFloorMult: config.kolHunterRotationUnderfillProfitFloorMult,
+    probeFlatTimeoutSec: config.kolHunterRotationUnderfillProbeTimeoutSec,
+    probeHardCutPct: config.kolHunterRotationUnderfillHardCutPct,
+    rotationDoaWindowSec: config.kolHunterRotationUnderfillDoaWindowSec,
+    rotationDoaMinMfePct: config.kolHunterRotationUnderfillDoaMinMfePct,
+    rotationDoaMaxMaePct: config.kolHunterRotationUnderfillDoaMaxMaePct,
+    flowExit: true,
+  };
+  if (primaryVersion === config.kolHunterRotationUnderfillParameterVersion) {
+    return [flowSpec];
+  }
   return [
     {
       suffix: 'fast15',
@@ -1309,6 +1379,7 @@ function buildRotationPaperArmSpecs(): RotationPaperArmSpec[] {
       rotationDoaMaxMaePct: config.kolHunterRotationQualityStrictDoaMaxMaePct,
       strictQuality: true,
     },
+    flowSpec,
   ];
 }
 
@@ -1365,6 +1436,7 @@ function applyRotationPaperArmSpec(pos: PaperPosition, spec: RotationPaperArmSpe
   pos.rotationDoaWindowSecOverride = spec.rotationDoaWindowSec;
   pos.rotationDoaMinMfePctOverride = spec.rotationDoaMinMfePct;
   pos.rotationDoaMaxMaePctOverride = spec.rotationDoaMaxMaePct;
+  pos.rotationFlowExitEnabled = spec.flowExit === true;
   pos.survivalFlags = [
     ...pos.survivalFlags,
     'ROTATION_V1_PAPER_PARAM_ARM',
@@ -1377,6 +1449,8 @@ function defaultEntryReasonForVersion(parameterVersion: string): KolEntryReason 
   if (parameterVersion === config.kolHunterSwingV2ParameterVersion) return 'swing_v2';
   if (parameterVersion === config.kolHunterRotationV1ParameterVersion) return 'rotation_v1';
   if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) return 'rotation_v1';
+  if (parameterVersion === config.kolHunterRotationExitFlowParameterVersion) return 'rotation_v1';
+  if (parameterVersion === config.kolHunterRotationChaseTopupParameterVersion) return 'rotation_v1';
   return 'legacy_v1';
 }
 
@@ -1385,6 +1459,8 @@ function defaultConvictionForVersion(parameterVersion: string): KolConvictionLev
   if (parameterVersion === config.kolHunterSwingV2ParameterVersion) return 'HIGH';
   if (parameterVersion === config.kolHunterRotationV1ParameterVersion) return 'MEDIUM_HIGH';
   if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) return 'MEDIUM_HIGH';
+  if (parameterVersion === config.kolHunterRotationExitFlowParameterVersion) return 'MEDIUM_HIGH';
+  if (parameterVersion === config.kolHunterRotationChaseTopupParameterVersion) return 'MEDIUM_HIGH';
   return 'LOW';
 }
 
@@ -1424,7 +1500,11 @@ function dynamicExitParamsForEntry(reason: KolEntryReason): DynamicExitParams {
 }
 
 function dynamicExitParamsForPosition(parameterVersion: string, reason: KolEntryReason): DynamicExitParams {
-  if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) {
+  if (
+    parameterVersion === config.kolHunterRotationUnderfillParameterVersion ||
+    parameterVersion === config.kolHunterRotationExitFlowParameterVersion ||
+    parameterVersion === config.kolHunterRotationChaseTopupParameterVersion
+  ) {
     return {
       t1Mfe: config.kolHunterRotationUnderfillT1Mfe,
       t1TrailPct: config.kolHunterRotationUnderfillT1TrailPct,
@@ -1802,6 +1882,9 @@ function handleKolSellSignal(tx: KolTx): void {
       (pos.rotationAnchorKols ?? []).some((id) => id.toLowerCase() === tx.kolId.toLowerCase());
 
     if (anchorSell) {
+      if (handleRotationFlowAnchorSell(pos, tx, nowSec, mfePct, maePct)) {
+        continue;
+      }
       log.info(
         `[KOL_HUNTER_ROTATION_ANCHOR_EXIT] ${pos.positionId} kol=${tx.kolId} ` +
         `action=close reason="rotation anchor sell"`
@@ -2092,7 +2175,7 @@ interface RotationV1TriggerResult {
 }
 
 interface KolEntrySignal {
-  label: 'smart-v3' | 'rotation-v1' | 'rotation-underfill';
+  label: 'smart-v3' | 'rotation-v1' | 'rotation-underfill' | 'rotation-chase-topup';
   logTag: string;
   parameterVersion: string;
   entryReason: KolEntryReason;
@@ -2156,9 +2239,13 @@ function ensureRotationV1State(cand: PendingCandidate): NonNullable<PendingCandi
     cand.rotationV1 = {
       noTradeReasonsEmitted: new Set<string>(),
       underfillNoTradeReasonsEmitted: new Set<string>(),
+      chaseTopupNoTradeReasonsEmitted: new Set<string>(),
     };
   } else if (!cand.rotationV1.underfillNoTradeReasonsEmitted) {
     cand.rotationV1.underfillNoTradeReasonsEmitted = new Set<string>();
+  }
+  if (!cand.rotationV1.chaseTopupNoTradeReasonsEmitted) {
+    cand.rotationV1.chaseTopupNoTradeReasonsEmitted = new Set<string>();
   }
   return cand.rotationV1;
 }
@@ -2264,7 +2351,8 @@ function recordRotationV1Intake(tx: KolTx): void {
   const nowMs = Date.now();
   const retainMs = Math.max(
     config.kolHunterRotationV1WindowSec,
-    config.kolHunterRotationV1MaxRecentSellSec
+    config.kolHunterRotationV1MaxRecentSellSec,
+    config.kolHunterRotationFlowMetricsLookbackSec
   ) * 1000;
   const rows = rotationV1RecentTxsByMint.get(tx.tokenMint) ?? [];
   rows.push(tx);
@@ -2721,6 +2809,153 @@ function evaluateRotationUnderfillTriggerState(cand: PendingCandidate, nowMs: nu
   };
 }
 
+function evaluateRotationChaseTopupTriggerState(cand: PendingCandidate, nowMs: number): RotationV1TriggerResult {
+  const empty = {
+    buyCount: 0,
+    smallBuyCount: 0,
+    grossBuySol: 0,
+    distinctRotationKols: 0,
+    recentSellCount: 0,
+    priceResponsePct: 0,
+    currentPrice: 0,
+    anchorKols: [],
+    anchorPrice: 0,
+    anchorPriceSource: 'none',
+    firstBuyAtMs: null,
+    lastBuyAtMs: null,
+    lastBuyAgeMs: null,
+    rotationScore: 0,
+  };
+  if (!config.kolHunterRotationV1Enabled || !config.kolHunterRotationChaseTopupPaperEnabled) {
+    return { triggered: false, flags: [], reason: 'disabled', telemetry: empty };
+  }
+  const rotationState = ensureRotationV1State(cand);
+  if (rotationState.chaseTopupEnteredAtMs) {
+    return { triggered: false, flags: [], reason: 'already_entered', telemetry: empty };
+  }
+  const smart = cand.smartV3;
+  const currentPrice = smart?.currentPrice ?? 0;
+  if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
+    return { triggered: false, flags: [], reason: 'missing_reference_price', telemetry: empty };
+  }
+
+  const seedKolIds = parseRotationV1KolIds();
+  const excludedKolIds = parseRotationV1ExcludeKolIds();
+  const minKolScore = config.kolHunterRotationUnderfillMinKolScore;
+  const buyLookbackSec = Math.max(
+    config.kolHunterRotationV1WindowSec,
+    config.kolHunterRotationUnderfillMaxLastBuyAgeSec
+  );
+  const buyStartMs = nowMs - buyLookbackSec * 1000;
+  const sellStartMs = nowMs - config.kolHunterRotationChaseTopupMaxRecentSellSec * 1000;
+  const scoredBuys = recentKolTxs
+    .filter((tx) =>
+      tx.tokenMint === cand.tokenMint &&
+      tx.action === 'buy' &&
+      isRotationUnderfillTierEligible(tx) &&
+      tx.timestamp >= buyStartMs
+    )
+    .map((tx) => ({ tx, score: rotationV1KolScore(tx, seedKolIds, excludedKolIds) }))
+    .filter((row) => row.score >= minKolScore);
+  const eligibleBuys = scoredBuys.map((row) => row.tx);
+  const firstBuyAtMs = eligibleBuys.reduce<number | null>(
+    (min, tx) => (min == null || tx.timestamp < min ? tx.timestamp : min),
+    null
+  );
+  const lastBuyAtMs = eligibleBuys.reduce<number | null>(
+    (max, tx) => (max == null || tx.timestamp > max ? tx.timestamp : max),
+    null
+  );
+  const lastBuyAgeMs = lastBuyAtMs == null ? null : Math.max(0, nowMs - lastBuyAtMs);
+  const anchorKols = [...new Set(eligibleBuys.map((tx) => tx.kolId))];
+  const distinctRotationKols = new Set(eligibleBuys.map((tx) => tx.kolId.toLowerCase())).size;
+  const rotationScore = scoredBuys.reduce((max, row) => Math.max(max, row.score), 0);
+  const reference = buildRotationUnderfillReference(scoredBuys);
+  const anchorPrice = reference?.price ?? 0;
+  const grossBuySol = eligibleBuys.reduce((sum, tx) => {
+    const solAmount = typeof tx.solAmount === 'number' && Number.isFinite(tx.solAmount) ? tx.solAmount : 0;
+    return sum + Math.max(0, solAmount);
+  }, 0);
+  const recentSameMintSells = recentKolTxs.filter((tx) =>
+    tx.tokenMint === cand.tokenMint &&
+    tx.action === 'sell' &&
+    tx.timestamp >= sellStartMs
+  );
+  const openerSol = eligibleBuys.length > 0
+    ? Math.max(0, eligibleBuys[0].solAmount ?? 0)
+    : 0;
+  const topupSol = eligibleBuys.slice(1).reduce((sum, tx) => sum + Math.max(0, tx.solAmount ?? 0), 0);
+  const topupStrength = openerSol > 0 ? topupSol / openerSol : 0;
+  const chaseMetrics = buildRotationChaseTopupMetrics({
+    buys: eligibleBuys,
+    entryAtMs: firstBuyAtMs ?? nowMs,
+    chaseStepPct: config.kolHunterRotationFlowChaseStepPct,
+  });
+  const priceResponsePct = anchorPrice > 0 ? currentPrice / anchorPrice - 1 : 0;
+  const telemetry = {
+    buyCount: eligibleBuys.length,
+    smallBuyCount: eligibleBuys.length,
+    grossBuySol,
+    distinctRotationKols,
+    recentSellCount: recentSameMintSells.length,
+    priceResponsePct,
+    currentPrice,
+    anchorKols,
+    anchorPrice,
+    anchorPriceSource: reference?.source ?? 'missing_kol_fill',
+    firstBuyAtMs,
+    lastBuyAtMs,
+    lastBuyAgeMs,
+    rotationScore,
+    underfillReferenceSolAmount: reference?.solAmount,
+    underfillReferenceTokenAmount: reference?.tokenAmount,
+  };
+
+  if (eligibleBuys.length < config.kolHunterRotationChaseTopupMinBuys) {
+    return { triggered: false, flags: [], reason: 'chase_insufficient_buys', telemetry };
+  }
+  if (!reference) {
+    return { triggered: false, flags: ['ROTATION_CHASE_MISSING_FILL_PRICE'], reason: 'chase_missing_fill_price', telemetry };
+  }
+  if (recentSameMintSells.length > 0) {
+    return { triggered: false, flags: ['ROTATION_CHASE_RECENT_SELL_BLOCK'], reason: 'chase_recent_same_mint_sell', telemetry };
+  }
+  if (lastBuyAgeMs != null && lastBuyAgeMs > config.kolHunterRotationUnderfillMaxLastBuyAgeSec * 1000) {
+    return { triggered: false, flags: [`ROTATION_CHASE_STALE_LAST_BUY_${Math.round(lastBuyAgeMs / 1000)}S`], reason: 'chase_stale_last_buy', telemetry };
+  }
+  if (topupStrength < config.kolHunterRotationChaseTopupMinTopupStrength) {
+    return {
+      triggered: false,
+      flags: [`ROTATION_CHASE_TOPUP_STRENGTH_${topupStrength.toFixed(3)}`],
+      reason: 'chase_topup_strength_too_low',
+      telemetry,
+    };
+  }
+  if (chaseMetrics.chaseTopupCount <= 0) {
+    return {
+      triggered: false,
+      flags: [`ROTATION_CHASE_MAX_STEP_${chaseMetrics.maxStepPct.toFixed(4)}`],
+      reason: 'chase_no_positive_step',
+      telemetry,
+    };
+  }
+
+  return {
+    triggered: true,
+    flags: [
+      'ROTATION_CHASE_TOPUP_V1',
+      'ROTATION_CHASE_TOPUP_PAPER_ONLY',
+      'ROTATION_CHASE_SA_ONLY',
+      `ROTATION_CHASE_BUYS_${eligibleBuys.length}`,
+      `ROTATION_CHASE_TOPUP_STRENGTH_${topupStrength.toFixed(3)}`,
+      `ROTATION_CHASE_STEP_${chaseMetrics.maxStepPct.toFixed(4)}`,
+      `ROTATION_CHASE_SCORE_${rotationScore.toFixed(2)}`,
+    ],
+    participatingKols: buildRotationUnderfillParticipants(scoredBuys),
+    telemetry,
+  };
+}
+
 function shouldEmitRotationNoTrade(reason?: string): boolean {
   return reason === 'recent_same_mint_sell' ||
     reason === 'insufficient_price_response' ||
@@ -2736,6 +2971,14 @@ function shouldEmitRotationUnderfillNoTrade(reason?: string): boolean {
     reason === 'underfill_discount_too_low' ||
     reason === 'underfill_discount_too_deep' ||
     reason === 'underfill_stale_last_buy';
+}
+
+function shouldEmitRotationChaseTopupNoTrade(reason?: string): boolean {
+  return reason === 'chase_recent_same_mint_sell' ||
+    reason === 'chase_missing_fill_price' ||
+    reason === 'chase_stale_last_buy' ||
+    reason === 'chase_topup_strength_too_low' ||
+    reason === 'chase_no_positive_step';
 }
 
 function buildRotationNoTradeObserverConfig() {
@@ -2855,6 +3098,62 @@ function trackRotationUnderfillNoTradeMarkout(
   );
 }
 
+function trackRotationChaseTopupNoTradeMarkout(
+  cand: PendingCandidate,
+  score: KolDiscoveryScore,
+  result: RotationV1TriggerResult,
+  reason: string,
+  flags: string[]
+): void {
+  const signalPrice =
+    result.telemetry.currentPrice > 0
+      ? result.telemetry.currentPrice
+      : result.telemetry.anchorPrice > 0
+        ? result.telemetry.anchorPrice
+        : cand.smartV3?.currentPrice ?? cand.smartV3?.kolEntryPrice ?? 0;
+  if (!Number.isFinite(signalPrice) || signalPrice <= 0) return;
+  const nowMs = Date.now();
+  trackRejectForMissedAlpha(
+    {
+      rejectCategory: 'viability',
+      rejectReason: `rotation_chase_topup_${reason}`,
+      tokenMint: cand.tokenMint,
+      lane: LANE_STRATEGY,
+      signalPrice,
+      probeSolAmount: config.kolHunterTicketSol,
+      tokenDecimals: cand.smartV3?.tokenDecimals,
+      signalSource: 'rotation_chase_topup_v1',
+      extras: {
+        positionId: `rotation-chase-topup-notrade-${cand.tokenMint.slice(0, 8)}-${reason}-${nowMs}`,
+        eventType: 'rotation_chase_topup_no_trade',
+        armName: armNameForVersion(config.kolHunterRotationChaseTopupParameterVersion),
+        entryReason: 'rotation_v1',
+        parameterVersion: config.kolHunterRotationChaseTopupParameterVersion,
+        tokenDecimalsSource: cand.smartV3?.tokenDecimalsSource ?? null,
+        noTradeReason: reason,
+        survivalFlags: flags,
+        kolCount: cand.kolTxs.length,
+        independentKolCount: result.telemetry.distinctRotationKols || score.independentKolCount,
+        effectiveIndependentCount: result.telemetry.distinctRotationKols || score.effectiveIndependentCount,
+        kolScore: result.telemetry.rotationScore || score.finalScore,
+        participatingKols: result.participatingKols ?? [],
+        rotationV1: result.telemetry,
+        rotationAnchorKols: result.telemetry.anchorKols,
+        rotationAnchorPrice: result.telemetry.anchorPrice,
+        rotationAnchorPriceSource: result.telemetry.anchorPriceSource ?? null,
+        rotationFirstBuyAtMs: result.telemetry.firstBuyAtMs,
+        rotationLastBuyAtMs: result.telemetry.lastBuyAtMs,
+        rotationLastBuyAgeMs: result.telemetry.lastBuyAgeMs,
+        rotationScore: result.telemetry.rotationScore,
+        underfillReferenceSolAmount: result.telemetry.underfillReferenceSolAmount ?? null,
+        underfillReferenceTokenAmount: result.telemetry.underfillReferenceTokenAmount ?? null,
+        priceResponsePct: result.telemetry.priceResponsePct,
+      },
+    },
+    buildRotationNoTradeObserverConfig()
+  );
+}
+
 function trackRotationPaperArmSkipMarkout(
   cand: PendingCandidate,
   score: KolDiscoveryScore,
@@ -2897,8 +3196,8 @@ function trackRotationPaperArmSkipMarkout(
         eventType: 'rotation_arm_skip',
         armName: spec.armName,
         parameterVersion: spec.parameterVersion,
-        parentArmName: armNameForVersion(config.kolHunterRotationV1ParameterVersion),
-        parentParameterVersion: config.kolHunterRotationV1ParameterVersion,
+        parentArmName: armNameForVersion(options.parameterVersion ?? config.kolHunterRotationV1ParameterVersion),
+        parentParameterVersion: options.parameterVersion ?? config.kolHunterRotationV1ParameterVersion,
         entryReason: 'rotation_v1',
         tokenDecimalsSource: entryTokenDecimals.source ?? null,
         skipReason,
@@ -3000,6 +3299,43 @@ function emitRotationUnderfillNoTradePolicy(
   trackRotationUnderfillNoTradeMarkout(cand, score, result, reason, flags);
 }
 
+function emitRotationChaseTopupNoTradePolicy(
+  cand: PendingCandidate,
+  score: KolDiscoveryScore,
+  result: RotationV1TriggerResult
+): void {
+  if (!shouldEmitRotationChaseTopupNoTrade(result.reason)) return;
+  const rotationState = ensureRotationV1State(cand);
+  const reason = result.reason ?? 'unknown';
+  if (rotationState.chaseTopupNoTradeReasonsEmitted?.has(reason)) return;
+  rotationState.chaseTopupNoTradeReasonsEmitted?.add(reason);
+  const flags = [
+    ...result.flags,
+    `ROTATION_CHASE_NOTRADE_${reason.toUpperCase()}`,
+    `ROTATION_CHASE_SCORE_${result.telemetry.rotationScore.toFixed(2)}`,
+  ];
+  if (typeof result.telemetry.lastBuyAgeMs === 'number') {
+    flags.push(`ROTATION_CHASE_LAST_BUY_AGE_${Math.round(result.telemetry.lastBuyAgeMs / 1000)}S`);
+  }
+  emitKolShadowPolicy({
+    eventKind: 'reject',
+    tokenMint: cand.tokenMint,
+    currentAction: 'block',
+    isLive: false,
+    isShadowArm: false,
+    armName: armNameForVersion(config.kolHunterRotationChaseTopupParameterVersion),
+    entryReason: 'rotation_v1',
+    rejectReason: `rotation_chase_topup_${reason}`,
+    independentKolCount: result.telemetry.distinctRotationKols || score.independentKolCount,
+    effectiveIndependentCount: result.telemetry.distinctRotationKols || score.effectiveIndependentCount,
+    kolScore: result.telemetry.rotationScore || score.finalScore,
+    participatingKols: result.participatingKols ?? score.participatingKols,
+    survivalFlags: flags,
+    recentJupiter429: currentRecentJupiter429(),
+  });
+  trackRotationChaseTopupNoTradeMarkout(cand, score, result, reason, flags);
+}
+
 async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
   const smart = cand.smartV3;
   if (!smart || smart.resolving) return;
@@ -3014,6 +3350,9 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
   const underfillTrigger = smartTrigger.reason || rotationTrigger?.triggered
     ? undefined
     : evaluateRotationUnderfillTriggerState(cand, nowMs);
+  const chaseTopupTrigger = smartTrigger.reason || rotationTrigger?.triggered || underfillTrigger?.triggered
+    ? undefined
+    : evaluateRotationChaseTopupTriggerState(cand, nowMs);
   const entrySignal: KolEntrySignal | undefined = smartTrigger.reason && smartTrigger.conviction
     ? {
         label: 'smart-v3',
@@ -3050,10 +3389,27 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
             paperOnly: true,
             paperOnlyReason: 'rotation_underfill_paper_only',
           }
+      : chaseTopupTrigger?.triggered
+        ? {
+            label: 'rotation-chase-topup',
+            logTag: 'KOL_HUNTER_ROTATION_CHASE_TOPUP_TRIGGER',
+            parameterVersion: config.kolHunterRotationChaseTopupParameterVersion,
+            entryReason: 'rotation_v1' as const,
+            conviction: 'MEDIUM_HIGH' as const,
+            extraFlags: chaseTopupTrigger.flags,
+            telemetry: chaseTopupTrigger.telemetry,
+            rotationAnchorKols: chaseTopupTrigger.telemetry.anchorKols,
+            entryParticipatingKols: chaseTopupTrigger.participatingKols,
+            entryIndependentKolCount: chaseTopupTrigger.telemetry.distinctRotationKols,
+            entryKolScore: chaseTopupTrigger.telemetry.rotationScore,
+            paperOnly: true,
+            paperOnlyReason: 'rotation_chase_topup_paper_only',
+          }
       : undefined;
   if (!entrySignal) {
     if (rotationTrigger) emitRotationV1NoTradePolicy(cand, score, rotationTrigger);
     if (underfillTrigger) emitRotationUnderfillNoTradePolicy(cand, score, underfillTrigger);
+    if (chaseTopupTrigger) emitRotationChaseTopupNoTradePolicy(cand, score, chaseTopupTrigger);
     return;
   }
 
@@ -3063,8 +3419,10 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     cleanupPendingCandidate(cand, false);
   } else if (entrySignal.label === 'rotation-v1') {
     ensureRotationV1State(cand).enteredAtMs = nowMs;
-  } else {
+  } else if (entrySignal.label === 'rotation-underfill') {
     ensureRotationV1State(cand).underfillEnteredAtMs = nowMs;
+  } else {
+    ensureRotationV1State(cand).chaseTopupEnteredAtMs = nowMs;
   }
   log.info(
     `[${entrySignal.logTag}] ${cand.tokenMint.slice(0, 8)} reason=${entrySignal.entryReason} ` +
@@ -3097,7 +3455,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       cooldownRemainingMs: cooldownCheck.remainingMs,
       entryReason: entrySignal.entryReason,
       parameterVersion: entrySignal.parameterVersion,
-      rotationV1: entrySignal.label === 'rotation-v1' || entrySignal.label === 'rotation-underfill'
+      rotationV1: entrySignal.label !== 'smart-v3'
         ? entrySignal.telemetry
         : undefined,
     });
@@ -3112,7 +3470,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
   const decayCheck = checkKolAlphaDecay(decayParticipants.map((k) => k.id));
   if (decayCheck.blocked) {
     log.info(`[KOL_HUNTER_ENTRY_DECAY_BLOCK] ${cand.tokenMint.slice(0, 8)} ${entrySignal.label} ${decayCheck.reason} — reject`);
-    if ((entrySignal.label === 'rotation-v1' || entrySignal.label === 'rotation-underfill') && entrySignal.telemetry) {
+    if (entrySignal.label !== 'smart-v3' && entrySignal.telemetry) {
       const rotationState = ensureRotationV1State(cand);
       const emitted = entrySignal.label === 'rotation-underfill'
         ? rotationState.underfillNoTradeReasonsEmitted
@@ -3121,7 +3479,9 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         emitted?.add('kol_alpha_decay');
         const flags = entrySignal.label === 'rotation-underfill'
           ? ['KOL_ALPHA_DECAY', 'ROTATION_UNDERFILL_NOTRADE_KOL_ALPHA_DECAY']
-          : ['KOL_ALPHA_DECAY', 'ROTATION_V1_NOTRADE_KOL_ALPHA_DECAY'];
+          : entrySignal.label === 'rotation-chase-topup'
+            ? ['KOL_ALPHA_DECAY', 'ROTATION_CHASE_NOTRADE_KOL_ALPHA_DECAY']
+            : ['KOL_ALPHA_DECAY', 'ROTATION_V1_NOTRADE_KOL_ALPHA_DECAY'];
         const decayResult: RotationV1TriggerResult = {
           triggered: false,
           reason: 'kol_alpha_decay',
@@ -3131,6 +3491,8 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         };
         if (entrySignal.label === 'rotation-underfill') {
           trackRotationUnderfillNoTradeMarkout(cand, score, decayResult, 'kol_alpha_decay', flags);
+        } else if (entrySignal.label === 'rotation-chase-topup') {
+          trackRotationChaseTopupNoTradeMarkout(cand, score, decayResult, 'kol_alpha_decay', flags);
         } else {
           trackRotationNoTradeMarkout(cand, score, decayResult, 'kol_alpha_decay', flags);
         }
@@ -3141,7 +3503,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       survivalFlags: ['KOL_ALPHA_DECAY'],
       entryReason: entrySignal.entryReason,
       parameterVersion: entrySignal.parameterVersion,
-      rotationV1: entrySignal.label === 'rotation-v1' || entrySignal.label === 'rotation-underfill'
+      rotationV1: entrySignal.label !== 'smart-v3'
         ? entrySignal.telemetry
         : undefined,
       signalPrice: smart.currentPrice,
@@ -3219,7 +3581,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       survivalReason: postDistribution.reason,
       survivalFlags: entryFlags,
       postDistributionGuard: postDistribution.telemetry,
-      rotationV1: entrySignal.label === 'rotation-v1' || entrySignal.label === 'rotation-underfill'
+      rotationV1: entrySignal.label !== 'smart-v3'
         ? entrySignal.telemetry
         : undefined,
       entryReason: entryOptions.entryReason,
@@ -3239,8 +3601,8 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       entrySignal.paperOnlyReason?.toUpperCase() ?? 'ROTATION_UNDERFILL_PAPER_ONLY',
     ];
     log.warn(
-      `[KOL_HUNTER_ROTATION_UNDERFILL_PAPER_ONLY] ${cand.tokenMint.slice(0, 8)} ` +
-      `discount=${(-Number(entrySignal.telemetry?.priceResponsePct ?? 0) * 100).toFixed(2)}% ` +
+      `[KOL_HUNTER_ROTATION_PAPER_ONLY] ${cand.tokenMint.slice(0, 8)} ` +
+      `label=${entrySignal.label} refMove=${(Number(entrySignal.telemetry?.priceResponsePct ?? 0) * 100).toFixed(2)}% ` +
       `kols=${entrySignal.entryIndependentKolCount ?? 0} score=${(entrySignal.entryKolScore ?? 0).toFixed(2)}. ` +
       `enter paper.`
     );
@@ -3874,7 +4236,8 @@ async function enterPaperPosition(
     : await resolveTokenDecimalsForObserver(tokenMint, firstTick.outputDecimals);
 
   const ticketSol = config.kolHunterTicketSol;
-  const nowSec = Math.floor(Date.now() / 1000);
+  const entryAtMs = Date.now();
+  const nowSec = Math.floor(entryAtMs / 1000);
   const positionId = `kolh-${tokenMint.slice(0, 8)}-${nowSec}`;
   const quantity = entryPrice > 0 ? ticketSol / entryPrice : 0;
   const primaryVersion = options.parameterVersion ?? config.kolHunterParameterVersion;
@@ -3934,7 +4297,7 @@ async function enterPaperPosition(
       ? options.convictionLevel ?? defaultConvictionForVersion(parameterVersion)
       : defaultConvictionForVersion(parameterVersion);
     const dynamicExit = dynamicExitParamsForPosition(parameterVersion, entryReason);
-    return {
+    const pos: PaperPosition = {
       positionId: id,
       tokenMint,
       state: 'PROBE',
@@ -3963,7 +4326,7 @@ async function enterPaperPosition(
       rotationDoaMinMfePctOverride: dynamicExit.rotationDoaMinMfePct,
       rotationDoaMaxMaePctOverride: dynamicExit.rotationDoaMaxMaePct,
       rotationAnchorKols: options.rotationAnchorKols,
-      rotationEntryAtMs: options.rotationAnchorKols ? Date.now() : undefined,
+      rotationEntryAtMs: options.rotationAnchorKols ? entryAtMs : undefined,
       rotationAnchorPrice: options.rotationAnchorPrice,
       rotationAnchorPriceSource: options.rotationAnchorPriceSource,
       rotationFirstBuyAtMs: options.rotationFirstBuyAtMs,
@@ -3972,6 +4335,8 @@ async function enterPaperPosition(
       rotationScore: options.rotationScore,
       underfillReferenceSolAmount: options.underfillReferenceSolAmount,
       underfillReferenceTokenAmount: options.underfillReferenceTokenAmount,
+      rotationFlowExitEnabled: parameterVersion === config.kolHunterRotationExitFlowParameterVersion ||
+        parameterVersion === config.kolHunterRotationChaseTopupParameterVersion,
       kolReinforcementCount: 0,
       detectorVersion: config.kolHunterDetectorVersion,
       independentKolCount: entryIndependentKolCount,
@@ -3980,6 +4345,19 @@ async function enterPaperPosition(
       tokenDecimals: entryTokenDecimals.value,
       tokenDecimalsSource: entryTokenDecimals.source,
     };
+    if (isRotationFamilyMarkoutPosition(pos)) {
+      pos.rotationMonetizableEdge = buildRotationMonetizableEdgeForPosition(pos);
+      const edge = pos.rotationMonetizableEdge;
+      if (edge) {
+        pos.survivalFlags = [
+          ...pos.survivalFlags,
+          edge.pass ? 'ROTATION_EDGE_SHADOW_PASS' : 'ROTATION_EDGE_SHADOW_FAIL',
+          `ROTATION_EDGE_COST_RATIO_${edge.costRatio.toFixed(3)}`,
+          `ROTATION_EDGE_VENUE_${edge.venue.toUpperCase()}`,
+        ];
+      }
+    }
+    return pos;
   };
 
   const positions = [
@@ -3996,8 +4374,11 @@ async function enterPaperPosition(
       `profitFloor=${config.kolHunterSwingV2T1ProfitFloorMult}x`
     );
   }
-  if (primaryVersion === config.kolHunterRotationV1ParameterVersion) {
-    for (const spec of buildRotationPaperArmSpecs()) {
+  if (
+    primaryVersion === config.kolHunterRotationV1ParameterVersion ||
+    primaryVersion === config.kolHunterRotationUnderfillParameterVersion
+  ) {
+    for (const spec of buildRotationPaperArmSpecs(primaryVersion)) {
       const rejectReason = rotationPaperArmRejectReason(
         spec,
         entryPrice,
@@ -4025,7 +4406,7 @@ async function enterPaperPosition(
       }
       const arm = makePosition(
         `${positionId}-${spec.suffix}`,
-        config.kolHunterRotationV1ParameterVersion,
+        primaryVersion,
         true,
         positionId
       );
@@ -4041,6 +4422,9 @@ async function enterPaperPosition(
   }
 
   for (const pos of positions) {
+    if (isRotationV1Position(pos)) {
+      updateRotationFlowMetrics(pos, Date.now());
+    }
     setActivePosition(pos);  // P1 #5: index 동기화 (Map + activeByMint Set)
     if (!options.skipPolicyEntry) {
       emitKolPositionPolicy(pos, 'entry', 'enter', { routeFound: true });
@@ -4241,6 +4625,237 @@ function hasFreshRotationAnchorBuy(pos: PaperPosition, nowMs: number): boolean {
   );
 }
 
+function rotationFlowMetricsConfig() {
+  return {
+    sellPressureWindowSec: config.kolHunterRotationFlowSellPressureWindowSec,
+    freshTopupSec: config.kolHunterRotationFlowFreshTopupSec,
+    chaseStepPct: config.kolHunterRotationFlowChaseStepPct,
+  };
+}
+
+function rotationMonetizableEdgeConfig() {
+  return {
+    enabled: config.kolHunterRotationEdgeShadowEnabled,
+    maxCostRatio: config.kolHunterRotationEdgeMaxCostRatio,
+    assumedAtaRentSol: config.kolHunterRotationEdgeAssumedAtaRentSol,
+    priorityFeeSol: config.kolHunterRotationEdgePriorityFeeSol,
+    tipSol: config.kolHunterRotationEdgeTipSol,
+    entrySlippageBps: config.kolHunterRotationEdgeEntrySlippageBps,
+    quickExitSlippageBps: config.kolHunterRotationEdgeQuickExitSlippageBps,
+  };
+}
+
+function inferRotationVenue(tokenMint: string, anchorKols?: string[]): string | undefined {
+  const anchors = new Set((anchorKols ?? []).map((id) => id.toLowerCase()));
+  const rows = rotationV1RecentTxsByMint.get(tokenMint) ?? [];
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const row = rows[i];
+    if (anchors.size > 0 && !anchors.has(row.kolId.toLowerCase())) continue;
+    if (typeof row.dexId === 'string' && row.dexId.length > 0) return row.dexId;
+  }
+  return undefined;
+}
+
+function buildRotationMonetizableEdgeForPosition(pos: Pick<PaperPosition, 'tokenMint' | 'ticketSol' | 'rotationAnchorKols'>): RotationMonetizableEdgeEstimate | null {
+  return buildRotationMonetizableEdgeEstimate({
+    ticketSol: pos.ticketSol,
+    venue: inferRotationVenue(pos.tokenMint, pos.rotationAnchorKols),
+    config: rotationMonetizableEdgeConfig(),
+  });
+}
+
+function buildSmartV3CopyableEdgeForClose(input: {
+  pos: PaperPosition;
+  walletNetSol: number;
+  tokenOnlyNetSol: number;
+}): SmartV3CopyableEdgeEstimate | null {
+  const { pos, walletNetSol, tokenOnlyNetSol } = input;
+  if (!isSmartV3Position(pos)) return null;
+  const ticketSol = pos.ticketSol;
+  const mode = pos.isLive === true ? 'live' : 'paper';
+  const assumedAtaRentSol = Math.max(0, pos.ataRentSol ?? config.kolHunterRotationPaperAssumedAtaRentSol);
+  const assumedNetworkFeeSol = Math.max(0, config.kolHunterRotationPaperAssumedNetworkFeeSol);
+  if (!Number.isFinite(ticketSol) || ticketSol <= 0) {
+    return {
+      schemaVersion: 'smart-v3-copyable-edge/v1',
+      shadowOnly: true,
+      pass: false,
+      reason: 'invalid_ticket',
+      mode,
+      ticketSol,
+      walletNetSol,
+      tokenOnlyNetSol,
+      copyableNetSol: walletNetSol,
+      copyableNetPct: null,
+      actualWalletDragSol: null,
+      estimatedDragSol: Infinity,
+      assumedAtaRentSol,
+      assumedNetworkFeeSol,
+      requiredGrossMovePct: null,
+    };
+  }
+  const actualWalletDragSol = mode === 'live'
+    ? Math.max(0, tokenOnlyNetSol - walletNetSol)
+    : null;
+  const estimatedDragSol = actualWalletDragSol ?? (assumedAtaRentSol + assumedNetworkFeeSol);
+  const copyableNetSol = mode === 'live'
+    ? walletNetSol
+    : tokenOnlyNetSol - estimatedDragSol;
+  const copyableNetPct = copyableNetSol / ticketSol;
+  return {
+    schemaVersion: 'smart-v3-copyable-edge/v1',
+    shadowOnly: true,
+    pass: copyableNetSol > 0,
+    reason: copyableNetSol > 0 ? 'copyable_net_positive' : 'copyable_net_non_positive',
+    mode,
+    ticketSol,
+    walletNetSol,
+    tokenOnlyNetSol,
+    copyableNetSol,
+    copyableNetPct,
+    actualWalletDragSol,
+    estimatedDragSol,
+    assumedAtaRentSol,
+    assumedNetworkFeeSol,
+    requiredGrossMovePct: estimatedDragSol / ticketSol,
+  };
+}
+
+function rotationFlowExitPolicyConfig() {
+  return {
+    lightReducePressure: config.kolHunterRotationExitFlowLightPressure,
+    strongReducePressure: config.kolHunterRotationExitFlowStrongPressure,
+    fullExitPressure: config.kolHunterRotationExitFlowFullExitPressure,
+    criticalExitPressure: config.kolHunterRotationExitFlowCriticalPressure,
+    lightReducePct: config.kolHunterRotationExitFlowLightReducePct,
+    strongReducePct: config.kolHunterRotationExitFlowStrongReducePct,
+    residualHoldSec: config.kolHunterRotationExitFlowResidualHoldSec,
+  };
+}
+
+function updateRotationFlowMetrics(pos: PaperPosition, nowMs: number): RotationFlowMetrics | null {
+  const anchorKols = pos.rotationAnchorKols ?? [];
+  if (anchorKols.length === 0) return null;
+  const rows = rotationV1RecentTxsByMint.get(pos.tokenMint) ?? [];
+  const metrics = buildRotationFlowMetrics({
+    rows,
+    tokenMint: pos.tokenMint,
+    anchorKolIds: anchorKols,
+    entryAtMs: pos.rotationEntryAtMs ?? pos.entryTimeSec * 1000,
+    nowMs,
+    config: rotationFlowMetricsConfig(),
+  });
+  pos.rotationFlowMetrics = metrics;
+  return metrics;
+}
+
+function applyRotationFlowReduce(
+  pos: PaperPosition,
+  decision: RotationFlowExitDecision,
+  currentPrice: number,
+  nowSec: number,
+  mfePct: number
+): boolean {
+  if (pos.rotationFlowReducedAtSec != null) return false;
+  const didReduce = executePaperPartialTake(
+    pos,
+    currentPrice,
+    nowSec,
+    mfePct,
+    decision.reducePct,
+    {
+      eventType: 'rotation_flow_reduce',
+      ledgerEventType: 'rotation_flow_reduce',
+      logTag: 'KOL_HUNTER_ROTATION_FLOW_REDUCE',
+      reason: decision.reason,
+    }
+  );
+  if (!didReduce) return false;
+  pos.rotationFlowDecision = decision.reason;
+  pos.rotationFlowReducedAtSec = nowSec;
+  pos.rotationFlowLastReducePct = decision.reducePct;
+  pos.rotationFlowResidualUntilSec = nowSec + decision.residualHoldSec;
+  pos.survivalFlags = [
+    ...pos.survivalFlags,
+    `ROTATION_FLOW_${decision.action.toUpperCase()}`,
+    `ROTATION_FLOW_REASON_${decision.reason.toUpperCase()}`,
+  ];
+  return true;
+}
+
+function maybeCloseRotationFlowResidual(
+  pos: PaperPosition,
+  currentPrice: number,
+  nowSec: number,
+  mfePct: number,
+  maePct: number
+): boolean {
+  if (!pos.rotationFlowExitEnabled || pos.rotationFlowReducedAtSec == null) return false;
+  if (pos.rotationFlowResidualUntilSec == null) return false;
+  const currentPct = (currentPrice - pos.marketReferencePrice) / pos.marketReferencePrice;
+  if (currentPct >= 0) {
+    pos.rotationFlowResidualUntilSec = undefined;
+    pos.rotationFlowDecision = 'residual_reclaimed_entry';
+    return false;
+  }
+  if (nowSec < pos.rotationFlowResidualUntilSec) return true;
+  pos.rotationFlowDecision = 'residual_timeout';
+  closePosition(pos, currentPrice, 'rotation_flow_residual_timeout', nowSec, mfePct, maePct);
+  return true;
+}
+
+function handleRotationFlowAnchorSell(
+  pos: PaperPosition,
+  tx: KolTx,
+  nowSec: number,
+  mfePct: number,
+  maePct: number
+): boolean {
+  if (!pos.rotationFlowExitEnabled || pos.isLive === true) return false;
+  const metrics = updateRotationFlowMetrics(pos, Date.now());
+  if (!metrics) return false;
+  const decision = decideRotationFlowExit(metrics, rotationFlowExitPolicyConfig());
+  pos.rotationFlowDecision = decision.reason;
+  log.info(
+    `[KOL_HUNTER_ROTATION_FLOW_EXIT] ${pos.positionId} kol=${tx.kolId} ` +
+    `action=${decision.action} reason=${decision.reason} ` +
+    `sellPressure30=${metrics.sellPressure30.toFixed(2)} topupStrength=${metrics.topupStrength.toFixed(2)} ` +
+    `freshTopup=${metrics.freshTopup ? 'y' : 'n'}`
+  );
+  if (decision.action === 'close_full') {
+    closePosition(pos, pos.lastPrice, 'insider_exit_full', nowSec, mfePct, maePct);
+    return true;
+  }
+  if (decision.action === 'reduce_light' || decision.action === 'reduce_strong') {
+    return applyRotationFlowReduce(pos, decision, pos.lastPrice, nowSec, mfePct);
+  }
+  return true;
+}
+
+function handleRotationFlowPriceKill(
+  pos: PaperPosition,
+  currentPrice: number,
+  nowSec: number,
+  mfePct: number,
+  maePct: number
+): boolean {
+  if (!pos.rotationFlowExitEnabled || pos.isLive === true) return false;
+  if (pos.rotationFlowReducedAtSec != null) {
+    return pos.rotationFlowResidualUntilSec != null;
+  }
+  const metrics = updateRotationFlowMetrics(pos, Date.now());
+  if (!metrics) return false;
+  const decision = decideRotationFlowPriceKill(metrics, rotationFlowExitPolicyConfig());
+  pos.rotationFlowDecision = decision.reason;
+  if (decision.action === 'close_full') return false;
+  log.info(
+    `[KOL_HUNTER_ROTATION_FLOW_PRICE_KILL] ${pos.positionId} action=${decision.action} ` +
+    `reason=${decision.reason} sellPressure30=${metrics.sellPressure30.toFixed(2)} ` +
+    `freshTopup=${metrics.freshTopup ? 'y' : 'n'}`
+  );
+  return applyRotationFlowReduce(pos, decision, currentPrice, nowSec, mfePct);
+}
+
 function shouldRotationDeadOnArrival(
   pos: PaperPosition,
   elapsedSec: number,
@@ -4289,6 +4904,9 @@ function onPriceTick(positionId: string, tick: PriceTick): void {
 
   switch (pos.state) {
     case 'PROBE': {
+      if (maybeCloseRotationFlowResidual(pos, currentPrice, nowSec, mfePct, maePct)) {
+        return;
+      }
       if (shouldRotationDeadOnArrival(pos, elapsedSec, mfePct, maePct, Date.now())) {
         closePosition(pos, currentPrice, 'rotation_dead_on_arrival', nowSec, mfePct, maePct);
         return;
@@ -4296,6 +4914,9 @@ function onPriceTick(positionId: string, tick: PriceTick): void {
       // 1. Hard cut (Lane T 파라미터: -10%)
       const probeHardCutPct = pos.probeHardCutPctOverride ?? config.kolHunterHardcutPct;
       if (maePct <= -probeHardCutPct) {
+        if (handleRotationFlowPriceKill(pos, currentPrice, nowSec, mfePct, maePct)) {
+          return;
+        }
         closePosition(pos, currentPrice, 'probe_hard_cut', nowSec, mfePct, maePct);
         return;
       }
@@ -4661,6 +5282,13 @@ function closePosition(
           rotationScore: pos.rotationScore ?? null,
           underfillReferenceSolAmount: pos.underfillReferenceSolAmount ?? null,
           underfillReferenceTokenAmount: pos.underfillReferenceTokenAmount ?? null,
+          rotationFlowExitEnabled: pos.rotationFlowExitEnabled ?? false,
+          rotationFlowMetrics: pos.rotationFlowMetrics ?? null,
+          rotationFlowDecision: pos.rotationFlowDecision ?? null,
+          rotationFlowReducedAtSec: pos.rotationFlowReducedAtSec ?? null,
+          rotationFlowResidualUntilSec: pos.rotationFlowResidualUntilSec ?? null,
+          rotationFlowLastReducePct: pos.rotationFlowLastReducePct ?? null,
+          rotationMonetizableEdge: pos.rotationMonetizableEdge ?? null,
           tokenDecimalsSource: pos.tokenDecimalsSource ?? null,
         },
       },
@@ -4738,8 +5366,27 @@ function isPriceKillReason(reason: CloseReason): boolean {
  *   - Moskowitz et al. TSMOM — winner truncation 위험 차단 (전량 close 회피)
  */
 function executePartialTake(pos: PaperPosition, currentPrice: number, nowSec: number, mfePct: number): void {
-  const takePct = config.kolHunterPartialTakePct;
-  if (takePct <= 0 || takePct >= 1) return;
+  executePaperPartialTake(pos, currentPrice, nowSec, mfePct, config.kolHunterPartialTakePct, {
+    eventType: 'paper_partial_take',
+    ledgerEventType: 'partial_take',
+    logTag: 'KOL_HUNTER_PARTIAL_TAKE',
+  });
+}
+
+function executePaperPartialTake(
+  pos: PaperPosition,
+  currentPrice: number,
+  nowSec: number,
+  mfePct: number,
+  takePct: number,
+  meta: {
+    eventType: string;
+    ledgerEventType: string;
+    logTag: string;
+    reason?: string;
+  }
+): boolean {
+  if (takePct <= 0 || takePct >= 1) return false;
 
   // 2026-05-01 (F2 critical fix): live wiring 미구현 — flag 활성화되어도 isLive parent 면 차단.
   //   이전 코드는 warn log + paper accounting 만 적용 → 실제 sell tx 없이 quantity 가 줄어든
@@ -4749,15 +5396,15 @@ function executePartialTake(pos: PaperPosition, currentPrice: number, nowSec: nu
   if (pos.isLive === true) {
     if (config.kolHunterPartialTakeLiveEnabled === true) {
       log.error(
-        `[KOL_HUNTER_PARTIAL_TAKE_LIVE_BLOCKED] ${pos.positionId} flag enabled 됐으나 live wiring ` +
+        `[${meta.logTag}_LIVE_BLOCKED] ${pos.positionId} flag enabled 됐으나 live wiring ` +
         `미구현 — wallet drift 방지 위해 partial take 발화 차단. 별도 sprint 후 코드 변경 필수.`
       );
     } else {
       log.debug(
-        `[KOL_HUNTER_PARTIAL_TAKE_PAPER_ONLY] ${pos.positionId} live parent — partial take skip (paper-only sprint).`
+        `[${meta.logTag}_PAPER_ONLY] ${pos.positionId} live parent — partial take skip (paper-only sprint).`
       );
     }
-    return;
+    return false;
   }
 
   const lockedQuantity = pos.quantity * takePct;
@@ -4775,10 +5422,10 @@ function executePartialTake(pos: PaperPosition, currentPrice: number, nowSec: nu
   pos.partialTakeLockedTicketSol = (pos.partialTakeLockedTicketSol ?? 0) + lockedTicketSol;
 
   log.info(
-    `[KOL_HUNTER_PARTIAL_TAKE] ${pos.positionId} mfe=${(mfePct * 100).toFixed(2)}% ` +
+    `[${meta.logTag}] ${pos.positionId} mfe=${(mfePct * 100).toFixed(2)}% ` +
     `take=${(takePct * 100).toFixed(0)}% locked_qty=${lockedQuantity.toFixed(2)} ` +
     `locked_net=${(lockedNetPct * 100).toFixed(2)}% remaining_qty=${pos.quantity.toFixed(2)} ` +
-      `mode=paper-shadow`
+      `mode=paper-shadow${meta.reason ? ` reason=${meta.reason}` : ''}`
   );
   trackPaperPositionMarkout(
     pos,
@@ -4787,7 +5434,8 @@ function executePartialTake(pos: PaperPosition, currentPrice: number, nowSec: nu
     lockedTicketSol,
     nowSec * 1000,
     {
-      eventType: 'paper_partial_take',
+      eventType: meta.eventType,
+      exitReason: meta.reason ?? null,
       mfePctAtTake: mfePct,
       lockedQuantity,
       lockedTicketSol,
@@ -4799,7 +5447,19 @@ function executePartialTake(pos: PaperPosition, currentPrice: number, nowSec: nu
   );
 
   // Paper ledger 의 partial record 별도 jsonl entry — DSR / winner-kill 분석 시 partial 따로 cohort 가능.
-  void appendPartialTakeLedger(pos, currentPrice, nowSec, mfePct, lockedQuantity, lockedTicketSol, lockedNetPct, lockedNetSol).catch(() => {});
+  void appendPartialTakeLedger(
+    pos,
+    currentPrice,
+    nowSec,
+    mfePct,
+    lockedQuantity,
+    lockedTicketSol,
+    lockedNetPct,
+    lockedNetSol,
+    meta.ledgerEventType,
+    meta.reason
+  ).catch(() => {});
+  return true;
 }
 
 /** Phase 2.A2 P0: partial take 별도 ledger jsonl writer. */
@@ -4812,6 +5472,8 @@ async function appendPartialTakeLedger(
   lockedTicketSol: number,
   lockedNetPct: number,
   lockedNetSol: number,
+  eventType: string = 'partial_take',
+  reason?: string,
 ): Promise<void> {
   try {
     const dir = config.realtimeDataDir;
@@ -4826,7 +5488,8 @@ async function appendPartialTakeLedger(
       tokenDecimalsSource: pos.tokenDecimalsSource ?? null,
       isShadowArm: pos.isShadowArm,
       isLive: pos.isLive ?? false,
-      eventType: 'partial_take' as const,
+      eventType,
+      reason: reason ?? null,
       promotedAt: new Date(nowSec * 1000).toISOString(),
       mfePctAtTake: mfePct,
       exitPrice,
@@ -4990,11 +5653,20 @@ function buildKolBaseLedgerRecord(
   const netPctTokenOnlyP = effectiveTicketTokenOnlyP > 0
     ? netSolTokenOnlyP / effectiveTicketTokenOnlyP
     : (tokenEntryRefP > 0 ? (tokenExitPriceForMetric - tokenEntryRefP) / tokenEntryRefP : 0);
+  const exitTimeSec = pos.entryTimeSec + holdSec;
+  const smartV3CopyableEdge = buildSmartV3CopyableEdgeForClose({
+    pos,
+    walletNetSol: netSol,
+    tokenOnlyNetSol: netSolTokenOnlyP,
+  });
   return {
     positionId: pos.positionId,
     strategy: LANE_STRATEGY,
     tokenMint: pos.tokenMint,
     ticketSol: pos.ticketSol,
+    openedAt: new Date(pos.entryTimeSec * 1000).toISOString(),
+    entryTimeSec: pos.entryTimeSec,
+    exitTimeSec,
     entryPrice: pos.entryPrice,
     entryPriceTokenOnly: pos.entryPriceTokenOnly,
     entryPriceWalletDelta: pos.entryPriceWalletDelta,
@@ -5005,6 +5677,10 @@ function buildKolBaseLedgerRecord(
     marketReferencePrice: pos.marketReferencePrice,
     peakPrice: pos.peakPrice,
     troughPrice: pos.troughPrice,
+    // Common aliases used by lane-specific reports. Keep canonical fields above intact.
+    maxPrice: pos.peakPrice,
+    minPrice: pos.troughPrice,
+    mfePct,
     mfePctPeak: mfePct,
     mfePctPeakTokenOnly: mfePctPeakTokenOnlyP,
     mfePctPeakWalletBased: mfePctPeakWalletBasedP,
@@ -5027,7 +5703,9 @@ function buildKolBaseLedgerRecord(
     parameterVersion: pos.parameterVersion,
     isShadowArm: pos.isShadowArm,
     parentPositionId: pos.parentPositionId ?? null,
+    entryReason: pos.kolEntryReason,
     kolEntryReason: pos.kolEntryReason,
+    convictionLevel: pos.kolConvictionLevel,
     kolConvictionLevel: pos.kolConvictionLevel,
     kolReinforcementCount: pos.kolReinforcementCount,
     detectorVersion: pos.detectorVersion,
@@ -5036,7 +5714,103 @@ function buildKolBaseLedgerRecord(
     isShadowKol: pos.isShadowKol ?? false,
     tokenDecimals: pos.tokenDecimals ?? null,
     tokenDecimalsSource: pos.tokenDecimalsSource ?? null,
-    closedAt: new Date((pos.entryTimeSec + holdSec) * 1000).toISOString(),
+    rotationMonetizableEdge: pos.rotationMonetizableEdge ?? null,
+    rotationMonetizablePass: pos.rotationMonetizableEdge?.pass ?? null,
+    rotationMonetizableCostRatio: pos.rotationMonetizableEdge?.costRatio ?? null,
+    smartV3CopyableEdge,
+    smartV3CopyablePass: smartV3CopyableEdge?.pass ?? null,
+    smartV3CopyableNetSol: smartV3CopyableEdge?.copyableNetSol ?? null,
+    smartV3CopyableNetPct: smartV3CopyableEdge?.copyableNetPct ?? null,
+    smartV3CopyableRequiredGrossMovePct: smartV3CopyableEdge?.requiredGrossMovePct ?? null,
+    closedAt: new Date(exitTimeSec * 1000).toISOString(),
+    extras: buildKolLedgerExtras(
+      pos,
+      exitPrice,
+      reason,
+      holdSec,
+      mfePct,
+      maePct,
+      netSol,
+      netPct,
+      netSolTokenOnlyP,
+      netPctTokenOnlyP,
+      smartV3CopyableEdge,
+    ),
+  };
+}
+
+function buildKolLedgerExtras(
+  pos: PaperPosition,
+  exitPrice: number,
+  reason: CloseReason,
+  holdSec: number,
+  mfePct: number,
+  maePct: number,
+  netSol: number,
+  netPct: number,
+  netSolTokenOnly?: number,
+  netPctTokenOnly?: number,
+  smartV3CopyableEdge?: SmartV3CopyableEdgeEstimate | null,
+): Record<string, unknown> {
+  return {
+    mode: pos.isLive === true ? 'live' : 'paper',
+    positionId: pos.positionId,
+    tokenMint: pos.tokenMint,
+    armName: pos.armName,
+    entryReason: pos.kolEntryReason,
+    convictionLevel: pos.kolConvictionLevel,
+    parameterVersion: pos.parameterVersion,
+    parentPositionId: pos.parentPositionId ?? null,
+    isShadowArm: pos.isShadowArm,
+    isShadowKol: pos.isShadowKol ?? false,
+    isTailPosition: pos.isTailPosition ?? false,
+    detectorVersion: pos.detectorVersion,
+    independentKolCount: pos.independentKolCount,
+    kolScore: pos.kolScore,
+    participatingKols: pos.participatingKols,
+    survivalFlags: pos.survivalFlags,
+    exitReason: reason,
+    holdSec,
+    mfePct,
+    maePct,
+    netSol,
+    netPct,
+    netSolTokenOnly: netSolTokenOnly ?? null,
+    netPctTokenOnly: netPctTokenOnly ?? null,
+    smartV3CopyableEdge: smartV3CopyableEdge ?? null,
+    smartV3CopyablePass: smartV3CopyableEdge?.pass ?? null,
+    entryPrice: pos.entryPrice,
+    exitPrice,
+    maxPrice: pos.peakPrice,
+    minPrice: pos.troughPrice,
+    t1VisitAtSec: pos.t1VisitAtSec ?? null,
+    t2VisitAtSec: pos.t2VisitAtSec ?? null,
+    t3VisitAtSec: pos.t3VisitAtSec ?? null,
+    t1MfeOverride: pos.t1MfeOverride ?? null,
+    t1TrailPctOverride: pos.t1TrailPctOverride ?? null,
+    t1ProfitFloorMult: pos.t1ProfitFloorMult ?? null,
+    probeFlatTimeoutSec: pos.probeFlatTimeoutSec ?? null,
+    probeHardCutPctOverride: pos.probeHardCutPctOverride ?? null,
+    rotationDoaWindowSecOverride: pos.rotationDoaWindowSecOverride ?? null,
+    rotationDoaMinMfePctOverride: pos.rotationDoaMinMfePctOverride ?? null,
+    rotationDoaMaxMaePctOverride: pos.rotationDoaMaxMaePctOverride ?? null,
+    rotationAnchorKols: pos.rotationAnchorKols ?? null,
+    rotationEntryAtMs: pos.rotationEntryAtMs ?? null,
+    rotationAnchorPrice: pos.rotationAnchorPrice ?? null,
+    rotationAnchorPriceSource: pos.rotationAnchorPriceSource ?? null,
+    rotationFirstBuyAtMs: pos.rotationFirstBuyAtMs ?? null,
+    rotationLastBuyAtMs: pos.rotationLastBuyAtMs ?? null,
+    rotationLastBuyAgeMs: pos.rotationLastBuyAgeMs ?? null,
+    rotationScore: pos.rotationScore ?? null,
+    underfillReferenceSolAmount: pos.underfillReferenceSolAmount ?? null,
+    underfillReferenceTokenAmount: pos.underfillReferenceTokenAmount ?? null,
+    rotationFlowExitEnabled: pos.rotationFlowExitEnabled ?? false,
+    rotationFlowMetrics: pos.rotationFlowMetrics ?? null,
+    rotationFlowDecision: pos.rotationFlowDecision ?? null,
+    rotationFlowReducedAtSec: pos.rotationFlowReducedAtSec ?? null,
+    rotationFlowResidualUntilSec: pos.rotationFlowResidualUntilSec ?? null,
+    rotationFlowLastReducePct: pos.rotationFlowLastReducePct ?? null,
+    rotationMonetizableEdge: pos.rotationMonetizableEdge ?? null,
   };
 }
 
@@ -5204,6 +5978,13 @@ async function appendPaperLedger(
       rotationScore: pos.rotationScore ?? null,
       underfillReferenceSolAmount: pos.underfillReferenceSolAmount ?? null,
       underfillReferenceTokenAmount: pos.underfillReferenceTokenAmount ?? null,
+      rotationFlowExitEnabled: pos.rotationFlowExitEnabled ?? false,
+      rotationFlowMetrics: pos.rotationFlowMetrics ?? null,
+      rotationFlowDecision: pos.rotationFlowDecision ?? null,
+      rotationFlowReducedAtSec: pos.rotationFlowReducedAtSec ?? null,
+      rotationFlowResidualUntilSec: pos.rotationFlowResidualUntilSec ?? null,
+      rotationFlowLastReducePct: pos.rotationFlowLastReducePct ?? null,
+      rotationMonetizableEdge: pos.rotationMonetizableEdge ?? null,
       markoutOffsetsSec: tradeMarkoutOffsetsSecForPosition(pos),
     };
     // 2026-04-28: inactive KOL paper trade 결과는 별도 ledger 로 분리. active 분포 무결성 유지.
@@ -5676,10 +6457,17 @@ async function enterLivePosition(
       tokenDecimals: position.tokenDecimals,
       signalSource: position.armName,
       extras: {
+        mode: 'live',
+        armName: position.armName,
+        parameterVersion: position.parameterVersion,
         entryReason: position.kolEntryReason,
         convictionLevel: position.kolConvictionLevel,
         kolScore: position.kolScore,
         independentKolCount: position.independentKolCount,
+        isShadowArm: position.isShadowArm,
+        isShadowKol: position.isShadowKol ?? false,
+        isTailPosition: position.isTailPosition ?? false,
+        parentPositionId: position.parentPositionId ?? null,
         rotationAnchorKols: position.rotationAnchorKols ?? null,
         rotationEntryAtMs: position.rotationEntryAtMs ?? null,
         rotationAnchorPrice: position.rotationAnchorPrice ?? null,
@@ -6012,6 +6800,17 @@ async function closeLivePosition(
           tokenDecimals: pos.tokenDecimals,
           signalSource: pos.armName,
           extras: {
+            mode: 'live',
+            armName: pos.armName,
+            parameterVersion: pos.parameterVersion,
+            entryReason: pos.kolEntryReason,
+            convictionLevel: pos.kolConvictionLevel,
+            kolScore: pos.kolScore,
+            independentKolCount: pos.independentKolCount,
+            isShadowArm: pos.isShadowArm,
+            isShadowKol: pos.isShadowKol ?? false,
+            isTailPosition: pos.isTailPosition ?? false,
+            parentPositionId: pos.parentPositionId ?? null,
             exitReason: effectiveReason,
             closeState: pos.state,
             holdSec: nowSec - pos.entryTimeSec,

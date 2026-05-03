@@ -33,7 +33,7 @@ import type { BotContext } from '../types';
 import { LANE_STRATEGY, log } from './constants';
 import { activePositions, funnelStats } from './positionState';
 import { getPureWsExecutor, resolvePureWsWalletLabel } from './wallet';
-import { v1LastEntrySecByPair } from './cooldowns';
+import { getPureWsPairOutcomeCooldown, v1LastEntrySecByPair } from './cooldowns';
 import { inflightEntryByPair } from './inflight';
 import { getOrInitLivePriceTracker } from './livePriceTracker';
 import { ensurePairQuarantineConfigured, appendPairQuarantineLedger } from './pairQuarantine';
@@ -47,6 +47,31 @@ import { trackPureWsPaperMarkout } from './markout';
 
 function isPureWsV2Signal(signal: Signal): boolean {
   return (signal.sourceLabel ?? '').startsWith('ws_burst_v2');
+}
+
+function rejectByPairOutcomeCooldown(signal: Signal, nowSec: number): boolean {
+  const outcomeCooldown = getPureWsPairOutcomeCooldown(signal.pairAddress, nowSec);
+  if (!outcomeCooldown) return false;
+  const remaining = outcomeCooldown.untilSec - nowSec;
+  log.info(
+    `[PUREWS_PAIR_OUTCOME_COOLDOWN] ${signal.pairAddress.slice(0, 12)} ` +
+    `active (${remaining}s remaining, reason=${outcomeCooldown.reason}, ` +
+    `net=${(outcomeCooldown.netPct * 100).toFixed(2)}%, mfe=${(outcomeCooldown.mfePct * 100).toFixed(2)}%)`
+  );
+  trackPureWsReject({
+    rejectCategory: 'pair_outcome_cooldown',
+    rejectReason: outcomeCooldown.reason,
+    tokenMint: signal.pairAddress,
+    signalPrice: signal.price,
+    probeSolAmount: config.pureWsLaneTicketSol,
+    signalSource: signal.sourceLabel,
+    extras: {
+      remainingSec: remaining,
+      netPct: outcomeCooldown.netPct,
+      mfePct: outcomeCooldown.mfePct,
+    },
+  });
+  return true;
 }
 
 export async function handlePureWsSignal(
@@ -86,9 +111,12 @@ export async function handlePureWsSignal(
     if (
       pos.pairAddress === signal.pairAddress &&
       pos.state !== 'CLOSED' &&
-      pos.isShadowArm !== true
+      (config.pureWsBlockParentWhileAnyArmOpen || pos.isShadowArm !== true)
     ) {
-      log.debug(`[PUREWS_SKIP] already holding ${signal.pairAddress.slice(0, 12)}`);
+      log.debug(
+        `[PUREWS_SKIP] already holding ${signal.pairAddress.slice(0, 12)} ` +
+        `arm=${pos.armName ?? 'unknown'} blockAnyArm=${config.pureWsBlockParentWhileAnyArmOpen}`
+      );
       return;
     }
   }
@@ -137,8 +165,11 @@ export async function handlePureWsSignal(
 
   // 2026-04-21 P1: v1 (bootstrap) 경로 per-pair cooldown.
   // v2 sourced signal (ws_burst_v2) 은 scanner 가 cooldown 관리하므로 여기선 v1 만 적용.
+  const nowSecForCooldown = Math.floor(Date.now() / 1000);
+  if (rejectByPairOutcomeCooldown(signal, nowSecForCooldown)) {
+    return;
+  }
   if (!isPureWsV2Signal(signal)) {
-    const nowSecForCooldown = Math.floor(Date.now() / 1000);
     const lastEntrySec = v1LastEntrySecByPair.get(signal.pairAddress) ?? 0;
     const cooldown = config.pureWsV1PerPairCooldownSec;
     if (nowSecForCooldown - lastEntrySec < cooldown) {

@@ -1,6 +1,6 @@
 # Operations Guide
 
-> Last updated: 2026-04-16
+> Last updated: 2026-05-03
 > Scope: VPS 배포 + paper 운영 점검 + risk tier demotion + live 운영 판단
 
 ---
@@ -395,7 +395,7 @@ cron 예시:
 | `scripts/restart-timescaledb.sh` | TimescaleDB 컨테이너 재기동 | DB 컨테이너 장애 시 수동 복구 |
 | `scripts/sync-vps-data.sh` | VPS `data/`를 로컬로 회수 | 세션/리포트 분석용 수동 동기화 |
 
-#### `sync-vps-data.sh` 동작 (2026-04-16 강화 / 2026-05-01 분석 단계 추가)
+#### `sync-vps-data.sh` 동작 (2026-04-16 강화 / 2026-05-03 lane report 추가)
 
 - **DB trades dump opt-in (2026-05-01)**: 기본 sync 는 DB를 사용하지 않고 `data/realtime/*.jsonl` 파일을 truth 로 쓴다. 과거 trades table snapshot 이 필요할 때만 `RUN_TRADES_DUMP=true`로 활성화한다.
 - **DB URL 자동 해결 (opt-in)**: `RUN_TRADES_DUMP=true`이고 `VPS_DATABASE_URL` 미설정 시 pm2 app(`momentum-bot`)에서 자동으로 `DATABASE_URL` 추출. `VPS_PM2_APP_NAME` env로 app 이름 재정의 가능.
@@ -405,10 +405,14 @@ cron 예시:
 - **자동 paper-arm-report (2026-04-26)**: sync 직후 `kol-paper-trades.jsonl` 기준 sub-arm 통계 생성 → `reports/kol-paper-arms-YYYY-MM-DD.md`. Jupiter API 0건 (file-only) — default ON.
 - **자동 token-quality-report (2026-05-01)**: sync 직후 `token-quality-observations.jsonl` + paper/live/missed-alpha + dev-wallet candidate JSON join → `reports/token-quality-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
 - **자동 live-canary-report (2026-05-01)**: sync 직후 live canary wallet-truth / 5x / catastrophic / runner 진단 생성 → `reports/kol-live-canary-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
+- **자동 smart-v3-evidence-report (2026-05-03)**: sync 직후 `smart-v3-paper-trades.jsonl`, `smart-v3-live-trades.jsonl`, shared `trade-markouts.jsonl` 로 smart-v3 cohort verdict 생성 → `reports/smart-v3-evidence-YYYY-MM-DD.md/json`. T+ verdict coverage 는 close `positionId × anchorType × horizon` 기준이며, Closed Trades W/L 은 copyable/wallet-first 로 계산하고 token-only W/L 은 별도 표시한다. Jupiter/RPC API 0건 (file-only) — default ON.
 - **자동 trade-markout-report (2026-05-02)**: sync 직후 `trade-markout-anchors.jsonl` + `trade-markouts.jsonl` 로 실제 buy/sell/paper anchor 의 T+30/60/300/1800 coverage / continuation 진단 생성 → `reports/trade-markout-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
+- **자동 pure_ws trade-markout-report (2026-05-03)**: sync 직후 pure_ws paper T+15/30/60/180/300/1800 coverage / post-cost behavior 생성 → `reports/pure-ws-trade-markout-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
+- **자동 rotation-report (2026-05-03)**: sync 직후 rotation control/arms/no-trade markout / T+15/30/60 post-cost 진단 생성 → `reports/rotation-lane-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
 - **자동 winner-kill-report (2026-05-01)**: sync 직후 missed-alpha close-site markout 으로 5x winner-kill rate 생성 → `reports/winner-kill-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
-- **자동 sync-health manifest (2026-05-01)**: 핵심 JSONL/log 파일의 row count, bytes, mtime 을 `reports/sync-health-YYYY-MM-DD.md`로 저장. 데이터 공백과 sync 실패 구분용 — default ON.
+- **자동 sync-health manifest (2026-05-03)**: 핵심 JSONL/log 파일의 row count, bytes, mtime, lane projection freshness, 최근 24h W/L/net/last-trade summary 를 `reports/sync-health-YYYY-MM-DD.md`로 저장. 데이터 공백과 sync 실패 구분용 — default ON.
 - **opt-in shadow-eval (2026-04-26)**: `RUN_SHADOW_EVAL=true` 시 KOL signal raw alpha 측정 (Jupiter forward quote 사용). default OFF — Jupiter quota 영향.
+- **환경변수 주의**: smart-v3 evidence/report 추가는 운영 `.env` 변경이 필요 없다. `SKIP_SMART_V3_EVIDENCE_REPORT=true` 는 sync report 생략용 shell opt-out 이며 runtime 전략 환경변수가 아니다.
 
 ```bash
 # 기본 사용 (파일 sync + file-only reports, DB 미사용)
@@ -432,9 +436,12 @@ SKIP_PAPER_REPORT=true bash scripts/sync-vps-data.sh
 # token quality / dev-candidate report 생략
 SKIP_TOKEN_QUALITY_REPORT=true bash scripts/sync-vps-data.sh
 
-# live canary / trade markout / winner-kill / sync health 생략
+# live canary / smart-v3 evidence / trade markout / winner-kill / sync health 생략
 SKIP_LIVE_CANARY_REPORT=true bash scripts/sync-vps-data.sh
+SKIP_SMART_V3_EVIDENCE_REPORT=true bash scripts/sync-vps-data.sh
 SKIP_TRADE_MARKOUT_REPORT=true bash scripts/sync-vps-data.sh
+SKIP_PUREWS_TRADE_MARKOUT_REPORT=true bash scripts/sync-vps-data.sh
+SKIP_ROTATION_REPORT=true bash scripts/sync-vps-data.sh
 SKIP_WINNER_KILL_REPORT=true bash scripts/sync-vps-data.sh
 SKIP_SYNC_HEALTH=true bash scripts/sync-vps-data.sh
 ```

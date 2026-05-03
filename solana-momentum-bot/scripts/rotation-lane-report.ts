@@ -10,6 +10,14 @@ import {
 
 const ROTATION_PAPER_TRADES_FILE = 'rotation-v1-paper-trades.jsonl';
 const KOL_PAPER_TRADES_FILE = 'kol-paper-trades.jsonl';
+const EVIDENCE_MIN_CLOSES = 50;
+const EVIDENCE_PROMOTION_MIN_CLOSES = 100;
+const EVIDENCE_MIN_OK_COVERAGE = 0.8;
+const EVIDENCE_MIN_EDGE_COVERAGE = 0.8;
+const EVIDENCE_MIN_EDGE_PASS_RATE = 0.5;
+const EVIDENCE_VERDICT_HORIZON_SEC = 60;
+const EVIDENCE_REQUIRED_COVERAGE_HORIZONS_SEC = [15, 30, 60];
+const ROTATION_CONTROL_ARM = 'kol_hunter_rotation_v1';
 
 interface Args {
   realtimeDir: string;
@@ -58,8 +66,38 @@ interface PaperArmStats {
   netSol: number;
   netSolTokenOnly: number;
   rentAdjustedNetSol: number;
+  edgeRows: number;
+  edgePassRows: number;
+  edgeFailRows: number;
+  medianEdgeCostRatio: number | null;
+  medianRequiredGrossMovePct: number | null;
   medianHoldSec: number | null;
   topExitReasons: Array<{ reason: string; count: number }>;
+}
+
+type EvidenceVerdictStatus =
+  | 'COLLECT'
+  | 'DATA_GAP'
+  | 'COST_REJECT'
+  | 'POST_COST_REJECT'
+  | 'WATCH'
+  | 'PROMOTION_CANDIDATE';
+
+interface EvidenceVerdict {
+  armName: string;
+  verdict: EvidenceVerdictStatus;
+  reasons: string[];
+  closes: number;
+  minRequiredCloses: number;
+  promotionRequiredCloses: number;
+  minOkCoverage: number | null;
+  requiredHorizonCoverage: Array<{ horizonSec: number; okCoverage: number | null }>;
+  t60MedianPostCostDeltaPct: number | null;
+  controlT60MedianPostCostDeltaPct: number | null;
+  controlBeatDeltaPct: number | null;
+  rentAdjustedNetSol: number | null;
+  edgeCoverage: number | null;
+  edgePassRate: number | null;
 }
 
 interface RotationReport {
@@ -75,6 +113,9 @@ interface RotationReport {
     rotationRows: number;
     afterBuy: HorizonStats[];
     afterSell: HorizonStats[];
+    afterSellFinal: HorizonStats[];
+    afterSellPartial: HorizonStats[];
+    afterSellHardCut: HorizonStats[];
     byArm: ArmHorizonStats[];
   };
   paperTrades: {
@@ -82,6 +123,7 @@ interface RotationReport {
     rotationRows: number;
     byArm: PaperArmStats[];
   };
+  evidenceVerdicts: EvidenceVerdict[];
   noTrade: {
     totalRows: number;
     probeRows: number;
@@ -234,6 +276,17 @@ function rowArmName(row: JsonRow): string {
     '(unknown)';
 }
 
+function rotationEdge(row: JsonRow): JsonRow {
+  const direct = obj(row.rotationMonetizableEdge);
+  if (Object.keys(direct).length > 0) return direct;
+  return obj(obj(row.extras).rotationMonetizableEdge);
+}
+
+function boolValue(value: unknown): boolean | null {
+  if (typeof value === 'boolean') return value;
+  return null;
+}
+
 function isRotationArmValue(value: string): boolean {
   return value === 'kol_hunter_rotation_v1' ||
     value.startsWith('rotation_') ||
@@ -270,6 +323,36 @@ function isRotationNoTrade(row: JsonRow): boolean {
       str(extras.eventType) === 'rotation_no_trade' ||
       str(extras.eventType) === 'rotation_arm_skip' ||
       str(row.rejectReason).startsWith('rotation_v1_'));
+}
+
+function markoutEventType(row: JsonRow): string {
+  return str(obj(row.extras).eventType);
+}
+
+function markoutExitReason(row: JsonRow): string {
+  return str(obj(row.extras).exitReason) || str(row.exitReason);
+}
+
+function isPartialSellMarkout(row: JsonRow): boolean {
+  const eventType = markoutEventType(row);
+  return eventType === 'paper_partial_take' ||
+    eventType === 'rotation_flow_reduce' ||
+    eventType.includes('partial');
+}
+
+function isFinalSellMarkout(row: JsonRow): boolean {
+  const eventType = markoutEventType(row);
+  return eventType === 'paper_close' ||
+    eventType === 'live_close' ||
+    (!isPartialSellMarkout(row) && str(row.anchorType) === 'sell');
+}
+
+function isHardCutSellMarkout(row: JsonRow): boolean {
+  const reason = markoutExitReason(row);
+  return reason === 'probe_hard_cut' ||
+    reason === 'rotation_dead_on_arrival' ||
+    reason === 'rotation_flow_residual_timeout' ||
+    reason === 'quick_reject_classifier_exit';
 }
 
 function percentile(values: number[], q: number): number | null {
@@ -361,6 +444,15 @@ function buildPaperArmStats(
         return tokenOnly == null ? numberOrZero(row.netSol) : tokenOnly;
       });
       const holdSec = scoped.map((row) => num(row.holdSec)).filter((value): value is number => value != null);
+      const edgeRows = scoped
+        .map(rotationEdge)
+        .filter((edge) => Object.keys(edge).length > 0);
+      const edgeCostRatios = edgeRows
+        .map((edge) => num(edge.costRatio))
+        .filter((value): value is number => value != null && Number.isFinite(value));
+      const edgeRequiredMoves = edgeRows
+        .map((edge) => num(edge.requiredGrossMovePct))
+        .filter((value): value is number => value != null && Number.isFinite(value));
       const netSol = netSolValues.reduce((sum, value) => sum + value, 0);
       const netSolTokenOnly = tokenOnlyValues.reduce((sum, value) => sum + value, 0);
       return {
@@ -373,11 +465,134 @@ function buildPaperArmStats(
         rentAdjustedNetSol: tokenOnlyValues
           .map((value) => value - assumedWalletDragSol)
           .reduce((sum, value) => sum + value, 0),
+        edgeRows: edgeRows.length,
+        edgePassRows: edgeRows.filter((edge) => boolValue(edge.pass) === true).length,
+        edgeFailRows: edgeRows.filter((edge) => boolValue(edge.pass) === false).length,
+        medianEdgeCostRatio: percentile(edgeCostRatios, 0.5),
+        medianRequiredGrossMovePct: percentile(edgeRequiredMoves, 0.5),
         medianHoldSec: percentile(holdSec, 0.5),
         topExitReasons: buildTopExitReasons(scoped),
       };
     })
     .sort((a, b) => b.rows - a.rows || b.netSolTokenOnly - a.netSolTokenOnly || a.armName.localeCompare(b.armName));
+}
+
+function horizonOkCoverage(row: HorizonStats | undefined): number | null {
+  if (!row) return null;
+  return row.rows > 0 ? row.okRows / row.rows : 0;
+}
+
+function requiredHorizonCoverage(markout: ArmHorizonStats | undefined): Array<{ horizonSec: number; okCoverage: number | null }> {
+  return EVIDENCE_REQUIRED_COVERAGE_HORIZONS_SEC.map((horizonSec) => ({
+    horizonSec,
+    okCoverage: horizonOkCoverage(markout?.afterBuy.find((row) => row.horizonSec === horizonSec)),
+  }));
+}
+
+function minRequiredOkCoverage(rows: Array<{ horizonSec: number; okCoverage: number | null }>): number | null {
+  const coverages = rows.map((row) => row.okCoverage);
+  if (coverages.some((value) => value == null || !Number.isFinite(value))) return null;
+  return percentile(coverages as number[], 0);
+}
+
+function verdictReasonCoverage(value: number | null): string {
+  return value == null ? 'ok coverage missing' : `ok coverage ${formatPct(value)} < ${formatPct(EVIDENCE_MIN_OK_COVERAGE)}`;
+}
+
+function verdictCoverageReasons(rows: Array<{ horizonSec: number; okCoverage: number | null }>): string[] {
+  return rows.flatMap((row) => {
+    if (row.okCoverage == null) return [`T+${row.horizonSec}s coverage missing`];
+    if (row.okCoverage < EVIDENCE_MIN_OK_COVERAGE) {
+      return [`T+${row.horizonSec}s ok coverage ${formatPct(row.okCoverage)} < ${formatPct(EVIDENCE_MIN_OK_COVERAGE)}`];
+    }
+    return [];
+  });
+}
+
+function armVerdictHorizon(markout: ArmHorizonStats | undefined): HorizonStats | null {
+  return markout?.afterBuy.find((row) => row.horizonSec === EVIDENCE_VERDICT_HORIZON_SEC) ?? null;
+}
+
+function buildEvidenceVerdicts(
+  paperArms: PaperArmStats[],
+  armMarkouts: ArmHorizonStats[]
+): EvidenceVerdict[] {
+  const markoutsByArm = new Map(armMarkouts.map((row) => [row.armName, row]));
+  const controlT60MedianPostCostDeltaPct =
+    armVerdictHorizon(markoutsByArm.get(ROTATION_CONTROL_ARM))?.medianPostCostDeltaPct ?? null;
+  return paperArms.map((arm) => {
+    const markout = markoutsByArm.get(arm.armName);
+    const coverageRows = requiredHorizonCoverage(markout);
+    const minOkCoverage = minRequiredOkCoverage(coverageRows);
+    const t60 = armVerdictHorizon(markout);
+    const controlBeatDeltaPct = t60?.medianPostCostDeltaPct != null && controlT60MedianPostCostDeltaPct != null
+      ? t60.medianPostCostDeltaPct - controlT60MedianPostCostDeltaPct
+      : null;
+    const edgeCoverage = arm.rows > 0 ? arm.edgeRows / arm.rows : null;
+    const edgePassRate = arm.edgeRows > 0 ? arm.edgePassRows / arm.edgeRows : null;
+    const reasons: string[] = [];
+    let verdict: EvidenceVerdictStatus = 'PROMOTION_CANDIDATE';
+
+    if (arm.rows < EVIDENCE_MIN_CLOSES) {
+      verdict = 'COLLECT';
+      reasons.push(`sample ${arm.rows}/${EVIDENCE_MIN_CLOSES}`);
+    } else if (
+      minOkCoverage == null ||
+      minOkCoverage < EVIDENCE_MIN_OK_COVERAGE ||
+      t60 == null ||
+      t60.rows === 0 ||
+      edgeCoverage == null ||
+      edgeCoverage < EVIDENCE_MIN_EDGE_COVERAGE
+    ) {
+      verdict = 'DATA_GAP';
+      reasons.push(...verdictCoverageReasons(coverageRows));
+      if (minOkCoverage == null || minOkCoverage < EVIDENCE_MIN_OK_COVERAGE) {
+        reasons.push(`min ${verdictReasonCoverage(minOkCoverage)}`);
+      }
+      if (t60 == null || t60.rows === 0) reasons.push(`T+${EVIDENCE_VERDICT_HORIZON_SEC}s markout missing`);
+      if (edgeCoverage == null || edgeCoverage < EVIDENCE_MIN_EDGE_COVERAGE) {
+        reasons.push(`edge coverage ${formatPct(edgeCoverage)} < ${formatPct(EVIDENCE_MIN_EDGE_COVERAGE)}`);
+      }
+    } else if (edgePassRate == null || edgePassRate < EVIDENCE_MIN_EDGE_PASS_RATE || arm.rentAdjustedNetSol <= 0) {
+      verdict = 'COST_REJECT';
+      if (edgePassRate == null) reasons.push('edge shadow rows missing');
+      else if (edgePassRate < EVIDENCE_MIN_EDGE_PASS_RATE) {
+        reasons.push(`edge pass ${formatPct(edgePassRate)} < ${formatPct(EVIDENCE_MIN_EDGE_PASS_RATE)}`);
+      }
+      if (arm.rentAdjustedNetSol <= 0) reasons.push(`rent stress ${formatSol(arm.rentAdjustedNetSol)} <= 0`);
+    } else if (t60.medianPostCostDeltaPct == null || t60.medianPostCostDeltaPct <= 0) {
+      verdict = 'POST_COST_REJECT';
+      reasons.push(`T+${EVIDENCE_VERDICT_HORIZON_SEC}s median postCost ${formatPct(t60.medianPostCostDeltaPct)} <= 0`);
+    } else if (arm.armName !== ROTATION_CONTROL_ARM && controlT60MedianPostCostDeltaPct == null) {
+      verdict = 'WATCH';
+      reasons.push('control T+60 baseline missing');
+    } else if (arm.armName !== ROTATION_CONTROL_ARM && controlBeatDeltaPct != null && controlBeatDeltaPct <= 0) {
+      verdict = 'POST_COST_REJECT';
+      reasons.push(`T+${EVIDENCE_VERDICT_HORIZON_SEC}s postCost ${formatPct(t60.medianPostCostDeltaPct)} <= control ${formatPct(controlT60MedianPostCostDeltaPct)}`);
+    } else if (arm.rows < EVIDENCE_PROMOTION_MIN_CLOSES) {
+      verdict = 'WATCH';
+      reasons.push(`sample ${arm.rows}/${EVIDENCE_PROMOTION_MIN_CLOSES}`);
+    } else {
+      reasons.push('promotion evidence threshold met');
+    }
+
+    return {
+      armName: arm.armName,
+      verdict,
+      reasons,
+      closes: arm.rows,
+      minRequiredCloses: EVIDENCE_MIN_CLOSES,
+      promotionRequiredCloses: EVIDENCE_PROMOTION_MIN_CLOSES,
+      minOkCoverage,
+      requiredHorizonCoverage: coverageRows,
+      t60MedianPostCostDeltaPct: t60?.medianPostCostDeltaPct ?? null,
+      controlT60MedianPostCostDeltaPct: arm.armName === ROTATION_CONTROL_ARM ? null : controlT60MedianPostCostDeltaPct,
+      controlBeatDeltaPct: arm.armName === ROTATION_CONTROL_ARM ? null : controlBeatDeltaPct,
+      rentAdjustedNetSol: arm.rentAdjustedNetSol,
+      edgeCoverage,
+      edgePassRate,
+    };
+  });
 }
 
 function anchorKey(row: JsonRow): string {
@@ -579,13 +794,28 @@ function renderStatsTable(rows: HorizonStats[]): string {
 function renderPaperArmTable(rows: PaperArmStats[]): string {
   if (rows.length === 0) return '_No rotation paper trade rows._';
   return [
-    '| arm | closes | W/L | net SOL | token-only SOL | rent-adjusted stress SOL | median hold | top exits |',
-    '|---|---:|---:|---:|---:|---:|---:|---|',
+    '| arm | closes | W/L | net SOL | token-only SOL | rent-adjusted stress SOL | edge pass/fail | median cost ratio | required gross move | median hold | top exits |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|',
     ...rows.map((row) =>
       `| ${row.armName} | ${row.rows} | ${row.wins}/${row.losses} | ${formatSol(row.netSol)} | ` +
       `${formatSol(row.netSolTokenOnly)} | ${formatSol(row.rentAdjustedNetSol)} | ` +
+      `${row.edgePassRows}/${row.edgeFailRows}${row.edgeRows === 0 ? ' (n/a)' : ''} | ` +
+      `${formatPct(row.medianEdgeCostRatio)} | ${formatPct(row.medianRequiredGrossMovePct)} | ` +
       `${row.medianHoldSec == null ? 'n/a' : `${row.medianHoldSec.toFixed(0)}s`} | ` +
       `${row.topExitReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'} |`
+    ),
+  ].join('\n');
+}
+
+function renderEvidenceVerdicts(rows: EvidenceVerdict[]): string {
+  if (rows.length === 0) return '_No rotation paper arm evidence yet._';
+  return [
+    '| arm | verdict | closes | min ok coverage | edge coverage | edge pass | rent stress | T+60 median postCost | vs control | reasons |',
+    '|---|---|---:|---:|---:|---:|---:|---:|---:|---|',
+    ...rows.map((row) =>
+      `| ${row.armName} | ${row.verdict} | ${row.closes}/${row.promotionRequiredCloses} | ` +
+      `${formatPct(row.minOkCoverage)} | ${formatPct(row.edgeCoverage)} | ${formatPct(row.edgePassRate)} | ${formatSol(row.rentAdjustedNetSol)} | ` +
+      `${formatPct(row.t60MedianPostCostDeltaPct)} | ${formatPct(row.controlBeatDeltaPct)} | ${row.reasons.join('; ') || 'n/a'} |`
     ),
   ].join('\n');
 }
@@ -653,11 +883,23 @@ function renderReport(report: RotationReport): string {
     '## Paper Trades By Arm',
     renderPaperArmTable(report.paperTrades.byArm),
     '',
+    '## Evidence Verdict By Arm',
+    renderEvidenceVerdicts(report.evidenceVerdicts),
+    '',
     '## After Buy',
     renderStatsTable(report.tradeMarkouts.afterBuy),
     '',
     '## After Sell',
     renderStatsTable(report.tradeMarkouts.afterSell),
+    '',
+    '## After Sell — Final Close Only',
+    renderStatsTable(report.tradeMarkouts.afterSellFinal),
+    '',
+    '## After Sell — Partial/Reduce Only',
+    renderStatsTable(report.tradeMarkouts.afterSellPartial),
+    '',
+    '## After Sell — Hard Cut Cohort',
+    renderStatsTable(report.tradeMarkouts.afterSellHardCut),
     '',
     '## Markouts By Arm',
     renderArmMarkouts(report.tradeMarkouts.byArm),
@@ -700,6 +942,7 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
     return Number.isFinite(t) && t >= args.sinceMs;
   });
   const rotationRows = recentTradeRows.filter(isRotationTradeMarkout);
+  const rotationSellRows = rotationRows.filter((row) => str(row.anchorType) === 'sell');
   const recentPaperRows = paperTrades.filter((row) => {
     const t = timeMs(row.closedAt) || timeMs(row.exitTimeSec) || timeMs(row.entryTimeSec);
     return Number.isFinite(t) && t >= args.sinceMs;
@@ -710,6 +953,8 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
     return Number.isFinite(t) && t >= args.sinceMs && isRotationNoTrade(row);
   });
   const noTradeProbeRows = recentNoTradeRows.filter((row) => (rowHorizon(row) ?? 0) > 0);
+  const armMarkouts = buildArmHorizonStats(rotationRows, args.horizonsSec, args.roundTripCostPct);
+  const paperArmStats = buildPaperArmStats(rotationPaperRows, assumedAtaRentSol, assumedNetworkFeeSol);
   return {
     generatedAt: new Date().toISOString(),
     realtimeDir: args.realtimeDir,
@@ -722,14 +967,18 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
       totalRows: recentTradeRows.length,
       rotationRows: rotationRows.length,
       afterBuy: summarize(rotationRows.filter((row) => str(row.anchorType) === 'buy'), args.horizonsSec, args.roundTripCostPct),
-      afterSell: summarize(rotationRows.filter((row) => str(row.anchorType) === 'sell'), args.horizonsSec, args.roundTripCostPct),
-      byArm: buildArmHorizonStats(rotationRows, args.horizonsSec, args.roundTripCostPct),
+      afterSell: summarize(rotationSellRows, args.horizonsSec, args.roundTripCostPct),
+      afterSellFinal: summarize(rotationSellRows.filter(isFinalSellMarkout), args.horizonsSec, args.roundTripCostPct),
+      afterSellPartial: summarize(rotationSellRows.filter(isPartialSellMarkout), args.horizonsSec, args.roundTripCostPct),
+      afterSellHardCut: summarize(rotationSellRows.filter(isHardCutSellMarkout), args.horizonsSec, args.roundTripCostPct),
+      byArm: armMarkouts,
     },
     paperTrades: {
       totalRows: recentPaperRows.length,
       rotationRows: rotationPaperRows.length,
-      byArm: buildPaperArmStats(rotationPaperRows, assumedAtaRentSol, assumedNetworkFeeSol),
+      byArm: paperArmStats,
     },
+    evidenceVerdicts: buildEvidenceVerdicts(paperArmStats, armMarkouts),
     noTrade: {
       totalRows: recentNoTradeRows.length,
       probeRows: noTradeProbeRows.length,

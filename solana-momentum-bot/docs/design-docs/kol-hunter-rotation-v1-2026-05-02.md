@@ -62,6 +62,116 @@ The lane should keep using active KOL DB metadata unless a future ADR introduces
 a separate include-list. Shadow and observer KOLs remain ineligible for live
 triggering.
 
+### Inventory-Flow Entry/Exit Review - 2026-05-03
+
+Latest synced evidence at review time:
+
+- sync health: `reports/sync-health-2026-05-03.md`, generated 2026-05-03 20:04 KST;
+- rotation report: `reports/rotation-lane-2026-05-03.md`;
+- KOL flow source: `data/realtime/kol-tx.jsonl`, synced 2026-05-03 20:01 KST;
+- scope: active S/A KOLs over the latest local 7d window, plus fresh rotation paper rows.
+
+The consistency check supports the rotation thesis but changes the interpretation:
+
+1. S/A rotators do use repeated same-mint buys, including trend-following top-ups.
+2. First sell is usually not a small noise event. It often de-risks most of the position.
+3. Sell-after-rebuy exists, but it is rare enough to be a secondary signal rather than the main exit rule.
+4. Rotation should use `count + size + order`, not count-only KOL events.
+
+Representative S/A sell-flow statistics:
+
+| KOL | style | first sell median | first sell <=30s | sellPressure30 median | sellPressure30 >=0.8 |
+|---|---|---:|---:|---:|---:|
+| `decu` | scalper | 21s | 63.9% | 1.01 | 78.4% |
+| `dv` | scalper | 12s | 77.9% | 0.92 | 69.7% |
+| `heyitsyolo` | scalper | 21s | 60.8% | 0.95 | 81.2% |
+| `theo` | scalper | 24s | 57.8% | 0.97 | 85.5% |
+| `chester` | scalper | 13s | 74.3% | 0.91 | 69.6% |
+| `jijo` | scalper | 38s | 44.9% | 1.25 | 75.0% |
+| `limfork_eth` | scalper | 50s | 36.6% | 0.92 | 71.0% |
+| `yenni` | scalper | 257s | 12.1% | 0.89 | 57.2% |
+
+Definitions used for the review:
+
+```text
+sellPressure30 = SOL sold by anchor KOLs within 30s after first sell
+               / SOL bought by anchor KOLs before that first sell
+
+topupStrength = post-opener top-up SOL / opener SOL
+
+chaseTopup = same-mint pre-first-sell buy sequence where later buy fill price
+             is materially above the previous buy fill price
+```
+
+Entry implication:
+
+- `rotation_underfill_v1` remains valid: buy only when our quote is below the S/A KOL's actual fill reference and no recent sell exists.
+- Add a separate paper-only `rotation_chase_topup_v1` candidate before any live consideration:
+  - active S/A KOL only;
+  - fresh opener plus top-up inside the short rotation window;
+  - follow-up buy fill price is above the prior buy by a cost-aware threshold;
+  - `topupStrength` is meaningful, not just dust;
+  - `sellPressure30` is still low;
+  - max hold remains a short rotation clock, not a runner clock.
+
+Exit implication:
+
+- First anchor sell should be interpreted by pressure, not by count alone.
+- Low-pressure sell can be a trim; high-pressure sell is usually a de-risk or exit.
+- Rebuy after sell is a rare rescue signal and must not override high sell pressure.
+- Top-up before sell is useful for residual hold; sell pressure after entry is useful for residual reduction or full exit.
+
+Initial paper-only exit state machine:
+
+```text
+on T1:
+  take 30-40% partial profit
+
+while residual is open:
+  if structural risk, no route, severe quote impact, or liquidity collapse:
+    exit full immediately
+
+  if sellPressure30 >= 1.2:
+    exit full and block same-mint reentry
+
+  if sellPressure30 >= 0.8:
+    exit full
+
+  if sellPressure30 >= 0.5:
+    reduce residual strongly
+
+  if sellPressure30 >= 0.2:
+    reduce residual lightly
+
+  if fresh top-up exists, sellPressure30 < 0.5, and quote quality is acceptable:
+    keep residual until max 60-90s
+
+  if no top-up and momentum fades:
+    close residual
+```
+
+Hard-cut implication:
+
+```text
+if structural hard cut:
+  exit full immediately
+
+if price-only hard cut and sellPressure30 >= 0.8:
+  exit full
+
+if price-only hard cut and sellPressure30 < 0.5 and fresh top-up exists:
+  cut 70-80%
+  keep 20-30% residual for max 60s
+
+if residual does not reclaim or quote quality worsens:
+  close residual
+```
+
+This is deliberately paper-only. It does not loosen live risk controls, does not
+turn rotation into a runner lane, and does not change smart-v3. The purpose is to
+test whether KOL inventory-flow improves exit timing versus the current binary
+hard-cut / full-close behavior.
+
 ## Policy
 
 Rotation v1 triggers during the existing smart-v3 observe window without consuming smart-v3:
@@ -109,6 +219,78 @@ Default exits are intentionally faster than `kol_hunter_rotation_v1`:
 - probe timeout `30s`;
 - hard cut `4%`;
 - DOA window `15s`.
+
+### Implemented Paper-Only Inventory-Flow Arms - 2026-05-03
+
+The 2026-05-03 consistency review introduced two paper-only inventory-flow
+arms. They are implemented as measurement arms, not live routing behavior. The
+shared flow metrics are built from the existing KOL transaction stream; no extra
+RPC call is required on the entry path.
+
+`rotation_chase_topup_v1`:
+
+- tests trend-following S/A top-up entries;
+- requires fresh same-mint top-up after opener;
+- requires a cost-aware positive buy-to-buy fill-price move;
+- rejects if recent `sellPressure30` is elevated;
+- uses the same short `15/30/60` primary validation clock as rotation-v1;
+- is paper-only by default under
+  `KOL_HUNTER_ROTATION_CHASE_TOPUP_PAPER_ENABLED=true`.
+
+`rotation_exit_kol_flow_v1`:
+
+- keeps the same candidate entry as its parent arm;
+- changes exit only;
+- uses `sellPressure`, `topupStrength`, first-sell timing, and residual state;
+- never delays structural exits;
+- tests virtual partial reduce plus small residual hold after low/medium pressure
+  anchor sell or price-only hard cut;
+- reports partial/reduce, final close, hard cut, DOA, and anchor-sell T+
+  separately;
+- is paper-only by default under
+  `KOL_HUNTER_ROTATION_EXIT_FLOW_PAPER_ENABLED=true`.
+
+Promotion rule remains unchanged: these arms must stay out of live until there
+are at least 50-100 fresh closes, `okCoverage >= 80%`, control-beating
+post-cost net, no loser-loss deterioration, and non-negative rent/network stress.
+
+### Monetizable-Edge Shadow Gate - 2026-05-03
+
+Deep research review conclusion: rotation is the most cost-sensitive KOL lane,
+so arm success must be judged after wallet-realistic execution drag, not only
+raw T+ continuation. Current implementation keeps all new rotation arms
+paper-only and adds a shadow estimate to every rotation paper position:
+
+- `rotationMonetizableEdge.schemaVersion = rotation-monetizable-edge/v1`;
+- assumed wallet drag = ATA rent + venue bleed model + base/priority fee +
+  entry/quick-exit slippage;
+- `costRatio = totalCostSol / ticketSol`;
+- default pass threshold `KOL_HUNTER_ROTATION_EDGE_MAX_COST_RATIO=0.06`;
+- default mode is observe-only. It does not block paper entries and never routes
+  to live;
+- paper close ledgers, trade-markout extras, and rotation reports expose
+  pass/fail, median cost ratio, and required gross move.
+
+This is intentionally a validation layer, not a new entry rule. Promotion still
+requires positive post-cost markout, non-negative rent/network stress, and enough
+closed samples.
+
+`scripts/rotation-lane-report.ts` now renders an arm-level evidence verdict:
+
+- `COLLECT`: fewer than 50 closed paper samples;
+- `DATA_GAP`: at least 50 closes, but any required T+15/T+30/T+60 buy
+  markout coverage is missing or below `80%`, or `rotationMonetizableEdge`
+  coverage is below `80%`;
+- `COST_REJECT`: edge shadow pass rate is weak or rent/network stress is not
+  positive;
+- `POST_COST_REJECT`: T+60 median post-cost markout is not positive;
+- `WATCH`: 50-99 closes with positive evidence, or an experimental arm has no
+  control T+60 baseline yet;
+- `PROMOTION_CANDIDATE`: at least 100 closes with markout coverage, cost,
+  rent-stress, T+60 post-cost, and control-beating T+60 checks all passing.
+
+The verdict is report-only. It cannot enable live routing and it does not block
+paper entries.
 
 ## Exit Shape
 

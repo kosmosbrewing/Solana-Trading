@@ -96,6 +96,7 @@ describe('Block 3 QA — paper-first enforcement', () => {
     resetEntryDriftGuardState();
     jest.clearAllMocks();
     override('pureWsLaneEnabled', true);
+    override('pureWsNewPairSourceGateEnabled', false);
     override('pureWsGateEnabled', false); // gate 건너뛰기 (MicroCandleBuilder mock 최소화)
     override('pureWsLaneWalletMode', 'main');
     // 2026-04-26 cleanup: 운영 .env 의 survival/probe/drift gate 가 jest 에 로드되어
@@ -116,6 +117,51 @@ describe('Block 3 QA — paper-first enforcement', () => {
   });
   afterEach(() => {
     resetTradeMarkoutObserverState();
+  });
+
+  it('new-pair source gate rejects legacy trending pure_ws signals before paper entry', async () => {
+    override('pureWsNewPairSourceGateEnabled', true);
+    override('pureWsLiveCanaryEnabled', false);
+    const { ctx, executor, tradeStore } = makeCtx('live');
+
+    await handlePureWsSignal(
+      {
+        pairAddress: 'PAIR_LEGACY_TRENDING',
+        strategy: 'bootstrap_10s',
+        price: 1.0,
+        discoverySource: 'gecko_trending',
+        sourceLabel: 'trigger_volume_mcap_spike',
+      } as any,
+      makeBuilder(),
+      ctx
+    );
+
+    expect(executor.executeBuy).not.toHaveBeenCalled();
+    expect(tradeStore.insertTrade).not.toHaveBeenCalled();
+    expect(getActivePureWsPositions().size).toBe(0);
+  });
+
+  it('new-pair source gate allows gecko_new_pool pure_ws paper observation', async () => {
+    override('pureWsNewPairSourceGateEnabled', true);
+    override('pureWsLiveCanaryEnabled', false);
+    const { ctx, executor, tradeStore } = makeCtx('live');
+
+    await handlePureWsSignal(
+      {
+        pairAddress: 'PAIR_NEW_POOL',
+        strategy: 'bootstrap_10s',
+        price: 1.0,
+        discoverySource: 'gecko_new_pool',
+        sourceLabel: 'trigger_volume_mcap_spike',
+      } as any,
+      makeBuilder(),
+      ctx
+    );
+
+    expect(executor.executeBuy).not.toHaveBeenCalled();
+    expect(tradeStore.insertTrade).not.toHaveBeenCalled();
+    expect(getActivePureWsPositions().size).toBe(1);
+    expect([...getActivePureWsPositions().values()][0].discoverySource).toBe('gecko_new_pool');
   });
 
   it('live mode + PUREWS_LIVE_CANARY_ENABLED=false: opens primary paper-only position, no live buy', async () => {

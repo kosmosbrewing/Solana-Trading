@@ -8,6 +8,7 @@ import { config } from '../../utils/config';
 import { createModuleLogger } from '../../utils/logger';
 import { getActivePureWsPositions } from './positionState';
 import { pureWsPaperMarkoutOffsetsSec } from './markout';
+import { isPureWsNewPairLedgerRow } from './sourceGate';
 
 const log = createModuleLogger('PureWsPaperDigest');
 
@@ -148,11 +149,11 @@ export async function flushPureWsPaperDigest(notifier: Notifier): Promise<void> 
     readJsonl(path.join(config.realtimeDataDir, 'trade-markout-anchors.jsonl')),
     readJsonl(path.join(config.realtimeDataDir, 'trade-markouts.jsonl')),
   ]);
-  const pureWsAnchors = anchors.filter(isPureWsSidecarRow);
-  const pureWsMarkouts = markouts.filter(isPureWsSidecarRow);
+  const pureWsAnchors = anchors.filter((row) => isPureWsSidecarRow(row) && isPureWsNewPairLedgerRow(row));
+  const pureWsMarkouts = markouts.filter((row) => isPureWsSidecarRow(row) && isPureWsNewPairLedgerRow(row));
   const closed = trades.filter((row) => {
     const closedAt = timeMs(row.closedAt);
-    return Number.isFinite(closedAt) && closedAt >= startedMs && closedAt < nowMs;
+    return isPureWsNewPairLedgerRow(row) && Number.isFinite(closedAt) && closedAt >= startedMs && closedAt < nowMs;
   });
   const entries = uniqueByKey(
     pureWsAnchors.filter((row) => str(row.anchorType) === 'buy' && inWindow(timeMs(row.anchorAt), startedMs, nowMs)),
@@ -161,6 +162,7 @@ export async function flushPureWsPaperDigest(notifier: Notifier): Promise<void> 
   const windowMarkouts = pureWsMarkouts.filter((row) => inWindow(timeMs(row.recordedAt), startedMs, nowMs));
   const openPaper = [...getActivePureWsPositions().values()].filter((pos) =>
     pos.state !== 'CLOSED' &&
+    isPureWsNewPairLedgerRow(pos) &&
     (pos.executionMode === 'paper' || pos.isShadowArm === true || pos.paperOnlyReason != null)
   );
 

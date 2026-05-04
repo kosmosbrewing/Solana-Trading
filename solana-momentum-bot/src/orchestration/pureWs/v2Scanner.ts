@@ -29,7 +29,8 @@ export async function scanPureWsV2Burst(
   ctx: BotContext,
   candleBuilder: MicroCandleBuilder,
   pairAddresses: Iterable<string>,
-  tokenSymbolByPair?: Map<string, string | undefined>
+  tokenSymbolByPair?: Map<string, string | undefined>,
+  discoverySourceByPair?: Map<string, string | undefined>
 ): Promise<void> {
   if (!config.pureWsLaneEnabled) return;
   if (!config.pureWsV2Enabled) return;
@@ -116,7 +117,7 @@ export async function scanPureWsV2Burst(
         rawPriceChangeBps: result.factors.rawPriceChangeBps,
       },
       sourceLabel: 'ws_burst_v2',
-      discoverySource: 'pure_ws_v2',
+      discoverySource: discoverySourceByPair?.get(pair) ?? 'pure_ws_v2',
     };
     await handlePureWsSignal(syntheticSignal, candleBuilder, ctx);
 

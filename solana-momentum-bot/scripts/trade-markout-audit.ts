@@ -15,6 +15,7 @@ import {
   verdictFor,
   writeOutputFile,
 } from './lib/tradeMarkoutAuditReport';
+import { isPureWsNewPairLedgerRow } from '../src/orchestration/pureWs/sourceGate';
 
 interface Args {
   realtimeDir: string;
@@ -147,7 +148,9 @@ function laneOfRow(row: JsonRow): 'kol_hunter' | 'pure_ws' | 'unknown' {
 }
 
 function laneMatches(row: JsonRow, lane: Args['lane']): boolean {
-  return lane === 'all' || laneOfRow(row) === lane;
+  if (lane === 'all') return true;
+  if (lane !== laneOfRow(row)) return false;
+  return lane !== 'pure_ws' || isPureWsNewPairLedgerRow(row);
 }
 
 function markoutKey(row: JsonRow): string {
@@ -212,6 +215,7 @@ async function main(): Promise<void> {
     .filter((anchor) => anchor.atMs >= args.sinceMs);
   const pureWsPaperCloseAnchorsFromLedger = pureWsPaperCloses
     .filter((row) => args.lane === 'all' || args.lane === 'pure_ws')
+    .filter(isPureWsNewPairLedgerRow)
     .flatMap(pureWsPaperCloseAnchors)
     .filter((anchor) => anchor.atMs >= args.sinceMs);
   const partialAnchors = partialTakes

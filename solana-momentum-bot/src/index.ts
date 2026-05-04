@@ -70,6 +70,7 @@ import {
   resolvePureWsWalletLabel,
   scanPureWsV2Burst,
   logPureWsV2TelemetrySummary,
+  isPureWsNewPairWatchlistEntry,
 } from './orchestration/pureWsBreakoutHandler';
 import { updateMigrationPositions, onMigrationEvent } from './orchestration/migrationLaneHandler';
 import type { MigrationEvent } from './strategy/migrationHandoffReclaim';
@@ -687,6 +688,16 @@ async function main() {
 
   // ─── Phase 1A: Scanner Engine ─────────────────────
   let scanner: ScannerEngine | null = null;
+  const preparePureWsSignalFromWatchlist = (signal: Signal): boolean => {
+    if (!config.pureWsNewPairSourceGateEnabled) return true;
+    const entry =
+      scanner?.getEntryByPairAddress(signal.pairAddress) ??
+      scanner?.getEntry(signal.pairAddress);
+    if (!isPureWsNewPairWatchlistEntry(entry)) return false;
+    signal.discoverySource = entry.discoverySource;
+    signal.tokenSymbol ??= entry.symbol;
+    return true;
+  };
   if (config.scannerEnabled) {
     const scannerBlacklistCheck = await createScannerBlacklistCheck(tradeStore);
     const scannerConfig: ScannerEngineConfig = {
@@ -1558,7 +1569,7 @@ async function main() {
               });
             }
             // Block 3 (2026-04-18): pure_ws_breakout lane — 같은 signal 소비, 별도 state machine.
-            if (config.pureWsLaneEnabled) {
+            if (config.pureWsLaneEnabled && preparePureWsSignalFromWatchlist(signal)) {
               void handlePureWsSignal(signal, realtimeCandleBuilder!, ctx).catch((err) => {
                 log.error(`Tick purews signal handling failed: ${err}`);
               });
@@ -1652,7 +1663,7 @@ async function main() {
               );
             }
             // Block 3 (2026-04-18): pure_ws_breakout lane — convexity-aligned separate state machine.
-            if (config.pureWsLaneEnabled) {
+            if (config.pureWsLaneEnabled && preparePureWsSignalFromWatchlist(signal)) {
               await realtimeCandleStage('handle_pure_ws_signal', () =>
                 handlePureWsSignal(signal, realtimeCandleBuilder!, ctx)
               );
@@ -1670,12 +1681,18 @@ async function main() {
         // bootstrap signal 과 별개 경로. pureWsV2Enabled=true + pureWsLaneEnabled=true 일 때만 작동.
         if (config.pureWsV2Enabled && config.pureWsLaneEnabled) {
           const watchlistEntries = universeEngine.getWatchlist();
-          const pairs = watchlistEntries.map((e) => e.pairAddress);
+          const pureWsNewPairEntries = config.pureWsNewPairSourceGateEnabled
+            ? watchlistEntries.filter(isPureWsNewPairWatchlistEntry)
+            : watchlistEntries;
+          const pairs = pureWsNewPairEntries.map((e) => e.pairAddress);
           const symByPair = new Map<string, string | undefined>(
-            watchlistEntries.map((e) => [e.pairAddress, e.symbol])
+            pureWsNewPairEntries.map((e) => [e.pairAddress, e.symbol])
+          );
+          const discoverySourceByPair = new Map<string, string | undefined>(
+            pureWsNewPairEntries.map((e) => [e.pairAddress, e.discoverySource])
           );
           await realtimeCandleStage('pure_ws_v2_scan', () =>
-            scanPureWsV2Burst(ctx, realtimeCandleBuilder!, pairs, symByPair)
+            scanPureWsV2Burst(ctx, realtimeCandleBuilder!, pairs, symByPair, discoverySourceByPair)
           ).catch((err) => {
             log.warn(`Pure WS v2 scan failed: ${err}`);
           });

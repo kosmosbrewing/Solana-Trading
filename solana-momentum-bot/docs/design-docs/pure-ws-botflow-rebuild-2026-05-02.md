@@ -9,6 +9,15 @@
 
 We will rebuild `pure_ws` around **new-pair bot-flow** rather than continue tuning the legacy `pure_ws_breakout` candle/burst strategy.
 
+2026-05-04 source-unification rule:
+
+```text
+pure_ws runtime evidence is new-pair-only by default.
+Allowed discovery provenance: gecko_new_pool or explicit program/new-pair aliases.
+Legacy gecko_trending / volume-mcap spike signals are rejected before paper/live entry.
+Digest and trade-markout audit use the same new-pair source rule.
+```
+
 This is not a return to blind launch sniping. The new lane uses:
 
 ```text

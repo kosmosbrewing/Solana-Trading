@@ -45,14 +45,14 @@ describe('pure_ws paper digest', () => {
         anchorType: 'buy',
         anchorAt: new Date(entryAnchorAt).toISOString(),
         signalSource: 'pure_ws_breakout',
-        extras: { lane: 'pure_ws' },
+        extras: { lane: 'pure_ws', discoverySource: 'gecko_new_pool' },
       },
       {
         positionId: 'p-tail',
         anchorType: 'sell',
         anchorAt: new Date(oldSellAnchorAt).toISOString(),
         signalSource: 'pure_ws_breakout',
-        extras: { lane: 'pure_ws' },
+        extras: { lane: 'pure_ws', discoverySource: 'gecko_new_pool' },
       },
     ]), 'utf8');
     await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([
@@ -65,7 +65,7 @@ describe('pure_ws paper digest', () => {
         deltaPct: 0.02,
         recordedAt: new Date(entryAnchorAt + 16_000).toISOString(),
         signalSource: 'pure_ws_breakout',
-        extras: { lane: 'pure_ws' },
+        extras: { lane: 'pure_ws', discoverySource: 'gecko_new_pool' },
       },
       {
         positionId: 'p-tail',
@@ -76,7 +76,7 @@ describe('pure_ws paper digest', () => {
         deltaPct: 1.2,
         recordedAt: new Date(startMs + 605_000).toISOString(),
         signalSource: 'pure_ws_breakout',
-        extras: { lane: 'pure_ws' },
+        extras: { lane: 'pure_ws', discoverySource: 'gecko_new_pool' },
       },
     ]), 'utf8');
     const notifier = {

@@ -40,6 +40,7 @@ import {
   __testResetStructuralKillCache,
   __testSpawnTailSubPosition,
   __testIsPriceKillReason,
+  __testSetKolLiveSellRetryDelaysMs,
   hydrateLiveExecutionQualityCooldownsFromBuyRecords,
   hydrateLiveExecutionQualityCooldownsFromLedger,
   recoverKolHunterOpenPositions,
@@ -2699,6 +2700,24 @@ describe('kolSignalHandler — state machine', () => {
       expect(positions[0].armName).toBe('kol_hunter_smart_v3');
     });
 
+    it('Drawdown Guard 는 KOL live hard halt 로 쓰지 않고 wallet floor 에 위임한다', async () => {
+      const { ctx, executeBuy } = buildLiveCtx();
+      ctx.tradingHaltedReason = 'Drawdown guard active: 30.51% below HWM 1.3911 SOL; resume at 1.1824 SOL';
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterSmartV3FreshWindowSec = 120;
+
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART, 70_000));
+      await handleKolSwap(buyTx('pain_confirm', 'A', MINT_SMART));
+      await flushAsync();
+
+      expect(executeBuy).toHaveBeenCalledTimes(1);
+      const live = __testGetActive().find((p) => p.isLive === true);
+      expect(live?.armName).toBe('kol_hunter_smart_v3');
+    });
+
     it('yellow-zone: wallet 0.75 미만이면 live 대신 paper fallback', async () => {
       const { ctx, executeBuy } = buildLiveCtx();
       const { setWalletStopGuardStateForTests } = require('../src/risk/walletStopGuard');
@@ -3072,6 +3091,7 @@ describe('kolSignalHandler — state machine', () => {
       // canary global guard 는 default off; concurrency 테스트만 명시적으로 켠다.
       mockedConfig.canaryGlobalConcurrencyEnabled = false;
       mockedConfig.canaryGlobalMaxConcurrent = 3;
+      __testSetKolLiveSellRetryDelaysMs([0, 0, 0, 0, 0]);
       resetCanaryConcurrencyGuardForTests();
       // ledger dedup 은 24h TTL — 테스트 간 reset 안 하면 동일 txSignature 가 모두 dedup 되어
       // appendFile call count 가 0 이 됨. entryIntegrity 의 helper 로 매 테스트 초기화.
@@ -3084,6 +3104,7 @@ describe('kolSignalHandler — state machine', () => {
       mockedConfig.kolHunterPaperOnly = true;
       mockedConfig.kolHunterLiveCanaryEnabled = false;
       mockedConfig.canaryGlobalConcurrencyEnabled = false;
+      __testSetKolLiveSellRetryDelaysMs();
       resetCanaryConcurrencyGuardForTests();
     });
 
@@ -3474,12 +3495,13 @@ describe('kolSignalHandler — state machine', () => {
       expect(acquireCanarySlot('kol_hunter')).toBe(true);
     });
 
-    it('3. live close fail (executeSell throws) → DB close 미호출 + critical (entry+0s 시점은 60s gate 로 미발사)', async () => {
+    it('3. live close fail (executeSell throws) → 즉시 5회 retry 후 DB close 미호출 + critical', async () => {
       // ⚠ Finding F1 (state-restore bug, 본 테스트로 발견): closePosition (line 1442) 가 동기적으로
       // 2026-04-28 F1 fix: closePosition 이 mutation 전 previousState capture 후 closeLivePosition 으로
       //   전달. sell 실패 시 pos.state = previousState 가 정확히 PROBE 등 원 상태로 복원 → retry 가능.
-      // 2026-04-28 F2 fix: critical notifier 가 lastCloseFailureAtSec 60s cooldown 비교 → entry 직후
-      //   sell 실패도 첫 1건은 알림 발사. 두 번째 실패 (60s 이내) 는 cooldown 차단.
+      // 2026-05-04 retry fix: 단일 executeSell 실패로 OPEN 방치하지 않고,
+      //   같은 close intent 안에서 initial + 5 retry 를 즉시 수행한다.
+      //   모두 실패하면 state 를 복원해 다음 tick 에 다시 retry 가능하게 유지한다.
       const failSell = jest.fn().mockRejectedValue(new Error('jupiter sell rpc fail'));
       const fx = buildE2EFixtures({ executeSell: failSell });
       __testInit({ priceFeed: stubFeed as unknown as never, ctx: fx.ctx });
@@ -3493,8 +3515,8 @@ describe('kolSignalHandler — state machine', () => {
       __testTriggerTick(live.positionId, live.entryPrice * 0.85);
       await flushAsync();
 
-      // sell 시도 1회 (closeLivePosition 진입 → executeSell 호출 → throw)
-      expect(failSell).toHaveBeenCalledTimes(1);
+      // sell 시도: initial + 5 immediate retries
+      expect(failSell).toHaveBeenCalledTimes(6);
       // DB close 호출 안 됨 (sell catch 분기에서 early return)
       expect(fx.closeTrade).not.toHaveBeenCalled();
       // F1 fix 검증: state 가 정확히 원 상태로 복원 (이전: 'CLOSED' 영구 잠금)
@@ -3504,16 +3526,111 @@ describe('kolSignalHandler — state machine', () => {
       expect(fx.sendCritical).toHaveBeenCalledTimes(1);
       expect(fx.sendCritical).toHaveBeenCalledWith(
         'kol_live_close_failed',
-        expect.stringContaining('sell failed')
+        expect.stringContaining('sell failed after 6 attempts')
       );
 
       // 두 번째 close trigger (60s 이내) — cooldown 으로 추가 critical 차단 + retry 가능
       __testTriggerTick(live.positionId, live.entryPrice * 0.84);
       await flushAsync();
-      // F1 fix 효과: state 복원되므로 retry 가능 (executeSell 다시 호출됨)
-      expect(failSell).toHaveBeenCalledTimes(2);
+      // F1 fix 효과: state 복원되므로 retry 가능 (executeSell batch 재호출됨)
+      expect(failSell).toHaveBeenCalledTimes(12);
       // F2 fix 효과: 60s cooldown 으로 critical 추가 발사 안 됨 (still 1)
       expect(fx.sendCritical).toHaveBeenCalledTimes(1);
+    });
+
+    it('3b. live close transient sell fail → retry 성공 시 critical 없이 close 완료', async () => {
+      const flakySell = jest.fn()
+        .mockRejectedValueOnce(new Error('jupiter transient timeout'))
+        .mockRejectedValueOnce(new Error('jupiter transient timeout'))
+        .mockResolvedValue({
+          txSignature: 'KOL_LIVE_SELL_SIG_RETRY_OK',
+          slippageBps: 21,
+        });
+      const fx = buildE2EFixtures({
+        executeSell: flakySell,
+        solBefore: 1.0,
+        solAfter: 1.006,
+      });
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx: fx.ctx });
+
+      await triggerSmartV3LiveEntry(MINT_SMART);
+      const live = __testGetActive().find((p) => p.isLive === true)!;
+
+      __testTriggerTick(live.positionId, live.entryPrice * 0.85);
+      await flushAsync();
+
+      expect(flakySell).toHaveBeenCalledTimes(3);
+      expect(fx.closeTrade).toHaveBeenCalledTimes(1);
+      expect(fx.sendCritical).not.toHaveBeenCalled();
+      expect(__testGetActive()).toHaveLength(0);
+    });
+
+    it('3c. live close retry 전 token balance 가 이미 0이면 중복 sell 없이 balance delta 로 close 복구', async () => {
+      const failThenBalanceGone = jest.fn().mockRejectedValueOnce(new Error('confirm timeout after send'));
+      const getTokenBalance = jest.fn()
+        .mockResolvedValueOnce(1_000_000n)
+        .mockResolvedValueOnce(0n);
+      const fx = buildE2EFixtures({
+        executeSell: failThenBalanceGone,
+        getTokenBalance,
+        solBefore: 1.0,
+        solAfter: 1.004,
+      });
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx: fx.ctx });
+
+      await triggerSmartV3LiveEntry(MINT_SMART);
+      const live = __testGetActive().find((p) => p.isLive === true)!;
+
+      __testTriggerTick(live.positionId, live.entryPrice * 0.85);
+      await flushAsync();
+
+      expect(failThenBalanceGone).toHaveBeenCalledTimes(1);
+      expect(getTokenBalance).toHaveBeenCalledTimes(2);
+      expect(fx.closeTrade).toHaveBeenCalledTimes(1);
+      expect(fx.sendCritical).not.toHaveBeenCalled();
+      expect(__testGetActive()).toHaveLength(0);
+      const sellLedgerCalls = mockAppendFile.mock.calls.filter((c) =>
+        typeof c[0] === 'string' && c[0].includes('executed-sells.jsonl')
+      );
+      expect(sellLedgerCalls.length).toBe(1);
+      const sellRecord = JSON.parse(String(sellLedgerCalls[0][1]).trim());
+      expect(sellRecord.txSignature).toBe(`KOL_LIVE_SELL_BALANCE_RECOVERED_${live.positionId}`);
+      expect(sellRecord.txSignature).not.toBe(live.entryTxSignature);
+    });
+
+    it('3d. live close retry after partial on-chain sell uses total sold ratio for wallet-truth exit price', async () => {
+      const partialThenOk = jest.fn()
+        .mockRejectedValueOnce(new Error('confirm timeout after partial send'))
+        .mockResolvedValue({
+          txSignature: 'KOL_LIVE_SELL_SIG_AFTER_PARTIAL',
+          slippageBps: 23,
+        });
+      const getTokenBalance = jest.fn()
+        .mockResolvedValueOnce(1_000_000n)
+        .mockResolvedValueOnce(600_000n);
+      const fx = buildE2EFixtures({
+        executeSell: partialThenOk,
+        getTokenBalance,
+        solBefore: 1.0,
+        solAfter: 1.004,
+      });
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx: fx.ctx });
+
+      await triggerSmartV3LiveEntry(MINT_SMART);
+      const live = __testGetActive().find((p) => p.isLive === true)!;
+      const quantityBeforeClose = live.quantity;
+
+      __testTriggerTick(live.positionId, live.entryPrice * 0.85);
+      await flushAsync();
+
+      expect(partialThenOk).toHaveBeenCalledTimes(2);
+      expect(partialThenOk).toHaveBeenNthCalledWith(1, live.tokenMint, 1_000_000n);
+      expect(partialThenOk).toHaveBeenNthCalledWith(2, live.tokenMint, 600_000n);
+      expect(getTokenBalance).toHaveBeenCalledTimes(2);
+      expect(fx.closeTrade).toHaveBeenCalledTimes(1);
+      expect(fx.closeTrade.mock.calls[0][0].exitPrice).toBeCloseTo(0.004 / quantityBeforeClose, 12);
+      expect(fx.sendCritical).not.toHaveBeenCalled();
+      expect(__testGetActive()).toHaveLength(0);
     });
 
     it('4. live close ORPHAN_NO_BALANCE (tokenBalance == 0n) → sell skip + DB close + critical', async () => {

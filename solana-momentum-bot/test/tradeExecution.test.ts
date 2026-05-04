@@ -1,6 +1,83 @@
-import { checkOpenPositions, closeTrade, recordOpenedTrade, PriceAnomalyError } from '../src/orchestration/tradeExecution';
+import { checkOpenPositions, closeTrade, recordOpenedTrade, PriceAnomalyError, syncTradingHalts } from '../src/orchestration/tradeExecution';
 import type { BotContext } from '../src/orchestration/types';
 import type { Trade } from '../src/utils/types';
+
+describe('syncTradingHalts drawdown policy', () => {
+  it('treats Drawdown Guard as soft warning, not global trading halt', async () => {
+    const notifier = {
+      sendInfo: jest.fn().mockResolvedValue(undefined),
+      sendCritical: jest.fn().mockResolvedValue(undefined),
+    };
+    const ctx = {
+      tradingHaltedReason: undefined,
+      notifier,
+      riskManager: {
+        getActiveHalt: jest.fn().mockReturnValue({
+          kind: 'drawdown',
+          reason: 'Drawdown guard active: 30.51% below HWM 1.3911 SOL; resume at 1.1824 SOL',
+        }),
+      },
+    } as unknown as BotContext;
+
+    await syncTradingHalts(ctx, {} as any);
+
+    expect(ctx.tradingHaltedReason).toBeUndefined();
+    expect(notifier.sendCritical).not.toHaveBeenCalled();
+    expect(notifier.sendInfo).toHaveBeenCalledWith(
+      expect.stringContaining('Drawdown guard soft warning'),
+      'risk'
+    );
+  });
+
+  it('keeps Daily Loss as a hard global trading halt', async () => {
+    const notifier = {
+      sendInfo: jest.fn().mockResolvedValue(undefined),
+      sendCritical: jest.fn().mockResolvedValue(undefined),
+    };
+    const reason = 'Daily loss limit reached: -0.2050 SOL';
+    const ctx = {
+      tradingHaltedReason: undefined,
+      notifier,
+      riskManager: {
+        getActiveHalt: jest.fn().mockReturnValue({
+          kind: 'dailyLoss',
+          reason,
+        }),
+      },
+    } as unknown as BotContext;
+
+    await syncTradingHalts(ctx, {} as any);
+
+    expect(ctx.tradingHaltedReason).toBe(reason);
+    expect(notifier.sendCritical).toHaveBeenCalledWith('Daily Loss', reason);
+  });
+
+  it('clears stale hard halt state when only soft Drawdown Guard remains active', async () => {
+    const notifier = {
+      sendInfo: jest.fn().mockResolvedValue(undefined),
+      sendCritical: jest.fn().mockResolvedValue(undefined),
+    };
+    const ctx = {
+      tradingHaltedReason: 'Daily loss limit reached: -0.2050 SOL',
+      notifier,
+      riskManager: {
+        getActiveHalt: jest.fn().mockReturnValue({
+          kind: 'drawdown',
+          reason: 'Drawdown guard active: 31.00% below HWM 1.4000 SOL; resume at 1.1900 SOL',
+        }),
+      },
+    } as unknown as BotContext;
+
+    await syncTradingHalts(ctx, {} as any);
+
+    expect(ctx.tradingHaltedReason).toBeUndefined();
+    expect(notifier.sendCritical).not.toHaveBeenCalled();
+    expect(notifier.sendInfo).toHaveBeenCalledWith(
+      expect.stringContaining('Trading resumed'),
+      'risk'
+    );
+  });
+});
 
 describe('tradeExecution paper balance', () => {
   it('credits paperBalance with exit proceeds when a paper trade closes', async () => {

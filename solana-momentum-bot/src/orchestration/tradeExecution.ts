@@ -14,6 +14,7 @@ import { appendEntryLedger, persistOpenTradeWithIntegrity } from './entryIntegri
 import { resolveSellReceivedSolFromSwapResult } from '../executor/executor';
 
 const log = createModuleLogger('TradeExecution');
+let lastSoftDrawdownHaltReason: string | undefined;
 
 // Why: CRITICAL_LIVE P0-C — alignOrderToExecutedEntry가 actual/planned ratio를
 // 그대로 TP/SL에 곱하기 때문에, ratio가 30% 이상 벌어지면 광적인 TP/SL이 ledger에
@@ -720,11 +721,30 @@ export async function syncTradingHalts(
 ): Promise<void> {
   const activeHalt = ctx.riskManager.getActiveHalt(portfolio);
 
+  if (activeHalt?.kind === 'drawdown') {
+    if (ctx.tradingHaltedReason) {
+      log.info(`Trading resumed: ${ctx.tradingHaltedReason} (drawdown guard is soft)`);
+      await ctx.notifier.sendInfo('Trading resumed — drawdown guard is now soft; wallet floor remains active', 'risk');
+      ctx.tradingHaltedReason = undefined;
+    }
+    if (lastSoftDrawdownHaltReason !== activeHalt.reason) {
+      lastSoftDrawdownHaltReason = activeHalt.reason;
+      log.warn(`[DRAWDOWN_GUARD_SOFT] ${activeHalt.reason}`);
+      await ctx.notifier.sendInfo(`Drawdown guard soft warning — ${activeHalt.reason}`, 'risk').catch(() => {});
+    }
+    return;
+  }
+
   if (!activeHalt && ctx.tradingHaltedReason) {
     log.info(`Trading resumed: ${ctx.tradingHaltedReason}`);
     await ctx.notifier.sendInfo('Trading resumed — risk halt cleared', 'risk');
     ctx.tradingHaltedReason = undefined;
+    lastSoftDrawdownHaltReason = undefined;
     return;
+  }
+
+  if (!activeHalt) {
+    lastSoftDrawdownHaltReason = undefined;
   }
 
   if (!activeHalt || ctx.tradingHaltedReason === activeHalt.reason) {
@@ -733,10 +753,7 @@ export async function syncTradingHalts(
 
   ctx.tradingHaltedReason = activeHalt.reason;
   log.error(activeHalt.reason);
-  await ctx.notifier.sendCritical(
-    activeHalt.kind === 'drawdown' ? 'Drawdown Guard' : 'Daily Loss',
-    activeHalt.reason
-  );
+  await ctx.notifier.sendCritical('Daily Loss', activeHalt.reason);
 }
 
 export async function closeTrade(

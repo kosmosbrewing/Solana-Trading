@@ -398,13 +398,6 @@ export class RiskManager {
   }
 
   getActiveHalt(portfolio: PortfolioState): RiskHalt | undefined {
-    if (portfolio.drawdownGuard.halted) {
-      return {
-        kind: 'drawdown',
-        reason: this.formatDrawdownHaltReason(portfolio.drawdownGuard),
-      };
-    }
-
     // 2026-04-29 (Option D): runtime env override. tier 정책 무관하게 강제 적용.
     // null (default) = 기존 tier 정책 그대로. 0 이하 = daily loss limit 사실상 disable
     // (wallet floor + canary cap 만 보호). mission §3 측정 sprint 동안 운영자 control.
@@ -416,6 +409,13 @@ export class RiskManager {
       return {
         kind: 'dailyLoss',
         reason: `Daily loss limit reached: ${portfolio.dailyPnl.toFixed(4)} SOL`,
+      };
+    }
+
+    if (portfolio.drawdownGuard.halted) {
+      return {
+        kind: 'drawdown',
+        reason: this.formatDrawdownHaltReason(portfolio.drawdownGuard),
       };
     }
 

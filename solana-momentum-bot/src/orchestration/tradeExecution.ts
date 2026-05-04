@@ -12,6 +12,7 @@ import { buildGateTraceSnapshot } from './signalTrace';
 import { summarizeTradeObservation } from './tradeMonitoring';
 import { appendEntryLedger, persistOpenTradeWithIntegrity } from './entryIntegrity';
 import { resolveSellReceivedSolFromSwapResult } from '../executor/executor';
+import { executeLiveSellWithImmediateRetries } from '../executor/liveSellRetry';
 
 const log = createModuleLogger('TradeExecution');
 let lastSoftDrawdownHaltReason: string | undefined;
@@ -320,8 +321,8 @@ export async function handleDegradedExitPhase1(
   let preSubmitTickPrice: number | undefined =
     ctx.realtimeCandleBuilder?.getCurrentPrice(trade.pairAddress) ?? undefined;
   const partialPct = config.degradedPartialPct;
-  const soldQuantity = trade.quantity * partialPct;
-  const remainingQuantity = trade.quantity - soldQuantity;
+  let soldQuantity = trade.quantity * partialPct;
+  let remainingQuantity = trade.quantity - soldQuantity;
 
   if (remainingQuantity <= 0 || soldQuantity <= 0) {
     log.warn(`Invalid degraded split for trade ${trade.id}; closing full position`);
@@ -351,8 +352,21 @@ export async function handleDegradedExitPhase1(
       swapSubmitAt = new Date();
       preSubmitTickPrice =
         ctx.realtimeCandleBuilder?.getCurrentPrice(trade.pairAddress) ?? preSubmitTickPrice;
-      const sellResult = await ctx.executor.executeSell(trade.pairAddress, partialTokenAmount);
+      const expectedRemainingBalance = tokenBalance > partialTokenAmount ? tokenBalance - partialTokenAmount : 0n;
+      const sellExecution = await executeLiveSellWithImmediateRetries({
+        executor: ctx.executor,
+        tokenMint: trade.pairAddress,
+        initialTokenBalance: tokenBalance,
+        requestedSellAmount: partialTokenAmount,
+        expectedRemainingBalance,
+        context: `degraded_phase1:${trade.id}`,
+        reason: 'DEGRADED_EXIT',
+        syntheticSignature: `DEGRADED_SELL_BALANCE_RECOVERED_${trade.id}`,
+      });
+      const sellResult = sellExecution.sellResult;
       swapResponseAt = new Date();
+      soldQuantity = trade.quantity * sellExecution.soldRatio;
+      remainingQuantity = trade.quantity - soldQuantity;
       const solAfter = await ctx.executor.getBalance();
       const receivedSol = resolveSellReceivedSolFromSwapResult({
         balanceDeltaSol: solAfter - solBefore,
@@ -405,36 +419,41 @@ export async function handleDegradedExitPhase1(
     preSubmitTickPrice,
   });
 
-  // 잔여분 새 trade 생성 (phase 2에서 청산)
-  const remainingTrade: Omit<Trade, 'id'> = {
-    ...trade,
-    quantity: remainingQuantity,
-    parentTradeId: trade.id,
-    status: 'OPEN',
-    createdAt: new Date(),
-    closedAt: undefined,
-    exitPrice: undefined,
-    pnl: undefined,
-    slippage: undefined,
-    exitReason: undefined,
-  };
-  // 2026-04-17 Block 1.5-2: partial close 후 remaining row 생성 실패 시에도
-  // on-chain 사실 (original trade close 는 이미 발생) 을 fallback ledger 에 남긴다.
-  // partial close 경로는 **halt 없음** — exit 는 계속 허용되어야 stuck 토큰이 자연 해소됨.
-  await appendEntryLedger('buy', {
-    parentTradeId: trade.id,
-    txSignature: trade.txSignature ?? `partial-${trade.id}`,
-    strategy: trade.strategy,
-    pairAddress: trade.pairAddress,
-    tokenSymbol: trade.tokenSymbol,
-    actualEntryPrice: trade.entryPrice,
-    actualQuantity: remainingQuantity,
-    note: 'degraded_exit_remaining',
-  });
-  await ctx.tradeStore.insertTrade(remainingTrade);
+  if (remainingQuantity > 0) {
+    // 잔여분 새 trade 생성 (phase 2에서 청산)
+    const remainingTrade: Omit<Trade, 'id'> = {
+      ...trade,
+      quantity: remainingQuantity,
+      parentTradeId: trade.id,
+      status: 'OPEN',
+      createdAt: new Date(),
+      closedAt: undefined,
+      exitPrice: undefined,
+      pnl: undefined,
+      slippage: undefined,
+      exitReason: undefined,
+    };
+    // 2026-04-17 Block 1.5-2: partial close 후 remaining row 생성 실패 시에도
+    // on-chain 사실 (original trade close 는 이미 발생) 을 fallback ledger 에 남긴다.
+    // partial close 경로는 **halt 없음** — exit 는 계속 허용되어야 stuck 토큰이 자연 해소됨.
+    await appendEntryLedger('buy', {
+      parentTradeId: trade.id,
+      txSignature: trade.txSignature ?? `partial-${trade.id}`,
+      strategy: trade.strategy,
+      pairAddress: trade.pairAddress,
+      tokenSymbol: trade.tokenSymbol,
+      actualEntryPrice: trade.entryPrice,
+      actualQuantity: remainingQuantity,
+      note: 'degraded_exit_remaining',
+    });
+    await ctx.tradeStore.insertTrade(remainingTrade);
 
-  // degraded 상태 기록 (phase 2 타이머 시작)
-  degradedStateMap.set(trade.id, { partialSoldAt: new Date(), pairAddress: trade.pairAddress });
+    // degraded 상태 기록 (phase 2 타이머 시작)
+    degradedStateMap.set(trade.id, { partialSoldAt: new Date(), pairAddress: trade.pairAddress });
+  } else {
+    degradedStateMap.delete(trade.id);
+    quoteFailCountMap.delete(trade.id);
+  }
 
   const partialTrade: Trade = {
     ...trade,
@@ -449,11 +468,13 @@ export async function handleDegradedExitPhase1(
     closedAt: new Date(),
   };
   await ctx.notifier.sendTradeClose(partialTrade);
-  await ctx.notifier.sendTradeAlert(
-    `DEGRADED_EXIT phase 1: ${trade.strategy} sold ${(partialPct * 100).toFixed(0)}%, ` +
-    `remaining ${formatTokenQuantity(remainingQuantity, trade.tokenSymbol)} ` +
-    `— phase 2 in ${(config.degradedDelayMs / 60_000).toFixed(0)}min`
-  );
+  if (remainingQuantity > 0) {
+    await ctx.notifier.sendTradeAlert(
+      `DEGRADED_EXIT phase 1: ${trade.strategy} sold ${(partialPct * 100).toFixed(0)}%, ` +
+      `remaining ${formatTokenQuantity(remainingQuantity, trade.tokenSymbol)} ` +
+      `— phase 2 in ${(config.degradedDelayMs / 60_000).toFixed(0)}min`
+    );
+  }
   ctx.healthMonitor.updateTradeTime();
 }
 
@@ -789,6 +810,7 @@ export async function closeTrade(
     let txSignature: string | undefined;
     let exitPrice = sanitizedDecisionPrice ?? trade.entryPrice;
     let executionSlippage = 0;
+    let closedQuantity = trade.quantity;
     // 2026-04-07: fake-fill/slippage saturation 감지 시 사유를 collected — closeTrade DB에 기록
     let fakeFillAnomalyReason: string | undefined;
 
@@ -809,9 +831,20 @@ export async function closeTrade(
         swapSubmitAt = new Date();
         preSubmitTickPrice =
           ctx.realtimeCandleBuilder?.getCurrentPrice(trade.pairAddress) ?? preSubmitTickPrice;
-        const sellResult = await sellExecutor.executeSell(trade.pairAddress, tokenBalance);
+        const sellExecution = await executeLiveSellWithImmediateRetries({
+          executor: sellExecutor,
+          tokenMint: trade.pairAddress,
+          initialTokenBalance: tokenBalance,
+          requestedSellAmount: tokenBalance,
+          expectedRemainingBalance: 0n,
+          context: `closeTrade:${trade.id}`,
+          reason,
+          syntheticSignature: `CLOSE_TRADE_SELL_BALANCE_RECOVERED_${trade.id}`,
+        });
+        const sellResult = sellExecution.sellResult;
         swapResponseAt = new Date();
         txSignature = sellResult.txSignature;
+        closedQuantity = trade.quantity * sellExecution.soldRatio;
 
         const solAfter = await sellExecutor.getBalance();
         const receivedSol = resolveSellReceivedSolFromSwapResult({
@@ -824,7 +857,7 @@ export async function closeTrade(
           tradeId: trade.id,
           exitPath: 'closeTrade',
           receivedSol,
-          soldQuantity: trade.quantity,
+          soldQuantity: closedQuantity,
           slippageBps: sellResult.slippageBps,
           fallbackPrice: exitPrice, // sanitizedDecisionPrice ?? entryPrice
         });
@@ -844,11 +877,11 @@ export async function closeTrade(
     // Why: sanitizedDecisionPrice = clamp 적용된 decision price (Phase E1),
     // originalDecisionPrice = caller 원본값 (telemetry 보존용)
     const decisionPrice = sanitizedDecisionPrice;
-    const rawPnl = (exitPrice - trade.entryPrice) * trade.quantity;
-    const paperCost = estimatePaperCost(ctx.tradingMode, trade.entryPrice, trade.quantity, trade.roundTripCostPct);
+    const rawPnl = (exitPrice - trade.entryPrice) * closedQuantity;
+    const paperCost = estimatePaperCost(ctx.tradingMode, trade.entryPrice, closedQuantity, trade.roundTripCostPct);
     const pnl = rawPnl - paperCost;
     const exitSlippageBps = ctx.tradingMode === 'live' ? decimalToBps(executionSlippage) : undefined;
-    applyPaperExitProceeds(ctx, trade.quantity, exitPrice, paperCost);
+    applyPaperExitProceeds(ctx, closedQuantity, exitPrice, paperCost);
 
     // Phase A4: exitPrice/entryPrice 단위 정합성 cross-check.
     // ratio < -95% 또는 > +1000%면 단위 오염 또는 fill 이상 → loud error + anomaly 플래그.
@@ -1223,7 +1256,17 @@ async function emergencyDumpPosition(
       `[PRICE_ANOMALY_DUMP] Attempting emergency sell of ${amountRaw} raw units ` +
       `(source=${source}) for ${order.pairAddress} — ${reason}`
     );
-    const sellResult = await ctx.executor.executeSell(order.pairAddress, amountRaw);
+    const sellResult = await executeLiveSellWithImmediateRetries({
+      executor: ctx.executor,
+      tokenMint: order.pairAddress,
+      initialTokenBalance: amountRaw,
+      requestedSellAmount: amountRaw,
+      expectedRemainingBalance: 0n,
+      context: `price_anomaly_dump:${order.pairAddress}`,
+      reason,
+      syntheticSignature: `PRICE_ANOMALY_DUMP_BALANCE_RECOVERED_${order.pairAddress}`,
+      allowBalanceRecovered: source === 'onchain',
+    }).then((execution) => execution.sellResult);
     log.error(`[PRICE_ANOMALY_DUMP] Emergency dump complete: sig=${sellResult.txSignature}`);
   } catch (dumpError) {
     log.error(
@@ -1338,9 +1381,11 @@ async function handleTakeProfit1Partial(
     // 이전 v5 (tp1PartialPct=0.3) 는 TP1 에서 30% 분할 청산했으나 backtest 와 정합 X
     // 이고 live 에서 runner thesis 파괴 원인. 이제 TP1 hit 시 풀 포지션 close.
     // partialPct > 0 케이스는 downstream 호환성을 위해 코드는 유지한다.
-    const tp1PartialPct = config.tp1PartialPct;
-    const soldQuantity = trade.quantity * tp1PartialPct;
-    const remainingQuantity = trade.quantity - soldQuantity;
+    const tp1PartialPct = typeof config.tp1PartialPct === 'number' && Number.isFinite(config.tp1PartialPct)
+      ? config.tp1PartialPct
+      : 0.5;
+    let soldQuantity = trade.quantity * tp1PartialPct;
+    let remainingQuantity = trade.quantity - soldQuantity;
 
     if (remainingQuantity <= 0 || soldQuantity <= 0) {
       // Option β: tp1PartialPct=0 은 정상 full close 경로.
@@ -1369,8 +1414,21 @@ async function handleTakeProfit1Partial(
       swapSubmitAt = new Date();
       preSubmitTickPrice =
         ctx.realtimeCandleBuilder?.getCurrentPrice(trade.pairAddress) ?? preSubmitTickPrice;
-      const sellResult = await ctx.executor.executeSell(trade.pairAddress, partialTokenAmount);
+      const expectedRemainingBalance = tokenBalance > partialTokenAmount ? tokenBalance - partialTokenAmount : 0n;
+      const sellExecution = await executeLiveSellWithImmediateRetries({
+        executor: ctx.executor,
+        tokenMint: trade.pairAddress,
+        initialTokenBalance: tokenBalance,
+        requestedSellAmount: partialTokenAmount,
+        expectedRemainingBalance,
+        context: `tp1_partial:${trade.id}`,
+        reason: 'TAKE_PROFIT_1',
+        syntheticSignature: `TP1_SELL_BALANCE_RECOVERED_${trade.id}`,
+      });
+      const sellResult = sellExecution.sellResult;
       swapResponseAt = new Date();
+      soldQuantity = trade.quantity * sellExecution.soldRatio;
+      remainingQuantity = trade.quantity - soldQuantity;
       const solAfter = await ctx.executor.getBalance();
       const receivedSol = resolveSellReceivedSolFromSwapResult({
         balanceDeltaSol: solAfter - solBefore,
@@ -1418,36 +1476,38 @@ async function handleTakeProfit1Partial(
     // v3: TP1 후 잔여 trade에 time stop 연장 — Runner 활성화 시간 확보
     const extendedTimeStopAt = new Date(Date.now() + config.tp1TimeExtensionMinutes * 60_000);
 
-    const remainingTrade: Omit<Trade, 'id'> = {
-      ...trade,
-      quantity: remainingQuantity,
-      parentTradeId: trade.id,
-      stopLoss: trade.entryPrice,
-      takeProfit1: trade.takeProfit2,
-      takeProfit2: trade.takeProfit2,
-      highWaterMark: Math.max(trade.highWaterMark ?? trade.entryPrice, currentPrice),
-      timeStopAt: extendedTimeStopAt,
-      status: 'OPEN',
-      createdAt: new Date(),
-      closedAt: undefined,
-      exitPrice: undefined,
-      pnl: undefined,
-      slippage: undefined,
-      exitReason: undefined,
-    };
+    if (remainingQuantity > 0) {
+      const remainingTrade: Omit<Trade, 'id'> = {
+        ...trade,
+        quantity: remainingQuantity,
+        parentTradeId: trade.id,
+        stopLoss: trade.entryPrice,
+        takeProfit1: trade.takeProfit2,
+        takeProfit2: trade.takeProfit2,
+        highWaterMark: Math.max(trade.highWaterMark ?? trade.entryPrice, currentPrice),
+        timeStopAt: extendedTimeStopAt,
+        status: 'OPEN',
+        createdAt: new Date(),
+        closedAt: undefined,
+        exitPrice: undefined,
+        pnl: undefined,
+        slippage: undefined,
+        exitReason: undefined,
+      };
 
-    // 2026-04-17 Block 1.5-2: TP1 partial close remaining — fallback ledger (no halt).
-    await appendEntryLedger('buy', {
-      parentTradeId: trade.id,
-      txSignature: trade.txSignature ?? `partial-tp1-${trade.id}`,
-      strategy: trade.strategy,
-      pairAddress: trade.pairAddress,
-      tokenSymbol: trade.tokenSymbol,
-      actualEntryPrice: trade.entryPrice,
-      actualQuantity: remainingQuantity,
-      note: 'tp1_partial_remaining',
-    });
-    await ctx.tradeStore.insertTrade(remainingTrade);
+      // 2026-04-17 Block 1.5-2: TP1 partial close remaining — fallback ledger (no halt).
+      await appendEntryLedger('buy', {
+        parentTradeId: trade.id,
+        txSignature: trade.txSignature ?? `partial-tp1-${trade.id}`,
+        strategy: trade.strategy,
+        pairAddress: trade.pairAddress,
+        tokenSymbol: trade.tokenSymbol,
+        actualEntryPrice: trade.entryPrice,
+        actualQuantity: remainingQuantity,
+        note: 'tp1_partial_remaining',
+      });
+      await ctx.tradeStore.insertTrade(remainingTrade);
+    }
 
     const partialTrade: Trade = {
       ...trade,
@@ -1462,18 +1522,22 @@ async function handleTakeProfit1Partial(
       closedAt: new Date(),
     };
     await ctx.notifier.sendTradeClose(partialTrade);
-    await ctx.notifier.sendTradeAlert(
-      `TP1 partial exit: ${trade.strategy} remaining ${formatTokenQuantity(remainingQuantity, trade.tokenSymbol)}, ` +
-      `SL moved to breakeven ${trade.entryPrice.toFixed(8)}`
-    );
+    if (remainingQuantity > 0) {
+      await ctx.notifier.sendTradeAlert(
+        `TP1 partial exit: ${trade.strategy} remaining ${formatTokenQuantity(remainingQuantity, trade.tokenSymbol)}, ` +
+        `SL moved to breakeven ${trade.entryPrice.toFixed(8)}`
+      );
+    }
 
-    await updatePositionsForPair(ctx, trade.pairAddress, 'MONITORING', {
-      quantity: remainingQuantity,
-      stopLoss: trade.entryPrice,
-      takeProfit1: trade.takeProfit2,
-      takeProfit2: trade.takeProfit2,
-      trailingStop: trade.trailingStop,
-    });
+    if (remainingQuantity > 0) {
+      await updatePositionsForPair(ctx, trade.pairAddress, 'MONITORING', {
+        quantity: remainingQuantity,
+        stopLoss: trade.entryPrice,
+        takeProfit1: trade.takeProfit2,
+        takeProfit2: trade.takeProfit2,
+        trailingStop: trade.trailingStop,
+      });
+    }
 
     ctx.healthMonitor.updateTradeTime();
     log.info(
@@ -1503,8 +1567,8 @@ async function handleRunnerGradeBPartial(
   let preSubmitTickPrice: number | undefined =
     ctx.realtimeCandleBuilder?.getCurrentPrice(trade.pairAddress) ?? undefined;
   try {
-    const soldQuantity = trade.quantity * 0.5;
-    const remainingQuantity = trade.quantity - soldQuantity;
+    let soldQuantity = trade.quantity * 0.5;
+    let remainingQuantity = trade.quantity - soldQuantity;
 
     if (remainingQuantity <= 0 || soldQuantity <= 0) {
       log.warn(`Invalid Grade B runner split for trade ${trade.id}; closing full at TP2`);
@@ -1531,8 +1595,21 @@ async function handleRunnerGradeBPartial(
       swapSubmitAt = new Date();
       preSubmitTickPrice =
         ctx.realtimeCandleBuilder?.getCurrentPrice(trade.pairAddress) ?? preSubmitTickPrice;
-      const sellResult = await ctx.executor.executeSell(trade.pairAddress, partialTokenAmount);
+      const expectedRemainingBalance = tokenBalance > partialTokenAmount ? tokenBalance - partialTokenAmount : 0n;
+      const sellExecution = await executeLiveSellWithImmediateRetries({
+        executor: ctx.executor,
+        tokenMint: trade.pairAddress,
+        initialTokenBalance: tokenBalance,
+        requestedSellAmount: partialTokenAmount,
+        expectedRemainingBalance,
+        context: `runner_b_partial:${trade.id}`,
+        reason: 'TAKE_PROFIT_2',
+        syntheticSignature: `RUNNER_B_SELL_BALANCE_RECOVERED_${trade.id}`,
+      });
+      const sellResult = sellExecution.sellResult;
       swapResponseAt = new Date();
+      soldQuantity = trade.quantity * sellExecution.soldRatio;
+      remainingQuantity = trade.quantity - soldQuantity;
       const solAfter = await ctx.executor.getBalance();
       const receivedSol = resolveSellReceivedSolFromSwapResult({
         balanceDeltaSol: solAfter - solBefore,
@@ -1585,40 +1662,42 @@ async function handleRunnerGradeBPartial(
     const newStopLoss = trade.takeProfit1;
     const extendedTimeStopAt = new Date(Date.now() + config.tp1TimeExtensionMinutes * 60_000);
 
-    const remainingTrade: Omit<Trade, 'id'> = {
-      ...trade,
-      quantity: remainingQuantity,
-      parentTradeId: trade.id,
-      stopLoss: newStopLoss,
-      takeProfit1: trade.takeProfit2,
-      takeProfit2: trade.takeProfit2 * 2, // Grade B runner: 상향된 TP2
-      highWaterMark: Math.max(trade.highWaterMark ?? trade.entryPrice, currentPrice),
-      trailingStop: trade.trailingStop ?? currentPrice * 0.9,
-      timeStopAt: extendedTimeStopAt,
-      status: 'OPEN',
-      createdAt: new Date(),
-      closedAt: undefined,
-      exitPrice: undefined,
-      pnl: undefined,
-      slippage: undefined,
-      exitReason: undefined,
-    };
-    // 2026-04-17 Block 1.5-2: Runner Grade B partial remaining — fallback ledger (no halt).
-    await appendEntryLedger('buy', {
-      parentTradeId: trade.id,
-      txSignature: trade.txSignature ?? `partial-runner-${trade.id}`,
-      strategy: trade.strategy,
-      pairAddress: trade.pairAddress,
-      tokenSymbol: trade.tokenSymbol,
-      actualEntryPrice: trade.entryPrice,
-      actualQuantity: remainingQuantity,
-      note: 'runner_grade_b_partial_remaining',
-    });
-    const insertedId = await ctx.tradeStore.insertTrade(remainingTrade);
+    if (remainingQuantity > 0) {
+      const remainingTrade: Omit<Trade, 'id'> = {
+        ...trade,
+        quantity: remainingQuantity,
+        parentTradeId: trade.id,
+        stopLoss: newStopLoss,
+        takeProfit1: trade.takeProfit2,
+        takeProfit2: trade.takeProfit2 * 2, // Grade B runner: 상향된 TP2
+        highWaterMark: Math.max(trade.highWaterMark ?? trade.entryPrice, currentPrice),
+        trailingStop: trade.trailingStop ?? currentPrice * 0.9,
+        timeStopAt: extendedTimeStopAt,
+        status: 'OPEN',
+        createdAt: new Date(),
+        closedAt: undefined,
+        exitPrice: undefined,
+        pnl: undefined,
+        slippage: undefined,
+        exitReason: undefined,
+      };
+      // 2026-04-17 Block 1.5-2: Runner Grade B partial remaining — fallback ledger (no halt).
+      await appendEntryLedger('buy', {
+        parentTradeId: trade.id,
+        txSignature: trade.txSignature ?? `partial-runner-${trade.id}`,
+        strategy: trade.strategy,
+        pairAddress: trade.pairAddress,
+        tokenSymbol: trade.tokenSymbol,
+        actualEntryPrice: trade.entryPrice,
+        actualQuantity: remainingQuantity,
+        note: 'runner_grade_b_partial_remaining',
+      });
+      const insertedId = await ctx.tradeStore.insertTrade(remainingTrade);
 
-    // 잔여분을 runner로 등록
-    if (insertedId) {
-      runnerStateMap.set(insertedId, true);
+      // 잔여분을 runner로 등록
+      if (insertedId) {
+        runnerStateMap.set(insertedId, true);
+      }
     }
 
     const partialTrade: Trade = {
@@ -1645,16 +1724,20 @@ async function handleRunnerGradeBPartial(
       ctx.walletManager.recordPnl(walletName, realizedPnl);
     }
 
-    await ctx.notifier.sendTradeAlert(
-      `Runner activated (B, 0.5x): ${trade.strategy} ${trade.id}, ` +
-      `sold 50% at TP2, remaining ${formatTokenQuantity(remainingQuantity, trade.tokenSymbol)} trailing`
-    );
+    if (remainingQuantity > 0) {
+      await ctx.notifier.sendTradeAlert(
+        `Runner activated (B, 0.5x): ${trade.strategy} ${trade.id}, ` +
+        `sold 50% at TP2, remaining ${formatTokenQuantity(remainingQuantity, trade.tokenSymbol)} trailing`
+      );
+    }
 
-    await updatePositionsForPair(ctx, trade.pairAddress, 'MONITORING', {
-      quantity: remainingQuantity,
-      stopLoss: newStopLoss,
-      trailingStop: trade.trailingStop,
-    });
+    if (remainingQuantity > 0) {
+      await updatePositionsForPair(ctx, trade.pairAddress, 'MONITORING', {
+        quantity: remainingQuantity,
+        stopLoss: newStopLoss,
+        trailingStop: trade.trailingStop,
+      });
+    }
 
     ctx.healthMonitor.updateTradeTime();
     log.info(

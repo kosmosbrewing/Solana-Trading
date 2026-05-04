@@ -31,6 +31,7 @@ import { lookupCachedSymbol } from '../../ingester/tokenSymbolResolver';
 import { trackPureWsPaperMarkout } from './markout';
 import { recordPureWsPairOutcomeCooldown } from './cooldowns';
 import { resolveSellReceivedSolFromSwapResult } from '../../executor/executor';
+import { executeLiveSellWithImmediateRetries, liveSellRetryMaxAttempts } from '../../executor/liveSellRetry';
 
 export async function closePureWsPosition(
   id: string,
@@ -65,6 +66,7 @@ async function closePureWsPositionSerialized(
   const previousState = pos.state;
   let sellCompleted = ctx.tradingMode !== 'live';
   let dbCloseSucceeded = false;
+  let soldQuantity = pos.quantity;
   // Phase 1 P0-4 (2026-04-25): wallet truth — live sell 시 receivedSol 을 outer 에 보존.
   let liveReceivedSol = 0;
 
@@ -77,7 +79,17 @@ async function closePureWsPositionSerialized(
         sellExecutor.getBalance(),
       ]);
       if (tokenBalance > 0n) {
-        const sellResult = await sellExecutor.executeSell(pos.pairAddress, tokenBalance);
+        const sellExecution = await executeLiveSellWithImmediateRetries({
+          executor: sellExecutor,
+          tokenMint: pos.pairAddress,
+          initialTokenBalance: tokenBalance,
+          requestedSellAmount: tokenBalance,
+          expectedRemainingBalance: 0n,
+          context: `pure_ws:${id}`,
+          reason,
+          syntheticSignature: `PUREWS_SELL_BALANCE_RECOVERED_${id}`,
+        });
+        const sellResult = sellExecution.sellResult;
         const solAfter = await sellExecutor.getBalance();
         const receivedSol = resolveSellReceivedSolFromSwapResult({
           balanceDeltaSol: solAfter - solBefore,
@@ -85,9 +97,10 @@ async function closePureWsPositionSerialized(
           context: `pure_ws:${id}`,
         });
         liveReceivedSol = receivedSol;
+        soldQuantity = pos.quantity * sellExecution.soldRatio;
         // 2026-04-29: wallet ground truth — receivedSol 부호 무관 항상 wallet 기준.
-        if (pos.quantity > 0) {
-          actualExitPrice = receivedSol / pos.quantity;
+        if (soldQuantity > 0) {
+          actualExitPrice = receivedSol / soldQuantity;
         }
         executionSlippage = bpsToDecimal(sellResult.slippageBps);
         exitTxSignature = sellResult.txSignature;
@@ -164,14 +177,14 @@ async function closePureWsPositionSerialized(
         ).catch(() => {});
       }
     } catch (sellErr) {
-      log.warn(`[PUREWS_LIVE_SELL] ${id} sell failed: ${sellErr}`);
+      log.warn(`[PUREWS_LIVE_SELL] ${id} sell failed after ${liveSellRetryMaxAttempts()} attempts: ${sellErr}`);
       pos.state = previousState;
       const nowSec = Math.floor(Date.now() / 1000);
       if (!pos.lastCloseFailureAtSec || nowSec - pos.lastCloseFailureAtSec >= 60) {
         pos.lastCloseFailureAtSec = nowSec;
         await ctx.notifier.sendCritical(
           'purews_close_failed',
-          `${id} ${pos.pairAddress} reason=${reason} sell failed — OPEN 유지`
+          `${id} ${pos.pairAddress} reason=${reason} sell failed after ${liveSellRetryMaxAttempts()} attempts — OPEN 유지`
         ).catch(() => {});
       }
       return;
@@ -190,9 +203,9 @@ async function closePureWsPositionSerialized(
     recordTokenSessionClose({ tokenMint: pos.pairAddress, netPct: closingNetPct });
   }
 
-  const rawPnl = (actualExitPrice - pos.entryPrice) * pos.quantity;
+  const rawPnl = (actualExitPrice - pos.entryPrice) * soldQuantity;
   const paperCost = ctx.tradingMode === 'paper'
-    ? pos.entryPrice * pos.quantity * (config.defaultAmmFeePct + config.defaultMevMarginPct)
+    ? pos.entryPrice * soldQuantity * (config.defaultAmmFeePct + config.defaultMevMarginPct)
     : 0;
   const pnl = rawPnl - paperCost;
   // Phase 1 P0-4 — `liveReceivedSol` 은 sell 직후 set. paper 에서는 0 → drift 0.
@@ -215,7 +228,7 @@ async function closePureWsPositionSerialized(
         discoverySource: pos.discoverySource,
         entryPrice: pos.entryPrice,
         plannedEntryPrice: pos.plannedEntryPrice,
-        quantity: pos.quantity,
+        quantity: soldQuantity,
         stopLoss: pos.entryPrice * (1 - config.pureWsProbeHardCutPct),
         takeProfit1: pos.entryPrice * (1 + config.pureWsT1MfeThreshold),
         takeProfit2: pos.entryPrice * (1 + config.pureWsT2MfeThreshold),

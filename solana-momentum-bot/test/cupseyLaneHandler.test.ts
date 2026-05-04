@@ -11,6 +11,7 @@ import {
   resetCupseyLaneStateForTests,
   updateCupseyPositions,
 } from '../src/orchestration/cupseyLaneHandler';
+import { setLiveSellRetryDelaysMsForTests } from '../src/executor/liveSellRetry';
 import type { BotContext } from '../src/orchestration/types';
 import type { Candle, Signal, Trade } from '../src/utils/types';
 
@@ -54,6 +55,7 @@ describe('cupseyLaneHandler persistence', () => {
       (config as unknown as Record<string, unknown>)[key] = value;
     }
     resetCupseyLaneStateForTests();
+    setLiveSellRetryDelaysMsForTests([0, 0, 0, 0, 0]);
   });
 
   afterEach(() => {
@@ -62,6 +64,7 @@ describe('cupseyLaneHandler persistence', () => {
     }
     originalConfig.clear();
     resetCupseyLaneStateForTests();
+    setLiveSellRetryDelaysMsForTests();
     jest.useRealTimers();
     jest.restoreAllMocks();
   });

@@ -44,6 +44,10 @@ import { openPureWsPaperParamArms } from './paperParamArms';
 import { openSwingV2Arm } from './swingV2Entry';
 import type { PureWsPosition } from './types';
 import { trackPureWsPaperMarkout } from './markout';
+import {
+  describePureWsSource,
+  isPureWsNewPairSignal,
+} from './sourceGate';
 
 function isPureWsV2Signal(signal: Signal): boolean {
   return (signal.sourceLabel ?? '').startsWith('ws_burst_v2');
@@ -82,6 +86,26 @@ export async function handlePureWsSignal(
   if (!config.pureWsLaneEnabled) return;
 
   funnelStats.signalsReceived++;
+  if (config.pureWsNewPairSourceGateEnabled && !isPureWsNewPairSignal(signal)) {
+    log.info(
+      `[PUREWS_SOURCE_REJECT] ${signal.pairAddress.slice(0, 12)} non_new_pair_source ` +
+      describePureWsSource(signal)
+    );
+    trackPureWsReject({
+      rejectCategory: 'other',
+      rejectReason: 'non_new_pair_source',
+      tokenMint: signal.pairAddress,
+      signalPrice: signal.price,
+      probeSolAmount: config.pureWsLaneTicketSol,
+      signalSource: signal.sourceLabel,
+      extras: {
+        sourceGate: 'new_pair_only',
+        discoverySource: signal.discoverySource ?? null,
+        sourceLabel: signal.sourceLabel ?? null,
+      },
+    });
+    return;
+  }
   const livePrimaryPaperMode =
     ctx.tradingMode === 'live' &&
     !config.pureWsLiveCanaryEnabled &&

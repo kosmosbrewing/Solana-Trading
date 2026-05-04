@@ -17,6 +17,12 @@ export {
   getPureWsV2Telemetry,
   logPureWsV2TelemetrySummary,
 } from './v2Telemetry';
+export {
+  isPureWsNewPairSignal,
+  isPureWsNewPairWatchlistEntry,
+  isPureWsNewPairLedgerRow,
+  describePureWsSource,
+} from './sourceGate';
 
 // Test helpers
 export { addPureWsPositionForTests } from './positionState';

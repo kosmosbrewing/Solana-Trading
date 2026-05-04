@@ -141,6 +141,7 @@ describe('Phase 1.3 — scanPureWsV2Burst', () => {
     resetAllCanaryStatesForTests();
     // tuned defaults (audit 기반)
     override('pureWsLaneEnabled', true);
+    override('pureWsNewPairSourceGateEnabled', false);
     override('pureWsV2Enabled', true);
     override('pureWsV2MinPassScore', 50);
     override('pureWsV2FloorVol', 0.15);
@@ -200,6 +201,46 @@ describe('Phase 1.3 — scanPureWsV2Burst', () => {
     expect(inserted.strategy).toBe('pure_ws_breakout');
     expect(inserted.sourceLabel).toBe('ws_burst_v2');
     expect(getActivePureWsPositions().size).toBe(1);
+  });
+
+  it('v2 source map keeps synthesized pure_ws entries on gecko_new_pool provenance', async () => {
+    override('pureWsNewPairSourceGateEnabled', true);
+    const pair = 'PAIR_NEW_POOL_V2';
+    const candles = buildBurstyCandles(pair);
+    const builder = makeBuilder(new Map([[pair, candles]]), new Map([[pair, 1.10]]));
+    const { ctx, tradeStore } = makeCtx('paper');
+
+    await scanPureWsV2Burst(
+      ctx,
+      builder,
+      [pair],
+      new Map([[pair, 'NEWV2']]),
+      new Map([[pair, 'gecko_new_pool']])
+    );
+
+    expect(tradeStore.insertTrade).toHaveBeenCalledTimes(1);
+    const [position] = [...getActivePureWsPositions().values()];
+    expect(position.discoverySource).toBe('gecko_new_pool');
+    expect(position.sourceLabel).toBe('ws_burst_v2');
+  });
+
+  it('v2 synthesized signals are blocked when provenance is not new-pair', async () => {
+    override('pureWsNewPairSourceGateEnabled', true);
+    const pair = 'PAIR_TRENDING_V2';
+    const candles = buildBurstyCandles(pair);
+    const builder = makeBuilder(new Map([[pair, candles]]), new Map([[pair, 1.10]]));
+    const { ctx, tradeStore } = makeCtx('paper');
+
+    await scanPureWsV2Burst(
+      ctx,
+      builder,
+      [pair],
+      new Map([[pair, 'TREND']]),
+      new Map([[pair, 'gecko_trending']])
+    );
+
+    expect(tradeStore.insertTrade).not.toHaveBeenCalled();
+    expect(getActivePureWsPositions().size).toBe(0);
   });
 
   it('v2 enabled + cold-start new pair activity → Signal synthesized', async () => {

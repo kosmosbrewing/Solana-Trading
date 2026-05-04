@@ -41,6 +41,9 @@ export const operationalToggles = {
   migrationLaneSignalOnly: boolOptional('MIGRATION_LANE_SIGNAL_ONLY', true),
   // 2026-04-18: Block 3 — pure_ws_breakout lane (mission-pivot convexity). paper-first.
   pureWsLaneEnabled: boolOptional('PUREWS_LANE_ENABLED', false),
+  // 2026-05-04: pure_ws rebuild evidence must be new-pair only. Legacy trending/bootstrap
+  // signals are rejected before paper/live entry so pippin-style mixed-source rows cannot pollute metrics.
+  pureWsNewPairSourceGateEnabled: boolOptional('PUREWS_NEW_PAIR_SOURCE_GATE_ENABLED', true),
   pureWsLaneWalletMode: (process.env.PUREWS_WALLET_MODE ?? 'auto') as 'auto' | 'main' | 'sandbox',
   // Why: PUREWS_LANE_ENABLED + TRADING_MODE=live 만으로 자동 live 가 되지 않게 하기 위함.
   pureWsLiveCanaryEnabled: boolOptional('PUREWS_LIVE_CANARY_ENABLED', false),

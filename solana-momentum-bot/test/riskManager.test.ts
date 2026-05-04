@@ -511,14 +511,19 @@ describe('RiskManager unrealized drawdown', () => {
       }, {} as unknown as TradeStore, createFakeClock(FIXTURE_NOW));
     }
 
-    function buildPortfolio(dailyPnlSol: number, equitySol: number): PortfolioState {
+    function buildPortfolio(dailyPnlSol: number, equitySol: number, drawdownHalted = false): PortfolioState {
       return {
         balanceSol: equitySol,
         equitySol,
         dailyPnl: dailyPnlSol,
         consecutiveLosses: 0,
         openTrades: [],
-        drawdownGuard: { halted: false, peakBalanceSol: equitySol, drawdownPct: 0 } as unknown as PortfolioState['drawdownGuard'],
+        drawdownGuard: {
+          halted: drawdownHalted,
+          peakBalanceSol: drawdownHalted ? equitySol / 0.6 : equitySol,
+          drawdownPct: drawdownHalted ? 0.4 : 0,
+          resumeBalanceSol: drawdownHalted ? equitySol * 1.2 : undefined,
+        } as unknown as PortfolioState['drawdownGuard'],
         riskTier: {
           edgeState: 'Calibration',
           maxRiskPerTrade: 0.01,
@@ -538,6 +543,14 @@ describe('RiskManager unrealized drawdown', () => {
       // equity 1 SOL × 5% = 0.05 SOL → -0.06 trip
       const halt = manager.getActiveHalt(buildPortfolio(-0.06, 1.0));
       expect(halt?.kind).toBe('dailyLoss');
+    });
+
+    it('daily loss remains the hard halt when drawdown guard is also active', () => {
+      (config as { riskMaxDailyLossOverride: number | null }).riskMaxDailyLossOverride = null;
+      const manager = buildManager();
+      const halt = manager.getActiveHalt(buildPortfolio(-0.06, 1.0, true));
+      expect(halt?.kind).toBe('dailyLoss');
+      expect(halt?.reason).toContain('Daily loss limit reached');
     });
 
     it('override 0.30 (30%) → -0.06 SOL 통과 (mission §3 측정 sprint)', () => {

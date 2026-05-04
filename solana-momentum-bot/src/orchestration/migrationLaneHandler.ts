@@ -33,6 +33,7 @@ import { appendEntryLedger, persistOpenTradeWithIntegrity, isEntryHaltActive } f
 import { resolveActualEntryMetrics } from './signalProcessor';
 import { resolveTokenSymbol, lookupCachedSymbol } from '../ingester/tokenSymbolResolver';
 import { resolveSellReceivedSolFromSwapResult } from '../executor/executor';
+import { executeLiveSellWithImmediateRetries, liveSellRetryMaxAttempts } from '../executor/liveSellRetry';
 
 const log = createModuleLogger('MigrationLane');
 
@@ -591,6 +592,7 @@ async function closeMigrationPositionSerialized(
   let actualExitPrice = exitPrice;
   let executionSlippage = 0;
   let exitTxSignature = pos.entryTxSignature;
+  let soldQuantity = pos.quantity;
   const holdSec = Math.floor(Date.now() / 1000) - pos.entryTimeSec;
 
   if (ctx.tradingMode === 'live') {
@@ -602,16 +604,27 @@ async function closeMigrationPositionSerialized(
         executor.getBalance(),
       ]);
       if (tokenBalance > 0n) {
-        const sellResult = await executor.executeSell(pos.event.pairAddress, tokenBalance);
+        const sellExecution = await executeLiveSellWithImmediateRetries({
+          executor,
+          tokenMint: pos.event.pairAddress,
+          initialTokenBalance: tokenBalance,
+          requestedSellAmount: tokenBalance,
+          expectedRemainingBalance: 0n,
+          context: `migration:${id}`,
+          reason,
+          syntheticSignature: `MIG_SELL_BALANCE_RECOVERED_${id}`,
+        });
+        const sellResult = sellExecution.sellResult;
         const solAfter = await executor.getBalance();
         const receivedSol = resolveSellReceivedSolFromSwapResult({
           balanceDeltaSol: solAfter - solBefore,
           sellResult,
           context: `migration:${id}`,
         });
+        soldQuantity = pos.quantity * sellExecution.soldRatio;
         // 2026-04-29: wallet ground truth — receivedSol 부호 무관 항상 wallet 기준.
-        if (pos.quantity > 0) {
-          actualExitPrice = receivedSol / pos.quantity;
+        if (soldQuantity > 0) {
+          actualExitPrice = receivedSol / soldQuantity;
         }
         executionSlippage = bpsToDecimal(sellResult.slippageBps);
         exitTxSignature = sellResult.txSignature;
@@ -621,15 +634,15 @@ async function closeMigrationPositionSerialized(
         );
       } else {
         log.warn(`[MIG_SELL] ${id} no token balance — skipping sell`);
-      }
-    } catch (sellErr) {
-      log.warn(`[MIG_LIVE_SELL] ${id} sell failed: ${sellErr}`);
+    }
+  } catch (sellErr) {
+      log.warn(`[MIG_LIVE_SELL] ${id} sell failed after ${liveSellRetryMaxAttempts()} attempts: ${sellErr}`);
       const nowSec = Math.floor(Date.now() / 1000);
       if (!pos.lastCloseFailureAtSec || nowSec - pos.lastCloseFailureAtSec >= 60) {
         pos.lastCloseFailureAtSec = nowSec;
         await ctx.notifier.sendCritical(
           'migration_close_failed',
-          `${id} ${pos.event.pairAddress} reason=${reason} sell failed`
+          `${id} ${pos.event.pairAddress} reason=${reason} sell failed after ${liveSellRetryMaxAttempts()} attempts`
         ).catch(() => {});
       }
       return;
@@ -637,9 +650,9 @@ async function closeMigrationPositionSerialized(
   }
 
   pos.stage = 'CLOSED';
-  const rawPnl = (actualExitPrice - pos.entryPrice) * pos.quantity;
+  const rawPnl = (actualExitPrice - pos.entryPrice) * soldQuantity;
   const paperCost = ctx.tradingMode === 'paper'
-    ? pos.entryPrice * pos.quantity * (config.defaultAmmFeePct + config.defaultMevMarginPct)
+    ? pos.entryPrice * soldQuantity * (config.defaultAmmFeePct + config.defaultMevMarginPct)
     : 0;
   const pnl = rawPnl - paperCost;
   const exitSlippageBps = ctx.tradingMode === 'live' ? Math.round(executionSlippage * 10_000) : undefined;

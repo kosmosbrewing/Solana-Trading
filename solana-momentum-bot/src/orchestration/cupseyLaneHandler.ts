@@ -32,6 +32,7 @@ import { acquireCanarySlot, releaseCanarySlot } from '../risk/canaryConcurrencyG
 import { resolveActualEntryMetrics } from './signalProcessor';
 import { resolveTokenSymbol, lookupCachedSymbol } from '../ingester/tokenSymbolResolver';
 import { resolveSellReceivedSolFromSwapResult } from '../executor/executor';
+import { executeLiveSellWithImmediateRetries, liveSellRetryMaxAttempts } from '../executor/liveSellRetry';
 
 const log = createModuleLogger('CupseyLane');
 
@@ -904,6 +905,7 @@ async function closeCupseyPositionSerialized(
   const previousState = pos.state;
   let sellCompleted = ctx.tradingMode !== 'live';
   let dbCloseSucceeded = false;
+  let soldQuantity = pos.quantity;
 
   // Live exit: Jupiter sell
   if (ctx.tradingMode === 'live') {
@@ -915,17 +917,28 @@ async function closeCupseyPositionSerialized(
         sellExecutor.getBalance(),
       ]);
       if (tokenBalance > 0n) {
-        const sellResult = await sellExecutor.executeSell(pos.pairAddress, tokenBalance);
+        const sellExecution = await executeLiveSellWithImmediateRetries({
+          executor: sellExecutor,
+          tokenMint: pos.pairAddress,
+          initialTokenBalance: tokenBalance,
+          requestedSellAmount: tokenBalance,
+          expectedRemainingBalance: 0n,
+          context: `cupsey:${id}`,
+          reason,
+          syntheticSignature: `CUPSEY_SELL_BALANCE_RECOVERED_${id}`,
+        });
+        const sellResult = sellExecution.sellResult;
         const solAfter = await sellExecutor.getBalance();
         const receivedSol = resolveSellReceivedSolFromSwapResult({
           balanceDeltaSol: solAfter - solBefore,
           sellResult,
           context: `cupsey:${id}`,
         });
+        soldQuantity = pos.quantity * sellExecution.soldRatio;
         // 2026-04-29: wallet ground truth — receivedSol 부호 무관 항상 wallet 기준.
         // (sell fees > 가치 시) DB ↔ wallet drift 차단.
-        if (pos.quantity > 0) {
-          actualExitPrice = receivedSol / pos.quantity;
+        if (soldQuantity > 0) {
+          actualExitPrice = receivedSol / soldQuantity;
         }
         executionSlippage = bpsToDecimal(sellResult.slippageBps);
         exitTxSignature = sellResult.txSignature;
@@ -955,14 +968,14 @@ async function closeCupseyPositionSerialized(
         throw new Error('no token balance for cupsey close');
       }
     } catch (sellErr) {
-      log.warn(`[CUPSEY_LIVE_SELL] ${id} sell failed: ${sellErr}`);
+      log.warn(`[CUPSEY_LIVE_SELL] ${id} sell failed after ${liveSellRetryMaxAttempts()} attempts: ${sellErr}`);
       pos.state = previousState;
       const nowSec = Math.floor(Date.now() / 1000);
       if (!pos.lastCloseFailureAtSec || nowSec - pos.lastCloseFailureAtSec >= 60) {
         pos.lastCloseFailureAtSec = nowSec;
         await ctx.notifier.sendCritical(
           'cupsey_close_failed',
-          `${id} ${pos.pairAddress} reason=${reason} sell failed — OPEN 유지`
+          `${id} ${pos.pairAddress} reason=${reason} sell failed after ${liveSellRetryMaxAttempts()} attempts — OPEN 유지`
         ).catch(() => {});
       }
       return;
@@ -970,12 +983,12 @@ async function closeCupseyPositionSerialized(
   }
   pos.state = 'CLOSED';
 
-  const rawPnl = (actualExitPrice - pos.entryPrice) * pos.quantity;
+  const rawPnl = (actualExitPrice - pos.entryPrice) * soldQuantity;
   // Block 4 (2026-04-18): canary auto-halt feed. pnl 계산 직후 보고 (paperCost 차감 후 값과 동일 단위).
   // Note: paper 모드도 canary state 를 공유 — paper 에서 ruin 시뮬도 유효해야 함.
   // Why: paper 모드는 wallet delta 없이 시장가로 PnL 계산 → AMM/MEV 비용 누락
   const paperCost = ctx.tradingMode === 'paper'
-    ? pos.entryPrice * pos.quantity * (config.defaultAmmFeePct + config.defaultMevMarginPct)
+    ? pos.entryPrice * soldQuantity * (config.defaultAmmFeePct + config.defaultMevMarginPct)
     : 0;
   const pnl = rawPnl - paperCost;
   const pnlPct = pos.entryPrice > 0 ? ((actualExitPrice - pos.entryPrice) / pos.entryPrice) * 100 : 0;
@@ -994,7 +1007,7 @@ async function closeCupseyPositionSerialized(
         discoverySource: pos.discoverySource,
         entryPrice: pos.entryPrice,
         plannedEntryPrice: pos.plannedEntryPrice,
-        quantity: pos.quantity,
+        quantity: soldQuantity,
         stopLoss: pos.entryPrice * (1 - config.cupseyProbeHardCutPct),
         takeProfit1: pos.entryPrice * (1 + config.cupseyProbeMfeThreshold),
         takeProfit2: pos.entryPrice * (1 + config.cupseyWinnerTrailingPct * 2),

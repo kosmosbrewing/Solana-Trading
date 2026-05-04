@@ -77,7 +77,12 @@ import type { HeliusPoolRegistry } from '../scanner/heliusPoolRegistry';
 import { GateCacheManager } from '../gate/gateCacheManager';
 import { getJupiter429Stats } from '../observability/jupiterRateLimitMetric';
 import { resolveTokenSymbol, lookupCachedSymbol } from '../ingester/tokenSymbolResolver';
-import { resolveSellReceivedSolFromSwapResult, type SwapResult } from '../executor/executor';
+import { resolveSellReceivedSolFromSwapResult } from '../executor/executor';
+import {
+  executeLiveSellWithImmediateRetries,
+  liveSellRetryMaxAttempts,
+  setLiveSellRetryDelaysMsForTests,
+} from '../executor/liveSellRetry';
 // 2026-04-27 (KOL live canary): pure_ws live path 와 동일 패턴.
 import type { Order, PartialFillDataReason, Trade } from '../utils/types';
 import type { BotContext } from './types';
@@ -106,9 +111,6 @@ import {
 
 const log = createModuleLogger('KolHunter');
 const LANE_STRATEGY = 'kol_hunter' as const;
-const KOL_LIVE_SELL_IMMEDIATE_RETRY_COUNT = 5;
-const DEFAULT_KOL_LIVE_SELL_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000, 4_000] as const;
-let kolLiveSellRetryDelaysMs: readonly number[] = DEFAULT_KOL_LIVE_SELL_RETRY_DELAYS_MS;
 
 // ─── State Types ─────────────────────────────────────────
 
@@ -1636,87 +1638,6 @@ function isLiveCanaryActive(): boolean {
  *  추후 KOL_HUNTER_WALLET_MODE env 추가 가능 (sandbox / main). */
 function getKolHunterExecutor(ctx: BotContext) {
   return ctx.executor;
-}
-
-function waitKolLiveSellRetry(delayMs: number): Promise<void> {
-  if (delayMs <= 0) return Promise.resolve();
-  return new Promise((resolve) => setTimeout(resolve, delayMs));
-}
-
-function rawAmountRatio(numerator: bigint, denominator: bigint): number {
-  if (numerator <= 0n || denominator <= 0n) return 0;
-  const scaled = (numerator * 1_000_000n) / denominator;
-  return Math.max(0, Math.min(1, Number(scaled) / 1_000_000));
-}
-
-interface KolLiveSellExecution {
-  sellResult: SwapResult;
-  soldRatio: number;
-  recoveredFromBalanceOnly: boolean;
-}
-
-async function executeKolLiveSellWithImmediateRetries(
-  executor: ReturnType<typeof getKolHunterExecutor>,
-  pos: PaperPosition,
-  initialTokenBalance: bigint,
-  requestedSellAmount: bigint,
-  expectedRemainingBalance: bigint,
-  reason: CloseReason
-): Promise<KolLiveSellExecution> {
-  const maxAttempts = 1 + KOL_LIVE_SELL_IMMEDIATE_RETRY_COUNT;
-  let lastErr: unknown;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    let sellAmount = requestedSellAmount;
-    let preAttemptBalance = initialTokenBalance;
-    if (attempt > 1) {
-      const delayMs = kolLiveSellRetryDelaysMs[attempt - 2] ?? kolLiveSellRetryDelaysMs[kolLiveSellRetryDelaysMs.length - 1] ?? 0;
-      log.warn(
-        `[KOL_HUNTER_LIVE_SELL_RETRY] ${pos.positionId} reason=${reason} ` +
-        `attempt=${attempt}/${maxAttempts} delayMs=${delayMs}`
-      );
-      await waitKolLiveSellRetry(delayMs);
-      const currentBalance = await executor.getTokenBalance(pos.tokenMint);
-      if (currentBalance <= expectedRemainingBalance) {
-        const soldRaw = initialTokenBalance > currentBalance ? initialTokenBalance - currentBalance : 0n;
-        const soldRatio = rawAmountRatio(soldRaw, initialTokenBalance);
-        log.warn(
-          `[KOL_HUNTER_LIVE_SELL_BALANCE_RECOVERED] ${pos.positionId} reason=${reason} ` +
-          `attempt=${attempt}/${maxAttempts} balance=${currentBalance.toString()} ` +
-            `expectedRemaining=${expectedRemainingBalance.toString()} soldRatio=${soldRatio.toFixed(4)}`
-        );
-        return {
-          sellResult: {
-            txSignature: `KOL_LIVE_SELL_BALANCE_RECOVERED_${pos.positionId}`,
-            expectedOutAmount: 0n,
-            slippageBps: 0,
-          },
-          soldRatio,
-          recoveredFromBalanceOnly: true,
-        };
-      }
-      preAttemptBalance = currentBalance;
-      sellAmount = currentBalance > expectedRemainingBalance
-        ? currentBalance - expectedRemainingBalance
-        : 0n;
-      if (sellAmount <= 0n) {
-        throw new Error(`sell retry amount resolved to zero; balance=${currentBalance.toString()}`);
-      }
-    }
-    try {
-      const sellResult = await executor.executeSell(pos.tokenMint, sellAmount);
-      const expectedPostBalance = preAttemptBalance > sellAmount ? preAttemptBalance - sellAmount : 0n;
-      const totalSoldRaw = initialTokenBalance > expectedPostBalance ? initialTokenBalance - expectedPostBalance : 0n;
-      const soldRatio = rawAmountRatio(totalSoldRaw, initialTokenBalance);
-      return { sellResult, soldRatio, recoveredFromBalanceOnly: false };
-    } catch (err) {
-      lastErr = err;
-      log.warn(
-        `[KOL_HUNTER_LIVE_SELL_ATTEMPT_FAILED] ${pos.positionId} reason=${reason} ` +
-        `attempt=${attempt}/${maxAttempts}: ${err}`
-      );
-    }
-  }
-  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
 export function stopKolHunter(): void {
@@ -6757,14 +6678,16 @@ async function closeLivePosition(
           `(${((1 - retainPct) * 100).toFixed(0)}% close, ${(retainPct * 100).toFixed(0)}% tail retain)`
         );
       }
-      const sellExecution = await executeKolLiveSellWithImmediateRetries(
-        sellExecutor,
-        pos,
-        tokenBalance,
-        sellAmount,
+      const sellExecution = await executeLiveSellWithImmediateRetries({
+        executor: sellExecutor,
+        tokenMint: pos.tokenMint,
+        initialTokenBalance: tokenBalance,
+        requestedSellAmount: sellAmount,
         expectedRemainingBalance,
-        reason
-      );
+        context: `kol_hunter:${pos.positionId}`,
+        reason,
+        syntheticSignature: `KOL_LIVE_SELL_BALANCE_RECOVERED_${pos.positionId}`,
+      });
       const sellResult = sellExecution.sellResult;
       const solAfter = await sellExecutor.getBalance();
       const receivedSol = resolveSellReceivedSolFromSwapResult({
@@ -6960,7 +6883,7 @@ async function closeLivePosition(
   } catch (sellErr) {
     log.warn(
       `[KOL_HUNTER_LIVE_SELL] ${pos.positionId} sell failed after ` +
-      `${1 + KOL_LIVE_SELL_IMMEDIATE_RETRY_COUNT} attempts: ${sellErr}`
+      `${liveSellRetryMaxAttempts()} attempts: ${sellErr}`
     );
     // 2026-04-28 F1 fix: callerPreviousState 가 있으면 그걸 사용 (closePosition mutation 이전 값).
     // 없으면 기존 previousState fallback (recovery 경로 등 직접 호출자).
@@ -6973,7 +6896,7 @@ async function closeLivePosition(
       await ctx.notifier.sendCritical(
         'kol_live_close_failed',
         `${pos.positionId} ${pos.tokenMint} reason=${reason} sell failed after ` +
-        `${1 + KOL_LIVE_SELL_IMMEDIATE_RETRY_COUNT} attempts — OPEN 유지`
+        `${liveSellRetryMaxAttempts()} attempts — OPEN 유지`
       ).catch(() => {});
     }
     return;
@@ -7493,5 +7416,5 @@ export function __testTriggerTick(positionId: string, price: number): void {
 }
 
 export function __testSetKolLiveSellRetryDelaysMs(delays?: readonly number[]): void {
-  kolLiveSellRetryDelaysMs = delays ?? DEFAULT_KOL_LIVE_SELL_RETRY_DELAYS_MS;
+  setLiveSellRetryDelaysMsForTests(delays);
 }

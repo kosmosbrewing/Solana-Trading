@@ -14,7 +14,9 @@
  *
  * 의존: 없음 (pure data + helper). I/O 없음. config 의존 없음 — runtime side 가 받아서 ledger 와 결합.
  *
- * 출처: https://www.helius.dev/docs/billing/credits (2026-05-01 확인)
+ * 출처:
+ *   - https://www.helius.dev/docs/billing/credits (2026-05-01 확인)
+ *   - https://www.helius.dev/docs/api-reference/rpc/http/gettransfersbyaddress (2026-05-05 확인)
  */
 
 export type HeliusCreditPurpose =
@@ -87,8 +89,9 @@ const CATALOG: ReadonlyArray<HeliusMethodCost> = [
   { surface: 'enhanced_tx', method: 'parseTransactions', creditsPerCall: 100, notes: 'Enhanced API parsing — KOL backfill / sample only' },
   { surface: 'enhanced_tx', method: 'parseTransactionHistory', creditsPerCall: 100 },
 
-  // ─── Wallet API (50 credits / call) ───
+  // ─── Wallet / Helius-exclusive RPC history APIs ───
   { surface: 'wallet_api', method: 'getTransactionsForAddress', creditsPerCall: 50, notes: 'KOL wallet history — bounded budget cap 필수' },
+  { surface: 'wallet_api', method: 'getTransfersByAddress', creditsPerCall: 10, notes: 'Parsed wallet transfers — 1y retention, 100 rows/call' },
 
   // ─── DAS API (10 credits) ───
   { surface: 'das', method: 'getAsset', creditsPerCall: 10 },

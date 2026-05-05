@@ -21,6 +21,8 @@
     "kol:policy-report": "ts-node scripts/kol-policy-report.ts",
     "kol:rotation-report": "ts-node scripts/rotation-lane-report.ts",
     "kol:smart-v3-evidence-report": "ts-node scripts/smart-v3-evidence-report.ts",
+    "kol:transfer-backfill": "ts-node scripts/kol-transfer-backfill.ts",
+    "kol:transfer-report": "ts-node scripts/kol-transfer-posterior-report.ts",
     "purews:botflow-report": "ts-node scripts/pure-ws-botflow-report.ts",
     "purews:botflow-paper": "ts-node scripts/pure-ws-botflow-report.ts",
     "ops:trade-markout-audit": "ts-node scripts/trade-markout-audit.ts",

@@ -79,6 +79,16 @@ describe('heliusCreditLedger', () => {
       expect(r.estimatedCredits).toBe(50);
     });
 
+    it('Wallet API getTransfersByAddress × 3 = 30 credits', () => {
+      const r = buildHeliusCreditUsage({
+        purpose: 'wallet_style_backfill',
+        surface: 'wallet_api',
+        method: 'getTransfersByAddress',
+        requestCount: 3,
+      });
+      expect(r.estimatedCredits).toBe(30);
+    });
+
     it('Sender × N = 0 credits 항상', () => {
       const r = buildHeliusCreditUsage({
         purpose: 'execution_telemetry',

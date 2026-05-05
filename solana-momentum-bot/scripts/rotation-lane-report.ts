@@ -7,9 +7,15 @@ import {
   lookupDevWalletCandidate,
   type DevWalletCandidateIndex,
 } from '../src/observability/devWalletCandidateRegistry';
+import {
+  buildKolTransferPosteriorReport,
+  type KolPosteriorMetrics,
+  type KolTransferRow,
+} from './kol-transfer-posterior-report';
 
 const ROTATION_PAPER_TRADES_FILE = 'rotation-v1-paper-trades.jsonl';
 const KOL_PAPER_TRADES_FILE = 'kol-paper-trades.jsonl';
+const KOL_TRANSFER_INPUT_FILE = 'kol-transfers.jsonl';
 const EVIDENCE_MIN_CLOSES = 50;
 const EVIDENCE_PROMOTION_MIN_CLOSES = 100;
 const EVIDENCE_MIN_OK_COVERAGE = 0.8;
@@ -28,6 +34,7 @@ interface Args {
   assumedAtaRentSol?: number;
   assumedNetworkFeeSol?: number;
   candidateFile?: string;
+  kolTransferInput?: string;
   mdOut?: string;
   jsonOut?: string;
 }
@@ -156,6 +163,12 @@ interface RotationReport {
     positive60s: number;
     positivePostCost60s: number;
   }>;
+  kolTransferPosterior: {
+    input: string;
+    rows: number;
+    candidates: number;
+    topRotationFit: KolPosteriorMetrics[];
+  };
 }
 
 function parseArgs(argv: string[]): Args {
@@ -168,6 +181,7 @@ function parseArgs(argv: string[]): Args {
     assumedAtaRentSol: 0.00207408,
     assumedNetworkFeeSol: 0.000105,
     candidateFile: DEFAULT_DEV_WALLET_CANDIDATE_PATH,
+    kolTransferInput: path.resolve(process.cwd(), 'data/research', KOL_TRANSFER_INPUT_FILE),
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -181,6 +195,8 @@ function parseArgs(argv: string[]): Args {
     else if (arg === '--candidate-file') args.candidateFile = path.resolve(argv[++i]);
     else if (arg.startsWith('--candidate-file=')) args.candidateFile = path.resolve(arg.split('=')[1]);
     else if (arg === '--no-candidates') args.candidateFile = undefined;
+    else if (arg === '--kol-transfer-input') args.kolTransferInput = path.resolve(argv[++i]);
+    else if (arg.startsWith('--kol-transfer-input=')) args.kolTransferInput = path.resolve(arg.split('=')[1]);
     else if (arg === '--md') args.mdOut = path.resolve(argv[++i]);
     else if (arg === '--json') args.jsonOut = path.resolve(argv[++i]);
   }
@@ -820,6 +836,23 @@ function renderEvidenceVerdicts(rows: EvidenceVerdict[]): string {
   ].join('\n');
 }
 
+function renderKolTransferPosteriorTable(report: RotationReport['kolTransferPosterior']): string {
+  if (report.rows === 0 || report.topRotationFit.length === 0) {
+    return `_No KOL transfer posterior rows. Run \`npm run kol:transfer-backfill\` first. Input: ${report.input}_`;
+  }
+  return [
+    '| KOL | tier | role | style | tx | buy | sell | reentry | sell/buy | med buy SOL | med hold | quick sell | rotation | smart-v3 | net SOL flow |',
+    '|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
+    ...report.topRotationFit.map((row) =>
+      `| ${row.kolId} | ${row.kolTier ?? '-'} | ${row.laneRole ?? '-'} | ${row.tradingStyle ?? '-'} | ` +
+      `${row.txGroups} | ${row.buyCandidates} | ${row.sellCandidates} | ${formatPct(row.sameMintReentryRatio)} | ` +
+      `${formatPct(row.sellToBuyRatio)} | ${row.medianBuySol == null ? 'n/a' : row.medianBuySol.toFixed(4)} | ` +
+      `${row.medianHoldSec == null ? 'n/a' : `${row.medianHoldSec.toFixed(0)}s`} | ${formatPct(row.quickSellRatio)} | ` +
+      `${row.rotationFitScore.toFixed(2)} | ${row.smartV3FitScore.toFixed(2)} | ${formatSol(row.netSolFlow)} |`
+    ),
+  ].join('\n');
+}
+
 function renderArmMarkouts(rows: ArmHorizonStats[]): string {
   if (rows.length === 0) return '_No rotation arm markout rows._';
   return rows.map((row) => [
@@ -880,6 +913,10 @@ function renderReport(report: RotationReport): string {
     `Rotation paper close rows: ${report.paperTrades.rotationRows}/${report.paperTrades.totalRows}`,
     `Rotation no-trade probe rows: ${report.noTrade.probeRows}/${report.noTrade.totalRows}`,
     '',
+    '## KOL Transfer Posterior — Rotation Fit',
+    '> Diagnostic only. Transfer candidates are not precise swap PnL. Use signature drill-down before policy changes.',
+    renderKolTransferPosteriorTable(report.kolTransferPosterior),
+    '',
     '## Paper Trades By Arm',
     renderPaperArmTable(report.paperTrades.byArm),
     '',
@@ -924,11 +961,13 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
   const paperTradesFileName = args.paperTradesFileName ?? ROTATION_PAPER_TRADES_FILE;
   const assumedAtaRentSol = args.assumedAtaRentSol ?? 0.00207408;
   const assumedNetworkFeeSol = args.assumedNetworkFeeSol ?? 0.000105;
-  const [tradeMarkouts, missedAlpha, tokenQuality, projectedPaperTrades] = await Promise.all([
+  const kolTransferInput = args.kolTransferInput ?? path.resolve(process.cwd(), 'data/research', KOL_TRANSFER_INPUT_FILE);
+  const [tradeMarkouts, missedAlpha, tokenQuality, projectedPaperTrades, kolTransferRows] = await Promise.all([
     readJsonl(path.join(args.realtimeDir, 'trade-markouts.jsonl')),
     readJsonl(path.join(args.realtimeDir, 'missed-alpha.jsonl')),
     readJsonl(path.join(args.realtimeDir, 'token-quality-observations.jsonl')),
     readJsonl(path.join(args.realtimeDir, paperTradesFileName)),
+    readJsonl(kolTransferInput),
   ]);
   const paperTrades = projectedPaperTrades.length > 0 || paperTradesFileName !== ROTATION_PAPER_TRADES_FILE
     ? projectedPaperTrades
@@ -955,6 +994,10 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
   const noTradeProbeRows = recentNoTradeRows.filter((row) => (rowHorizon(row) ?? 0) > 0);
   const armMarkouts = buildArmHorizonStats(rotationRows, args.horizonsSec, args.roundTripCostPct);
   const paperArmStats = buildPaperArmStats(rotationPaperRows, assumedAtaRentSol, assumedNetworkFeeSol);
+  const kolTransferPosterior = buildKolTransferPosteriorReport(kolTransferRows as unknown as KolTransferRow[], {
+    input: kolTransferInput,
+    sinceSec: Math.floor(args.sinceMs / 1000),
+  });
   return {
     generatedAt: new Date().toISOString(),
     realtimeDir: args.realtimeDir,
@@ -992,6 +1035,15 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
       candidateIndex,
       args.roundTripCostPct
     ),
+    kolTransferPosterior: {
+      input: kolTransferInput,
+      rows: kolTransferPosterior.rows,
+      candidates: kolTransferPosterior.candidates,
+      topRotationFit: kolTransferPosterior.metrics
+        .slice()
+        .sort((a, b) => b.rotationFitScore - a.rotationFitScore || b.buyCandidates - a.buyCandidates)
+        .slice(0, 12),
+    },
   };
 }
 

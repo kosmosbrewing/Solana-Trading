@@ -405,14 +405,15 @@ cron 예시:
 - **자동 paper-arm-report (2026-04-26)**: sync 직후 `kol-paper-trades.jsonl` 기준 sub-arm 통계 생성 → `reports/kol-paper-arms-YYYY-MM-DD.md`. Jupiter API 0건 (file-only) — default ON.
 - **자동 token-quality-report (2026-05-01)**: sync 직후 `token-quality-observations.jsonl` + paper/live/missed-alpha + dev-wallet candidate JSON join → `reports/token-quality-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
 - **자동 live-canary-report (2026-05-01)**: sync 직후 live canary wallet-truth / 5x / catastrophic / runner 진단 생성 → `reports/kol-live-canary-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
-- **자동 smart-v3-evidence-report (2026-05-03)**: sync 직후 `smart-v3-paper-trades.jsonl`, `smart-v3-live-trades.jsonl`, shared `trade-markouts.jsonl` 로 smart-v3 cohort verdict 생성 → `reports/smart-v3-evidence-YYYY-MM-DD.md/json`. T+ verdict coverage 는 close `positionId × anchorType × horizon` 기준이며, Closed Trades W/L 은 copyable/wallet-first 로 계산하고 token-only W/L 은 별도 표시한다. Jupiter/RPC API 0건 (file-only) — default ON.
+- **자동 KOL transfer posterior report (2026-05-05)**: sync 직후 `data/research/kol-transfers.jsonl` 을 읽어 KOL별 rotation/smart-v3 posterior 진단 생성 → `reports/kol-transfer-posterior-YYYY-MM-DD.md/json`. API 호출 0건 (file-only) — default ON. 원본 backfill 은 `npm run kol:transfer-backfill` 로 별도 실행한다.
+- **자동 smart-v3-evidence-report (2026-05-03 / 2026-05-05 posterior join)**: sync 직후 `smart-v3-paper-trades.jsonl`, `smart-v3-live-trades.jsonl`, shared `trade-markouts.jsonl`, 선택적 `data/research/kol-transfers.jsonl` 로 smart-v3 cohort verdict + KOL transfer posterior 진단 생성 → `reports/smart-v3-evidence-YYYY-MM-DD.md/json`. T+ verdict coverage 는 close `positionId × anchorType × horizon` 기준이며, Closed Trades W/L 은 copyable/wallet-first 로 계산하고 token-only W/L 은 별도 표시한다. Jupiter/RPC API 0건 (file-only) — default ON.
 - **자동 trade-markout-report (2026-05-02)**: sync 직후 `trade-markout-anchors.jsonl` + `trade-markouts.jsonl` 로 실제 buy/sell/paper anchor 의 T+30/60/300/1800 coverage / continuation 진단 생성 → `reports/trade-markout-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
 - **자동 pure_ws trade-markout-report (2026-05-03)**: sync 직후 pure_ws paper T+15/30/60/180/300/1800 coverage / post-cost behavior 생성 → `reports/pure-ws-trade-markout-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
-- **자동 rotation-report (2026-05-03)**: sync 직후 rotation control/arms/no-trade markout / T+15/30/60 post-cost 진단 생성 → `reports/rotation-lane-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
+- **자동 rotation-report (2026-05-03 / 2026-05-05 posterior join)**: sync 직후 rotation control/arms/no-trade markout / T+15/30/60 post-cost / KOL transfer posterior 진단 생성 → `reports/rotation-lane-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
 - **자동 winner-kill-report (2026-05-01)**: sync 직후 missed-alpha close-site markout 으로 5x winner-kill rate 생성 → `reports/winner-kill-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
 - **자동 sync-health manifest (2026-05-03)**: 핵심 JSONL/log 파일의 row count, bytes, mtime, lane projection freshness, 최근 24h W/L/net/last-trade summary 를 `reports/sync-health-YYYY-MM-DD.md`로 저장. 데이터 공백과 sync 실패 구분용 — default ON.
 - **opt-in shadow-eval (2026-04-26)**: `RUN_SHADOW_EVAL=true` 시 KOL signal raw alpha 측정 (Jupiter forward quote 사용). default OFF — Jupiter quota 영향.
-- **환경변수 주의**: smart-v3 evidence/report 추가는 운영 `.env` 변경이 필요 없다. `SKIP_SMART_V3_EVIDENCE_REPORT` 와 `SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT` 는 sync/report-only shell knob 이며 runtime 전략 환경변수가 아니다.
+- **환경변수 주의**: smart-v3 evidence/rotation/KOL transfer posterior report 추가는 운영 `.env` 변경이 필요 없다. `SKIP_KOL_TRANSFER_REPORT`, `KOL_TRANSFER_REPORT_SINCE`, `KOL_TRANSFER_INPUT`, `SKIP_SMART_V3_EVIDENCE_REPORT`, `SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT` 는 sync/report-only shell knob 이며 runtime 전략 환경변수가 아니다.
 
 ```bash
 # 기본 사용 (파일 sync + file-only reports, DB 미사용)
@@ -438,6 +439,9 @@ SKIP_TOKEN_QUALITY_REPORT=true bash scripts/sync-vps-data.sh
 
 # live canary / smart-v3 evidence / trade markout / winner-kill / sync health 생략
 SKIP_LIVE_CANARY_REPORT=true bash scripts/sync-vps-data.sh
+SKIP_KOL_TRANSFER_REPORT=true bash scripts/sync-vps-data.sh
+KOL_TRANSFER_REPORT_SINCE=14d bash scripts/sync-vps-data.sh
+KOL_TRANSFER_INPUT=data/research/kol-transfers.jsonl bash scripts/sync-vps-data.sh
 SKIP_SMART_V3_EVIDENCE_REPORT=true bash scripts/sync-vps-data.sh
 SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT=0.01 bash scripts/sync-vps-data.sh
 SKIP_TRADE_MARKOUT_REPORT=true bash scripts/sync-vps-data.sh
@@ -446,6 +450,29 @@ SKIP_ROTATION_REPORT=true bash scripts/sync-vps-data.sh
 SKIP_WINNER_KILL_REPORT=true bash scripts/sync-vps-data.sh
 SKIP_SYNC_HEALTH=true bash scripts/sync-vps-data.sh
 ```
+
+KOL transfer posterior 운영:
+
+```bash
+# API 호출 있음: Helius getTransfersByAddress backfill. 기본 30d / active KOL.
+HELIUS_API_KEY=... npm run kol:transfer-backfill -- --since 30d
+
+# 최근 1주 관측 정확도 갱신용: 기존 ledger 백업 후 7d snapshot 으로 원자적 교체.
+# backup: data/research/kol-transfers.jsonl.bak-YYYYMMDDTHHMMSSZ
+HELIUS_API_KEY=... npm run kol:transfer-backfill -- --since 7d --overwrite
+
+# API 호출 없음: backfill 결과를 posterior report 로 변환.
+npm run kol:transfer-report -- --input data/research/kol-transfers.jsonl --since 30d \
+  --md reports/kol-transfer-posterior-$(date +%Y-%m-%d).md \
+  --json reports/kol-transfer-posterior-$(date +%Y-%m-%d).json
+```
+
+주의:
+
+- `kol-transfer-backfill` 은 Helius API를 호출하므로 sync 기본 경로에 넣지 않는다.
+- `--overwrite` 는 기존 `kol-transfers.jsonl` 을 백업한 뒤 임시 파일에 쓰고, Helius page 성공이 0건이면 교체하지 않는다.
+- `kol-transfer-report`, `smart-v3-evidence-report`, `rotation-report` 의 posterior 섹션은 모두 진단 전용이다.
+- transfer 기반 buy/sell 후보는 precise swap PnL 이 아니다. 정책 보조신호 승격 전에는 상위 signature만 gTFA drill-down 으로 검증한다.
 
 원칙:
 

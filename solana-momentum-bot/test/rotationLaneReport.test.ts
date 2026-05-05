@@ -86,6 +86,64 @@ describe('rotation-lane-report', () => {
     expect(markdown).toContain('postCostDelta');
   });
 
+  it('adds a diagnostic KOL transfer posterior section for rotation fit', async () => {
+    const transferFile = path.join(dir, 'kol-transfers.jsonl');
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([]));
+    await writeFile(transferFile, jsonl([
+      {
+        kolId: 'dv',
+        kolAddress: 'DV111',
+        kolTier: 'S',
+        laneRole: 'rotation_anchor',
+        tradingStyle: 'rotator',
+        walletDirection: 'out',
+        transfer: {
+          signature: 'buy1',
+          blockTime: 1_778_870_400,
+          slot: 1,
+          type: 'TRANSFER',
+          mint: 'So11111111111111111111111111111111111111112',
+          uiAmount: '0.5',
+          amount: '500000000',
+        },
+      },
+      {
+        kolId: 'dv',
+        kolAddress: 'DV111',
+        kolTier: 'S',
+        laneRole: 'rotation_anchor',
+        tradingStyle: 'rotator',
+        walletDirection: 'in',
+        transfer: {
+          signature: 'buy1',
+          blockTime: 1_778_870_400,
+          slot: 1,
+          type: 'TRANSFER',
+          mint: 'MintRotationPosterior11111111111111111',
+          uiAmount: '1000',
+          amount: '1000',
+        },
+      },
+    ]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [15],
+      roundTripCostPct: 0.005,
+      kolTransferInput: transferFile,
+    });
+
+    expect(report.kolTransferPosterior.rows).toBe(2);
+    expect(report.kolTransferPosterior.topRotationFit[0].kolId).toBe('dv');
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('KOL Transfer Posterior — Rotation Fit');
+    expect(markdown).toContain('Diagnostic only');
+  });
+
   it('counts skipped rotation paper arms as no-trade markouts', async () => {
     await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
     await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));

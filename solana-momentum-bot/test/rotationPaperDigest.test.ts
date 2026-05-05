@@ -145,4 +145,20 @@ describe('rotation paper digest', () => {
     expect(message).toContain('· PAPER open 0건 · entries 1건 · skips 1건');
     expect(notifier.sendInfo.mock.calls[0][1]).toBe('kol_rotation_paper_digest');
   });
+
+  it('can force a startup baseline digest even when no new window events exist', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'rotation-digest-empty-'));
+    override('realtimeDataDir', dir);
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), '', 'utf8');
+    const notifier = {
+      sendInfo: jest.fn<Promise<void>, [string, string?]>(async () => {}),
+    };
+
+    await flushRotationPaperDigest(notifier as any, { force: true });
+
+    expect(notifier.sendInfo).toHaveBeenCalledTimes(1);
+    const message = notifier.sendInfo.mock.calls[0][0] as string;
+    expect(message).toContain('ROTATION PAPER 오늘 요약');
+    expect(message).toContain('· 합계 close 0건 (해당 구간 PAPER 거래 없음)');
+  });
 });

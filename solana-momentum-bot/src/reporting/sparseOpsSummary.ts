@@ -216,17 +216,25 @@ export function buildCohortFunnelBreakdown(
 export function buildSparseOpsSummaryMessage(summary: SparseOpsSummary | undefined): string | undefined {
   if (!summary) return undefined;
 
+  const activePairs = summary.latestTriggerStats?.activePairCount ?? 0;
+  const sparsePairs = summary.latestTriggerStats?.sparseDominantPairCount ?? 0;
+  const normalIdle = summary.totalSignals === 0 &&
+    summary.executedLiveSignals === 0 &&
+    activePairs === 0 &&
+    sparsePairs === 0;
   const status = summary.executedLiveSignals > 0
     ? `live ${summary.executedLiveSignals}건`
     : summary.totalSignals > 0
       ? '진입 없음'
-      : '신호 없음';
+      : normalIdle
+        ? '정상 idle'
+        : '신호 없음';
   const lines = [
     `희박 거래: ${status} (${summary.windowHours}h)`,
     `- 신호 ${summary.totalSignals}건 → live ${summary.executedLiveSignals}건`,
   ];
 
-  if (summary.latestTriggerStats) {
+  if (summary.latestTriggerStats && !normalIdle) {
     const trigger = summary.latestTriggerStats;
     if (typeof trigger.activePairCount === 'number' || typeof trigger.sparseDominantPairCount === 'number') {
       lines.push(`- 상태: 활성 pair ${trigger.activePairCount ?? '?'} · sparse pair ${trigger.sparseDominantPairCount ?? '?'}`);
@@ -239,14 +247,45 @@ export function buildSparseOpsSummaryMessage(summary: SparseOpsSummary | undefin
 
   if (summary.freshness) {
     const f = summary.freshness;
-    lines.push(
-      `- 후보: seen ${f.candidateSeen} · admSkip ${f.admissionSkip} · idleEvict ${f.idleEvicted}`
-    );
-    const bottleneck = formatPrimarySparseBottleneck(f);
+    const bottleneck = normalIdle ? formatAbstractSparseBottleneck(f) : formatPrimarySparseBottleneck(f);
     if (bottleneck) lines.push(`- 병목: ${bottleneck}`);
+    if (!normalIdle) {
+      lines.push(
+        `- 후보: seen ${f.candidateSeen} · admSkip ${f.admissionSkip} · idleEvict ${f.idleEvicted}`
+      );
+    }
   }
 
   return lines.join('\n');
+}
+
+function formatAbstractSparseBottleneck(freshness: FreshnessSummary): string | undefined {
+  const labels = freshness.admissionSkipByReason
+    .slice(0, 2)
+    .map((r) => abstractAdmissionReason(r.reason));
+  const uniqueLabels = [...new Set(labels.filter(Boolean))];
+  if (uniqueLabels.length > 0) return uniqueLabels.join(' / ');
+  if (freshness.idleEvicted > 0) return '후보 idle 만료';
+  return undefined;
+}
+
+function abstractAdmissionReason(reason: string): string {
+  switch (reason) {
+    case 'unsupported_dex':
+      return 'DEX 미지원';
+    case 'unsupported_pool_program':
+      return 'pool program 미지원';
+    case 'no_pairs':
+      return '페어 없음';
+    case 'parse_miss':
+      return '파싱 누락';
+    case 'pool_prewarm_miss':
+      return 'pool prewarm 미스';
+    case 'capacity':
+      return '처리 용량 제한';
+    default:
+      return reason.replace(/_/g, ' ');
+  }
 }
 
 function formatPrimarySparseBottleneck(freshness: FreshnessSummary): string | undefined {

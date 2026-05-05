@@ -93,4 +93,20 @@ describe('pure_ws paper digest', () => {
     expect(message).toContain('· 합계 close 0건 (해당 구간 PAPER 거래 없음)');
     expect(message).toContain('· PAPER open 0건 · entries 1건');
   });
+
+  it('can force a startup baseline digest even when no new window events exist', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'purews-digest-empty-'));
+    override('realtimeDataDir', dir);
+    await writeFile(path.join(dir, 'pure-ws-paper-trades.jsonl'), '', 'utf8');
+    const notifier = {
+      sendInfo: jest.fn<Promise<void>, [string, string?]>(async () => {}),
+    };
+
+    await flushPureWsPaperDigest(notifier as any, { force: true });
+
+    expect(notifier.sendInfo).toHaveBeenCalledTimes(1);
+    const message = notifier.sendInfo.mock.calls[0][0] as string;
+    expect(message).toContain('PURE_WS PAPER 오늘 요약');
+    expect(message).toContain('· 합계 close 0건 (해당 구간 PAPER 거래 없음)');
+  });
 });

@@ -15,11 +15,72 @@ import { flushRotationPaperDigest } from '../orchestration/rotationPaperDigest';
 const log = createModuleLogger('MonitoringLoops');
 
 const REGIME_UPDATE_INTERVAL_MS = 15 * 60 * 1000;
+const DIGEST_SCHEDULER_POLL_MS = 30_000;
+const STARTUP_DIGEST_ALIGNED_SUPPRESS_MS = 120_000;
 // 2026-04-29 (Tier 1 noise reduction): 1h → 2h.
 // Why: 매 시간 발사 = 24 msg/day. heartbeat (KST 짝수 hour) 와 동기 시 12 msg/day.
 //   reporting.ts 의 hourly batch (heartbeat 시 시간별 1줄 요약) 와 정보 중복도 감소.
 //   `KOL_HOURLY_DIGEST_INTERVAL_MS` env override 로 운영자 조정 가능.
 const KOL_HOURLY_DIGEST_INTERVAL_MS = Number(process.env.KOL_HOURLY_DIGEST_INTERVAL_MS ?? '7200000');
+
+function kstHourOf(date: Date): number {
+  return (date.getUTCHours() + 9) % 24;
+}
+
+function startDigestLoop(
+  label: string,
+  intervalMs: number,
+  flush: (options?: { force?: boolean }) => Promise<void>,
+  options: { startupDelayMs?: number } = {}
+): ReturnType<typeof setInterval> {
+  const safeIntervalMs = Math.max(60_000, intervalMs);
+  const intervalHours = safeIntervalMs % 3_600_000 === 0 ? safeIntervalMs / 3_600_000 : 0;
+  let lastStartupForcedAtMs = 0;
+  if (options.startupDelayMs != null) {
+    const startupTimer = setTimeout(() => {
+      lastStartupForcedAtMs = Date.now();
+      void flush({ force: true }).catch((error) => {
+        log.warn(`${label} startup flush failed: ${error}`);
+      });
+    }, Math.max(0, options.startupDelayMs));
+    startupTimer.unref?.();
+  }
+
+  if (intervalHours >= 1) {
+    let lastFiredUtcHour = -1;
+    const handle = setInterval(async () => {
+      const now = new Date();
+      const utcHour = Math.floor(now.getTime() / 3_600_000);
+      if (utcHour === lastFiredUtcHour) return;
+      if (lastStartupForcedAtMs > 0 && now.getTime() - lastStartupForcedAtMs < STARTUP_DIGEST_ALIGNED_SUPPRESS_MS) {
+        lastFiredUtcHour = utcHour;
+        return;
+      }
+
+      const kstHour = kstHourOf(now);
+      if (kstHour % intervalHours !== 0) return;
+
+      lastFiredUtcHour = utcHour;
+      try {
+        await flush();
+      } catch (error) {
+        log.warn(`${label} failed: ${error}`);
+      }
+    }, DIGEST_SCHEDULER_POLL_MS);
+    log.info(`${label} scheduled — interval=${safeIntervalMs / 60000}min, KST-hour aligned`);
+    return handle;
+  }
+
+  const handle = setInterval(async () => {
+    try {
+      await flush();
+    } catch (error) {
+      log.warn(`${label} failed: ${error}`);
+    }
+  }, safeIntervalMs);
+  log.info(`${label} scheduled — interval=${safeIntervalMs / 60000}min`);
+  return handle;
+}
 
 export interface MonitoringDeps {
   ctx: BotContext;
@@ -163,26 +224,20 @@ export async function startMonitoringLoops(deps: MonitoringDeps): Promise<Monito
   // ─── KOL paper hourly digest (L1) — kol_hunter 켜져 있을 때만
   let kolHourlyDigestInterval: ReturnType<typeof setInterval> | null = null;
   if (config.kolHunterEnabled) {
-    kolHourlyDigestInterval = setInterval(async () => {
-      try {
-        await flushKolHourlyDigest(deps.notifier);
-      } catch (error) {
-        log.warn(`KOL hourly digest failed: ${error}`);
-      }
-    }, KOL_HOURLY_DIGEST_INTERVAL_MS);
-    log.info(`KOL hourly digest scheduled — interval=${KOL_HOURLY_DIGEST_INTERVAL_MS / 60000}min`);
+    kolHourlyDigestInterval = startDigestLoop(
+      'KOL hourly digest',
+      KOL_HOURLY_DIGEST_INTERVAL_MS,
+      () => flushKolHourlyDigest(deps.notifier)
+    );
   }
   let pureWsPaperDigestInterval: ReturnType<typeof setInterval> | null = null;
   if (config.pureWsLaneEnabled && config.pureWsPaperNotifyEnabled && config.pureWsPaperDigestEnabled) {
-    const intervalMs = Math.max(60_000, config.pureWsPaperDigestIntervalMs);
-    pureWsPaperDigestInterval = setInterval(async () => {
-      try {
-        await flushPureWsPaperDigest(deps.notifier);
-      } catch (error) {
-        log.warn(`pure_ws paper digest failed: ${error}`);
-      }
-    }, intervalMs);
-    log.info(`pure_ws paper digest scheduled — interval=${intervalMs / 60000}min`);
+    pureWsPaperDigestInterval = startDigestLoop(
+      'pure_ws paper digest',
+      config.pureWsPaperDigestIntervalMs,
+      (options) => flushPureWsPaperDigest(deps.notifier, options),
+      { startupDelayMs: 20_000 }
+    );
   }
   let rotationPaperDigestInterval: ReturnType<typeof setInterval> | null = null;
   if (
@@ -191,15 +246,12 @@ export async function startMonitoringLoops(deps: MonitoringDeps): Promise<Monito
     config.kolHunterRotationPaperNotifyEnabled &&
     config.kolHunterRotationPaperDigestEnabled
   ) {
-    const intervalMs = Math.max(60_000, config.kolHunterRotationPaperDigestIntervalMs);
-    rotationPaperDigestInterval = setInterval(async () => {
-      try {
-        await flushRotationPaperDigest(deps.notifier);
-      } catch (error) {
-        log.warn(`rotation paper digest failed: ${error}`);
-      }
-    }, intervalMs);
-    log.info(`rotation paper digest scheduled — interval=${intervalMs / 60000}min`);
+    rotationPaperDigestInterval = startDigestLoop(
+      'rotation paper digest',
+      config.kolHunterRotationPaperDigestIntervalMs,
+      (options) => flushRotationPaperDigest(deps.notifier, options),
+      { startupDelayMs: 25_000 }
+    );
   }
 
   return {

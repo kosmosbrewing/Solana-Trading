@@ -88,10 +88,17 @@ describe('rotation-lane-report', () => {
 
   it('adds a diagnostic KOL transfer posterior section for rotation fit', async () => {
     const transferFile = path.join(dir, 'kol-transfers.jsonl');
+    const kolDbPath = path.join(dir, 'wallets.json');
     await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
     await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
     await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([]));
     await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([]));
+    await writeFile(kolDbPath, JSON.stringify({
+      kols: [
+        { id: 'dv', addresses: ['DV111'], tier: 'A', is_active: true, trading_style: 'rotator' },
+        { id: 'decu', addresses: ['DECU111'], tier: 'A', is_active: true, trading_style: 'scalper' },
+      ],
+    }), 'utf8');
     await writeFile(transferFile, jsonl([
       {
         kolId: 'dv',
@@ -135,13 +142,23 @@ describe('rotation-lane-report', () => {
       horizonsSec: [15],
       roundTripCostPct: 0.005,
       kolTransferInput: transferFile,
+      kolDbPath,
     });
 
     expect(report.kolTransferPosterior.rows).toBe(2);
     expect(report.kolTransferPosterior.topRotationFit[0].kolId).toBe('dv');
+    expect(report.kolTransferPosterior.coverageSummary).toMatchObject({
+      targets: 2,
+      ok: 1,
+      stale: 0,
+      missing: 1,
+      rotationTargets: 2,
+    });
     const markdown = renderRotationLaneReportMarkdown(report);
     expect(markdown).toContain('KOL Transfer Posterior — Rotation Fit');
     expect(markdown).toContain('Diagnostic only');
+    expect(markdown).toContain('### Coverage');
+    expect(markdown).toContain('| decu | A | - | scalper | yes | missing |');
   });
 
   it('counts skipped rotation paper arms as no-trade markouts', async () => {
@@ -248,7 +265,7 @@ describe('rotation-lane-report', () => {
     expect(markdown).toContain('DEV_STATUS_WATCHLIST');
   });
 
-  it('summarizes rotation paper arms and rent-adjusted stress PnL', async () => {
+  it('summarizes rotation paper arms with refund-adjusted and wallet-drag stress PnL', async () => {
     await writeFile(path.join(dir, 'kol-paper-trades.jsonl'), jsonl([
       {
         strategy: 'kol_hunter',
@@ -264,9 +281,17 @@ describe('rotation-lane-report', () => {
         netSolTokenOnly: 0.003,
         rotationMonetizableEdge: {
           pass: true,
-          costRatio: 0.04,
-          requiredGrossMovePct: 0.04,
+          ticketSol: 0.02,
+          bleedTotalSol: 0.0008,
+          requiredGrossMovePct: 0.14,
         },
+        rotationFlowMetrics: {
+          topupStrength: 0.25,
+          sellPressure30: 0,
+          anchorBuySolBeforeFirstSell: 1.2,
+          freshTopup: true,
+        },
+        survivalFlags: ['TOKEN_QUALITY_UNKNOWN'],
       },
       {
         strategy: 'kol_hunter',
@@ -285,6 +310,13 @@ describe('rotation-lane-report', () => {
           costRatio: 0.12,
           requiredGrossMovePct: 0.12,
         },
+        rotationFlowMetrics: {
+          topupStrength: 0,
+          sellPressure30: 0.9,
+          anchorBuySolBeforeFirstSell: 0.4,
+          freshTopup: false,
+        },
+        survivalFlags: ['UNCLEAN_TOKEN:top10_80pct', 'EXIT_LIQUIDITY_UNKNOWN'],
       },
     ]));
     await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([
@@ -315,21 +347,45 @@ describe('rotation-lane-report', () => {
     const cost = report.paperTrades.byArm.find((row) => row.armName === 'rotation_cost_guard_v1');
     expect(fast?.rows).toBe(1);
     expect(fast?.wins).toBe(1);
+    expect(fast?.refundAdjustedNetSol).toBeCloseTo(0.0029);
     expect(fast?.rentAdjustedNetSol).toBeCloseTo(0.0019);
     expect(fast?.edgePassRows).toBe(1);
     expect(fast?.medianEdgeCostRatio).toBeCloseTo(0.04);
+    expect(fast?.medianRequiredGrossMovePct).toBeCloseTo(0.04);
+    expect(report.paperTrades.winnerEntryPairings.find((row) =>
+      row.armName === 'rotation_fast15_v1' && row.exitBucket === 'winner_trailing_t1'
+    )?.refundAdjustedNetSol).toBeCloseTo(0.0029);
+    expect(report.paperTrades.winnerEntryDiagnostics.find((row) =>
+      row.armName === 'rotation_fast15_v1' && row.exitBucket === 'winner_trailing_t1'
+    )).toMatchObject({
+      medianTopupStrength: 0.25,
+      medianSellPressure30: 0,
+      medianAnchorBuySol: 1.2,
+      freshTopupRate: 1,
+      unknownQualityRate: 1,
+    });
+    expect(report.paperTrades.winnerEntryDiagnostics.find((row) =>
+      row.armName === 'rotation_cost_guard_v1' && row.exitBucket === 'other_exits'
+    )?.highRiskFlagRate).toBe(1);
+    expect(cost?.refundAdjustedNetSol).toBeCloseTo(0.0009);
     expect(cost?.rentAdjustedNetSol).toBeCloseTo(-0.0001);
     expect(cost?.edgeFailRows).toBe(1);
+    expect(cost?.medianRequiredGrossMovePct).toBeCloseTo(0.12);
     expect(report.tradeMarkouts.byArm[0].armName).toBe('rotation_fast15_v1');
     expect(report.tradeMarkouts.byArm[0].afterBuy[0].positivePostCostRows).toBe(1);
     expect(report.evidenceVerdicts.find((row) => row.armName === 'rotation_fast15_v1')?.verdict).toBe('COLLECT');
 
     const markdown = renderRotationLaneReportMarkdown(report);
     expect(markdown).toContain('## Paper Trades By Arm');
+    expect(markdown).toContain('## Winner Entry Pairing');
+    expect(markdown).toContain('## Winner Entry Diagnostics');
+    expect(markdown).toContain('med sellPressure30');
     expect(markdown).toContain('## Evidence Verdict By Arm');
     expect(markdown).toContain('rotation_fast15_v1');
     expect(markdown).toContain('edge pass/fail');
-    expect(markdown).toContain('rent-adjusted stress');
+    expect(markdown).toContain('refund-adjusted');
+    expect(markdown).toContain('wallet-drag stress');
+    expect(markdown).toContain('required gross move');
     expect(markdown).toContain('## Markouts By Arm');
   });
 
@@ -385,6 +441,7 @@ describe('rotation-lane-report', () => {
     expect(verdict?.minOkCoverage).toBe(1);
     expect(verdict?.edgeCoverage).toBe(1);
     expect(verdict?.edgePassRate).toBe(0);
+    expect(verdict?.refundAdjustedNetSol).toBeGreaterThan(0);
     expect(verdict?.rentAdjustedNetSol).toBeLessThan(0);
 
     const markdown = renderRotationLaneReportMarkdown(report);
@@ -392,7 +449,7 @@ describe('rotation-lane-report', () => {
     expect(markdown).toContain('edge pass 0.00% < 50.00%');
   });
 
-  it('requires T+15, T+30, and T+60 coverage before judging sampled arms', async () => {
+  it('requires T+15 and T+30 coverage before judging sampled arms', async () => {
     const armName = 'rotation_fast15_v1';
     await writeFile(path.join(dir, 'kol-paper-trades.jsonl'), jsonl(
       Array.from({ length: 50 }, (_, index) => ({
@@ -444,12 +501,127 @@ describe('rotation-lane-report', () => {
     expect(verdict?.requiredHorizonCoverage).toEqual([
       { horizonSec: 15, okCoverage: 0 },
       { horizonSec: 30, okCoverage: 0 },
-      { horizonSec: 60, okCoverage: 1 },
     ]);
 
     const markdown = renderRotationLaneReportMarkdown(report);
     expect(markdown).toContain('T+15s ok coverage 0.00% < 80.00%');
     expect(markdown).toContain('T+30s ok coverage 0.00% < 80.00%');
+  });
+
+  it('uses T+15/T+30 as primary edge and treats T+60 weakness as decay warning', async () => {
+    const armName = 'kol_hunter_rotation_v1';
+    await writeFile(path.join(dir, 'kol-paper-trades.jsonl'), jsonl(
+      Array.from({ length: 100 }, (_, index) => ({
+        strategy: 'kol_hunter',
+        lane: 'kol_hunter',
+        armName,
+        parameterVersion: 'rotation-v1.0.0',
+        kolEntryReason: 'rotation_v1',
+        positionId: `rot-control-${index}`,
+        closedAt: `2026-05-02T00:${String(index % 60).padStart(2, '0')}:00.000Z`,
+        exitReason: 'winner_trailing_t1',
+        holdSec: 18,
+        netSol: 0.002,
+        netSolTokenOnly: 0.003,
+        rotationMonetizableEdge: {
+          pass: true,
+          costRatio: 0.04,
+          requiredGrossMovePct: 0.04,
+        },
+      }))
+    ));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl(
+      Array.from({ length: 100 }, (_, index) => [15, 30, 60].map((horizonSec) => ({
+        anchorType: 'buy',
+        positionId: `rot-control-${index}`,
+        tokenMint: `MintRotationControl${index}`,
+        horizonSec,
+        quoteStatus: 'ok',
+        deltaPct: horizonSec === 15 ? 0.03 : horizonSec === 30 ? 0.02 : -0.02,
+        recordedAt: `2026-05-02T00:${String(index % 60).padStart(2, '0')}:30.000Z`,
+        extras: { armName, entryReason: 'rotation_v1' },
+      }))).flat()
+    ));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [15, 30, 60],
+      roundTripCostPct: 0.005,
+      assumedAtaRentSol: 0.001,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    const verdict = report.evidenceVerdicts.find((row) => row.armName === armName);
+    expect(verdict?.verdict).toBe('PROMOTION_CANDIDATE');
+    expect(verdict?.primaryHorizonSec).toBe(15);
+    expect(verdict?.primaryMedianPostCostDeltaPct).toBeCloseTo(0.025);
+    expect(verdict?.decayMedianPostCostDeltaPct).toBeCloseTo(-0.025);
+    expect(verdict?.reasons).toContain('T+60s decay warning -2.50% <= 0');
+    expect(verdict?.reasons).toContain('promotion evidence threshold met');
+
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('primary postCost');
+    expect(markdown).toContain('T+15s 2.50%, T+30s 1.50%');
+    expect(markdown).toContain('T+60 decay');
+  });
+
+  it('rejects promotion when T+15 is positive but T+30 has already decayed below cost', async () => {
+    const armName = 'kol_hunter_rotation_v1';
+    await writeFile(path.join(dir, 'kol-paper-trades.jsonl'), jsonl(
+      Array.from({ length: 100 }, (_, index) => ({
+        strategy: 'kol_hunter',
+        lane: 'kol_hunter',
+        armName,
+        parameterVersion: 'rotation-v1.0.0',
+        kolEntryReason: 'rotation_v1',
+        positionId: `rot-decay-${index}`,
+        closedAt: `2026-05-02T00:${String(index % 60).padStart(2, '0')}:00.000Z`,
+        exitReason: 'winner_trailing_t1',
+        holdSec: 18,
+        netSol: 0.002,
+        netSolTokenOnly: 0.003,
+        rotationMonetizableEdge: {
+          pass: true,
+          costRatio: 0.04,
+          requiredGrossMovePct: 0.04,
+        },
+      }))
+    ));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl(
+      Array.from({ length: 100 }, (_, index) => [15, 30].map((horizonSec) => ({
+        anchorType: 'buy',
+        positionId: `rot-decay-${index}`,
+        tokenMint: `MintRotationDecay${index}`,
+        horizonSec,
+        quoteStatus: 'ok',
+        deltaPct: horizonSec === 15 ? 0.03 : -0.01,
+        recordedAt: `2026-05-02T00:${String(index % 60).padStart(2, '0')}:30.000Z`,
+        extras: { armName, entryReason: 'rotation_v1' },
+      }))).flat()
+    ));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [15, 30],
+      roundTripCostPct: 0.005,
+      assumedAtaRentSol: 0.001,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    const verdict = report.evidenceVerdicts.find((row) => row.armName === armName);
+    expect(verdict?.verdict).toBe('POST_COST_REJECT');
+    expect(verdict?.primaryHorizonSec).toBe(15);
+    expect(verdict?.primaryHorizonPostCost).toEqual([
+      { horizonSec: 15, medianPostCostDeltaPct: 0.024999999999999998 },
+      { horizonSec: 30, medianPostCostDeltaPct: -0.015 },
+    ]);
+    expect(verdict?.reasons).toContain('T+30s median postCost -1.50% <= 0');
   });
 
   it('splits after-sell markouts into final close, partial reduce, and hard-cut cohorts', async () => {

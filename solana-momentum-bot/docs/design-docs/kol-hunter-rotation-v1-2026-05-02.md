@@ -251,46 +251,105 @@ RPC call is required on the entry path.
   `KOL_HUNTER_ROTATION_EXIT_FLOW_PAPER_ENABLED=true`.
 
 Promotion rule remains unchanged: these arms must stay out of live until there
-are at least 50-100 fresh closes, `okCoverage >= 80%`, control-beating
-post-cost net, no loser-loss deterioration, and non-negative rent/network stress.
+are at least 50-100 fresh closes, `okCoverage >= 80%` on the primary
+`T+15/T+30` windows, control-beating post-cost net, no loser-loss
+deterioration, and positive refund-adjusted net.
 
 ### Monetizable-Edge Shadow Gate - 2026-05-03
 
 Deep research review conclusion: rotation is the most cost-sensitive KOL lane,
-so arm success must be judged after wallet-realistic execution drag, not only
-raw T+ continuation. Current implementation keeps all new rotation arms
-paper-only and adds a shadow estimate to every rotation paper position:
+so arm success must be judged after copyable execution drag, not only raw T+
+continuation. Current implementation keeps all new rotation arms paper-only and
+adds a shadow estimate to every rotation paper position:
 
 - `rotationMonetizableEdge.schemaVersion = rotation-monetizable-edge/v1`;
-- assumed wallet drag = ATA rent + venue bleed model + base/priority fee +
+- irreversible execution cost = venue bleed model + base/priority fee +
   entry/quick-exit slippage;
-- `costRatio = totalCostSol / ticketSol`;
+- recoverable ATA rent is tracked separately as wallet drag, not as permanent
+  strategy loss;
+- `costRatio = irreversibleCostSol / ticketSol`;
+- `walletDragRatio = (recoverableRentSol + irreversibleCostSol) / ticketSol`;
 - default pass threshold `KOL_HUNTER_ROTATION_EDGE_MAX_COST_RATIO=0.06`;
 - default mode is observe-only. It does not block paper entries and never routes
   to live;
 - paper close ledgers, trade-markout extras, and rotation reports expose
-  pass/fail, median cost ratio, and required gross move.
+  pass/fail, median cost ratio, wallet-drag ratio, and required gross move.
 
 This is intentionally a validation layer, not a new entry rule. Promotion still
-requires positive post-cost markout, non-negative rent/network stress, and enough
-closed samples.
+requires positive primary-window post-cost markout, positive refund-adjusted net,
+and enough closed samples.
 
 `scripts/rotation-lane-report.ts` now renders an arm-level evidence verdict:
 
 - `COLLECT`: fewer than 50 closed paper samples;
-- `DATA_GAP`: at least 50 closes, but any required T+15/T+30/T+60 buy
+- `DATA_GAP`: at least 50 closes, but any required T+15/T+30 buy
   markout coverage is missing or below `80%`, or `rotationMonetizableEdge`
   coverage is below `80%`;
-- `COST_REJECT`: edge shadow pass rate is weak or rent/network stress is not
+- `COST_REJECT`: edge shadow pass rate is weak or refund-adjusted net is not
   positive;
-- `POST_COST_REJECT`: T+60 median post-cost markout is not positive;
+- `POST_COST_REJECT`: best primary T+15/T+30 median post-cost markout is not
+  positive or does not beat the control arm;
 - `WATCH`: 50-99 closes with positive evidence, or an experimental arm has no
-  control T+60 baseline yet;
+  control T+15/T+30 baseline yet;
 - `PROMOTION_CANDIDATE`: at least 100 closes with markout coverage, cost,
-  rent-stress, T+60 post-cost, and control-beating T+60 checks all passing.
+  refund-adjusted net, primary-window post-cost, and control-beating primary
+  checks all passing.
 
 The verdict is report-only. It cannot enable live routing and it does not block
 paper entries.
+
+2026-05-05 mission-aligned update:
+
+- Reports now show both `refund-adjusted SOL` and `wallet-drag stress SOL`.
+- `refund-adjusted SOL` treats ATA rent as recoverable and subtracts only the
+  configured irreversible network fee from token-only PnL.
+- `wallet-drag stress SOL` keeps the old conservative view of token-only PnL
+  minus ATA rent and network fee. It is still useful for wallet floor / capital
+  lock analysis, but it is not the promotion blocker by itself.
+- `Winner Entry Pairing` splits `winner_trailing_t1` from all other exits by
+  entry arm. This prevents treating `winner_trailing_t1` as an entry signal and
+  instead measures which entry arms most reliably reach the T1 trailing state.
+- `Winner Entry Diagnostics` splits the same winner/non-winner buckets by
+  `topupStrength`, `sellPressure30`, anchor buy size, fresh top-up rate,
+  high-risk flag rate, and unknown-quality flag rate. This is report-only and
+  exists to find candidate entry refinements without changing live behavior.
+- 2026-05-05 follow-up: the evidence verdict now treats T+15/T+30 as the
+  fast-compound primary window and T+60 as decay warning. A negative T+60 no
+  longer rejects an otherwise positive fast arm; it tells the operator that the
+  lane should harvest earlier rather than behave like a runner lane.
+- 2026-05-05 review fix: promotion now requires both primary windows to stay
+  positive after cost. An arm with positive T+15 but negative T+30 is a
+  `POST_COST_REJECT` until a future ADR defines an explicit one-horizon capture
+  arm. The report renders T+15 and T+30 side by side instead of hiding behind a
+  single best-horizon value.
+- 2026-05-05 review fix: legacy `rotationMonetizableEdge.requiredGrossMovePct`
+  rows that included recoverable ATA rent are normalized to copyable
+  irreversible cost in `required gross move`; wallet-drag remains visible in its
+  own column.
+
+### KOL Transfer Posterior Coverage - 2026-05-05
+
+The Helius transfer posterior is diagnostic-only. It can help explain whether a
+KOL behaves more like a short-rotation wallet or a support/runner wallet, but it
+must not become a live allowlist or blocklist without a separate evidence review.
+
+The posterior report now loads the active KOL DB and classifies every active
+address as:
+
+- `ok`: this KOL/address has posterior rows inside the report window;
+- `stale`: historical posterior rows exist, but none are fresh for the report
+  window;
+- `missing`: no posterior rows are present in the local cache.
+
+Rotation reports surface the same coverage table before showing rotation-fit
+scores. This prevents stale posterior data from being misread as a bad KOL
+signal. A stale/missing posterior is a data quality finding, not a trading
+decision. Promotion still requires fresh arm-level paper closes, T+15/T+30
+`okCoverage`, refund-adjusted post-cost net, and control-beating evidence.
+
+Coverage matching is address-first, so KOL id alias changes do not create false
+`missing` rows. If the active KOL DB cannot be loaded, the report states
+`load_failed` instead of rendering an empty active target set.
 
 ## Exit Shape
 

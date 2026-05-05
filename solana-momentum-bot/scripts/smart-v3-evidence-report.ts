@@ -67,6 +67,8 @@ interface SmartV3CohortStats {
   copyableEdgeRows: number;
   copyablePassRows: number;
   hardCutRows: number;
+  medianMaeWorstPct: number | null;
+  medianHardCutMaePct: number | null;
   t1Rows: number;
   t2Rows: number;
   t3Rows: number;
@@ -383,6 +385,22 @@ function isHardCut(row: JsonRow): boolean {
   return reason.includes('hard_cut') || reason.includes('stat_stop') || reason.includes('quick_reject');
 }
 
+function maeWorstPctOf(row: JsonRow): number | null {
+  return normalizeReturnFraction(firstNum(row, ['maeWorstPct', 'maePctTokenOnly', 'maePct']));
+}
+
+function hardCutMaePctOf(row: JsonRow): number | null {
+  return normalizeReturnFraction(firstNum(row, ['hardCutTriggerMaePct', 'maeWorstPct', 'maePctTokenOnly', 'maePct']));
+}
+
+function recoverableRentSolOfRow(row: JsonRow, assumedAtaRentSol: number): number {
+  const direct = firstNum(row, ['ataRentSol', 'entryRentSol']);
+  if (direct != null) return Math.max(0, direct);
+  const edge = smartV3CopyableEdgeOf(row);
+  const edgeRent = edge ? num(edge.assumedAtaRentSol) : null;
+  return edgeRent != null && edgeRent > 0 ? edgeRent : assumedAtaRentSol;
+}
+
 function copyableNetSolOfRow(
   mode: 'paper' | 'live',
   row: JsonRow,
@@ -391,8 +409,11 @@ function copyableNetSolOfRow(
 ): number {
   const edge = smartV3CopyableEdgeOf(row);
   const edgeNet = edge ? num(edge.copyableNetSol) : null;
+  if (mode === 'live') {
+    const baseNet = edgeNet ?? tradeNetSol(row);
+    return baseNet + recoverableRentSolOfRow(row, assumedAtaRentSol);
+  }
   if (edgeNet != null) return edgeNet;
-  if (mode === 'live') return tradeNetSol(row);
   return tradeNetSolTokenOnly(row) - assumedAtaRentSol - assumedNetworkFeeSol;
 }
 
@@ -411,6 +432,11 @@ function summarizeTradeCohort(
   const holds = rows.map(tradeHoldSec).filter((value): value is number => value != null);
   const copyableEdges = rows.map(smartV3CopyableEdgeOf).filter((edge): edge is JsonRow => edge != null);
   const copyableNetSol = copyableNetByRow.reduce((sum, value) => sum + value, 0);
+  const maeWorstValues = rows.map(maeWorstPctOf).filter((value): value is number => value != null);
+  const hardCutMaeValues = rows
+    .filter(isHardCut)
+    .map(hardCutMaePctOf)
+    .filter((value): value is number => value != null);
   return {
     cohort: `${mode}:${entryReason}`,
     mode,
@@ -426,6 +452,8 @@ function summarizeTradeCohort(
     copyableEdgeRows: copyableEdges.length,
     copyablePassRows: copyableEdges.filter((edge) => edge.pass === true).length,
     hardCutRows: rows.filter(isHardCut).length,
+    medianMaeWorstPct: median(maeWorstValues),
+    medianHardCutMaePct: median(hardCutMaeValues),
     t1Rows: rows.filter((row) => hasField(row, ['t1VisitAtSec', 't1VisitedAt', 't1ReachedAt'])).length,
     t2Rows: rows.filter((row) => hasField(row, ['t2VisitAtSec', 't2VisitedAt', 't2ReachedAt'])).length,
     t3Rows: rows.filter((row) => hasField(row, ['t3VisitAtSec', 't3VisitedAt', 't3ReachedAt'])).length,
@@ -804,8 +832,8 @@ export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceRepor
   lines.push(`- paper rows: ${report.tradeRows.paperRows}`);
   lines.push(`- live rows: ${report.tradeRows.liveRows}`);
   lines.push('');
-  lines.push('| cohort | rows | copyable W/L | token W/L | netSOL | tokenOnly | copyable | edgeRows | hardCut | T1 | T2 | T3 | 5x | medHold | top exits |');
-  lines.push('|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|');
+  lines.push('| cohort | rows | copyable W/L | token W/L | netSOL | tokenOnly | rent-adj | edgeRows | hardCut | med worst MAE | med hardCut MAE | T1 | T2 | T3 | 5x | medHold | top exits |');
+  lines.push('|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|');
   for (const cohort of report.tradeRows.byCohort) {
     lines.push([
       `| ${cohort.cohort}`,
@@ -817,6 +845,8 @@ export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceRepor
       sol(cohort.rentAdjustedNetSol),
       `${cohort.copyablePassRows}/${cohort.copyableEdgeRows}`,
       cohort.hardCutRows,
+      pct(cohort.medianMaeWorstPct),
+      pct(cohort.medianHardCutMaePct),
       cohort.t1Rows,
       cohort.t2Rows,
       cohort.t3Rows,
@@ -825,7 +855,7 @@ export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceRepor
       cohort.topExitReasons.map((entry) => `${entry.reason}:${entry.count}`).join(', ') || 'n/a',
     ].join(' | ') + ' |');
   }
-  if (report.tradeRows.byCohort.length === 0) lines.push('| n/a | 0 | 0/0 | 0/0 | +0.0000 | +0.0000 | +0.0000 | 0/0 | 0 | 0 | 0 | 0 | 0 | n/a | n/a |');
+  if (report.tradeRows.byCohort.length === 0) lines.push('| n/a | 0 | 0/0 | 0/0 | +0.0000 | +0.0000 | +0.0000 | 0/0 | 0 | n/a | n/a | 0 | 0 | 0 | 0 | n/a | n/a |');
   lines.push('');
 
   lines.push('## T+ After Buy');

@@ -82,6 +82,7 @@ import {
   executeLiveSellWithImmediateRetries,
   liveSellRetryMaxAttempts,
   setLiveSellRetryDelaysMsForTests,
+  type LiveSellRetryUrgency,
 } from '../executor/liveSellRetry';
 // 2026-04-27 (KOL live canary): pure_ws live path 와 동일 패턴.
 import type { Order, PartialFillDataReason, Trade } from '../utils/types';
@@ -108,6 +109,11 @@ import {
   buildRotationMonetizableEdgeEstimate,
   type RotationMonetizableEdgeEstimate,
 } from './rotation/monetizableEdge';
+import {
+  buildExcursionTelemetryRecord,
+  updateExcursionTelemetry,
+  type ExcursionTelemetrySnapshot,
+} from './excursionTelemetry';
 
 const log = createModuleLogger('KolHunter');
 const LANE_STRATEGY = 'kol_hunter' as const;
@@ -297,6 +303,14 @@ export interface PaperPosition {
    * runnerNetPct = runnerNetSol/runnerTicket vs totalNetPct = totalNetSol/originalTicket 구분.
    */
   partialTakeLockedTicketSol?: number;
+  /** Token-only MAE/MFE telemetry for hard-cut quality analysis. */
+  excursionTelemetry?: ExcursionTelemetrySnapshot;
+  smartV3LiveHardCutReentry?: boolean;
+  smartV3HardCutParentPositionId?: string;
+  smartV3HardCutAtMs?: number;
+  smartV3HardCutEntryPrice?: number;
+  smartV3HardCutExitPrice?: number;
+  smartV3HardCutDiscountPct?: number;
 }
 
 interface SmartV3CopyableEdgeEstimate {
@@ -349,6 +363,12 @@ interface PaperEntryOptions {
   entryIndependentKolCount?: number;
   entryKolScore?: number;
   entryParticipatingKols?: KolDiscoveryScore['participatingKols'];
+  smartV3LiveHardCutReentry?: boolean;
+  smartV3HardCutParentPositionId?: string;
+  smartV3HardCutAtMs?: number;
+  smartV3HardCutEntryPrice?: number;
+  smartV3HardCutExitPrice?: number;
+  smartV3HardCutDiscountPct?: number;
 }
 
 interface DynamicExitParams {
@@ -419,11 +439,176 @@ function isInReentryCooldown(tokenMint: string): { blocked: boolean; remainingMs
 /** 테스트용 reset. */
 export function resetReentryCooldownForTests(): void {
   recentClosedTokens.clear();
+  smartV3LiveHardCutReentryByMint.clear();
 }
 
 const smartV3SellCancelByMint = new Map<string, number>();
 
+const SMART_V3_LIVE_HARD_CUT_REENTRY_WINDOW_MS = 10 * 60 * 1000;
+const SMART_V3_LIVE_HARD_CUT_REENTRY_MAX_ATTEMPTS = 1;
+const SMART_V3_LIVE_HARD_CUT_REENTRY_MIN_RECOVERY_PCT = 0.01;
+
+interface SmartV3LiveHardCutReentryState {
+  tokenMint: string;
+  parentPositionId: string;
+  closedAtMs: number;
+  expiresAtMs: number;
+  parentEntryTimeMs: number;
+  parentEntryPrice: number;
+  hardCutPrice: number;
+  participatingKolIds: string[];
+  attempts: number;
+  attempting: boolean;
+}
+
+interface SmartV3LiveHardCutReentryDecision {
+  allowed: boolean;
+  state?: SmartV3LiveHardCutReentryState;
+  discountPct?: number;
+  recoveredFromCutPct?: number;
+  reason?: string;
+}
+
+const smartV3LiveHardCutReentryByMint = new Map<string, SmartV3LiveHardCutReentryState>();
+
+function clearSmartV3LiveHardCutReentry(tokenMint: string): void {
+  smartV3LiveHardCutReentryByMint.delete(tokenMint);
+}
+
+function hasParticipatingKolSellSince(tokenMint: string, kolIds: string[], sinceMs: number): boolean {
+  const normalized = new Set(kolIds.map((id) => id.toLowerCase()));
+  if (normalized.size === 0) return false;
+  return recentKolTxs.some((tx) =>
+    tx.tokenMint === tokenMint &&
+    tx.action === 'sell' &&
+    tx.timestamp >= sinceMs &&
+    normalized.has(tx.kolId.toLowerCase())
+  );
+}
+
+function maybeRegisterSmartV3LiveHardCutReentry(
+  pos: PaperPosition,
+  hardCutPrice: number,
+  reason: CloseReason,
+  nowMs = Date.now()
+): void {
+  if (reason !== 'probe_hard_cut') return;
+  if (pos.isLive !== true || pos.isShadowArm || !isSmartV3Position(pos)) return;
+  const parentEntryPrice = pos.entryPriceTokenOnly && pos.entryPriceTokenOnly > 0
+    ? pos.entryPriceTokenOnly
+    : pos.entryPrice;
+  if (!Number.isFinite(parentEntryPrice) || parentEntryPrice <= 0) return;
+  if (!Number.isFinite(hardCutPrice) || hardCutPrice <= 0) return;
+  const participatingKolIds = pos.participatingKols.map((kol) => kol.id).filter(Boolean);
+  if (participatingKolIds.length === 0) return;
+  if (hasParticipatingKolSellSince(pos.tokenMint, participatingKolIds, pos.entryTimeSec * 1000)) {
+    clearSmartV3LiveHardCutReentry(pos.tokenMint);
+    return;
+  }
+  if (recentSmartV3SellCancelAt(pos.tokenMint, nowMs) != null) {
+    clearSmartV3LiveHardCutReentry(pos.tokenMint);
+    return;
+  }
+  const state: SmartV3LiveHardCutReentryState = {
+    tokenMint: pos.tokenMint,
+    parentPositionId: pos.positionId,
+    closedAtMs: nowMs,
+    expiresAtMs: nowMs + SMART_V3_LIVE_HARD_CUT_REENTRY_WINDOW_MS,
+    parentEntryTimeMs: pos.entryTimeSec * 1000,
+    parentEntryPrice,
+    hardCutPrice,
+    participatingKolIds,
+    attempts: 0,
+    attempting: false,
+  };
+  smartV3LiveHardCutReentryByMint.set(pos.tokenMint, state);
+  log.info(
+    `[KOL_HUNTER_SMART_V3_HARDCUT_REENTRY_ARMED] ${pos.tokenMint.slice(0, 8)} ` +
+    `parent=${pos.positionId} entry=${parentEntryPrice.toFixed(8)} cut=${hardCutPrice.toFixed(8)} ` +
+    `expires=${Math.round(SMART_V3_LIVE_HARD_CUT_REENTRY_WINDOW_MS / 1000)}s`
+  );
+}
+
+function evaluateSmartV3LiveHardCutReentry(
+  tokenMint: string,
+  currentPrice: number,
+  nowMs = Date.now()
+): SmartV3LiveHardCutReentryDecision {
+  const state = smartV3LiveHardCutReentryByMint.get(tokenMint);
+  if (!state) return { allowed: false, reason: 'not_armed' };
+  if (nowMs > state.expiresAtMs) {
+    clearSmartV3LiveHardCutReentry(tokenMint);
+    return { allowed: false, reason: 'expired' };
+  }
+  if (state.attempts >= SMART_V3_LIVE_HARD_CUT_REENTRY_MAX_ATTEMPTS) {
+    clearSmartV3LiveHardCutReentry(tokenMint);
+    return { allowed: false, reason: 'attempt_exhausted' };
+  }
+  if (state.attempting) {
+    return { allowed: false, state, reason: 'attempt_inflight' };
+  }
+  if (hasParticipatingKolSellSince(tokenMint, state.participatingKolIds, state.parentEntryTimeMs)) {
+    clearSmartV3LiveHardCutReentry(tokenMint);
+    return { allowed: false, reason: 'participating_kol_sold' };
+  }
+  if (recentSmartV3SellCancelAt(tokenMint, nowMs) != null) {
+    clearSmartV3LiveHardCutReentry(tokenMint);
+    return { allowed: false, reason: 'sell_cancel_quarantine' };
+  }
+  if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
+    return { allowed: false, state, reason: 'invalid_price' };
+  }
+  const discountPct = currentPrice / state.parentEntryPrice - 1;
+  if (discountPct > 0) {
+    return { allowed: false, state, discountPct, reason: 'not_discounted' };
+  }
+  const recoveredFromCutPct = currentPrice / state.hardCutPrice - 1;
+  if (recoveredFromCutPct < SMART_V3_LIVE_HARD_CUT_REENTRY_MIN_RECOVERY_PCT) {
+    return { allowed: false, state, discountPct, recoveredFromCutPct, reason: 'no_recovery_confirm' };
+  }
+  return { allowed: true, state, discountPct, recoveredFromCutPct };
+}
+
+function beginSmartV3LiveHardCutReentryAttempt(tokenMint: string, parentPositionId?: string): boolean {
+  const state = smartV3LiveHardCutReentryByMint.get(tokenMint);
+  if (!state) return false;
+  if (parentPositionId && state.parentPositionId !== parentPositionId) return false;
+  if (state.attempting || state.attempts >= SMART_V3_LIVE_HARD_CUT_REENTRY_MAX_ATTEMPTS) return false;
+  state.attempting = true;
+  return true;
+}
+
+function releaseSmartV3LiveHardCutReentryAttempt(tokenMint: string, parentPositionId?: string): void {
+  const state = smartV3LiveHardCutReentryByMint.get(tokenMint);
+  if (!state) return;
+  if (parentPositionId && state.parentPositionId !== parentPositionId) return;
+  state.attempting = false;
+}
+
+function completeSmartV3LiveHardCutReentryAttempt(tokenMint: string, parentPositionId?: string): void {
+  const state = smartV3LiveHardCutReentryByMint.get(tokenMint);
+  if (!state) return;
+  if (parentPositionId && state.parentPositionId !== parentPositionId) return;
+  state.attempts += 1;
+  state.attempting = false;
+  clearSmartV3LiveHardCutReentry(tokenMint);
+}
+
+function invalidateSmartV3LiveHardCutReentryOnSell(tx: KolTx): void {
+  const state = smartV3LiveHardCutReentryByMint.get(tx.tokenMint);
+  if (!state) return;
+  const soldByParticipant = state.participatingKolIds
+    .some((id) => id.toLowerCase() === tx.kolId.toLowerCase());
+  if (!soldByParticipant) return;
+  clearSmartV3LiveHardCutReentry(tx.tokenMint);
+  log.info(
+    `[KOL_HUNTER_SMART_V3_HARDCUT_REENTRY_CANCEL] ${tx.tokenMint.slice(0, 8)} ` +
+    `kol=${tx.kolId} sell after hardcut`
+  );
+}
+
 function markSmartV3SellCancel(tokenMint: string, nowMs = Date.now()): void {
+  clearSmartV3LiveHardCutReentry(tokenMint);
   smartV3SellCancelByMint.set(tokenMint, nowMs);
   if (smartV3SellCancelByMint.size <= 1000) return;
   const pruneBeforeMs = nowMs - config.kolHunterPostDistributionCancelQuarantineSec * 1000 * 4;
@@ -1841,6 +2026,7 @@ export function evaluateInsiderExitDecision(
 }
 
 function handleKolSellSignal(tx: KolTx): void {
+  invalidateSmartV3LiveHardCutReentryOnSell(tx);
   const cand = pending.get(tx.tokenMint);
   const positions = getActivePositionsByMint(tx.tokenMint).filter((p) =>
     p.participatingKols.some((k) => k.id === tx.kolId) ||
@@ -3450,11 +3636,22 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
   // 이전 patch 는 resolveStalk (v1/legacy) 만 적용 → smart-v3 (kolHunterSmartV3Enabled=true default)
   // 운영 환경에서 효과 0. 이 위치 (trigger 발화 직후, entry 진입 직전) 에 차단 검사 삽입.
   // same-token cooldown 도 누락이라 함께 추가.
+  const candIsShadowForHardCutReentry = cand.kolTxs.length > 0 && cand.kolTxs.every((t) => t.isShadow === true);
+  const canConsiderSmartV3LiveHardCutReentry =
+    entrySignal.label === 'smart-v3' &&
+    isLiveCanaryActive() &&
+    !!botCtx &&
+    !candIsShadowForHardCutReentry;
   const cooldownCheck = isInReentryCooldown(cand.tokenMint);
-  if (cooldownCheck.blocked) {
+  const smartV3HardCutReentry: SmartV3LiveHardCutReentryDecision =
+    cooldownCheck.blocked && canConsiderSmartV3LiveHardCutReentry
+    ? evaluateSmartV3LiveHardCutReentry(cand.tokenMint, smart.currentPrice, nowMs)
+    : { allowed: false, reason: 'not_applicable' };
+  if (cooldownCheck.blocked && !smartV3HardCutReentry.allowed) {
     log.info(
       `[KOL_HUNTER_ENTRY_REENTRY_BLOCK] ${cand.tokenMint.slice(0, 8)} ${entrySignal.label} ` +
-      `cooldown ${Math.round(cooldownCheck.remainingMs/1000)}s — reject`
+      `cooldown ${Math.round(cooldownCheck.remainingMs/1000)}s ` +
+      `hardCutReentry=${smartV3HardCutReentry.reason ?? 'blocked'} — reject`
     );
     fireRejectObserver(cand.tokenMint, 'smart_v3_no_trigger', cand, score, {
       survivalReason: 'reentry_cooldown',
@@ -3470,6 +3667,13 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       cleanupPendingCandidate(cand, true);
     }
     return;
+  } else if (cooldownCheck.blocked && smartV3HardCutReentry.allowed) {
+    log.warn(
+      `[KOL_HUNTER_SMART_V3_HARDCUT_REENTRY_ALLOW] ${cand.tokenMint.slice(0, 8)} ` +
+      `cooldownBypass parent=${smartV3HardCutReentry.state?.parentPositionId ?? 'unknown'} ` +
+      `discount=${((smartV3HardCutReentry.discountPct ?? 0) * 100).toFixed(2)}% ` +
+      `recovery=${((smartV3HardCutReentry.recoveredFromCutPct ?? 0) * 100).toFixed(2)}%`
+    );
   }
   const decayParticipants = entrySignal.entryParticipatingKols && entrySignal.entryParticipatingKols.length > 0
     ? entrySignal.entryParticipatingKols
@@ -3538,6 +3742,12 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     rotationScore: entrySignal.telemetry?.rotationScore,
     underfillReferenceSolAmount: entrySignal.telemetry?.underfillReferenceSolAmount,
     underfillReferenceTokenAmount: entrySignal.telemetry?.underfillReferenceTokenAmount,
+    smartV3LiveHardCutReentry: smartV3HardCutReentry.allowed,
+    smartV3HardCutParentPositionId: smartV3HardCutReentry.state?.parentPositionId,
+    smartV3HardCutAtMs: smartV3HardCutReentry.state?.closedAtMs,
+    smartV3HardCutEntryPrice: smartV3HardCutReentry.state?.parentEntryPrice,
+    smartV3HardCutExitPrice: smartV3HardCutReentry.state?.hardCutPrice,
+    smartV3HardCutDiscountPct: smartV3HardCutReentry.discountPct,
     entryIndependentKolCount: entrySignal.label === 'smart-v3'
       ? smartFresh.freshIndependentKolCount
       : entrySignal.entryIndependentKolCount,
@@ -3575,7 +3785,40 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     ...smart.preEntryFlags,
     ...entrySignal.extraFlags,
     ...postDistribution.flags,
+    ...(smartV3HardCutReentry.allowed ? ['SMART_V3_LIVE_HARD_CUT_REENTRY'] : []),
   ];
+  const smartV3HardCutReentryLiveOnly = entrySignal.label === 'smart-v3' && smartV3HardCutReentry.allowed;
+  const rejectSmartV3HardCutReentryLiveOnlyFallback = (
+    blockReason: string,
+    flags: string[],
+    extras: Record<string, unknown> = {}
+  ): void => {
+    const survivalFlags = [
+      ...flags,
+      'SMART_V3_LIVE_HARD_CUT_REENTRY_LIVE_ONLY_BLOCK',
+    ];
+    log.warn(
+      `[KOL_HUNTER_SMART_V3_HARDCUT_REENTRY_LIVE_BLOCK] ${cand.tokenMint.slice(0, 8)} ` +
+      `reason=${blockReason} parent=${smartV3HardCutReentry.state?.parentPositionId ?? 'unknown'} — no paper fallback`
+    );
+    fireRejectObserver(cand.tokenMint, 'smart_v3_no_trigger', cand, score, {
+      survivalReason: 'smart_v3_hardcut_reentry_live_blocked',
+      survivalFlags,
+      liveOnlyBlockReason: blockReason,
+      smartV3HardCutParentPositionId: smartV3HardCutReentry.state?.parentPositionId,
+      smartV3HardCutAtMs: smartV3HardCutReentry.state?.closedAtMs,
+      smartV3HardCutEntryPrice: smartV3HardCutReentry.state?.parentEntryPrice,
+      smartV3HardCutExitPrice: smartV3HardCutReentry.state?.hardCutPrice,
+      smartV3HardCutDiscountPct: smartV3HardCutReentry.discountPct,
+      smartV3HardCutRecoveryPct: smartV3HardCutReentry.recoveredFromCutPct,
+      entryReason: entryOptions.entryReason,
+      parameterVersion: entryOptions.parameterVersion,
+      signalPrice: smart.currentPrice,
+      tokenDecimals: smart.tokenDecimals,
+      ...extras,
+    });
+    cleanupPendingCandidate(cand, true);
+  };
   if (postDistribution.blocked) {
     log.warn(
       `[KOL_HUNTER_POST_DISTRIBUTION_BLOCK] ${cand.tokenMint.slice(0, 8)} ${entrySignal.label} trigger — ` +
@@ -3634,6 +3877,10 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         ...entryFlags,
         'SAME_MINT_LIVE_EXPOSURE_GUARD',
       ];
+      if (smartV3HardCutReentryLiveOnly) {
+        rejectSmartV3HardCutReentryLiveOnlyFallback('same_mint_live_active', policyFlags);
+        return;
+      }
       log.warn(
         `[KOL_HUNTER_SAME_MINT_LIVE_GUARD] ${cand.tokenMint.slice(0, 8)} ${entrySignal.label} trigger — ` +
         `fallback paper.`
@@ -3675,6 +3922,13 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     //   wallet floor 와 daily halt 사이 buffer 확보를 위해 KOL lane 도 존중.
     const hardTradingHaltReason = getHardTradingHaltReason(botCtx.tradingHaltedReason);
     if (hardTradingHaltReason) {
+      if (smartV3HardCutReentryLiveOnly) {
+        rejectSmartV3HardCutReentryLiveOnlyFallback('hard_trading_halt', [
+          ...entryFlags,
+          'LIVE_HARD_TRADING_HALT',
+        ], { hardTradingHaltReason });
+        return;
+      }
       log.warn(
         `[KOL_HUNTER_TRADING_HALT] ${cand.tokenMint.slice(0, 8)} ${entrySignal.label} trigger — ` +
         `${hardTradingHaltReason}. fallback paper.`
@@ -3689,6 +3943,13 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       );
     }
     if (isWalletStopActive()) {
+      if (smartV3HardCutReentryLiveOnly) {
+        rejectSmartV3HardCutReentryLiveOnlyFallback('wallet_stop_active', [
+          ...entryFlags,
+          'WALLET_STOP_ACTIVE',
+        ]);
+        return;
+      }
       log.warn(
         `[KOL_HUNTER_WALLET_STOP] ${cand.tokenMint.slice(0, 8)} ${entrySignal.label} trigger — ` +
         `wallet floor active. fallback paper.`
@@ -3697,6 +3958,13 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       return;
     }
     if (isEntryHaltActive(LANE_STRATEGY)) {
+      if (smartV3HardCutReentryLiveOnly) {
+        rejectSmartV3HardCutReentryLiveOnlyFallback('entry_halt_active', [
+          ...entryFlags,
+          'ENTRY_HALT_ACTIVE',
+        ]);
+        return;
+      }
       log.warn(
         `[KOL_HUNTER_ENTRY_HALT] ${cand.tokenMint.slice(0, 8)} ${entrySignal.label} trigger — ` +
         `lane halt active. fallback paper.`
@@ -3710,6 +3978,13 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         ...entryFlags,
         'LIVE_EXEC_QUALITY_COOLDOWN',
       ];
+      if (smartV3HardCutReentryLiveOnly) {
+        rejectSmartV3HardCutReentryLiveOnlyFallback('live_execution_quality_cooldown', policyFlags, {
+          liveExecutionQualityReason: qualityCooldown.reason,
+          liveExecutionQualityRemainingMs: qualityCooldown.remainingMs,
+        });
+        return;
+      }
       log.warn(
         `[KOL_HUNTER_LIVE_QUALITY_COOLDOWN] ${cand.tokenMint.slice(0, 8)} ${entrySignal.label} trigger — ` +
         `${qualityCooldown.reason ?? 'execution_quality'} ` +
@@ -3736,6 +4011,10 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     });
     if (!liveGate.allowLive) {
       const policyFlags = [...entryFlags, ...liveGate.flags];
+      if (smartV3HardCutReentryLiveOnly) {
+        rejectSmartV3HardCutReentryLiveOnlyFallback(liveGate.reason ?? 'live_gate_blocked', policyFlags);
+        return;
+      }
       log.warn(
         `[KOL_HUNTER_YELLOW_ZONE] ${cand.tokenMint.slice(0, 8)} ${entrySignal.label} trigger — ` +
         `${liveGate.reason}. fallback paper.`
@@ -3757,6 +4036,13 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         ...entryFlags,
         ...smartV3LiveFallback.flags,
       ];
+      if (smartV3HardCutReentryLiveOnly) {
+        rejectSmartV3HardCutReentryLiveOnlyFallback(
+          smartV3LiveFallback.reason ?? 'smart_v3_live_fallback',
+          policyFlags
+        );
+        return;
+      }
       log.warn(
         `[KOL_HUNTER_SMART_V3_LIVE_FALLBACK] ${cand.tokenMint.slice(0, 8)} reason=${smartV3LiveFallback.reason} ` +
         `entryReason=${entrySignal.entryReason} freshKols=${smartFresh.freshIndependentKolCount} ` +
@@ -4358,6 +4644,12 @@ async function enterPaperPosition(
       underfillReferenceTokenAmount: options.underfillReferenceTokenAmount,
       rotationFlowExitEnabled: parameterVersion === config.kolHunterRotationExitFlowParameterVersion ||
         parameterVersion === config.kolHunterRotationChaseTopupParameterVersion,
+      smartV3LiveHardCutReentry: options.smartV3LiveHardCutReentry,
+      smartV3HardCutParentPositionId: options.smartV3HardCutParentPositionId,
+      smartV3HardCutAtMs: options.smartV3HardCutAtMs,
+      smartV3HardCutEntryPrice: options.smartV3HardCutEntryPrice,
+      smartV3HardCutExitPrice: options.smartV3HardCutExitPrice,
+      smartV3HardCutDiscountPct: options.smartV3HardCutDiscountPct,
       kolReinforcementCount: 0,
       detectorVersion: config.kolHunterDetectorVersion,
       independentKolCount: entryIndependentKolCount,
@@ -4915,6 +5207,20 @@ function onPriceTick(positionId: string, tick: PriceTick): void {
   const currentPct = (currentPrice - ref) / ref;
   const nowSec = Math.floor(Date.now() / 1000);
   const elapsedSec = nowSec - pos.entryTimeSec;
+  const tokenTelemetryRef = pos.entryPriceTokenOnly && pos.entryPriceTokenOnly > 0
+    ? pos.entryPriceTokenOnly
+    : ref;
+  if (tokenTelemetryRef > 0) {
+    const tokenMfePct = (pos.peakPrice - tokenTelemetryRef) / tokenTelemetryRef;
+    const tokenMaePct = (pos.troughPrice - tokenTelemetryRef) / tokenTelemetryRef;
+    const tokenCurrentPct = (currentPrice - tokenTelemetryRef) / tokenTelemetryRef;
+    pos.excursionTelemetry = updateExcursionTelemetry(pos.excursionTelemetry, {
+      elapsedSec,
+      maePct: tokenMaePct,
+      mfePct: tokenMfePct,
+      currentPct: tokenCurrentPct,
+    });
+  }
 
   // 2026-04-30 (Sprint 2.A1): 모든 state 에서 structural kill-switch 우선 평가.
   //   PROBE / RUNNER_T1/T2/T3 모두 적용 — sellability 변화는 winner 진입 후에도 위험.
@@ -5363,6 +5669,12 @@ function isPriceKillReason(reason: CloseReason): boolean {
     || reason === 'quick_reject_classifier_exit';
 }
 
+function liveSellUrgencyForCloseReason(reason: CloseReason): LiveSellRetryUrgency {
+  if (reason === 'structural_kill_sell_route') return 'structural';
+  if (reason === 'probe_hard_cut' || reason === 'rotation_dead_on_arrival') return 'hard_cut';
+  return 'normal';
+}
+
 /**
  * Phase C: tail sub-position spawn. parent close 직후 호출.
  *   - state: 'TAIL'
@@ -5680,6 +5992,11 @@ function buildKolBaseLedgerRecord(
     walletNetSol: netSol,
     tokenOnlyNetSol: netSolTokenOnlyP,
   });
+  const excursionTelemetryRecord = buildExcursionTelemetryRecord(pos.excursionTelemetry, {
+    reason,
+    maePctAtClose: maePctTokenOnlyP,
+    elapsedSec: holdSec,
+  });
   return {
     positionId: pos.positionId,
     strategy: LANE_STRATEGY,
@@ -5707,6 +6024,7 @@ function buildKolBaseLedgerRecord(
     mfePctPeakWalletBased: mfePctPeakWalletBasedP,
     maePct,
     maePctTokenOnly: maePctTokenOnlyP,
+    ...excursionTelemetryRecord,
     netPct,
     netPctTokenOnly: netPctTokenOnlyP,
     netSol,
@@ -5738,6 +6056,12 @@ function buildKolBaseLedgerRecord(
     rotationMonetizableEdge: pos.rotationMonetizableEdge ?? null,
     rotationMonetizablePass: pos.rotationMonetizableEdge?.pass ?? null,
     rotationMonetizableCostRatio: pos.rotationMonetizableEdge?.costRatio ?? null,
+    smartV3LiveHardCutReentry: pos.smartV3LiveHardCutReentry ?? false,
+    smartV3HardCutParentPositionId: pos.smartV3HardCutParentPositionId ?? null,
+    smartV3HardCutAtMs: pos.smartV3HardCutAtMs ?? null,
+    smartV3HardCutEntryPrice: pos.smartV3HardCutEntryPrice ?? null,
+    smartV3HardCutExitPrice: pos.smartV3HardCutExitPrice ?? null,
+    smartV3HardCutDiscountPct: pos.smartV3HardCutDiscountPct ?? null,
     smartV3CopyableEdge,
     smartV3CopyablePass: smartV3CopyableEdge?.pass ?? null,
     smartV3CopyableNetSol: smartV3CopyableEdge?.copyableNetSol ?? null,
@@ -5756,6 +6080,7 @@ function buildKolBaseLedgerRecord(
       netSolTokenOnlyP,
       netPctTokenOnlyP,
       smartV3CopyableEdge,
+      excursionTelemetryRecord,
     ),
   };
 }
@@ -5772,6 +6097,7 @@ function buildKolLedgerExtras(
   netSolTokenOnly?: number,
   netPctTokenOnly?: number,
   smartV3CopyableEdge?: SmartV3CopyableEdgeEstimate | null,
+  excursionTelemetryRecord?: Record<string, number | null>,
 ): Record<string, unknown> {
   return {
     mode: pos.isLive === true ? 'live' : 'paper',
@@ -5800,6 +6126,13 @@ function buildKolLedgerExtras(
     netPctTokenOnly: netPctTokenOnly ?? null,
     smartV3CopyableEdge: smartV3CopyableEdge ?? null,
     smartV3CopyablePass: smartV3CopyableEdge?.pass ?? null,
+    smartV3LiveHardCutReentry: pos.smartV3LiveHardCutReentry ?? false,
+    smartV3HardCutParentPositionId: pos.smartV3HardCutParentPositionId ?? null,
+    smartV3HardCutAtMs: pos.smartV3HardCutAtMs ?? null,
+    smartV3HardCutEntryPrice: pos.smartV3HardCutEntryPrice ?? null,
+    smartV3HardCutExitPrice: pos.smartV3HardCutExitPrice ?? null,
+    smartV3HardCutDiscountPct: pos.smartV3HardCutDiscountPct ?? null,
+    ...(excursionTelemetryRecord ?? {}),
     entryPrice: pos.entryPrice,
     exitPrice,
     maxPrice: pos.peakPrice,
@@ -6042,6 +6375,12 @@ async function appendLiveLedger(
   //   exitPrice (= actualExitPrice = receivedSol/qty wallet-delta) 와 분리.
   tokenMarketExitPrice?: number,
   tokenMarketSoldQuantity?: number,
+  liveSellTelemetry?: {
+    sellRetryUrgency: LiveSellRetryUrgency;
+    sellRetryAttempts: number | null;
+    sellRecoveredFromBalanceOnly: boolean | null;
+    sellRetrySoldRatio: number | null;
+  },
 ): Promise<void> {
   try {
     const dir = config.realtimeDataDir;
@@ -6057,6 +6396,10 @@ async function appendLiveLedger(
       entryTxSignature: pos.entryTxSignature ?? null,
       exitTxSignature: exitTxSignature ?? null,
       ticketSol: pos.ticketSol,
+      sellRetryUrgency: liveSellTelemetry?.sellRetryUrgency ?? null,
+      sellRetryAttempts: liveSellTelemetry?.sellRetryAttempts ?? null,
+      sellRecoveredFromBalanceOnly: liveSellTelemetry?.sellRecoveredFromBalanceOnly ?? null,
+      sellRetrySoldRatio: liveSellTelemetry?.sellRetrySoldRatio ?? null,
     };
     await appendFile(path.join(dir, 'kol-live-trades.jsonl'), JSON.stringify(record) + '\n', 'utf8');
     await appendKolTradeProjection(dir, pos, 'live', record);
@@ -6152,6 +6495,22 @@ async function enterLivePosition(
     log.debug(`[KOL_HUNTER_LIVE] global canary slot full — defer ${tokenMint.slice(0, 8)}`);
     unsubscribePriceIfIdle(tokenMint);
     return;
+  }
+  let smartV3HardCutReentryAttempting = false;
+  if (options.smartV3LiveHardCutReentry) {
+    smartV3HardCutReentryAttempting = beginSmartV3LiveHardCutReentryAttempt(
+      tokenMint,
+      options.smartV3HardCutParentPositionId
+    );
+    if (!smartV3HardCutReentryAttempting) {
+      log.warn(
+        `[KOL_HUNTER_SMART_V3_HARDCUT_REENTRY_INFLIGHT_BLOCK] ${tokenMint.slice(0, 8)} ` +
+        `parent=${options.smartV3HardCutParentPositionId ?? 'unknown'} — skip duplicate live buy`
+      );
+      releaseCanarySlot(LANE_STRATEGY);
+      unsubscribePriceIfIdle(tokenMint);
+      return;
+    }
   }
 
   // 3. executeBuy.
@@ -6268,6 +6627,10 @@ async function enterLivePosition(
     }
     entryTxSignature = buyResult.txSignature;
     entrySlippageBps = buyResult.slippageBps;
+    if (smartV3HardCutReentryAttempting) {
+      completeSmartV3LiveHardCutReentryAttempt(tokenMint, options.smartV3HardCutParentPositionId);
+      smartV3HardCutReentryAttempting = false;
+    }
     partialFillDataMissing = metrics.partialFillDataMissing;
     partialFillDataReason = metrics.partialFillDataReason;
     buyCompletedAtMs = Date.now();
@@ -6291,6 +6654,9 @@ async function enterLivePosition(
     );
   } catch (buyErr) {
     log.warn(`[KOL_HUNTER_LIVE_BUY] ${positionId} buy failed: ${buyErr}`);
+    if (smartV3HardCutReentryAttempting) {
+      releaseSmartV3LiveHardCutReentryAttempt(tokenMint, options.smartV3HardCutParentPositionId);
+    }
     releaseCanarySlot(LANE_STRATEGY);
     unsubscribePriceIfIdle(tokenMint);
     return;
@@ -6378,6 +6744,12 @@ async function enterLivePosition(
       rotationLastBuyAtMs: options.rotationLastBuyAtMs ?? null,
       rotationLastBuyAgeMs: options.rotationLastBuyAgeMs ?? null,
       rotationScore: options.rotationScore ?? null,
+      smartV3LiveHardCutReentry: options.smartV3LiveHardCutReentry ?? false,
+      smartV3HardCutParentPositionId: options.smartV3HardCutParentPositionId ?? null,
+      smartV3HardCutAtMs: options.smartV3HardCutAtMs ?? null,
+      smartV3HardCutEntryPrice: options.smartV3HardCutEntryPrice ?? null,
+      smartV3HardCutExitPrice: options.smartV3HardCutExitPrice ?? null,
+      smartV3HardCutDiscountPct: options.smartV3HardCutDiscountPct ?? null,
     },
     notifierKey: 'kol_live_open_persist',
     buildNotifierMessage: (err) =>
@@ -6437,6 +6809,12 @@ async function enterLivePosition(
     rotationLastBuyAtMs: options.rotationLastBuyAtMs,
     rotationLastBuyAgeMs: options.rotationLastBuyAgeMs,
     rotationScore: options.rotationScore,
+    smartV3LiveHardCutReentry: options.smartV3LiveHardCutReentry,
+    smartV3HardCutParentPositionId: options.smartV3HardCutParentPositionId,
+    smartV3HardCutAtMs: options.smartV3HardCutAtMs,
+    smartV3HardCutEntryPrice: options.smartV3HardCutEntryPrice,
+    smartV3HardCutExitPrice: options.smartV3HardCutExitPrice,
+    smartV3HardCutDiscountPct: options.smartV3HardCutDiscountPct,
     kolReinforcementCount: 0,
     detectorVersion: config.kolHunterDetectorVersion,
     independentKolCount: entryIndependentKolCount,
@@ -6496,6 +6874,12 @@ async function enterLivePosition(
         rotationLastBuyAtMs: position.rotationLastBuyAtMs ?? null,
         rotationLastBuyAgeMs: position.rotationLastBuyAgeMs ?? null,
         rotationScore: position.rotationScore ?? null,
+        smartV3LiveHardCutReentry: position.smartV3LiveHardCutReentry ?? false,
+        smartV3HardCutParentPositionId: position.smartV3HardCutParentPositionId ?? null,
+        smartV3HardCutAtMs: position.smartV3HardCutAtMs ?? null,
+        smartV3HardCutEntryPrice: position.smartV3HardCutEntryPrice ?? null,
+        smartV3HardCutExitPrice: position.smartV3HardCutExitPrice ?? null,
+        smartV3HardCutDiscountPct: position.smartV3HardCutDiscountPct ?? null,
       },
     },
     buildTradeMarkoutObserverConfig(position)
@@ -6547,6 +6931,12 @@ async function enterLivePosition(
       parentPositionId: positionId,
       kolEntryReason: defaultEntryReasonForVersion(config.kolHunterSwingV2ParameterVersion),
       kolConvictionLevel: defaultConvictionForVersion(config.kolHunterSwingV2ParameterVersion),
+      smartV3LiveHardCutReentry: options.smartV3LiveHardCutReentry,
+      smartV3HardCutParentPositionId: options.smartV3HardCutParentPositionId,
+      smartV3HardCutAtMs: options.smartV3HardCutAtMs,
+      smartV3HardCutEntryPrice: options.smartV3HardCutEntryPrice,
+      smartV3HardCutExitPrice: options.smartV3HardCutExitPrice,
+      smartV3HardCutDiscountPct: options.smartV3HardCutDiscountPct,
       kolReinforcementCount: 0,
       detectorVersion: config.kolHunterDetectorVersion,
       independentKolCount: score.independentKolCount,
@@ -6642,6 +7032,10 @@ async function closeLivePosition(
   let sellCompleted = false;
   let liveReceivedSol = 0;
   let effectiveReason: CloseReason = reason;
+  const sellRetryUrgency = liveSellUrgencyForCloseReason(reason);
+  let sellRetryAttempts: number | null = null;
+  let sellRecoveredFromBalanceOnly: boolean | null = null;
+  let sellRetrySoldRatio: number | null = null;
   // 2026-05-01 (Phase D P0-3 fix): soldQuantity / isPriceKillParent 를 함수 scope 로 hoist.
   //   이전엔 try block scope 안에서만 사용 → DB closeTrade / canary / ledger / notifier 가
   //   pos.quantity 전체 기준으로 잘못 계산. partial sell 일관 정합 보장.
@@ -6687,7 +7081,11 @@ async function closeLivePosition(
         context: `kol_hunter:${pos.positionId}`,
         reason,
         syntheticSignature: `KOL_LIVE_SELL_BALANCE_RECOVERED_${pos.positionId}`,
+        urgency: sellRetryUrgency,
       });
+      sellRetryAttempts = sellExecution.attempts;
+      sellRecoveredFromBalanceOnly = sellExecution.recoveredFromBalanceOnly;
+      sellRetrySoldRatio = sellExecution.soldRatio;
       const sellResult = sellExecution.sellResult;
       const solAfter = await sellExecutor.getBalance();
       const receivedSol = resolveSellReceivedSolFromSwapResult({
@@ -6763,6 +7161,11 @@ async function closeLivePosition(
       const maePctTokenOnly = tokenEntryRef > 0
         ? (pos.troughPrice - tokenEntryRef) / tokenEntryRef
         : 0;
+      const excursionTelemetryRecord = buildExcursionTelemetryRecord(pos.excursionTelemetry, {
+        reason: effectiveReason,
+        maePctAtClose: maePctTokenOnly,
+        elapsedSec: nowSec - pos.entryTimeSec,
+      });
       // exitPriceTokenOnly = 정책 trigger 가 본 시장 가격. wallet-delta 와 동일 단위지만 의미는 token 시장 가격.
       const exitPriceTokenOnly = exitPrice;
       const netPctTokenOnly = tokenEntryRef > 0
@@ -6793,6 +7196,7 @@ async function closeLivePosition(
         mfePctPeakWalletBased,
         // 2026-05-01 (Sprint Z): netPct/maePct/exit/netSol token-only 분리 측정.
         maePctTokenOnly,
+        ...excursionTelemetryRecord,
         exitPriceTokenOnly,
         netPctTokenOnly,
         netSolTokenOnly,
@@ -6803,6 +7207,10 @@ async function closeLivePosition(
         peakPrice: pos.peakPrice,
         troughPrice: pos.troughPrice,
         marketReferencePrice: pos.marketReferencePrice,
+        sellRetryUrgency,
+        sellRetryAttempts,
+        sellRecoveredFromBalanceOnly,
+        sellRetrySoldRatio,
         t1VisitAtSec: pos.t1VisitAtSec ?? null,
         t2VisitAtSec: pos.t2VisitAtSec ?? null,
         t3VisitAtSec: pos.t3VisitAtSec ?? null,
@@ -6861,6 +7269,12 @@ async function closeLivePosition(
             rotationLastBuyAtMs: pos.rotationLastBuyAtMs ?? null,
             rotationLastBuyAgeMs: pos.rotationLastBuyAgeMs ?? null,
             rotationScore: pos.rotationScore ?? null,
+            smartV3LiveHardCutReentry: pos.smartV3LiveHardCutReentry ?? false,
+            smartV3HardCutParentPositionId: pos.smartV3HardCutParentPositionId ?? null,
+            smartV3HardCutAtMs: pos.smartV3HardCutAtMs ?? null,
+            smartV3HardCutEntryPrice: pos.smartV3HardCutEntryPrice ?? null,
+            smartV3HardCutExitPrice: pos.smartV3HardCutExitPrice ?? null,
+            smartV3HardCutDiscountPct: pos.smartV3HardCutDiscountPct ?? null,
           },
         },
         buildTradeMarkoutObserverConfig(pos)
@@ -7011,6 +7425,7 @@ async function closeLivePosition(
   // 2026-04-29 (Track 1): live close 도 same-token cooldown stamp.
   if (!pos.isShadowArm) {
     markTokenClosed(pos.tokenMint);
+    maybeRegisterSmartV3LiveHardCutReentry(pos, exitPrice, effectiveReason);
     // 2026-04-29 (P0-2): KOL alpha decay tracking — live close 가 우선 신호 (real wallet delta).
     markKolClosed(pos.participatingKols.map((k) => k.id), pnl);
   }
@@ -7033,7 +7448,13 @@ async function closeLivePosition(
       // 2026-05-01 (Codex H1): token-only metric 은 정책 trigger 가 본 시장가 `exitPrice` 기반.
       //   actualExitPrice (= receivedSol/qty wallet-delta) 가 아닌 closeLivePosition 인자.
       exitPrice,
-      soldQuantity
+      soldQuantity,
+      {
+        sellRetryUrgency,
+        sellRetryAttempts,
+        sellRecoveredFromBalanceOnly,
+        sellRetrySoldRatio,
+      }
     ).catch(() => {});
   }
 
@@ -7416,5 +7837,11 @@ export function __testTriggerTick(positionId: string, price: number): void {
 }
 
 export function __testSetKolLiveSellRetryDelaysMs(delays?: readonly number[]): void {
-  setLiveSellRetryDelaysMsForTests(delays);
+  if (delays == null) {
+    setLiveSellRetryDelaysMsForTests();
+    return;
+  }
+  setLiveSellRetryDelaysMsForTests(delays, 'normal');
+  setLiveSellRetryDelaysMsForTests(delays, 'hard_cut');
+  setLiveSellRetryDelaysMsForTests(delays, 'structural');
 }

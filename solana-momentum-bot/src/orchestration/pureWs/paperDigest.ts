@@ -7,7 +7,6 @@ import type { Notifier } from '../../notifier';
 import { config } from '../../utils/config';
 import { createModuleLogger } from '../../utils/logger';
 import { getActivePureWsPositions } from './positionState';
-import { pureWsPaperMarkoutOffsetsSec } from './markout';
 import { isPureWsNewPairLedgerRow } from './sourceGate';
 
 const log = createModuleLogger('PureWsPaperDigest');
@@ -54,30 +53,6 @@ function secondMs(value: number): number {
   return Math.floor(value / 1000) * 1000;
 }
 
-function pct(value: number | null): string {
-  return value == null ? 'n/a' : `${(value * 100).toFixed(1)}%`;
-}
-
-function sol(value: number): string {
-  return `${value >= 0 ? '+' : ''}${value.toFixed(6)}`;
-}
-
-function countBy(rows: JsonRow[], field: string): Array<[string, number]> {
-  const counts = new Map<string, number>();
-  for (const row of rows) {
-    const key = str(row[field]) || '(missing)';
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
-  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-}
-
-function median(values: number[]): number | null {
-  if (values.length === 0) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
-}
-
 function extrasOf(row: JsonRow): JsonRow {
   return typeof row.extras === 'object' && row.extras != null ? row.extras as JsonRow : {};
 }
@@ -88,10 +63,6 @@ function isPureWsSidecarRow(row: JsonRow): boolean {
   const source = str(row.signalSource);
   const strategy = str(row.strategy) || str(extras.strategy);
   return lane === 'pure_ws' || source === 'pure_ws_breakout' || source === 'pure_ws_swing_v2' || strategy.startsWith('pure_ws');
-}
-
-function isOkMarkout(row: JsonRow): boolean {
-  return str(row.quoteStatus) === 'ok' && num(row.deltaPct) != null;
 }
 
 function inWindow(valueMs: number, startedMs: number, nowMs: number): boolean {
@@ -106,10 +77,6 @@ function anchorKey(row: JsonRow): string {
   return `${str(row.positionId)}:${str(row.anchorType)}:${anchorId}`;
 }
 
-function markoutKey(row: JsonRow): string {
-  return `${anchorKey(row)}:${String(num(row.horizonSec) ?? '')}`;
-}
-
 function uniqueByKey(rows: JsonRow[], keyFn: (row: JsonRow) => string): JsonRow[] {
   const seen = new Set<string>();
   const out: JsonRow[] = [];
@@ -122,20 +89,95 @@ function uniqueByKey(rows: JsonRow[], keyFn: (row: JsonRow) => string): JsonRow[
   return out;
 }
 
-function latestRowsByKey(rows: JsonRow[], keyFn: (row: JsonRow) => string): JsonRow[] {
-  const latest = new Map<string, JsonRow>();
-  for (const row of rows) {
-    const key = keyFn(row);
-    const current = latest.get(key);
-    if (!current || timeMs(row.recordedAt) >= timeMs(current.recordedAt)) {
-      latest.set(key, row);
-    }
-  }
-  return [...latest.values()];
+interface PaperHourlyLine {
+  kstHour: number;
+  closed: number;
+  winners: number;
+  losers: number;
+  netSol: number;
 }
 
-function armShort(raw: string): string {
-  return raw.replace(/^pure_ws_/, '').replace(/^breakout$/, 'primary');
+function kstDayStartMs(nowMs: number): number {
+  const kst = new Date(nowMs + 9 * 3600_000);
+  return Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate()) - 9 * 3600_000;
+}
+
+function kstHourOf(ms: number): number {
+  return (new Date(ms).getUTCHours() + 9) % 24;
+}
+
+function signSol4(value: number): string {
+  return `${value >= 0 ? '+' : ''}${value.toFixed(4)}`;
+}
+
+function formatPaperHour(hour: number): string {
+  return hour.toString().padStart(2, '0');
+}
+
+function formatZeroRange(start: PaperHourlyLine, end: PaperHourlyLine): string {
+  if (start.kstHour === end.kstHour) return `- ${formatPaperHour(start.kstHour)}:00 · close 0건`;
+  return `- ${formatPaperHour(start.kstHour)}-${formatPaperHour(end.kstHour)} · close 0건`;
+}
+
+function formatPaperHourlyLines(lines: PaperHourlyLine[]): string[] {
+  const out: string[] = [];
+  let quietStart: PaperHourlyLine | null = null;
+  let quietEnd: PaperHourlyLine | null = null;
+  const flushQuiet = () => {
+    if (quietStart && quietEnd) out.push(formatZeroRange(quietStart, quietEnd));
+    quietStart = null;
+    quietEnd = null;
+  };
+
+  for (const line of lines) {
+    if (line.closed === 0) {
+      quietStart ??= line;
+      quietEnd = line;
+      continue;
+    }
+    flushQuiet();
+    out.push(
+      `- ${formatPaperHour(line.kstHour)}:00 · close ${line.closed}건 ` +
+      `(${line.winners}W/${line.losers}L) net ${signSol4(line.netSol)}`
+    );
+  }
+  flushQuiet();
+  return out;
+}
+
+function buildPaperTodayDigest(label: string, closedRows: JsonRow[], nowMs: number): string {
+  const dayStartMs = kstDayStartMs(nowMs);
+  const endHour = kstHourOf(nowMs);
+  const hours: PaperHourlyLine[] = [];
+  for (let hour = 0; hour <= endHour; hour += 1) {
+    hours.push({ kstHour: hour, closed: 0, winners: 0, losers: 0, netSol: 0 });
+  }
+
+  for (const row of closedRows) {
+    const closedAt = timeMs(row.closedAt);
+    if (!Number.isFinite(closedAt) || closedAt < dayStartMs || closedAt >= nowMs) continue;
+    const bucket = hours[kstHourOf(closedAt)];
+    if (!bucket) continue;
+    const net = num(row.netSol) ?? 0;
+    bucket.closed += 1;
+    bucket.netSol += net;
+    if (net > 0) bucket.winners += 1;
+    else bucket.losers += 1;
+  }
+
+  const totalClosed = hours.reduce((sum, line) => sum + line.closed, 0);
+  const totalWinners = hours.reduce((sum, line) => sum + line.winners, 0);
+  const totalLosers = hours.reduce((sum, line) => sum + line.losers, 0);
+  const totalNet = hours.reduce((sum, line) => sum + line.netSol, 0);
+  const aggregate = totalClosed > 0
+    ? `· 합계 close ${totalClosed}건 (${totalWinners}W/${totalLosers}L) net ${signSol4(totalNet)} SOL`
+    : `· 합계 close 0건 (해당 구간 PAPER 거래 없음)`;
+
+  return [
+    `⚪ 📊 <b>${label} PAPER 오늘 요약</b> KST 00:00→${formatPaperHour(endHour)}:00`,
+    ...formatPaperHourlyLines(hours),
+    aggregate,
+  ].join('\n');
 }
 
 export async function flushPureWsPaperDigest(notifier: Notifier): Promise<void> {
@@ -168,80 +210,9 @@ export async function flushPureWsPaperDigest(notifier: Notifier): Promise<void> 
 
   if (closed.length === 0 && entries.length === 0 && openPaper.length === 0 && windowMarkouts.length === 0) return;
 
-  const net = closed.reduce((sum, row) => sum + (num(row.netSol) ?? 0), 0);
-  const wins = closed.filter((row) => (num(row.netSol) ?? 0) > 0).length;
-  const losses = closed.filter((row) => (num(row.netSol) ?? 0) < 0).length;
-  const avgHold = median(closed.map((row) => num(row.holdSec)).filter((v): v is number => v != null));
-  const byArm = countBy(closed, 'armName')
-    .slice(0, 3)
-    .map(([key, count]) => `${armShort(key)}:${count}`)
-    .join(', ') || 'none';
-  const byExit = countBy(closed, 'exitReason')
-    .slice(0, 4)
-    .map(([key, count]) => `${key}:${count}`)
-    .join(', ') || 'none';
-
-  const topMfe = [...closed]
-    .sort((a, b) => (num(b.mfePctPeak) ?? -Infinity) - (num(a.mfePctPeak) ?? -Infinity))
-    .slice(0, 3)
-    .map((row) =>
-      `${str(row.tokenSymbol) || str(row.pairAddress).slice(0, 8)} ` +
-      `${armShort(str(row.armName))} MFE ${pct(num(row.mfePctPeak))} net ${sol(num(row.netSol) ?? 0)}`
-    );
-
-  const roundTripCost = config.defaultAmmFeePct + config.defaultMevMarginPct;
-  const markoutLines = pureWsPaperMarkoutOffsetsSec().map((horizonSec) => {
-    const maturedAnchors = uniqueByKey(
-      pureWsAnchors.filter((row) => {
-        const anchorAt = timeMs(row.anchorAt);
-        const targetMs = anchorAt + horizonSec * 1000;
-        return (
-          (str(row.anchorType) === 'buy' || str(row.anchorType) === 'sell') &&
-          Number.isFinite(anchorAt) &&
-          targetMs >= startedMs &&
-          targetMs < nowMs
-        );
-      }),
-      anchorKey
-    );
-    const expectedKeys = new Set(maturedAnchors.map((row) => `${anchorKey(row)}:${horizonSec}`));
-    const rows = latestRowsByKey(
-      pureWsMarkouts.filter((row) => expectedKeys.has(markoutKey(row))),
-      markoutKey
-    );
-    const ok = rows.filter(isOkMarkout);
-    const postCost = ok
-      .map((row) => (num(row.deltaPct) ?? 0) - roundTripCost);
-    const positivePostCost = postCost.filter((value) => value > 0).length;
-    const expected = expectedKeys.size;
-    return `T+${horizonSec}s ok ${ok.length}/${expected} pc+ ${positivePostCost}/${ok.length} med ${pct(median(postCost))}`;
-  });
-  const afterSellTail = windowMarkouts
-    .filter((row) =>
-      str(row.anchorType) === 'sell' &&
-      isOkMarkout(row) &&
-      (num(row.deltaPct) ?? 0) >= config.pureWsPaperRareAfterSellPct
-    )
-    .sort((a, b) => (num(b.deltaPct) ?? -Infinity) - (num(a.deltaPct) ?? -Infinity))
-    .slice(0, 3)
-    .map((row) => `${str(row.positionId).slice(0, 18)} T+${num(row.horizonSec) ?? '?'} ${pct(num(row.deltaPct))}`);
-
-  const startKst = new Date(startedMs + 9 * 3600_000).toISOString().slice(11, 16);
-  const endKst = new Date(nowMs + 9 * 3600_000).toISOString().slice(11, 16);
-  const lines = [
-    `[PURE_WS PAPER ${startKst}-${endKst} KST]`,
-    `entries ${entries.length} · closes ${closed.length} · open ${openPaper.length}`,
-    `W/L ${wins}/${losses} · net ${sol(net)} SOL · medHold ${avgHold == null ? 'n/a' : `${Math.round(avgHold)}s`}`,
-    `arms ${byArm}`,
-    `exits ${byExit}`,
-  ];
-  if (topMfe.length > 0) {
-    lines.push(`top MFE: ${topMfe.join(' | ')}`);
-  }
-  if (afterSellTail.length > 0) {
-    lines.push(`after-sell tail: ${afterSellTail.join(' | ')}`);
-  }
-  lines.push(`markout: ${markoutLines.join(' | ')}`);
+  const dayClosed = trades.filter((row) => isPureWsNewPairLedgerRow(row));
+  const lines = [buildPaperTodayDigest('PURE_WS', dayClosed, nowMs)];
+  lines.push(`· PAPER open ${openPaper.length}건 · entries ${entries.length}건`);
 
   try {
     await notifier.sendInfo(lines.join('\n'), 'pure_ws_paper_digest');

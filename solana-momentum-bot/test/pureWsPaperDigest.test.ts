@@ -87,10 +87,10 @@ describe('pure_ws paper digest', () => {
 
     expect(notifier.sendInfo).toHaveBeenCalledTimes(1);
     const message = notifier.sendInfo.mock.calls[0][0] as string;
-    expect(message).toContain('entries 1 · closes 0');
-    expect(message).toContain('T+15s ok 1/1');
-    expect(message).toContain('T+30s ok 0/0');
-    expect(message).toContain('T+1800s ok 1/1');
-    expect(message).toContain('after-sell tail: p-tail');
+    expect(message).toContain('PURE_WS PAPER 오늘 요약');
+    expect(message).toContain('KST 00:00→09:00');
+    expect(message).toContain('- 00-09 · close 0건');
+    expect(message).toContain('· 합계 close 0건 (해당 구간 PAPER 거래 없음)');
+    expect(message).toContain('· PAPER open 0건 · entries 1건');
   });
 });

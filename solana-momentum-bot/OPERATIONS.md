@@ -414,6 +414,7 @@ cron 예시:
 - **자동 sync-health manifest (2026-05-03)**: 핵심 JSONL/log 파일의 row count, bytes, mtime, lane projection freshness, 최근 24h W/L/net/last-trade summary 를 `reports/sync-health-YYYY-MM-DD.md`로 저장. 데이터 공백과 sync 실패 구분용 — default ON.
 - **opt-in shadow-eval (2026-04-26)**: `RUN_SHADOW_EVAL=true` 시 KOL signal raw alpha 측정 (Jupiter forward quote 사용). default OFF — Jupiter quota 영향.
 - **환경변수 주의**: smart-v3 evidence/rotation/KOL transfer posterior report 추가는 운영 `.env` 변경이 필요 없다. `SKIP_KOL_TRANSFER_REPORT`, `KOL_TRANSFER_REPORT_SINCE`, `KOL_TRANSFER_INPUT`, `SKIP_SMART_V3_EVIDENCE_REPORT`, `SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT` 는 sync/report-only shell knob 이며 runtime 전략 환경변수가 아니다.
+- **로컬 분석 캐시 보호 (2026-05-05)**: 운영 데이터는 VPS → local 로 sync 하지만, `data/research/kol-transfers.jsonl*` 는 로컬 Helius posterior 캐시라 기본 rsync 제외한다. 필요 시 `DATA_RSYNC_EXCLUDES` 로 override 가능.
 
 ```bash
 # 기본 사용 (파일 sync + file-only reports, DB 미사용)
@@ -454,6 +455,12 @@ SKIP_SYNC_HEALTH=true bash scripts/sync-vps-data.sh
 KOL transfer posterior 운영:
 
 ```bash
+# 권장 자동 배치 엔트리: stale(기본 22h+)일 때만 Helius 호출.
+npm run kol:transfer-refresh
+
+# 강제 refresh.
+KOL_TRANSFER_REFRESH_FORCE=true npm run kol:transfer-refresh
+
 # API 호출 있음: Helius getTransfersByAddress backfill. 기본 30d / active KOL.
 HELIUS_API_KEY=... npm run kol:transfer-backfill -- --since 30d
 
@@ -462,7 +469,7 @@ HELIUS_API_KEY=... npm run kol:transfer-backfill -- --since 30d
 HELIUS_API_KEY=... npm run kol:transfer-backfill -- --since 7d --overwrite
 
 # API 호출 없음: backfill 결과를 posterior report 로 변환.
-npm run kol:transfer-report -- --input data/research/kol-transfers.jsonl --since 30d \
+npm run kol:transfer-report -- --input data/research/kol-transfers.jsonl --since 7d \
   --md reports/kol-transfer-posterior-$(date +%Y-%m-%d).md \
   --json reports/kol-transfer-posterior-$(date +%Y-%m-%d).json
 ```
@@ -471,15 +478,25 @@ npm run kol:transfer-report -- --input data/research/kol-transfers.jsonl --since
 
 - `kol-transfer-backfill` 은 Helius API를 호출하므로 sync 기본 경로에 넣지 않는다.
 - `--overwrite` 는 기존 `kol-transfers.jsonl` 을 백업한 뒤 임시 파일에 쓰고, Helius page 성공이 0건이면 교체하지 않는다.
+- `kol-transfer-refresh` 는 sidecar 배치용 wrapper 다. 기본 `KOL_TRANSFER_REFRESH_SINCE=7d`, `KOL_TRANSFER_REFRESH_MAX_AGE_HOURS=22`, stale 이 아니면 API 호출 없이 skip 한다.
+- `sync-vps-data.sh` 는 API를 호출하지 않고 `KOL_TRANSFER_STALE_WARN_HOURS=30` 기준으로 stale 경고만 출력한다.
+- `sync-vps-data.sh` 는 기본 `DATA_RSYNC_EXCLUDES` 로 `data/research/kol-transfers.jsonl*` 를 VPS sync 대상에서 제외한다. 로컬에서 생성한 posterior 입력을 운영 원본 sync 가 덮어쓰지 않게 하기 위함이다.
 - `kol-transfer-report`, `smart-v3-evidence-report`, `rotation-report` 의 posterior 섹션은 모두 진단 전용이다.
 - transfer 기반 buy/sell 후보는 precise swap PnL 이 아니다. 정책 보조신호 승격 전에는 상위 signature만 gTFA drill-down 으로 검증한다.
 
 원칙:
 
-- `pm2` 운영 표준 경로에는 포함하지 않는다.
-- cron에 자동 등록하지 않는다.
+- live trading process 내부에는 포함하지 않는다.
+- 자동화가 필요하면 cron/pm2 별도 process 로만 등록한다.
 - 사용 전 대상 경로와 환경을 직접 확인한다.
 - 파일 정리 시 위 2개는 `유지 대상`으로 본다.
+
+권장 cron 예시:
+
+```cron
+# KST 03:10 daily. stale 이 아니면 API 호출 없이 종료.
+10 18 * * * cd /root/Solana/Solana-Trading/solana-momentum-bot && npm run -s kol:transfer-refresh >> logs/kol-transfer-refresh.cron.log 2>&1
+```
 
 ### Telegram Alert 연결
 

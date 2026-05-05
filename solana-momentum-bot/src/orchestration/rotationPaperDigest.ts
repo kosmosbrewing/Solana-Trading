@@ -64,34 +64,6 @@ function secondMs(value: number): number {
   return Math.floor(value / 1000) * 1000;
 }
 
-function pct(value: number | null): string {
-  return value == null ? 'n/a' : `${(value * 100).toFixed(1)}%`;
-}
-
-function sol(value: number): string {
-  return `${value >= 0 ? '+' : ''}${value.toFixed(6)}`;
-}
-
-function median(values: number[]): number | null {
-  if (values.length === 0) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
-}
-
-function uniqSortedSeconds(values: number[]): number[] {
-  return [...new Set(values.filter((value) => Number.isFinite(value) && value > 0))]
-    .sort((a, b) => a - b);
-}
-
-function rotationDigestHorizons(): number[] {
-  return uniqSortedSeconds([
-    ...(config.kolHunterRotationV1MarkoutOffsetsSec ?? [15, 30, 60]),
-    300,
-    1800,
-  ]);
-}
-
 function extrasOf(row: JsonRow): JsonRow {
   return obj(row.extras);
 }
@@ -104,14 +76,6 @@ function rowArmName(row: JsonRow): string {
     str(row.parameterVersion) ||
     str(extras.parameterVersion) ||
     '(unknown)';
-}
-
-function armShort(raw: string): string {
-  return raw
-    .replace(/^kol_hunter_rotation_/, 'rotation_')
-    .replace(/^kol_hunter_/, '')
-    .replace(/^rotation_/, 'rot_')
-    .replace(/_v1$/, '');
 }
 
 function isRotationArmValue(value: string): boolean {
@@ -147,10 +111,6 @@ function isRotationPaperPosition(pos: PaperPosition): boolean {
     pos.parameterVersion.startsWith('rotation-');
 }
 
-function isOkMarkout(row: JsonRow): boolean {
-  return str(row.quoteStatus) === 'ok' && num(row.deltaPct) != null;
-}
-
 function inWindow(valueMs: number, startedMs: number, nowMs: number): boolean {
   return Number.isFinite(valueMs) && valueMs >= startedMs && valueMs < nowMs;
 }
@@ -161,10 +121,6 @@ function anchorKey(row: JsonRow): string {
   const anchorAt = timeMs(row.anchorAt);
   const anchorId = Number.isFinite(anchorAt) ? String(secondMs(anchorAt)) : 'na';
   return `${str(row.positionId)}:${str(row.anchorType)}:${anchorId}`;
-}
-
-function markoutKey(row: JsonRow): string {
-  return `${anchorKey(row)}:${String(num(row.horizonSec) ?? '')}`;
 }
 
 function uniqueByKey(rows: JsonRow[], keyFn: (row: JsonRow) => string): JsonRow[] {
@@ -179,25 +135,95 @@ function uniqueByKey(rows: JsonRow[], keyFn: (row: JsonRow) => string): JsonRow[
   return out;
 }
 
-function latestRowsByKey(rows: JsonRow[], keyFn: (row: JsonRow) => string): JsonRow[] {
-  const latest = new Map<string, JsonRow>();
-  for (const row of rows) {
-    const key = keyFn(row);
-    const current = latest.get(key);
-    if (!current || timeMs(row.recordedAt) >= timeMs(current.recordedAt)) {
-      latest.set(key, row);
-    }
-  }
-  return [...latest.values()];
+interface PaperHourlyLine {
+  kstHour: number;
+  closed: number;
+  winners: number;
+  losers: number;
+  netSol: number;
 }
 
-function countBy(rows: JsonRow[], keyFn: (row: JsonRow) => string): Array<[string, number]> {
-  const counts = new Map<string, number>();
-  for (const row of rows) {
-    const key = keyFn(row) || '(missing)';
-    counts.set(key, (counts.get(key) ?? 0) + 1);
+function kstDayStartMs(nowMs: number): number {
+  const kst = new Date(nowMs + 9 * 3600_000);
+  return Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate()) - 9 * 3600_000;
+}
+
+function kstHourOf(ms: number): number {
+  return (new Date(ms).getUTCHours() + 9) % 24;
+}
+
+function signSol4(value: number): string {
+  return `${value >= 0 ? '+' : ''}${value.toFixed(4)}`;
+}
+
+function formatPaperHour(hour: number): string {
+  return hour.toString().padStart(2, '0');
+}
+
+function formatZeroRange(start: PaperHourlyLine, end: PaperHourlyLine): string {
+  if (start.kstHour === end.kstHour) return `- ${formatPaperHour(start.kstHour)}:00 · close 0건`;
+  return `- ${formatPaperHour(start.kstHour)}-${formatPaperHour(end.kstHour)} · close 0건`;
+}
+
+function formatPaperHourlyLines(lines: PaperHourlyLine[]): string[] {
+  const out: string[] = [];
+  let quietStart: PaperHourlyLine | null = null;
+  let quietEnd: PaperHourlyLine | null = null;
+  const flushQuiet = () => {
+    if (quietStart && quietEnd) out.push(formatZeroRange(quietStart, quietEnd));
+    quietStart = null;
+    quietEnd = null;
+  };
+
+  for (const line of lines) {
+    if (line.closed === 0) {
+      quietStart ??= line;
+      quietEnd = line;
+      continue;
+    }
+    flushQuiet();
+    out.push(
+      `- ${formatPaperHour(line.kstHour)}:00 · close ${line.closed}건 ` +
+      `(${line.winners}W/${line.losers}L) net ${signSol4(line.netSol)}`
+    );
   }
-  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  flushQuiet();
+  return out;
+}
+
+function buildPaperTodayDigest(label: string, closedRows: JsonRow[], nowMs: number): string {
+  const dayStartMs = kstDayStartMs(nowMs);
+  const endHour = kstHourOf(nowMs);
+  const hours: PaperHourlyLine[] = [];
+  for (let hour = 0; hour <= endHour; hour += 1) {
+    hours.push({ kstHour: hour, closed: 0, winners: 0, losers: 0, netSol: 0 });
+  }
+
+  for (const row of closedRows) {
+    const closedAt = timeMs(row.closedAt);
+    if (!Number.isFinite(closedAt) || closedAt < dayStartMs || closedAt >= nowMs) continue;
+    const bucket = hours[kstHourOf(closedAt)];
+    if (!bucket) continue;
+    const net = num(row.netSol) ?? 0;
+    bucket.closed += 1;
+    bucket.netSol += net;
+    if (net > 0) bucket.winners += 1;
+    else bucket.losers += 1;
+  }
+
+  const totalClosed = hours.reduce((sum, line) => sum + line.closed, 0);
+  const totalWinners = hours.reduce((sum, line) => sum + line.winners, 0);
+  const totalLosers = hours.reduce((sum, line) => sum + line.losers, 0);
+  const totalNet = hours.reduce((sum, line) => sum + line.netSol, 0);
+  const aggregate = totalClosed > 0
+    ? `· 합계 close ${totalClosed}건 (${totalWinners}W/${totalLosers}L) net ${signSol4(totalNet)} SOL`
+    : `· 합계 close 0건 (해당 구간 PAPER 거래 없음)`;
+
+  return [
+    `⚪ 📊 <b>${label} PAPER 오늘 요약</b> KST 00:00→${formatPaperHour(endHour)}:00`,
+    ...formatPaperHourlyLines(hours),
+    aggregate,
+  ].join('\n');
 }
 
 function eventKey(row: JsonRow): string {
@@ -254,86 +280,9 @@ export async function flushRotationPaperDigest(notifier: Notifier): Promise<void
     return;
   }
 
-  const net = closed.reduce((sum, row) => sum + (num(row.netSol) ?? 0), 0);
-  const tokenNet = closed.reduce((sum, row) => sum + (num(row.netSolTokenOnly) ?? num(row.netSol) ?? 0), 0);
-  const wins = closed.filter((row) => (num(row.netSol) ?? 0) > 0).length;
-  const losses = closed.filter((row) => (num(row.netSol) ?? 0) < 0).length;
-  const medHold = median(closed.map((row) => num(row.holdSec)).filter((value): value is number => value != null));
-  const arms = countBy([...entries, ...closed], rowArmName)
-    .slice(0, 5)
-    .map(([key, count]) => `${armShort(key)}:${count}`)
-    .join(', ') || 'none';
-  const exits = countBy(closed, (row) => str(row.exitReason) || '(unknown)')
-    .slice(0, 4)
-    .map(([key, count]) => `${key}:${count}`)
-    .join(', ') || 'none';
-
-  const topMfe = [...closed]
-    .sort((a, b) => (num(b.mfePctPeak) ?? -Infinity) - (num(a.mfePctPeak) ?? -Infinity))
-    .slice(0, 3)
-    .map((row) =>
-      `${str(row.tokenMint).slice(0, 8)} ${armShort(rowArmName(row))} ` +
-      `MFE ${pct(num(row.mfePctPeak))} net ${sol(num(row.netSol) ?? 0)}`
-    );
-
-  const roundTripCost = config.defaultAmmFeePct + config.defaultMevMarginPct;
-  const markoutLines = rotationDigestHorizons().map((horizonSec) => {
-    const maturedAnchors = uniqueByKey(
-      rotationAnchors.filter((row) => {
-        const anchorAt = timeMs(row.anchorAt);
-        const targetMs = anchorAt + horizonSec * 1000;
-        return (
-          (str(row.anchorType) === 'buy' || str(row.anchorType) === 'sell') &&
-          Number.isFinite(anchorAt) &&
-          targetMs >= startedMs &&
-          targetMs < nowMs
-        );
-      }),
-      anchorKey
-    );
-    const expectedKeys = new Set(maturedAnchors.map((row) => `${anchorKey(row)}:${horizonSec}`));
-    const rows = latestRowsByKey(
-      rotationMarkouts.filter((row) => expectedKeys.has(markoutKey(row))),
-      markoutKey
-    );
-    const ok = rows.filter(isOkMarkout);
-    const postCost = ok.map((row) => (num(row.deltaPct) ?? 0) - roundTripCost);
-    const positivePostCost = postCost.filter((value) => value > 0).length;
-    return `T+${horizonSec}s ok ${ok.length}/${expectedKeys.size} pc+ ${positivePostCost}/${ok.length} med ${pct(median(postCost))}`;
-  });
-
-  const skipOk = windowSkipProbes.filter((row) => str(obj(row.probe).quoteStatus) === 'ok' && num(obj(row.probe).deltaPct) != null);
-  const skipPostCost = skipOk.map((row) => (num(obj(row.probe).deltaPct) ?? 0) - roundTripCost);
-  const skipPositive = skipPostCost.filter((value) => value > 0).length;
-  const afterSellTail = windowMarkouts
-    .filter((row) =>
-      str(row.anchorType) === 'sell' &&
-      isOkMarkout(row) &&
-      (num(row.deltaPct) ?? 0) >= config.kolHunterRotationPaperRareAfterSellPct
-    )
-    .sort((a, b) => (num(b.deltaPct) ?? -Infinity) - (num(a.deltaPct) ?? -Infinity))
-    .slice(0, 3)
-    .map((row) => `${str(row.positionId).slice(0, 18)} T+${num(row.horizonSec) ?? '?'} ${pct(num(row.deltaPct))}`);
-
-  const startKst = new Date(startedMs + 9 * 3600_000).toISOString().slice(11, 16);
-  const endKst = new Date(nowMs + 9 * 3600_000).toISOString().slice(11, 16);
-  const lines = [
-    `[ROTATION PAPER ${startKst}-${endKst} KST]`,
-    `entries ${entries.length} · closes ${closed.length} · open ${openPaper.length} · skips ${skipMarkers.length}`,
-    `W/L ${wins}/${losses} · net ${sol(net)} SOL · token ${sol(tokenNet)} SOL · medHold ${medHold == null ? 'n/a' : `${Math.round(medHold)}s`}`,
-    `arms ${arms}`,
-    `exits ${exits}`,
-  ];
-  if (topMfe.length > 0) {
-    lines.push(`top MFE: ${topMfe.join(' | ')}`);
-  }
-  if (skipMarkers.length > 0 || windowSkipProbes.length > 0) {
-    lines.push(`arm-skip FN: pc+ ${skipPositive}/${skipOk.length} · probes ${windowSkipProbes.length}`);
-  }
-  if (afterSellTail.length > 0) {
-    lines.push(`after-sell tail: ${afterSellTail.join(' | ')}`);
-  }
-  lines.push(`markout: ${markoutLines.join(' | ')}`);
+  const dayClosed = trades.filter((row) => isRotationPaperTrade(row));
+  const lines = [buildPaperTodayDigest('ROTATION', dayClosed, nowMs)];
+  lines.push(`· PAPER open ${openPaper.length}건 · entries ${entries.length}건 · skips ${skipMarkers.length}건`);
 
   try {
     await notifier.sendInfo(lines.join('\n'), 'kol_rotation_paper_digest');

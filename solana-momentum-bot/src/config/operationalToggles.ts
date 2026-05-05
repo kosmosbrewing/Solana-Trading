@@ -54,7 +54,8 @@ export const operationalToggles = {
   pureWsPaperNotifyEnabled: boolOptional('PUREWS_PAPER_NOTIFY_ENABLED', true),
   pureWsPaperNotifyIndividualEnabled: boolOptional('PUREWS_PAPER_NOTIFY_INDIVIDUAL_ENABLED', false),
   pureWsPaperDigestEnabled: boolOptional('PUREWS_PAPER_DIGEST_ENABLED', true),
-  pureWsPaperDigestIntervalMs: numEnv('PUREWS_PAPER_DIGEST_INTERVAL_MS', '900000'),
+  // Same cadence as KOL/smart-v3 paper digest by default (2h heartbeat-aligned).
+  pureWsPaperDigestIntervalMs: numEnv('PUREWS_PAPER_DIGEST_INTERVAL_MS', '7200000'),
   pureWsPaperRareMfePct: numEnv('PUREWS_PAPER_RARE_MFE_PCT', '0.30'),
   pureWsPaperRareAfterSellPct: numEnv('PUREWS_PAPER_RARE_AFTER_SELL_PCT', '1.00'),
 } as const;

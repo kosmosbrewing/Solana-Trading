@@ -3104,6 +3104,7 @@ describe('kolSignalHandler — state machine', () => {
       mockedConfig.kolHunterPaperOnly = true;
       mockedConfig.kolHunterLiveCanaryEnabled = false;
       mockedConfig.canaryGlobalConcurrencyEnabled = false;
+      mockedConfig.kolHunterReentryCooldownMs = 0;
       __testSetKolLiveSellRetryDelaysMs();
       resetCanaryConcurrencyGuardForTests();
     });
@@ -3159,8 +3160,8 @@ describe('kolSignalHandler — state machine', () => {
     }
 
     /** smart-v3 fresh velocity trigger 로 live entry 까지 도달 시키는 helper. */
-    async function triggerSmartV3LiveEntry(mint: string, kolId = 'pain') {
-      stubFeed.setInitialPrice(mint, 0.001);
+    async function triggerSmartV3LiveEntry(mint: string, kolId = 'pain', price = 0.001) {
+      stubFeed.setInitialPrice(mint, price);
       await handleKolSwap(buyTx(kolId, 'S', mint));
       await handleKolSwap(buyTx(`${kolId}_confirm`, 'A', mint));
       await flushAsync();
@@ -3564,6 +3565,89 @@ describe('kolSignalHandler — state machine', () => {
       expect(fx.sendCritical).not.toHaveBeenCalled();
       expect(__testGetActive()).toHaveLength(0);
     });
+
+    it('3b-2. smart-v3 live hardcut 후 참여 KOL sell 이 없으면 할인 재진입은 cooldown 을 1회 우회', async () => {
+      mockedConfig.kolHunterReentryCooldownMs = 1_800_000;
+      const fx = buildE2EFixtures();
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx: fx.ctx });
+
+      await triggerSmartV3LiveEntry(MINT_SMART, 'pain', 0.001);
+      const firstLive = __testGetActive().find((p) => p.isLive === true)!;
+      expect(firstLive).toBeDefined();
+
+      __testTriggerTick(firstLive.positionId, firstLive.entryPrice * 0.85);
+      await flushAsync();
+      expect(__testGetActive()).toHaveLength(0);
+      expect(fx.executeBuy).toHaveBeenCalledTimes(1);
+
+      await triggerSmartV3LiveEntry(MINT_SMART, 'reentry', 0.0009);
+      const reentry = __testGetActive().find((p) => p.isLive === true);
+      expect(fx.executeBuy).toHaveBeenCalledTimes(2);
+      expect(reentry).toBeDefined();
+      expect(reentry?.survivalFlags).toContain('SMART_V3_LIVE_HARD_CUT_REENTRY');
+      expect(reentry?.smartV3LiveHardCutReentry).toBe(true);
+      expect(reentry?.smartV3HardCutParentPositionId).toBe(firstLive.positionId);
+      expect(reentry?.smartV3HardCutDiscountPct).toBeLessThanOrEqual(0);
+    });
+
+    it('3b-3. smart-v3 hardcut 재진입은 live-only라 wallet stop 중 paper fallback 하지 않는다', async () => {
+      mockedConfig.kolHunterReentryCooldownMs = 1_800_000;
+      const fx = buildE2EFixtures();
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx: fx.ctx });
+
+      await triggerSmartV3LiveEntry(MINT_SMART, 'pain', 0.001);
+      const firstLive = __testGetActive().find((p) => p.isLive === true)!;
+      __testTriggerTick(firstLive.positionId, firstLive.entryPrice * 0.85);
+      await flushAsync();
+      expect(__testGetActive()).toHaveLength(0);
+
+      const { setWalletStopGuardStateForTests } = require('../src/risk/walletStopGuard');
+      setWalletStopGuardStateForTests(true, 'floor-test', 0.69);
+
+      await triggerSmartV3LiveEntry(MINT_SMART, 'reentry_blocked', 0.0009);
+
+      expect(fx.executeBuy).toHaveBeenCalledTimes(1);
+      expect(__testGetActive()).toHaveLength(0);
+    }, 10_000);
+
+    it('3b-4. smart-v3 hardcut 재진입은 buy 실패가 아니라 체결 성공 1회만 소모한다', async () => {
+      mockedConfig.kolHunterReentryCooldownMs = 1_800_000;
+      const buyOk = {
+        txSignature: 'KOL_LIVE_BUY_SIG',
+        expectedInAmount: 10_000_000n,
+        actualInputAmount: 10_000_000n,
+        actualInputUiAmount: 0.01,
+        inputDecimals: 9,
+        expectedOutAmount: 10_000_000n,
+        actualOutAmount: 10_000_000n,
+        actualOutUiAmount: 10,
+        outputDecimals: 6,
+        slippageBps: 12,
+      };
+      const executeBuy = jest.fn()
+        .mockResolvedValueOnce({ ...buyOk, txSignature: 'KOL_LIVE_BUY_SIG_PARENT' })
+        .mockRejectedValueOnce(new Error('transient quote/send failure'))
+        .mockResolvedValueOnce({ ...buyOk, txSignature: 'KOL_LIVE_BUY_SIG_REENTRY' });
+      const fx = buildE2EFixtures({ executeBuy });
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx: fx.ctx });
+
+      await triggerSmartV3LiveEntry(MINT_SMART, 'pain', 0.001);
+      const firstLive = __testGetActive().find((p) => p.isLive === true)!;
+      __testTriggerTick(firstLive.positionId, firstLive.entryPrice * 0.85);
+      await flushAsync();
+      expect(__testGetActive()).toHaveLength(0);
+
+      await triggerSmartV3LiveEntry(MINT_SMART, 'reentry_fail', 0.0009);
+      expect(executeBuy).toHaveBeenCalledTimes(2);
+      expect(__testGetActive()).toHaveLength(0);
+
+      await triggerSmartV3LiveEntry(MINT_SMART, 'reentry_success', 0.0009);
+      const reentry = __testGetActive().find((p) => p.isLive === true);
+      expect(executeBuy).toHaveBeenCalledTimes(3);
+      expect(reentry).toBeDefined();
+      expect(reentry?.entryTxSignature).toBe('KOL_LIVE_BUY_SIG_REENTRY');
+      expect(reentry?.smartV3LiveHardCutReentry).toBe(true);
+    }, 10_000);
 
     it('3c. live close retry 전 token balance 가 이미 0이면 중복 sell 없이 balance delta 로 close 복구', async () => {
       const failThenBalanceGone = jest.fn().mockRejectedValueOnce(new Error('confirm timeout after send'));

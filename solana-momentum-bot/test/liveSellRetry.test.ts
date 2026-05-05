@@ -68,6 +68,36 @@ describe('executeLiveSellWithImmediateRetries', () => {
     expect(result.soldRaw).toBe(1_000n);
   });
 
+  it('uses the selected urgency profile and reports it in the execution result', async () => {
+    setLiveSellRetryDelaysMsForTests([0, 0, 0, 0, 0], 'hard_cut');
+    const executor = {
+      executeSell: jest.fn()
+        .mockRejectedValueOnce(new Error('route timeout'))
+        .mockResolvedValueOnce({
+          txSignature: 'SELL_HARD_CUT_OK',
+          expectedOutAmount: 1n,
+          slippageBps: 18,
+        }),
+      getTokenBalance: jest.fn().mockResolvedValueOnce(1_000n),
+    };
+
+    const result = await executeLiveSellWithImmediateRetries({
+      executor,
+      tokenMint: 'mint',
+      initialTokenBalance: 1_000n,
+      requestedSellAmount: 1_000n,
+      expectedRemainingBalance: 0n,
+      context: 'test:hard_cut_urgency',
+      reason: 'probe_hard_cut',
+      syntheticSignature: 'SYNTHETIC_RECOVERED',
+      urgency: 'hard_cut',
+    });
+
+    expect(result.urgency).toBe('hard_cut');
+    expect(result.attempts).toBe(2);
+    expect(result.sellResult.txSignature).toBe('SELL_HARD_CUT_OK');
+  });
+
   it('does not convert zero balance into synthetic success when balance recovery is disabled', async () => {
     const executor = {
       executeSell: jest.fn().mockRejectedValue(new Error('sell failed')),

@@ -78,6 +78,9 @@ interface PaperArmStats {
   edgeFailRows: number;
   medianEdgeCostRatio: number | null;
   medianRequiredGrossMovePct: number | null;
+  hardCutRows: number;
+  medianMaeWorstPct: number | null;
+  medianHardCutMaePct: number | null;
   medianHoldSec: number | null;
   topExitReasons: Array<{ reason: string; count: number }>;
 }
@@ -441,6 +444,27 @@ function buildTopExitReasons(rows: JsonRow[]): Array<{ reason: string; count: nu
     .slice(0, 5);
 }
 
+function normalizeReturnFraction(value: number | null): number | null {
+  if (value == null) return null;
+  return Math.abs(value) > 20 ? value / 100 : value;
+}
+
+function rowMaeWorstPct(row: JsonRow): number | null {
+  return normalizeReturnFraction(num(row.maeWorstPct) ?? num(row.maePctTokenOnly) ?? num(row.maePct));
+}
+
+function rowHardCutMaePct(row: JsonRow): number | null {
+  return normalizeReturnFraction(num(row.hardCutTriggerMaePct) ?? num(row.maeWorstPct) ?? num(row.maePctTokenOnly) ?? num(row.maePct));
+}
+
+function isHardCutTrade(row: JsonRow): boolean {
+  const reason = str(row.exitReason);
+  return reason === 'probe_hard_cut' ||
+    reason === 'rotation_dead_on_arrival' ||
+    reason === 'rotation_flow_residual_timeout' ||
+    reason === 'quick_reject_classifier_exit';
+}
+
 function buildPaperArmStats(
   rows: JsonRow[],
   assumedAtaRentSol: number,
@@ -471,6 +495,9 @@ function buildPaperArmStats(
         .filter((value): value is number => value != null && Number.isFinite(value));
       const netSol = netSolValues.reduce((sum, value) => sum + value, 0);
       const netSolTokenOnly = tokenOnlyValues.reduce((sum, value) => sum + value, 0);
+      const maeWorstValues = scoped.map(rowMaeWorstPct).filter((value): value is number => value != null);
+      const hardCutRows = scoped.filter(isHardCutTrade);
+      const hardCutMaeValues = hardCutRows.map(rowHardCutMaePct).filter((value): value is number => value != null);
       return {
         armName,
         rows: scoped.length,
@@ -486,6 +513,9 @@ function buildPaperArmStats(
         edgeFailRows: edgeRows.filter((edge) => boolValue(edge.pass) === false).length,
         medianEdgeCostRatio: percentile(edgeCostRatios, 0.5),
         medianRequiredGrossMovePct: percentile(edgeRequiredMoves, 0.5),
+        hardCutRows: hardCutRows.length,
+        medianMaeWorstPct: percentile(maeWorstValues, 0.5),
+        medianHardCutMaePct: percentile(hardCutMaeValues, 0.5),
         medianHoldSec: percentile(holdSec, 0.5),
         topExitReasons: buildTopExitReasons(scoped),
       };
@@ -810,13 +840,14 @@ function renderStatsTable(rows: HorizonStats[]): string {
 function renderPaperArmTable(rows: PaperArmStats[]): string {
   if (rows.length === 0) return '_No rotation paper trade rows._';
   return [
-    '| arm | closes | W/L | net SOL | token-only SOL | rent-adjusted stress SOL | edge pass/fail | median cost ratio | required gross move | median hold | top exits |',
-    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|',
+    '| arm | closes | W/L | net SOL | token-only SOL | rent-adjusted stress SOL | edge pass/fail | median cost ratio | required gross move | hardCut | med worst MAE | med hardCut MAE | median hold | top exits |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|',
     ...rows.map((row) =>
       `| ${row.armName} | ${row.rows} | ${row.wins}/${row.losses} | ${formatSol(row.netSol)} | ` +
       `${formatSol(row.netSolTokenOnly)} | ${formatSol(row.rentAdjustedNetSol)} | ` +
       `${row.edgePassRows}/${row.edgeFailRows}${row.edgeRows === 0 ? ' (n/a)' : ''} | ` +
       `${formatPct(row.medianEdgeCostRatio)} | ${formatPct(row.medianRequiredGrossMovePct)} | ` +
+      `${row.hardCutRows} | ${formatPct(row.medianMaeWorstPct)} | ${formatPct(row.medianHardCutMaePct)} | ` +
       `${row.medianHoldSec == null ? 'n/a' : `${row.medianHoldSec.toFixed(0)}s`} | ` +
       `${row.topExitReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'} |`
     ),

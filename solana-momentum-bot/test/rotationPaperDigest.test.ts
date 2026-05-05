@@ -137,13 +137,12 @@ describe('rotation paper digest', () => {
 
     expect(notifier.sendInfo).toHaveBeenCalledTimes(1);
     const message = notifier.sendInfo.mock.calls[0][0] as string;
-    expect(message).toContain('[ROTATION PAPER');
-    expect(message).toContain('entries 1 · closes 1');
-    expect(message).toContain('skips 1');
-    expect(message).toContain('rot_fast15');
-    expect(message).toContain('T+15s ok 2/2');
-    expect(message).toContain('arm-skip FN: pc+ 1/1');
-    expect(message).toContain('after-sell tail: rot-fast-1');
+    expect(message).toContain('ROTATION PAPER 오늘 요약');
+    expect(message).toContain('KST 00:00→09:00');
+    expect(message).toContain('- 00-08 · close 0건');
+    expect(message).toContain('- 09:00 · close 1건 (1W/0L) net +0.0020');
+    expect(message).toContain('· 합계 close 1건 (1W/0L) net +0.0020 SOL');
+    expect(message).toContain('· PAPER open 0건 · entries 1건 · skips 1건');
     expect(notifier.sendInfo.mock.calls[0][1]).toBe('kol_rotation_paper_digest');
   });
 });

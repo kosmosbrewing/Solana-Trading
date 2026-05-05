@@ -15,7 +15,7 @@ export function formatHelpMessage(allowedProcesses: string[]): string {
     '<code>/health</code> 가용성 상태 점검',
     '<code>/report</code> 최근 운영 heartbeat 조회',
     '<code>/heartbeat</code> 최근 운영 heartbeat 조회',
-    '<code>/restart &lt;name|alias&gt;</code> 프로세스 재시작',
+    '<code>/restart &lt;name|alias&gt;</code> ecosystem config 재적용 후 재시작',
     '<code>/stop &lt;name|alias&gt;</code> 프로세스 중지',
     '<code>/logs &lt;name|alias&gt;</code> 최근 로그 30줄',
     `대상 프로세스: ${processes}`,

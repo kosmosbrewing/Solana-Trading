@@ -33,6 +33,7 @@ const LOG_FILES: Record<string, { out: string; error: string }> = {
     error: 'logs/ops-error.log',
   },
 };
+const ECOSYSTEM_CONFIG_FILE = 'ecosystem.config.cjs';
 
 export class Pm2Service {
   async listProcesses(): Promise<Pm2ProcessStatus[]> {
@@ -57,8 +58,13 @@ export class Pm2Service {
   }
 
   async restartProcess(name: string): Promise<string> {
-    const output = await this.run(['restart', name, '--update-env']);
-    return sanitizePm2Output(joinOutput(output));
+    const ecosystemConfigPath = path.resolve(process.cwd(), ECOSYSTEM_CONFIG_FILE);
+    const args = buildRestartProcessArgs(name, fs.existsSync(ecosystemConfigPath), ecosystemConfigPath);
+    const output = await this.run(args);
+    const note = args[0] === 'startOrRestart'
+      ? `\nApplied ecosystem config: ${ECOSYSTEM_CONFIG_FILE}`
+      : '';
+    return sanitizePm2Output(joinOutput(output) + note);
   }
 
   async stopProcess(name: string): Promise<string> {
@@ -120,6 +126,18 @@ export class Pm2Service {
       });
     });
   }
+}
+
+export function buildRestartProcessArgs(
+  name: string,
+  ecosystemConfigExists: boolean,
+  ecosystemConfigPath = path.resolve(process.cwd(), ECOSYSTEM_CONFIG_FILE)
+): string[] {
+  if (!ecosystemConfigExists) {
+    return ['restart', name, '--update-env'];
+  }
+
+  return ['startOrRestart', ecosystemConfigPath, '--only', name, '--update-env'];
 }
 
 function resolveLogFiles(name: string): string[] {

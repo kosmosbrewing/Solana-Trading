@@ -180,7 +180,10 @@ function buildPaperTodayDigest(label: string, closedRows: JsonRow[], nowMs: numb
   ].join('\n');
 }
 
-export async function flushPureWsPaperDigest(notifier: Notifier): Promise<void> {
+export async function flushPureWsPaperDigest(
+  notifier: Notifier,
+  options: { force?: boolean } = {}
+): Promise<void> {
   if (!config.pureWsPaperNotifyEnabled || !config.pureWsPaperDigestEnabled) return;
   const nowMs = Date.now();
   const startedMs = windowStartedMs;
@@ -208,7 +211,15 @@ export async function flushPureWsPaperDigest(notifier: Notifier): Promise<void> 
     (pos.executionMode === 'paper' || pos.isShadowArm === true || pos.paperOnlyReason != null)
   );
 
-  if (closed.length === 0 && entries.length === 0 && openPaper.length === 0 && windowMarkouts.length === 0) return;
+  if (
+    !options.force &&
+    closed.length === 0 &&
+    entries.length === 0 &&
+    openPaper.length === 0 &&
+    windowMarkouts.length === 0
+  ) {
+    return;
+  }
 
   const dayClosed = trades.filter((row) => isPureWsNewPairLedgerRow(row));
   const lines = [buildPaperTodayDigest('PURE_WS', dayClosed, nowMs)];

@@ -10,7 +10,7 @@ import {
 } from '../src/reporting/sparseOpsSummary';
 
 describe('sparseOpsSummary', () => {
-  it('builds a compact operator-friendly sparse summary', () => {
+  it('compresses normal idle sparse summary for Telegram', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'sparse-ops-'));
     const sessionDir = path.join(root, 'sessions', 'session-1');
     fs.mkdirSync(sessionDir, { recursive: true });
@@ -28,6 +28,8 @@ describe('sparseOpsSummary', () => {
         { type: 'candidate_evicted', timestampMs: Date.parse('2026-04-05T06:05:00.000Z'), tokenMint: 'idle-token-1', reason: 'idle', detail: 'idleSec=640|immediate=true' },
         { type: 'candidate_evicted', timestampMs: Date.parse('2026-04-05T06:05:01.000Z'), tokenMint: 'idle-token-1', reason: 'idle', detail: 'idleSec=601|immediate=true' },
         { type: 'candidate_evicted', timestampMs: Date.parse('2026-04-05T06:05:02.000Z'), tokenMint: 'score-token-1', reason: 'score', detail: 'score=42' },
+        { type: 'admission_skip', timestampMs: Date.parse('2026-04-05T06:06:00.000Z'), reason: 'unsupported_dex' },
+        { type: 'admission_skip', timestampMs: Date.parse('2026-04-05T06:06:01.000Z'), reason: 'no_pairs' },
       ],
     }));
     fs.writeFileSync(path.join(sessionDir, 'realtime-signals.jsonl'), '');
@@ -35,15 +37,48 @@ describe('sparseOpsSummary', () => {
     const summary = loadSparseOpsSummary(root, 4, 2);
     const message = buildSparseOpsSummaryMessage(summary);
 
-    expect(message).toContain('희박 거래: 신호 없음 (4h)');
+    expect(message).toContain('희박 거래: 정상 idle (4h)');
     expect(message).toContain('- 신호 0건 → live 0건');
-    expect(message).toContain('- 판단: 희박 거래 데이터 부족이 우세함');
-    expect(message).toContain('- 후보: seen 0 · admSkip 0 · idleEvict 2');
-    expect(message).toContain('- 병목: idle evict 2 (idle-token-1)');
+    expect(message).toContain('- 병목: DEX 미지원 / 페어 없음');
+    expect(message).not.toContain('- 상태:');
+    expect(message).not.toContain('- 판단:');
+    expect(message).not.toContain('- 후보:');
     expect(message).not.toContain('진단 이벤트');
     expect(message).not.toContain('alias miss');
     expect(message).not.toContain('Freshness');
     expect(message).not.toContain('Cohort funnel');
+  });
+
+  it('expands sparse summary when signals exist but live entries are blocked', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'sparse-ops-active-'));
+    const sessionDir = path.join(root, 'sessions', 'session-1');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.writeFileSync(path.join(root, 'current-session.json'), JSON.stringify({
+      datasetDir: sessionDir,
+      startedAt: '2026-04-05T05:24:58.037Z',
+    }));
+    fs.writeFileSync(path.join(root, 'runtime-diagnostics.json'), JSON.stringify({
+      events: [
+        {
+          type: 'trigger_stats',
+          timestampMs: Date.parse('2026-04-05T06:10:30.119Z'),
+          detail: 'evals=100 signals=1(sparse=0 boosted=0) insuffCandles=0 volInsuf=0 sparseInsuf=0 lowBuyRatio=0 cooldown=0 idleSkip=0 activePairs=3 sparsePairs=1',
+        },
+        { type: 'admission_skip', timestampMs: Date.parse('2026-04-05T06:06:00.000Z'), reason: 'unsupported_dex' },
+        { type: 'admission_skip', timestampMs: Date.parse('2026-04-05T06:06:01.000Z'), reason: 'no_pairs' },
+      ],
+    }));
+    fs.writeFileSync(path.join(sessionDir, 'realtime-signals.jsonl'), [
+      JSON.stringify({ id: 's1', timestamp: '2026-04-05T06:09:00.000Z', status: 'rejected' }),
+    ].join('\n') + '\n');
+
+    const summary = loadSparseOpsSummary(root, 4, 2);
+    const message = buildSparseOpsSummaryMessage(summary);
+
+    expect(message).toContain('희박 거래: 진입 없음 (4h)');
+    expect(message).toContain('- 상태: 활성 pair 3 · sparse pair 1');
+    expect(message).toContain('- 병목: unsupported_dex 1, no_pairs 1');
+    expect(message).toContain('- 후보: seen 0 · admSkip 2 · idleEvict 0');
   });
 
   it('partitions cohort funnel counts by cohort label and stage', () => {

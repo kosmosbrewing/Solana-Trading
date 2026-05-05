@@ -230,7 +230,10 @@ function eventKey(row: JsonRow): string {
   return str(row.eventId) || `${str(row.tokenMint)}:${str(row.rejectReason)}:${timeMs(row.rejectedAt)}`;
 }
 
-export async function flushRotationPaperDigest(notifier: Notifier): Promise<void> {
+export async function flushRotationPaperDigest(
+  notifier: Notifier,
+  options: { force?: boolean } = {}
+): Promise<void> {
   if (!config.kolHunterRotationPaperNotifyEnabled || !config.kolHunterRotationPaperDigestEnabled) return;
   const nowMs = Date.now();
   const startedMs = windowStartedMs;
@@ -270,6 +273,7 @@ export async function flushRotationPaperDigest(notifier: Notifier): Promise<void
   );
 
   if (
+    !options.force &&
     closed.length === 0 &&
     entries.length === 0 &&
     openPaper.length === 0 &&

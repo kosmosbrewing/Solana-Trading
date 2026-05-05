@@ -294,6 +294,7 @@ describe('smart-v3-evidence-report', () => {
       mode: 'live',
       netSol: -0.001,
       netSolTokenOnly: -0.0005,
+      ataRentSol: 0,
       mfePctPeak: 0.08,
       exitReason: 'probe_hard_cut',
     })));

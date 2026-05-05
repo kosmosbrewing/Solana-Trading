@@ -5,7 +5,16 @@ const log = createModuleLogger('LiveSellRetry');
 
 export const LIVE_SELL_IMMEDIATE_RETRY_COUNT = 5;
 const DEFAULT_LIVE_SELL_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000, 4_000] as const;
-let liveSellRetryDelaysMs: readonly number[] = DEFAULT_LIVE_SELL_RETRY_DELAYS_MS;
+const HARD_CUT_LIVE_SELL_RETRY_DELAYS_MS = [0, 150, 300, 600, 1_200] as const;
+const STRUCTURAL_LIVE_SELL_RETRY_DELAYS_MS = [0, 100, 200, 400, 800] as const;
+
+export type LiveSellRetryUrgency = 'normal' | 'hard_cut' | 'structural';
+
+let liveSellRetryDelaysMsByUrgency: Record<LiveSellRetryUrgency, readonly number[]> = {
+  normal: DEFAULT_LIVE_SELL_RETRY_DELAYS_MS,
+  hard_cut: HARD_CUT_LIVE_SELL_RETRY_DELAYS_MS,
+  structural: STRUCTURAL_LIVE_SELL_RETRY_DELAYS_MS,
+};
 
 export interface LiveSellRetryExecutor {
   executeSell(tokenMint: string, amountRaw: bigint): Promise<SwapResult>;
@@ -18,6 +27,7 @@ export interface LiveSellRetryExecution {
   soldRaw: bigint;
   attempts: number;
   recoveredFromBalanceOnly: boolean;
+  urgency: LiveSellRetryUrgency;
 }
 
 export interface LiveSellRetryParams {
@@ -30,6 +40,7 @@ export interface LiveSellRetryParams {
   reason: string;
   syntheticSignature: string;
   retryCount?: number;
+  urgency?: LiveSellRetryUrgency;
   allowBalanceRecovered?: boolean;
 }
 
@@ -48,6 +59,10 @@ export function liveSellRetryMaxAttempts(retryCount = LIVE_SELL_IMMEDIATE_RETRY_
   return 1 + Math.max(0, Math.floor(retryCount));
 }
 
+function liveSellRetryDelaysFor(urgency: LiveSellRetryUrgency): readonly number[] {
+  return liveSellRetryDelaysMsByUrgency[urgency] ?? liveSellRetryDelaysMsByUrgency.normal;
+}
+
 export async function executeLiveSellWithImmediateRetries(
   params: LiveSellRetryParams
 ): Promise<LiveSellRetryExecution> {
@@ -61,6 +76,8 @@ export async function executeLiveSellWithImmediateRetries(
     syntheticSignature,
   } = params;
   const allowBalanceRecovered = params.allowBalanceRecovered !== false;
+  const urgency = params.urgency ?? 'normal';
+  const retryDelaysMs = liveSellRetryDelaysFor(urgency);
   const expectedRemainingBalance = params.expectedRemainingBalance ??
     (initialTokenBalance > requestedSellAmount ? initialTokenBalance - requestedSellAmount : 0n);
   const maxAttempts = liveSellRetryMaxAttempts(params.retryCount);
@@ -71,10 +88,10 @@ export async function executeLiveSellWithImmediateRetries(
     let preAttemptBalance = initialTokenBalance;
 
     if (attempt > 1) {
-      const delayMs = liveSellRetryDelaysMs[attempt - 2] ?? liveSellRetryDelaysMs[liveSellRetryDelaysMs.length - 1] ?? 0;
+      const delayMs = retryDelaysMs[attempt - 2] ?? retryDelaysMs[retryDelaysMs.length - 1] ?? 0;
       log.warn(
         `[LIVE_SELL_RETRY] ${context} reason=${reason} ` +
-        `attempt=${attempt}/${maxAttempts} delayMs=${delayMs}`
+        `urgency=${urgency} attempt=${attempt}/${maxAttempts} delayMs=${delayMs}`
       );
       await waitLiveSellRetry(delayMs);
 
@@ -103,6 +120,7 @@ export async function executeLiveSellWithImmediateRetries(
           soldRaw,
           attempts: attempt,
           recoveredFromBalanceOnly: true,
+          urgency,
         };
       }
 
@@ -120,7 +138,7 @@ export async function executeLiveSellWithImmediateRetries(
       const expectedPostBalance = preAttemptBalance > sellAmount ? preAttemptBalance - sellAmount : 0n;
       const soldRaw = initialTokenBalance > expectedPostBalance ? initialTokenBalance - expectedPostBalance : 0n;
       const soldRatio = rawAmountRatio(soldRaw, initialTokenBalance);
-      return { sellResult, soldRatio, soldRaw, attempts: attempt, recoveredFromBalanceOnly: false };
+      return { sellResult, soldRatio, soldRaw, attempts: attempt, recoveredFromBalanceOnly: false, urgency };
     } catch (err) {
       lastErr = err;
       log.warn(
@@ -133,6 +151,20 @@ export async function executeLiveSellWithImmediateRetries(
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
-export function setLiveSellRetryDelaysMsForTests(delays?: readonly number[]): void {
-  liveSellRetryDelaysMs = delays ?? DEFAULT_LIVE_SELL_RETRY_DELAYS_MS;
+export function setLiveSellRetryDelaysMsForTests(
+  delays?: readonly number[],
+  urgency: LiveSellRetryUrgency = 'normal'
+): void {
+  if (delays == null) {
+    liveSellRetryDelaysMsByUrgency = {
+      normal: DEFAULT_LIVE_SELL_RETRY_DELAYS_MS,
+      hard_cut: HARD_CUT_LIVE_SELL_RETRY_DELAYS_MS,
+      structural: STRUCTURAL_LIVE_SELL_RETRY_DELAYS_MS,
+    };
+    return;
+  }
+  liveSellRetryDelaysMsByUrgency = {
+    ...liveSellRetryDelaysMsByUrgency,
+    [urgency]: delays,
+  };
 }

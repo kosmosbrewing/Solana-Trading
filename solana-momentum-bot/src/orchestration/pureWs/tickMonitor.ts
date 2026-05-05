@@ -15,6 +15,7 @@ import { getPureWsLivePriceTracker } from './livePriceTracker';
 import { trackPureWsClose } from './missedAlpha';
 import { closePureWsPosition } from './close';
 import type { PureWsPosition } from './types';
+import { updateExcursionTelemetry } from '../excursionTelemetry';
 
 export async function updatePureWsPositions(
   ctx: BotContext,
@@ -55,6 +56,12 @@ export async function updatePureWsPositions(
     const maePct = (pos.troughPrice - referencePrice) / referencePrice;
     const currentPct = (currentPrice - referencePrice) / referencePrice;
     const elapsedSec = nowSec - pos.entryTimeSec;
+    pos.excursionTelemetry = updateExcursionTelemetry(pos.excursionTelemetry, {
+      elapsedSec,
+      maePct,
+      mfePct,
+      currentPct,
+    });
 
     // 2026-04-26: shadow arm override resolution.
     // primary 는 모든 override 가 undefined → 기존 config 그대로. swing-v2 shadow 만 override 적용.

@@ -31,7 +31,18 @@ import { lookupCachedSymbol } from '../../ingester/tokenSymbolResolver';
 import { trackPureWsPaperMarkout } from './markout';
 import { recordPureWsPairOutcomeCooldown } from './cooldowns';
 import { resolveSellReceivedSolFromSwapResult } from '../../executor/executor';
-import { executeLiveSellWithImmediateRetries, liveSellRetryMaxAttempts } from '../../executor/liveSellRetry';
+import {
+  executeLiveSellWithImmediateRetries,
+  liveSellRetryMaxAttempts,
+  type LiveSellRetryUrgency,
+} from '../../executor/liveSellRetry';
+import { buildExcursionTelemetryRecord } from '../excursionTelemetry';
+
+function pureWsSellUrgencyForReason(reason: CloseReason): LiveSellRetryUrgency {
+  if (reason === 'DEGRADED_EXIT' || reason === 'EMERGENCY') return 'structural';
+  if (reason === 'REJECT_HARD_CUT' || reason === 'STOP_LOSS') return 'hard_cut';
+  return 'normal';
+}
 
 export async function closePureWsPosition(
   id: string,
@@ -69,6 +80,10 @@ async function closePureWsPositionSerialized(
   let soldQuantity = pos.quantity;
   // Phase 1 P0-4 (2026-04-25): wallet truth — live sell 시 receivedSol 을 outer 에 보존.
   let liveReceivedSol = 0;
+  const sellRetryUrgency = pureWsSellUrgencyForReason(reason);
+  let sellRetryAttempts: number | null = null;
+  let sellRecoveredFromBalanceOnly: boolean | null = null;
+  let sellRetrySoldRatio: number | null = null;
 
   if (ctx.tradingMode === 'live') {
     try {
@@ -88,7 +103,11 @@ async function closePureWsPositionSerialized(
           context: `pure_ws:${id}`,
           reason,
           syntheticSignature: `PUREWS_SELL_BALANCE_RECOVERED_${id}`,
+          urgency: sellRetryUrgency,
         });
+        sellRetryAttempts = sellExecution.attempts;
+        sellRecoveredFromBalanceOnly = sellExecution.recoveredFromBalanceOnly;
+        sellRetrySoldRatio = sellExecution.soldRatio;
         const sellResult = sellExecution.sellResult;
         const solAfter = await sellExecutor.getBalance();
         const receivedSol = resolveSellReceivedSolFromSwapResult({
@@ -115,6 +134,14 @@ async function closePureWsPositionSerialized(
           pos.marketReferencePrice > 0
             ? (pos.peakPrice - pos.marketReferencePrice) / pos.marketReferencePrice
             : 0;
+        const maePct = pos.marketReferencePrice > 0
+          ? (pos.troughPrice - pos.marketReferencePrice) / pos.marketReferencePrice
+          : 0;
+        const excursionTelemetryRecord = buildExcursionTelemetryRecord(pos.excursionTelemetry, {
+          reason,
+          maePctAtClose: maePct,
+          elapsedSec: holdSec,
+        });
         // Phase 1 P0-4: DB pnl ↔ wallet delta drift — sell 직후 즉시 측정 (price-based vs wallet-based).
         const solSpentNominalLocal = pos.entryPrice * pos.quantity;
         const dbPnlLocal = (actualExitPrice - pos.entryPrice) * pos.quantity;
@@ -142,9 +169,15 @@ async function closePureWsPositionSerialized(
           entryPrice: pos.entryPrice,
           holdSec,
           mfePctPeak,
+          maePct,
+          ...excursionTelemetryRecord,
           peakPrice: pos.peakPrice,
           troughPrice: pos.troughPrice,
           marketReferencePrice: pos.marketReferencePrice,
+          sellRetryUrgency,
+          sellRetryAttempts,
+          sellRecoveredFromBalanceOnly,
+          sellRetrySoldRatio,
           t1VisitAtSec: pos.t1VisitAtSec ?? null,
           t2VisitAtSec: pos.t2VisitAtSec ?? null,
           t3VisitAtSec: pos.t3VisitAtSec ?? null,
@@ -400,6 +433,11 @@ async function closePaperOnlyPosition(
   const ref = pos.marketReferencePrice;
   const mfePct = ref > 0 ? (pos.peakPrice - ref) / ref : 0;
   const maePct = ref > 0 ? (pos.troughPrice - ref) / ref : 0;
+  const excursionTelemetryRecord = buildExcursionTelemetryRecord(pos.excursionTelemetry, {
+    reason,
+    maePctAtClose: maePct,
+    elapsedSec: holdSec,
+  });
   const isShadow = pos.isShadowArm === true;
   const armName = pos.armName ?? (isShadow ? 'pure_ws_swing_v2' : LANE_STRATEGY);
   const strategy = armName.startsWith('pure_ws') ? armName : (isShadow ? 'pure_ws_swing_v2' : LANE_STRATEGY);
@@ -476,6 +514,7 @@ async function closePaperOnlyPosition(
       holdSec,
       mfePct,
       maePct,
+      ...excursionTelemetryRecord,
       netPct,
       netPctTokenOnly: tokenOnlyNetPct,
       netSol: pnl,
@@ -512,6 +551,7 @@ async function closePaperOnlyPosition(
       troughPrice: pos.troughPrice,
       mfePctPeak: mfePct,
       maePct,
+      ...excursionTelemetryRecord,
       netPct,
       netPctTokenOnly: tokenOnlyNetPct,
       netSol: pnl,

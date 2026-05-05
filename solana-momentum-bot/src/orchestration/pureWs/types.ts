@@ -1,3 +1,5 @@
+import type { ExcursionTelemetrySnapshot } from '../excursionTelemetry';
+
 // pure_ws_breakout 의 in-memory position 표현. PureWsTradeState 는 운영 4 단계 +
 // CLOSED 의 sentinel. PureWsPosition 은 entry/exit 사이의 모든 derived state 보유.
 
@@ -67,4 +69,6 @@ export interface PureWsPosition {
   probeTrailingPctOverride?: number;
   t1TrailPctOverride?: number;
   t1ProfitFloorMultOverride?: number;
+  /** Market-reference MAE/MFE telemetry for cross-lane hard-cut analysis. */
+  excursionTelemetry?: ExcursionTelemetrySnapshot;
 }

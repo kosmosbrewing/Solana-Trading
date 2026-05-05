@@ -77,12 +77,17 @@ SKIP_WINNER_KILL_REPORT="${SKIP_WINNER_KILL_REPORT:-false}"
 SKIP_SYNC_HEALTH="${SKIP_SYNC_HEALTH:-false}"
 TOKEN_QUALITY_WINDOW_DAYS="${TOKEN_QUALITY_WINDOW_DAYS:-7}"
 TRADE_MARKOUT_SINCE="${TRADE_MARKOUT_SINCE:-24h}"
-KOL_TRANSFER_REPORT_SINCE="${KOL_TRANSFER_REPORT_SINCE:-30d}"
+KOL_TRANSFER_REPORT_SINCE="${KOL_TRANSFER_REPORT_SINCE:-7d}"
 KOL_TRANSFER_INPUT="${KOL_TRANSFER_INPUT:-data/research/kol-transfers.jsonl}"
+KOL_TRANSFER_STALE_WARN_HOURS="${KOL_TRANSFER_STALE_WARN_HOURS:-30}"
 SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT="${SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT:-0.005}"
 ROTATION_REPORT_ROUND_TRIP_COST_PCT="${ROTATION_REPORT_ROUND_TRIP_COST_PCT:-0.005}"
 WINNER_KILL_WINDOW_DAYS="${WINNER_KILL_WINDOW_DAYS:-7}"
 RUN_SHADOW_EVAL="${RUN_SHADOW_EVAL:-false}"
+# Local analysis cache. The operator analyzes VPS runtime data locally, so Helius
+# posterior inputs generated on the local machine must not be overwritten by
+# rsyncing the remote data/ tree.
+DATA_RSYNC_EXCLUDES="${DATA_RSYNC_EXCLUDES:-research/kol-transfers.jsonl research/kol-transfers.jsonl.bak-* research/kol-transfers.jsonl.tmp-* research/.kol-transfer-refresh.lock/**}"
 
 to_epoch() {
   local ts="${1%%.*}"  # 소수점 이하 제거
@@ -148,6 +153,39 @@ file_mtime_iso() {
   fi
   date -u -r "$epoch" "+%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || \
   date -u -d "@$epoch" "+%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "$epoch"
+}
+
+abs_path() {
+  local p="$1"
+  case "$p" in
+    /*) echo "$p" ;;
+    *) echo "${ROOT_DIR}/${p}" ;;
+  esac
+}
+
+check_kol_transfer_freshness() {
+  local input_abs
+  input_abs="$(abs_path "$KOL_TRANSFER_INPUT")"
+  if [ ! -f "$input_abs" ]; then
+    echo "[sync-vps-data] ⚠️  WARNING: KOL transfer input missing: ${KOL_TRANSFER_INPUT}"
+    echo "[sync-vps-data]    refresh: npm run kol:transfer-refresh"
+    return
+  fi
+  local mtime now age_sec age_hours
+  mtime="$(file_mtime_epoch "$input_abs")"
+  if [ -z "$mtime" ]; then
+    echo "[sync-vps-data] ⚠️  WARNING: KOL transfer input mtime unavailable: ${KOL_TRANSFER_INPUT}"
+    return
+  fi
+  now="$(date +%s)"
+  age_sec=$((now - mtime))
+  age_hours=$((age_sec / 3600))
+  if [ "$age_sec" -gt $((KOL_TRANSFER_STALE_WARN_HOURS * 3600)) ]; then
+    echo "[sync-vps-data] ⚠️  WARNING: KOL transfer input is ${age_hours}h old (>${KOL_TRANSFER_STALE_WARN_HOURS}h)"
+    echo "[sync-vps-data]    refresh: npm run kol:transfer-refresh"
+  else
+    echo "[sync-vps-data] kol-transfer input fresh: ${age_hours}h old"
+  fi
 }
 
 write_lane_trade_summary_markdown() {
@@ -309,7 +347,14 @@ write_sync_health_report() {
 if [ "$SKIP_FILES" != "true" ]; then
   mkdir -p "${LOCAL_PATH}"
   echo "[sync-vps-data] files: ${REMOTE_HOST}:${REMOTE_PATH} -> ${LOCAL_PATH}"
-  rsync -avz --progress "${REMOTE_HOST}:${REMOTE_PATH}" "${LOCAL_PATH}"
+  RSYNC_EXCLUDE_ARGS=()
+  for pattern in ${DATA_RSYNC_EXCLUDES}; do
+    RSYNC_EXCLUDE_ARGS+=(--exclude "$pattern")
+  done
+  if [ "${#RSYNC_EXCLUDE_ARGS[@]}" -gt 0 ]; then
+    echo "[sync-vps-data] data rsync excludes: ${DATA_RSYNC_EXCLUDES}"
+  fi
+  rsync -avz --progress "${RSYNC_EXCLUDE_ARGS[@]}" "${REMOTE_HOST}:${REMOTE_PATH}" "${LOCAL_PATH}"
 else
   echo "[sync-vps-data] files: SKIPPED (SKIP_FILES=true)"
 fi
@@ -523,6 +568,7 @@ fi
 # Why: getTransfersByAddress backfill 결과를 KOL별 rotation/smart-v3 prior 진단으로 고정한다.
 # API 호출 0건. backfill 자체는 `npm run kol:transfer-backfill`로 별도 수동/배치 실행한다.
 if [ "$SKIP_KOL_TRANSFER_REPORT" != "true" ]; then
+  check_kol_transfer_freshness
   KOL_TRANSFER_MD="${ROOT_DIR}/reports/kol-transfer-posterior-$(date +%Y-%m-%d).md"
   KOL_TRANSFER_JSON="${ROOT_DIR}/reports/kol-transfer-posterior-$(date +%Y-%m-%d).json"
   echo "[sync-vps-data] kol-transfer-report: generating since=${KOL_TRANSFER_REPORT_SINCE} input=${KOL_TRANSFER_INPUT}"

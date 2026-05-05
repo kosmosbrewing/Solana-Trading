@@ -9,6 +9,11 @@ import {
 } from '../src/observability/devWalletCandidateRegistry';
 import {
   buildKolTransferPosteriorReport,
+  loadKolPosteriorCoverageTargetsWithStatus,
+  type KolPosteriorCoverage,
+  type KolPosteriorCoverageLoadStatus,
+  type KolPosteriorCoverageSummary,
+  type KolPosteriorCoverageTarget,
   type KolPosteriorMetrics,
   type KolTransferRow,
 } from './kol-transfer-posterior-report';
@@ -21,8 +26,9 @@ const EVIDENCE_PROMOTION_MIN_CLOSES = 100;
 const EVIDENCE_MIN_OK_COVERAGE = 0.8;
 const EVIDENCE_MIN_EDGE_COVERAGE = 0.8;
 const EVIDENCE_MIN_EDGE_PASS_RATE = 0.5;
-const EVIDENCE_VERDICT_HORIZON_SEC = 60;
-const EVIDENCE_REQUIRED_COVERAGE_HORIZONS_SEC = [15, 30, 60];
+const EVIDENCE_PRIMARY_HORIZONS_SEC = [15, 30];
+const EVIDENCE_DECAY_HORIZON_SEC = 60;
+const EVIDENCE_REQUIRED_COVERAGE_HORIZONS_SEC = EVIDENCE_PRIMARY_HORIZONS_SEC;
 const ROTATION_CONTROL_ARM = 'kol_hunter_rotation_v1';
 
 interface Args {
@@ -35,6 +41,7 @@ interface Args {
   assumedNetworkFeeSol?: number;
   candidateFile?: string;
   kolTransferInput?: string;
+  kolDbPath?: string;
   mdOut?: string;
   jsonOut?: string;
 }
@@ -72,17 +79,46 @@ interface PaperArmStats {
   losses: number;
   netSol: number;
   netSolTokenOnly: number;
+  refundAdjustedNetSol: number;
   rentAdjustedNetSol: number;
   edgeRows: number;
   edgePassRows: number;
   edgeFailRows: number;
   medianEdgeCostRatio: number | null;
+  medianEdgeWalletDragRatio: number | null;
   medianRequiredGrossMovePct: number | null;
   hardCutRows: number;
   medianMaeWorstPct: number | null;
   medianHardCutMaePct: number | null;
   medianHoldSec: number | null;
   topExitReasons: Array<{ reason: string; count: number }>;
+}
+
+interface WinnerEntryPairingStats {
+  armName: string;
+  exitBucket: 'winner_trailing_t1' | 'other_exits';
+  rows: number;
+  wins: number;
+  losses: number;
+  netSol: number;
+  netSolTokenOnly: number;
+  refundAdjustedNetSol: number;
+  rentAdjustedNetSol: number;
+  medianMfePct: number | null;
+  medianMaePct: number | null;
+  medianHoldSec: number | null;
+}
+
+interface WinnerEntryDiagnosticStats {
+  armName: string;
+  exitBucket: 'winner_trailing_t1' | 'other_exits';
+  rows: number;
+  medianTopupStrength: number | null;
+  medianSellPressure30: number | null;
+  medianAnchorBuySol: number | null;
+  freshTopupRate: number | null;
+  highRiskFlagRate: number | null;
+  unknownQualityRate: number | null;
 }
 
 type EvidenceVerdictStatus =
@@ -102,9 +138,17 @@ interface EvidenceVerdict {
   promotionRequiredCloses: number;
   minOkCoverage: number | null;
   requiredHorizonCoverage: Array<{ horizonSec: number; okCoverage: number | null }>;
+  primaryHorizonPostCost: Array<{ horizonSec: number; medianPostCostDeltaPct: number | null }>;
+  primaryHorizonSec: number | null;
+  primaryMedianPostCostDeltaPct: number | null;
+  controlPrimaryMedianPostCostDeltaPct: number | null;
+  primaryBeatDeltaPct: number | null;
+  decayHorizonSec: number;
+  decayMedianPostCostDeltaPct: number | null;
   t60MedianPostCostDeltaPct: number | null;
   controlT60MedianPostCostDeltaPct: number | null;
   controlBeatDeltaPct: number | null;
+  refundAdjustedNetSol: number | null;
   rentAdjustedNetSol: number | null;
   edgeCoverage: number | null;
   edgePassRate: number | null;
@@ -132,6 +176,8 @@ interface RotationReport {
     totalRows: number;
     rotationRows: number;
     byArm: PaperArmStats[];
+    winnerEntryPairings: WinnerEntryPairingStats[];
+    winnerEntryDiagnostics: WinnerEntryDiagnosticStats[];
   };
   evidenceVerdicts: EvidenceVerdict[];
   noTrade: {
@@ -168,8 +214,13 @@ interface RotationReport {
   }>;
   kolTransferPosterior: {
     input: string;
+    kolDbPath?: string;
+    coverageLoadStatus?: KolPosteriorCoverageLoadStatus;
+    coverageLoadError?: string;
     rows: number;
     candidates: number;
+    coverageSummary?: KolPosteriorCoverageSummary;
+    coverage?: KolPosteriorCoverage[];
     topRotationFit: KolPosteriorMetrics[];
   };
 }
@@ -185,6 +236,7 @@ function parseArgs(argv: string[]): Args {
     assumedNetworkFeeSol: 0.000105,
     candidateFile: DEFAULT_DEV_WALLET_CANDIDATE_PATH,
     kolTransferInput: path.resolve(process.cwd(), 'data/research', KOL_TRANSFER_INPUT_FILE),
+    kolDbPath: path.resolve(process.cwd(), 'data/kol/wallets.json'),
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -200,6 +252,8 @@ function parseArgs(argv: string[]): Args {
     else if (arg === '--no-candidates') args.candidateFile = undefined;
     else if (arg === '--kol-transfer-input') args.kolTransferInput = path.resolve(argv[++i]);
     else if (arg.startsWith('--kol-transfer-input=')) args.kolTransferInput = path.resolve(arg.split('=')[1]);
+    else if (arg === '--kol-db') args.kolDbPath = path.resolve(argv[++i]);
+    else if (arg === '--no-kol-coverage') args.kolDbPath = undefined;
     else if (arg === '--md') args.mdOut = path.resolve(argv[++i]);
     else if (arg === '--json') args.jsonOut = path.resolve(argv[++i]);
   }
@@ -304,6 +358,44 @@ function rotationEdge(row: JsonRow): JsonRow {
 function boolValue(value: unknown): boolean | null {
   if (typeof value === 'boolean') return value;
   return null;
+}
+
+function edgeTicketSol(edge: JsonRow): number | null {
+  const value = num(edge.ticketSol);
+  return value != null && value > 0 ? value : null;
+}
+
+function edgeCopyableCostRatio(edge: JsonRow): number | null {
+  const ticketSol = edgeTicketSol(edge);
+  const irreversibleCostSol = num(edge.irreversibleCostSol) ?? num(edge.bleedTotalSol);
+  if (ticketSol != null && irreversibleCostSol != null && Number.isFinite(irreversibleCostSol)) {
+    return irreversibleCostSol / ticketSol;
+  }
+  return num(edge.costRatio);
+}
+
+function edgeWalletDragRatio(edge: JsonRow): number | null {
+  const direct = num(edge.walletDragRatio);
+  if (direct != null) return direct;
+  const ticketSol = edgeTicketSol(edge);
+  const walletDragSol = num(edge.walletDragSol) ?? num(edge.totalCostSol);
+  if (ticketSol != null && walletDragSol != null && Number.isFinite(walletDragSol)) {
+    return walletDragSol / ticketSol;
+  }
+  return null;
+}
+
+function edgePassValue(edge: JsonRow): boolean | null {
+  const costRatio = edgeCopyableCostRatio(edge);
+  const maxCostRatio = num(edge.maxCostRatio);
+  if (costRatio != null && maxCostRatio != null) return costRatio <= maxCostRatio;
+  return boolValue(edge.pass);
+}
+
+function edgeRequiredGrossMovePct(edge: JsonRow): number | null {
+  const copyableCostRatio = edgeCopyableCostRatio(edge);
+  if (copyableCostRatio != null) return copyableCostRatio;
+  return num(edge.requiredGrossMovePct);
 }
 
 function isRotationArmValue(value: string): boolean {
@@ -453,8 +545,43 @@ function rowMaeWorstPct(row: JsonRow): number | null {
   return normalizeReturnFraction(num(row.maeWorstPct) ?? num(row.maePctTokenOnly) ?? num(row.maePct));
 }
 
+function rowMfePct(row: JsonRow): number | null {
+  return normalizeReturnFraction(num(row.mfePctPeak) ?? num(row.mfePctTokenOnly) ?? num(row.mfePct));
+}
+
 function rowHardCutMaePct(row: JsonRow): number | null {
   return normalizeReturnFraction(num(row.hardCutTriggerMaePct) ?? num(row.maeWorstPct) ?? num(row.maePctTokenOnly) ?? num(row.maePct));
+}
+
+function rotationFlowMetrics(row: JsonRow): JsonRow {
+  const direct = obj(row.rotationFlowMetrics);
+  if (Object.keys(direct).length > 0) return direct;
+  return obj(obj(row.extras).rotationFlowMetrics);
+}
+
+function rowSurvivalFlags(row: JsonRow): string[] {
+  const direct = row.survivalFlags;
+  const fromExtras = obj(row.extras).survivalFlags;
+  const raw = Array.isArray(direct) ? direct : Array.isArray(fromExtras) ? fromExtras : [];
+  return raw.flatMap((flag) => typeof flag === 'string' ? [flag] : []);
+}
+
+function hasHighRiskFlag(row: JsonRow): boolean {
+  return rowSurvivalFlags(row).some((flag) =>
+    flag.startsWith('UNCLEAN_TOKEN') ||
+    flag.includes('NO_SECURITY_DATA') ||
+    flag.includes('SEVERE') ||
+    flag.includes('RUG') ||
+    flag.includes('BLACKLIST')
+  );
+}
+
+function hasUnknownQualityFlag(row: JsonRow): boolean {
+  return rowSurvivalFlags(row).some((flag) =>
+    flag === 'TOKEN_QUALITY_UNKNOWN' ||
+    flag === 'EXIT_LIQUIDITY_UNKNOWN' ||
+    flag === 'NO_HELIUS_PROVENANCE'
+  );
 }
 
 function isHardCutTrade(row: JsonRow): boolean {
@@ -488,10 +615,13 @@ function buildPaperArmStats(
         .map(rotationEdge)
         .filter((edge) => Object.keys(edge).length > 0);
       const edgeCostRatios = edgeRows
-        .map((edge) => num(edge.costRatio))
+        .map(edgeCopyableCostRatio)
+        .filter((value): value is number => value != null && Number.isFinite(value));
+      const edgeWalletDragRatios = edgeRows
+        .map(edgeWalletDragRatio)
         .filter((value): value is number => value != null && Number.isFinite(value));
       const edgeRequiredMoves = edgeRows
-        .map((edge) => num(edge.requiredGrossMovePct))
+        .map(edgeRequiredGrossMovePct)
         .filter((value): value is number => value != null && Number.isFinite(value));
       const netSol = netSolValues.reduce((sum, value) => sum + value, 0);
       const netSolTokenOnly = tokenOnlyValues.reduce((sum, value) => sum + value, 0);
@@ -505,13 +635,17 @@ function buildPaperArmStats(
         losses: netSolValues.filter((value) => value <= 0).length,
         netSol,
         netSolTokenOnly,
+        refundAdjustedNetSol: tokenOnlyValues
+          .map((value) => value - assumedNetworkFeeSol)
+          .reduce((sum, value) => sum + value, 0),
         rentAdjustedNetSol: tokenOnlyValues
           .map((value) => value - assumedWalletDragSol)
           .reduce((sum, value) => sum + value, 0),
         edgeRows: edgeRows.length,
-        edgePassRows: edgeRows.filter((edge) => boolValue(edge.pass) === true).length,
-        edgeFailRows: edgeRows.filter((edge) => boolValue(edge.pass) === false).length,
+        edgePassRows: edgeRows.filter((edge) => edgePassValue(edge) === true).length,
+        edgeFailRows: edgeRows.filter((edge) => edgePassValue(edge) === false).length,
         medianEdgeCostRatio: percentile(edgeCostRatios, 0.5),
+        medianEdgeWalletDragRatio: percentile(edgeWalletDragRatios, 0.5),
         medianRequiredGrossMovePct: percentile(edgeRequiredMoves, 0.5),
         hardCutRows: hardCutRows.length,
         medianMaeWorstPct: percentile(maeWorstValues, 0.5),
@@ -521,6 +655,100 @@ function buildPaperArmStats(
       };
     })
     .sort((a, b) => b.rows - a.rows || b.netSolTokenOnly - a.netSolTokenOnly || a.armName.localeCompare(b.armName));
+}
+
+function buildWinnerEntryPairingStats(
+  rows: JsonRow[],
+  assumedAtaRentSol: number,
+  assumedNetworkFeeSol: number
+): WinnerEntryPairingStats[] {
+  const buckets = new Map<string, { armName: string; exitBucket: WinnerEntryPairingStats['exitBucket']; rows: JsonRow[] }>();
+  const assumedWalletDragSol = assumedAtaRentSol + assumedNetworkFeeSol;
+  for (const row of rows) {
+    const armName = rowArmName(row);
+    const exitBucket: WinnerEntryPairingStats['exitBucket'] =
+      str(row.exitReason) === 'winner_trailing_t1' ? 'winner_trailing_t1' : 'other_exits';
+    const key = `${armName}:${exitBucket}`;
+    const bucket = buckets.get(key) ?? { armName, exitBucket, rows: [] };
+    bucket.rows.push(row);
+    buckets.set(key, bucket);
+  }
+  return [...buckets.values()]
+    .map(({ armName, exitBucket, rows: scoped }) => {
+      const netSolValues = scoped.map((row) => numberOrZero(row.netSol));
+      const tokenOnlyValues = scoped.map((row) => {
+        const tokenOnly = num(row.netSolTokenOnly);
+        return tokenOnly == null ? numberOrZero(row.netSol) : tokenOnly;
+      });
+      const holds = scoped.map((row) => num(row.holdSec)).filter((value): value is number => value != null);
+      const mfeValues = scoped.map(rowMfePct).filter((value): value is number => value != null);
+      const maeValues = scoped.map(rowMaeWorstPct).filter((value): value is number => value != null);
+      return {
+        armName,
+        exitBucket,
+        rows: scoped.length,
+        wins: netSolValues.filter((value) => value > 0).length,
+        losses: netSolValues.filter((value) => value <= 0).length,
+        netSol: netSolValues.reduce((sum, value) => sum + value, 0),
+        netSolTokenOnly: tokenOnlyValues.reduce((sum, value) => sum + value, 0),
+        refundAdjustedNetSol: tokenOnlyValues
+          .map((value) => value - assumedNetworkFeeSol)
+          .reduce((sum, value) => sum + value, 0),
+        rentAdjustedNetSol: tokenOnlyValues
+          .map((value) => value - assumedWalletDragSol)
+          .reduce((sum, value) => sum + value, 0),
+        medianMfePct: percentile(mfeValues, 0.5),
+        medianMaePct: percentile(maeValues, 0.5),
+        medianHoldSec: percentile(holds, 0.5),
+      };
+    })
+    .sort((a, b) => {
+      if (a.exitBucket !== b.exitBucket) return a.exitBucket === 'winner_trailing_t1' ? -1 : 1;
+      return b.netSolTokenOnly - a.netSolTokenOnly || b.rows - a.rows || a.armName.localeCompare(b.armName);
+    });
+}
+
+function buildWinnerEntryDiagnosticStats(rows: JsonRow[]): WinnerEntryDiagnosticStats[] {
+  const buckets = new Map<string, { armName: string; exitBucket: WinnerEntryDiagnosticStats['exitBucket']; rows: JsonRow[] }>();
+  for (const row of rows) {
+    const armName = rowArmName(row);
+    const exitBucket: WinnerEntryDiagnosticStats['exitBucket'] =
+      str(row.exitReason) === 'winner_trailing_t1' ? 'winner_trailing_t1' : 'other_exits';
+    const key = `${armName}:${exitBucket}`;
+    const bucket = buckets.get(key) ?? { armName, exitBucket, rows: [] };
+    bucket.rows.push(row);
+    buckets.set(key, bucket);
+  }
+  return [...buckets.values()]
+    .map(({ armName, exitBucket, rows: scoped }) => {
+      const topupStrength = scoped
+        .map((row) => num(rotationFlowMetrics(row).topupStrength))
+        .filter((value): value is number => value != null);
+      const sellPressure = scoped
+        .map((row) => num(rotationFlowMetrics(row).sellPressure30))
+        .filter((value): value is number => value != null);
+      const anchorBuySol = scoped
+        .map((row) => num(rotationFlowMetrics(row).anchorBuySolBeforeFirstSell))
+        .filter((value): value is number => value != null);
+      const freshTopups = scoped.filter((row) => rotationFlowMetrics(row).freshTopup === true).length;
+      const highRisk = scoped.filter(hasHighRiskFlag).length;
+      const unknownQuality = scoped.filter(hasUnknownQualityFlag).length;
+      return {
+        armName,
+        exitBucket,
+        rows: scoped.length,
+        medianTopupStrength: percentile(topupStrength, 0.5),
+        medianSellPressure30: percentile(sellPressure, 0.5),
+        medianAnchorBuySol: percentile(anchorBuySol, 0.5),
+        freshTopupRate: scoped.length > 0 ? freshTopups / scoped.length : null,
+        highRiskFlagRate: scoped.length > 0 ? highRisk / scoped.length : null,
+        unknownQualityRate: scoped.length > 0 ? unknownQuality / scoped.length : null,
+      };
+    })
+    .sort((a, b) => {
+      if (a.exitBucket !== b.exitBucket) return a.exitBucket === 'winner_trailing_t1' ? -1 : 1;
+      return b.rows - a.rows || a.armName.localeCompare(b.armName);
+    });
 }
 
 function horizonOkCoverage(row: HorizonStats | undefined): number | null {
@@ -555,8 +783,36 @@ function verdictCoverageReasons(rows: Array<{ horizonSec: number; okCoverage: nu
   });
 }
 
-function armVerdictHorizon(markout: ArmHorizonStats | undefined): HorizonStats | null {
-  return markout?.afterBuy.find((row) => row.horizonSec === EVIDENCE_VERDICT_HORIZON_SEC) ?? null;
+function horizonBySec(markout: ArmHorizonStats | undefined, horizonSec: number): HorizonStats | null {
+  return markout?.afterBuy.find((row) => row.horizonSec === horizonSec) ?? null;
+}
+
+function bestPrimaryHorizon(markout: ArmHorizonStats | undefined): HorizonStats | null {
+  const candidates = EVIDENCE_PRIMARY_HORIZONS_SEC
+    .map((horizonSec) => horizonBySec(markout, horizonSec))
+    .filter((row): row is HorizonStats => row != null && row.rows > 0 && row.medianPostCostDeltaPct != null);
+  if (candidates.length === 0) return null;
+  return candidates.sort((a, b) =>
+    (b.medianPostCostDeltaPct ?? -Infinity) - (a.medianPostCostDeltaPct ?? -Infinity) ||
+    a.horizonSec - b.horizonSec
+  )[0];
+}
+
+function primaryHorizonPostCost(markout: ArmHorizonStats | undefined): Array<{ horizonSec: number; medianPostCostDeltaPct: number | null }> {
+  return EVIDENCE_PRIMARY_HORIZONS_SEC.map((horizonSec) => ({
+    horizonSec,
+    medianPostCostDeltaPct: horizonBySec(markout, horizonSec)?.medianPostCostDeltaPct ?? null,
+  }));
+}
+
+function weakPrimaryPostCostReasons(rows: Array<{ horizonSec: number; medianPostCostDeltaPct: number | null }>): string[] {
+  return rows.flatMap((row) => {
+    if (row.medianPostCostDeltaPct == null) return [`T+${row.horizonSec}s median postCost missing`];
+    if (row.medianPostCostDeltaPct <= 0) {
+      return [`T+${row.horizonSec}s median postCost ${formatPct(row.medianPostCostDeltaPct)} <= 0`];
+    }
+    return [];
+  });
 }
 
 function buildEvidenceVerdicts(
@@ -564,20 +820,33 @@ function buildEvidenceVerdicts(
   armMarkouts: ArmHorizonStats[]
 ): EvidenceVerdict[] {
   const markoutsByArm = new Map(armMarkouts.map((row) => [row.armName, row]));
+  const controlPrimaryMedianPostCostDeltaPct =
+    bestPrimaryHorizon(markoutsByArm.get(ROTATION_CONTROL_ARM))?.medianPostCostDeltaPct ?? null;
   const controlT60MedianPostCostDeltaPct =
-    armVerdictHorizon(markoutsByArm.get(ROTATION_CONTROL_ARM))?.medianPostCostDeltaPct ?? null;
+    horizonBySec(markoutsByArm.get(ROTATION_CONTROL_ARM), EVIDENCE_DECAY_HORIZON_SEC)?.medianPostCostDeltaPct ?? null;
   return paperArms.map((arm) => {
     const markout = markoutsByArm.get(arm.armName);
     const coverageRows = requiredHorizonCoverage(markout);
     const minOkCoverage = minRequiredOkCoverage(coverageRows);
-    const t60 = armVerdictHorizon(markout);
-    const controlBeatDeltaPct = t60?.medianPostCostDeltaPct != null && controlT60MedianPostCostDeltaPct != null
-      ? t60.medianPostCostDeltaPct - controlT60MedianPostCostDeltaPct
+    const primary = bestPrimaryHorizon(markout);
+    const primaryPostCostRows = primaryHorizonPostCost(markout);
+    const weakPrimaryPostCost = weakPrimaryPostCostReasons(primaryPostCostRows);
+    const decay = horizonBySec(markout, EVIDENCE_DECAY_HORIZON_SEC);
+    const primaryBeatDeltaPct =
+      primary?.medianPostCostDeltaPct != null && controlPrimaryMedianPostCostDeltaPct != null
+        ? primary.medianPostCostDeltaPct - controlPrimaryMedianPostCostDeltaPct
+        : null;
+    const controlBeatDeltaPct = primaryBeatDeltaPct;
+    const decayBeatDeltaPct = decay?.medianPostCostDeltaPct != null && controlT60MedianPostCostDeltaPct != null
+      ? decay.medianPostCostDeltaPct - controlT60MedianPostCostDeltaPct
       : null;
     const edgeCoverage = arm.rows > 0 ? arm.edgeRows / arm.rows : null;
     const edgePassRate = arm.edgeRows > 0 ? arm.edgePassRows / arm.edgeRows : null;
     const reasons: string[] = [];
     let verdict: EvidenceVerdictStatus = 'PROMOTION_CANDIDATE';
+    if (decay?.medianPostCostDeltaPct != null && decay.medianPostCostDeltaPct <= 0) {
+      reasons.push(`T+${EVIDENCE_DECAY_HORIZON_SEC}s decay warning ${formatPct(decay.medianPostCostDeltaPct)} <= 0`);
+    }
 
     if (arm.rows < EVIDENCE_MIN_CLOSES) {
       verdict = 'COLLECT';
@@ -585,8 +854,8 @@ function buildEvidenceVerdicts(
     } else if (
       minOkCoverage == null ||
       minOkCoverage < EVIDENCE_MIN_OK_COVERAGE ||
-      t60 == null ||
-      t60.rows === 0 ||
+      primary == null ||
+      primary.rows === 0 ||
       edgeCoverage == null ||
       edgeCoverage < EVIDENCE_MIN_EDGE_COVERAGE
     ) {
@@ -595,26 +864,28 @@ function buildEvidenceVerdicts(
       if (minOkCoverage == null || minOkCoverage < EVIDENCE_MIN_OK_COVERAGE) {
         reasons.push(`min ${verdictReasonCoverage(minOkCoverage)}`);
       }
-      if (t60 == null || t60.rows === 0) reasons.push(`T+${EVIDENCE_VERDICT_HORIZON_SEC}s markout missing`);
+      if (primary == null || primary.rows === 0) {
+        reasons.push(`T+${EVIDENCE_PRIMARY_HORIZONS_SEC.join('/')}s primary markout missing`);
+      }
       if (edgeCoverage == null || edgeCoverage < EVIDENCE_MIN_EDGE_COVERAGE) {
         reasons.push(`edge coverage ${formatPct(edgeCoverage)} < ${formatPct(EVIDENCE_MIN_EDGE_COVERAGE)}`);
       }
-    } else if (edgePassRate == null || edgePassRate < EVIDENCE_MIN_EDGE_PASS_RATE || arm.rentAdjustedNetSol <= 0) {
+    } else if (edgePassRate == null || edgePassRate < EVIDENCE_MIN_EDGE_PASS_RATE || arm.refundAdjustedNetSol <= 0) {
       verdict = 'COST_REJECT';
       if (edgePassRate == null) reasons.push('edge shadow rows missing');
       else if (edgePassRate < EVIDENCE_MIN_EDGE_PASS_RATE) {
         reasons.push(`edge pass ${formatPct(edgePassRate)} < ${formatPct(EVIDENCE_MIN_EDGE_PASS_RATE)}`);
       }
-      if (arm.rentAdjustedNetSol <= 0) reasons.push(`rent stress ${formatSol(arm.rentAdjustedNetSol)} <= 0`);
-    } else if (t60.medianPostCostDeltaPct == null || t60.medianPostCostDeltaPct <= 0) {
+      if (arm.refundAdjustedNetSol <= 0) reasons.push(`refund-adjusted net ${formatSol(arm.refundAdjustedNetSol)} <= 0`);
+    } else if (weakPrimaryPostCost.length > 0) {
       verdict = 'POST_COST_REJECT';
-      reasons.push(`T+${EVIDENCE_VERDICT_HORIZON_SEC}s median postCost ${formatPct(t60.medianPostCostDeltaPct)} <= 0`);
-    } else if (arm.armName !== ROTATION_CONTROL_ARM && controlT60MedianPostCostDeltaPct == null) {
+      reasons.push(...weakPrimaryPostCost);
+    } else if (arm.armName !== ROTATION_CONTROL_ARM && controlPrimaryMedianPostCostDeltaPct == null) {
       verdict = 'WATCH';
-      reasons.push('control T+60 baseline missing');
-    } else if (arm.armName !== ROTATION_CONTROL_ARM && controlBeatDeltaPct != null && controlBeatDeltaPct <= 0) {
+      reasons.push(`control T+${EVIDENCE_PRIMARY_HORIZONS_SEC.join('/')}s baseline missing`);
+    } else if (arm.armName !== ROTATION_CONTROL_ARM && primaryBeatDeltaPct != null && primaryBeatDeltaPct <= 0) {
       verdict = 'POST_COST_REJECT';
-      reasons.push(`T+${EVIDENCE_VERDICT_HORIZON_SEC}s postCost ${formatPct(t60.medianPostCostDeltaPct)} <= control ${formatPct(controlT60MedianPostCostDeltaPct)}`);
+      reasons.push(`primary postCost ${formatPct(primary.medianPostCostDeltaPct)} <= control ${formatPct(controlPrimaryMedianPostCostDeltaPct)}`);
     } else if (arm.rows < EVIDENCE_PROMOTION_MIN_CLOSES) {
       verdict = 'WATCH';
       reasons.push(`sample ${arm.rows}/${EVIDENCE_PROMOTION_MIN_CLOSES}`);
@@ -631,9 +902,17 @@ function buildEvidenceVerdicts(
       promotionRequiredCloses: EVIDENCE_PROMOTION_MIN_CLOSES,
       minOkCoverage,
       requiredHorizonCoverage: coverageRows,
-      t60MedianPostCostDeltaPct: t60?.medianPostCostDeltaPct ?? null,
+      primaryHorizonPostCost: primaryPostCostRows,
+      primaryHorizonSec: primary?.horizonSec ?? null,
+      primaryMedianPostCostDeltaPct: primary?.medianPostCostDeltaPct ?? null,
+      controlPrimaryMedianPostCostDeltaPct: arm.armName === ROTATION_CONTROL_ARM ? null : controlPrimaryMedianPostCostDeltaPct,
+      primaryBeatDeltaPct: arm.armName === ROTATION_CONTROL_ARM ? null : primaryBeatDeltaPct,
+      decayHorizonSec: EVIDENCE_DECAY_HORIZON_SEC,
+      decayMedianPostCostDeltaPct: decay?.medianPostCostDeltaPct ?? null,
+      t60MedianPostCostDeltaPct: decay?.medianPostCostDeltaPct ?? null,
       controlT60MedianPostCostDeltaPct: arm.armName === ROTATION_CONTROL_ARM ? null : controlT60MedianPostCostDeltaPct,
-      controlBeatDeltaPct: arm.armName === ROTATION_CONTROL_ARM ? null : controlBeatDeltaPct,
+      controlBeatDeltaPct: arm.armName === ROTATION_CONTROL_ARM ? null : decayBeatDeltaPct,
+      refundAdjustedNetSol: arm.refundAdjustedNetSol,
       rentAdjustedNetSol: arm.rentAdjustedNetSol,
       edgeCoverage,
       edgePassRate,
@@ -840,13 +1119,13 @@ function renderStatsTable(rows: HorizonStats[]): string {
 function renderPaperArmTable(rows: PaperArmStats[]): string {
   if (rows.length === 0) return '_No rotation paper trade rows._';
   return [
-    '| arm | closes | W/L | net SOL | token-only SOL | rent-adjusted stress SOL | edge pass/fail | median cost ratio | required gross move | hardCut | med worst MAE | med hardCut MAE | median hold | top exits |',
-    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|',
+    '| arm | closes | W/L | net SOL | token-only SOL | refund-adjusted SOL | wallet-drag stress SOL | edge pass/fail | median cost ratio | wallet drag ratio | required gross move | hardCut | med worst MAE | med hardCut MAE | median hold | top exits |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|',
     ...rows.map((row) =>
       `| ${row.armName} | ${row.rows} | ${row.wins}/${row.losses} | ${formatSol(row.netSol)} | ` +
-      `${formatSol(row.netSolTokenOnly)} | ${formatSol(row.rentAdjustedNetSol)} | ` +
+      `${formatSol(row.netSolTokenOnly)} | ${formatSol(row.refundAdjustedNetSol)} | ${formatSol(row.rentAdjustedNetSol)} | ` +
       `${row.edgePassRows}/${row.edgeFailRows}${row.edgeRows === 0 ? ' (n/a)' : ''} | ` +
-      `${formatPct(row.medianEdgeCostRatio)} | ${formatPct(row.medianRequiredGrossMovePct)} | ` +
+      `${formatPct(row.medianEdgeCostRatio)} | ${formatPct(row.medianEdgeWalletDragRatio)} | ${formatPct(row.medianRequiredGrossMovePct)} | ` +
       `${row.hardCutRows} | ${formatPct(row.medianMaeWorstPct)} | ${formatPct(row.medianHardCutMaePct)} | ` +
       `${row.medianHoldSec == null ? 'n/a' : `${row.medianHoldSec.toFixed(0)}s`} | ` +
       `${row.topExitReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'} |`
@@ -854,15 +1133,45 @@ function renderPaperArmTable(rows: PaperArmStats[]): string {
   ].join('\n');
 }
 
+function renderWinnerEntryPairingTable(rows: WinnerEntryPairingStats[]): string {
+  if (rows.length === 0) return '_No winner-entry pairing rows._';
+  return [
+    '| arm | exit bucket | closes | W/L | net SOL | token-only SOL | refund-adjusted SOL | wallet-drag stress SOL | med MFE | med MAE | median hold |',
+    '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
+    ...rows.map((row) =>
+      `| ${row.armName} | ${row.exitBucket} | ${row.rows} | ${row.wins}/${row.losses} | ` +
+      `${formatSol(row.netSol)} | ${formatSol(row.netSolTokenOnly)} | ${formatSol(row.refundAdjustedNetSol)} | ` +
+      `${formatSol(row.rentAdjustedNetSol)} | ${formatPct(row.medianMfePct)} | ${formatPct(row.medianMaePct)} | ` +
+      `${row.medianHoldSec == null ? 'n/a' : `${row.medianHoldSec.toFixed(0)}s`} |`
+    ),
+  ].join('\n');
+}
+
+function renderWinnerEntryDiagnosticsTable(rows: WinnerEntryDiagnosticStats[]): string {
+  if (rows.length === 0) return '_No winner-entry diagnostic rows._';
+  return [
+    '| arm | exit bucket | closes | med topup | med sellPressure30 | med anchor buy SOL | fresh topup | high-risk flags | unknown-quality flags |',
+    '|---|---|---:|---:|---:|---:|---:|---:|---:|',
+    ...rows.map((row) =>
+      `| ${row.armName} | ${row.exitBucket} | ${row.rows} | ${formatPct(row.medianTopupStrength)} | ` +
+      `${formatPct(row.medianSellPressure30)} | ${row.medianAnchorBuySol == null ? 'n/a' : row.medianAnchorBuySol.toFixed(4)} | ` +
+      `${formatPct(row.freshTopupRate)} | ${formatPct(row.highRiskFlagRate)} | ${formatPct(row.unknownQualityRate)} |`
+    ),
+  ].join('\n');
+}
+
 function renderEvidenceVerdicts(rows: EvidenceVerdict[]): string {
   if (rows.length === 0) return '_No rotation paper arm evidence yet._';
   return [
-    '| arm | verdict | closes | min ok coverage | edge coverage | edge pass | rent stress | T+60 median postCost | vs control | reasons |',
-    '|---|---|---:|---:|---:|---:|---:|---:|---:|---|',
+    '| arm | verdict | closes | min ok coverage | edge coverage | edge pass | refund-adjusted | wallet-drag stress | primary postCost | best primary | vs control | T+60 decay | reasons |',
+    '|---|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---|',
     ...rows.map((row) =>
       `| ${row.armName} | ${row.verdict} | ${row.closes}/${row.promotionRequiredCloses} | ` +
-      `${formatPct(row.minOkCoverage)} | ${formatPct(row.edgeCoverage)} | ${formatPct(row.edgePassRate)} | ${formatSol(row.rentAdjustedNetSol)} | ` +
-      `${formatPct(row.t60MedianPostCostDeltaPct)} | ${formatPct(row.controlBeatDeltaPct)} | ${row.reasons.join('; ') || 'n/a'} |`
+      `${formatPct(row.minOkCoverage)} | ${formatPct(row.edgeCoverage)} | ${formatPct(row.edgePassRate)} | ` +
+      `${formatSol(row.refundAdjustedNetSol)} | ${formatSol(row.rentAdjustedNetSol)} | ` +
+      `${row.primaryHorizonPostCost.map((item) => `T+${item.horizonSec}s ${formatPct(item.medianPostCostDeltaPct)}`).join(', ') || 'n/a'} | ` +
+      `${row.primaryHorizonSec == null ? 'n/a' : `T+${row.primaryHorizonSec}s ${formatPct(row.primaryMedianPostCostDeltaPct)}`} | ` +
+      `${formatPct(row.primaryBeatDeltaPct)} | ${formatPct(row.decayMedianPostCostDeltaPct)} | ${row.reasons.join('; ') || 'n/a'} |`
     ),
   ].join('\n');
 }
@@ -881,6 +1190,41 @@ function renderKolTransferPosteriorTable(report: RotationReport['kolTransferPost
       `${row.medianHoldSec == null ? 'n/a' : `${row.medianHoldSec.toFixed(0)}s`} | ${formatPct(row.quickSellRatio)} | ` +
       `${row.rotationFitScore.toFixed(2)} | ${row.smartV3FitScore.toFixed(2)} | ${formatSol(row.netSolFlow)} |`
     ),
+  ].join('\n');
+}
+
+function renderKolTransferCoverageTable(report: RotationReport['kolTransferPosterior']): string {
+  if (report.coverageLoadStatus === 'load_failed') {
+    return `_Coverage load failed for \`${report.kolDbPath ?? 'unknown'}\`: ${report.coverageLoadError ?? 'unknown error'}_`;
+  }
+  if (report.coverageLoadStatus === 'disabled') {
+    return '_Coverage disabled. Pass `--kol-db data/kol/wallets.json` to enable._';
+  }
+  if (!report.coverageSummary) return '_Coverage unavailable._';
+  const visibleCoverage = (report.coverage ?? [])
+    .filter((row) => row.rotationCandidate || row.status !== 'ok')
+    .slice(0, 30);
+  return [
+    `- active targets: ${report.coverageSummary.targets} · ok=${report.coverageSummary.ok} · stale=${report.coverageSummary.stale} · missing=${report.coverageSummary.missing}`,
+    `- rotation candidates: ${report.coverageSummary.rotationTargets} · ok=${report.coverageSummary.rotationOk} · stale=${report.coverageSummary.rotationStale} · missing=${report.coverageSummary.rotationMissing}`,
+    '',
+    '| KOL | tier | role | style | rotation? | status | rows all | rows since | candidates since | last transfer | age h |',
+    '|---|---|---|---|---:|---|---:|---:|---:|---|---:|',
+    ...(visibleCoverage.length > 0
+      ? visibleCoverage.map((row) => [
+          row.kolId,
+          row.kolTier ?? '-',
+          row.laneRole ?? '-',
+          row.tradingStyle ?? '-',
+          row.rotationCandidate ? 'yes' : 'no',
+          row.status,
+          String(row.rowsAll),
+          String(row.rowsSince),
+          String(row.candidatesSince),
+          row.lastTransferAt ?? '-',
+          row.lastAgeHours == null ? '-' : row.lastAgeHours.toFixed(1),
+        ].join(' | ').replace(/^/, '| ').replace(/$/, ' |'))
+      : ['| n/a | - | - | - | - | ok | 0 | 0 | 0 | - | - |']),
   ].join('\n');
 }
 
@@ -938,7 +1282,7 @@ function renderReport(report: RotationReport): string {
     `Realtime dir: ${report.realtimeDir}`,
     `Horizons: ${report.horizonsSec.map((horizon) => `T+${horizon}s`).join(', ')}`,
     `Round-trip cost assumption: ${formatPct(report.roundTripCostPct)}`,
-    `Paper wallet-drag stress assumption: ATA rent ${formatSol(report.assumedAtaRentSol)} SOL + network ${formatSol(report.assumedNetworkFeeSol)} SOL`,
+    `Paper refund-adjusted assumption: network ${formatSol(report.assumedNetworkFeeSol)} SOL is irreversible; ATA rent ${formatSol(report.assumedAtaRentSol)} SOL is recoverable wallet drag`,
     '',
     `Rotation trade markout rows: ${report.tradeMarkouts.rotationRows}/${report.tradeMarkouts.totalRows}`,
     `Rotation paper close rows: ${report.paperTrades.rotationRows}/${report.paperTrades.totalRows}`,
@@ -946,10 +1290,23 @@ function renderReport(report: RotationReport): string {
     '',
     '## KOL Transfer Posterior — Rotation Fit',
     '> Diagnostic only. Transfer candidates are not precise swap PnL. Use signature drill-down before policy changes.',
+    '',
+    '### Coverage',
+    renderKolTransferCoverageTable(report.kolTransferPosterior),
+    '',
+    '### Top Rotation Fit',
     renderKolTransferPosteriorTable(report.kolTransferPosterior),
     '',
     '## Paper Trades By Arm',
     renderPaperArmTable(report.paperTrades.byArm),
+    '',
+    '## Winner Entry Pairing',
+    '> `winner_trailing_t1` is an exit state after T1 promotion, so this table checks which entry arms most often reach that exit bucket.',
+    renderWinnerEntryPairingTable(report.paperTrades.winnerEntryPairings),
+    '',
+    '## Winner Entry Diagnostics',
+    '> Splits winner vs non-winner exits by flow/risk features. This is report-only and must not be used as a live allowlist.',
+    renderWinnerEntryDiagnosticsTable(report.paperTrades.winnerEntryDiagnostics),
     '',
     '## Evidence Verdict By Arm',
     renderEvidenceVerdicts(report.evidenceVerdicts),
@@ -1025,9 +1382,22 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
   const noTradeProbeRows = recentNoTradeRows.filter((row) => (rowHorizon(row) ?? 0) > 0);
   const armMarkouts = buildArmHorizonStats(rotationRows, args.horizonsSec, args.roundTripCostPct);
   const paperArmStats = buildPaperArmStats(rotationPaperRows, assumedAtaRentSol, assumedNetworkFeeSol);
+  const winnerEntryPairings = buildWinnerEntryPairingStats(rotationPaperRows, assumedAtaRentSol, assumedNetworkFeeSol);
+  const winnerEntryDiagnostics = buildWinnerEntryDiagnosticStats(rotationPaperRows);
+  const coverageLoad: {
+    status: KolPosteriorCoverageLoadStatus;
+    targets: KolPosteriorCoverageTarget[];
+    error?: string;
+  } = args.kolDbPath
+    ? await loadKolPosteriorCoverageTargetsWithStatus(args.kolDbPath)
+    : { status: 'disabled', targets: [] };
   const kolTransferPosterior = buildKolTransferPosteriorReport(kolTransferRows as unknown as KolTransferRow[], {
     input: kolTransferInput,
+    kolDbPath: args.kolDbPath,
     sinceSec: Math.floor(args.sinceMs / 1000),
+    coverageTargets: coverageLoad.status === 'loaded' ? coverageLoad.targets : undefined,
+    coverageLoadStatus: coverageLoad.status,
+    coverageLoadError: coverageLoad.error,
   });
   return {
     generatedAt: new Date().toISOString(),
@@ -1051,6 +1421,8 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
       totalRows: recentPaperRows.length,
       rotationRows: rotationPaperRows.length,
       byArm: paperArmStats,
+      winnerEntryPairings,
+      winnerEntryDiagnostics,
     },
     evidenceVerdicts: buildEvidenceVerdicts(paperArmStats, armMarkouts),
     noTrade: {
@@ -1068,8 +1440,13 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
     ),
     kolTransferPosterior: {
       input: kolTransferInput,
+      kolDbPath: kolTransferPosterior.kolDbPath,
+      coverageLoadStatus: kolTransferPosterior.coverageLoadStatus,
+      coverageLoadError: kolTransferPosterior.coverageLoadError,
       rows: kolTransferPosterior.rows,
       candidates: kolTransferPosterior.candidates,
+      coverageSummary: kolTransferPosterior.coverageSummary,
+      coverage: kolTransferPosterior.coverage,
       topRotationFit: kolTransferPosterior.metrics
         .slice()
         .sort((a, b) => b.rotationFitScore - a.rotationFitScore || b.buyCandidates - a.buyCandidates)

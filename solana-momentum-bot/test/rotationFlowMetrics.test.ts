@@ -120,7 +120,7 @@ describe('rotation flow metrics', () => {
 });
 
 describe('rotation monetizable edge', () => {
-  it('fails small tickets when ATA rent and execution drag exceed the cost-ratio ceiling', () => {
+  it('excludes recoverable ATA rent from the copyable cost-ratio ceiling', () => {
     const estimate = buildRotationMonetizableEdgeEstimate({
       ticketSol: 0.02,
       venue: 'pumpswap',
@@ -136,9 +136,12 @@ describe('rotation monetizable edge', () => {
     });
 
     expect(estimate).toBeTruthy();
-    expect(estimate?.pass).toBe(false);
-    expect(estimate?.reason).toBe('cost_ratio_exceeded');
-    expect(estimate?.costRatio).toBeGreaterThan(0.06);
+    expect(estimate?.pass).toBe(true);
+    expect(estimate?.reason).toBe('cost_ratio_ok');
+    expect(estimate?.costRatio).toBeLessThan(0.06);
+    expect(estimate?.walletDragRatio).toBeGreaterThan(0.06);
+    expect(estimate?.recoverableRentSol).toBeCloseTo(0.00207408);
+    expect(estimate?.irreversibleCostSol).toBeCloseTo(estimate?.totalCostSol ?? 0);
     expect(estimate?.requiredGrossMovePct).toBeCloseTo(estimate?.costRatio ?? 0);
   });
 

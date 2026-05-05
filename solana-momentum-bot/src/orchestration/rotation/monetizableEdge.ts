@@ -18,9 +18,13 @@ export interface RotationMonetizableEdgeEstimate {
   ticketSol: number;
   venue: Venue;
   maxCostRatio: number;
+  walletDragRatio: number;
   costRatio: number;
+  irreversibleCostSol: number;
   totalCostSol: number;
   ataRentSol: number;
+  recoverableRentSol: number;
+  walletDragSol: number;
   bleedTotalSol: number;
   baseFeeSol: number;
   priorityFeeSol: number;
@@ -53,9 +57,13 @@ export function buildRotationMonetizableEdgeEstimate(input: {
       ticketSol,
       venue,
       maxCostRatio: input.config.maxCostRatio,
+      walletDragRatio: Infinity,
       costRatio: Infinity,
+      irreversibleCostSol: Infinity,
       totalCostSol: Infinity,
       ataRentSol: input.config.assumedAtaRentSol,
+      recoverableRentSol: input.config.assumedAtaRentSol,
+      walletDragSol: Infinity,
       bleedTotalSol: Infinity,
       baseFeeSol: 0,
       priorityFeeSol: 0,
@@ -74,9 +82,11 @@ export function buildRotationMonetizableEdgeEstimate(input: {
     entrySlippageBps: input.config.entrySlippageBps,
     quickExitSlippageBps: input.config.quickExitSlippageBps,
   });
-  const ataRentSol = Math.max(0, input.config.assumedAtaRentSol);
-  const totalCostSol = ataRentSol + bleed.totalSol;
-  const costRatio = totalCostSol / ticketSol;
+  const recoverableRentSol = Math.max(0, input.config.assumedAtaRentSol);
+  const irreversibleCostSol = bleed.totalSol;
+  const walletDragSol = recoverableRentSol + irreversibleCostSol;
+  const costRatio = irreversibleCostSol / ticketSol;
+  const walletDragRatio = walletDragSol / ticketSol;
   const pass = costRatio <= input.config.maxCostRatio;
   return {
     schemaVersion: 'rotation-monetizable-edge/v1',
@@ -86,9 +96,13 @@ export function buildRotationMonetizableEdgeEstimate(input: {
     ticketSol,
     venue,
     maxCostRatio: input.config.maxCostRatio,
+    walletDragRatio,
     costRatio,
-    totalCostSol,
-    ataRentSol,
+    irreversibleCostSol,
+    totalCostSol: irreversibleCostSol,
+    ataRentSol: recoverableRentSol,
+    recoverableRentSol,
+    walletDragSol,
     bleedTotalSol: bleed.totalSol,
     baseFeeSol: bleed.baseFeeSol,
     priorityFeeSol: bleed.priorityFeeSol,

@@ -20,6 +20,7 @@ const DEFAULT_INPUT = 'kol-transfers.jsonl';
 
 interface Args {
   input: string;
+  kolDbPath?: string;
   sinceSec?: number;
   mdOut?: string;
   jsonOut?: string;
@@ -50,6 +51,14 @@ export interface KolTransferRow {
   walletDirection: WalletDirection;
   eventId?: string;
   transfer: TransferLike;
+}
+
+export interface KolPosteriorCoverageTarget {
+  kolId: string;
+  kolAddress: string;
+  kolTier?: string;
+  laneRole?: string;
+  tradingStyle?: string;
 }
 
 export interface TradeCandidate {
@@ -90,23 +99,70 @@ export interface KolPosteriorMetrics {
   smartV3FitScore: number;
 }
 
+export type KolPosteriorCoverageStatus = 'ok' | 'stale' | 'missing';
+
+export interface KolPosteriorCoverage {
+  kolId: string;
+  kolAddress: string;
+  kolTier?: string;
+  laneRole?: string;
+  tradingStyle?: string;
+  rotationCandidate: boolean;
+  status: KolPosteriorCoverageStatus;
+  rowsAll: number;
+  rowsSince: number;
+  candidatesSince: number;
+  firstTransferAt?: string;
+  lastTransferAt?: string;
+  firstSinceAt?: string;
+  lastSinceAt?: string;
+  lastAgeHours: number | null;
+}
+
+export interface KolPosteriorCoverageSummary {
+  targets: number;
+  ok: number;
+  stale: number;
+  missing: number;
+  rotationTargets: number;
+  rotationOk: number;
+  rotationStale: number;
+  rotationMissing: number;
+}
+
+export type KolPosteriorCoverageLoadStatus = 'disabled' | 'loaded' | 'load_failed';
+
+export interface KolPosteriorCoverageTargetLoadResult {
+  status: Exclude<KolPosteriorCoverageLoadStatus, 'disabled'>;
+  targets: KolPosteriorCoverageTarget[];
+  error?: string;
+}
+
 export interface KolTransferPosteriorReport {
   generatedAt: string;
   input: string;
+  kolDbPath?: string;
+  coverageLoadStatus?: KolPosteriorCoverageLoadStatus;
+  coverageLoadError?: string;
   since?: string;
   rows: number;
   candidates: number;
   metrics: KolPosteriorMetrics[];
+  coverageSummary?: KolPosteriorCoverageSummary;
+  coverage?: KolPosteriorCoverage[];
 }
 
 export function parseArgs(argv: string[], nowSec = Math.floor(Date.now() / 1000)): Args {
   const args: Args = {
     input: path.resolve(process.cwd(), 'data/research', DEFAULT_INPUT),
+    kolDbPath: path.resolve(process.cwd(), 'data/kol/wallets.json'),
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--input') args.input = path.resolve(requireValue(argv[++i], arg));
     else if (arg === '--research-dir') args.input = path.resolve(requireValue(argv[++i], arg), DEFAULT_INPUT);
+    else if (arg === '--kol-db') args.kolDbPath = path.resolve(requireValue(argv[++i], arg));
+    else if (arg === '--no-coverage') args.kolDbPath = undefined;
     else if (arg === '--since') args.sinceSec = nowSec - parseDurationSec(requireValue(argv[++i], arg));
     else if (arg === '--since-unix') args.sinceSec = parsePositiveInt(requireValue(argv[++i], arg), arg);
     else if (arg === '--md') args.mdOut = path.resolve(requireValue(argv[++i], arg));
@@ -147,6 +203,46 @@ async function readJsonl<T>(file: string): Promise<T[]> {
     });
   } catch {
     return [];
+  }
+}
+
+export async function loadKolPosteriorCoverageTargets(kolDbPath: string): Promise<KolPosteriorCoverageTarget[]> {
+  return (await loadKolPosteriorCoverageTargetsWithStatus(kolDbPath)).targets;
+}
+
+export async function loadKolPosteriorCoverageTargetsWithStatus(kolDbPath: string): Promise<KolPosteriorCoverageTargetLoadResult> {
+  try {
+    const raw = JSON.parse(await readFile(kolDbPath, 'utf8')) as {
+      kols?: Array<{
+        id?: string;
+        addresses?: string[];
+        tier?: string;
+        is_active?: boolean;
+        lane_role?: string;
+        trading_style?: string;
+      }>;
+    };
+    const out: KolPosteriorCoverageTarget[] = [];
+    for (const kol of Array.isArray(raw.kols) ? raw.kols : []) {
+      if (kol.is_active === false) continue;
+      for (const address of Array.isArray(kol.addresses) ? kol.addresses : []) {
+        if (typeof address !== 'string' || address.length === 0) continue;
+        out.push({
+          kolId: kol.id ?? address.slice(0, 8),
+          kolAddress: address,
+          kolTier: kol.tier,
+          laneRole: kol.lane_role,
+          tradingStyle: kol.trading_style,
+        });
+      }
+    }
+    return { status: 'loaded', targets: out };
+  } catch (error) {
+    return {
+      status: 'load_failed',
+      targets: [],
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 
@@ -374,19 +470,119 @@ function round(n: number): number {
   return Math.round(n * 1000) / 1000;
 }
 
-export function buildKolTransferPosteriorReport(rows: KolTransferRow[], args: Pick<Args, 'input' | 'sinceSec'>): KolTransferPosteriorReport {
+function addressKey(address: string): string {
+  return address.trim();
+}
+
+function isRotationCandidateTarget(target: KolPosteriorCoverageTarget): boolean {
+  const tier = (target.kolTier ?? '').toUpperCase();
+  const role = (target.laneRole ?? '').toLowerCase();
+  const style = (target.tradingStyle ?? '').toLowerCase();
+  return tier === 'S' ||
+    tier === 'A' ||
+    role.includes('rotation') ||
+    role.includes('discovery_canary') ||
+    role.includes('copy_core') ||
+    style.includes('scalper') ||
+    style.includes('rotator');
+}
+
+function isoFromSec(sec: number | undefined): string | undefined {
+  return sec == null || sec <= 0 ? undefined : new Date(sec * 1000).toISOString();
+}
+
+function ageHoursFromSec(sec: number | undefined): number | null {
+  if (sec == null || sec <= 0) return null;
+  return Math.max(0, Math.round(((Date.now() / 1000 - sec) / 3600) * 10) / 10);
+}
+
+export function buildKolPosteriorCoverage(
+  rows: KolTransferRow[],
+  targets: KolPosteriorCoverageTarget[],
+  sinceSec?: number,
+): KolPosteriorCoverage[] {
+  const deduped = dedupeTransferRows(rows);
+  const rowsByAddress = new Map<string, KolTransferRow[]>();
+  for (const row of deduped) {
+    const key = addressKey(row.kolAddress);
+    const list = rowsByAddress.get(key) ?? [];
+    list.push(row);
+    rowsByAddress.set(key, list);
+  }
+
+  return targets.map((target) => {
+    const allRows = rowsByAddress.get(addressKey(target.kolAddress)) ?? [];
+    const sinceRows = sinceSec == null
+      ? allRows
+      : allRows.filter((row) => (row.transfer.blockTime ?? 0) >= sinceSec);
+    const allTimes = allRows.map((row) => row.transfer.blockTime ?? 0).filter((value) => value > 0).sort((a, b) => a - b);
+    const sinceTimes = sinceRows.map((row) => row.transfer.blockTime ?? 0).filter((value) => value > 0).sort((a, b) => a - b);
+    const candidatesSince = buildTradeCandidates(sinceRows).length;
+    const status: KolPosteriorCoverageStatus = sinceRows.length > 0 ? 'ok' : allRows.length > 0 ? 'stale' : 'missing';
+    return {
+      ...target,
+      rotationCandidate: isRotationCandidateTarget(target),
+      status,
+      rowsAll: allRows.length,
+      rowsSince: sinceRows.length,
+      candidatesSince,
+      firstTransferAt: isoFromSec(allTimes[0]),
+      lastTransferAt: isoFromSec(allTimes[allTimes.length - 1]),
+      firstSinceAt: isoFromSec(sinceTimes[0]),
+      lastSinceAt: isoFromSec(sinceTimes[sinceTimes.length - 1]),
+      lastAgeHours: ageHoursFromSec(allTimes[allTimes.length - 1]),
+    };
+  }).sort((a, b) => {
+    const statusRank: Record<KolPosteriorCoverageStatus, number> = { missing: 0, stale: 1, ok: 2 };
+    return statusRank[a.status] - statusRank[b.status] ||
+      Number(b.rotationCandidate) - Number(a.rotationCandidate) ||
+      b.rowsAll - a.rowsAll ||
+      a.kolId.localeCompare(b.kolId);
+  });
+}
+
+function summarizeCoverage(rows: KolPosteriorCoverage[]): KolPosteriorCoverageSummary {
+  const rotation = rows.filter((row) => row.rotationCandidate);
+  return {
+    targets: rows.length,
+    ok: rows.filter((row) => row.status === 'ok').length,
+    stale: rows.filter((row) => row.status === 'stale').length,
+    missing: rows.filter((row) => row.status === 'missing').length,
+    rotationTargets: rotation.length,
+    rotationOk: rotation.filter((row) => row.status === 'ok').length,
+    rotationStale: rotation.filter((row) => row.status === 'stale').length,
+    rotationMissing: rotation.filter((row) => row.status === 'missing').length,
+  };
+}
+
+export function buildKolTransferPosteriorReport(
+  rows: KolTransferRow[],
+  args: Pick<Args, 'input' | 'kolDbPath' | 'sinceSec'> & {
+    coverageTargets?: KolPosteriorCoverageTarget[];
+    coverageLoadStatus?: KolPosteriorCoverageLoadStatus;
+    coverageLoadError?: string;
+  },
+): KolTransferPosteriorReport {
   const filtered = args.sinceSec == null
     ? rows
     : rows.filter((row) => (row.transfer.blockTime ?? 0) >= args.sinceSec!);
   const deduped = dedupeTransferRows(filtered);
   const candidates = buildTradeCandidates(deduped);
+  const coverage = args.coverageTargets
+    ? buildKolPosteriorCoverage(rows, args.coverageTargets, args.sinceSec)
+    : undefined;
   return {
     generatedAt: new Date().toISOString(),
     input: args.input,
+    kolDbPath: args.kolDbPath,
+    coverageLoadStatus: args.coverageLoadStatus,
+    coverageLoadError: args.coverageLoadError,
     since: args.sinceSec != null ? new Date(args.sinceSec * 1000).toISOString() : undefined,
     rows: deduped.length,
     candidates: candidates.length,
     metrics: computeKolPosteriorMetrics(deduped, candidates),
+    coverageSummary: coverage ? summarizeCoverage(coverage) : undefined,
+    coverage,
   };
 }
 
@@ -396,12 +592,61 @@ export function renderKolTransferPosteriorMarkdown(report: KolTransferPosteriorR
   lines.push('');
   lines.push(`- generatedAt: ${report.generatedAt}`);
   lines.push(`- input: ${report.input}`);
+  if (report.kolDbPath) lines.push(`- kolDb: ${report.kolDbPath}`);
   if (report.since) lines.push(`- since: ${report.since}`);
   lines.push(`- transfer rows: ${report.rows}`);
   lines.push(`- signature candidates: ${report.candidates}`);
   lines.push('');
   lines.push(`> Diagnostic only. Transfer candidates are not precise swap PnL. Use gTFA drill-down before policy changes.`);
   lines.push('');
+  if (report.coverageSummary || report.coverageLoadStatus === 'load_failed' || report.coverageLoadStatus === 'disabled') {
+    lines.push(`## Coverage`);
+    lines.push('');
+    if (report.coverageLoadStatus) lines.push(`- status: ${report.coverageLoadStatus}`);
+    if (report.coverageLoadError) lines.push(`- error: ${report.coverageLoadError}`);
+    if (!report.coverageSummary) {
+      lines.push('');
+      lines.push(`_Coverage targets were not loaded; posterior fit remains diagnostic but coverage freshness is unknown._`);
+      lines.push('');
+    }
+  }
+  if (report.coverageSummary) {
+    lines.push([
+      `- active targets: ${report.coverageSummary.targets}`,
+      `ok=${report.coverageSummary.ok}`,
+      `stale=${report.coverageSummary.stale}`,
+      `missing=${report.coverageSummary.missing}`,
+    ].join(' · '));
+    lines.push([
+      `- rotation candidates: ${report.coverageSummary.rotationTargets}`,
+      `ok=${report.coverageSummary.rotationOk}`,
+      `stale=${report.coverageSummary.rotationStale}`,
+      `missing=${report.coverageSummary.rotationMissing}`,
+    ].join(' · '));
+    lines.push('');
+    lines.push('| KOL | tier | role | style | rotation? | status | rows all | rows since | candidates since | last transfer | age h |');
+    lines.push('|---|---|---|---|---:|---|---:|---:|---:|---|---:|');
+    const visibleCoverage = (report.coverage ?? [])
+      .filter((row) => row.rotationCandidate || row.status !== 'ok')
+      .slice(0, 40);
+    for (const row of visibleCoverage) {
+      lines.push([
+        row.kolId,
+        row.kolTier ?? '-',
+        row.laneRole ?? '-',
+        row.tradingStyle ?? '-',
+        row.rotationCandidate ? 'yes' : 'no',
+        row.status,
+        String(row.rowsAll),
+        String(row.rowsSince),
+        String(row.candidatesSince),
+        row.lastTransferAt ?? '-',
+        row.lastAgeHours == null ? '-' : row.lastAgeHours.toFixed(1),
+      ].join(' | ').replace(/^/, '| ').replace(/$/, ' |'));
+    }
+    if (visibleCoverage.length === 0) lines.push('| n/a | - | - | - | - | ok | 0 | 0 | 0 | - | - |');
+    lines.push('');
+  }
   lines.push(`## KOL Posterior`);
   lines.push('');
   lines.push('| KOL | tier | role | style | tx | buy | sell | unique mints | reentry | sell/buy | med buy SOL | med hold | quick sell | multi-sell | rotation | smart-v3 | net SOL flow |');
@@ -455,7 +700,19 @@ async function writeOutput(file: string, content: string): Promise<void> {
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const rows = await readJsonl<KolTransferRow>(args.input);
-  const report = buildKolTransferPosteriorReport(rows, args);
+  const coverageLoad: {
+    status: KolPosteriorCoverageLoadStatus;
+    targets: KolPosteriorCoverageTarget[];
+    error?: string;
+  } = args.kolDbPath
+    ? await loadKolPosteriorCoverageTargetsWithStatus(args.kolDbPath)
+    : { status: 'disabled' as const, targets: [] };
+  const report = buildKolTransferPosteriorReport(rows, {
+    ...args,
+    coverageTargets: coverageLoad.status === 'loaded' ? coverageLoad.targets : undefined,
+    coverageLoadStatus: coverageLoad.status,
+    coverageLoadError: coverageLoad.error,
+  });
   const markdown = renderKolTransferPosteriorMarkdown(report);
   if (args.jsonOut) await writeOutput(args.jsonOut, JSON.stringify(report, null, 2));
   if (args.mdOut) await writeOutput(args.mdOut, markdown);

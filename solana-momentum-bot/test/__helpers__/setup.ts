@@ -25,6 +25,12 @@ if (!process.env.LOG_SILENT) {
 // Test 환경 마킹 — 일부 모듈이 isTest 분기 가능
 process.env.NODE_ENV = process.env.NODE_ENV ?? 'test';
 
+// Config 모듈 import 테스트가 로컬 .env 유무에 흔들리지 않도록 test-only dummy secrets 주입.
+// 실제 네트워크 호출은 각 테스트에서 별도 mock/fixture 를 사용해야 한다.
+process.env.SOLANA_RPC_URL = process.env.SOLANA_RPC_URL ?? 'http://127.0.0.1:8899';
+process.env.WALLET_PRIVATE_KEY = process.env.WALLET_PRIVATE_KEY ?? JSON.stringify(Array(64).fill(1));
+process.env.DATABASE_URL = process.env.DATABASE_URL ?? 'postgres://test:test@127.0.0.1:5432/test';
+
 // Jupiter / Helius 외부 호출이 새는 경우 즉시 발견 가능하도록 unhandled rejection 강화
 process.on('unhandledRejection', (reason) => {
   // jest 가 자동 fail 시키지만 명시적으로 stderr 에 기록

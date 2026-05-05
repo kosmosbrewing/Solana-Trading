@@ -1,4 +1,3 @@
-#!/usr/bin/env ts-node
 /**
  * Winner-Kill Rate Analyzer (2026-04-30, Sprint 1.B2)
  *

@@ -1,11 +1,17 @@
 #!/usr/bin/env ts-node
 import { mkdir, readFile, writeFile } from 'fs/promises';
 import path from 'path';
+import {
+  buildKolTransferPosteriorReport,
+  type KolPosteriorMetrics,
+  type KolTransferRow,
+} from './kol-transfer-posterior-report';
 
 const SMART_V3_PAPER_TRADES_FILE = 'smart-v3-paper-trades.jsonl';
 const SMART_V3_LIVE_TRADES_FILE = 'smart-v3-live-trades.jsonl';
 const KOL_PAPER_TRADES_FILE = 'kol-paper-trades.jsonl';
 const KOL_LIVE_TRADES_FILE = 'kol-live-trades.jsonl';
+const KOL_TRANSFER_INPUT_FILE = 'kol-transfers.jsonl';
 const SMART_V3_ARM = 'kol_hunter_smart_v3';
 const SMART_V3_REASONS = new Set(['pullback', 'velocity', 'pullback_and_velocity']);
 const REQUIRED_COVERAGE_HORIZONS_SEC = [30, 60, 300, 1800];
@@ -24,6 +30,7 @@ interface Args {
   roundTripCostPct: number;
   assumedAtaRentSol: number;
   assumedNetworkFeeSol: number;
+  kolTransferInput?: string;
   mdOut?: string;
   jsonOut?: string;
 }
@@ -124,6 +131,12 @@ interface SmartV3EvidenceReport {
     }>;
   };
   evidenceVerdicts: SmartV3EvidenceVerdict[];
+  kolTransferPosterior: {
+    input: string;
+    rows: number;
+    candidates: number;
+    topSmartV3Fit: KolPosteriorMetrics[];
+  };
 }
 
 function parseArgs(argv: string[]): Args {
@@ -134,6 +147,7 @@ function parseArgs(argv: string[]): Args {
     roundTripCostPct: 0.005,
     assumedAtaRentSol: 0.00207408,
     assumedNetworkFeeSol: 0.000105,
+    kolTransferInput: path.resolve(process.cwd(), 'data/research', KOL_TRANSFER_INPUT_FILE),
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -143,6 +157,8 @@ function parseArgs(argv: string[]): Args {
     else if (arg === '--round-trip-cost-pct') args.roundTripCostPct = parseNonNegativeNumber(argv[++i], arg);
     else if (arg === '--assumed-ata-rent-sol') args.assumedAtaRentSol = parseNonNegativeNumber(argv[++i], arg);
     else if (arg === '--assumed-network-fee-sol') args.assumedNetworkFeeSol = parseNonNegativeNumber(argv[++i], arg);
+    else if (arg === '--kol-transfer-input') args.kolTransferInput = path.resolve(argv[++i]);
+    else if (arg.startsWith('--kol-transfer-input=')) args.kolTransferInput = path.resolve(arg.split('=')[1]);
     else if (arg === '--md') args.mdOut = path.resolve(argv[++i]);
     else if (arg === '--json') args.jsonOut = path.resolve(argv[++i]);
   }
@@ -615,10 +631,12 @@ async function smartV3MarkoutRows(realtimeDir: string, sinceMs: number): Promise
 }
 
 export async function buildSmartV3EvidenceReport(args: Args): Promise<SmartV3EvidenceReport> {
-  const [paperRows, liveRows, markoutRows] = await Promise.all([
+  const kolTransferInput = args.kolTransferInput ?? path.resolve(process.cwd(), 'data/research', KOL_TRANSFER_INPUT_FILE);
+  const [paperRows, liveRows, markoutRows, kolTransferRows] = await Promise.all([
     smartV3TradeRows(args.realtimeDir, 'paper', args.sinceMs),
     smartV3TradeRows(args.realtimeDir, 'live', args.sinceMs),
     smartV3MarkoutRows(args.realtimeDir, args.sinceMs),
+    readJsonl(kolTransferInput),
   ]);
   const cohortInputs = [
     ...groupByEntryReason('paper', paperRows).map((group) => ({
@@ -647,6 +665,10 @@ export async function buildSmartV3EvidenceReport(args: Args): Promise<SmartV3Evi
     const cohortMarkouts = byCohort.find((entry) => entry.cohort === cohort.cohort);
     return buildVerdict(cohort, cohortMarkouts?.afterBuy ?? [], cohortMarkouts?.afterSell ?? []);
   });
+  const kolTransferPosterior = buildKolTransferPosteriorReport(kolTransferRows as unknown as KolTransferRow[], {
+    input: kolTransferInput,
+    sinceSec: Math.floor(args.sinceMs / 1000),
+  });
 
   return {
     generatedAt: new Date().toISOString(),
@@ -668,6 +690,15 @@ export async function buildSmartV3EvidenceReport(args: Args): Promise<SmartV3Evi
       byCohort,
     },
     evidenceVerdicts,
+    kolTransferPosterior: {
+      input: kolTransferInput,
+      rows: kolTransferPosterior.rows,
+      candidates: kolTransferPosterior.candidates,
+      topSmartV3Fit: kolTransferPosterior.metrics
+        .slice()
+        .sort((a, b) => b.smartV3FitScore - a.smartV3FitScore || b.buyCandidates - a.buyCandidates)
+        .slice(0, 12),
+    },
   };
 }
 
@@ -702,6 +733,35 @@ function renderHorizonTable(stats: HorizonStats[]): string {
   return lines.join('\n');
 }
 
+function renderKolTransferPosteriorTable(report: SmartV3EvidenceReport['kolTransferPosterior']): string {
+  if (report.rows === 0 || report.topSmartV3Fit.length === 0) {
+    return `_No KOL transfer posterior rows. Run \`npm run kol:transfer-backfill\` first. Input: ${report.input}_`;
+  }
+  const lines = [
+    '| KOL | tier | role | style | tx | buy | sell | sell/buy | med buy SOL | med hold | quick sell | rotation | smart-v3 | net SOL flow |',
+    '|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
+  ];
+  for (const row of report.topSmartV3Fit) {
+    lines.push([
+      `| ${row.kolId}`,
+      row.kolTier ?? '-',
+      row.laneRole ?? '-',
+      row.tradingStyle ?? '-',
+      row.txGroups,
+      row.buyCandidates,
+      row.sellCandidates,
+      pct(row.sellToBuyRatio),
+      row.medianBuySol == null ? 'n/a' : row.medianBuySol.toFixed(4),
+      row.medianHoldSec == null ? 'n/a' : `${row.medianHoldSec.toFixed(0)}s`,
+      pct(row.quickSellRatio),
+      row.rotationFitScore.toFixed(2),
+      row.smartV3FitScore.toFixed(2),
+      sol(row.netSolFlow),
+    ].join(' | ') + ' |');
+  }
+  return lines.join('\n');
+}
+
 export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceReport): string {
   const lines: string[] = [];
   lines.push('# Smart-v3 Evidence Report');
@@ -712,6 +772,11 @@ export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceRepor
   lines.push(`- horizons: ${report.horizonsSec.join(', ')}s`);
   lines.push(`- round-trip cost assumption: ${(report.roundTripCostPct * 100).toFixed(2)}%`);
   lines.push(`- wallet drag stress: ${(report.assumedAtaRentSol + report.assumedNetworkFeeSol).toFixed(6)} SOL / close`);
+  lines.push('');
+
+  lines.push('## KOL Transfer Posterior — Smart-v3 Fit');
+  lines.push('> Diagnostic only. Transfer candidates are not precise swap PnL. Use signature drill-down before policy changes.');
+  lines.push(renderKolTransferPosteriorTable(report.kolTransferPosterior));
   lines.push('');
 
   lines.push('## Evidence Verdicts');

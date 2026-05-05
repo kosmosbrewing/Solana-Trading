@@ -13,6 +13,7 @@
 #   SKIP_PAPER_REPORT=true bash scripts/sync-vps-data.sh   # paper arm report 생략
 #   SKIP_TOKEN_QUALITY_REPORT=true bash scripts/sync-vps-data.sh  # dev candidate quality report 생략
 #   SKIP_LIVE_CANARY_REPORT=true bash scripts/sync-vps-data.sh    # live canary report 생략
+#   SKIP_KOL_TRANSFER_REPORT=true bash scripts/sync-vps-data.sh   # KOL transfer posterior report 생략
 #   SKIP_SMART_V3_EVIDENCE_REPORT=true bash scripts/sync-vps-data.sh  # smart-v3 evidence verdict 생략
 #   SKIP_TRADE_MARKOUT_REPORT=true bash scripts/sync-vps-data.sh  # buy/sell T+ markout report 생략
 #   SKIP_PUREWS_TRADE_MARKOUT_REPORT=true bash scripts/sync-vps-data.sh  # pure_ws T+ report 생략
@@ -57,6 +58,7 @@ fi
 # paper-arm-report: 파일 only (Jupiter API 0건) → default ON.
 # token-quality-report: 파일 only (Jupiter/API 0건) → default ON. dev-wallet candidate JSON join 포함.
 # live-canary-report: 파일 only → default ON. live canary wallet-truth / 5x / catastrophic summary.
+# kol-transfer-report: 파일 only → default ON. data/research/kol-transfers.jsonl posterior summary.
 # smart-v3-evidence-report: 파일 only → default ON. smart-v3 projection + shared T+ verdict.
 # trade-markout-report: 파일 only → default ON. 실제 buy/sell 이후 T+30/60/300/1800 coverage / continuation.
 # rotation-report: 파일 only → default ON. rotation lane T+15/30/60 entry/exit/no-trade feedback.
@@ -66,6 +68,7 @@ fi
 SKIP_PAPER_REPORT="${SKIP_PAPER_REPORT:-false}"
 SKIP_TOKEN_QUALITY_REPORT="${SKIP_TOKEN_QUALITY_REPORT:-false}"
 SKIP_LIVE_CANARY_REPORT="${SKIP_LIVE_CANARY_REPORT:-false}"
+SKIP_KOL_TRANSFER_REPORT="${SKIP_KOL_TRANSFER_REPORT:-false}"
 SKIP_SMART_V3_EVIDENCE_REPORT="${SKIP_SMART_V3_EVIDENCE_REPORT:-false}"
 SKIP_TRADE_MARKOUT_REPORT="${SKIP_TRADE_MARKOUT_REPORT:-false}"
 SKIP_PUREWS_TRADE_MARKOUT_REPORT="${SKIP_PUREWS_TRADE_MARKOUT_REPORT:-false}"
@@ -74,6 +77,8 @@ SKIP_WINNER_KILL_REPORT="${SKIP_WINNER_KILL_REPORT:-false}"
 SKIP_SYNC_HEALTH="${SKIP_SYNC_HEALTH:-false}"
 TOKEN_QUALITY_WINDOW_DAYS="${TOKEN_QUALITY_WINDOW_DAYS:-7}"
 TRADE_MARKOUT_SINCE="${TRADE_MARKOUT_SINCE:-24h}"
+KOL_TRANSFER_REPORT_SINCE="${KOL_TRANSFER_REPORT_SINCE:-30d}"
+KOL_TRANSFER_INPUT="${KOL_TRANSFER_INPUT:-data/research/kol-transfers.jsonl}"
 SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT="${SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT:-0.005}"
 ROTATION_REPORT_ROUND_TRIP_COST_PCT="${ROTATION_REPORT_ROUND_TRIP_COST_PCT:-0.005}"
 WINNER_KILL_WINDOW_DAYS="${WINNER_KILL_WINDOW_DAYS:-7}"
@@ -278,6 +283,9 @@ write_sync_health_report() {
       "data/realtime/missed-alpha.jsonl" \
       "data/realtime/trade-markout-anchors.jsonl" \
       "data/realtime/trade-markouts.jsonl" \
+      "data/research/kol-transfers.jsonl" \
+      "reports/kol-transfer-posterior-$(date +%Y-%m-%d).md" \
+      "reports/kol-transfer-posterior-$(date +%Y-%m-%d).json" \
       "data/realtime/executed-buys.jsonl" \
       "data/realtime/executed-sells.jsonl" \
       "logs/bot.log" \
@@ -511,13 +519,29 @@ else
   echo "[sync-vps-data] live-canary-report: SKIPPED (SKIP_LIVE_CANARY_REPORT=true)"
 fi
 
+# ─── 6b. KOL transfer posterior report (file-only) ───
+# Why: getTransfersByAddress backfill 결과를 KOL별 rotation/smart-v3 prior 진단으로 고정한다.
+# API 호출 0건. backfill 자체는 `npm run kol:transfer-backfill`로 별도 수동/배치 실행한다.
+if [ "$SKIP_KOL_TRANSFER_REPORT" != "true" ]; then
+  KOL_TRANSFER_MD="${ROOT_DIR}/reports/kol-transfer-posterior-$(date +%Y-%m-%d).md"
+  KOL_TRANSFER_JSON="${ROOT_DIR}/reports/kol-transfer-posterior-$(date +%Y-%m-%d).json"
+  echo "[sync-vps-data] kol-transfer-report: generating since=${KOL_TRANSFER_REPORT_SINCE} input=${KOL_TRANSFER_INPUT}"
+  if (cd "${ROOT_DIR}" && npm run -s kol:transfer-report -- --input "${KOL_TRANSFER_INPUT}" --since "${KOL_TRANSFER_REPORT_SINCE}" --md "${KOL_TRANSFER_MD}" --json "${KOL_TRANSFER_JSON}" 2>&1 | tail -10); then
+    echo "[sync-vps-data] kol-transfer-report: ok → ${KOL_TRANSFER_MD}"
+  else
+    echo "[sync-vps-data] kol-transfer-report: WARN — generation failed (sync 자체는 정상)"
+  fi
+else
+  echo "[sync-vps-data] kol-transfer-report: SKIPPED (SKIP_KOL_TRANSFER_REPORT=true)"
+fi
+
 # ─── 7. Smart-v3 evidence report (file-only) ───
 # Why: smart-v3 는 5x main lane 이므로 rotation arm discipline 을 policy 가 아니라 evidence verdict 로 먼저 이식한다.
 if [ "$SKIP_SMART_V3_EVIDENCE_REPORT" != "true" ]; then
   SMART_V3_EVIDENCE_MD="${ROOT_DIR}/reports/smart-v3-evidence-$(date +%Y-%m-%d).md"
   SMART_V3_EVIDENCE_JSON="${ROOT_DIR}/reports/smart-v3-evidence-$(date +%Y-%m-%d).json"
   echo "[sync-vps-data] smart-v3-evidence-report: generating since=${TRADE_MARKOUT_SINCE} roundTripCost=${SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT}"
-  if (cd "${ROOT_DIR}" && npm run -s kol:smart-v3-evidence-report -- --since "${TRADE_MARKOUT_SINCE}" --horizons 30,60,300,1800 --realtime-dir data/realtime --round-trip-cost-pct "${SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT}" --md "${SMART_V3_EVIDENCE_MD}" --json "${SMART_V3_EVIDENCE_JSON}" 2>&1 | tail -12); then
+  if (cd "${ROOT_DIR}" && npm run -s kol:smart-v3-evidence-report -- --since "${TRADE_MARKOUT_SINCE}" --horizons 30,60,300,1800 --realtime-dir data/realtime --round-trip-cost-pct "${SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT}" --kol-transfer-input "${KOL_TRANSFER_INPUT}" --md "${SMART_V3_EVIDENCE_MD}" --json "${SMART_V3_EVIDENCE_JSON}" 2>&1 | tail -12); then
     echo "[sync-vps-data] smart-v3-evidence-report: ok → ${SMART_V3_EVIDENCE_MD}"
   else
     echo "[sync-vps-data] smart-v3-evidence-report: WARN — generation failed (sync 자체는 정상)"
@@ -563,7 +587,7 @@ if [ "$SKIP_ROTATION_REPORT" != "true" ]; then
   ROTATION_MD="${ROOT_DIR}/reports/rotation-lane-$(date +%Y-%m-%d).md"
   ROTATION_JSON="${ROOT_DIR}/reports/rotation-lane-$(date +%Y-%m-%d).json"
   echo "[sync-vps-data] rotation-report: generating since=${TRADE_MARKOUT_SINCE} roundTripCost=${ROTATION_REPORT_ROUND_TRIP_COST_PCT}"
-  if (cd "${ROOT_DIR}" && npm run -s kol:rotation-report -- --since "${TRADE_MARKOUT_SINCE}" --horizons 15,30,60,300,1800 --realtime-dir data/realtime --round-trip-cost-pct "${ROTATION_REPORT_ROUND_TRIP_COST_PCT}" --md "${ROTATION_MD}" --json "${ROTATION_JSON}" 2>&1 | tail -12); then
+  if (cd "${ROOT_DIR}" && npm run -s kol:rotation-report -- --since "${TRADE_MARKOUT_SINCE}" --horizons 15,30,60,300,1800 --realtime-dir data/realtime --round-trip-cost-pct "${ROTATION_REPORT_ROUND_TRIP_COST_PCT}" --kol-transfer-input "${KOL_TRANSFER_INPUT}" --md "${ROTATION_MD}" --json "${ROTATION_JSON}" 2>&1 | tail -12); then
     echo "[sync-vps-data] rotation-report: ok → ${ROTATION_MD}"
   else
     echo "[sync-vps-data] rotation-report: WARN — generation failed (sync 자체는 정상)"

@@ -89,6 +89,65 @@ describe('smart-v3-evidence-report', () => {
     expect(renderSmartV3EvidenceReportMarkdown(report)).toContain('Smart-v3 Evidence Report');
   });
 
+  it('adds a diagnostic KOL transfer posterior section for smart-v3 fit', async () => {
+    const transferFile = path.join(dir, 'kol-transfers.jsonl');
+    await writeFile(path.join(dir, 'smart-v3-paper-trades.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'smart-v3-live-trades.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+    await writeFile(transferFile, jsonl([
+      {
+        kolId: 'swinger',
+        kolAddress: 'SWING111',
+        kolTier: 'A',
+        laneRole: 'smart_v3_support',
+        tradingStyle: 'swing',
+        walletDirection: 'out',
+        transfer: {
+          signature: 'buy1',
+          blockTime: 1_778_870_400,
+          slot: 1,
+          type: 'TRANSFER',
+          mint: 'So11111111111111111111111111111111111111112',
+          uiAmount: '2.5',
+          amount: '2500000000',
+        },
+      },
+      {
+        kolId: 'swinger',
+        kolAddress: 'SWING111',
+        kolTier: 'A',
+        laneRole: 'smart_v3_support',
+        tradingStyle: 'swing',
+        walletDirection: 'in',
+        transfer: {
+          signature: 'buy1',
+          blockTime: 1_778_870_400,
+          slot: 1,
+          type: 'TRANSFER',
+          mint: 'MintSmartPosterior11111111111111111111',
+          uiAmount: '1000',
+          amount: '1000',
+        },
+      },
+    ]));
+
+    const report = await buildSmartV3EvidenceReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [30, 60, 300, 1800],
+      roundTripCostPct: 0.005,
+      assumedAtaRentSol: 0.002,
+      assumedNetworkFeeSol: 0.0001,
+      kolTransferInput: transferFile,
+    });
+
+    expect(report.kolTransferPosterior.rows).toBe(2);
+    expect(report.kolTransferPosterior.topSmartV3Fit[0].kolId).toBe('swinger');
+    const markdown = renderSmartV3EvidenceReportMarkdown(report);
+    expect(markdown).toContain('KOL Transfer Posterior — Smart-v3 Fit');
+    expect(markdown).toContain('Diagnostic only');
+  });
+
   it('flags DATA_GAP when sell-side T+ coverage is missing', async () => {
     await writeFile(path.join(dir, 'smart-v3-paper-trades.jsonl'), jsonl(smartV3TradeRows(50)));
     await writeFile(path.join(dir, 'smart-v3-live-trades.jsonl'), jsonl([]));

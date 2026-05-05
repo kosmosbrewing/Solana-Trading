@@ -6,6 +6,7 @@
  *   - WSS metering (2 credits / 0.1 MB)
  *   - getProgramAccounts = 10 credits
  *   - getTransactionsForAddress = 50 credits
+ *   - getTransfersByAddress = 10 credits
  *   - Sender = 0 credits
  *   - fallback estimate per surface
  */
@@ -54,6 +55,11 @@ describe('heliusCreditCost catalog', () => {
     it('getTransactionsForAddress = 50 credits (Wallet API)', () => {
       const c = getCostByMethodAndSurface('getTransactionsForAddress', 'wallet_api');
       expect(c?.creditsPerCall).toBe(50);
+    });
+
+    it('getTransfersByAddress = 10 credits (Wallet API)', () => {
+      const c = getCostByMethodAndSurface('getTransfersByAddress', 'wallet_api');
+      expect(c?.creditsPerCall).toBe(10);
     });
   });
 

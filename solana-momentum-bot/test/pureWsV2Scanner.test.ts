@@ -164,6 +164,8 @@ describe('Phase 1.3 — scanPureWsV2Burst', () => {
     override('pureWsV2PerPairCooldownSec', 300);
     override('pureWsLaneWalletMode', 'main');
     override('pureWsLiveCanaryEnabled', true);
+    override('pureWsSwingV2Enabled', false);
+    override('pureWsSwingV2LiveCanaryEnabled', false);
     // 2026-04-26 cleanup: 운영 .env 의 survival/probe/drift gate isolation
     override('pureWsSurvivalCheckEnabled', false);
     override('pureWsSurvivalAllowDataMissing', true);

@@ -41,7 +41,7 @@ Solana DEX 순수 실전형 momentum / sniper 봇이다.
   - `pure_ws` botflow — new-pair paper/observer candidate. Mayhem copy가 아니라 new-pair 기준 관측 lane이며, live 승격은 evidence 확보 전 금지.
   - `cupsey_flip_10s` — frozen benchmark, disabled.
 - **운영 분석 표준**: 먼저 `bash scripts/sync-vps-data.sh`로 `data/`, `logs/`, `reports/`를 동기화한다. DB dump는 opt-in. 결론은 lane별 `OK / WATCH / PAUSE_REVIEW / INVESTIGATE`로 끝낸다.
-- **운영 env 표준**: `.env`는 Git 추적 금지. Git으로 동기화할 수 있는 값은 secret 없는 [`ops/env/production.env`](./ops/env/production.env)에 둔다. `scripts/deploy.sh`가 배포 중 해당 profile을 원격 `.env`에 병합한다.
+- **운영 env 표준**: `.env`는 Git 추적 금지. Git으로 동기화할 수 있는 값은 secret 없는 [`ops/env/production.env`](./ops/env/production.env)에 둔다. `scripts/deploy.sh`가 배포 중 해당 profile을 원격 `.env`에 병합하고, `scripts/deploy-remote.sh`는 원격 repo를 먼저 pull한 뒤 원격 deploy를 실행한다.
 - **유일한 truth**: wallet delta. DB `pnl` drift 전력이 있어 단독 판정 금지.
 
 ## Read Order

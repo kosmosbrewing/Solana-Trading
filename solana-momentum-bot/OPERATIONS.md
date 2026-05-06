@@ -423,6 +423,8 @@ cron 예시:
 - `.env`는 `WALLET_PRIVATE_KEY`, RPC/API key, DB URL을 포함할 수 있으므로 Git 추적 금지다. `git pull`만으로 운영 `.env`가 바뀌지 않는 것은 정상 동작이다.
 - Git으로 동기화할 수 있는 non-secret 운영 override 는 `ops/env/production.env`에 둔다.
 - `scripts/deploy.sh`는 `git pull` 후 `DEPLOY_ENV_PROFILE` (default `ops/env/production.env`)을 원격 `.env`에 병합한다. 기존 secret 값은 `.env`/shell env에 남기고 profile에는 넣지 않는다.
+- `scripts/deploy-remote.sh`는 원격 repo를 먼저 `git pull --ff-only`로 갱신한 뒤 원격 `scripts/deploy.sh`를 실행한다. 따라서 profile merge 변경도 첫 배포부터 적용된다.
+- `deploy-remote.sh --sync-env`는 로컬 `.env`를 직접 병합하는 예외 경로다. 일반 운영에서는 tracked `ops/env/production.env` + 원격 secret `.env` 조합을 우선한다.
 - 병합 스크립트는 `.env.backup-<timestamp>`를 남긴다. 자동 병합을 건너뛰려면 `DEPLOY_ENV_PROFILE=`로 빈 값을 준다.
 - 붙여넣기/수동 편집 후에는 `gOL_HUNTER_*` 같은 오타 키가 없는지 확인한다. KOL live canary 키는 반드시 `KOL_HUNTER_LIVE_CANARY_ENABLED`다.
 - Rotation canary 운영 의도는 `KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=false` + `KOL_HUNTER_ROTATION_CHASE_TOPUP_LIVE_CANARY_ENABLED=true`다. 전체 rotation live를 열지 않는다.

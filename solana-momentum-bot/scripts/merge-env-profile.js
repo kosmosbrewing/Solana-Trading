@@ -48,6 +48,7 @@ if (!fs.existsSync(profilePath)) {
 const targetLines = readLines(targetPath);
 const profileLines = readLines(profilePath);
 const profile = parseAssignments(profileLines);
+const knownTypoKeys = new Set(['gOL_HUNTER_LIVE_CANARY_ENABLED']);
 
 if (profile.size === 0) {
   console.error(`[env-profile] ERROR profile has no KEY=value assignments: ${profilePath}`);
@@ -56,11 +57,14 @@ if (profile.size === 0) {
 
 const seen = new Set();
 const mergedLines = targetLines.map((line) => {
+  const typoMatch = line.match(/^\s*(?:export\s+)?([A-Za-z0-9_]+)\s*=/);
+  if (typoMatch && knownTypoKeys.has(typoMatch[1])) return null;
+
   const match = line.match(/^\s*(?:export\s+)?([A-Z0-9_]+)\s*=/);
   if (!match || !profile.has(match[1])) return line;
   seen.add(match[1]);
   return `${match[1]}=${profile.get(match[1])}`;
-});
+}).filter((line) => line !== null);
 
 for (const [key, value] of profile.entries()) {
   if (!seen.has(key)) mergedLines.push(`${key}=${value}`);
@@ -73,11 +77,6 @@ const missingSecrets = requiredSecrets.filter((key) => isPlaceholder(merged.get(
 if (missingSecrets.length > 0) {
   console.error(`[env-profile] ERROR required runtime secrets missing after merge: ${missingSecrets.join(', ')}`);
   process.exit(1);
-}
-
-const typoLines = mergedLines.filter((line) => /^\s*gOL_HUNTER_LIVE_CANARY_ENABLED\s*=/.test(line));
-if (typoLines.length > 0) {
-  console.warn('[env-profile] WARN found typo key gOL_HUNTER_LIVE_CANARY_ENABLED; correct KOL_HUNTER_LIVE_CANARY_ENABLED will be enforced by profile.');
 }
 
 fs.copyFileSync(targetPath, `${targetPath}.backup-${Date.now()}`);

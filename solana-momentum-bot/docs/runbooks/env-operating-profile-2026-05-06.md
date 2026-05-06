@@ -258,6 +258,12 @@ Deploy behavior:
 4. Existing secrets remain in runtime `.env` or shell env; do not put them in the profile.
 5. A timestamped `.env.backup-*` file is created before writing.
 
+Remote deploy behavior:
+
+1. `scripts/deploy-remote.sh` refreshes the remote repo before invoking remote `scripts/deploy.sh`.
+2. This allows profile-merge changes to take effect on the first deployment after `git push`.
+3. `deploy-remote.sh --sync-env` still exists for emergency local-env merge, but normal operation should use tracked `ops/env/production.env` plus remote-only secrets.
+
 To skip profile merge for an emergency deploy:
 
 ```bash

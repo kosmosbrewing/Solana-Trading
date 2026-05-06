@@ -135,6 +135,7 @@ Deployment/env note:
 - Secret-bearing runtime `.env` remains gitignored.
 - Non-secret live/paper toggles are tracked in `ops/env/production.env`.
 - `scripts/deploy.sh` merges that profile into runtime `.env` during deploy, then restarts `momentum-bot`.
+- `scripts/deploy-remote.sh` first refreshes the remote repo, so profile merge changes are available before the remote deploy script runs.
 
 ## Cupsey Benchmark Lane (개조 금지)
 

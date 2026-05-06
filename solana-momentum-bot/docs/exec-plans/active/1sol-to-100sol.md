@@ -1,25 +1,26 @@
 # Execution Plan: Positive-Optionality Engine (post-pivot, refined 2026-04-21)
 
-> Status: current active execution plan
-> Updated: 2026-04-21 (Mission Refinement — 100 SOL 은 tail outcome)
-> Scope: Stage 1-4 maturity gate 진행 + Survival Layer P0 구현
-> **Authority chain**: [`mission-refinement-2026-04-21.md`](../../design-docs/mission-refinement-2026-04-21.md) (최상위) → [`mission-pivot-2026-04-18.md`](../../design-docs/mission-pivot-2026-04-18.md) → [`PLAN.md`](../../../PLAN.md)
+> Status: historical execution plan, superseded for day-to-day work
+> Updated: 2026-05-06 (current operating docs now override this 2026-04-21 plan)
+> Scope: 2026-04-21 post-pivot Stage 1-4 maturity gate history
+> **Current active work**: [`20260503_BACKLOG.md`](./20260503_BACKLOG.md), [`SESSION_START.md`](../../../SESSION_START.md), [`STRATEGY.md`](../../../STRATEGY.md), [`docs/design-docs/lane-operating-refactor-2026-05-03.md`](../../design-docs/lane-operating-refactor-2026-05-03.md)
+> **Authority chain**: [`SESSION_START.md`](../../../SESSION_START.md) / [`MISSION_CONTROL.md`](../../../MISSION_CONTROL.md) → [`PLAN.md`](../../../PLAN.md) → this historical plan
 > Pre-pivot snapshot: [`docs/historical/pre-pivot-2026-04-18/`](../../historical/pre-pivot-2026-04-18/) 내 PLAN/PROJECT/MEASUREMENT/STRATEGY + git history
 > Archive: 완료된 Block 별 설계 문서와 QA 는 [`docs/design-docs/`](../../design-docs/), 메모리는 `project_block{0-4}_*`.
 
 ## Role
 
-이 문서는 **post-pivot 운영 authority** 다.
+이 문서는 2026-04-21 기준 **post-pivot 운영 authority였던 문서**다. 현재 운영 판단은 위 Current active work 문서를 우선한다.
 
 - Block 0-4 + DEX_TRADE Phase 1-3 + 2026-04-19~21 refinement 구현 완료 이후 wallet-verified **Stage 진행**이 어떻게 일어나는지 정리한다
 - mission / KPI 자체는 [`PLAN.md`](../../../PLAN.md) + [`MEASUREMENT.md`](../../../MEASUREMENT.md) 참조
 - 전략 / gate / lane 세부는 [`STRATEGY.md`](../../../STRATEGY.md) 참조
-- 본 문서는 "**지금 남은 Stage 통과 단계**" 만 정리
+- 본 문서는 당시 Stage 통과 단계를 보존한다. 새 작업은 `20260503_BACKLOG.md`에 쌓는다.
 
 ## Baseline (Ground Truth)
 
 - 미션 (2026-04-21 refined): **Positive-optionality engine** — 100 SOL 은 tail outcome 으로 관찰, 판단 KPI 아님
-- 성공 기준: 0.8 SOL floor 유지 + 200 live trades + 5x+ winner 분포 실측
+- 성공 기준: 현재 운영 0.7 SOL floor 유지 + 200 live trades + 5x+ winner 분포 실측
 - 실제 wallet baseline (2026-04-17 실측): 시작 `1.3 SOL` → 현재 `1.07 SOL` (`−17.7%`)
 - **wallet delta 만이 유일한 ground truth**. DB `pnl` 은 drift `+18.34 SOL` 전력 있어 단독 판정 금지.
 - 평가 지표: [`MEASUREMENT.md`](../../../MEASUREMENT.md) 의 **4단계 Stage gate** + wallet log growth + winner distribution + ruin probability.
@@ -31,7 +32,7 @@
 | Block 0 | Mission pivot 문서화 | `mission-pivot-2026-04-18.md` + PLAN/PROJECT/MEASUREMENT/STRATEGY 재작성 |
 | Block 1 | Wallet ownership + always-on comparator | `CUPSEY/MIGRATION/PUREWS_WALLET_MODE` + `src/risk/walletDeltaComparator.ts` (wallet-aware) + startup fail-fast |
 | Block 2 | Coverage expansion | DEX ID alias normalization + `admission-skips-dex.jsonl` telemetry |
-| Block 3 | pure_ws_breakout lane (paper-first) | `src/orchestration/pureWsBreakoutHandler.ts` + `PUREWS_LIVE_CANARY_ENABLED` gate |
+| Block 3 | pure_ws_breakout lane (paper-first, historical) | superseded by pure_ws botflow new-pair paper/observer docs |
 | Block 4 | Canary guardrails + A/B eval | `src/risk/canaryAutoHalt.ts` + `src/risk/canaryConcurrencyGuard.ts` + `scripts/canary-eval.ts` (wallet-truth metrics 포함) |
 
 ## 현재 남은 운영 단계
@@ -67,15 +68,15 @@ CANARY_GLOBAL_CONCURRENCY_ENABLED=true    # 전역 동시 3 ticket 강제
 CANARY_GLOBAL_MAX_CONCURRENT=3
 CANARY_MAX_TRADES=200                     # Stage 4 scale/retire decision gate 에서 halt
 CANARY_MAX_BUDGET_SOL=0.3                 # Real Asset Guard — cumulative loss cap
-WALLET_STOP_MIN_SOL=0.8                   # Real Asset Guard — wallet floor
+WALLET_STOP_MIN_SOL=0.7                   # Real Asset Guard — current operating wallet floor
 ```
 
 Hard guardrails (Real Asset Guard, 불변):
-- Wallet Stop Guard `< 0.8 SOL` → 전 lane entry halt
+- Wallet Stop Guard `< 0.7 SOL` → 전 lane entry halt
 - Canary cumulative loss cap `-0.3 SOL` → 해당 lane halt
 - Wallet delta comparator drift ≥ 0.20 SOL → 전 lane halt
 - Security hard reject (top-holder %, mint/freeze authority, honeypot)
-- Ticket 0.01 SOL fixed, max concurrent 3 (전역)
+- Ticket default 0.01 SOL / KOL 0.02 SOL, max concurrent 3 (전역)
 
 ### Phase O3 — 50-trade safety checkpoint (관측 전용)
 

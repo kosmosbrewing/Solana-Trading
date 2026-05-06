@@ -29,7 +29,7 @@
 | `bootstrap_10s` | **signal-only** | cupsey/pure_ws trigger source. `executionRrReject=99.0` 로 실거래 100% 억제. |
 | **`kol_hunter_smart_v3`** | **main 5x lane / live canary with paper fallback** | Fresh active 2+ KOL velocity 중심. A+A 허용, S+B/A+B 는 fresh S/A strength rule 미통과. Pullback-only / weak post-sell recovery / dev watchlist 는 paper fallback. Pre-T1 dead probe 는 MAE fast-fail, 살아난 probe 는 bounded recovery-hold. |
 | ↳ `kol_hunter` swing-v2 | paper shadow (`KOL_HUNTER_SWING_V2_ENABLED`) | multi-KOL S/A ≥2 + score ≥5.0 자격 시 동시 생성. 600s stalk / 25% trail / 1.10 floor. |
-| **`kol_hunter_rotation_v1`** | **fast-compound auxiliary / live off until evidence** | T+15/T+30 post-cost harvesting 실험. Control + `rotation_fast15_v1` / `rotation_cost_guard_v1` / `rotation_quality_strict_v1` / paper-only `rotation_underfill_v1`. |
+| **`kol_hunter_rotation_v1`** | **fast-compound auxiliary / canonical live off; chase-topup canary only** | T+15/T+30 post-cost harvesting 실험. Control + `rotation_fast15_v1` / `rotation_cost_guard_v1` / `rotation_quality_strict_v1` / `rotation_underfill_v1` / `rotation_chase_topup_v1`. Canonical live는 닫고, 승격된 chase-topup arm만 별도 live canary 키로 연다. |
 | **`pure_ws botflow`** | **paper/observe-only rebuild candidate** | New-pair / botflow microstructure 관측. Mayhem copy 금지. T+15/30/60/180/300/1800 markout + 15분 digest + paper arms. |
 | `migration_reclaim` | signal-only (env) | Migration Handoff Reclaim. paper 대기. |
 | `volume_spike` / `fib_pullback` / `core_momentum` | **dormant** | 5m 해상도, 밈코인 비적합 |
@@ -113,6 +113,29 @@ KOL_HUNTER_SMART_V3_MAE_RECOVERY_MAX_MAE_PCT=0.18
 KOL_HUNTER_SMART_V3_MAE_RECOVERY_HOLD_SEC=12
 ```
 
+Rotation live canary operating rule (2026-05-06):
+
+```text
+KOL_HUNTER_ROTATION_V1_ENABLED=true
+KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=false
+
+# single promoted arm only
+KOL_HUNTER_ROTATION_CHASE_TOPUP_LIVE_CANARY_ENABLED=true
+KOL_HUNTER_ROTATION_CHASE_TOPUP_PARAMETER_VERSION=rotation-chase-topup-v1.0.0
+KOL_HUNTER_ROTATION_CHASE_TOPUP_PAPER_ENABLED=true
+KOL_HUNTER_ROTATION_CHASE_TOPUP_MIN_BUYS=2
+KOL_HUNTER_ROTATION_CHASE_TOPUP_MIN_TOPUP_STRENGTH=0.08
+KOL_HUNTER_ROTATION_CHASE_TOPUP_MAX_RECENT_SELL_SEC=60
+```
+
+`KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=true` opens the broader canonical rotation-v1 live path and is not the current operating intent.
+
+Deployment/env note:
+
+- Secret-bearing runtime `.env` remains gitignored.
+- Non-secret live/paper toggles are tracked in `ops/env/production.env`.
+- `scripts/deploy.sh` merges that profile into runtime `.env` during deploy, then restarts `momentum-bot`.
+
 ## Cupsey Benchmark Lane (개조 금지)
 
 `cupsey_flip_10s` 는 현재 유일한 live-proven lane 이며 benchmark 로 유지한다.
@@ -150,6 +173,8 @@ cupsey benchmark 유지 방침에 따라 이 threshold 역시 변경 금지.
 새 lane 에서는 같은 factor set 을 재사용하되, threshold 만 사명에 맞춰 재조정.
 
 ## DEX_TRADE Phase 3 — Quick Reject + Hold Sentinel + Ruin Sim (2026-04-18)
+
+> Legacy appendix. This section preserves the 2026-04-18 pure_ws/cupsey DEX_TRADE work for reference. Current runtime lane policy is the Runtime Lane Set above plus `docs/design-docs/lane-operating-refactor-2026-05-03.md`; do not use the old `pure_ws_breakout` promotion text below as live policy.
 
 ### Quick Reject Classifier ([src/risk/quickRejectClassifier.ts](./src/risk/quickRejectClassifier.ts))
 
@@ -481,4 +506,4 @@ Halt 발동 시: 모든 lane(cupsey/migration/main/strategy_d)의 `entryIntegrit
 
 ## One-Line Summary
 
-> cupsey 는 건드리지 않는 benchmark, pure_ws_breakout 은 별도 상태기계로 신설, bootstrap 은 signal-only 유지, attention/context gate retire, wallet delta 가 유일한 판정 기준.
+> smart-v3 는 main 5x lane, rotation-v1 은 fast-compound 보조 lane, pure_ws 는 new-pair paper/observer 후보, cupsey 는 frozen benchmark, wallet delta 가 유일한 판정 기준.

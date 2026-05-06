@@ -1,11 +1,11 @@
 # PLAN.md
 
 > Status: current mission charter (post-pivot, refined 2026-04-21)
-> Updated: 2026-04-21
+> Updated: 2026-05-06
 > Purpose: 이 저장소의 장기 목표, 운영 원칙, 문서 계층을 고정한다.
-> **Authority chain**: [`mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md) (최상위) → [`mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md) → [`MISSION_CONTROL.md`](./MISSION_CONTROL.md) (control-plane) → 본 문서
+> **Authority chain**: [`SESSION_START.md`](./SESSION_START.md) / [`MISSION_CONTROL.md`](./MISSION_CONTROL.md) (current operating override) → [`mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md) (historical refinement) → [`mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md) → 본 문서
 > Pre-pivot snapshot: [`docs/historical/pre-pivot-2026-04-18/PLAN.md`](./docs/historical/pre-pivot-2026-04-18/PLAN.md)
-> Use with: [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md) for current active execution work, [`PLAN_CMPL.md`](./PLAN_CMPL.md) for archived plans.
+> Use with: [`docs/exec-plans/active/20260503_BACKLOG.md`](./docs/exec-plans/active/20260503_BACKLOG.md) for current active execution work, [`PLAN_CMPL.md`](./PLAN_CMPL.md) for archived plans.
 
 ## Role
 
@@ -25,11 +25,11 @@
 
 ### 성공 기준 (기술적 성공)
 
-> **0.8 SOL floor 를 깨지 않고 200 live trades 를 통과하며, 5x+ winner 분포를 실측했다** 면 성공.
+> **현재 운영 floor 0.7 SOL 을 깨지 않고 200 live trades 를 통과하며, 5x+ winner 분포를 실측했다** 면 성공.
 
 그 이후 tail outcome (10x / 50x / 100x) 은 운 — 실패해도 학습.
 
-상세: [`mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md)
+원 사명 정제 문서는 0.8 SOL floor 로 작성됐지만, 2026-04-28 이후 실제 운영 기준은 `SESSION_START.md`의 0.7 SOL floor 를 따른다.
 
 ### Why Pivoted (2026-04-18)
 
@@ -55,7 +55,7 @@
 
 ### P3. Small Ticket, Many Shots, Long Runners
 
-- Fixed ticket `0.01 SOL` (canary), 동시 진입 여러 개 허용.
+- Fixed ticket default `0.01 SOL`, KOL `0.02 SOL` canary, 동시 진입 여러 개 허용.
 - Loser는 빠르게 정리, winner는 최대한 길게 보유.
 - 평균 수익률보다 5x/10x winner 빈도를 중시한다.
 
@@ -66,7 +66,7 @@
 - Exitability 확인
 - Duplicate / race 방지 (Patch A, B1)
 - HWM / price sanity (Patch B2)
-- Wallet Stop Guard `< 0.8 SOL` halt
+- Wallet Stop Guard `< 0.7 SOL` halt
 - RPC fail-safe halt
 
 이 항목은 convexity 최우선 원칙보다도 위에 있다.
@@ -96,13 +96,14 @@
 
 ### Layer 2. 현재 active execution plan
 
-- [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md)
+- [`docs/exec-plans/active/20260503_BACKLOG.md`](./docs/exec-plans/active/20260503_BACKLOG.md)
+- [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md) — historical post-pivot execution plan
 
 ### Layer 3. Reference
 
 - [`PROJECT.md`](./PROJECT.md) — persona / goals
 - [`MEASUREMENT.md`](./MEASUREMENT.md) — wallet 기준 KPI
-- [`STRATEGY.md`](./STRATEGY.md) — cupsey benchmark + pure_ws_breakout placeholder
+- [`STRATEGY.md`](./STRATEGY.md) — smart-v3 / rotation-v1 chase-topup canary / pure_ws current lane policy
 
 ### Layer 4. Completed archive
 

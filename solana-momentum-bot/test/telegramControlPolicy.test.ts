@@ -1,5 +1,6 @@
 import {
   isAuthorizedControlMessage,
+  isSelfTargetingProcessCommand,
   listProcessAliases,
   parseControlCommand,
 } from '../src/ops/telegramControlPolicy';
@@ -80,5 +81,24 @@ describe('telegramControlPolicy', () => {
   test('lists derived process aliases', () => {
     expect(listProcessAliases('momentum-bot')).toEqual(['momentum-bot', 'bot']);
     expect(listProcessAliases('momentum-shadow')).toEqual(['momentum-shadow', 'shadow']);
+  });
+
+  test('detects unsafe self restart or stop commands', () => {
+    expect(isSelfTargetingProcessCommand(
+      { type: 'restart', processName: 'momentum-ops-bot' },
+      'momentum-ops-bot'
+    )).toBe(true);
+    expect(isSelfTargetingProcessCommand(
+      { type: 'stop', processName: 'momentum-ops-bot' },
+      'momentum-ops-bot'
+    )).toBe(true);
+    expect(isSelfTargetingProcessCommand(
+      { type: 'logs', processName: 'momentum-ops-bot' },
+      'momentum-ops-bot'
+    )).toBe(false);
+    expect(isSelfTargetingProcessCommand(
+      { type: 'restart', processName: 'momentum-bot' },
+      'momentum-ops-bot'
+    )).toBe(false);
   });
 });

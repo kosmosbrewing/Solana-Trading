@@ -363,6 +363,7 @@ Rotation v1 uses the common KOL Hunter state machine with lane-specific override
 - shorter probe flat timeout.
 - dead-on-arrival exit when early MFE is weak and MAE breaches the rotation threshold;
 - fresh anchor top-up inside the grace window can defer dead-on-arrival once;
+- `rotation_mae_fast_fail` after the DOA window for weak-MFE probes that drift below the MAE threshold before hard cut;
 - anchor rotator sell overrides style-aware sell relaxation and exits full.
 
 It still uses structural stop, post-distribution guard, live canary gate, wallet stop, entry halt, and sell-route checks. Real Asset Guard values are unchanged.
@@ -375,8 +376,16 @@ Paper and live observability must carry the same rotation dimensions:
 - `rotationLastBuyAtMs`
 - `rotationLastBuyAgeMs`
 - `rotationScore`
+- `rotationMaeFastFail`
 
 These fields are propagated to paper close rows, live buy/sell fallback ledger rows, and T+ markout extras.
+
+2026-05-06 MAE fast-fail update:
+
+- Default config is observable and reversible via `KOL_HUNTER_ROTATION_MAE_FAST_FAIL_ENABLED`.
+- Default thresholds: min elapsed `5s`, max MAE `-3%`, max MFE `+1.5%`.
+- The check runs after `rotation_dead_on_arrival` and before the wider probe hard cut. It is meant to reduce late failed probes, not to replace structural stops or winner trailing.
+- Reports split `After Sell - MAE Fast-Fail Cohort` from the broader hard-cut cohort so the policy can be reviewed before further live expansion.
 
 Rotation v1 uses a shorter validation clock than the 5x lane:
 

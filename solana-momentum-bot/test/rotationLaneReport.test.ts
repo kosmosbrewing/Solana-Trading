@@ -662,6 +662,17 @@ describe('rotation-lane-report', () => {
         recordedAt: '2026-05-02T00:03:30.000Z',
         extras: { eventType: 'paper_close', exitReason: 'probe_hard_cut', armName: 'rotation_exit_kol_flow_v1' },
       },
+      {
+        anchorType: 'sell',
+        positionId: 'rot-mae-fast-fail-1',
+        tokenMint: 'MintMaeFastFail111111111111111111111',
+        signalSource: 'rotation_exit_kol_flow_v1',
+        horizonSec: 30,
+        quoteStatus: 'ok',
+        deltaPct: -0.02,
+        recordedAt: '2026-05-02T00:04:30.000Z',
+        extras: { eventType: 'paper_close', exitReason: 'rotation_mae_fast_fail', armName: 'rotation_exit_kol_flow_v1' },
+      },
     ]));
 
     const report = await buildRotationLaneReport({
@@ -671,16 +682,19 @@ describe('rotation-lane-report', () => {
       roundTripCostPct: 0.005,
     });
 
-    expect(report.tradeMarkouts.afterSell[0].rows).toBe(3);
-    expect(report.tradeMarkouts.afterSellFinal[0].rows).toBe(2);
+    expect(report.tradeMarkouts.afterSell[0].rows).toBe(4);
+    expect(report.tradeMarkouts.afterSellFinal[0].rows).toBe(3);
     expect(report.tradeMarkouts.afterSellPartial[0].rows).toBe(1);
-    expect(report.tradeMarkouts.afterSellHardCut[0].rows).toBe(1);
+    expect(report.tradeMarkouts.afterSellHardCut[0].rows).toBe(2);
+    expect(report.tradeMarkouts.afterSellMaeFastFail[0].rows).toBe(1);
     expect(report.tradeMarkouts.afterSellPartial[0].medianPostCostDeltaPct).toBeCloseTo(-0.015);
     expect(report.tradeMarkouts.afterSellHardCut[0].positivePostCostRows).toBe(1);
+    expect(report.tradeMarkouts.afterSellMaeFastFail[0].positivePostCostRows).toBe(0);
 
     const markdown = renderRotationLaneReportMarkdown(report);
     expect(markdown).toContain('After Sell — Final Close Only');
     expect(markdown).toContain('After Sell — Partial/Reduce Only');
     expect(markdown).toContain('After Sell — Hard Cut Cohort');
+    expect(markdown).toContain('After Sell — MAE Fast-Fail Cohort');
   });
 });

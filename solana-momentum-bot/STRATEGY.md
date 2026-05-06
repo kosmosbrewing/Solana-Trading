@@ -1,7 +1,7 @@
 # STRATEGY.md (post-pivot)
 
 > Status: current quick reference
-> Updated: 2026-05-03
+> Updated: 2026-05-06
 > Purpose: 현재 runtime 에서 읽어야 할 전략 / gate / risk / 핵심 파라미터를 짧게 정리한다.
 > Pivot decision: [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md)
 > Current lane refactor: [`docs/design-docs/lane-operating-refactor-2026-05-03.md`](./docs/design-docs/lane-operating-refactor-2026-05-03.md)
@@ -27,7 +27,7 @@
 |---|---|---|
 | **`cupsey_flip_10s`** | **benchmark (frozen, env disabled)** | A/B 비교 기준선. **개조 금지.** |
 | `bootstrap_10s` | **signal-only** | cupsey/pure_ws trigger source. `executionRrReject=99.0` 로 실거래 100% 억제. |
-| **`kol_hunter_smart_v3`** | **main 5x lane / live canary with paper fallback** | Fresh active 2+ KOL velocity 중심. A+A 허용, S+B/A+B 는 fresh S/A strength rule 미통과. Pullback-only / weak post-sell recovery / dev watchlist 는 paper fallback. |
+| **`kol_hunter_smart_v3`** | **main 5x lane / live canary with paper fallback** | Fresh active 2+ KOL velocity 중심. A+A 허용, S+B/A+B 는 fresh S/A strength rule 미통과. Pullback-only / weak post-sell recovery / dev watchlist 는 paper fallback. Pre-T1 dead probe 는 MAE fast-fail, 살아난 probe 는 bounded recovery-hold. |
 | ↳ `kol_hunter` swing-v2 | paper shadow (`KOL_HUNTER_SWING_V2_ENABLED`) | multi-KOL S/A ≥2 + score ≥5.0 자격 시 동시 생성. 600s stalk / 25% trail / 1.10 floor. |
 | **`kol_hunter_rotation_v1`** | **fast-compound auxiliary / live off until evidence** | T+15/T+30 post-cost harvesting 실험. Control + `rotation_fast15_v1` / `rotation_cost_guard_v1` / `rotation_quality_strict_v1` / paper-only `rotation_underfill_v1`. |
 | **`pure_ws botflow`** | **paper/observe-only rebuild candidate** | New-pair / botflow microstructure 관측. Mayhem copy 금지. T+15/30/60/180/300/1800 markout + 15분 digest + paper arms. |
@@ -71,7 +71,47 @@ npm run kol:smart-v3-evidence-report -- --since 24h --realtime-dir data/realtime
 - Report-only; no live entry, exit, ticket, or guard behavior changes.
 - Verdict T+ coverage is close-anchor based by `positionId × anchorType × horizon`, not just observed-row ok-rate.
 - Closed Trades uses copyable/wallet-first W/L and shows token-only W/L separately.
-- Runtime `.env` change is not required. `SKIP_SMART_V3_EVIDENCE_REPORT` and `SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT` are sync/report-only shell knobs.
+- Closed Trades also shows MAE fast-fail, recovery-hold, and pre-T1 MFE band counts (`10-20`, `20-30`, `30-50`).
+- Runtime `.env` override is not required for the 2026-05-06 MAE changes; defaults are active. `SKIP_SMART_V3_EVIDENCE_REPORT` and `SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT` are sync/report-only shell knobs.
+
+Smart-v3 probe exit refinement (2026-05-06):
+
+```text
+MAE fast-fail:
+  pre-T1 only
+  elapsed >= 5s
+  market/reference MFE < +3%
+  token-only MAE <= -6%
+  no fresh participating KOL buy within 15s
+  close reason = smart_v3_mae_fast_fail
+
+MAE recovery hold:
+  pre-T1 only
+  market/reference MFE >= +10%
+  token-only MAE > -18%
+  no participating KOL sell after entry
+  one bounded 12s hold before generic hard cut
+
+Pre-T1 telemetry:
+  smartV3PreT1MfeBand = 10_20 / 20_30 / 30_50
+  smartV3PreT1ClosePct
+  smartV3PreT1GivebackPct
+  smartV3PreT1WouldLockBreakeven
+```
+
+Default knobs:
+
+```text
+KOL_HUNTER_SMART_V3_MAE_FAST_FAIL_ENABLED=true
+KOL_HUNTER_SMART_V3_MAE_FAST_FAIL_MIN_ELAPSED_SEC=5
+KOL_HUNTER_SMART_V3_MAE_FAST_FAIL_MAX_MFE_PCT=0.03
+KOL_HUNTER_SMART_V3_MAE_FAST_FAIL_MAX_MAE_PCT=0.06
+KOL_HUNTER_SMART_V3_MAE_FAST_FAIL_FRESH_BUY_GRACE_SEC=15
+KOL_HUNTER_SMART_V3_MAE_RECOVERY_HOLD_ENABLED=true
+KOL_HUNTER_SMART_V3_MAE_RECOVERY_MIN_MFE_PCT=0.10
+KOL_HUNTER_SMART_V3_MAE_RECOVERY_MAX_MAE_PCT=0.18
+KOL_HUNTER_SMART_V3_MAE_RECOVERY_HOLD_SEC=12
+```
 
 ## Cupsey Benchmark Lane (개조 금지)
 

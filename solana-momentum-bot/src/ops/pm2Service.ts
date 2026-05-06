@@ -59,7 +59,13 @@ export class Pm2Service {
 
   async restartProcess(name: string): Promise<string> {
     const ecosystemConfigPath = path.resolve(process.cwd(), ECOSYSTEM_CONFIG_FILE);
-    const args = buildRestartProcessArgs(name, fs.existsSync(ecosystemConfigPath), ecosystemConfigPath);
+    const processExists = await this.processExists(name);
+    const args = buildRestartProcessArgs(
+      name,
+      fs.existsSync(ecosystemConfigPath),
+      ecosystemConfigPath,
+      processExists
+    );
     const output = await this.run(args);
     const note = args[0] === 'startOrRestart'
       ? `\nApplied ecosystem config: ${ECOSYSTEM_CONFIG_FILE}`
@@ -89,6 +95,14 @@ export class Pm2Service {
 
   private run(args: string[], timeoutMs = 15_000): Promise<Pm2CommandOutput> {
     return this.runCommand('pm2', args, timeoutMs);
+  }
+
+  private async processExists(name: string): Promise<boolean> {
+    try {
+      return (await this.listProcesses()).some((process) => process.name === name);
+    } catch {
+      return false;
+    }
   }
 
   private runCommand(command: string, args: string[], timeoutMs: number): Promise<Pm2CommandOutput> {
@@ -131,8 +145,13 @@ export class Pm2Service {
 export function buildRestartProcessArgs(
   name: string,
   ecosystemConfigExists: boolean,
-  ecosystemConfigPath = path.resolve(process.cwd(), ECOSYSTEM_CONFIG_FILE)
+  ecosystemConfigPath = path.resolve(process.cwd(), ECOSYSTEM_CONFIG_FILE),
+  processExists = true
 ): string[] {
+  if (processExists) {
+    return ['restart', name, '--update-env'];
+  }
+
   if (!ecosystemConfigExists) {
     return ['restart', name, '--update-env'];
   }

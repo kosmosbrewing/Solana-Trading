@@ -1,5 +1,7 @@
 import { config } from '../utils/config';
 import { createModuleLogger } from '../utils/logger';
+import { mkdir, readFile, writeFile } from 'fs/promises';
+import path from 'path';
 import { Notifier } from '../notifier';
 import { Pm2AlertMonitor } from './pm2AlertMonitor';
 import { buildPm2HealthSummary } from './pm2Health';
@@ -17,13 +19,18 @@ import {
   formatLogsMessage,
   formatStatusMessage,
 } from './telegramControlFormatter';
-import { parseControlCommand, isAuthorizedControlMessage } from './telegramControlPolicy';
+import {
+  isAuthorizedControlMessage,
+  isSelfTargetingProcessCommand,
+  parseControlCommand,
+} from './telegramControlPolicy';
 import { TelegramMessage, TelegramUpdate } from './telegramTypes';
 import { TelegramUpdateClient } from './telegramUpdateClient';
 
 const log = createModuleLogger('TelegramControlBot');
 const POLL_TIMEOUT_SEC = 30;
 const RETRY_DELAY_MS = 3_000;
+const CONTROL_BOT_PROCESS_NAME = 'momentum-ops-bot';
 
 let running = true;
 
@@ -32,10 +39,11 @@ async function main() {
 
   const notifier = new Notifier(config.telegramBotToken, config.telegramChatId);
   const updateClient = new TelegramUpdateClient(config.telegramBotToken);
+  const offsetStorePath = resolveOffsetStorePath();
   const pm2Service = new Pm2Service();
   const heartbeatDeps = createRuntimeHeartbeatDeps();
   const alertMonitor = new Pm2AlertMonitor(pm2Service, notifier, config.pm2AllowedProcesses);
-  let offset = await getInitialOffset(updateClient);
+  let offset = await getInitialOffset(updateClient, offsetStorePath);
 
   await alertMonitor.initialize();
   registerShutdownHandlers();
@@ -46,6 +54,7 @@ async function main() {
       const updates = await updateClient.getUpdates(offset, POLL_TIMEOUT_SEC);
       for (const update of updates) {
         offset = update.update_id + 1;
+        await persistOffset(offsetStorePath, offset);
         await handleUpdate(update, notifier, pm2Service, alertMonitor, heartbeatDeps);
       }
       await alertMonitor.tick();
@@ -79,6 +88,15 @@ async function handleUpdate(
   if (parsed.kind === 'ignored') return;
   if (parsed.kind === 'error') {
     await notifier.sendMessage(formatErrorMessage(`${parsed.message}\nUse /help for available commands.`));
+    return;
+  }
+  const processCommand = parsed.command.type === 'restart' || parsed.command.type === 'stop'
+    ? parsed.command
+    : null;
+  if (processCommand && isSelfTargetingProcessCommand(processCommand, CONTROL_BOT_PROCESS_NAME)) {
+    await notifier.sendMessage(formatErrorMessage(
+      `${processCommand.type} ${processCommand.processName} is blocked from Telegram control to prevent command replay loops. Use SSH/PM2 directly.`
+    ));
     return;
   }
 
@@ -131,12 +149,47 @@ async function handleUpdate(
   }
 }
 
-async function getInitialOffset(updateClient: TelegramUpdateClient): Promise<number> {
+async function getInitialOffset(updateClient: TelegramUpdateClient, offsetStorePath: string): Promise<number> {
+  const storedOffset = await readStoredOffset(offsetStorePath);
   const updates = await updateClient.getUpdates(undefined, 1);
-  if (updates.length === 0) return 0;
-  const offset = updates[updates.length - 1].update_id + 1;
-  log.info(`Skipping ${updates.length} stale Telegram update(s)`);
+  if (updates.length === 0) return storedOffset;
+  const remoteOffset = updates[updates.length - 1].update_id + 1;
+  const offset = Math.max(storedOffset, remoteOffset);
+  await tryPersistOffset(offsetStorePath, offset);
+  log.info(`Skipping ${updates.length} stale Telegram update(s), offset=${offset}`);
   return offset;
+}
+
+function resolveOffsetStorePath(): string {
+  return path.resolve(config.realtimeDataDir, 'telegram-control-offset.json');
+}
+
+async function readStoredOffset(filePath: string): Promise<number> {
+  try {
+    const raw = await readFile(filePath, 'utf8');
+    const parsed = JSON.parse(raw) as { offset?: unknown };
+    return typeof parsed.offset === 'number' && Number.isFinite(parsed.offset)
+      ? Math.max(0, Math.floor(parsed.offset))
+      : 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function persistOffset(filePath: string, offset: number): Promise<void> {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, `${JSON.stringify({
+    offset,
+    updatedAt: new Date().toISOString(),
+  })}\n`);
+}
+
+async function tryPersistOffset(filePath: string, offset: number): Promise<void> {
+  try {
+    await persistOffset(filePath, offset);
+  } catch (error) {
+    log.warn(`Telegram offset persist failed: ${error}`);
+  }
 }
 
 function ensureControlConfig(): void {

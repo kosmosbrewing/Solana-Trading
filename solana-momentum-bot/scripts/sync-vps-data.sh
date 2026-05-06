@@ -8,6 +8,8 @@
 # Usage:
 #   bash scripts/sync-vps-data.sh                    # files + logs + file-only reports
 #   RUN_TRADES_DUMP=true bash scripts/sync-vps-data.sh  # legacy DB trades snapshot opt-in
+#   SYNC_REMOTE_ENV=true bash scripts/sync-vps-data.sh   # 운영 .env를 로컬 .env.vps로 다운로드 (gitignored)
+#   SYNC_REMOTE_ENV=true LOCAL_ENV_PATH=.env bash scripts/sync-vps-data.sh  # 로컬 .env를 명시적으로 갱신
 #   SKIP_FILES=true bash scripts/sync-vps-data.sh    # logs + reports 만
 #   SKIP_LOGS=true bash scripts/sync-vps-data.sh     # files + reports 만
 #   SKIP_PAPER_REPORT=true bash scripts/sync-vps-data.sh   # paper arm report 생략
@@ -31,6 +33,7 @@
 # Output:
 #   data/realtime/sessions/...           (rsync from VPS data/)
 #   logs/bot-out.log, logs/bot-error.log ... (rsync from VPS logs/)
+#   .env.vps                             (opt-in, gitignored, chmod 600)
 #   data/vps-trades-latest.jsonl         (opt-in, one JSON object per row, gitignored)
 #   data/vps-trades-${STAMP}.jsonl       (opt-in timestamped snapshot)
 
@@ -42,11 +45,14 @@ REMOTE_PATH="${REMOTE_PATH:-~/Solana/Solana-Trading/solana-momentum-bot/data/}"
 LOCAL_PATH="${LOCAL_PATH:-${ROOT_DIR}/data/}"
 REMOTE_LOGS_PATH="${REMOTE_LOGS_PATH:-~/Solana/Solana-Trading/solana-momentum-bot/logs/}"
 LOCAL_LOGS_PATH="${LOCAL_LOGS_PATH:-${ROOT_DIR}/logs/}"
+REMOTE_ENV_PATH="${REMOTE_ENV_PATH:-~/Solana/Solana-Trading/solana-momentum-bot/.env}"
+LOCAL_ENV_PATH="${LOCAL_ENV_PATH:-${ROOT_DIR}/.env.vps}"
 VPS_PM2_APP_NAME="${VPS_PM2_APP_NAME:-momentum-bot}"
 ALLOW_STALE_DB_DUMP="${ALLOW_STALE_DB_DUMP:-false}"
 
 SKIP_FILES="${SKIP_FILES:-false}"
 SKIP_LOGS="${SKIP_LOGS:-false}"
+SYNC_REMOTE_ENV="${SYNC_REMOTE_ENV:-false}"
 # 2026-05-01: DB trades snapshot 은 기본 OFF. 운영 분석은 data/realtime JSONL 을 truth 로 사용한다.
 # 필요할 때만 RUN_TRADES_DUMP=true 또는 SKIP_TRADES=false 로 opt-in.
 RUN_TRADES_DUMP="${RUN_TRADES_DUMP:-false}"
@@ -161,6 +167,29 @@ abs_path() {
     /*) echo "$p" ;;
     *) echo "${ROOT_DIR}/${p}" ;;
   esac
+}
+
+sync_remote_env_file() {
+  local local_env_abs
+  local tmp_file
+
+  local_env_abs="$(abs_path "$LOCAL_ENV_PATH")"
+  tmp_file="${local_env_abs}.tmp"
+  mkdir -p "$(dirname "$local_env_abs")"
+
+  if [ "$local_env_abs" = "${ROOT_DIR}/.env" ]; then
+    echo "[sync-vps-data] env: WARNING — local .env will be overwritten because LOCAL_ENV_PATH=.env"
+  fi
+
+  echo "[sync-vps-data] env: ${REMOTE_HOST}:${REMOTE_ENV_PATH} -> ${local_env_abs}"
+  if rsync -az --chmod=F600 "${REMOTE_HOST}:${REMOTE_ENV_PATH}" "$tmp_file"; then
+    mv "$tmp_file" "$local_env_abs"
+    chmod 600 "$local_env_abs" 2>/dev/null || true
+    echo "[sync-vps-data] env: ok → ${local_env_abs} (content hidden, chmod 600)"
+  else
+    rm -f "$tmp_file"
+    echo "[sync-vps-data] env: WARNING — failed to download remote .env from ${REMOTE_HOST}:${REMOTE_ENV_PATH}"
+  fi
 }
 
 check_kol_transfer_freshness() {
@@ -392,6 +421,15 @@ if [ "$SKIP_LOGS" != "true" ]; then
   fi
 else
   echo "[sync-vps-data] logs: SKIPPED (SKIP_LOGS=true)"
+fi
+
+# ─── 2b. Remote .env (opt-in) ───
+# Why opt-in: 운영 .env에는 private key / RPC key 등 비밀값이 들어간다.
+# 기본 목적지는 gitignored .env.vps 이며, 로컬 .env 덮어쓰기는 LOCAL_ENV_PATH=.env 를 명시해야 한다.
+if [ "$SYNC_REMOTE_ENV" = "true" ]; then
+  sync_remote_env_file
+else
+  echo "[sync-vps-data] env: SKIPPED (set SYNC_REMOTE_ENV=true to download .env.vps)"
 fi
 
 # ─── 3. Trades snapshot (JSONL, no local DB) ───

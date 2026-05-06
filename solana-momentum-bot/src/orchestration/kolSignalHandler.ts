@@ -1935,7 +1935,8 @@ export function initKolHunter(
   log.info(
     `[KOL_HUNTER] initialized — paperOnly=${config.kolHunterPaperOnly} ` +
     `survival=${securityClient ? 'enabled' : 'skipped (no client)'} ` +
-    `liveCanary=${liveCapable ? 'ENABLED (live wallet exposure)' : 'disabled'}`
+    `liveCanary=${liveCapable ? 'ENABLED (live wallet exposure)' : 'disabled'} ` +
+    `rotationChaseTopupLiveCanary=${config.kolHunterRotationChaseTopupLiveCanaryEnabled ? 'configured' : 'disabled'}`
   );
 }
 
@@ -1953,6 +1954,15 @@ function isLiveCanaryActive(): boolean {
   if (config.kolHunterPaperOnly) return false;
   if (!config.kolHunterLiveCanaryEnabled) return false;
   return true;
+}
+
+function getLiveCanaryInactiveReason(candIsShadow: boolean): { reason: string; flag: string } | null {
+  if (!botCtx) return { reason: 'bot_ctx_missing', flag: 'LIVE_GATE_BOT_CTX_MISSING' };
+  if (botCtx.tradingMode !== 'live') return { reason: 'trading_mode_not_live', flag: 'LIVE_GATE_TRADING_MODE_NOT_LIVE' };
+  if (config.kolHunterPaperOnly) return { reason: 'kol_hunter_paper_only', flag: 'LIVE_GATE_KOL_HUNTER_PAPER_ONLY' };
+  if (!config.kolHunterLiveCanaryEnabled) return { reason: 'kol_live_canary_disabled', flag: 'LIVE_GATE_KOL_CANARY_DISABLED' };
+  if (candIsShadow) return { reason: 'shadow_candidate', flag: 'LIVE_GATE_SHADOW_CANDIDATE' };
+  return null;
 }
 
 /** Live canary 의 wallet executor 결정. 현 phase 5 P1-15: main wallet 사용.
@@ -4408,6 +4418,35 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       botCtx,
       entryOptionsWithLiveShadow
     );
+    return;
+  }
+  const inactiveLiveGate = getLiveCanaryInactiveReason(candIsShadow);
+  const shouldLogLiveGateFallback =
+    inactiveLiveGate != null &&
+    (
+      entrySignal.label === 'rotation-chase-topup' ||
+      config.kolHunterRotationChaseTopupLiveCanaryEnabled ||
+      config.kolHunterLiveCanaryEnabled ||
+      !config.kolHunterPaperOnly
+    );
+  if (shouldLogLiveGateFallback && inactiveLiveGate) {
+    const policyFlags = [
+      ...entryFlags,
+      inactiveLiveGate.flag,
+    ];
+    log.warn(
+      `[KOL_HUNTER_LIVE_GATE_NOT_ENTERED] ${cand.tokenMint.slice(0, 8)} ${entrySignal.label} trigger — ` +
+      `reason=${inactiveLiveGate.reason}. fallback paper.`
+    );
+    emitKolLiveFallbackPolicy(cand.tokenMint, score, policyFlags, {
+      ...entryPolicyMetrics,
+      entryReason: entryOptions.entryReason,
+      armName: entryOptions.parameterVersion ? armNameForVersion(entryOptions.parameterVersion) : undefined,
+    });
+    await enterPaperPosition(cand.tokenMint, cand, score, policyFlags, {
+      ...entryOptionsWithLiveShadow,
+      skipPolicyEntry: true,
+    });
     return;
   }
   await enterPaperPosition(cand.tokenMint, cand, score, entryFlags, entryOptionsWithLiveShadow);

@@ -83,6 +83,18 @@ export const kolHunter = {
   kolHunterMaxConcurrent: numEnv('KOL_HUNTER_MAX_CONCURRENT', '3'),
   kolHunterStalkWindowSec: numEnv('KOL_HUNTER_STALK_WINDOW_SEC', '180'),
   kolHunterHardcutPct: numEnv('KOL_HUNTER_HARDCUT_PCT', '0.10'),
+  // 2026-05-06: smart-v3 MAE fast-fail. Unlike rotation's very tight -3% rule,
+  // smart-v3 keeps a wider 5x-lane probe budget and only exits early when the
+  // token-only path never showed meaningful MFE and no fresh KOL top-up exists.
+  kolHunterSmartV3MaeFastFailEnabled: boolOptional('KOL_HUNTER_SMART_V3_MAE_FAST_FAIL_ENABLED', true),
+  kolHunterSmartV3MaeFastFailMinElapsedSec: numEnv('KOL_HUNTER_SMART_V3_MAE_FAST_FAIL_MIN_ELAPSED_SEC', '5'),
+  kolHunterSmartV3MaeFastFailMaxMfePct: numEnv('KOL_HUNTER_SMART_V3_MAE_FAST_FAIL_MAX_MFE_PCT', '0.03'),
+  kolHunterSmartV3MaeFastFailMaxMaePct: numEnv('KOL_HUNTER_SMART_V3_MAE_FAST_FAIL_MAX_MAE_PCT', '0.06'),
+  kolHunterSmartV3MaeFastFailFreshBuyGraceSec: numEnv('KOL_HUNTER_SMART_V3_MAE_FAST_FAIL_FRESH_BUY_GRACE_SEC', '15'),
+  kolHunterSmartV3MaeRecoveryHoldEnabled: boolOptional('KOL_HUNTER_SMART_V3_MAE_RECOVERY_HOLD_ENABLED', true),
+  kolHunterSmartV3MaeRecoveryMinMfePct: numEnv('KOL_HUNTER_SMART_V3_MAE_RECOVERY_MIN_MFE_PCT', '0.10'),
+  kolHunterSmartV3MaeRecoveryMaxMaePct: numEnv('KOL_HUNTER_SMART_V3_MAE_RECOVERY_MAX_MAE_PCT', '0.18'),
+  kolHunterSmartV3MaeRecoveryHoldSec: numEnv('KOL_HUNTER_SMART_V3_MAE_RECOVERY_HOLD_SEC', '12'),
   kolHunterT1Mfe: numEnv('KOL_HUNTER_T1_MFE', '0.50'),
   kolHunterT1TrailPct: numEnv('KOL_HUNTER_T1_TRAIL_PCT', '0.15'),
   kolHunterT2Mfe: numEnv('KOL_HUNTER_T2_MFE', '4.00'),
@@ -295,6 +307,12 @@ export const kolHunter = {
   kolHunterRotationV1DoaMinMfePct: numEnv('KOL_HUNTER_ROTATION_V1_DOA_MIN_MFE_PCT', '0.03'),
   kolHunterRotationV1DoaMaxMaePct: numEnv('KOL_HUNTER_ROTATION_V1_DOA_MAX_MAE_PCT', '0.06'),
   kolHunterRotationV1FreshBuyGraceSec: numEnv('KOL_HUNTER_ROTATION_V1_FRESH_BUY_GRACE_SEC', '15'),
+  // 2026-05-06: MAE-based fast-fail for rotation PROBE positions.
+  // Runs after the existing DOA guard and before hard cut, so it only tightens late failing probes.
+  kolHunterRotationMaeFastFailEnabled: boolOptional('KOL_HUNTER_ROTATION_MAE_FAST_FAIL_ENABLED', true),
+  kolHunterRotationMaeFastFailMinElapsedSec: numEnv('KOL_HUNTER_ROTATION_MAE_FAST_FAIL_MIN_ELAPSED_SEC', '5'),
+  kolHunterRotationMaeFastFailMaxMaePct: numEnv('KOL_HUNTER_ROTATION_MAE_FAST_FAIL_MAX_MAE_PCT', '0.03'),
+  kolHunterRotationMaeFastFailMaxMfePct: numEnv('KOL_HUNTER_ROTATION_MAE_FAST_FAIL_MAX_MFE_PCT', '0.015'),
   // Rotation is a fast-compound lane. Primary validation horizons are immediate continuation (15s),
   // DOA/failure classification (30s), and short continuation (60s). Long-tail 300/1800s stays global.
   kolHunterRotationV1MarkoutOffsetsSec: parseSecondsList(optional('KOL_HUNTER_ROTATION_V1_MARKOUT_OFFSETS_SEC', '15,30,60')),
@@ -347,6 +365,9 @@ export const kolHunter = {
   kolHunterRotationExitFlowResidualHoldSec: numEnv('KOL_HUNTER_ROTATION_EXIT_FLOW_RESIDUAL_HOLD_SEC', '75'),
   kolHunterRotationExitFlowParameterVersion: process.env.KOL_HUNTER_ROTATION_EXIT_FLOW_PARAMETER_VERSION ?? 'rotation-exit-flow-v1.0.0',
   kolHunterRotationChaseTopupPaperEnabled: boolOptional('KOL_HUNTER_ROTATION_CHASE_TOPUP_PAPER_ENABLED', true),
+  // 2026-05-06: live canary opt-in for the single promoted rotation arm only.
+  // Keeps canonical rotation-v1 live controlled by KOL_HUNTER_ROTATION_V1_LIVE_ENABLED.
+  kolHunterRotationChaseTopupLiveCanaryEnabled: boolOptional('KOL_HUNTER_ROTATION_CHASE_TOPUP_LIVE_CANARY_ENABLED', false),
   kolHunterRotationChaseTopupMinBuys: numEnv('KOL_HUNTER_ROTATION_CHASE_TOPUP_MIN_BUYS', '2'),
   kolHunterRotationChaseTopupMinTopupStrength: numEnv('KOL_HUNTER_ROTATION_CHASE_TOPUP_MIN_TOPUP_STRENGTH', '0.08'),
   kolHunterRotationChaseTopupMaxRecentSellSec: numEnv('KOL_HUNTER_ROTATION_CHASE_TOPUP_MAX_RECENT_SELL_SEC', '60'),
@@ -383,8 +404,8 @@ export const kolHunter = {
   kolHunterRotationPaperAssumedNetworkFeeSol: numEnv('KOL_HUNTER_ROTATION_PAPER_ASSUMED_NETWORK_FEE_SOL', '0.000105'),
   kolHunterRotationPaperNotifyEnabled: boolOptional('KOL_HUNTER_ROTATION_PAPER_NOTIFY_ENABLED', true),
   kolHunterRotationPaperDigestEnabled: boolOptional('KOL_HUNTER_ROTATION_PAPER_DIGEST_ENABLED', true),
-  // Same cadence as KOL/smart-v3 paper digest by default (2h heartbeat-aligned).
-  kolHunterRotationPaperDigestIntervalMs: numEnv('KOL_HUNTER_ROTATION_PAPER_DIGEST_INTERVAL_MS', '7200000'),
+  // Fast paper lane: keep operator feedback frequent without per-open/per-close spam.
+  kolHunterRotationPaperDigestIntervalMs: numEnv('KOL_HUNTER_ROTATION_PAPER_DIGEST_INTERVAL_MS', '900000'),
   kolHunterRotationPaperRareMfePct: numEnv('KOL_HUNTER_ROTATION_PAPER_RARE_MFE_PCT', '0.30'),
   kolHunterRotationPaperRareAfterSellPct: numEnv('KOL_HUNTER_ROTATION_PAPER_RARE_AFTER_SELL_PCT', '0.50'),
 
@@ -421,5 +442,8 @@ export const kolHunter = {
   kolHunterSmartV3ProbeTimeoutVelocitySec: numEnv('KOL_HUNTER_SMART_V3_PROBE_TIMEOUT_VELOCITY_SEC', '300'),
   kolHunterSmartV3ReinforcementTrailInc: numEnv('KOL_HUNTER_SMART_V3_REINFORCEMENT_TRAIL_INC', '0.01'),
   kolHunterSmartV3ReinforcementTrailMax: numEnv('KOL_HUNTER_SMART_V3_REINFORCEMENT_TRAIL_MAX', '0.25'),
+  kolHunterSmartV3PaperArmsEnabled: boolOptional('KOL_HUNTER_SMART_V3_PAPER_ARMS_ENABLED', true),
+  kolHunterSmartV3FastFailPaperEnabled: boolOptional('KOL_HUNTER_SMART_V3_FAST_FAIL_PAPER_ENABLED', true),
+  kolHunterSmartV3RunnerRelaxedPaperEnabled: boolOptional('KOL_HUNTER_SMART_V3_RUNNER_RELAXED_PAPER_ENABLED', true),
   kolHunterSmartV3ParameterVersion: process.env.KOL_HUNTER_SMART_V3_PARAMETER_VERSION ?? 'smart-v3.0.0',
 } as const;

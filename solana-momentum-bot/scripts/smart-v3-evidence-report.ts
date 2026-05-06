@@ -56,6 +56,7 @@ interface SmartV3CohortStats {
   cohort: string;
   mode: 'paper' | 'live';
   entryReason: string;
+  armName?: string | null;
   rows: number;
   wins: number;
   losses: number;
@@ -67,6 +68,11 @@ interface SmartV3CohortStats {
   copyableEdgeRows: number;
   copyablePassRows: number;
   hardCutRows: number;
+  maeFastFailRows: number;
+  maeRecoveryHoldRows: number;
+  preT1Mfe10_20Rows: number;
+  preT1Mfe20_30Rows: number;
+  preT1Mfe30_50Rows: number;
   medianMaeWorstPct: number | null;
   medianHardCutMaePct: number | null;
   t1Rows: number;
@@ -119,6 +125,7 @@ interface SmartV3EvidenceReport {
   assumedNetworkFeeSol: number;
   tradeRows: {
     paperRows: number;
+    paperLiveEligibleRows: number;
     liveRows: number;
     byCohort: SmartV3CohortStats[];
   };
@@ -126,6 +133,7 @@ interface SmartV3EvidenceReport {
     smartV3Rows: number;
     afterBuy: HorizonStats[];
     afterSell: HorizonStats[];
+    afterSellMaeFastFail: HorizonStats[];
     byCohort: Array<{
       cohort: string;
       afterBuy: HorizonStats[];
@@ -323,6 +331,11 @@ function isSmartV3Row(row: JsonRow): boolean {
   return strategy === 'kol_hunter' && SMART_V3_REASONS.has(reason);
 }
 
+function isSmartV3LiveEligibleShadowRow(row: JsonRow): boolean {
+  const extras = extrasOf(row);
+  return row.smartV3LiveEligibleShadow === true || extras.smartV3LiveEligibleShadow === true;
+}
+
 function isOkMarkout(row: JsonRow): boolean {
   return str(row.quoteStatus) === 'ok' && num(row.deltaPct) != null;
 }
@@ -382,7 +395,23 @@ function maxMfe(row: JsonRow): number {
 
 function isHardCut(row: JsonRow): boolean {
   const reason = str(row.exitReason) || str(row.closeReason);
-  return reason.includes('hard_cut') || reason.includes('stat_stop') || reason.includes('quick_reject');
+  return reason.includes('hard_cut') || reason.includes('mae_fast_fail') || reason.includes('stat_stop') || reason.includes('quick_reject');
+}
+
+function isSmartV3MaeFastFail(row: JsonRow): boolean {
+  const extras = extrasOf(row);
+  const reason = str(row.exitReason) || str(row.closeReason) || str(extras.exitReason) || str(extras.closeReason);
+  return reason === 'smart_v3_mae_fast_fail' || row.smartV3MaeFastFail === true || extras.smartV3MaeFastFail === true;
+}
+
+function isSmartV3MaeRecoveryHold(row: JsonRow): boolean {
+  const extras = extrasOf(row);
+  return row.smartV3MaeRecoveryHold === true || extras.smartV3MaeRecoveryHold === true;
+}
+
+function smartV3PreT1MfeBand(row: JsonRow): string | null {
+  const extras = extrasOf(row);
+  return str(row.smartV3PreT1MfeBand) || str(extras.smartV3PreT1MfeBand) || null;
 }
 
 function maeWorstPctOf(row: JsonRow): number | null {
@@ -423,6 +452,8 @@ function summarizeTradeCohort(
   rows: JsonRow[],
   assumedAtaRentSol: number,
   assumedNetworkFeeSol: number,
+  cohortPrefix: string = mode,
+  armName?: string | null,
 ): SmartV3CohortStats {
   const copyableNetByRow = rows.map((row) => copyableNetSolOfRow(mode, row, assumedAtaRentSol, assumedNetworkFeeSol));
   const wins = copyableNetByRow.filter((value) => value > 0).length;
@@ -438,9 +469,10 @@ function summarizeTradeCohort(
     .map(hardCutMaePctOf)
     .filter((value): value is number => value != null);
   return {
-    cohort: `${mode}:${entryReason}`,
+    cohort: `${cohortPrefix}:${armName ?? entryReason}`,
     mode,
     entryReason,
+    armName: armName ?? null,
     rows: rows.length,
     wins,
     losses: rows.length - wins,
@@ -452,6 +484,11 @@ function summarizeTradeCohort(
     copyableEdgeRows: copyableEdges.length,
     copyablePassRows: copyableEdges.filter((edge) => edge.pass === true).length,
     hardCutRows: rows.filter(isHardCut).length,
+    maeFastFailRows: rows.filter(isSmartV3MaeFastFail).length,
+    maeRecoveryHoldRows: rows.filter(isSmartV3MaeRecoveryHold).length,
+    preT1Mfe10_20Rows: rows.filter((row) => smartV3PreT1MfeBand(row) === '10_20').length,
+    preT1Mfe20_30Rows: rows.filter((row) => smartV3PreT1MfeBand(row) === '20_30').length,
+    preT1Mfe30_50Rows: rows.filter((row) => smartV3PreT1MfeBand(row) === '30_50').length,
     medianMaeWorstPct: median(maeWorstValues),
     medianHardCutMaePct: median(hardCutMaeValues),
     t1Rows: rows.filter((row) => hasField(row, ['t1VisitAtSec', 't1VisitedAt', 't1ReachedAt'])).length,
@@ -526,7 +563,8 @@ function markoutsForCohort(markouts: JsonRow[], cohort: SmartV3CohortStats, posi
     const rowReason = entryReasonOf(row);
     const modeMatches = rowMode === cohort.mode;
     const reasonMatches = cohort.entryReason === 'all' || rowReason === cohort.entryReason;
-    return positionId !== '' && positionIds.has(positionId) && modeMatches && reasonMatches;
+    const armMatches = !cohort.armName || armNameOf(row) === cohort.armName;
+    return positionId !== '' && positionIds.has(positionId) && modeMatches && reasonMatches && armMatches;
   });
 }
 
@@ -620,6 +658,17 @@ function groupByEntryReason(mode: 'paper' | 'live', rows: JsonRow[]): Array<{ re
     .map(([reason, groupRows]) => ({ reason, rows: groupRows }));
 }
 
+function groupByArm(rows: JsonRow[]): Array<{ armName: string; rows: JsonRow[] }> {
+  const groups = new Map<string, JsonRow[]>();
+  for (const row of rows) {
+    const armName = armNameOf(row) || 'unknown';
+    groups.set(armName, [...(groups.get(armName) ?? []), row]);
+  }
+  return [...groups.entries()]
+    .filter(([, groupRows]) => groupRows.length > 0)
+    .map(([armName, groupRows]) => ({ armName, rows: groupRows }));
+}
+
 async function smartV3TradeRows(realtimeDir: string, mode: 'paper' | 'live', sinceMs: number): Promise<JsonRow[]> {
   const projectionFile = mode === 'paper' ? SMART_V3_PAPER_TRADES_FILE : SMART_V3_LIVE_TRADES_FILE;
   const legacyFile = mode === 'paper' ? KOL_PAPER_TRADES_FILE : KOL_LIVE_TRADES_FILE;
@@ -666,20 +715,73 @@ export async function buildSmartV3EvidenceReport(args: Args): Promise<SmartV3Evi
     smartV3MarkoutRows(args.realtimeDir, args.sinceMs),
     readJsonl(kolTransferInput),
   ]);
+  const paperLiveEligibleRows = paperRows.filter(isSmartV3LiveEligibleShadowRow);
   const cohortInputs = [
     ...groupByEntryReason('paper', paperRows).map((group) => ({
       rows: group.rows,
       stats: summarizeTradeCohort('paper', group.reason, group.rows, args.assumedAtaRentSol, args.assumedNetworkFeeSol),
     })),
+    ...groupByEntryReason('paper', paperLiveEligibleRows).map((group) => ({
+      rows: group.rows,
+      stats: summarizeTradeCohort(
+        'paper',
+        group.reason,
+        group.rows,
+        args.assumedAtaRentSol,
+        args.assumedNetworkFeeSol,
+        'paper_live_eligible',
+      ),
+    })),
+    ...groupByArm(paperRows).map((group) => ({
+      rows: group.rows,
+      stats: summarizeTradeCohort(
+        'paper',
+        'all',
+        group.rows,
+        args.assumedAtaRentSol,
+        args.assumedNetworkFeeSol,
+        'paper_arm',
+        group.armName,
+      ),
+    })),
+    ...groupByArm(paperLiveEligibleRows).map((group) => ({
+      rows: group.rows,
+      stats: summarizeTradeCohort(
+        'paper',
+        'all',
+        group.rows,
+        args.assumedAtaRentSol,
+        args.assumedNetworkFeeSol,
+        'paper_live_eligible_arm',
+        group.armName,
+      ),
+    })),
     ...groupByEntryReason('live', liveRows).map((group) => ({
       rows: group.rows,
       stats: summarizeTradeCohort('live', group.reason, group.rows, args.assumedAtaRentSol, args.assumedNetworkFeeSol),
+    })),
+    ...groupByArm(liveRows).map((group) => ({
+      rows: group.rows,
+      stats: summarizeTradeCohort(
+        'live',
+        'all',
+        group.rows,
+        args.assumedAtaRentSol,
+        args.assumedNetworkFeeSol,
+        'live_arm',
+        group.armName,
+      ),
     })),
   ];
   const cohorts = cohortInputs.map((entry) => entry.stats);
 
   const afterBuy = summarizeMarkoutRows(markoutRows.filter((row) => anchorTypeOf(row) === 'buy'), args.horizonsSec, args.roundTripCostPct);
   const afterSell = summarizeMarkoutRows(markoutRows.filter((row) => anchorTypeOf(row) === 'sell'), args.horizonsSec, args.roundTripCostPct);
+  const afterSellMaeFastFail = summarizeMarkoutRows(
+    markoutRows.filter((row) => anchorTypeOf(row) === 'sell' && isSmartV3MaeFastFail(row)),
+    args.horizonsSec,
+    args.roundTripCostPct,
+  );
   const byCohort = cohortInputs.map(({ stats: cohort, rows: cohortRows }) => {
     const positionIds = new Set(cohortRows.map(tradePositionId).filter(Boolean));
     const rows = markoutsForCohort(markoutRows, cohort, positionIds);
@@ -708,6 +810,7 @@ export async function buildSmartV3EvidenceReport(args: Args): Promise<SmartV3Evi
     assumedNetworkFeeSol: args.assumedNetworkFeeSol,
     tradeRows: {
       paperRows: paperRows.length,
+      paperLiveEligibleRows: paperLiveEligibleRows.length,
       liveRows: liveRows.length,
       byCohort: cohorts,
     },
@@ -715,6 +818,7 @@ export async function buildSmartV3EvidenceReport(args: Args): Promise<SmartV3Evi
       smartV3Rows: markoutRows.length,
       afterBuy,
       afterSell,
+      afterSellMaeFastFail,
       byCohort,
     },
     evidenceVerdicts,
@@ -830,10 +934,11 @@ export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceRepor
 
   lines.push('## Closed Trades');
   lines.push(`- paper rows: ${report.tradeRows.paperRows}`);
+  lines.push(`- paper live-eligible rows: ${report.tradeRows.paperLiveEligibleRows}`);
   lines.push(`- live rows: ${report.tradeRows.liveRows}`);
   lines.push('');
-  lines.push('| cohort | rows | copyable W/L | token W/L | netSOL | tokenOnly | rent-adj | edgeRows | hardCut | med worst MAE | med hardCut MAE | T1 | T2 | T3 | 5x | medHold | top exits |');
-  lines.push('|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|');
+  lines.push('| cohort | rows | copyable W/L | token W/L | netSOL | tokenOnly | rent-adj | edgeRows | hardCut | maeFastFail | recoveryHold | preT1 10-20 | preT1 20-30 | preT1 30-50 | med worst MAE | med hardCut MAE | T1 | T2 | T3 | 5x | medHold | top exits |');
+  lines.push('|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|');
   for (const cohort of report.tradeRows.byCohort) {
     lines.push([
       `| ${cohort.cohort}`,
@@ -845,6 +950,11 @@ export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceRepor
       sol(cohort.rentAdjustedNetSol),
       `${cohort.copyablePassRows}/${cohort.copyableEdgeRows}`,
       cohort.hardCutRows,
+      cohort.maeFastFailRows,
+      cohort.maeRecoveryHoldRows,
+      cohort.preT1Mfe10_20Rows,
+      cohort.preT1Mfe20_30Rows,
+      cohort.preT1Mfe30_50Rows,
       pct(cohort.medianMaeWorstPct),
       pct(cohort.medianHardCutMaePct),
       cohort.t1Rows,
@@ -855,7 +965,7 @@ export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceRepor
       cohort.topExitReasons.map((entry) => `${entry.reason}:${entry.count}`).join(', ') || 'n/a',
     ].join(' | ') + ' |');
   }
-  if (report.tradeRows.byCohort.length === 0) lines.push('| n/a | 0 | 0/0 | 0/0 | +0.0000 | +0.0000 | +0.0000 | 0/0 | 0 | n/a | n/a | 0 | 0 | 0 | 0 | n/a | n/a |');
+  if (report.tradeRows.byCohort.length === 0) lines.push('| n/a | 0 | 0/0 | 0/0 | +0.0000 | +0.0000 | +0.0000 | 0/0 | 0 | 0 | 0 | 0 | 0 | 0 | n/a | n/a | 0 | 0 | 0 | 0 | n/a | n/a |');
   lines.push('');
 
   lines.push('## T+ After Buy');
@@ -863,6 +973,9 @@ export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceRepor
   lines.push('');
   lines.push('## T+ After Sell');
   lines.push(renderHorizonTable(report.markouts.afterSell));
+  lines.push('');
+  lines.push('## T+ After Sell — MAE Fast-Fail Cohort');
+  lines.push(renderHorizonTable(report.markouts.afterSellMaeFastFail));
   lines.push('');
   lines.push('## Interpretation');
   lines.push('- This report is diagnostic only. It does not change smart-v3 entry/exit behavior.');

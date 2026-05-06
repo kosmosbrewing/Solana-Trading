@@ -92,6 +92,7 @@ export function buildExcursionTelemetryRecord(
   const snapshot = telemetry ?? emptyExcursionTelemetry();
   const reason = close.reason.toLowerCase();
   const isHardCut = reason.includes('hard_cut') ||
+    reason.includes('mae_fast_fail') ||
     reason.includes('structural_kill') ||
     reason.includes('dead_on_arrival') ||
     reason === 'stop_loss';

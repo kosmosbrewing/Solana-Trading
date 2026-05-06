@@ -37,6 +37,9 @@ Implemented operating shape:
 - weak post-sell recovery falls back to paper via `SMART_V3_POST_SELL_RECOVERY_WEAK`;
 - dev wallet blacklist/watchlist status gates live to paper, while allowlist is telemetry only;
 - unknown dev status remains fail-open and does not bypass survival, sell-route, drift, halt, or canary guards.
+- MAE fast-fail is default-on for smart-v3 probe positions: if pre-T1 MFE stays below `+3%`, token-only MAE reaches `-6%`, minimum elapsed is met, and no participating KOL has freshly topped up, the position closes as `smart_v3_mae_fast_fail`;
+- pre-T1 MFE recovery hold is default-on: if smart-v3 has reached at least `+10%` MFE, token-only MAE has not exceeded `-18%`, and no participating KOL has sold after entry, the first hard-cut event receives a short one-time hold window instead of immediate close;
+- pre-T1 MFE giveback is measurement-only: close rows record `smartV3PreT1MfeBand`, close pct, giveback pct, and breakeven-lock diagnostic flags so we can measure whether small winners are being cut before T1.
 
 Required analysis before scaling:
 
@@ -53,6 +56,7 @@ Implemented diagnostic transfer from rotation/deep-research work:
 - smart-v3 evidence verdict coverage is close-anchor based: each cohort close `positionId` must have ok buy/sell markouts for the required horizon; raw row ok-rate is shown separately and does not promote a cohort;
 - smart-v3 close ledgers now carry `smartV3CopyableEdge` shadow fields so copyable result can use actual per-close drag when available;
 - smart-v3 closed-trade W/L is copyable/wallet-first, with token-only W/L shown separately because token-only wins can still be non-copyable after wallet drag;
+- smart-v3 closed-trade cohorts show MAE fast-fail, recovery-hold, and pre-T1 MFE band counts (`10-20`, `20-30`, `30-50`) as diagnostics;
 - live smart-v3 buy/sell markout anchors carry `mode`, `armName`, `parameterVersion`, and `entryReason` to avoid paper/live or pullback/velocity cohort bleed;
 - the report adds no runtime strategy env; `SKIP_SMART_V3_EVIDENCE_REPORT` and `SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT` are sync/report-only shell knobs;
 - verdicts are report-only and must not change live eligibility, hard-cut, trail, or ticket sizing without a separate ADR.

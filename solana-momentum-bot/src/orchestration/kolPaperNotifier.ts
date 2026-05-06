@@ -45,6 +45,9 @@ interface ArmCounters {
   entries: number;           // paper_entry emit
   closes: number;
   netSolSum: number;
+  liveEligiblePaperEntries: number;
+  liveEligiblePaperCloses: number;
+  liveEligiblePaperNetSolSum: number;
   winnersByVisit: { t1: number; t2: number; t3: number };
   winners5xByVisit: number;  // closed with t2VisitAtSec set (5x= post-T2 visit floor)
 }
@@ -59,7 +62,13 @@ interface PeakMover {
   closedAtMs: number;
 }
 
-const ARMS = ['kol_hunter_v1', 'kol_hunter_smart_v3', 'kol_hunter_swing_v2'] as const;
+const ARMS = [
+  'kol_hunter_v1',
+  'kol_hunter_smart_v3',
+  'smart_v3_fast_fail',
+  'smart_v3_runner_relaxed',
+  'kol_hunter_swing_v2',
+] as const;
 type ArmName = typeof ARMS[number] | 'unknown';
 
 function emptyArmCounters(): ArmCounters {
@@ -68,6 +77,9 @@ function emptyArmCounters(): ArmCounters {
     entries: 0,
     closes: 0,
     netSolSum: 0,
+    liveEligiblePaperEntries: 0,
+    liveEligiblePaperCloses: 0,
+    liveEligiblePaperNetSolSum: 0,
     winnersByVisit: { t1: 0, t2: 0, t3: 0 },
     winners5xByVisit: 0,
   };
@@ -112,6 +124,9 @@ function onPaperEntry(pos: PaperPosition): void {
   const arm = (ARMS as readonly string[]).includes(pos.armName) ? (pos.armName as ArmName) : 'unknown';
   digest.perArm[arm].entries++;
   digest.perArm[arm].discoveries++;  // entry 가 곧 discovery 의 subset (arm 별 분포)
+  if (arm === 'kol_hunter_smart_v3' && pos.isLive !== true && pos.smartV3LiveEligibleShadow === true) {
+    digest.perArm[arm].liveEligiblePaperEntries++;
+  }
 }
 
 function onPaperClose(payload: {
@@ -131,6 +146,10 @@ function onPaperClose(payload: {
   const counters = digest.perArm[arm];
   counters.closes++;
   counters.netSolSum += netSol;
+  if (arm === 'kol_hunter_smart_v3' && pos.isLive !== true && pos.smartV3LiveEligibleShadow === true) {
+    counters.liveEligiblePaperCloses++;
+    counters.liveEligiblePaperNetSolSum += netSol;
+  }
   if (pos.t1VisitAtSec) counters.winnersByVisit.t1++;
   if (pos.t2VisitAtSec) {
     counters.winnersByVisit.t2++;
@@ -220,6 +239,16 @@ function buildHourlyDigestMessage(): string | null {
     return `${armShort}: ${c.entries}e/${c.closes}c (net ${c.netSolSum >= 0 ? '+' : ''}${c.netSolSum.toFixed(4)} SOL)`;
   }).join(', ');
   lines.push(`  arms: ${armSummary}`);
+
+  const smartV3 = digest.perArm.kol_hunter_smart_v3;
+  if (smartV3.liveEligiblePaperEntries > 0 || smartV3.liveEligiblePaperCloses > 0) {
+    lines.push(
+      `  smart-v3 live-eligible paper: ${smartV3.liveEligiblePaperEntries}e/` +
+      `${smartV3.liveEligiblePaperCloses}c ` +
+      `(net ${smartV3.liveEligiblePaperNetSolSum >= 0 ? '+' : ''}` +
+      `${smartV3.liveEligiblePaperNetSolSum.toFixed(4)} SOL)`
+    );
+  }
 
   // Top movers (peak MFE 기준 desc)
   const top = [...digest.topMovers]

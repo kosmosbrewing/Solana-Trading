@@ -80,6 +80,15 @@ export function listProcessAliases(processName: string): string[] {
   return [processName, match[1]];
 }
 
+export function isSelfTargetingProcessCommand(
+  command: ControlCommand,
+  currentProcessName: string | undefined
+): boolean {
+  if (!currentProcessName) return false;
+  if (command.type !== 'restart' && command.type !== 'stop') return false;
+  return command.processName === currentProcessName;
+}
+
 function resolveProcessName(processToken: string, allowedProcesses: string[]): string | null {
   const normalizedToken = processToken.toLowerCase();
   for (const processName of allowedProcesses) {

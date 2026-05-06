@@ -89,6 +89,128 @@ describe('smart-v3-evidence-report', () => {
     expect(renderSmartV3EvidenceReportMarkdown(report)).toContain('Smart-v3 Evidence Report');
   });
 
+  it('splits paper live-eligible smart-v3 rows into a separate reporting cohort', async () => {
+    const rows = smartV3TradeRows(10).map((row, index) => ({
+      ...row,
+      smartV3LiveEligibleShadow: index < 6,
+      smartV3LiveBlockReason: index < 6 ? null : 'live canary requires fresh independentKolCount >= 2',
+    }));
+    await writeFile(path.join(dir, 'smart-v3-paper-trades.jsonl'), jsonl(rows));
+    await writeFile(path.join(dir, 'smart-v3-live-trades.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl(smartV3MarkoutRows(10, [30, 60, 300, 1800], 0.05)));
+
+    const report = await buildSmartV3EvidenceReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [30, 60, 300, 1800],
+      roundTripCostPct: 0.005,
+      assumedAtaRentSol: 0.002,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.tradeRows.paperRows).toBe(10);
+    expect(report.tradeRows.paperLiveEligibleRows).toBe(6);
+    expect(report.tradeRows.byCohort.find((entry) => entry.cohort === 'paper:velocity')?.rows).toBe(10);
+    expect(report.tradeRows.byCohort.find((entry) => entry.cohort === 'paper_live_eligible:velocity')?.rows).toBe(6);
+    const eligibleMarkouts = report.markouts.byCohort.find((entry) => entry.cohort === 'paper_live_eligible:velocity');
+    expect(eligibleMarkouts?.afterBuy[0].expectedAnchors).toBe(6);
+    expect(eligibleMarkouts?.afterBuy[0].okAnchors).toBe(6);
+    expect(renderSmartV3EvidenceReportMarkdown(report)).toContain('paper live-eligible rows: 6');
+  });
+
+  it('counts pre-T1 MFE giveback bands for smart-v3 close diagnostics', async () => {
+    const rows = [
+      ...smartV3TradeRows(2, {
+        t1VisitAtSec: null,
+        smartV3PreT1MfeBand: '10_20',
+        smartV3PreT1GivebackPct: 0.18,
+      }),
+      ...smartV3TradeRows(3, {
+        t1VisitAtSec: null,
+        smartV3PreT1MfeBand: '20_30',
+        smartV3PreT1GivebackPct: 0.25,
+      }),
+      ...smartV3TradeRows(4, {
+        t1VisitAtSec: null,
+        smartV3PreT1MfeBand: '30_50',
+        smartV3PreT1GivebackPct: 0.36,
+      }),
+    ].map((row, index) => ({ ...row, positionId: `pre-t1-band-${index}` }));
+    await writeFile(path.join(dir, 'smart-v3-paper-trades.jsonl'), jsonl(rows));
+    await writeFile(path.join(dir, 'smart-v3-live-trades.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+
+    const report = await buildSmartV3EvidenceReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [30, 60, 300, 1800],
+      roundTripCostPct: 0.005,
+      assumedAtaRentSol: 0.002,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    const cohort = report.tradeRows.byCohort.find((entry) => entry.cohort === 'paper:velocity');
+    expect(cohort?.preT1Mfe10_20Rows).toBe(2);
+    expect(cohort?.preT1Mfe20_30Rows).toBe(3);
+    expect(cohort?.preT1Mfe30_50Rows).toBe(4);
+    const markdown = renderSmartV3EvidenceReportMarkdown(report);
+    expect(markdown).toContain('preT1 20-30');
+    expect(markdown).toContain('| paper:velocity | 9');
+  });
+
+  it('splits smart-v3 paper rows and markout coverage by armName', async () => {
+    const mainRows = smartV3TradeRows(6);
+    const fastFailRows = smartV3TradeRows(4, {
+      armName: 'smart_v3_fast_fail',
+      parameterVersion: 'smart-v3-fast-fail-v1.0.0',
+      exitReason: 'probe_hard_cut',
+      netSol: -0.001,
+      netSolTokenOnly: -0.0005,
+      smartV3LiveEligibleShadow: true,
+    }).map((row, index) => ({
+      ...row,
+      positionId: `paper-smart-v3-fast-fail-${index}`,
+    }));
+    const fastFailMarkouts = smartV3MarkoutRows(4, [30, 60, 300, 1800], -0.02)
+      .map((row, index) => {
+        const positionIndex = Math.floor(index / 8);
+        return {
+          ...row,
+          positionId: `paper-smart-v3-fast-fail-${positionIndex}`,
+          signalSource: 'smart_v3_fast_fail',
+          extras: {
+            mode: 'paper',
+            armName: 'smart_v3_fast_fail',
+            parameterVersion: 'smart-v3-fast-fail-v1.0.0',
+            entryReason: 'velocity',
+          },
+        };
+      });
+    await writeFile(path.join(dir, 'smart-v3-paper-trades.jsonl'), jsonl([...mainRows, ...fastFailRows]));
+    await writeFile(path.join(dir, 'smart-v3-live-trades.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([
+      ...smartV3MarkoutRows(6, [30, 60, 300, 1800], 0.05),
+      ...fastFailMarkouts,
+    ]));
+
+    const report = await buildSmartV3EvidenceReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [30, 60, 300, 1800],
+      roundTripCostPct: 0.005,
+      assumedAtaRentSol: 0.002,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.tradeRows.byCohort.find((entry) => entry.cohort === 'paper_arm:kol_hunter_smart_v3')?.rows).toBe(6);
+    expect(report.tradeRows.byCohort.find((entry) => entry.cohort === 'paper_arm:smart_v3_fast_fail')?.rows).toBe(4);
+    expect(report.tradeRows.byCohort.find((entry) => entry.cohort === 'paper_live_eligible_arm:smart_v3_fast_fail')?.rows).toBe(4);
+    const fastFailMarkout = report.markouts.byCohort.find((entry) => entry.cohort === 'paper_arm:smart_v3_fast_fail');
+    expect(fastFailMarkout?.afterBuy[0].expectedAnchors).toBe(4);
+    expect(fastFailMarkout?.afterBuy[0].okAnchors).toBe(4);
+    expect(fastFailMarkout?.afterBuy[0].medianPostCostDeltaPct).toBeCloseTo(-0.025);
+  });
+
   it('adds a diagnostic KOL transfer posterior section for smart-v3 fit', async () => {
     const transferFile = path.join(dir, 'kol-transfers.jsonl');
     await writeFile(path.join(dir, 'smart-v3-paper-trades.jsonl'), jsonl([]));

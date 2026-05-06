@@ -170,6 +170,7 @@ interface RotationReport {
     afterSellFinal: HorizonStats[];
     afterSellPartial: HorizonStats[];
     afterSellHardCut: HorizonStats[];
+    afterSellMaeFastFail: HorizonStats[];
     byArm: ArmHorizonStats[];
   };
   paperTrades: {
@@ -462,8 +463,13 @@ function isHardCutSellMarkout(row: JsonRow): boolean {
   const reason = markoutExitReason(row);
   return reason === 'probe_hard_cut' ||
     reason === 'rotation_dead_on_arrival' ||
+    reason === 'rotation_mae_fast_fail' ||
     reason === 'rotation_flow_residual_timeout' ||
     reason === 'quick_reject_classifier_exit';
+}
+
+function isMaeFastFailSellMarkout(row: JsonRow): boolean {
+  return markoutExitReason(row) === 'rotation_mae_fast_fail';
 }
 
 function percentile(values: number[], q: number): number | null {
@@ -588,6 +594,7 @@ function isHardCutTrade(row: JsonRow): boolean {
   const reason = str(row.exitReason);
   return reason === 'probe_hard_cut' ||
     reason === 'rotation_dead_on_arrival' ||
+    reason === 'rotation_mae_fast_fail' ||
     reason === 'rotation_flow_residual_timeout' ||
     reason === 'quick_reject_classifier_exit';
 }
@@ -1326,6 +1333,9 @@ function renderReport(report: RotationReport): string {
     '## After Sell — Hard Cut Cohort',
     renderStatsTable(report.tradeMarkouts.afterSellHardCut),
     '',
+    '## After Sell — MAE Fast-Fail Cohort',
+    renderStatsTable(report.tradeMarkouts.afterSellMaeFastFail),
+    '',
     '## Markouts By Arm',
     renderArmMarkouts(report.tradeMarkouts.byArm),
     '',
@@ -1415,6 +1425,7 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
       afterSellFinal: summarize(rotationSellRows.filter(isFinalSellMarkout), args.horizonsSec, args.roundTripCostPct),
       afterSellPartial: summarize(rotationSellRows.filter(isPartialSellMarkout), args.horizonsSec, args.roundTripCostPct),
       afterSellHardCut: summarize(rotationSellRows.filter(isHardCutSellMarkout), args.horizonsSec, args.roundTripCostPct),
+      afterSellMaeFastFail: summarize(rotationSellRows.filter(isMaeFastFailSellMarkout), args.horizonsSec, args.roundTripCostPct),
       byArm: armMarkouts,
     },
     paperTrades: {

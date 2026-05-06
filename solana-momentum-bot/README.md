@@ -1,6 +1,6 @@
 # Solana Momentum Bot
 
-> **Mission (2026-04-21 refined)**: `0.8 SOL floor + 200 live trades + 5x+ winner 실측` 이 성공 기준. 100 SOL 은 tail outcome (관찰 변수).
+> **Mission (current operating)**: `0.7 SOL floor + 200 live trades + 5x+ winner 실측` 이 성공 기준. 100 SOL 은 tail outcome (관찰 변수).
 > **Active paradigm (2026-04-23)**: **Option 5 — KOL Wallet Discovery + 자체 Execution**.
 
 Solana DEX 순수 실전형 momentum / sniper 봇이다.
@@ -31,38 +31,18 @@ Solana DEX 순수 실전형 momentum / sniper 봇이다.
 | 2026-04-21 | Mission refinement — 100 SOL = tail outcome, 5x+ winner 실측 = 성공 | [`docs/design-docs/mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md) |
 | **2026-04-23 (현재)** | **Option 5 — KOL Discovery + 자체 Execution** | [`docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md`](./docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md) |
 
-## Current Status (2026-04-28)
+## Current Status (2026-05-06)
 
-- **Active paradigm**: Option 5 — KOL Wallet Discovery + 자체 Execution ([ADR](./docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md))
-- **Phase 진행도** ([`REFACTORING_v1.0.md`](./REFACTORING_v1.0.md)):
-  - Phase 0-3 완료 (KOL DB v6 / tracker / shadow-eval / paper lane state machine)
-  - Phase 3.5 / 3.6 완료 (smart-v3 main + swing-v2 shadow A/B / pure_ws swing-v2 paper+live canary 코드)
-  - **Phase 4 코드 완료** (commit 1469a08, 2026-04-27): KOL `enterLivePosition` + `closeLivePosition` + Triple-flag gate
-  - Phase 4 활성화 — **gate 3 of 4 충족**: paper 466+ trade ✅ / 5x+ winner 1건 (24h, n=1) ✅ / 0.8 SOL floor ✅ / **ADR + Telegram critical ack 미작성** ❌
-- **KOL paper 24h 결과 (2026-04-27 02:36Z ~ 04-28 02:37Z, UTC)**:
-  - 254 trade / smart-v3 197건 +0.108 SOL (avg +5.99%) / swing-v2 57건 +0.034 SOL (avg +6.50%)
-  - 누적 net **+0.142 SOL** (24h)
-  - **5x+ winner 1건 (첫 돌파)**: `DF7DAPat` smart-v3 mfe+940% net+940% / insider_exit_full / hold 656s / kols=jijo,trey
-  - Single-winner 의존도: +0.094 / +0.142 = **66%** (표본 부족, 추가 winner 누적 필요)
-  - Top-5 mfe 중 **3건 hold_phase_sentinel 컷** (capture 29% / mfe 167% → net 58%) — 가설 (A) 정량 증거
-- **3대 active incident** (2026-04-28 발견, INCIDENT.md):
-  - 🔴 **missed-alpha observer dead** — `observations` 배열 24h × 4287건 모두 빈 상태 (commit 1469a08 회귀 의심)
-  - 🔴 **wallet_delta_warn drift 0.118 SOL spam** (5분 × 6회) — dedup/cooldown 미작동 + drift origin 불명
-  - 🟡 **notifier failures 3건** error 빈 capture
-- **Wallet baseline**: 시작 `1.3 SOL` → 현재 `1.07 SOL` (`-0.23 SOL`, paper 영향 0)
-- **유일한 truth**: wallet delta. DB `pnl` drift `+18.34 SOL` 전력 있어 단독 판정 금지.
-- **시간대 정합 규칙 (2026-04-28 적용)**: 모든 timestamp UTC `Z`, 분석 cutoff 도 `date -u` 기반. KST cutoff 사용 금지.
-- **Lane / arm 상태**:
-  - `cupsey_flip_10s` — benchmark **frozen** (env disabled)
-  - `pure_ws_breakout` — Lane S baseline (live opt-in, 현재 `LIVE_CANARY_ENABLED=false`)
-  - `pure_ws_swing_v2` — Lane S long-hold A/B (paper shadow / live canary 코드 완료, opt-in)
-  - `kol_hunter` v1 / smart-v3 (main) / swing-v2 (shadow) — Lane T
-    - **paper-only 강제 + live canary 코드 완료** (Triple-flag gate, opt-in)
-    - 24h paired observation (32 mints / 57 pairs): swing-v2 +0.018 SOL outperform (표본 적음)
-  - `bootstrap_10s` — signal-only
-  - `migration_reclaim` — signal-only
-  - `volume_spike` / `fib_pullback` — dormant (5m 해상도 비적합)
-  - ~~Strategy D / `new_lp_sniper`~~ — **2026-04-26 retire**
+- **Active paradigm**: Option 5 — KOL Wallet Discovery + 자체 Execution ([ADR](./docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md)).
+- **Current operating floor**: 0.7 SOL. Historical 0.8 SOL mission-refinement 문서는 원 사명 정의로만 읽고, 운영 판단은 `SESSION_START.md` / `MISSION_CONTROL.md` / `STRATEGY.md`를 따른다.
+- **Lane 상태**:
+  - `kol_hunter_smart_v3` — main 5x lane. live canary + paper arms, 2+ fresh active KOL 중심, dev quality는 보조신호, MAE fast-fail / bounded recovery-hold / pre-T1 giveback telemetry 적용.
+  - `kol_hunter_rotation_v1` — fast-compound 보조 lane. canonical rotation live는 닫고, 검증된 `rotation_chase_topup_v1`만 별도 live canary 키로 열 수 있다. S/A 1-KOL better-entry, chase/top-up arm, partialized sell-follow, T+ evidence를 본다.
+  - `pure_ws` botflow — new-pair paper/observer candidate. Mayhem copy가 아니라 new-pair 기준 관측 lane이며, live 승격은 evidence 확보 전 금지.
+  - `cupsey_flip_10s` — frozen benchmark, disabled.
+- **운영 분석 표준**: 먼저 `bash scripts/sync-vps-data.sh`로 `data/`, `logs/`, `reports/`를 동기화한다. DB dump는 opt-in. 결론은 lane별 `OK / WATCH / PAUSE_REVIEW / INVESTIGATE`로 끝낸다.
+- **운영 env 표준**: `.env`는 Git 추적 금지. Git으로 동기화할 수 있는 값은 secret 없는 [`ops/env/production.env`](./ops/env/production.env)에 둔다. `scripts/deploy.sh`가 배포 중 해당 profile을 원격 `.env`에 병합한다.
+- **유일한 truth**: wallet delta. DB `pnl` drift 전력이 있어 단독 판정 금지.
 
 ## Read Order
 
@@ -75,7 +55,8 @@ Solana DEX 순수 실전형 momentum / sniper 봇이다.
 | [`ARCHITECTURE.md`](./ARCHITECTURE.md) | 모듈 책임, 의존성 방향 |
 | [`PLAN.md`](./PLAN.md) | mission charter (convexity) |
 | [`PROJECT.md`](./PROJECT.md) | persona / goals / hard guardrails |
-| [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md) | 현재 active execution plan (post-pivot) |
+| [`docs/exec-plans/active/20260503_BACKLOG.md`](./docs/exec-plans/active/20260503_BACKLOG.md) | 현재 active backlog |
+| [`docs/exec-plans/active/1sol-to-100sol.md`](./docs/exec-plans/active/1sol-to-100sol.md) | historical post-pivot execution plan |
 | [`STRATEGY.md`](./STRATEGY.md) | runtime quick reference (lane / gate / guardrail) |
 | [`OPERATIONS.md`](./OPERATIONS.md) | 운영 절차 + Block 1-4 runbook |
 | [`MEASUREMENT.md`](./MEASUREMENT.md) | wallet log growth + winner 분포 + ruin probability |
@@ -113,15 +94,17 @@ Stage 2: Signal
   bootstrap_10s trigger (signal-only)
 
 Stage 3: Lane (parallel A/B)
-  cupsey_flip_10s (benchmark, STALK→PROBE→WINNER)
-  pure_ws_breakout (candidate, immediate PROBE → tiered runner 2x/5x/10x)
+  kol_hunter_smart_v3 (main 5x lane, live canary + paper arms)
+  kol_hunter_rotation_v1 (fast-compound aux lane, canonical live off; chase-topup arm canary only)
+  pure_ws botflow (new-pair paper/observer candidate)
+  cupsey_flip_10s (frozen benchmark, disabled)
 
 Stage 4: Gate (loose factor-based)
   security hard reject → liquidity / quote sanity → exitability
   lane-specific factor gate (vol accel + buy ratio + tx density + price acceleration)
 
 Stage 5: Guard (shared hard guardrails, 불변)
-  Wallet Stop Guard < 0.8 SOL
+  Wallet Stop Guard < 0.7 SOL
   Wallet delta comparator (always-on drift halt)
   entryIntegrity per-lane halt
   canary auto-halt (consecutive losers / budget / max trades)
@@ -129,11 +112,11 @@ Stage 5: Guard (shared hard guardrails, 불변)
   close mutex (shared across lanes)
 
 Stage 6: Execute
-  ticket 0.01 SOL fixed, Jupiter executor, lane wallet mode 명시
+  default ticket 0.01 SOL / KOL ticket 0.02 SOL, Jupiter executor, lane wallet mode 명시
 
 Stage 7: Observe
   executed-buys/sells ledger (wallet-aware) + runtime diagnostics
-  ops:canary:eval (cupsey vs pure_ws wallet-truth A/B + promotion verdict)
+  sync-health / kol-live-canary / smart-v3-evidence / trade-markout / lane reports
   ops:reconcile:wallet (FIFO RPC 감사)
 ```
 
@@ -159,4 +142,4 @@ npm run paper-report
 
 ## One-Line Summary
 
-> Convexity mission, wallet delta 가 유일한 판정 기준, cupsey 는 건드리지 않는 benchmark, `pure_ws_breakout` 은 paper-first opt-in gate 로 분리, `pure_ws_swing_v2` / `kol_hunter` 는 swing 손익비 A/B 측정 (paper-first → opt-in live canary).
+> Convexity mission, wallet delta 가 유일한 판정 기준, smart-v3 는 main 5x lane, rotation-v1 은 fast-compound 보조 lane, pure_ws 는 new-pair paper/observer 후보, cupsey 는 frozen benchmark.

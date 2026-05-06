@@ -1,7 +1,7 @@
 # Project Goals & Persona (post-pivot, refined 2026-04-21)
 
-> Updated: 2026-04-21
-> Authority chain: [`mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md) (최상위) → [`mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md) → 본 문서
+> Updated: 2026-05-06
+> Authority chain: [`SESSION_START.md`](./SESSION_START.md) / [`MISSION_CONTROL.md`](./MISSION_CONTROL.md) (current operating override) → [`mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md) (historical refinement) → [`mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md) → 본 문서
 > Pre-pivot snapshot: [`docs/historical/pre-pivot-2026-04-18/PROJECT.md`](./docs/historical/pre-pivot-2026-04-18/PROJECT.md)
 
 ## Persona
@@ -10,7 +10,7 @@
 - 1인 개발자, 자동화 수익 파이프라인을 축적하는 CTO
 - Solana 트레이딩 봇은 여러 자동화 시스템 중 하나
 - 24/7 무인 운영 전제, 수동 개입 최소화
-- 리스크 성향: convexity 추구 + wallet 기준 하한선 고정 (hard stop `0.8 SOL`)
+- 리스크 성향: convexity 추구 + wallet 기준 하한선 고정 (current operating floor `0.7 SOL`)
 
 ### 봇
 - 이름: Solana Momentum Bot
@@ -21,17 +21,17 @@
 
 ### 최종 성공 기준 (2026-04-21 refined)
 
-> **0.8 SOL floor 를 깨지 않고 200 live trades 를 통과하며, 5x+ winner 분포를 실측했다.**
+> **현재 운영 floor 0.7 SOL 을 깨지 않고 200 live trades 를 통과하며, 5x+ winner 분포를 실측했다.**
 
 100 SOL 도달은 **tail outcome — 관찰 변수이지 KPI 가 아님**. 100 SOL 을 달성 못해도 Stage 4 통과하면 프로젝트는 **기술적 성공**.
 
-상세: [`mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md)
+원 사명 정제 문서는 0.8 SOL floor 로 작성됐지만, 2026-04-28 이후 실제 운영 기준은 `SESSION_START.md`의 0.7 SOL floor 를 따른다.
 
 ### 4단계 Maturity Gate
 
 | Stage | 통과 기준 |
 |-------|----------|
-| 1. Safety Pass | 48h drift < 0.01 / survival filter pass >= 90% / 0.8 floor 무위반 |
+| 1. Safety Pass | 48h drift < 0.01 / survival filter pass >= 90% / 0.7 floor 무위반 |
 | 2. Sample Accumulation | 100 live trades / max DD < 30% / wallet stop 0회 |
 | 3. Winner Distribution | 5x+ winner >= 1건 실측 |
 | 4. Scale Decision | 200+ trades / lane log growth > 0 / ruin probability < 5% |
@@ -84,27 +84,25 @@ baseline: cupsey_flip_10s는 기존 구조 그대로 유지 (benchmark)
 - Exitability 확인
 - Duplicate / race 방지 (Patch A: STALK→PROBE reentrancy guard, Patch B1: close mutex)
 - HWM / price sanity bound (Patch B2: cupseyMaxPeakMultiplier = 15x)
-- Wallet Stop Guard `< 0.8 SOL` halt
+- Wallet Stop Guard `< 0.7 SOL` halt
 - RPC fail-safe halt (연속 RPC 실패 → lane halt)
 - Entry integrity (`persistOpenTradeWithIntegrity` 모든 lane 필수)
 - Wallet truth accounting (executed-buys/sells.jsonl + FIFO reconcile)
 
-## 현재 상태 스냅샷 (2026-04-18)
+## 현재 상태 스냅샷 (2026-05-06)
 
 ### 확인된 것
 
-- **Wallet ground truth**: 시작 `1.30 SOL` → 현재 `1.07 SOL` (`-0.23 SOL`)
-- **DB drift**: DB pnl 합계 `+18.11 SOL` vs wallet `-0.23 SOL`, drift `+18.34 SOL`
-- **유일한 live-proven lane**: `cupsey_flip_10s` (benchmark 유지)
-- **Signal source**: `bootstrap_10s` (signal-only, `executionRrReject=99.0`)
-- **Dormant**: `volume_spike`, `fib_pullback` (5m 해상도, 밈코인 비적합)
+- **유일한 truth**: wallet delta. DB pnl 단독 판정 금지.
+- **Active main lane**: `kol_hunter_smart_v3` live canary + paper arms.
+- **Auxiliary lanes**: `kol_hunter_rotation_v1` paper-first fast-compound with promoted `rotation_chase_topup_v1` live canary only, `pure_ws` new-pair paper/observer.
+- **Frozen benchmark**: `cupsey_flip_10s` disabled, 개조 금지.
 
 ### 아직 미증명인 것
 
-- Pure WS breakout lane의 실제 wallet expectancy
-- Coverage 확장 (DEX eligibility) 후의 signal density
-- 5x / 10x winner 빈도 (관측 자체가 부족)
-- cupsey primary의 wallet ownership 구조 (main vs sandbox executor)
+- smart-v3 live canary의 200-trade survival/tail distribution.
+- rotation-v1 arm별 post-cost expectancy 및 sell-follow/partial-exit edge.
+- pure_ws new-pair paper lane의 신호 밀도와 T+ continuation.
 
 ## 로드맵 (post-pivot, 2026-04-21 현재 상태)
 
@@ -113,7 +111,7 @@ baseline: cupsey_flip_10s는 기존 구조 그대로 유지 (benchmark)
 | Block 0 | Mission Pivot 문서화 | **완료 (2026-04-18)** + refinement 반영 (2026-04-21) |
 | Block 1 | Wallet ownership + always-on comparator (P0) | **완료 (2026-04-18)** |
 | Block 2 | Coverage expansion (DEX / pair eligibility) | **완료 (2026-04-18)** |
-| Block 3 | `pure_ws_breakout` lane 신설 (paper first) | **완료 (2026-04-18)** |
+| Block 3 | `pure_ws` new-pair paper/observer lane | **진행 중 — evidence 수집** |
 | Block 4 | Live canary with guardrails | **완료 (2026-04-18)** |
 | DEX_TRADE Phase 1-3 | v2 burst detector + viability floor + quickReject / holdPhase sentinel | **완료 (2026-04-18)** |
 | Post-deploy fix 1 | wallet delta drift (cupsey/migration/pureWs entry metrics), orphan close loop | **완료 (2026-04-18~20)** |
@@ -125,7 +123,7 @@ baseline: cupsey_flip_10s는 기존 구조 그대로 유지 (benchmark)
 
 | Stage | 통과 기준 | 현 상태 |
 |-------|---------|--------|
-| 1. Safety Pass | 48h 운영 / drift 정상 / survival filter pass / 0.8 floor 무위반 | **진행 중** — survival filter 가 아직 비어 있어 불완전 통과 |
+| 1. Safety Pass | 48h 운영 / drift 정상 / survival filter pass / 0.7 floor 무위반 | **진행 중** — lane별 evidence report 기준 |
 | 2. Sample Accumulation | 100 live trades / max DD < 30% / wallet stop 0회 | 미진입 — Stage 1 통과 후 |
 | 3. Winner Distribution | 5x+ winner >= 1건 실측 | 미진입 |
 | 4. Scale Decision | 200+ live trades / lane log growth > 0 / ruin probability < 5% | 미진입 |
@@ -134,10 +132,10 @@ baseline: cupsey_flip_10s는 기존 구조 그대로 유지 (benchmark)
 
 | 가드 | 값 |
 |---|---|
-| Wallet Stop Guard | `wallet_sol < 0.8` 전 lane halt |
+| Wallet Stop Guard | `wallet_sol < 0.7` 전 lane halt |
 | Canary cumulative loss cap | `-0.3 SOL` (lane별) |
-| Fixed ticket | `0.01 SOL` canary |
-| Max concurrent ticket | `3` (pure_ws lane) |
+| Fixed ticket | default `0.01 SOL`, KOL `0.02 SOL` canary |
+| Max concurrent ticket | `3` 전역 |
 | RPC fail-safe | 연속 RPC 실패 → lane halt |
 | Security hard reject | mint/freeze authority, honeypot sim (Survival Layer 구현 시 확장) |
 

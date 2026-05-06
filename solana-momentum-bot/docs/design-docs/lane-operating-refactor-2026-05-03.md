@@ -12,7 +12,7 @@ The three active strategy surfaces now have separate operating roles:
 | Strategy surface | Role | Live stance | Paper / observation stance |
 |---|---|---|---|
 | `kol_hunter_smart_v3` | Main 5x lane | Live canary allowed only through fresh 2+ active KOL velocity plus live gates | Paper fallback for pullback, weak recovery, dev risk, halt, or guard fallback |
-| `kol_hunter_rotation_v1` | Fast-compound KOL auxiliary lane | Keep live disabled until post-cost T+15/T+30 evidence improves | Paper control plus parallel parameter arms and underfill arm |
+| `kol_hunter_rotation_v1` | Fast-compound KOL auxiliary lane | Keep canonical live disabled; only promoted `rotation_chase_topup_v1` can run as live canary | Paper control plus parallel parameter arms, underfill arm, and chase-topup canary evidence |
 | `pure_ws botflow` | New-pair / botflow rebuild candidate | Live off | Paper/observe-only with T+ markouts, digest, and parameter arms |
 
 The refactor keeps the old aggregate KOL ledgers for compatibility, but adds lane-level projection files for analysis.

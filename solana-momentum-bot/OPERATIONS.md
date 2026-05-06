@@ -1,11 +1,13 @@
 # Operations Guide
 
-> Last updated: 2026-05-03
+> Last updated: 2026-05-06
 > Scope: VPS 배포 + paper 운영 점검 + risk tier demotion + live 운영 판단
 
 ---
 
 ## Current Operations Note
+
+Current lane/report 기준은 `SESSION_START.md`, `STRATEGY.md`, `docs/design-docs/lane-operating-refactor-2026-05-03.md`, `docs/exec-plans/active/20260503_BACKLOG.md`를 우선한다. 아래 2026-04-18 DEX_TRADE/pure_ws_breakout 섹션은 legacy runbook 이며, 현재 pure_ws live 승격 정책으로 사용하지 않는다.
 
 ### DEX_TRADE Phase 3 — Quick Reject + Hold Sentinel + Ruin Sim (2026-04-18)
 
@@ -415,6 +417,15 @@ cron 예시:
 - **opt-in shadow-eval (2026-04-26)**: `RUN_SHADOW_EVAL=true` 시 KOL signal raw alpha 측정 (Jupiter forward quote 사용). default OFF — Jupiter quota 영향.
 - **환경변수 주의**: smart-v3 evidence/rotation/KOL transfer posterior report 추가는 운영 `.env` 변경이 필요 없다. `SKIP_KOL_TRANSFER_REPORT`, `KOL_TRANSFER_REPORT_SINCE`, `KOL_TRANSFER_INPUT`, `SKIP_SMART_V3_EVIDENCE_REPORT`, `SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT` 는 sync/report-only shell knob 이며 runtime 전략 환경변수가 아니다. Smart-v3 MAE fast-fail / recovery-hold 는 runtime knob 이 추가됐지만 default-on 안전값이 있어 운영 `.env` override 는 필수가 아니다.
 - **로컬 분석 캐시 보호 (2026-05-05)**: 운영 데이터는 VPS → local 로 sync 하지만, `data/research/kol-transfers.jsonl*` 는 로컬 Helius posterior 캐시라 기본 rsync 제외한다. 필요 시 `DATA_RSYNC_EXCLUDES` 로 override 가능.
+
+#### 운영 `.env` 반영 원칙 (2026-05-06)
+
+- `.env`는 `WALLET_PRIVATE_KEY`, RPC/API key, DB URL을 포함할 수 있으므로 Git 추적 금지다. `git pull`만으로 운영 `.env`가 바뀌지 않는 것은 정상 동작이다.
+- Git으로 동기화할 수 있는 non-secret 운영 override 는 `ops/env/production.env`에 둔다.
+- `scripts/deploy.sh`는 `git pull` 후 `DEPLOY_ENV_PROFILE` (default `ops/env/production.env`)을 원격 `.env`에 병합한다. 기존 secret 값은 `.env`/shell env에 남기고 profile에는 넣지 않는다.
+- 병합 스크립트는 `.env.backup-<timestamp>`를 남긴다. 자동 병합을 건너뛰려면 `DEPLOY_ENV_PROFILE=`로 빈 값을 준다.
+- 붙여넣기/수동 편집 후에는 `gOL_HUNTER_*` 같은 오타 키가 없는지 확인한다. KOL live canary 키는 반드시 `KOL_HUNTER_LIVE_CANARY_ENABLED`다.
+- Rotation canary 운영 의도는 `KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=false` + `KOL_HUNTER_ROTATION_CHASE_TOPUP_LIVE_CANARY_ENABLED=true`다. 전체 rotation live를 열지 않는다.
 
 ```bash
 # 기본 사용 (파일 sync + file-only reports, DB 미사용)

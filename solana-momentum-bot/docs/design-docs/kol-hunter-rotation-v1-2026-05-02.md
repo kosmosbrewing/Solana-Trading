@@ -106,7 +106,7 @@ chaseTopup = same-mint pre-first-sell buy sequence where later buy fill price
 Entry implication:
 
 - `rotation_underfill_v1` remains valid: buy only when our quote is below the S/A KOL's actual fill reference and no recent sell exists.
-- Add a separate paper-only `rotation_chase_topup_v1` candidate before any live consideration:
+- Add a separate initially paper-only `rotation_chase_topup_v1` candidate before any live consideration:
   - active S/A KOL only;
   - fresh opener plus top-up inside the short rotation window;
   - follow-up buy fill price is above the prior buy by a cost-aware threshold;
@@ -236,6 +236,9 @@ RPC call is required on the entry path.
 - uses the same short `15/30/60` primary validation clock as rotation-v1;
 - is paper-only by default under
   `KOL_HUNTER_ROTATION_CHASE_TOPUP_PAPER_ENABLED=true`.
+- can be promoted independently through
+  `KOL_HUNTER_ROTATION_CHASE_TOPUP_LIVE_CANARY_ENABLED=true` while canonical
+  `KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=false` remains closed.
 
 `rotation_exit_kol_flow_v1`:
 
@@ -425,9 +428,10 @@ This keeps historical reports working while making daily rotation paper review m
 
 ## Rollout
 
-1. Paper: enable `KOL_HUNTER_ROTATION_V1_ENABLED=true`, leave live disabled when a paper-only shakeout is desired.
-2. Live canary: enable both `KOL_HUNTER_ROTATION_V1_ENABLED=true` and `KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=true`. Existing canary gates still apply, but rotation uses its own `KOL_HUNTER_ROTATION_V1_MIN_INDEPENDENT_KOL=1` instead of weakening the global smart-v3 live min-KOL gate.
-3. Measure by `armName/kolEntryReason`:
+1. Paper: enable `KOL_HUNTER_ROTATION_V1_ENABLED=true`, leave canonical live disabled when a paper-only shakeout is desired.
+2. Promoted chase-topup live canary: keep `KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=false` and enable only `KOL_HUNTER_ROTATION_CHASE_TOPUP_LIVE_CANARY_ENABLED=true`. This routes the single promoted arm through existing live canary gates without opening the broader rotation-v1 live path.
+3. Full canonical rotation live: only after a separate ADR/evidence review, enable both `KOL_HUNTER_ROTATION_V1_ENABLED=true` and `KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=true`. Existing canary gates still apply, but this is not the current operating intent.
+4. Measure by `armName/kolEntryReason`:
    - closed netSol and token-only netPct;
    - median hold;
    - hard-cut rate;

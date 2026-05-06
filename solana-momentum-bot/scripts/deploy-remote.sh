@@ -36,14 +36,21 @@ fi
 LOCAL_HEAD=$(git rev-parse --short HEAD)
 echo "Local HEAD: $LOCAL_HEAD"
 
-# ─── 2. 크래시 잔해 정리 (--clean) ───
+# ─── 2. Remote repo refresh ───
+# Why: deploy.sh itself may have changed. Pull before executing it so new deploy
+#      helpers like env profile merge are active on the first deployment.
+echo ""
+echo "Refreshing remote repo..."
+ssh "$VPS_HOST" "cd $VPS_PATH && git fetch origin main && git pull origin main --ff-only"
+
+# ─── 3. 크래시 잔해 정리 (--clean) ───
 if [ "$CLEAN" = true ]; then
   echo ""
   echo "Cleaning crash artifacts on VPS..."
   ssh "$VPS_HOST" "cd $VPS_PATH && rm -f data/realtime/*.tmp && rm -f data/realtime/runtime-diagnostics.json && echo 'Cleaned .tmp + diagnostics'"
 fi
 
-# ─── 3. Optional .env sync (Git 추적 금지, SSH 전송만 허용) ───
+# ─── 4. Optional .env sync (Git 추적 금지, SSH 전송만 허용) ───
 if [ "$SYNC_ENV" = true ]; then
   if [ ! -f "$ENV_SOURCE" ]; then
     echo "ERROR: env source not found: $ENV_SOURCE"
@@ -109,7 +116,7 @@ console.log('.env merged (secrets preserved, content hidden)');
 NODE
 fi
 
-# ─── 4. VPS에서 deploy.sh 실행 (git pull + build + pm2 restart) ───
+# ─── 5. VPS에서 deploy.sh 실행 (build + pm2 restart) ───
 echo ""
 echo "Running deploy on VPS..."
 ssh -t "$VPS_HOST" "cd $VPS_PATH && bash scripts/deploy.sh"

@@ -130,6 +130,11 @@ Promoted live canary for the single chase-topup arm:
 
 ```dotenv
 KOL_HUNTER_ROTATION_CHASE_TOPUP_LIVE_CANARY_ENABLED=true
+KOL_HUNTER_ROTATION_CHASE_TOPUP_PARAMETER_VERSION=rotation-chase-topup-v1.0.0
+KOL_HUNTER_ROTATION_CHASE_TOPUP_PAPER_ENABLED=true
+KOL_HUNTER_ROTATION_CHASE_TOPUP_MIN_BUYS=2
+KOL_HUNTER_ROTATION_CHASE_TOPUP_MIN_TOPUP_STRENGTH=0.08
+KOL_HUNTER_ROTATION_CHASE_TOPUP_MAX_RECENT_SELL_SEC=60
 ```
 
 Usually omit because code defaults are active:
@@ -221,7 +226,12 @@ KOL_HUNTER_LIVE_MIN_INDEPENDENT_KOL=2
 KOL_HUNTER_ROTATION_V1_ENABLED=true
 KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=false
 # Enable only when intentionally running the promoted rotation live canary:
-# KOL_HUNTER_ROTATION_CHASE_TOPUP_LIVE_CANARY_ENABLED=true
+KOL_HUNTER_ROTATION_CHASE_TOPUP_LIVE_CANARY_ENABLED=true
+KOL_HUNTER_ROTATION_CHASE_TOPUP_PARAMETER_VERSION=rotation-chase-topup-v1.0.0
+KOL_HUNTER_ROTATION_CHASE_TOPUP_PAPER_ENABLED=true
+KOL_HUNTER_ROTATION_CHASE_TOPUP_MIN_BUYS=2
+KOL_HUNTER_ROTATION_CHASE_TOPUP_MIN_TOPUP_STRENGTH=0.08
+KOL_HUNTER_ROTATION_CHASE_TOPUP_MAX_RECENT_SELL_SEC=60
 
 PUREWS_LANE_ENABLED=true
 PUREWS_LIVE_CANARY_ENABLED=false
@@ -229,6 +239,38 @@ PUREWS_SWING_V2_LIVE_CANARY_ENABLED=false
 ```
 
 This should be the default operator-facing `.env` size. Add experiment overrides only for the duration of a measured sprint, then remove them.
+
+## Deployment Note
+
+Runtime `.env` is intentionally gitignored. It may contain private keys and RPC/API credentials, so do not remove `.env` from `.gitignore`.
+
+Non-secret operational overrides are tracked in:
+
+```text
+ops/env/production.env
+```
+
+Deploy behavior:
+
+1. `scripts/deploy.sh` runs `git pull`.
+2. If `DEPLOY_ENV_PROFILE` is unset, it uses `ops/env/production.env`.
+3. The profile is merged into runtime `.env` by `scripts/merge-env-profile.js`.
+4. Existing secrets remain in runtime `.env` or shell env; do not put them in the profile.
+5. A timestamped `.env.backup-*` file is created before writing.
+
+To skip profile merge for an emergency deploy:
+
+```bash
+DEPLOY_ENV_PROFILE= bash scripts/deploy.sh
+```
+
+To use another tracked profile:
+
+```bash
+DEPLOY_ENV_PROFILE=ops/env/some-other.env bash scripts/deploy.sh
+```
+
+After editing, verify exact key spelling. In particular, `gOL_HUNTER_LIVE_CANARY_ENABLED` is invalid; the runtime key is `KOL_HUNTER_LIVE_CANARY_ENABLED`.
 
 ## Cleanup Checklist
 

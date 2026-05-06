@@ -6,6 +6,13 @@ set -euo pipefail
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$APP_DIR"
 
+if [ -f "$HOME/.profile" ]; then
+  set +u
+  # shellcheck disable=SC1090
+  . "$HOME/.profile"
+  set -u
+fi
+
 echo "=== Solana Momentum Bot — Deploy ==="
 echo "Directory: $APP_DIR"
 
@@ -41,16 +48,26 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
+# ─── 3a. Tracked production overrides → runtime .env ───
+# Why: .env contains secrets and stays gitignored. The tracked profile lets git pull
+#      update non-secret operating toggles during deploy without committing secrets.
+ENV_PROFILE="${DEPLOY_ENV_PROFILE:-ops/env/production.env}"
+if [ -n "$ENV_PROFILE" ] && [ -f "$ENV_PROFILE" ]; then
+  echo "Merging env profile: $ENV_PROFILE"
+  node scripts/merge-env-profile.js --profile="$ENV_PROFILE" --target=.env --required=
+fi
+
 # 필수 키 확인
 for KEY in SOLANA_RPC_URL WALLET_PRIVATE_KEY DATABASE_URL; do
-  VAL=$(grep "^${KEY}=" .env | cut -d= -f2-)
+  ENV_FILE_VAL=$(grep "^${KEY}=" .env 2>/dev/null | tail -1 | cut -d= -f2- | sed -E 's/[[:space:]]+#.*$//')
+  VAL="${ENV_FILE_VAL:-${!KEY-}}"
   if [ -z "$VAL" ] || [ "$VAL" = "YOUR_KEY" ]; then
-    echo "ERROR: $KEY is not set in .env"
+    echo "ERROR: $KEY is not set in .env or shell env"
     exit 1
   fi
 done
 
-TRADING_MODE=$(grep "^TRADING_MODE=" .env | cut -d= -f2- | tr -d ' ')
+TRADING_MODE=$(grep "^TRADING_MODE=" .env | tail -1 | cut -d= -f2- | sed -E 's/[[:space:]]+#.*$//' | tr -d ' ')
 echo "Trading mode: ${TRADING_MODE:-paper}"
 
 # ─── 4. Install dependencies ───

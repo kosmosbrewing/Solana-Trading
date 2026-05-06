@@ -69,7 +69,7 @@ All tokens are not one universe. Arms must be separated by tail structure.
 |---|---|---|
 | Lane C: `cupsey_flip_10s` | benchmark | **frozen** (env disabled) |
 | Lane T main: `kol_hunter_smart_v3` | fresh active KOL velocity 기반 5x lane | live canary active + paper fallback, fresh active KOL ≥ 2, MAE fast-fail / bounded recovery-hold |
-| Lane R auxiliary: `kol_hunter_rotation_v1` | KOL-driven fast-compound / short continuation | paper measurement, live disabled until post-cost evidence |
+| Lane R auxiliary: `kol_hunter_rotation_v1` | KOL-driven fast-compound / short continuation | paper measurement, canonical live disabled; promoted `rotation_chase_topup_v1` canary only |
 | Lane S rebuild: `pure_ws botflow` | new-pair / botflow microstructure observation | paper/observe-only; live disabled |
 | Lane S legacy: `pure_ws_breakout` / `pure_ws_swing_v2` | legacy WS scalping / swing A/B reference | benchmark or paper-only unless explicit canary ADR |
 | Lane T A/B: `kol_hunter` swing-v2 | multi-KOL S/A ≥2 + score ≥5.0 자격 시 long-hold shadow | paper shadow |
@@ -321,7 +321,7 @@ The mission is won by preserving survival while repeatedly buying cheap optional
 |---------|--------------|-----------|-----------|
 | **C1 Survival Budget** | 모든 lane (전역) | `src/risk/walletStopGuard.ts`, `src/risk/canaryAutoHalt.ts`, `src/state/entryHaltState.ts` | 즉시 (Real Asset Guard, 불변) |
 | **C2 Tail Universe Selection** | `kol_hunter` (Lane T) | `src/ingester/kolWalletTracker.ts`, `src/kol/db.ts`, `src/kol/scoring.ts` | Phase 1 (passive logging) |
-| **C3 Payoff Architecture** | `kol_hunter_smart_v3` main 5x + `kol_hunter_rotation_v1` fast-compound + `pure_ws botflow` observe/rebuild | `src/orchestration/pureWs/`, `src/orchestration/kolSignalHandler.ts`, `src/observability/pureWsBotflow*.ts` | 2026-05-03 lane split + projection ledger refactor; 2026-05-06 smart-v3 MAE fast-fail/recovery diagnostics |
+| **C3 Payoff Architecture** | `kol_hunter_smart_v3` main 5x + `kol_hunter_rotation_v1` fast-compound + `pure_ws botflow` observe/rebuild | `src/orchestration/pureWs/`, `src/orchestration/kolSignalHandler.ts`, `src/observability/pureWsBotflow*.ts` | 2026-05-03 lane split + projection ledger refactor; 2026-05-06 smart-v3 MAE fast-fail/recovery diagnostics + rotation chase-topup live canary profile |
 | **C3.1 Lane Edge Controller (Kelly)** | 전 lane × cohort | `src/risk/laneOutcomeReconciler.ts` (P0), `src/risk/laneEdgeController.ts` (P1) | P0 완료 / P1 완료 / P2 Phase 4 후 / P3 Stage 4 후 |
 | **C4 Execution Quality** | 모든 lane | `src/gate/securityGate.ts`, `src/gate/sellQuoteProbe.ts`, `src/gate/entryDriftGuard.ts`, `src/observability/jupiterRateLimitMetric.ts` | 즉시 (Real Asset Guard) |
 | **C5 200-Trade Experiment** | Lane S + Lane T 합산 | `scripts/canary-eval.ts`, `scripts/lane-edge-report.ts`, `data/realtime/lane-outcomes-reconciled.jsonl` | Phase 5 (200 trades 누적 후) |

@@ -3,7 +3,7 @@
 > 이 문서는 모듈 구조, 의존성 방향, 데이터 흐름을 정의한다.
 > 새 파일 생성 전 반드시 이 문서의 의존성 규칙을 확인하라.
 >
-> **2026-04-26 H2 재구성**: 3-layer 모델 (Real Asset Guard / Lane / Observability) 도입.
+> **2026-05-06 갱신**: 3-layer 모델 (Real Asset Guard / Lane / Observability) 유지. 현재 lane 상태는 `SESSION_START.md`, `STRATEGY.md`, `docs/design-docs/lane-operating-refactor-2026-05-03.md`를 우선한다.
 > Pre-pivot 의 단일 Context→Trigger 모델은 [`docs/historical/architecture-pre-pivot.md`](./docs/historical/architecture-pre-pivot.md) 로 격리.
 
 ---
@@ -16,20 +16,21 @@
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │ Layer A — Real Asset Guard (불변, 모든 paradigm 공통)             │
-│   ticket 0.01 / floor 0.8 / canary -0.3 / drift halt 0.2 /       │
-│   max concurrent 3 / security gate / sell quote probe            │
+│   default ticket 0.01 / KOL ticket 0.02 / floor 0.7 /             │
+│   canary budget caps / drift halt 0.2 / max concurrent 3 /        │
+│   security gate / sell quote probe                                │
 │   → src/risk/* + src/state/entryHaltState (no orchestration 의존) │
 └─────────────────────────────────────────────────────────────────┘
                               ↑ enforce
 ┌─────────────────────────────────────────────────────────────────┐
 │ Layer B — Lane (paradigm 별 entry/exit 로직)                      │
 │   - cupsey_flip_10s    (frozen benchmark, disabled)               │
-│   - pure_ws_breakout   (Lane S, scalping baseline)                │
-│   - pure_ws_swing_v2   (Lane S long-hold A/B, paper-first)        │
+│   - pure_ws botflow    (new-pair paper/observer candidate)        │
+│   - rotation-v1        (fast-compound aux; canonical live off,      │
+│                         chase-topup live canary only)              │
 │   - kol_hunter         (Lane T, tail hunter — Option 5)           │
 │     ├ v1 (legacy single-KOL wait)                                  │
-│     ├ smart-v3 (pullback + velocity, main paper)                   │
-│     └ swing-v2 (multi-KOL long hold shadow)                        │
+│     └ smart-v3 (2+ KOL main 5x lane, live canary + paper arms)      │
 │   - migration_reclaim (backlog, signal-only)                      │
 │   → src/orchestration/* + src/strategy/* + src/gate/*             │
 └─────────────────────────────────────────────────────────────────┘
@@ -43,16 +44,15 @@
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Lane 표 (현 active, 2026-04-26 갱신)
+### Lane 표 (현 active, 2026-05-06 갱신)
 
 | Lane / arm | 상태 | Paradigm | 주 파일 | 손익비 정책 |
 |------|------|---------|--------|------------|
 | `cupsey_flip_10s` | disabled (env) | benchmark frozen | `cupseyLaneHandler.ts` | **개조 금지** |
-| `pure_ws_breakout` | live, opt-in | mission-pivot Lane S | `pureWs/entryFlow.ts` | 30s probe / 15% trail |
-| `pure_ws_swing_v2` | paper shadow / live canary opt-in | mission-pivot Lane S A/B | `pureWs/swingV2Entry.ts` | 600s probe / 25% trail / 1.10 floor |
-| `kol_hunter` v1 | paper-only | Option 5 legacy | `kolSignalHandler.ts` | 180s stalk / 15% trail |
-| `kol_hunter` smart-v3 | paper-only (main) | Option 5 main | `kolSignalHandler.ts` | pullback/velocity/both, reason 별 trail (20-25%) + floor (1.05-1.10) |
-| `kol_hunter` swing-v2 | paper-only (shadow) | Option 5 shadow A/B | `kolSignalHandler.ts` | 600s stalk / 25% trail / 1.10 floor |
+| `kol_hunter` smart-v3 | live canary + paper arms | Option 5 main 5x lane | `kolSignalHandler.ts` | 2+ fresh active KOL, dev quality as auxiliary, MAE fast-fail/recovery hold/pre-T1 telemetry |
+| `kol_hunter` rotation-v1 | paper-first / chase-topup live canary only | fast-compound aux lane | `kolSignalHandler.ts` | S/A 1-KOL better-entry + chase/top-up arms, partialized sell-follow, T+ validation |
+| `pure_ws` botflow | paper/observer | new-pair candidate | `pureWs/`, `observability/pureWs*` | new-pair only, botflow/price reaction/T+ observer, live promotion blocked until evidence |
+| `kol_hunter` v1 | legacy fallback | Option 5 legacy | `kolSignalHandler.ts` | 유지 보수 전용 |
 | `bootstrap_10s` | signal-only | legacy | `signalProcessor.ts` | 억제 (executionRrReject=99) |
 | `migration_reclaim` | signal-only (env) | option5 후속 | `migrationLaneHandler.ts` | paper 대기 |
 | `volume_spike` / `fib_pullback` | dormant | pre-pivot | — | 비활성 |
@@ -61,11 +61,10 @@
 
 | Hard constraint | 코드 변수 | 모듈 | env override |
 |-----------------|-----------|------|--------------|
-| Wallet floor | `walletStopMinSol=0.8` | `src/risk/walletStopGuard.ts` | `WALLET_STOP_MIN_SOL` |
+| Wallet floor | `walletStopMinSol=0.7` | `src/risk/walletStopGuard.ts` | `WALLET_STOP_MIN_SOL` |
 | Canary cumulative loss cap (primary lanes) | `canaryMaxBudgetSol=0.3` | `src/risk/canaryAutoHalt.ts` | `CANARY_MAX_BUDGET_SOL` |
 | Canary loss cap (swing-v2 lane 별도) | `canarySwingV2MaxBudgetSol=0.1` | `src/risk/canaryAutoHalt.ts` | `CANARY_SWING_V2_MAX_BUDGET_SOL` |
-| Fixed ticket (primary lanes) | `*LaneTicketSol=0.01` | `src/utils/tradingParams.ts` | lane 별 |
-| Fixed ticket (swing-v2) | `pureWsSwingV2TicketSol=0.01` | `src/config/dexTradeDetector.ts` | `PUREWS_SWING_V2_TICKET_SOL` |
+| Fixed ticket (primary lanes) | default `0.01`, KOL `0.02` | `src/utils/tradingParams.ts`, `src/config/kolHunter.ts` | lane 별 |
 | Max concurrent (전역) | 3 | `src/risk/canaryConcurrencyGuard.ts` | `CANARY_GLOBAL_MAX_CONCURRENT` |
 | Max concurrent (swing-v2 자체) | 2 | `src/orchestration/pureWs/swingV2Entry.ts` | `PUREWS_SWING_V2_MAX_CONCURRENT` |
 | Drift halt | `walletDeltaHaltSol=0.2` | `src/risk/walletDeltaComparator.ts` | `WALLET_DELTA_HALT_SOL` |

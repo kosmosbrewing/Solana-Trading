@@ -616,6 +616,14 @@ async function main() {
     if (config.kolHunterLiveCanaryEnabled && !config.kolHunterPaperOnly) {
       liveLanesEnabled.push('KOL_HUNTER_LIVE_CANARY');
     }
+    if (config.kolHunterRotationChaseTopupLiveCanaryEnabled) {
+      const chaseTopupLiveActive = config.kolHunterLiveCanaryEnabled && !config.kolHunterPaperOnly;
+      liveLanesEnabled.push(
+        chaseTopupLiveActive
+          ? 'KOL_HUNTER_ROTATION_CHASE_TOPUP_LIVE_CANARY'
+          : 'KOL_HUNTER_ROTATION_CHASE_TOPUP_LIVE_CANARY_CONFIGURED_INACTIVE'
+      );
+    }
     if (liveLanesEnabled.length > 0) {
       log.warn(
         `[STAGE_GATE_REMINDER] live canary flags=[${liveLanesEnabled.join(',')}]. ` +

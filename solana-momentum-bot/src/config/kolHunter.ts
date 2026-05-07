@@ -416,6 +416,27 @@ export const kolHunter = {
   // KOL_HUNTER_LIVE_CANARY_ENABLED 는 KOL live 공통 상위 gate 이다. 이 flag 는 smart-v3 만
   // live 에서 paper fallback 시켜 rotation chase-topup 단일 live canary 를 열 때 사용한다.
   kolHunterSmartV3LiveEnabled: boolOptional('KOL_HUNTER_SMART_V3_LIVE_ENABLED', true),
+  // 2026-05-07: smart-v3 live 품질 fallback. 최근 live 근거에서 live entry 대부분이
+  // EXIT_LIQUIDITY_UNKNOWN 또는 holder concentration flag 를 동반했다. Paper 는 계속
+  // 관측하되 live 는 unknown/unclean 품질에서 fail-closed 로 둔다.
+  kolHunterSmartV3LiveStrictQualityEnabled: boolOptional('KOL_HUNTER_SMART_V3_LIVE_STRICT_QUALITY_ENABLED', true),
+  kolHunterSmartV3LiveBlockExitLiquidityUnknown: boolOptional('KOL_HUNTER_SMART_V3_LIVE_BLOCK_EXIT_LIQUIDITY_UNKNOWN', true),
+  kolHunterSmartV3LiveBlockTokenQualityUnknown: boolOptional('KOL_HUNTER_SMART_V3_LIVE_BLOCK_TOKEN_QUALITY_UNKNOWN', true),
+  kolHunterSmartV3LiveBlockUncleanToken: boolOptional('KOL_HUNTER_SMART_V3_LIVE_BLOCK_UNCLEAN_TOKEN', true),
+  // 진입 전 참여 KOL sell 이 있으면 분배 위험으로 본다. 충분한 fresh independent
+  // re-buy 와 no-sell window 가 확인될 때만 live 를 허용한다.
+  kolHunterSmartV3PreEntrySellLiveBlockEnabled: boolOptional('KOL_HUNTER_SMART_V3_PRE_ENTRY_SELL_LIVE_BLOCK_ENABLED', true),
+  kolHunterSmartV3PreEntrySellMinNoSellSec: numEnv('KOL_HUNTER_SMART_V3_PRE_ENTRY_SELL_MIN_NO_SELL_SEC', '60'),
+  // Runtime posterior-lite combo guard. 의도적으로 보수적인 in-memory guard 다:
+  // 반복 손실 smart-v3 KOL 조합은 paper 로 돌리고, 신규/미확인 조합은 계속 관측한다.
+  kolHunterSmartV3ComboDecayEnabled: boolOptional('KOL_HUNTER_SMART_V3_COMBO_DECAY_ENABLED', true),
+  kolHunterSmartV3ComboDecayCooldownMs: numEnv('KOL_HUNTER_SMART_V3_COMBO_DECAY_COOLDOWN_MS', '21600000'),
+  kolHunterSmartV3ComboDecayMinCloses: numEnv('KOL_HUNTER_SMART_V3_COMBO_DECAY_MIN_CLOSES', '2'),
+  kolHunterSmartV3ComboDecayLossRatio: numEnv('KOL_HUNTER_SMART_V3_COMBO_DECAY_LOSS_RATIO', '1.0'),
+  // KOL fill-price advantage guard. KOL fill 수량을 알 수 있으면, live 는 KOL
+  // 가중 평균 진입가보다 현저히 불리한 quote 를 추격하지 않는다.
+  kolHunterSmartV3KolFillAdvantageEnabled: boolOptional('KOL_HUNTER_SMART_V3_KOL_FILL_ADVANTAGE_ENABLED', true),
+  kolHunterSmartV3MaxAdverseKolFillPct: numEnv('KOL_HUNTER_SMART_V3_MAX_ADVERSE_KOL_FILL_PCT', '0.03'),
   // observe window: anti-correlation 60s 와 충돌하지 않도록 120s default. 60s 는 env override 가능.
   kolHunterSmartV3ObserveWindowSec: numEnv('KOL_HUNTER_SMART_V3_OBSERVE_WINDOW_SEC', '120'),
   kolHunterSmartV3MinPullbackPct: numEnv('KOL_HUNTER_SMART_V3_MIN_PULLBACK_PCT', '0.10'),

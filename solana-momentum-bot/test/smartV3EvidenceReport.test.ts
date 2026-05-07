@@ -410,6 +410,50 @@ describe('smart-v3-evidence-report', () => {
     expect(cohort?.rentAdjustedNetSol).toBeCloseTo(-0.05);
   });
 
+  it('summarizes smart-v3 paper live-block reasons and flags', async () => {
+    await writeFile(path.join(dir, 'smart-v3-paper-trades.jsonl'), jsonl([
+      ...smartV3TradeRows(1, {
+        positionId: 'blocked-quality',
+        smartV3LiveEligibleShadow: false,
+        smartV3LiveBlockReason: 'smart_v3_live_quality_fallback',
+        smartV3LiveBlockFlags: ['SMART_V3_LIVE_QUALITY_FALLBACK', 'EXIT_LIQUIDITY_UNKNOWN'],
+      }),
+      ...smartV3TradeRows(1, {
+        positionId: 'blocked-sell',
+        smartV3LiveEligibleShadow: false,
+        extras: {
+          smartV3LiveBlockReason: 'smart_v3_pre_entry_sell_risk',
+          smartV3LiveBlockFlags: ['SMART_V3_RECENT_SELL_NO_SELL_WINDOW'],
+        },
+      }),
+      ...smartV3TradeRows(1, {
+        positionId: 'eligible',
+        smartV3LiveEligibleShadow: true,
+      }),
+    ]));
+    await writeFile(path.join(dir, 'smart-v3-live-trades.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+
+    const report = await buildSmartV3EvidenceReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [30, 60, 300, 1800],
+      roundTripCostPct: 0.005,
+      assumedAtaRentSol: 0.002,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.tradeRows.paperLiveEligibleRows).toBe(1);
+    expect(report.tradeRows.paperLiveBlockedRows).toBe(2);
+    expect(report.tradeRows.paperLiveBlockReasons.map((entry) => entry.reason)).toEqual([
+      'smart_v3_live_quality_fallback',
+      'smart_v3_pre_entry_sell_risk',
+    ]);
+    const markdown = renderSmartV3EvidenceReportMarkdown(report);
+    expect(markdown).toContain('paper live-blocked rows: 2');
+    expect(markdown).toContain('SMART_V3_LIVE_QUALITY_FALLBACK:1');
+  });
+
   it('rejects non-positive copyable smart-v3 cohorts without tail evidence', async () => {
     await writeFile(path.join(dir, 'smart-v3-paper-trades.jsonl'), jsonl([]));
     await writeFile(path.join(dir, 'smart-v3-live-trades.jsonl'), jsonl(smartV3TradeRows(50, {

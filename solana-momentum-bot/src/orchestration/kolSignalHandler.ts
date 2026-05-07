@@ -314,6 +314,7 @@ export interface PaperPosition {
   smartV3LiveBlockReason?: string | null;
   smartV3LiveBlockFlags?: string[];
   smartV3LiveEligibilityEvaluatedAtMs?: number;
+  smartV3EntryComboKey?: string | null;
   smartV3LiveHardCutReentry?: boolean;
   smartV3HardCutParentPositionId?: string;
   smartV3HardCutAtMs?: number;
@@ -381,6 +382,7 @@ interface PaperEntryOptions {
   smartV3LiveBlockReason?: string | null;
   smartV3LiveBlockFlags?: string[];
   smartV3LiveEligibilityEvaluatedAtMs?: number;
+  smartV3EntryComboKey?: string | null;
   smartV3LiveHardCutReentry?: boolean;
   smartV3HardCutParentPositionId?: string;
   smartV3HardCutAtMs?: number;
@@ -1053,9 +1055,82 @@ function checkKolAlphaDecay(kolIds: string[]): { blocked: boolean; reason?: stri
   return { blocked: false };
 }
 
+interface SmartV3ComboCloseRecord {
+  closedAtMs: number;
+  pnlSol: number;
+  isWin: boolean;
+  mode: 'paper' | 'live';
+}
+const recentSmartV3ComboCloses = new Map<string, SmartV3ComboCloseRecord[]>();
+const SMART_V3_COMBO_DECAY_RING_SIZE = 5;
+
+function smartV3ComboKey(kolIds: string[]): string | null {
+  const normalized = [...new Set(kolIds.map((id) => id.trim().toLowerCase()).filter(Boolean))]
+    .sort();
+  if (normalized.length < 2) return null;
+  return normalized.join('+');
+}
+
+function pushSmartV3ComboCloseRecord(key: string, pnlSol: number, mode: 'paper' | 'live'): void {
+  if (!config.kolHunterSmartV3ComboDecayEnabled) return;
+  const buf = recentSmartV3ComboCloses.get(key) ?? [];
+  buf.push({ closedAtMs: Date.now(), pnlSol, isWin: pnlSol > 0, mode });
+  while (buf.length > SMART_V3_COMBO_DECAY_RING_SIZE) buf.shift();
+  recentSmartV3ComboCloses.set(key, buf);
+  if (recentSmartV3ComboCloses.size > 500) {
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    for (const [combo, recs] of recentSmartV3ComboCloses) {
+      const last = recs[recs.length - 1];
+      if (last && last.closedAtMs < cutoff) recentSmartV3ComboCloses.delete(combo);
+    }
+  }
+}
+
+function markSmartV3ComboClosed(pos: PaperPosition, pnlSol: number, mode: 'paper' | 'live'): void {
+  if (!config.kolHunterSmartV3ComboDecayEnabled) return;
+  if (!isSmartV3Position(pos) || isRotationFamilyMarkoutPosition(pos)) return;
+  const key = pos.smartV3EntryComboKey ?? smartV3ComboKey(pos.participatingKols.map((k) => k.id));
+  if (!key) return;
+  pushSmartV3ComboCloseRecord(key, pnlSol, mode);
+}
+
+function checkSmartV3ComboDecay(kolIds: string[]): { blocked: boolean; reason?: string; flags: string[] } {
+  if (!config.kolHunterSmartV3ComboDecayEnabled) return { blocked: false, flags: [] };
+  const key = smartV3ComboKey(kolIds);
+  if (!key) return { blocked: false, flags: [] };
+  const minCloses = Math.max(1, config.kolHunterSmartV3ComboDecayMinCloses);
+  const buf = recentSmartV3ComboCloses.get(key);
+  if (!buf) return { blocked: false, flags: [] };
+  const recentWindow = buf.slice(-Math.max(minCloses, 1));
+  const hasRecentLiveLoss = recentWindow.some((row) => row.mode === 'live' && !row.isWin);
+  if (buf.length < minCloses && !hasRecentLiveLoss) return { blocked: false, flags: [] };
+  const cooldownMs = config.kolHunterSmartV3ComboDecayCooldownMs;
+  if (cooldownMs <= 0) return { blocked: false, flags: [] };
+  const recent = buf.length < minCloses ? recentWindow : buf.slice(-minCloses);
+  const cumPnl = recent.reduce((sum, row) => sum + row.pnlSol, 0);
+  const losses = recent.filter((row) => !row.isWin).length;
+  const liveLosses = recent.filter((row) => row.mode === 'live' && !row.isWin).length;
+  const lossRatio = losses / recent.length;
+  const lastCloseMs = recent[recent.length - 1].closedAtMs;
+  const elapsedMs = Date.now() - lastCloseMs;
+  if (cumPnl >= 0 && liveLosses === 0) return { blocked: false, flags: [] };
+  if (liveLosses === 0 && lossRatio < config.kolHunterSmartV3ComboDecayLossRatio) return { blocked: false, flags: [] };
+  if (elapsedMs >= cooldownMs) return { blocked: false, flags: [] };
+  return {
+    blocked: true,
+    reason: `smart_v3_combo_decay:${key}:cum=${cumPnl.toFixed(4)}:losses=${losses}/${recent.length}:liveLosses=${liveLosses}`,
+    flags: [
+      'SMART_V3_COMBO_DECAY',
+      `SMART_V3_COMBO_DECAY_LOSSES_${losses}_OF_${recent.length}`,
+      `SMART_V3_COMBO_DECAY_LIVE_LOSSES_${liveLosses}`,
+    ],
+  };
+}
+
 /** 테스트용 reset. */
 export function resetKolDecayForTests(): void {
   recentKolCloses.clear();
+  recentSmartV3ComboCloses.clear();
 }
 // 2026-04-26 P1 audit fix #5: O(N) `[...active.values()].filter(p => p.tokenMint === X)` 패턴이
 // 매 price tick / kol_swap 마다 hot path 에 등장. token → positionId Set 인덱스로 O(1) 화.
@@ -2530,9 +2605,41 @@ interface KolEntrySignal {
   paperOnlyReason?: string;
 }
 
+function isSmartV3LiveStrictQualityFlag(flag: string): boolean {
+  const upper = flag.toUpperCase();
+  if (config.kolHunterSmartV3LiveBlockExitLiquidityUnknown && upper === 'EXIT_LIQUIDITY_UNKNOWN') return true;
+  if (config.kolHunterSmartV3LiveBlockTokenQualityUnknown && upper === 'TOKEN_QUALITY_UNKNOWN') return true;
+  if (config.kolHunterSmartV3LiveBlockUncleanToken && upper.startsWith('UNCLEAN_TOKEN')) return true;
+  if (config.kolHunterSmartV3LiveBlockUncleanToken && upper.startsWith('HOLDER_')) return true;
+  if (upper === 'NO_SELL_ROUTE' || upper === 'SELL_NO_ROUTE' || upper === 'NO_ROUTE') return true;
+  if (upper.includes('NO_SELL_ROUTE') || upper.includes('RUG')) return true;
+  return false;
+}
+
+function smartV3KolWeightedFillPrice(cand: PendingCandidate, fresh: SmartV3FreshContext): number | null {
+  if (!config.kolHunterSmartV3KolFillAdvantageEnabled) return null;
+  const freshKolIds = new Set(fresh.freshParticipatingKols.map((k) => k.id.toLowerCase()));
+  if (freshKolIds.size === 0) return null;
+  let solAmount = 0;
+  let tokenAmount = 0;
+  for (const tx of mergeRecentAndCandidateTxs(cand)) {
+    if (tx.tokenMint !== cand.tokenMint || tx.action !== 'buy') continue;
+    if (!freshKolIds.has(tx.kolId.toLowerCase())) continue;
+    const sol = typeof tx.solAmount === 'number' && Number.isFinite(tx.solAmount) ? tx.solAmount : 0;
+    const tokens = typeof tx.tokenAmount === 'number' && Number.isFinite(tx.tokenAmount) ? tx.tokenAmount : 0;
+    if (sol <= 0 || tokens <= 0) continue;
+    solAmount += sol;
+    tokenAmount += tokens;
+  }
+  if (solAmount <= 0 || tokenAmount <= 0) return null;
+  return solAmount / tokenAmount;
+}
+
 function evaluateSmartV3LiveFallback(
+  cand: PendingCandidate,
   entrySignal: KolEntrySignal,
-  fresh: SmartV3FreshContext
+  fresh: SmartV3FreshContext,
+  entryFlags: string[]
 ): { fallback: boolean; reason?: string; flags: string[] } {
   if (entrySignal.label !== 'smart-v3') return { fallback: false, flags: [] };
   const flags: string[] = [];
@@ -2549,6 +2656,36 @@ function evaluateSmartV3LiveFallback(
   if (weakPostSellRecovery) {
     flags.push('SMART_V3_POST_SELL_RECOVERY_WEAK');
   }
+  if (config.kolHunterSmartV3PreEntrySellLiveBlockEnabled && fresh.preEntrySellKols > 0) {
+    const minNoSellSec = Math.max(0, config.kolHunterSmartV3PreEntrySellMinNoSellSec);
+    const noSellWindowSatisfied =
+      fresh.secondsSinceLastSell !== null && fresh.secondsSinceLastSell >= minNoSellSec;
+    if (fresh.freshBuyKolsAfterLastSell < config.kolHunterSmartV3MinFreshAfterSellKols) {
+      flags.push('SMART_V3_PRE_ENTRY_SELL_LIVE_DISABLED');
+    } else if (!noSellWindowSatisfied) {
+      flags.push('SMART_V3_RECENT_SELL_NO_SELL_WINDOW');
+    }
+  }
+  if (config.kolHunterSmartV3LiveStrictQualityEnabled) {
+    const qualityFlags = entryFlags.filter(isSmartV3LiveStrictQualityFlag);
+    if (qualityFlags.length > 0) {
+      flags.push('SMART_V3_LIVE_QUALITY_FALLBACK');
+      flags.push(...qualityFlags.map((flag) => `SMART_V3_QUALITY_${flag}`));
+    }
+  }
+  const comboDecay = checkSmartV3ComboDecay(fresh.freshParticipatingKols.map((k) => k.id));
+  if (comboDecay.blocked) {
+    flags.push(...comboDecay.flags);
+  }
+  const smart = cand.smartV3;
+  const kolFillPrice = smartV3KolWeightedFillPrice(cand, fresh);
+  if (smart && kolFillPrice && kolFillPrice > 0) {
+    const adversePct = smart.currentPrice / kolFillPrice - 1;
+    if (adversePct > config.kolHunterSmartV3MaxAdverseKolFillPct) {
+      flags.push('SMART_V3_ENTRY_ADVANTAGE_ADVERSE');
+      flags.push(`SMART_V3_KOL_FILL_ADVERSE_${adversePct.toFixed(4)}`);
+    }
+  }
   if (flags.length === 0) return { fallback: false, flags: [] };
   return {
     fallback: true,
@@ -2556,6 +2693,14 @@ function evaluateSmartV3LiveFallback(
       ? 'smart_v3_live_disabled'
       : flags.includes('SMART_V3_PULLBACK_LIVE_DISABLED')
       ? 'smart_v3_pullback_live_disabled'
+      : flags.includes('SMART_V3_LIVE_QUALITY_FALLBACK')
+      ? 'smart_v3_live_quality_fallback'
+      : flags.includes('SMART_V3_PRE_ENTRY_SELL_LIVE_DISABLED') || flags.includes('SMART_V3_RECENT_SELL_NO_SELL_WINDOW')
+      ? 'smart_v3_pre_entry_sell_risk'
+      : flags.includes('SMART_V3_COMBO_DECAY')
+      ? 'smart_v3_combo_decay'
+      : flags.includes('SMART_V3_ENTRY_ADVANTAGE_ADVERSE')
+      ? 'smart_v3_entry_advantage_adverse'
       : 'smart_v3_post_sell_recovery_weak',
     flags,
   };
@@ -2616,7 +2761,7 @@ function buildSmartV3LiveEligibilityShadow(options: {
   if (!liveGate.allowLive) {
     return blocked(liveGate.reason ?? 'live_gate_blocked', liveGate.flags);
   }
-  const fallback = evaluateSmartV3LiveFallback(entrySignal, smartFresh);
+  const fallback = evaluateSmartV3LiveFallback(cand, entrySignal, smartFresh, entryFlags);
   if (fallback.fallback) {
     return blocked(fallback.reason ?? 'smart_v3_live_fallback', fallback.flags);
   }
@@ -4047,6 +4192,9 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
           ? smartFresh.freshParticipatingKols
           : smartFresh.shadowFreshParticipatingKols)
       : entrySignal.entryParticipatingKols,
+    smartV3EntryComboKey: entrySignal.label === 'smart-v3'
+      ? smartV3ComboKey(smartFresh.freshParticipatingKols.map((k) => k.id))
+      : undefined,
   };
   const entryPolicyMetrics = entrySignal.label === 'smart-v3'
     ? {
@@ -4386,7 +4534,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       });
       return;
     }
-    const smartV3LiveFallback = evaluateSmartV3LiveFallback(entrySignal, smartFresh);
+    const smartV3LiveFallback = evaluateSmartV3LiveFallback(cand, entrySignal, smartFresh, entryFlags);
     if (smartV3LiveFallback.fallback) {
       const policyFlags = [
         ...entryFlags,
@@ -5035,6 +5183,7 @@ async function enterPaperPosition(
       smartV3LiveBlockReason: options.smartV3LiveBlockReason,
       smartV3LiveBlockFlags: options.smartV3LiveBlockFlags,
       smartV3LiveEligibilityEvaluatedAtMs: options.smartV3LiveEligibilityEvaluatedAtMs,
+      smartV3EntryComboKey: options.smartV3EntryComboKey,
       smartV3HardCutParentPositionId: options.smartV3HardCutParentPositionId,
       smartV3HardCutAtMs: options.smartV3HardCutAtMs,
       smartV3HardCutEntryPrice: options.smartV3HardCutEntryPrice,
@@ -6144,6 +6293,7 @@ function closePosition(
     markTokenClosed(pos.tokenMint);
     // 2026-04-29 (P0-2): KOL alpha decay tracking — paper close 도 KOL track-record 누적.
     markKolClosed(pos.participatingKols.map((k) => k.id), netSol);
+    markSmartV3ComboClosed(pos, netSol, 'paper');
   }
 
   // price feed unsubscribe — token 의 모든 A/B arm 이 닫힌 뒤에만 정리
@@ -6583,6 +6733,7 @@ function buildKolBaseLedgerRecord(
     smartV3LiveBlockReason: pos.smartV3LiveBlockReason ?? null,
     smartV3LiveBlockFlags: pos.smartV3LiveBlockFlags ?? null,
     smartV3LiveEligibilityEvaluatedAtMs: pos.smartV3LiveEligibilityEvaluatedAtMs ?? null,
+    smartV3EntryComboKey: pos.smartV3EntryComboKey ?? null,
     smartV3LiveHardCutReentry: pos.smartV3LiveHardCutReentry ?? false,
     smartV3HardCutParentPositionId: pos.smartV3HardCutParentPositionId ?? null,
     smartV3HardCutAtMs: pos.smartV3HardCutAtMs ?? null,
@@ -6664,6 +6815,7 @@ function buildKolLedgerExtras(
     smartV3LiveBlockReason: pos.smartV3LiveBlockReason ?? null,
     smartV3LiveBlockFlags: pos.smartV3LiveBlockFlags ?? null,
     smartV3LiveEligibilityEvaluatedAtMs: pos.smartV3LiveEligibilityEvaluatedAtMs ?? null,
+    smartV3EntryComboKey: pos.smartV3EntryComboKey ?? null,
     smartV3LiveHardCutReentry: pos.smartV3LiveHardCutReentry ?? false,
     smartV3HardCutParentPositionId: pos.smartV3HardCutParentPositionId ?? null,
     smartV3HardCutAtMs: pos.smartV3HardCutAtMs ?? null,
@@ -7370,6 +7522,7 @@ async function enterLivePosition(
     smartV3LiveBlockReason: options.smartV3LiveBlockReason,
     smartV3LiveBlockFlags: options.smartV3LiveBlockFlags,
     smartV3LiveEligibilityEvaluatedAtMs: options.smartV3LiveEligibilityEvaluatedAtMs,
+    smartV3EntryComboKey: options.smartV3EntryComboKey,
     smartV3HardCutParentPositionId: options.smartV3HardCutParentPositionId,
     smartV3HardCutAtMs: options.smartV3HardCutAtMs,
     smartV3HardCutEntryPrice: options.smartV3HardCutEntryPrice,
@@ -8053,6 +8206,7 @@ async function closeLivePosition(
     maybeRegisterSmartV3LiveHardCutReentry(pos, exitPrice, effectiveReason);
     // 2026-04-29 (P0-2): KOL alpha decay tracking — live close 가 우선 신호 (real wallet delta).
     markKolClosed(pos.participatingKols.map((k) => k.id), pnl);
+    markSmartV3ComboClosed(pos, pnl, 'live');
   }
 
   // 2026-04-30 (Sprint 1.B3): live trade outcome 을 jsonl 로 persist (DSR validator 입력).
@@ -8469,4 +8623,14 @@ export function __testSetKolLiveSellRetryDelaysMs(delays?: readonly number[]): v
   setLiveSellRetryDelaysMsForTests(delays, 'normal');
   setLiveSellRetryDelaysMsForTests(delays, 'hard_cut');
   setLiveSellRetryDelaysMsForTests(delays, 'structural');
+}
+
+export function __testRecordSmartV3ComboClose(
+  kolIds: string[],
+  pnlSol: number,
+  mode: 'paper' | 'live' = 'paper'
+): void {
+  const key = smartV3ComboKey(kolIds);
+  if (!key) return;
+  pushSmartV3ComboCloseRecord(key, pnlSol, mode);
 }

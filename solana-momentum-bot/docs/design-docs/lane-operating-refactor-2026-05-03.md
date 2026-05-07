@@ -11,7 +11,7 @@ The three active strategy surfaces now have separate operating roles:
 
 | Strategy surface | Role | Live stance | Paper / observation stance |
 |---|---|---|---|
-| `kol_hunter_smart_v3` | Main 5x lane | Live canary allowed only through fresh 2+ active KOL velocity plus live gates | Paper fallback for pullback, weak recovery, dev risk, halt, or guard fallback |
+| `kol_hunter_smart_v3` | Main 5x lane | Live canary allowed only through fresh 2+ active KOL velocity plus strict quality, distribution, combo, and entry-advantage gates | Paper fallback for pullback, weak recovery, dev risk, quality risk, prior sell risk, bad combo, halt, or guard fallback |
 | `kol_hunter_rotation_v1` | Fast-compound KOL auxiliary lane | Keep canonical live disabled; only promoted `rotation_chase_topup_v1` can run as live canary | Paper control plus parallel parameter arms, underfill arm, and chase-topup canary evidence |
 | `pure_ws botflow` | New-pair / botflow rebuild candidate | Live off | Paper/observe-only with T+ markouts, digest, and parameter arms |
 
@@ -35,6 +35,10 @@ Implemented operating shape:
 - inactive/shadow KOLs are auxiliary confirmation only and cannot create live eligibility;
 - pure pullback live entry falls back to paper via `SMART_V3_PULLBACK_LIVE_DISABLED`;
 - weak post-sell recovery falls back to paper via `SMART_V3_POST_SELL_RECOVERY_WEAK`;
+- live strict quality is fail-closed by default: `EXIT_LIQUIDITY_UNKNOWN`, `TOKEN_QUALITY_UNKNOWN`, `UNCLEAN_TOKEN*`, holder-risk, no-route, and rug-like flags fallback to paper via `SMART_V3_LIVE_QUALITY_FALLBACK`;
+- any pre-entry same-mint KOL sell requires enough fresh independent re-buy plus a no-sell window before live; otherwise it falls back to paper via `SMART_V3_PRE_ENTRY_SELL_LIVE_DISABLED` or `SMART_V3_RECENT_SELL_NO_SELL_WINDOW`;
+- repeated losing smart-v3 KOL combinations are tracked in-memory and temporarily fallback to paper via `SMART_V3_COMBO_DECAY`; the combo key is fixed from entry-time fresh KOLs, primary paper and live closes both feed the memory, live losses are weighted as stronger evidence, and shadow arms are excluded;
+- if fresh KOL fill-price data exists and our quote is materially above the KOL weighted entry, live falls back to paper via `SMART_V3_ENTRY_ADVANTAGE_ADVERSE`;
 - dev wallet blacklist/watchlist status gates live to paper, while allowlist is telemetry only;
 - unknown dev status remains fail-open and does not bypass survival, sell-route, drift, halt, or canary guards.
 - MAE fast-fail is default-on for smart-v3 probe positions: if pre-T1 MFE stays below `+3%`, token-only MAE reaches `-6%`, minimum elapsed is met, and no participating KOL has freshly topped up, the position closes as `smart_v3_mae_fast_fail`;
@@ -55,8 +59,10 @@ Implemented diagnostic transfer from rotation/deep-research work:
 - smart-v3 evidence uses 30/60/300/1800 second buy/sell T+ coverage, not rotation's 15/30 second fast-harvest objective;
 - smart-v3 evidence verdict coverage is close-anchor based: each cohort close `positionId` must have ok buy/sell markouts for the required horizon; raw row ok-rate is shown separately and does not promote a cohort;
 - smart-v3 close ledgers now carry `smartV3CopyableEdge` shadow fields so copyable result can use actual per-close drag when available;
+- smart-v3 close ledgers also carry `smartV3EntryComboKey`, so later reinforcement KOLs do not rewrite the entry combo used for posterior-lite decay;
 - smart-v3 closed-trade W/L is copyable/wallet-first, with token-only W/L shown separately because token-only wins can still be non-copyable after wallet drag;
 - smart-v3 closed-trade cohorts show MAE fast-fail, recovery-hold, and pre-T1 MFE band counts (`10-20`, `20-30`, `30-50`) as diagnostics;
+- smart-v3 evidence now summarizes paper rows that would have been live-blocked, including top `smartV3LiveBlockReason` and `smartV3LiveBlockFlags`, so strict gates can be audited against false-negative T+ markouts;
 - live smart-v3 buy/sell markout anchors carry `mode`, `armName`, `parameterVersion`, and `entryReason` to avoid paper/live or pullback/velocity cohort bleed;
 - the report adds no runtime strategy env; `SKIP_SMART_V3_EVIDENCE_REPORT` and `SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT` are sync/report-only shell knobs;
 - verdicts are report-only and must not change live eligibility, hard-cut, trail, or ticket sizing without a separate ADR.

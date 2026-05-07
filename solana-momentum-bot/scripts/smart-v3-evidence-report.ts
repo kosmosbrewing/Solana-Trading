@@ -126,6 +126,9 @@ interface SmartV3EvidenceReport {
   tradeRows: {
     paperRows: number;
     paperLiveEligibleRows: number;
+    paperLiveBlockedRows: number;
+    paperLiveBlockReasons: Array<{ reason: string; count: number }>;
+    paperLiveBlockFlags: Array<{ reason: string; count: number }>;
     liveRows: number;
     byCohort: SmartV3CohortStats[];
   };
@@ -285,6 +288,18 @@ function countTop(rows: JsonRow[], fn: (row: JsonRow) => string, limit = 5): Arr
     .map(([reason, count]) => ({ reason, count }));
 }
 
+function countTopStrings(values: string[], limit = 8): Array<{ reason: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const value of values) {
+    const key = value || '(missing)';
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, limit)
+    .map(([reason, count]) => ({ reason, count }));
+}
+
 function extrasOf(row: JsonRow): JsonRow {
   return obj(row.extras);
 }
@@ -334,6 +349,26 @@ function isSmartV3Row(row: JsonRow): boolean {
 function isSmartV3LiveEligibleShadowRow(row: JsonRow): boolean {
   const extras = extrasOf(row);
   return row.smartV3LiveEligibleShadow === true || extras.smartV3LiveEligibleShadow === true;
+}
+
+function smartV3LiveBlockReasonOf(row: JsonRow): string {
+  const extras = extrasOf(row);
+  return str(row.smartV3LiveBlockReason) || str(extras.smartV3LiveBlockReason);
+}
+
+function smartV3LiveBlockFlagsOf(row: JsonRow): string[] {
+  const extras = extrasOf(row);
+  const direct = Array.isArray(row.smartV3LiveBlockFlags) ? row.smartV3LiveBlockFlags : [];
+  const extra = Array.isArray(extras.smartV3LiveBlockFlags) ? extras.smartV3LiveBlockFlags : [];
+  return [...direct, ...extra].filter((flag): flag is string => typeof flag === 'string' && flag.length > 0);
+}
+
+function isSmartV3LiveBlockedShadowRow(row: JsonRow): boolean {
+  const extras = extrasOf(row);
+  return row.smartV3LiveEligibleShadow === false ||
+    extras.smartV3LiveEligibleShadow === false ||
+    smartV3LiveBlockReasonOf(row).length > 0 ||
+    smartV3LiveBlockFlagsOf(row).length > 0;
 }
 
 function isOkMarkout(row: JsonRow): boolean {
@@ -716,6 +751,7 @@ export async function buildSmartV3EvidenceReport(args: Args): Promise<SmartV3Evi
     readJsonl(kolTransferInput),
   ]);
   const paperLiveEligibleRows = paperRows.filter(isSmartV3LiveEligibleShadowRow);
+  const paperLiveBlockedRows = paperRows.filter(isSmartV3LiveBlockedShadowRow);
   const cohortInputs = [
     ...groupByEntryReason('paper', paperRows).map((group) => ({
       rows: group.rows,
@@ -811,6 +847,9 @@ export async function buildSmartV3EvidenceReport(args: Args): Promise<SmartV3Evi
     tradeRows: {
       paperRows: paperRows.length,
       paperLiveEligibleRows: paperLiveEligibleRows.length,
+      paperLiveBlockedRows: paperLiveBlockedRows.length,
+      paperLiveBlockReasons: countTop(paperLiveBlockedRows, smartV3LiveBlockReasonOf, 8),
+      paperLiveBlockFlags: countTopStrings(paperLiveBlockedRows.flatMap(smartV3LiveBlockFlagsOf), 12),
       liveRows: liveRows.length,
       byCohort: cohorts,
     },
@@ -935,7 +974,14 @@ export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceRepor
   lines.push('## Closed Trades');
   lines.push(`- paper rows: ${report.tradeRows.paperRows}`);
   lines.push(`- paper live-eligible rows: ${report.tradeRows.paperLiveEligibleRows}`);
+  lines.push(`- paper live-blocked rows: ${report.tradeRows.paperLiveBlockedRows}`);
   lines.push(`- live rows: ${report.tradeRows.liveRows}`);
+  if (report.tradeRows.paperLiveBlockReasons.length > 0) {
+    lines.push(`- live block reasons: ${report.tradeRows.paperLiveBlockReasons.map((entry) => `${entry.reason}:${entry.count}`).join(', ')}`);
+  }
+  if (report.tradeRows.paperLiveBlockFlags.length > 0) {
+    lines.push(`- live block flags: ${report.tradeRows.paperLiveBlockFlags.map((entry) => `${entry.reason}:${entry.count}`).join(', ')}`);
+  }
   lines.push('');
   lines.push('| cohort | rows | copyable W/L | token W/L | netSOL | tokenOnly | rent-adj | edgeRows | hardCut | maeFastFail | recoveryHold | preT1 10-20 | preT1 20-30 | preT1 30-50 | med worst MAE | med hardCut MAE | T1 | T2 | T3 | 5x | medHold | top exits |');
   lines.push('|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|');

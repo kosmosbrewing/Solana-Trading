@@ -333,6 +333,7 @@ jest.mock('../src/utils/config', () => ({
     kolHunterRotationPaperAssumedNetworkFeeSol: 0.000105,
     // 2026-04-26: smart-v3 는 production main default 이지만 기존 state-machine tests 는 v1 명시.
     kolHunterSmartV3Enabled: false,
+    kolHunterSmartV3LiveEnabled: true,
     kolHunterSmartV3ObserveWindowSec: 120,
     kolHunterSmartV3MinPullbackPct: 0.10,
     kolHunterSmartV3MaxDrawdownFromKolEntryPct: 0.15,
@@ -489,6 +490,7 @@ describe('kolSignalHandler — state machine', () => {
     resetJupiter429Metric();
     const mockedConfig = (require('../src/utils/config') as any).config;
     mockedConfig.kolHunterSmartV3Enabled = false;
+    mockedConfig.kolHunterSmartV3LiveEnabled = true;
     mockedConfig.kolHunterRotationV1Enabled = false;
     mockedConfig.kolHunterRotationV1LiveEnabled = false;
     mockedConfig.kolHunterRotationV1MinIndependentKol = 1;
@@ -2421,9 +2423,11 @@ describe('kolSignalHandler — state machine', () => {
 
     beforeEach(() => {
       mockedConfig.kolHunterSmartV3Enabled = true;
+      mockedConfig.kolHunterSmartV3LiveEnabled = true;
     });
     afterEach(() => {
       mockedConfig.kolHunterSmartV3Enabled = false;
+      mockedConfig.kolHunterSmartV3LiveEnabled = true;
       mockedConfig.kolHunterPaperOnly = true;
       mockedConfig.kolHunterLiveCanaryEnabled = false;
       mockedConfig.kolHunterLiveMinIndependentKol = 2;
@@ -2530,6 +2534,30 @@ describe('kolSignalHandler — state machine', () => {
       expect(positions[0].kolEntryReason).toBe('pullback');
       expect(positions[0].survivalFlags).toContain('SMART_V3_PULLBACK_LIVE_DISABLED');
       expect(policyRecordsWithFlag('SMART_V3_PULLBACK_LIVE_DISABLED').length).toBeGreaterThan(0);
+    });
+
+    it('smart-v3 live disabled 이면 KOL live canary active 여도 paper fallback 한다', async () => {
+      const { ctx, executeBuy, insertTrade } = buildLiveCtx();
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterSmartV3LiveEnabled = false;
+
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      await handleKolSwap(buyTx('ghost', 'A', MINT_SMART));
+      await flushAsync();
+
+      expect(executeBuy).not.toHaveBeenCalled();
+      expect(insertTrade).not.toHaveBeenCalled();
+
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].isLive).toBeFalsy();
+      expect(positions[0].armName).toBe('kol_hunter_smart_v3');
+      expect(positions[0].kolEntryReason).toBe('velocity');
+      expect(positions[0].survivalFlags).toContain('SMART_V3_LIVE_DISABLED');
+      expect(policyRecordsWithFlag('SMART_V3_LIVE_DISABLED').length).toBeGreaterThan(0);
     });
 
     it('fresh S/A velocity trigger 는 live canary 에 진입한다', async () => {

@@ -1936,6 +1936,7 @@ export function initKolHunter(
     `[KOL_HUNTER] initialized — paperOnly=${config.kolHunterPaperOnly} ` +
     `survival=${securityClient ? 'enabled' : 'skipped (no client)'} ` +
     `liveCanary=${liveCapable ? 'ENABLED (live wallet exposure)' : 'disabled'} ` +
+    `smartV3Live=${config.kolHunterSmartV3LiveEnabled ? 'enabled' : 'disabled'} ` +
     `rotationChaseTopupLiveCanary=${config.kolHunterRotationChaseTopupLiveCanaryEnabled ? 'configured' : 'disabled'}`
   );
 }
@@ -2535,6 +2536,9 @@ function evaluateSmartV3LiveFallback(
 ): { fallback: boolean; reason?: string; flags: string[] } {
   if (entrySignal.label !== 'smart-v3') return { fallback: false, flags: [] };
   const flags: string[] = [];
+  if (!config.kolHunterSmartV3LiveEnabled) {
+    flags.push('SMART_V3_LIVE_DISABLED');
+  }
   if (entrySignal.entryReason === 'pullback' && !config.kolHunterSmartV3PullbackLiveEnabled) {
     flags.push('SMART_V3_PULLBACK_LIVE_DISABLED');
   }
@@ -2548,7 +2552,9 @@ function evaluateSmartV3LiveFallback(
   if (flags.length === 0) return { fallback: false, flags: [] };
   return {
     fallback: true,
-    reason: flags.includes('SMART_V3_PULLBACK_LIVE_DISABLED')
+    reason: flags.includes('SMART_V3_LIVE_DISABLED')
+      ? 'smart_v3_live_disabled'
+      : flags.includes('SMART_V3_PULLBACK_LIVE_DISABLED')
       ? 'smart_v3_pullback_live_disabled'
       : 'smart_v3_post_sell_recovery_weak',
     flags,

@@ -615,6 +615,9 @@ async function main() {
     // 2026-04-27: KOL live canary triple-flag gate (kolHunterLiveCanaryEnabled + !kolHunterPaperOnly + tradingMode='live')
     if (config.kolHunterLiveCanaryEnabled && !config.kolHunterPaperOnly) {
       liveLanesEnabled.push('KOL_HUNTER_LIVE_CANARY');
+      if (!config.kolHunterSmartV3LiveEnabled) {
+        liveLanesEnabled.push('KOL_HUNTER_SMART_V3_LIVE_DISABLED');
+      }
     }
     if (config.kolHunterRotationChaseTopupLiveCanaryEnabled) {
       const chaseTopupLiveActive = config.kolHunterLiveCanaryEnabled && !config.kolHunterPaperOnly;

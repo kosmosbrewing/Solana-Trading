@@ -413,6 +413,9 @@ export const kolHunter = {
   // 운영자 결정: 돈을 번 적 없는 v1 single-KOL wait entry 대신 smart-v3 trigger 를 main 으로 사용.
   // KOL_HUNTER_ENABLED=false 기본값과 paper-only guard 는 그대로 — 실제 wallet risk 없음.
   kolHunterSmartV3Enabled: boolOptional('KOL_HUNTER_SMART_V3_ENABLED', true),
+  // KOL_HUNTER_LIVE_CANARY_ENABLED 는 KOL live 공통 상위 gate 이다. 이 flag 는 smart-v3 만
+  // live 에서 paper fallback 시켜 rotation chase-topup 단일 live canary 를 열 때 사용한다.
+  kolHunterSmartV3LiveEnabled: boolOptional('KOL_HUNTER_SMART_V3_LIVE_ENABLED', true),
   // observe window: anti-correlation 60s 와 충돌하지 않도록 120s default. 60s 는 env override 가능.
   kolHunterSmartV3ObserveWindowSec: numEnv('KOL_HUNTER_SMART_V3_OBSERVE_WINDOW_SEC', '120'),
   kolHunterSmartV3MinPullbackPct: numEnv('KOL_HUNTER_SMART_V3_MIN_PULLBACK_PCT', '0.10'),

@@ -29,7 +29,7 @@
 | `bootstrap_10s` | **signal-only** | cupsey/pure_ws trigger source. `executionRrReject=99.0` 로 실거래 100% 억제. |
 | **`kol_hunter_smart_v3`** | **main 5x lane / live canary with strict paper fallback** | Fresh active 2+ KOL velocity 중심. A+A 허용, S+B/A+B 는 fresh S/A strength rule 미통과. Pullback-only / weak post-sell recovery / unclean quality / repeated losing KOL combo / adverse KOL-fill price 는 paper fallback. Pre-T1 dead probe 는 MAE fast-fail, 살아난 probe 는 bounded recovery-hold. |
 | ↳ `kol_hunter` swing-v2 | paper shadow (`KOL_HUNTER_SWING_V2_ENABLED`) | multi-KOL S/A ≥2 + score ≥5.0 자격 시 동시 생성. 600s stalk / 25% trail / 1.10 floor. |
-| **`kol_hunter_rotation_v1`** | **fast-compound auxiliary / canonical live off; chase-topup canary only** | T+15/T+30 post-cost harvesting 실험. Control + `rotation_fast15_v1` / `rotation_cost_guard_v1` / `rotation_quality_strict_v1` / `rotation_underfill_v1` / `rotation_chase_topup_v1`. Canonical live는 닫고, 승격된 chase-topup arm만 별도 live canary 키로 연다. |
+| **`kol_hunter_rotation_v1`** | **fast-compound auxiliary / canonical live off; underfill canary only** | T+15/T+30 post-cost harvesting 실험. Control + `rotation_fast15_v1` / `rotation_cost_guard_v1` / `rotation_quality_strict_v1` / `rotation_underfill_v1` / `rotation_chase_topup_v1`. Canonical live와 chase-topup live는 닫고, S/A KOL fill보다 유리한 `rotation_underfill_v1`만 별도 live canary 키로 연다. |
 | **`pure_ws botflow`** | **paper/observe-only rebuild candidate** | New-pair / botflow microstructure 관측. Mayhem copy 금지. T+15/30/60/180/300/1800 markout + 15분 digest + paper arms. |
 | `migration_reclaim` | signal-only (env) | Migration Handoff Reclaim. paper 대기. |
 | `volume_spike` / `fib_pullback` / `core_momentum` | **dormant** | 5m 해상도, 밈코인 비적합 |
@@ -71,7 +71,7 @@ npm run kol:smart-v3-evidence-report -- --since 24h --realtime-dir data/realtime
 - Report-only; no live entry, exit, ticket, or guard behavior changes.
 - Verdict T+ coverage is close-anchor based by `positionId × anchorType × horizon`, not just observed-row ok-rate.
 - Closed Trades uses copyable/wallet-first W/L and shows token-only W/L separately.
-- Closed Trades also shows MAE fast-fail, recovery-hold, and pre-T1 MFE band counts (`10-20`, `20-30`, `30-50`).
+- Closed Trades also shows MAE fast-fail, recovery-hold, MFE floor-exit/stage counts, and pre-T1 MFE band counts (`10-20`, `20-30`, `30-50`).
 - It also summarizes paper rows that would have been live-blocked, including `smartV3LiveBlockReason` and `smartV3LiveBlockFlags`.
 - Runtime `.env` override is not required for the 2026-05-06 MAE or 2026-05-07 live-quality fallback changes; defaults are active. `SKIP_SMART_V3_EVIDENCE_REPORT` and `SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT` are sync/report-only shell knobs.
 
@@ -112,6 +112,33 @@ KOL_HUNTER_SMART_V3_MAE_RECOVERY_HOLD_ENABLED=true
 KOL_HUNTER_SMART_V3_MAE_RECOVERY_MIN_MFE_PCT=0.10
 KOL_HUNTER_SMART_V3_MAE_RECOVERY_MAX_MAE_PCT=0.18
 KOL_HUNTER_SMART_V3_MAE_RECOVERY_HOLD_SEC=12
+```
+
+### MFE Winner Preservation
+
+Smart-v3 exit tuning is not trying to force a higher close win-rate. It raises the stop to breakeven/profit floors once a position has already shown MFE, so it does not round-trip into an ordinary loss.
+
+Default stages:
+
+```text
+MFE >= +10%   -> breakeven_watch, floor +0.5%
+MFE >= +20%   -> profit_lock,     floor +2.0%
+MFE >= +50%   -> runner,          floor +10.0%
+MFE >= +100%  -> convexity,       floor +20.0%
+```
+
+If current price crosses below the active token-only floor, smart-v3 exits immediately as `smart_v3_mfe_floor_exit` and logs `KOL_HUNTER_SMART_V3_MFE_FLOOR_EXIT`. This is a stop trigger, not a close blocker. Structural/liquidity/insider safety exits still remain highest priority.
+
+```bash
+KOL_HUNTER_SMART_V3_MFE_FLOOR_ENABLED=true
+KOL_HUNTER_SMART_V3_MFE_BREAKEVEN_THRESHOLD_PCT=0.10
+KOL_HUNTER_SMART_V3_MFE_PROFIT_LOCK_THRESHOLD_PCT=0.20
+KOL_HUNTER_SMART_V3_MFE_RUNNER_THRESHOLD_PCT=0.50
+KOL_HUNTER_SMART_V3_MFE_CONVEXITY_THRESHOLD_PCT=1.00
+KOL_HUNTER_SMART_V3_MFE_BREAKEVEN_FLOOR_PCT=0.005
+KOL_HUNTER_SMART_V3_MFE_PROFIT_LOCK_FLOOR_PCT=0.02
+KOL_HUNTER_SMART_V3_MFE_RUNNER_FLOOR_PCT=0.10
+KOL_HUNTER_SMART_V3_MFE_CONVEXITY_FLOOR_PCT=0.20
 ```
 
 Smart-v3 live entry hardening (2026-05-07):
@@ -157,19 +184,25 @@ KOL_HUNTER_SMART_V3_KOL_FILL_ADVANTAGE_ENABLED=true
 KOL_HUNTER_SMART_V3_MAX_ADVERSE_KOL_FILL_PCT=0.03
 ```
 
-Rotation live canary operating rule (2026-05-06):
+Rotation live canary operating rule (2026-05-08):
 
 ```text
 KOL_HUNTER_ROTATION_V1_ENABLED=true
 KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=false
 
-# single promoted arm only
-KOL_HUNTER_ROTATION_CHASE_TOPUP_LIVE_CANARY_ENABLED=true
+# demoted to paper after live/paper divergence
+KOL_HUNTER_ROTATION_CHASE_TOPUP_LIVE_CANARY_ENABLED=false
 KOL_HUNTER_ROTATION_CHASE_TOPUP_PARAMETER_VERSION=rotation-chase-topup-v1.0.0
 KOL_HUNTER_ROTATION_CHASE_TOPUP_PAPER_ENABLED=true
 KOL_HUNTER_ROTATION_CHASE_TOPUP_MIN_BUYS=2
 KOL_HUNTER_ROTATION_CHASE_TOPUP_MIN_TOPUP_STRENGTH=0.08
 KOL_HUNTER_ROTATION_CHASE_TOPUP_MAX_RECENT_SELL_SEC=60
+
+# single promoted arm only
+KOL_HUNTER_ROTATION_UNDERFILL_PAPER_ENABLED=true
+KOL_HUNTER_ROTATION_UNDERFILL_LIVE_CANARY_ENABLED=true
+KOL_HUNTER_ROTATION_UNDERFILL_LIVE_EXIT_FLOW_ENABLED=true
+KOL_HUNTER_ROTATION_UNDERFILL_LIVE_STRICT_QUALITY_ENABLED=true
 ```
 
 `KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=true` opens the broader canonical rotation-v1 live path and is not the current operating intent.

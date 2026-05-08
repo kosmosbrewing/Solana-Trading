@@ -19,7 +19,7 @@ Important current state:
 
 - The project has three strategy surfaces:
   - `kol_hunter_smart_v3`: main 5x lane.
-  - `kol_hunter_rotation_v1`: fast-compound auxiliary lane. Canonical live remains disabled; only promoted `rotation_chase_topup_v1` may run as a live canary.
+  - `kol_hunter_rotation_v1`: fast-compound auxiliary lane. Canonical live remains disabled; `rotation_chase_topup_v1` is paper-only and only promoted `rotation_underfill_v1` may run as a live canary.
   - `pure_ws botflow`: paper/observe-only new-pair botflow rebuild candidate.
 - Current Real Asset Guard:
   - wallet floor `0.7 SOL`;

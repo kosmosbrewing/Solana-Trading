@@ -19,6 +19,7 @@ import {
 } from './kol-transfer-posterior-report';
 
 const ROTATION_PAPER_TRADES_FILE = 'rotation-v1-paper-trades.jsonl';
+const ROTATION_LIVE_TRADES_FILE = 'rotation-v1-live-trades.jsonl';
 const KOL_PAPER_TRADES_FILE = 'kol-paper-trades.jsonl';
 const KOL_TRANSFER_INPUT_FILE = 'kol-transfers.jsonl';
 const EVIDENCE_MIN_CLOSES = 50;
@@ -121,6 +122,16 @@ interface WinnerEntryDiagnosticStats {
   unknownQualityRate: number | null;
 }
 
+interface UnderfillEntryQualityStats {
+  scope: 'paper' | 'live';
+  rows: number;
+  referenceRows: number;
+  medianEntryVsKolFillPct: number | null;
+  p75EntryVsKolFillPct: number | null;
+  favorableRows: number;
+  unfavorableRows: number;
+}
+
 type EvidenceVerdictStatus =
   | 'COLLECT'
   | 'DATA_GAP'
@@ -180,6 +191,12 @@ interface RotationReport {
     winnerEntryPairings: WinnerEntryPairingStats[];
     winnerEntryDiagnostics: WinnerEntryDiagnosticStats[];
   };
+  liveTrades: {
+    totalRows: number;
+    rotationRows: number;
+    byArm: PaperArmStats[];
+  };
+  underfillEntryQuality: UnderfillEntryQualityStats[];
   evidenceVerdicts: EvidenceVerdict[];
   noTrade: {
     totalRows: number;
@@ -570,6 +587,51 @@ function rowSurvivalFlags(row: JsonRow): string[] {
   const fromExtras = obj(row.extras).survivalFlags;
   const raw = Array.isArray(direct) ? direct : Array.isArray(fromExtras) ? fromExtras : [];
   return raw.flatMap((flag) => typeof flag === 'string' ? [flag] : []);
+}
+
+function rowUnderfillReferencePrice(row: JsonRow): number | null {
+  const direct = num(row.underfillReferencePrice);
+  if (direct != null && direct > 0) return direct;
+  const extras = obj(row.extras);
+  const extraDirect = num(extras.underfillReferencePrice);
+  if (extraDirect != null && extraDirect > 0) return extraDirect;
+  const sol = num(row.underfillReferenceSolAmount) ?? num(extras.underfillReferenceSolAmount);
+  const tokens = num(row.underfillReferenceTokenAmount) ?? num(extras.underfillReferenceTokenAmount);
+  if (sol != null && tokens != null && sol > 0 && tokens > 0) return sol / tokens;
+  return null;
+}
+
+function rowEntryPriceForUnderfillQuality(row: JsonRow): number | null {
+  return num(row.entryPriceTokenOnly) ??
+    num(row.entryPrice) ??
+    num(obj(row.extras).entryPrice);
+}
+
+function buildUnderfillEntryQualityStats(
+  scope: UnderfillEntryQualityStats['scope'],
+  rows: JsonRow[]
+): UnderfillEntryQualityStats {
+  const underfillRows = rows.filter((row) => {
+    const arm = rowArmName(row);
+    return arm === 'rotation_underfill_v1';
+  });
+  const diffs = underfillRows
+    .map((row) => {
+      const ref = rowUnderfillReferencePrice(row);
+      const entry = rowEntryPriceForUnderfillQuality(row);
+      if (ref == null || entry == null || ref <= 0 || entry <= 0) return null;
+      return entry / ref - 1;
+    })
+    .filter((value): value is number => value != null && Number.isFinite(value));
+  return {
+    scope,
+    rows: underfillRows.length,
+    referenceRows: diffs.length,
+    medianEntryVsKolFillPct: percentile(diffs, 0.5),
+    p75EntryVsKolFillPct: percentile(diffs, 0.75),
+    favorableRows: diffs.filter((value) => value < 0).length,
+    unfavorableRows: diffs.filter((value) => value >= 0).length,
+  };
 }
 
 function hasHighRiskFlag(row: JsonRow): boolean {
@@ -1167,6 +1229,25 @@ function renderWinnerEntryDiagnosticsTable(rows: WinnerEntryDiagnosticStats[]): 
   ].join('\n');
 }
 
+function renderUnderfillEntryQualityTable(rows: UnderfillEntryQualityStats[]): string {
+  if (rows.length === 0) return '_No underfill entry-quality rows._';
+  const lines = [
+    '| scope | rows | reference rows | favorable/unfavorable | median entry vs KOL fill | p75 entry vs KOL fill |',
+    '|---|---:|---:|---:|---:|---:|',
+  ];
+  for (const row of rows) {
+    lines.push([
+      row.scope,
+      row.rows,
+      row.referenceRows,
+      `${row.favorableRows}/${row.unfavorableRows}`,
+      formatPct(row.medianEntryVsKolFillPct),
+      formatPct(row.p75EntryVsKolFillPct),
+    ].join(' | ').replace(/^/, '| ').replace(/$/, ' |'));
+  }
+  return lines.join('\n');
+}
+
 function renderEvidenceVerdicts(rows: EvidenceVerdict[]): string {
   if (rows.length === 0) return '_No rotation paper arm evidence yet._';
   return [
@@ -1293,6 +1374,7 @@ function renderReport(report: RotationReport): string {
     '',
     `Rotation trade markout rows: ${report.tradeMarkouts.rotationRows}/${report.tradeMarkouts.totalRows}`,
     `Rotation paper close rows: ${report.paperTrades.rotationRows}/${report.paperTrades.totalRows}`,
+    `Rotation live close rows: ${report.liveTrades.rotationRows}/${report.liveTrades.totalRows}`,
     `Rotation no-trade probe rows: ${report.noTrade.probeRows}/${report.noTrade.totalRows}`,
     '',
     '## KOL Transfer Posterior — Rotation Fit',
@@ -1314,6 +1396,13 @@ function renderReport(report: RotationReport): string {
     '## Winner Entry Diagnostics',
     '> Splits winner vs non-winner exits by flow/risk features. This is report-only and must not be used as a live allowlist.',
     renderWinnerEntryDiagnosticsTable(report.paperTrades.winnerEntryDiagnostics),
+    '',
+    '## Underfill Entry Quality',
+    '> Entry/KOL-fill diff is the canary equivalence check. Negative values mean our entry was below the S/A KOL weighted fill.',
+    renderUnderfillEntryQualityTable(report.underfillEntryQuality),
+    '',
+    '## Live Trades By Arm',
+    renderPaperArmTable(report.liveTrades.byArm),
     '',
     '## Evidence Verdict By Arm',
     renderEvidenceVerdicts(report.evidenceVerdicts),
@@ -1360,11 +1449,12 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
   const assumedAtaRentSol = args.assumedAtaRentSol ?? 0.00207408;
   const assumedNetworkFeeSol = args.assumedNetworkFeeSol ?? 0.000105;
   const kolTransferInput = args.kolTransferInput ?? path.resolve(process.cwd(), 'data/research', KOL_TRANSFER_INPUT_FILE);
-  const [tradeMarkouts, missedAlpha, tokenQuality, projectedPaperTrades, kolTransferRows] = await Promise.all([
+  const [tradeMarkouts, missedAlpha, tokenQuality, projectedPaperTrades, projectedLiveTrades, kolTransferRows] = await Promise.all([
     readJsonl(path.join(args.realtimeDir, 'trade-markouts.jsonl')),
     readJsonl(path.join(args.realtimeDir, 'missed-alpha.jsonl')),
     readJsonl(path.join(args.realtimeDir, 'token-quality-observations.jsonl')),
     readJsonl(path.join(args.realtimeDir, paperTradesFileName)),
+    readJsonl(path.join(args.realtimeDir, ROTATION_LIVE_TRADES_FILE)),
     readJsonl(kolTransferInput),
   ]);
   const paperTrades = projectedPaperTrades.length > 0 || paperTradesFileName !== ROTATION_PAPER_TRADES_FILE
@@ -1385,6 +1475,11 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
     return Number.isFinite(t) && t >= args.sinceMs;
   });
   const rotationPaperRows = recentPaperRows.filter(isRotationPaperTrade);
+  const recentLiveRows = projectedLiveTrades.filter((row) => {
+    const t = timeMs(row.closedAt) || timeMs(row.exitTimeSec) || timeMs(row.entryTimeSec);
+    return Number.isFinite(t) && t >= args.sinceMs;
+  });
+  const rotationLiveRows = recentLiveRows.filter(isRotationPaperTrade);
   const recentNoTradeRows = missedAlpha.filter((row) => {
     const t = timeMs(probe(row).firedAt) || timeMs(row.rejectedAt);
     return Number.isFinite(t) && t >= args.sinceMs && isRotationNoTrade(row);
@@ -1435,6 +1530,15 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
       winnerEntryPairings,
       winnerEntryDiagnostics,
     },
+    liveTrades: {
+      totalRows: recentLiveRows.length,
+      rotationRows: rotationLiveRows.length,
+      byArm: buildPaperArmStats(rotationLiveRows, assumedAtaRentSol, assumedNetworkFeeSol),
+    },
+    underfillEntryQuality: [
+      buildUnderfillEntryQualityStats('paper', rotationPaperRows),
+      buildUnderfillEntryQualityStats('live', rotationLiveRows),
+    ],
     evidenceVerdicts: buildEvidenceVerdicts(paperArmStats, armMarkouts),
     noTrade: {
       totalRows: recentNoTradeRows.length,

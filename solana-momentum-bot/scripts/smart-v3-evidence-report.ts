@@ -70,6 +70,12 @@ interface SmartV3CohortStats {
   hardCutRows: number;
   maeFastFailRows: number;
   maeRecoveryHoldRows: number;
+  mfeStageProbeRows: number;
+  mfeStageBreakevenRows: number;
+  mfeStageProfitLockRows: number;
+  mfeStageRunnerRows: number;
+  mfeStageConvexityRows: number;
+  profitFloorExitRows: number;
   preT1Mfe10_20Rows: number;
   preT1Mfe20_30Rows: number;
   preT1Mfe30_50Rows: number;
@@ -371,6 +377,19 @@ function isSmartV3LiveBlockedShadowRow(row: JsonRow): boolean {
     smartV3LiveBlockFlagsOf(row).length > 0;
 }
 
+function smartV3MfeStageOf(row: JsonRow): string {
+  const extras = extrasOf(row);
+  return str(row.smartV3MfeStage) || str(extras.smartV3MfeStage);
+}
+
+function isSmartV3ProfitFloorExit(row: JsonRow): boolean {
+  const extras = extrasOf(row);
+  const reason = str(row.exitReason) || str(row.closeReason) || str(extras.exitReason) || str(extras.closeReason);
+  return reason === 'smart_v3_mfe_floor_exit' ||
+    row.smartV3ProfitFloorExit === true ||
+    extras.smartV3ProfitFloorExit === true;
+}
+
 function isOkMarkout(row: JsonRow): boolean {
   return str(row.quoteStatus) === 'ok' && num(row.deltaPct) != null;
 }
@@ -521,6 +540,12 @@ function summarizeTradeCohort(
     hardCutRows: rows.filter(isHardCut).length,
     maeFastFailRows: rows.filter(isSmartV3MaeFastFail).length,
     maeRecoveryHoldRows: rows.filter(isSmartV3MaeRecoveryHold).length,
+    mfeStageProbeRows: rows.filter((row) => smartV3MfeStageOf(row) === 'probe').length,
+    mfeStageBreakevenRows: rows.filter((row) => smartV3MfeStageOf(row) === 'breakeven_watch').length,
+    mfeStageProfitLockRows: rows.filter((row) => smartV3MfeStageOf(row) === 'profit_lock').length,
+    mfeStageRunnerRows: rows.filter((row) => smartV3MfeStageOf(row) === 'runner').length,
+    mfeStageConvexityRows: rows.filter((row) => smartV3MfeStageOf(row) === 'convexity').length,
+    profitFloorExitRows: rows.filter(isSmartV3ProfitFloorExit).length,
     preT1Mfe10_20Rows: rows.filter((row) => smartV3PreT1MfeBand(row) === '10_20').length,
     preT1Mfe20_30Rows: rows.filter((row) => smartV3PreT1MfeBand(row) === '20_30').length,
     preT1Mfe30_50Rows: rows.filter((row) => smartV3PreT1MfeBand(row) === '30_50').length,
@@ -983,8 +1008,8 @@ export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceRepor
     lines.push(`- live block flags: ${report.tradeRows.paperLiveBlockFlags.map((entry) => `${entry.reason}:${entry.count}`).join(', ')}`);
   }
   lines.push('');
-  lines.push('| cohort | rows | copyable W/L | token W/L | netSOL | tokenOnly | rent-adj | edgeRows | hardCut | maeFastFail | recoveryHold | preT1 10-20 | preT1 20-30 | preT1 30-50 | med worst MAE | med hardCut MAE | T1 | T2 | T3 | 5x | medHold | top exits |');
-  lines.push('|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|');
+  lines.push('| cohort | rows | copyable W/L | token W/L | netSOL | tokenOnly | rent-adj | edgeRows | hardCut | maeFastFail | recoveryHold | floorExit | stage>=20 | stage>=50 | stage>=100 | preT1 10-20 | preT1 20-30 | preT1 30-50 | med worst MAE | med hardCut MAE | T1 | T2 | T3 | 5x | medHold | top exits |');
+  lines.push('|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|');
   for (const cohort of report.tradeRows.byCohort) {
     lines.push([
       `| ${cohort.cohort}`,
@@ -998,6 +1023,10 @@ export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceRepor
       cohort.hardCutRows,
       cohort.maeFastFailRows,
       cohort.maeRecoveryHoldRows,
+      cohort.profitFloorExitRows,
+      cohort.mfeStageProfitLockRows + cohort.mfeStageRunnerRows + cohort.mfeStageConvexityRows,
+      cohort.mfeStageRunnerRows + cohort.mfeStageConvexityRows,
+      cohort.mfeStageConvexityRows,
       cohort.preT1Mfe10_20Rows,
       cohort.preT1Mfe20_30Rows,
       cohort.preT1Mfe30_50Rows,
@@ -1011,7 +1040,7 @@ export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceRepor
       cohort.topExitReasons.map((entry) => `${entry.reason}:${entry.count}`).join(', ') || 'n/a',
     ].join(' | ') + ' |');
   }
-  if (report.tradeRows.byCohort.length === 0) lines.push('| n/a | 0 | 0/0 | 0/0 | +0.0000 | +0.0000 | +0.0000 | 0/0 | 0 | 0 | 0 | 0 | 0 | 0 | n/a | n/a | 0 | 0 | 0 | 0 | n/a | n/a |');
+  if (report.tradeRows.byCohort.length === 0) lines.push('| n/a | 0 | 0/0 | 0/0 | +0.0000 | +0.0000 | +0.0000 | 0/0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | n/a | n/a | 0 | 0 | 0 | 0 | n/a | n/a |');
   lines.push('');
 
   lines.push('## T+ After Buy');

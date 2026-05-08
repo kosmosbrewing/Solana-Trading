@@ -236,9 +236,8 @@ RPC call is required on the entry path.
 - uses the same short `15/30/60` primary validation clock as rotation-v1;
 - is paper-only by default under
   `KOL_HUNTER_ROTATION_CHASE_TOPUP_PAPER_ENABLED=true`.
-- can be promoted independently through
-  `KOL_HUNTER_ROTATION_CHASE_TOPUP_LIVE_CANARY_ENABLED=true` while canonical
-  `KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=false` remains closed.
+- was tested as an independent live canary, but 2026-05-08 live/paper
+  divergence demoted it back to paper-only.
 
 `rotation_exit_kol_flow_v1`:
 
@@ -429,7 +428,7 @@ This keeps historical reports working while making daily rotation paper review m
 ## Rollout
 
 1. Paper: enable `KOL_HUNTER_ROTATION_V1_ENABLED=true`, leave canonical live disabled when a paper-only shakeout is desired.
-2. Promoted chase-topup live canary: keep `KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=false` and enable only `KOL_HUNTER_ROTATION_CHASE_TOPUP_LIVE_CANARY_ENABLED=true`. This routes the single promoted arm through existing live canary gates without opening the broader rotation-v1 live path.
+2. Promoted underfill live canary: keep `KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=false`, keep `KOL_HUNTER_ROTATION_CHASE_TOPUP_LIVE_CANARY_ENABLED=false`, and enable only `KOL_HUNTER_ROTATION_UNDERFILL_LIVE_CANARY_ENABLED=true`. This routes the S/A underfill arm through existing live canary gates without opening the broader rotation-v1 live path. `KOL_HUNTER_ROTATION_UNDERFILL_LIVE_STRICT_QUALITY_ENABLED=true` keeps unknown/unclean quality on paper, and `KOL_HUNTER_ROTATION_UNDERFILL_LIVE_EXIT_FLOW_ENABLED=true` applies the exit-flow policy to the live underfill position.
 3. Full canonical rotation live: only after a separate ADR/evidence review, enable both `KOL_HUNTER_ROTATION_V1_ENABLED=true` and `KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=true`. Existing canary gates still apply, but this is not the current operating intent.
 4. Measure by `armName/kolEntryReason`:
    - closed netSol and token-only netPct;

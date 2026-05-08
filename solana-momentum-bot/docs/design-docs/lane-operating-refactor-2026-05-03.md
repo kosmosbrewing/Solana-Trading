@@ -12,7 +12,7 @@ The three active strategy surfaces now have separate operating roles:
 | Strategy surface | Role | Live stance | Paper / observation stance |
 |---|---|---|---|
 | `kol_hunter_smart_v3` | Main 5x lane | Live canary allowed only through fresh 2+ active KOL velocity plus strict quality, distribution, combo, and entry-advantage gates | Paper fallback for pullback, weak recovery, dev risk, quality risk, prior sell risk, bad combo, halt, or guard fallback |
-| `kol_hunter_rotation_v1` | Fast-compound KOL auxiliary lane | Keep canonical live disabled; only promoted `rotation_chase_topup_v1` can run as live canary | Paper control plus parallel parameter arms, underfill arm, and chase-topup canary evidence |
+| `kol_hunter_rotation_v1` | Fast-compound KOL auxiliary lane | Keep canonical live disabled; only promoted `rotation_underfill_v1` can run as live canary | Paper control plus parallel parameter arms, underfill arm, chase-topup paper, and entry-vs-KOL-fill canary evidence |
 | `pure_ws botflow` | New-pair / botflow rebuild candidate | Live off | Paper/observe-only with T+ markouts, digest, and parameter arms |
 
 The refactor keeps the old aggregate KOL ledgers for compatibility, but adds lane-level projection files for analysis.
@@ -43,7 +43,9 @@ Implemented operating shape:
 - unknown dev status remains fail-open and does not bypass survival, sell-route, drift, halt, or canary guards.
 - MAE fast-fail is default-on for smart-v3 probe positions: if pre-T1 MFE stays below `+3%`, token-only MAE reaches `-6%`, minimum elapsed is met, and no participating KOL has freshly topped up, the position closes as `smart_v3_mae_fast_fail`;
 - pre-T1 MFE recovery hold is default-on: if smart-v3 has reached at least `+10%` MFE, token-only MAE has not exceeded `-18%`, and no participating KOL has sold after entry, the first hard-cut event receives a short one-time hold window instead of immediate close;
-- pre-T1 MFE giveback is measurement-only: close rows record `smartV3PreT1MfeBand`, close pct, giveback pct, and breakeven-lock diagnostic flags so we can measure whether small winners are being cut before T1.
+- MFE winner preservation is default-on: once smart-v3 reaches `+10%/+20%/+50%/+100%` MFE, it enters `breakeven_watch` / `profit_lock` / `runner` / `convexity` and raises the stop to `+0.5%/+2%/+10%/+20%` token-only floor;
+- floor breach is an exit trigger (`smart_v3_mfe_floor_exit`), not a close blocker. Structural/liquidity/insider exits remain highest priority. The goal is not to inflate win-rate; it is to stop proven MFE candidates from being closed as losses before the 5x payoff has time to express;
+- pre-T1 MFE giveback remains measured: close rows record `smartV3PreT1MfeBand`, close pct, giveback pct, breakeven-lock diagnostic flags, MFE stage, profit floor, and floor-exit counters.
 
 Required analysis before scaling:
 
@@ -61,7 +63,7 @@ Implemented diagnostic transfer from rotation/deep-research work:
 - smart-v3 close ledgers now carry `smartV3CopyableEdge` shadow fields so copyable result can use actual per-close drag when available;
 - smart-v3 close ledgers also carry `smartV3EntryComboKey`, so later reinforcement KOLs do not rewrite the entry combo used for posterior-lite decay;
 - smart-v3 closed-trade W/L is copyable/wallet-first, with token-only W/L shown separately because token-only wins can still be non-copyable after wallet drag;
-- smart-v3 closed-trade cohorts show MAE fast-fail, recovery-hold, and pre-T1 MFE band counts (`10-20`, `20-30`, `30-50`) as diagnostics;
+- smart-v3 closed-trade cohorts show MAE fast-fail, recovery-hold, MFE floor-exit counts, stage counts (`>=20`, `>=50`, `>=100`), and pre-T1 MFE band counts (`10-20`, `20-30`, `30-50`) as diagnostics;
 - smart-v3 evidence now summarizes paper rows that would have been live-blocked, including top `smartV3LiveBlockReason` and `smartV3LiveBlockFlags`, so strict gates can be audited against false-negative T+ markouts;
 - live smart-v3 buy/sell markout anchors carry `mode`, `armName`, `parameterVersion`, and `entryReason` to avoid paper/live or pullback/velocity cohort bleed;
 - the report adds no runtime strategy env; `SKIP_SMART_V3_EVIDENCE_REPORT` and `SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT` are sync/report-only shell knobs;

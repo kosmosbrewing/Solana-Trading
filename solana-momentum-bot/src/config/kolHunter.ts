@@ -95,6 +95,18 @@ export const kolHunter = {
   kolHunterSmartV3MaeRecoveryMinMfePct: numEnv('KOL_HUNTER_SMART_V3_MAE_RECOVERY_MIN_MFE_PCT', '0.10'),
   kolHunterSmartV3MaeRecoveryMaxMaePct: numEnv('KOL_HUNTER_SMART_V3_MAE_RECOVERY_MAX_MAE_PCT', '0.18'),
   kolHunterSmartV3MaeRecoveryHoldSec: numEnv('KOL_HUNTER_SMART_V3_MAE_RECOVERY_HOLD_SEC', '12'),
+  // 2026-05-08: once smart-v3 has meaningful MFE, stop treating it as a dead probe.
+  // Non-structural exits below the stage floor are blocked so winners do not round-trip
+  // into losses before the 5x lane has a chance to express.
+  kolHunterSmartV3MfeFloorEnabled: boolOptional('KOL_HUNTER_SMART_V3_MFE_FLOOR_ENABLED', true),
+  kolHunterSmartV3MfeBreakevenThresholdPct: numEnv('KOL_HUNTER_SMART_V3_MFE_BREAKEVEN_THRESHOLD_PCT', '0.10'),
+  kolHunterSmartV3MfeProfitLockThresholdPct: numEnv('KOL_HUNTER_SMART_V3_MFE_PROFIT_LOCK_THRESHOLD_PCT', '0.20'),
+  kolHunterSmartV3MfeRunnerThresholdPct: numEnv('KOL_HUNTER_SMART_V3_MFE_RUNNER_THRESHOLD_PCT', '0.50'),
+  kolHunterSmartV3MfeConvexityThresholdPct: numEnv('KOL_HUNTER_SMART_V3_MFE_CONVEXITY_THRESHOLD_PCT', '1.00'),
+  kolHunterSmartV3MfeBreakevenFloorPct: numEnv('KOL_HUNTER_SMART_V3_MFE_BREAKEVEN_FLOOR_PCT', '0.005'),
+  kolHunterSmartV3MfeProfitLockFloorPct: numEnv('KOL_HUNTER_SMART_V3_MFE_PROFIT_LOCK_FLOOR_PCT', '0.02'),
+  kolHunterSmartV3MfeRunnerFloorPct: numEnv('KOL_HUNTER_SMART_V3_MFE_RUNNER_FLOOR_PCT', '0.10'),
+  kolHunterSmartV3MfeConvexityFloorPct: numEnv('KOL_HUNTER_SMART_V3_MFE_CONVEXITY_FLOOR_PCT', '0.20'),
   kolHunterT1Mfe: numEnv('KOL_HUNTER_T1_MFE', '0.50'),
   kolHunterT1TrailPct: numEnv('KOL_HUNTER_T1_TRAIL_PCT', '0.15'),
   kolHunterT2Mfe: numEnv('KOL_HUNTER_T2_MFE', '4.00'),
@@ -386,6 +398,11 @@ export const kolHunter = {
   // Hypothesis: a single active S/A KOL buy can be worth testing when our quote is below the
   // observed KOL reference price, provided the KOL has not sold. This is not a live lane.
   kolHunterRotationUnderfillPaperEnabled: boolOptional('KOL_HUNTER_ROTATION_UNDERFILL_PAPER_ENABLED', true),
+  // 2026-05-08: promote the stronger underfill entry profile as the narrow
+  // rotation live canary, while keeping chase-topup paper-only by default.
+  kolHunterRotationUnderfillLiveCanaryEnabled: boolOptional('KOL_HUNTER_ROTATION_UNDERFILL_LIVE_CANARY_ENABLED', false),
+  kolHunterRotationUnderfillLiveExitFlowEnabled: boolOptional('KOL_HUNTER_ROTATION_UNDERFILL_LIVE_EXIT_FLOW_ENABLED', true),
+  kolHunterRotationUnderfillLiveStrictQualityEnabled: boolOptional('KOL_HUNTER_ROTATION_UNDERFILL_LIVE_STRICT_QUALITY_ENABLED', true),
   kolHunterRotationUnderfillMinKolScore: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_MIN_KOL_SCORE', '0.45'),
   kolHunterRotationUnderfillMaxLastBuyAgeSec: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_MAX_LAST_BUY_AGE_SEC', '45'),
   kolHunterRotationUnderfillMaxRecentSellSec: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_MAX_RECENT_SELL_SEC', '60'),
@@ -413,8 +430,8 @@ export const kolHunter = {
   // 운영자 결정: 돈을 번 적 없는 v1 single-KOL wait entry 대신 smart-v3 trigger 를 main 으로 사용.
   // KOL_HUNTER_ENABLED=false 기본값과 paper-only guard 는 그대로 — 실제 wallet risk 없음.
   kolHunterSmartV3Enabled: boolOptional('KOL_HUNTER_SMART_V3_ENABLED', true),
-  // KOL_HUNTER_LIVE_CANARY_ENABLED 는 KOL live 공통 상위 gate 이다. 이 flag 는 smart-v3 만
-  // live 에서 paper fallback 시켜 rotation chase-topup 단일 live canary 를 열 때 사용한다.
+  // KOL_HUNTER_LIVE_CANARY_ENABLED 는 KOL live 공통 상위 gate 이다. smart-v3 live 는
+  // 별도 flag 로 막고, rotation arm 은 arm-specific live canary flag 로 승격한다.
   kolHunterSmartV3LiveEnabled: boolOptional('KOL_HUNTER_SMART_V3_LIVE_ENABLED', true),
   // 2026-05-07: smart-v3 live 품질 fallback. 최근 live 근거에서 live entry 대부분이
   // EXIT_LIQUIDITY_UNKNOWN 또는 holder concentration flag 를 동반했다. Paper 는 계속

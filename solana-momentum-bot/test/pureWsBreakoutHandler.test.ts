@@ -12,6 +12,7 @@ import {
 } from '../src/orchestration/pureWsBreakoutHandler';
 import { resetAllEntryHaltsForTests, triggerEntryHalt } from '../src/orchestration/entryIntegrity';
 import { resetWalletStopGuardForTests, setWalletStopGuardStateForTests } from '../src/risk/walletStopGuard';
+import { setLiveSellInitialBalanceRetryDelaysMsForTests } from '../src/executor/liveSellRetry';
 import type { BotContext } from '../src/orchestration/types';
 import type { MicroCandleBuilder } from '../src/realtime';
 import { config } from '../src/utils/config';
@@ -80,10 +81,12 @@ describe('pureWsBreakoutHandler — tiered runner', () => {
     resetPureWsLaneStateForTests();
     resetAllEntryHaltsForTests();
     resetWalletStopGuardForTests();
+    setLiveSellInitialBalanceRetryDelaysMsForTests([0, 0, 0, 0, 0]);
   });
 
   afterEach(() => {
     disableLane();
+    setLiveSellInitialBalanceRetryDelaysMsForTests();
   });
 
   it('PROBE hardcut closes when MAE ≤ -3%', async () => {

@@ -34,6 +34,7 @@ import { resolveSellReceivedSolFromSwapResult } from '../../executor/executor';
 import {
   executeLiveSellWithImmediateRetries,
   liveSellRetryMaxAttempts,
+  resolveLiveSellInitialTokenBalance,
   type LiveSellRetryUrgency,
 } from '../../executor/liveSellRetry';
 import { buildExcursionTelemetryRecord } from '../excursionTelemetry';
@@ -88,11 +89,16 @@ async function closePureWsPositionSerialized(
   if (ctx.tradingMode === 'live') {
     try {
       const sellExecutor = getPureWsExecutor(ctx);
-      // 2026-04-28 P0-C fix: tokenBalance + getBalance(solBefore) 병렬 (~250ms 단축).
-      const [tokenBalance, solBefore] = await Promise.all([
-        sellExecutor.getTokenBalance(pos.pairAddress),
-        sellExecutor.getBalance(),
-      ]);
+      const initialBalanceProbe = await resolveLiveSellInitialTokenBalance({
+        executor: sellExecutor,
+        tokenMint: pos.pairAddress,
+        context: `pure_ws:${id}`,
+        reason,
+        entryTxSignature: pos.entryTxSignature,
+        entryTimeSec: pos.entryTimeSec,
+      });
+      const tokenBalance = initialBalanceProbe.balance;
+      const solBefore = await sellExecutor.getBalance();
       if (tokenBalance > 0n) {
         const sellExecution = await executeLiveSellWithImmediateRetries({
           executor: sellExecutor,
@@ -104,6 +110,7 @@ async function closePureWsPositionSerialized(
           reason,
           syntheticSignature: `PUREWS_SELL_BALANCE_RECOVERED_${id}`,
           urgency: sellRetryUrgency,
+          allowBalanceRecovered: initialBalanceProbe.source !== 'entry_tx_post_balance',
         });
         sellRetryAttempts = sellExecution.attempts;
         sellRecoveredFromBalanceOnly = sellExecution.recoveredFromBalanceOnly;
@@ -198,7 +205,8 @@ async function closePureWsPositionSerialized(
         // sellCompleted=true 로 DB close 진행. 1회 critical notifier.
         log.warn(
           `[PUREWS_ORPHAN_CLOSE] ${id} ${pos.pairAddress.slice(0, 12)} zero token balance — ` +
-          `force closing (previousReason=${reason} entry=${pos.entryPrice.toFixed(8)} qty=${pos.quantity})`
+          `force closing (previousReason=${reason} attempts=${initialBalanceProbe.attempts} ` +
+          `entry=${pos.entryPrice.toFixed(8)} qty=${pos.quantity})`
         );
         reason = 'ORPHAN_NO_BALANCE';
         actualExitPrice = pos.entryPrice;  // pnl = 0

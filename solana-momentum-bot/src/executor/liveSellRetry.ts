@@ -7,6 +7,8 @@ export const LIVE_SELL_IMMEDIATE_RETRY_COUNT = 5;
 const DEFAULT_LIVE_SELL_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000, 4_000] as const;
 const HARD_CUT_LIVE_SELL_RETRY_DELAYS_MS = [0, 150, 300, 600, 1_200] as const;
 const STRUCTURAL_LIVE_SELL_RETRY_DELAYS_MS = [0, 100, 200, 400, 800] as const;
+const DEFAULT_INITIAL_BALANCE_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000, 4_000] as const;
+const DEFAULT_ENTRY_TX_FALLBACK_MAX_AGE_MS = 30_000;
 
 export type LiveSellRetryUrgency = 'normal' | 'hard_cut' | 'structural';
 
@@ -15,10 +17,12 @@ let liveSellRetryDelaysMsByUrgency: Record<LiveSellRetryUrgency, readonly number
   hard_cut: HARD_CUT_LIVE_SELL_RETRY_DELAYS_MS,
   structural: STRUCTURAL_LIVE_SELL_RETRY_DELAYS_MS,
 };
+let initialBalanceRetryDelaysMs: readonly number[] = DEFAULT_INITIAL_BALANCE_RETRY_DELAYS_MS;
 
 export interface LiveSellRetryExecutor {
   executeSell(tokenMint: string, amountRaw: bigint): Promise<SwapResult>;
   getTokenBalance(tokenMint: string): Promise<bigint>;
+  getTokenBalanceFromTransaction?(signature: string, tokenMint: string): Promise<bigint | null>;
 }
 
 export interface LiveSellRetryExecution {
@@ -44,9 +48,83 @@ export interface LiveSellRetryParams {
   allowBalanceRecovered?: boolean;
 }
 
+export interface LiveSellInitialBalanceProbe {
+  balance: bigint;
+  attempts: number;
+  source: 'rpc_balance' | 'entry_tx_post_balance' | 'zero_confirmed';
+}
+
+export interface LiveSellInitialBalanceParams {
+  executor: LiveSellRetryExecutor;
+  tokenMint: string;
+  context: string;
+  reason: string;
+  entryTxSignature?: string;
+  entryTimeSec?: number;
+  nowMs?: number;
+  entryTxFallbackMaxAgeMs?: number;
+}
+
 function waitLiveSellRetry(delayMs: number): Promise<void> {
   if (delayMs <= 0) return Promise.resolve();
   return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+export async function resolveLiveSellInitialTokenBalance(
+  params: LiveSellInitialBalanceParams
+): Promise<LiveSellInitialBalanceProbe> {
+  const { executor, tokenMint, context, reason, entryTxSignature } = params;
+  const maxAttempts = 1 + initialBalanceRetryDelaysMs.length;
+  const nowMs = params.nowMs ?? Date.now();
+  const fallbackMaxAgeMs = params.entryTxFallbackMaxAgeMs ?? DEFAULT_ENTRY_TX_FALLBACK_MAX_AGE_MS;
+  const entryAgeMs = typeof params.entryTimeSec === 'number'
+    ? nowMs - params.entryTimeSec * 1000
+    : 0;
+  const entryTxFallbackAllowed = entryAgeMs >= 0 && entryAgeMs <= fallbackMaxAgeMs;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (attempt > 1) {
+      const delayMs = initialBalanceRetryDelaysMs[attempt - 2] ?? 0;
+      await waitLiveSellRetry(delayMs);
+    }
+
+    const balance = await executor.getTokenBalance(tokenMint);
+    if (balance > 0n) {
+      if (attempt > 1) {
+        log.warn(
+          `[LIVE_SELL_INITIAL_BALANCE_SETTLED] ${context} reason=${reason} ` +
+          `attempt=${attempt}/${maxAttempts} balance=${balance.toString()}`
+        );
+      }
+      return { balance, attempts: attempt, source: 'rpc_balance' };
+    }
+
+    if (entryTxSignature && executor.getTokenBalanceFromTransaction && entryTxFallbackAllowed) {
+      const txBalance = await executor.getTokenBalanceFromTransaction(entryTxSignature, tokenMint);
+      if (txBalance != null && txBalance > 0n) {
+        log.warn(
+          `[LIVE_SELL_INITIAL_BALANCE_TX_FALLBACK] ${context} reason=${reason} ` +
+          `attempt=${attempt}/${maxAttempts} rpcBalance=0 txBalance=${txBalance.toString()} ` +
+          `entryTx=${entryTxSignature.slice(0, 12)} entryAgeMs=${entryAgeMs}`
+        );
+        return { balance: txBalance, attempts: attempt, source: 'entry_tx_post_balance' };
+      }
+    } else if (entryTxSignature && executor.getTokenBalanceFromTransaction && !entryTxFallbackAllowed && attempt === 1) {
+      log.warn(
+        `[LIVE_SELL_INITIAL_BALANCE_TX_FALLBACK_SKIPPED] ${context} reason=${reason} ` +
+        `entryAgeMs=${entryAgeMs} maxAgeMs=${fallbackMaxAgeMs}`
+      );
+    }
+
+    if (attempt < maxAttempts) {
+      log.warn(
+        `[LIVE_SELL_INITIAL_BALANCE_RETRY] ${context} reason=${reason} ` +
+        `attempt=${attempt}/${maxAttempts} balance=0`
+      );
+    }
+  }
+
+  return { balance: 0n, attempts: maxAttempts, source: 'zero_confirmed' };
 }
 
 function rawAmountRatio(numerator: bigint, denominator: bigint): number {
@@ -98,10 +176,16 @@ export async function executeLiveSellWithImmediateRetries(
       const currentBalance = await executor.getTokenBalance(tokenMint);
       if (currentBalance <= expectedRemainingBalance) {
         if (!allowBalanceRecovered) {
-          throw new Error(
+          lastErr = new Error(
             `sell retry balance recovered disabled; balance=${currentBalance.toString()} ` +
             `expectedRemaining=${expectedRemainingBalance.toString()}`
           );
+          log.warn(
+            `[LIVE_SELL_BALANCE_RECOVERY_SKIPPED] ${context} reason=${reason} ` +
+            `attempt=${attempt}/${maxAttempts} balance=${currentBalance.toString()} ` +
+            `expectedRemaining=${expectedRemainingBalance.toString()}`
+          );
+          continue;
         }
         const soldRaw = initialTokenBalance > currentBalance ? initialTokenBalance - currentBalance : 0n;
         const soldRatio = rawAmountRatio(soldRaw, initialTokenBalance);
@@ -167,4 +251,8 @@ export function setLiveSellRetryDelaysMsForTests(
     ...liveSellRetryDelaysMsByUrgency,
     [urgency]: delays,
   };
+}
+
+export function setLiveSellInitialBalanceRetryDelaysMsForTests(delays?: readonly number[]): void {
+  initialBalanceRetryDelaysMs = delays ?? DEFAULT_INITIAL_BALANCE_RETRY_DELAYS_MS;
 }

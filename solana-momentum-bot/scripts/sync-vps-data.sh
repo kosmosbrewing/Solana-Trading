@@ -67,6 +67,7 @@ fi
 # live-canary-report: 파일 only → default ON. live canary wallet-truth / 5x / catastrophic summary.
 # kol-transfer-report: 파일 only → default ON. data/research/kol-transfers.jsonl posterior summary.
 # smart-v3-evidence-report: 파일 only → default ON. smart-v3 projection + shared T+ verdict.
+# live-equivalence-report: 파일 only → default ON. paper/live gate divergence reason join.
 # trade-markout-report: 파일 only → default ON. 실제 buy/sell 이후 T+30/60/300/1800 coverage / continuation.
 # rotation-report: 파일 only → default ON. rotation lane T+15/30/60 entry/exit/no-trade feedback.
 # capitulation-report: 파일 only → default ON. capitulation rebound T+15/30/60/180/300/1800 feedback.
@@ -78,6 +79,7 @@ SKIP_TOKEN_QUALITY_REPORT="${SKIP_TOKEN_QUALITY_REPORT:-false}"
 SKIP_LIVE_CANARY_REPORT="${SKIP_LIVE_CANARY_REPORT:-false}"
 SKIP_KOL_TRANSFER_REPORT="${SKIP_KOL_TRANSFER_REPORT:-false}"
 SKIP_SMART_V3_EVIDENCE_REPORT="${SKIP_SMART_V3_EVIDENCE_REPORT:-false}"
+SKIP_LIVE_EQUIVALENCE_REPORT="${SKIP_LIVE_EQUIVALENCE_REPORT:-false}"
 SKIP_TRADE_MARKOUT_REPORT="${SKIP_TRADE_MARKOUT_REPORT:-false}"
 SKIP_PUREWS_TRADE_MARKOUT_REPORT="${SKIP_PUREWS_TRADE_MARKOUT_REPORT:-false}"
 SKIP_ROTATION_REPORT="${SKIP_ROTATION_REPORT:-false}"
@@ -349,6 +351,7 @@ write_sync_health_report() {
       "data/realtime/smart-v3-live-trades.jsonl" \
       "data/realtime/rotation-v1-paper-trades.jsonl" \
       "data/realtime/rotation-v1-live-trades.jsonl" \
+      "data/realtime/kol-live-equivalence.jsonl" \
       "data/realtime/capitulation-rebound-paper-trades.jsonl" \
       "data/realtime/pure-ws-paper-trades.jsonl" \
       "data/realtime/pure-ws-live-trades.jsonl" \
@@ -638,6 +641,21 @@ if [ "$SKIP_SMART_V3_EVIDENCE_REPORT" != "true" ]; then
   fi
 else
   echo "[sync-vps-data] smart-v3-evidence-report: SKIPPED (SKIP_SMART_V3_EVIDENCE_REPORT=true)"
+fi
+
+# ─── 7b. KOL live equivalence report (file-only) ───
+# Why: paper 는 들어갔지만 live 는 왜 막혔는지 후보 단위로 join 한다. API/RPC 호출 0건.
+if [ "$SKIP_LIVE_EQUIVALENCE_REPORT" != "true" ]; then
+  LIVE_EQUIVALENCE_MD="${ROOT_DIR}/reports/kol-live-equivalence-$(date +%Y-%m-%d).md"
+  LIVE_EQUIVALENCE_JSON="${ROOT_DIR}/reports/kol-live-equivalence-$(date +%Y-%m-%d).json"
+  echo "[sync-vps-data] live-equivalence-report: generating since=${TRADE_MARKOUT_SINCE}"
+  if (cd "${ROOT_DIR}" && npm run -s kol:live-equivalence-report -- --since "${TRADE_MARKOUT_SINCE}" --realtime-dir data/realtime --md "${LIVE_EQUIVALENCE_MD}" --json "${LIVE_EQUIVALENCE_JSON}" 2>&1 | tail -10); then
+    echo "[sync-vps-data] live-equivalence-report: ok → ${LIVE_EQUIVALENCE_MD}"
+  else
+    echo "[sync-vps-data] live-equivalence-report: WARN — generation failed (sync 자체는 정상)"
+  fi
+else
+  echo "[sync-vps-data] live-equivalence-report: SKIPPED (SKIP_LIVE_EQUIVALENCE_REPORT=true)"
 fi
 
 # ─── 8. Trade markout report (file-only) ───

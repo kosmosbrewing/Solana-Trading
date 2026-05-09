@@ -26,6 +26,7 @@
     "kol:transfer-backfill": "ts-node scripts/kol-transfer-backfill.ts",
     "kol:transfer-refresh": "bash scripts/kol-transfer-refresh.sh",
     "kol:transfer-report": "ts-node scripts/kol-transfer-posterior-report.ts",
+    "kol:live-equivalence-report": "ts-node scripts/kol-live-equivalence-report.ts",
     "purews:botflow-report": "ts-node scripts/pure-ws-botflow-report.ts",
     "purews:botflow-paper": "ts-node scripts/pure-ws-botflow-report.ts",
     "ops:trade-markout-audit": "ts-node scripts/trade-markout-audit.ts",

@@ -60,6 +60,12 @@ import {
 } from '../observability/tradeMarkoutObserver';
 import { trackKolClose } from './kolMissedAlpha';
 import {
+  appendKolLiveEquivalence,
+  KOL_LIVE_EQUIVALENCE_SCHEMA_VERSION,
+  type KolLiveEquivalenceDecisionStage,
+  type KolLiveEquivalenceRow,
+} from '../observability/kolLiveEquivalence';
+import {
   appendTokenQualityObservation,
   type DevStatus,
   type TokenQualityRecord,
@@ -336,6 +342,12 @@ export interface PaperPosition {
   smartV3LiveBlockReason?: string | null;
   smartV3LiveBlockFlags?: string[];
   smartV3LiveEligibilityEvaluatedAtMs?: number;
+  /** Paper/live gate equivalence trace id for explaining why paper entered but live did not. */
+  liveEquivalenceCandidateId?: string;
+  liveEquivalenceDecisionStage?: KolLiveEquivalenceDecisionStage;
+  liveEquivalenceLiveWouldEnter?: boolean;
+  liveEquivalenceLiveBlockReason?: string | null;
+  liveEquivalenceLiveBlockFlags?: string[];
   smartV3EntryComboKey?: string | null;
   smartV3LiveHardCutReentry?: boolean;
   smartV3HardCutParentPositionId?: string;
@@ -413,6 +425,11 @@ interface PaperEntryOptions {
   smartV3LiveBlockReason?: string | null;
   smartV3LiveBlockFlags?: string[];
   smartV3LiveEligibilityEvaluatedAtMs?: number;
+  liveEquivalenceCandidateId?: string;
+  liveEquivalenceDecisionStage?: KolLiveEquivalenceDecisionStage;
+  liveEquivalenceLiveWouldEnter?: boolean;
+  liveEquivalenceLiveBlockReason?: string | null;
+  liveEquivalenceLiveBlockFlags?: string[];
   smartV3EntryComboKey?: string | null;
   smartV3LiveHardCutReentry?: boolean;
   smartV3HardCutParentPositionId?: string;
@@ -1625,6 +1642,104 @@ function emitKolLiveFallbackPolicy(
     survivalFlags,
     recentJupiter429: currentRecentJupiter429(),
     ...extras,
+  });
+}
+
+function buildLiveEquivalenceCandidateId(
+  tokenMint: string,
+  entrySignal: KolEntrySignal,
+  nowMs: number
+): string {
+  const arm = armNameForVersion(entrySignal.parameterVersion);
+  return `${tokenMint}:${entrySignal.label}:${arm}:${nowMs}`;
+}
+
+function buildLiveEquivalenceOptionPatch(input: {
+  candidateId: string;
+  stage: KolLiveEquivalenceDecisionStage;
+  liveWouldEnter: boolean;
+  reason?: string | null;
+  flags?: string[];
+}): Pick<
+  PaperEntryOptions,
+  | 'liveEquivalenceCandidateId'
+  | 'liveEquivalenceDecisionStage'
+  | 'liveEquivalenceLiveWouldEnter'
+  | 'liveEquivalenceLiveBlockReason'
+  | 'liveEquivalenceLiveBlockFlags'
+> {
+  return {
+    liveEquivalenceCandidateId: input.candidateId,
+    liveEquivalenceDecisionStage: input.stage,
+    liveEquivalenceLiveWouldEnter: input.liveWouldEnter,
+    liveEquivalenceLiveBlockReason: input.reason ?? null,
+    liveEquivalenceLiveBlockFlags: Array.from(new Set(input.flags ?? [])),
+  };
+}
+
+function emitKolLiveEquivalence(input: {
+  candidateId: string;
+  tokenMint: string;
+  entrySignal: KolEntrySignal;
+  score: KolDiscoveryScore;
+  entryOptions: PaperEntryOptions;
+  survivalFlags: string[];
+  candIsShadow: boolean;
+  stage: KolLiveEquivalenceDecisionStage;
+  paperWouldEnter?: boolean;
+  liveWouldEnter: boolean;
+  liveAttempted?: boolean;
+  liveBlockReason?: string | null;
+  liveBlockFlags?: string[];
+  paperOnlyReason?: string | null;
+  sameMintLiveActive?: boolean;
+  hardTradingHaltReason?: string | null;
+  liveExecutionQualityReason?: string | null;
+  liveExecutionQualityRemainingMs?: number | null;
+}): void {
+  const participants = input.entryOptions.entryParticipatingKols ?? input.score.participatingKols;
+  const independentKolCount =
+    input.entryOptions.entryIndependentKolCount ?? input.score.independentKolCount;
+  const effectiveIndependentKolCount =
+    input.entryOptions.entryIndependentKolCount ?? input.score.effectiveIndependentCount;
+  const kolScore = input.entryOptions.entryKolScore ?? input.score.finalScore;
+  const record: KolLiveEquivalenceRow = {
+    schemaVersion: KOL_LIVE_EQUIVALENCE_SCHEMA_VERSION,
+    generatedAt: new Date().toISOString(),
+    candidateId: input.candidateId,
+    tokenMint: input.tokenMint,
+    entrySignalLabel: input.entrySignal.label,
+    armName: armNameForVersion(input.entrySignal.parameterVersion),
+    parameterVersion: input.entrySignal.parameterVersion,
+    entryReason: input.entryOptions.entryReason ?? input.entrySignal.entryReason,
+    convictionLevel: input.entryOptions.convictionLevel ?? input.entrySignal.conviction,
+    paperWouldEnter: input.paperWouldEnter ?? true,
+    liveWouldEnter: input.liveWouldEnter,
+    liveAttempted: input.liveAttempted ?? false,
+    decisionStage: input.stage,
+    liveBlockReason: input.liveBlockReason ?? null,
+    liveBlockFlags: Array.from(new Set(input.liveBlockFlags ?? [])),
+    paperOnlyReason: input.paperOnlyReason ?? null,
+    isShadowKol: input.candIsShadow,
+    isLiveCanaryActive: isLiveCanaryActive(),
+    hasBotContext: botCtx != null,
+    independentKolCount,
+    effectiveIndependentKolCount,
+    kolScore,
+    participatingKols: participants.map((p) => ({
+      id: p.id,
+      tier: p.tier,
+      timestamp: p.timestamp,
+    })),
+    survivalFlags: Array.from(new Set(input.survivalFlags)),
+    sameMintLiveActive: input.sameMintLiveActive,
+    hardTradingHaltReason: input.hardTradingHaltReason ?? null,
+    liveExecutionQualityReason: input.liveExecutionQualityReason ?? null,
+    liveExecutionQualityRemainingMs: input.liveExecutionQualityRemainingMs ?? null,
+    source: 'runtime',
+  };
+  void appendKolLiveEquivalence(record, { realtimeDir: config.realtimeDataDir }).catch((err) => {
+    log.debug(`[KOL_LIVE_EQUIVALENCE] append failed: ${String(err)}`);
   });
 }
 
@@ -4614,10 +4729,12 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     return;
   }
 
+  const liveEquivalenceCandidateId = buildLiveEquivalenceCandidateId(cand.tokenMint, entrySignal, Date.now());
   const entryOptions: PaperEntryOptions = {
     parameterVersion: entrySignal.parameterVersion,
     entryReason: entrySignal.entryReason,
     convictionLevel: entrySignal.conviction,
+    liveEquivalenceCandidateId,
     tokenDecimals: smart.tokenDecimals,
     tokenDecimalsSource: smart.tokenDecimalsSource,
     rotationTelemetry: entrySignal.telemetry,
@@ -4776,6 +4893,22 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         ...smartV3LiveEligibilityShadow,
       }
     : entryOptions;
+  const withLiveEquivalence = (
+    base: PaperEntryOptions,
+    stage: KolLiveEquivalenceDecisionStage,
+    liveWouldEnter: boolean,
+    reason?: string | null,
+    flags?: string[],
+  ): PaperEntryOptions => ({
+    ...base,
+    ...buildLiveEquivalenceOptionPatch({
+      candidateId: liveEquivalenceCandidateId,
+      stage,
+      liveWouldEnter,
+      reason,
+      flags,
+    }),
+  });
   if (entrySignal.label === 'smart-v3') {
     const baseShadowFlags = [
       ...entryFlags,
@@ -4827,7 +4960,33 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       `kols=${entrySignal.entryIndependentKolCount ?? 0} score=${(entrySignal.entryKolScore ?? 0).toFixed(2)}. ` +
       `enter paper.`
     );
-    await enterPaperPosition(cand.tokenMint, cand, score, policyFlags, entryOptionsWithLiveShadow);
+    emitKolLiveEquivalence({
+      candidateId: liveEquivalenceCandidateId,
+      tokenMint: cand.tokenMint,
+      entrySignal,
+      score,
+      entryOptions: entryOptionsWithLiveShadow,
+      survivalFlags: policyFlags,
+      candIsShadow,
+      stage: 'paper_only',
+      liveWouldEnter: false,
+      liveBlockReason: entrySignal.paperOnlyReason ?? 'paper_only',
+      liveBlockFlags: policyFlags,
+      paperOnlyReason: entrySignal.paperOnlyReason ?? 'paper_only',
+    });
+    await enterPaperPosition(
+      cand.tokenMint,
+      cand,
+      score,
+      policyFlags,
+      withLiveEquivalence(
+        entryOptionsWithLiveShadow,
+        'paper_only',
+        false,
+        entrySignal.paperOnlyReason ?? 'paper_only',
+        policyFlags,
+      ),
+    );
     return;
   }
 
@@ -4860,8 +5019,22 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         entryReason: entryOptions.entryReason,
         armName: entryOptions.parameterVersion ? armNameForVersion(entryOptions.parameterVersion) : undefined,
       });
+      emitKolLiveEquivalence({
+        candidateId: liveEquivalenceCandidateId,
+        tokenMint: cand.tokenMint,
+        entrySignal,
+        score,
+        entryOptions: entryOptionsWithLiveShadow,
+        survivalFlags: policyFlags,
+        candIsShadow,
+        stage: 'same_mint_live_guard',
+        liveWouldEnter: false,
+        liveBlockReason: 'same_mint_live_active',
+        liveBlockFlags: policyFlags,
+        sameMintLiveActive,
+      });
       await enterPaperPosition(cand.tokenMint, cand, score, policyFlags, {
-        ...entryOptionsWithLiveShadow,
+        ...withLiveEquivalence(entryOptionsWithLiveShadow, 'same_mint_live_guard', false, 'same_mint_live_active', policyFlags),
         skipPolicyEntry: true,
       });
       return;
@@ -4880,8 +5053,21 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         entryReason: entryOptions.entryReason,
         armName: entryOptions.parameterVersion ? armNameForVersion(entryOptions.parameterVersion) : undefined,
       });
+      emitKolLiveEquivalence({
+        candidateId: liveEquivalenceCandidateId,
+        tokenMint: cand.tokenMint,
+        entrySignal,
+        score,
+        entryOptions: entryOptionsWithLiveShadow,
+        survivalFlags: policyFlags,
+        candIsShadow,
+        stage: 'rotation_live_disabled',
+        liveWouldEnter: false,
+        liveBlockReason: 'rotation_v1_live_disabled',
+        liveBlockFlags: policyFlags,
+      });
       await enterPaperPosition(cand.tokenMint, cand, score, policyFlags, {
-        ...entryOptionsWithLiveShadow,
+        ...withLiveEquivalence(entryOptionsWithLiveShadow, 'rotation_live_disabled', false, 'rotation_v1_live_disabled', policyFlags),
         skipPolicyEntry: true,
       });
       return;
@@ -4903,7 +5089,28 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         `[KOL_HUNTER_TRADING_HALT] ${cand.tokenMint.slice(0, 8)} ${entrySignal.label} trigger — ` +
         `${hardTradingHaltReason}. fallback paper.`
       );
-      await enterPaperPosition(cand.tokenMint, cand, score, entryFlags, entryOptionsWithLiveShadow);
+      const policyFlags = [...entryFlags, 'LIVE_HARD_TRADING_HALT'];
+      emitKolLiveEquivalence({
+        candidateId: liveEquivalenceCandidateId,
+        tokenMint: cand.tokenMint,
+        entrySignal,
+        score,
+        entryOptions: entryOptionsWithLiveShadow,
+        survivalFlags: policyFlags,
+        candIsShadow,
+        stage: 'hard_trading_halt',
+        liveWouldEnter: false,
+        liveBlockReason: 'hard_trading_halt',
+        liveBlockFlags: policyFlags,
+        hardTradingHaltReason,
+      });
+      await enterPaperPosition(
+        cand.tokenMint,
+        cand,
+        score,
+        policyFlags,
+        withLiveEquivalence(entryOptionsWithLiveShadow, 'hard_trading_halt', false, 'hard_trading_halt', policyFlags),
+      );
       return;
     }
     if (isDrawdownGuardHaltReason(botCtx.tradingHaltedReason)) {
@@ -4924,7 +5131,27 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         `[KOL_HUNTER_WALLET_STOP] ${cand.tokenMint.slice(0, 8)} ${entrySignal.label} trigger — ` +
         `wallet floor active. fallback paper.`
       );
-      await enterPaperPosition(cand.tokenMint, cand, score, entryFlags, entryOptionsWithLiveShadow);
+      const policyFlags = [...entryFlags, 'WALLET_STOP_ACTIVE'];
+      emitKolLiveEquivalence({
+        candidateId: liveEquivalenceCandidateId,
+        tokenMint: cand.tokenMint,
+        entrySignal,
+        score,
+        entryOptions: entryOptionsWithLiveShadow,
+        survivalFlags: policyFlags,
+        candIsShadow,
+        stage: 'wallet_stop',
+        liveWouldEnter: false,
+        liveBlockReason: 'wallet_stop_active',
+        liveBlockFlags: policyFlags,
+      });
+      await enterPaperPosition(
+        cand.tokenMint,
+        cand,
+        score,
+        policyFlags,
+        withLiveEquivalence(entryOptionsWithLiveShadow, 'wallet_stop', false, 'wallet_stop_active', policyFlags),
+      );
       return;
     }
     if (isEntryHaltActive(LANE_STRATEGY)) {
@@ -4939,7 +5166,27 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         `[KOL_HUNTER_ENTRY_HALT] ${cand.tokenMint.slice(0, 8)} ${entrySignal.label} trigger — ` +
         `lane halt active. fallback paper.`
       );
-      await enterPaperPosition(cand.tokenMint, cand, score, entryFlags, entryOptionsWithLiveShadow);
+      const policyFlags = [...entryFlags, 'ENTRY_HALT_ACTIVE'];
+      emitKolLiveEquivalence({
+        candidateId: liveEquivalenceCandidateId,
+        tokenMint: cand.tokenMint,
+        entrySignal,
+        score,
+        entryOptions: entryOptionsWithLiveShadow,
+        survivalFlags: policyFlags,
+        candIsShadow,
+        stage: 'entry_halt',
+        liveWouldEnter: false,
+        liveBlockReason: 'entry_halt_active',
+        liveBlockFlags: policyFlags,
+      });
+      await enterPaperPosition(
+        cand.tokenMint,
+        cand,
+        score,
+        policyFlags,
+        withLiveEquivalence(entryOptionsWithLiveShadow, 'entry_halt', false, 'entry_halt_active', policyFlags),
+      );
       return;
     }
     const qualityCooldown = isInLiveExecutionQualityCooldown(cand.tokenMint);
@@ -4965,8 +5212,29 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         entryReason: entryOptions.entryReason,
         armName: entryOptions.parameterVersion ? armNameForVersion(entryOptions.parameterVersion) : undefined,
       });
+      emitKolLiveEquivalence({
+        candidateId: liveEquivalenceCandidateId,
+        tokenMint: cand.tokenMint,
+        entrySignal,
+        score,
+        entryOptions: entryOptionsWithLiveShadow,
+        survivalFlags: policyFlags,
+        candIsShadow,
+        stage: 'live_execution_quality_cooldown',
+        liveWouldEnter: false,
+        liveBlockReason: 'live_execution_quality_cooldown',
+        liveBlockFlags: policyFlags,
+        liveExecutionQualityReason: qualityCooldown.reason ?? null,
+        liveExecutionQualityRemainingMs: qualityCooldown.remainingMs,
+      });
       await enterPaperPosition(cand.tokenMint, cand, score, policyFlags, {
-        ...entryOptionsWithLiveShadow,
+        ...withLiveEquivalence(
+          entryOptionsWithLiveShadow,
+          'live_execution_quality_cooldown',
+          false,
+          'live_execution_quality_cooldown',
+          policyFlags,
+        ),
         skipPolicyEntry: true,
       });
       return;
@@ -5000,8 +5268,27 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         entryReason: entryOptions.entryReason,
         armName: entryOptions.parameterVersion ? armNameForVersion(entryOptions.parameterVersion) : undefined,
       });
+      emitKolLiveEquivalence({
+        candidateId: liveEquivalenceCandidateId,
+        tokenMint: cand.tokenMint,
+        entrySignal,
+        score,
+        entryOptions: entryOptionsWithLiveShadow,
+        survivalFlags: policyFlags,
+        candIsShadow,
+        stage: 'yellow_zone',
+        liveWouldEnter: false,
+        liveBlockReason: liveGate.reason ?? 'live_gate_blocked',
+        liveBlockFlags: policyFlags,
+      });
       await enterPaperPosition(cand.tokenMint, cand, score, policyFlags, {
-        ...entryOptionsWithLiveShadow,
+        ...withLiveEquivalence(
+          entryOptionsWithLiveShadow,
+          'yellow_zone',
+          false,
+          liveGate.reason ?? 'live_gate_blocked',
+          policyFlags,
+        ),
         skipPolicyEntry: true,
       });
       return;
@@ -5021,8 +5308,27 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         entryReason: entryOptions.entryReason,
         armName: entryOptions.parameterVersion ? armNameForVersion(entryOptions.parameterVersion) : undefined,
       });
+      emitKolLiveEquivalence({
+        candidateId: liveEquivalenceCandidateId,
+        tokenMint: cand.tokenMint,
+        entrySignal,
+        score,
+        entryOptions: entryOptionsWithLiveShadow,
+        survivalFlags: policyFlags,
+        candIsShadow,
+        stage: 'rotation_underfill_live_fallback',
+        liveWouldEnter: false,
+        liveBlockReason: rotationUnderfillLiveFallback.reason ?? 'rotation_underfill_live_fallback',
+        liveBlockFlags: policyFlags,
+      });
       await enterPaperPosition(cand.tokenMint, cand, score, policyFlags, {
-        ...entryOptionsWithLiveShadow,
+        ...withLiveEquivalence(
+          entryOptionsWithLiveShadow,
+          'rotation_underfill_live_fallback',
+          false,
+          rotationUnderfillLiveFallback.reason ?? 'rotation_underfill_live_fallback',
+          policyFlags,
+        ),
         skipPolicyEntry: true,
       });
       return;
@@ -5051,19 +5357,52 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         entryReason: entryOptions.entryReason,
         armName: entryOptions.parameterVersion ? armNameForVersion(entryOptions.parameterVersion) : undefined,
       });
+      emitKolLiveEquivalence({
+        candidateId: liveEquivalenceCandidateId,
+        tokenMint: cand.tokenMint,
+        entrySignal,
+        score,
+        entryOptions: entryOptionsWithLiveShadow,
+        survivalFlags: policyFlags,
+        candIsShadow,
+        stage: 'smart_v3_live_fallback',
+        liveWouldEnter: false,
+        liveBlockReason: smartV3LiveFallback.reason ?? 'smart_v3_live_fallback',
+        liveBlockFlags: policyFlags,
+      });
       await enterPaperPosition(cand.tokenMint, cand, score, policyFlags, {
-        ...entryOptionsWithLiveShadow,
+        ...withLiveEquivalence(
+          entryOptionsWithLiveShadow,
+          'smart_v3_live_fallback',
+          false,
+          smartV3LiveFallback.reason ?? 'smart_v3_live_fallback',
+          policyFlags,
+        ),
         skipPolicyEntry: true,
       });
       return;
     }
+    emitKolLiveEquivalence({
+      candidateId: liveEquivalenceCandidateId,
+      tokenMint: cand.tokenMint,
+      entrySignal,
+      score,
+      entryOptions: entryOptionsWithLiveShadow,
+      survivalFlags: entryFlags,
+      candIsShadow,
+      stage: 'pre_execution_live_allowed',
+      liveWouldEnter: true,
+      liveAttempted: true,
+      liveBlockReason: null,
+      liveBlockFlags: [],
+    });
     await enterLivePosition(
       cand.tokenMint,
       cand,
       score,
       entryFlags,
       botCtx,
-      entryOptionsWithLiveShadow
+      withLiveEquivalence(entryOptionsWithLiveShadow, 'pre_execution_live_allowed', true, null, [])
     );
     return;
   }
@@ -5090,13 +5429,45 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       entryReason: entryOptions.entryReason,
       armName: entryOptions.parameterVersion ? armNameForVersion(entryOptions.parameterVersion) : undefined,
     });
+    emitKolLiveEquivalence({
+      candidateId: liveEquivalenceCandidateId,
+      tokenMint: cand.tokenMint,
+      entrySignal,
+      score,
+      entryOptions: entryOptionsWithLiveShadow,
+      survivalFlags: policyFlags,
+      candIsShadow,
+      stage: 'live_gate_not_entered',
+      liveWouldEnter: false,
+      liveBlockReason: inactiveLiveGate.reason,
+      liveBlockFlags: policyFlags,
+    });
     await enterPaperPosition(cand.tokenMint, cand, score, policyFlags, {
-      ...entryOptionsWithLiveShadow,
+      ...withLiveEquivalence(entryOptionsWithLiveShadow, 'live_gate_not_entered', false, inactiveLiveGate.reason, policyFlags),
       skipPolicyEntry: true,
     });
     return;
   }
-  await enterPaperPosition(cand.tokenMint, cand, score, entryFlags, entryOptionsWithLiveShadow);
+  emitKolLiveEquivalence({
+    candidateId: liveEquivalenceCandidateId,
+    tokenMint: cand.tokenMint,
+    entrySignal,
+    score,
+    entryOptions: entryOptionsWithLiveShadow,
+    survivalFlags: entryFlags,
+    candIsShadow,
+    stage: 'default_paper',
+    liveWouldEnter: false,
+    liveBlockReason: 'default_paper',
+    liveBlockFlags: [],
+  });
+  await enterPaperPosition(
+    cand.tokenMint,
+    cand,
+    score,
+    entryFlags,
+    withLiveEquivalence(entryOptionsWithLiveShadow, 'default_paper', false, 'default_paper', []),
+  );
 }
 
 async function resolveStalk(tokenMint: string): Promise<void> {
@@ -5704,6 +6075,11 @@ async function enterPaperPosition(
       smartV3LiveBlockReason: options.smartV3LiveBlockReason,
       smartV3LiveBlockFlags: options.smartV3LiveBlockFlags,
       smartV3LiveEligibilityEvaluatedAtMs: options.smartV3LiveEligibilityEvaluatedAtMs,
+      liveEquivalenceCandidateId: options.liveEquivalenceCandidateId,
+      liveEquivalenceDecisionStage: options.liveEquivalenceDecisionStage,
+      liveEquivalenceLiveWouldEnter: options.liveEquivalenceLiveWouldEnter,
+      liveEquivalenceLiveBlockReason: options.liveEquivalenceLiveBlockReason,
+      liveEquivalenceLiveBlockFlags: options.liveEquivalenceLiveBlockFlags,
       smartV3EntryComboKey: options.smartV3EntryComboKey,
       smartV3HardCutParentPositionId: options.smartV3HardCutParentPositionId,
       smartV3HardCutAtMs: options.smartV3HardCutAtMs,
@@ -7355,6 +7731,11 @@ function buildKolBaseLedgerRecord(
     smartV3LiveBlockReason: pos.smartV3LiveBlockReason ?? null,
     smartV3LiveBlockFlags: pos.smartV3LiveBlockFlags ?? null,
     smartV3LiveEligibilityEvaluatedAtMs: pos.smartV3LiveEligibilityEvaluatedAtMs ?? null,
+    liveEquivalenceCandidateId: pos.liveEquivalenceCandidateId ?? null,
+    liveEquivalenceDecisionStage: pos.liveEquivalenceDecisionStage ?? null,
+    liveEquivalenceLiveWouldEnter: pos.liveEquivalenceLiveWouldEnter ?? null,
+    liveEquivalenceLiveBlockReason: pos.liveEquivalenceLiveBlockReason ?? null,
+    liveEquivalenceLiveBlockFlags: pos.liveEquivalenceLiveBlockFlags ?? null,
     smartV3EntryComboKey: pos.smartV3EntryComboKey ?? null,
     smartV3LiveHardCutReentry: pos.smartV3LiveHardCutReentry ?? false,
     smartV3HardCutParentPositionId: pos.smartV3HardCutParentPositionId ?? null,
@@ -7445,6 +7826,11 @@ function buildKolLedgerExtras(
     smartV3LiveBlockReason: pos.smartV3LiveBlockReason ?? null,
     smartV3LiveBlockFlags: pos.smartV3LiveBlockFlags ?? null,
     smartV3LiveEligibilityEvaluatedAtMs: pos.smartV3LiveEligibilityEvaluatedAtMs ?? null,
+    liveEquivalenceCandidateId: pos.liveEquivalenceCandidateId ?? null,
+    liveEquivalenceDecisionStage: pos.liveEquivalenceDecisionStage ?? null,
+    liveEquivalenceLiveWouldEnter: pos.liveEquivalenceLiveWouldEnter ?? null,
+    liveEquivalenceLiveBlockReason: pos.liveEquivalenceLiveBlockReason ?? null,
+    liveEquivalenceLiveBlockFlags: pos.liveEquivalenceLiveBlockFlags ?? null,
     smartV3EntryComboKey: pos.smartV3EntryComboKey ?? null,
     smartV3LiveHardCutReentry: pos.smartV3LiveHardCutReentry ?? false,
     smartV3HardCutParentPositionId: pos.smartV3HardCutParentPositionId ?? null,
@@ -7817,6 +8203,17 @@ async function enterLivePosition(
     });
     await enterPaperPosition(tokenMint, cand, score, policyFlags, {
       ...options,
+      ...(
+        options.liveEquivalenceCandidateId
+          ? buildLiveEquivalenceOptionPatch({
+              candidateId: options.liveEquivalenceCandidateId,
+              stage: 'live_fresh_reference_reject',
+              liveWouldEnter: false,
+              reason,
+              flags: policyFlags,
+            })
+          : {}
+      ),
       tokenDecimals: options.tokenDecimals ?? decimals,
       tokenDecimalsSource: options.tokenDecimalsSource ?? (decimals == null ? undefined : 'jupiter_quote'),
       smartV3LiveEligibleShadow: options.smartV3LiveEligibleShadow === true ? false : options.smartV3LiveEligibleShadow,

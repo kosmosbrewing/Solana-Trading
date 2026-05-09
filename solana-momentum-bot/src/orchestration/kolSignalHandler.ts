@@ -81,6 +81,8 @@ import { resolveSellReceivedSolFromSwapResult } from '../executor/executor';
 import {
   executeLiveSellWithImmediateRetries,
   liveSellRetryMaxAttempts,
+  resolveLiveSellInitialTokenBalance,
+  setLiveSellInitialBalanceRetryDelaysMsForTests,
   setLiveSellRetryDelaysMsForTests,
   type LiveSellRetryUrgency,
 } from '../executor/liveSellRetry';
@@ -8520,12 +8522,16 @@ async function closeLivePosition(
 
   try {
     const sellExecutor = getKolHunterExecutor(ctx);
-    // 2026-04-28 P0-C fix: tokenBalance + getBalance(solBefore) 병렬화 (이전엔 직렬 await).
-    // 두 RPC 모두 sellExecutor 의 read-only 호출 — 병렬 안전. ~250ms latency 단축.
-    const [tokenBalance, solBefore] = await Promise.all([
-      sellExecutor.getTokenBalance(pos.tokenMint),
-      sellExecutor.getBalance(),
-    ]);
+    const initialBalanceProbe = await resolveLiveSellInitialTokenBalance({
+      executor: sellExecutor,
+      tokenMint: pos.tokenMint,
+      context: `kol_hunter:${pos.positionId}`,
+      reason,
+      entryTxSignature: pos.entryTxSignature,
+      entryTimeSec: pos.entryTimeSec,
+    });
+    const tokenBalance = initialBalanceProbe.balance;
+    const solBefore = await sellExecutor.getBalance();
     if (tokenBalance > 0n) {
       // 2026-05-01 (Phase D): tail retain live — parent close 시 partial sell 분기.
       //   조건: tail retain live enabled + 현재 close 가 parent (not tail) + price kill reason
@@ -8558,6 +8564,7 @@ async function closeLivePosition(
         reason,
         syntheticSignature: `KOL_LIVE_SELL_BALANCE_RECOVERED_${pos.positionId}`,
         urgency: sellRetryUrgency,
+        allowBalanceRecovered: initialBalanceProbe.source !== 'entry_tx_post_balance',
       });
       sellRetryAttempts = sellExecution.attempts;
       sellRecoveredFromBalanceOnly = sellExecution.recoveredFromBalanceOnly;
@@ -8771,10 +8778,12 @@ async function closeLivePosition(
         buildTradeMarkoutObserverConfig(pos)
       );
     } else {
-      // ORPHAN_NO_BALANCE — pure_ws 패턴 동일.
+      // ORPHAN_NO_BALANCE — 첫 0 balance 는 신뢰하지 않는다.
+      // Fresh ATA 생성 직후 RPC account index lag 로 false orphan 이 발생할 수 있으므로
+      // resolveLiveSellInitialTokenBalance 가 retry + entry tx postTokenBalances fallback 까지 확인한 뒤에만 도달.
       log.warn(
         `[KOL_HUNTER_LIVE_ORPHAN] ${pos.positionId} ${pos.tokenMint.slice(0, 12)} zero balance — ` +
-        `force closing pnl=0 (previousReason=${reason})`
+        `force closing pnl=0 (previousReason=${reason} attempts=${initialBalanceProbe.attempts})`
       );
       effectiveReason = 'ORPHAN_NO_BALANCE';
       actualExitPrice = pos.entryPrice;
@@ -9331,8 +9340,10 @@ export function __testTriggerTick(positionId: string, price: number): void {
 export function __testSetKolLiveSellRetryDelaysMs(delays?: readonly number[]): void {
   if (delays == null) {
     setLiveSellRetryDelaysMsForTests();
+    setLiveSellInitialBalanceRetryDelaysMsForTests();
     return;
   }
+  setLiveSellInitialBalanceRetryDelaysMsForTests(delays);
   setLiveSellRetryDelaysMsForTests(delays, 'normal');
   setLiveSellRetryDelaysMsForTests(delays, 'hard_cut');
   setLiveSellRetryDelaysMsForTests(delays, 'structural');

@@ -4200,6 +4200,7 @@ describe('kolSignalHandler — state machine', () => {
       executeBuy?: jest.Mock;
       executeSell?: jest.Mock;
       getTokenBalance?: jest.Mock;
+      getTokenBalanceFromTransaction?: jest.Mock;
       solBefore?: number;
       solAfter?: number;
       insertTradeId?: string;
@@ -4223,6 +4224,7 @@ describe('kolSignalHandler — state machine', () => {
         slippageBps: 18,
       });
       const getTokenBalance = opts.getTokenBalance ?? jest.fn().mockResolvedValue(1_000_000n);
+      const getTokenBalanceFromTransaction = opts.getTokenBalanceFromTransaction;
       const solBefore = opts.solBefore ?? 1.0;
       const solAfter = opts.solAfter ?? 1.05;
       // getBalance 는 sell 전후 2회 호출 — sequential mock.
@@ -4237,10 +4239,10 @@ describe('kolSignalHandler — state machine', () => {
         tradingMode: 'live',
         tradeStore: { insertTrade, closeTrade, getOpenTrades: jest.fn().mockResolvedValue([]) },
         notifier: { sendCritical, sendTradeOpen, sendTradeClose, sendInfo },
-        executor: { executeBuy, executeSell, getTokenBalance, getBalance },
+        executor: { executeBuy, executeSell, getTokenBalance, getBalance, getTokenBalanceFromTransaction },
       } as any;
       return {
-        ctx, executeBuy, executeSell, getTokenBalance, getBalance,
+        ctx, executeBuy, executeSell, getTokenBalance, getBalance, getTokenBalanceFromTransaction,
         insertTrade, closeTrade, sendCritical, sendTradeOpen, sendTradeClose, sendInfo,
       };
     }
@@ -4803,7 +4805,7 @@ describe('kolSignalHandler — state machine', () => {
       expect(__testGetActive()).toHaveLength(0);
     });
 
-    it('4. live close ORPHAN_NO_BALANCE (tokenBalance == 0n) → sell skip + DB close + critical', async () => {
+    it('4. live close confirms ORPHAN_NO_BALANCE only after balance settle retries', async () => {
       const fx = buildE2EFixtures({ getTokenBalance: jest.fn().mockResolvedValue(0n) });
       __testInit({ priceFeed: stubFeed as unknown as never, ctx: fx.ctx });
 
@@ -4816,7 +4818,7 @@ describe('kolSignalHandler — state machine', () => {
 
       // sell 호출 안 됨 (balance 0 분기)
       expect(fx.executeSell).not.toHaveBeenCalled();
-      expect(fx.getTokenBalance).toHaveBeenCalledTimes(1);
+      expect(fx.getTokenBalance).toHaveBeenCalledTimes(6);
       // DB close 는 호출됨 (effectiveReason=ORPHAN_NO_BALANCE, pnl=0)
       expect(fx.closeTrade).toHaveBeenCalledTimes(1);
       expect(fx.closeTrade).toHaveBeenCalledWith(expect.objectContaining({
@@ -4833,6 +4835,33 @@ describe('kolSignalHandler — state machine', () => {
       expect(fx.sendCritical).toHaveBeenCalledTimes(1);
       expect(fx.sendCritical.mock.calls[0][0]).toBe('kol_live_orphan');
       // active map 에서 제거됨
+      expect(__testGetActive()).toHaveLength(0);
+    });
+
+    it('4b. live close uses entry tx postTokenBalance fallback instead of false orphan', async () => {
+      const getTokenBalance = jest.fn().mockResolvedValueOnce(0n);
+      const getTokenBalanceFromTransaction = jest.fn().mockResolvedValue(1_000_000n);
+      const fx = buildE2EFixtures({
+        getTokenBalance,
+        getTokenBalanceFromTransaction,
+        solBefore: 1.0,
+        solAfter: 1.006,
+      });
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx: fx.ctx });
+
+      await triggerSmartV3LiveEntry(MINT_SMART);
+      const live = __testGetActive().find((p) => p.isLive === true)!;
+
+      __testTriggerTick(live.positionId, live.entryPrice * 0.85);
+      await flushAsync();
+
+      expect(getTokenBalance).toHaveBeenCalledTimes(1);
+      expect(getTokenBalanceFromTransaction).toHaveBeenCalledWith('KOL_LIVE_BUY_SIG', live.tokenMint);
+      expect(fx.executeSell).toHaveBeenCalledTimes(1);
+      expect(fx.executeSell).toHaveBeenCalledWith(live.tokenMint, 1_000_000n);
+      expect(fx.closeTrade).toHaveBeenCalledTimes(1);
+      expect(fx.closeTrade.mock.calls[0][0].exitReason).toBe('probe_hard_cut');
+      expect(fx.sendCritical).not.toHaveBeenCalledWith('kol_live_orphan', expect.any(String));
       expect(__testGetActive()).toHaveLength(0);
     });
 

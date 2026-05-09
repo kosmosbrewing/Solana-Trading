@@ -1,6 +1,6 @@
 import { config } from '../utils/config';
 import { createModuleLogger } from '../utils/logger';
-import { mkdir, readFile, writeFile } from 'fs/promises';
+import { appendFile, mkdir, readFile, writeFile } from 'fs/promises';
 import path from 'path';
 import { Notifier } from '../notifier';
 import { Pm2AlertMonitor } from './pm2AlertMonitor';
@@ -31,6 +31,7 @@ const log = createModuleLogger('TelegramControlBot');
 const POLL_TIMEOUT_SEC = 30;
 const RETRY_DELAY_MS = 3_000;
 const CONTROL_BOT_PROCESS_NAME = 'momentum-ops-bot';
+const CONTROL_AUDIT_FILE = 'ops-control-events.jsonl';
 
 let running = true;
 
@@ -121,19 +122,29 @@ async function handleUpdate(
         return;
       case 'restart':
         alertMonitor.markManualAction(parsed.command.processName);
-        await notifier.sendMessage(formatActionMessage(
-          'restart',
-          parsed.command.processName,
-          await pm2Service.restartProcess(parsed.command.processName)
-        ));
+        await appendControlAuditEvent('requested', parsed.command.type, parsed.command.processName, message);
+        {
+          const result = await pm2Service.restartProcess(parsed.command.processName);
+          await appendControlAuditEvent('succeeded', parsed.command.type, parsed.command.processName, message);
+          await notifier.sendMessage(formatActionMessage(
+            'restart',
+            parsed.command.processName,
+            result
+          ));
+        }
         return;
       case 'stop':
         alertMonitor.markManualAction(parsed.command.processName);
-        await notifier.sendMessage(formatActionMessage(
-          'stop',
-          parsed.command.processName,
-          await pm2Service.stopProcess(parsed.command.processName)
-        ));
+        await appendControlAuditEvent('requested', parsed.command.type, parsed.command.processName, message);
+        {
+          const result = await pm2Service.stopProcess(parsed.command.processName);
+          await appendControlAuditEvent('succeeded', parsed.command.type, parsed.command.processName, message);
+          await notifier.sendMessage(formatActionMessage(
+            'stop',
+            parsed.command.processName,
+            result
+          ));
+        }
         return;
       case 'logs':
         await notifier.sendMessage(formatLogsMessage(
@@ -144,6 +155,9 @@ async function handleUpdate(
     }
   } catch (error) {
     const messageText = error instanceof Error ? error.message : String(error);
+    if (parsed.command.type === 'restart' || parsed.command.type === 'stop') {
+      await appendControlAuditEvent('failed', parsed.command.type, parsed.command.processName, message, messageText);
+    }
     log.error(`Command failed: ${messageText}`);
     await notifier.sendMessage(formatErrorMessage(messageText));
   }
@@ -162,6 +176,40 @@ async function getInitialOffset(updateClient: TelegramUpdateClient, offsetStoreP
 
 function resolveOffsetStorePath(): string {
   return path.resolve(config.realtimeDataDir, 'telegram-control-offset.json');
+}
+
+async function appendControlAuditEvent(
+  status: 'requested' | 'succeeded' | 'failed',
+  command: 'restart' | 'stop',
+  processName: string,
+  message: TelegramMessage,
+  error?: string
+): Promise<void> {
+  const record = {
+    recordedAt: new Date().toISOString(),
+    status,
+    command,
+    processName,
+    chatId: String(message.chat.id),
+    userId: message.from?.id != null ? String(message.from.id) : null,
+    username: message.from?.username ?? null,
+    messageId: message.message_id,
+    error: error ?? null,
+  };
+  log.info(
+    `[OPS_CONTROL_AUDIT] status=${status} command=${command} process=${processName} ` +
+    `chat=${record.chatId} user=${record.userId ?? 'unknown'}`
+  );
+  try {
+    await mkdir(config.realtimeDataDir, { recursive: true });
+    await appendFile(
+      path.join(config.realtimeDataDir, CONTROL_AUDIT_FILE),
+      `${JSON.stringify(record)}\n`,
+      'utf8'
+    );
+  } catch (auditError) {
+    log.warn(`Control audit append failed: ${auditError}`);
+  }
 }
 
 async function readStoredOffset(filePath: string): Promise<number> {

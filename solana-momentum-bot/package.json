@@ -14,6 +14,7 @@
     "paper-report": "ts-node scripts/paper-report.ts",
     "ops:check:ledger": "ts-node scripts/ledger-audit.ts",
     "ops:reconcile:wallet": "ts-node scripts/wallet-reconcile.ts",
+    "ops:reconcile:live-assets": "ts-node scripts/live-asset-reconcile.ts",
     "ops:canary:eval": "ts-node scripts/canary-eval.ts",
     "kol:shadow-eval": "ts-node scripts/kol-shadow-eval.ts",
     "kol:paper-arm-report": "ts-node scripts/kol-paper-arm-report.ts",

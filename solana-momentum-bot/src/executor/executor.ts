@@ -955,6 +955,28 @@ export class Executor {
     return balances.reduce((sum, amount) => sum + amount, 0n);
   }
 
+  async getTokenBalanceFromTransaction(signature: string, tokenMint: string): Promise<bigint | null> {
+    try {
+      const tx = await getTransactionForCostCached(
+        this.connection,
+        signature,
+        'executor_entry_tx_balance_probe'
+      );
+      if (!tx?.meta?.postTokenBalances) return null;
+      return tokenBalanceRawByOwner(
+        tx.meta.postTokenBalances as TokenBalanceLike[],
+        this.wallet.publicKey.toBase58(),
+        tokenMint
+      );
+    } catch (error) {
+      log.warn(
+        `[TOKEN_BALANCE_TX_FALLBACK_FAILED] sig=${signature.slice(0, 12)} ` +
+        `mint=${tokenMint.slice(0, 12)} error=${error}`
+      );
+      return null;
+    }
+  }
+
   private async getAssetBalanceRaw(mint: string): Promise<bigint> {
     if (mint === SOL_MINT) {
       recordHeliusRpcCredit({

@@ -1,15 +1,84 @@
 import {
   executeLiveSellWithImmediateRetries,
+  resolveLiveSellInitialTokenBalance,
+  setLiveSellInitialBalanceRetryDelaysMsForTests,
   setLiveSellRetryDelaysMsForTests,
 } from '../src/executor/liveSellRetry';
 
 describe('executeLiveSellWithImmediateRetries', () => {
   beforeEach(() => {
     setLiveSellRetryDelaysMsForTests([0, 0, 0, 0, 0]);
+    setLiveSellInitialBalanceRetryDelaysMsForTests([0, 0]);
   });
 
   afterEach(() => {
     setLiveSellRetryDelaysMsForTests();
+    setLiveSellInitialBalanceRetryDelaysMsForTests();
+  });
+
+  it('waits for an initially missing token balance before declaring zero confirmed', async () => {
+    const executor = {
+      executeSell: jest.fn(),
+      getTokenBalance: jest.fn()
+        .mockResolvedValueOnce(0n)
+        .mockResolvedValueOnce(0n)
+        .mockResolvedValueOnce(123n),
+    };
+
+    const result = await resolveLiveSellInitialTokenBalance({
+      executor,
+      tokenMint: 'mint',
+      context: 'test:initial_balance',
+      reason: 'hard_cut',
+    });
+
+    expect(result).toEqual({ balance: 123n, attempts: 3, source: 'rpc_balance' });
+    expect(executor.getTokenBalance).toHaveBeenCalledTimes(3);
+  });
+
+  it('falls back to the entry transaction post token balance when RPC account balance lags', async () => {
+    const nowMs = Date.now();
+    const executor = {
+      executeSell: jest.fn(),
+      getTokenBalance: jest.fn().mockResolvedValueOnce(0n),
+      getTokenBalanceFromTransaction: jest.fn().mockResolvedValueOnce(456n),
+    };
+
+    const result = await resolveLiveSellInitialTokenBalance({
+      executor,
+      tokenMint: 'mint',
+      context: 'test:tx_balance',
+      reason: 'entry_advantage_emergency_exit',
+      entryTxSignature: 'ENTRY_SIG',
+      entryTimeSec: Math.floor(nowMs / 1000),
+      nowMs,
+    });
+
+    expect(result).toEqual({ balance: 456n, attempts: 1, source: 'entry_tx_post_balance' });
+    expect(executor.getTokenBalanceFromTransaction).toHaveBeenCalledWith('ENTRY_SIG', 'mint');
+  });
+
+  it('does not use entry transaction post balance for stale recovered positions', async () => {
+    const nowMs = Date.now();
+    const executor = {
+      executeSell: jest.fn(),
+      getTokenBalance: jest.fn().mockResolvedValue(0n),
+      getTokenBalanceFromTransaction: jest.fn().mockResolvedValue(456n),
+    };
+
+    const result = await resolveLiveSellInitialTokenBalance({
+      executor,
+      tokenMint: 'mint',
+      context: 'test:stale_tx_balance',
+      reason: 'recovered_orphan_probe',
+      entryTxSignature: 'ENTRY_SIG',
+      entryTimeSec: Math.floor((nowMs - 120_000) / 1000),
+      nowMs,
+    });
+
+    expect(result).toEqual({ balance: 0n, attempts: 3, source: 'zero_confirmed' });
+    expect(executor.getTokenBalance).toHaveBeenCalledTimes(3);
+    expect(executor.getTokenBalanceFromTransaction).not.toHaveBeenCalled();
   });
 
   it('recovers when the first failed sell already removed the expected token balance', async () => {

@@ -412,10 +412,11 @@ cron 예시:
 - **자동 trade-markout-report (2026-05-02)**: sync 직후 `trade-markout-anchors.jsonl` + `trade-markouts.jsonl` 로 실제 buy/sell/paper anchor 의 T+30/60/300/1800 coverage / continuation 진단 생성 → `reports/trade-markout-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
 - **자동 pure_ws trade-markout-report (2026-05-03)**: sync 직후 pure_ws paper T+15/30/60/180/300/1800 coverage / post-cost behavior 생성 → `reports/pure-ws-trade-markout-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
 - **자동 rotation-report (2026-05-03 / 2026-05-05 posterior join)**: sync 직후 rotation control/arms/no-trade markout / T+15/30/60 post-cost / KOL transfer posterior 진단 생성 → `reports/rotation-lane-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
+- **자동 capitulation-rebound-report (2026-05-09)**: sync 직후 `capitulation-rebound-paper-trades.jsonl`, shared `trade-markouts.jsonl`, `missed-alpha.jsonl` 로 paper-only rebound close / T+15/30/60/180/300/1800 / no-trade counterfactual 진단 생성 → `reports/capitulation-rebound-YYYY-MM-DD.md/json`. Jupiter/RPC API 0건 (file-only) — default ON.
 - **자동 winner-kill-report (2026-05-01)**: sync 직후 missed-alpha close-site markout 으로 5x winner-kill rate 생성 → `reports/winner-kill-YYYY-MM-DD.md`. Jupiter/RPC API 0건 (file-only) — default ON.
 - **자동 sync-health manifest (2026-05-03)**: 핵심 JSONL/log 파일의 row count, bytes, mtime, lane projection freshness, 최근 24h W/L/net/last-trade summary 를 `reports/sync-health-YYYY-MM-DD.md`로 저장. 데이터 공백과 sync 실패 구분용 — default ON.
 - **opt-in shadow-eval (2026-04-26)**: `RUN_SHADOW_EVAL=true` 시 KOL signal raw alpha 측정 (Jupiter forward quote 사용). default OFF — Jupiter quota 영향.
-- **환경변수 주의**: smart-v3 evidence/rotation/KOL transfer posterior report 추가는 운영 `.env` 변경이 필요 없다. `SKIP_KOL_TRANSFER_REPORT`, `KOL_TRANSFER_REPORT_SINCE`, `KOL_TRANSFER_INPUT`, `SKIP_SMART_V3_EVIDENCE_REPORT`, `SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT` 는 sync/report-only shell knob 이며 runtime 전략 환경변수가 아니다. Smart-v3 MAE fast-fail / recovery-hold / MFE floor 와 live strict-quality/pre-entry-sell/combo-decay/KOL-fill-advantage fallback 은 runtime knob 이 추가됐지만 default-on 안전값이 있어 운영 `.env` override 는 필수가 아니다. Combo decay 는 entry-time fresh KOL key 를 기준으로 primary paper+live close 를 함께 보며, shadow arm 은 학습 대상에서 제외한다.
+- **환경변수 주의**: smart-v3 evidence/rotation/capitulation/KOL transfer posterior report 추가는 운영 `.env` 변경이 필요 없다. `SKIP_KOL_TRANSFER_REPORT`, `KOL_TRANSFER_REPORT_SINCE`, `KOL_TRANSFER_INPUT`, `SKIP_SMART_V3_EVIDENCE_REPORT`, `SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT`, `SKIP_CAPITULATION_REPORT`, `CAPITULATION_REPORT_ROUND_TRIP_COST_PCT` 는 sync/report-only shell knob 이며 runtime 전략 환경변수가 아니다. Smart-v3 MAE fast-fail / recovery-hold / MFE floor 와 live strict-quality/pre-entry-sell/combo-decay/KOL-fill-advantage fallback 은 runtime knob 이 추가됐지만 default-on 안전값이 있어 운영 `.env` override 는 필수가 아니다. Combo decay 는 entry-time fresh KOL key 를 기준으로 primary paper+live close 를 함께 보며, shadow arm 은 학습 대상에서 제외한다.
 - **로컬 분석 캐시 보호 (2026-05-05)**: 운영 데이터는 VPS → local 로 sync 하지만, `data/research/kol-transfers.jsonl*` 는 로컬 Helius posterior 캐시라 기본 rsync 제외한다. 필요 시 `DATA_RSYNC_EXCLUDES` 로 override 가능.
 
 #### 운영 `.env` 반영 원칙 (2026-05-06)
@@ -427,7 +428,7 @@ cron 예시:
 - `deploy-remote.sh --sync-env`는 로컬 `.env`를 직접 병합하는 예외 경로다. 일반 운영에서는 tracked `ops/env/production.env` + 원격 secret `.env` 조합을 우선한다.
 - 병합 스크립트는 `.env.backup-<timestamp>`를 남긴다. 자동 병합을 건너뛰려면 `DEPLOY_ENV_PROFILE=`로 빈 값을 준다.
 - 붙여넣기/수동 편집 후에는 `gOL_HUNTER_*` 같은 오타 키가 없는지 확인한다. KOL live canary 키는 반드시 `KOL_HUNTER_LIVE_CANARY_ENABLED`다.
-- Rotation canary 운영 의도는 `KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=false` + `KOL_HUNTER_ROTATION_CHASE_TOPUP_LIVE_CANARY_ENABLED=false` + `KOL_HUNTER_ROTATION_UNDERFILL_LIVE_CANARY_ENABLED=true`다. 전체 rotation live를 열지 않고, chase-topup은 paper-only로 둔다.
+- Rotation canary 운영 의도는 `KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=false` + `KOL_HUNTER_ROTATION_CHASE_TOPUP_LIVE_CANARY_ENABLED=false` + `KOL_HUNTER_ROTATION_UNDERFILL_LIVE_CANARY_ENABLED=true`다. 전체 rotation live를 열지 않고, chase-topup은 paper-only로 둔다. Underfill은 paper trigger 기준과 live trigger 기준을 맞추되 Real Asset Guard/live canary gate는 유지한다.
 
 ```bash
 # 기본 사용 (파일 sync + file-only reports, DB 미사용)
@@ -461,6 +462,8 @@ SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT=0.01 bash scripts/sync-vps-data.sh
 SKIP_TRADE_MARKOUT_REPORT=true bash scripts/sync-vps-data.sh
 SKIP_PUREWS_TRADE_MARKOUT_REPORT=true bash scripts/sync-vps-data.sh
 SKIP_ROTATION_REPORT=true bash scripts/sync-vps-data.sh
+SKIP_CAPITULATION_REPORT=true bash scripts/sync-vps-data.sh
+CAPITULATION_REPORT_ROUND_TRIP_COST_PCT=0.01 bash scripts/sync-vps-data.sh
 SKIP_WINNER_KILL_REPORT=true bash scripts/sync-vps-data.sh
 SKIP_SYNC_HEALTH=true bash scripts/sync-vps-data.sh
 ```

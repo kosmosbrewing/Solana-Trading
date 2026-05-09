@@ -22,6 +22,7 @@ import { Connection, ParsedTransactionWithMeta, PublicKey } from '@solana/web3.j
 import { appendFile, mkdir } from 'fs/promises';
 import path from 'path';
 import { createModuleLogger } from '../utils/logger';
+import { recordHeliusRpcCredit } from '../observability/heliusRpcAttribution';
 import { SOL_MINT, LAMPORTS_PER_SOL } from '../utils/constants';
 import {
   getAllActiveAddresses,
@@ -71,10 +72,14 @@ export interface KolWalletTrackerConfig {
 const WATCHDOG_INTERVAL_MS = 5 * 60 * 1000;       // 5min — RPC churn detection
 const RESUBSCRIBE_COOLDOWN_MS = 5 * 60 * 1000;    // 5min cooldown — thundering herd 방지
 const FULL_DISCONNECT_ALERT_AFTER_MS = 15 * 60 * 1000;  // 15min: 모든 sub 사라지면 critical
+const TX_CACHE_TTL_MS = 10 * 60 * 1000;
+const TX_CACHE_MAX = 5000;
 
 export class KolWalletTracker extends EventEmitter {
   private readonly subscriptions = new Map<string, number>();
   private readonly config: KolWalletTrackerConfig;
+  private readonly txCache = new Map<string, { expiresAt: number; tx: ParsedTransactionWithMeta | null }>();
+  private readonly txInFlight = new Map<string, Promise<ParsedTransactionWithMeta | null>>();
   private started = false;
   private outputDirEnsured = false;
   private targetAddresses: string[] = [];
@@ -348,10 +353,7 @@ export class KolWalletTracker extends EventEmitter {
       if (timeout.unref) timeout.unref();
     });
     const tx = await Promise.race([
-      this.config.connection.getParsedTransaction(signature, {
-        maxSupportedTransactionVersion: 0,
-        commitment: 'confirmed',
-      }),
+      this.fetchParsedTransactionCached(signature, wallet.id, walletAddress),
       timeoutPromise,
     ]).finally(() => {
       if (timeout) clearTimeout(timeout);
@@ -413,6 +415,51 @@ export class KolWalletTracker extends EventEmitter {
       `[KOL_TX] kol=${wallet.id} tier=${wallet.tier} ${kolTx.action} ` +
       `${swap.tokenMint.slice(0, 8)}... sol=${swap.solAmount?.toFixed(4) ?? '?'} sig=${signature.slice(0, 8)}`
     );
+  }
+
+  private fetchParsedTransactionCached(
+    signature: string,
+    kolId: string,
+    walletAddress: string
+  ): Promise<ParsedTransactionWithMeta | null> {
+    const now = Date.now();
+    const cached = this.txCache.get(signature);
+    if (cached && cached.expiresAt > now) return Promise.resolve(cached.tx);
+
+    const existing = this.txInFlight.get(signature);
+    if (existing) return existing;
+
+    recordHeliusRpcCredit({
+      purpose: 'kol_tx_enrichment',
+      method: 'getParsedTransaction',
+      feature: 'kol_wallet_tracker',
+      walletAddress,
+      txSignature: signature,
+      traceId: `kol-wallet-${kolId}-${signature.slice(0, 8)}`,
+    });
+    const promise = this.config.connection.getParsedTransaction(signature, {
+      maxSupportedTransactionVersion: 0,
+      commitment: 'confirmed',
+    }).then((tx) => {
+      this.txCache.set(signature, { expiresAt: Date.now() + TX_CACHE_TTL_MS, tx });
+      this.trimTxCache();
+      return tx;
+    }).finally(() => {
+      this.txInFlight.delete(signature);
+    });
+    this.txInFlight.set(signature, promise);
+    return promise;
+  }
+
+  private trimTxCache(): void {
+    if (this.txCache.size <= TX_CACHE_MAX) return;
+    const now = Date.now();
+    for (const [signature, row] of this.txCache.entries()) {
+      if (row.expiresAt <= now || this.txCache.size > TX_CACHE_MAX) {
+        this.txCache.delete(signature);
+      }
+      if (this.txCache.size <= TX_CACHE_MAX) return;
+    }
   }
 
   private async appendJsonl(kolTx: KolTx, shadow: boolean): Promise<void> {

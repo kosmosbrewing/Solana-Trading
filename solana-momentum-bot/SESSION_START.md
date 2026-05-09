@@ -32,13 +32,14 @@ npm run check:fast
 3. **`docs/design-docs/mission-refinement-2026-04-21.md`** — 원 사명 정의. 현재 운영 floor 는 2026-04-28 B안으로 **0.7 SOL** 확정 + 200 live trades + 5x+ winner 실측. 100 SOL 은 tail outcome.
 4. **`REFACTORING_v1.0.md`** — Option 5 의 Phase 0-5 실행 가이드 (현 active sprint).
 
-### Lane 표 (2026-05-03 갱신 — 3 strategy split)
+### Lane 표 (2026-05-09 갱신 — 3 live/observe surfaces + 1 paper experiment)
 
 | Lane | arm | 모드 | 역할 | 코드 | 파라미터 |
 |------|------|------|------|------|----------|
 | `cupsey_flip_10s` | — | (disabled) | **Benchmark (frozen)** — 개조 금지 | `cupseyLaneHandler.ts` | 변경 0 |
 | `kol_hunter_smart_v3` | main | live canary + paper fallback | **Main 5x lane** | `kolSignalHandler.ts` | fresh active 2+ KOL velocity / pullback live fallback |
 | `kol_hunter_rotation_v1` | control + paper arms + promoted underfill canary | canonical rotation live off; `rotation_underfill_v1` canary only | fast-compound auxiliary | `kolSignalHandler.ts`, `src/orchestration/rotation/`, `rotationPaperDigest.ts` | T+15/T+30 post-cost / S/A underfill live + chase-topup paper + flow-exit |
+| `kol_hunter_capitulation_rebound_v1` | paper experiment | paper-only; live prohibited | KOL attention 이후 liquidity-shock rebound 검증 | `kolSignalHandler.ts`, `src/orchestration/capitulationRebound/`, `capitulation-rebound-report.ts` | hard veto + recovery confirmation / T+15/30/60/180/300/1800 |
 | `pure_ws botflow` | primary + paper arms | paper/observe-only | new-pair botflow rebuild candidate | `src/orchestration/pureWs/`, `src/observability/pureWsBotflow*.ts` | T+15/30/60/180/300/1800 / 15m digest |
 
 ---
@@ -64,9 +65,11 @@ npm run check:fast
 ## 4. 5 분 안에 알아야 할 것
 
 ### 최근 무엇을 했나
+- **2026-05-09** — **smart-v3 live canary 재개**. 최근 24h smart-v3 paper 개선 신호를 운영 canary 에 다시 반영하기 위해 `KOL_HUNTER_SMART_V3_LIVE_ENABLED=true` 를 명시하고 version label 을 `smart-v3.0.1-live-canary-2026-05-09` 로 갱신했다. 범위는 기존 KOL live canary budget/ticket/floor 안이며, `KOL_HUNTER_SMART_V3_PULLBACK_LIVE_ENABLED` 는 계속 default false 라서 pure pullback 은 paper fallback 으로 남는다. MAE fast-fail / recovery hold / MFE floor / strict quality fallback 은 그대로 적용된다.
+- **2026-05-09** — **KOL capitulation rebound V1 paper lane 구현**. Research 가설을 live 정책이 아니라 paper-only liquidity-shock rebound 실험으로 격리했다. Entry 는 KOL attention 이후 drawdown/bounce/recovery confirmation, recent sell wave 부재, hard-veto token/quote/security flags 통과가 필요하고, 기존 size-aware sell quote 확인을 거친다. Close 는 no-reaction/no-post-cost/hard-cut 중심의 short monetization path 를 쓰며 runner logic 을 상속하지 않는다. Projection ledger 는 `data/realtime/capitulation-rebound-paper-trades.jsonl`, shared markout offsets 는 `15,30,60,180,300,1800`, report 는 `npm run kol:capitulation-report`. `sync-vps-data.sh`는 API 호출 없이 daily capitulation report 와 sync-health row count 를 생성한다. Live 승격은 최소 100 closes + ok coverage + post-cost 검증 전 금지.
 - **2026-05-07** — **smart-v3 live entry quality hardening**. Fresh active 2+ velocity remains the only default live path, but live now fail-closes to paper on strict quality flags (`EXIT_LIQUIDITY_UNKNOWN`, `TOKEN_QUALITY_UNKNOWN`, `UNCLEAN_TOKEN*`, holder-risk/no-route/rug-like), weak pre-entry sell recovery/no-sell window failures, repeated losing KOL combinations, and materially adverse quote vs fresh KOL fill price. Combo decay uses entry-time fresh KOL identity (`smartV3EntryComboKey`), learns from primary paper+live closes, treats live losses as stronger evidence, and excludes shadow arms. `smart-v3-evidence-report` now renders paper rows that would have been live-blocked with top block reasons/flags. Defaults are active; 운영 `.env` override 필수 없음.
 - **2026-05-08** — **smart-v3 MFE winner preservation**. Goal is not forced win-rate improvement; it is preventing positions that already printed meaningful MFE from round-tripping into loss. Smart-v3 now has default-on MFE stages (`breakeven_watch` +10%, `profit_lock` +20%, `runner` +50%, `convexity` +100%) and stage floors (+0.5%, +2%, +10%, +20%). A floor breach exits immediately as `smart_v3_mfe_floor_exit`; structural/liquidity/insider safety exits remain highest priority. Close ledgers and `smart-v3-evidence-report` expose stage/floor-exit counts. 운영 `.env` override 필수 없음.
-- **2026-05-08** — **rotation live canary arm 교체**. `rotation_chase_topup_v1` live 는 paper/live entry diff 와 live 0W/16L 관측 후 paper 로 강등했다. Canonical `KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=false` 는 유지하고, `rotation_underfill_v1` 만 `KOL_HUNTER_ROTATION_UNDERFILL_LIVE_CANARY_ENABLED=true` 로 좁게 연다. Underfill live 는 S/A KOL fill reference 필수, KOL weighted fill 대비 할인 진입, strict quality fallback, optional exit-flow live 적용을 사용한다. `rotation-lane-report` 는 live close rows 와 underfill entry-vs-KOL-fill diff 를 표시한다.
+- **2026-05-08/09** — **rotation live canary arm 교체 + underfill paper-equivalent live 기준**. `rotation_chase_topup_v1` live 는 paper/live entry diff 와 live 0W/16L 관측 후 paper 로 강등했다. Canonical `KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=false` 는 유지하고, `rotation_underfill_v1` 만 `KOL_HUNTER_ROTATION_UNDERFILL_LIVE_CANARY_ENABLED=true` 로 좁게 연다. Underfill live 는 S/A KOL fill reference 필수, KOL weighted fill 대비 할인 진입 기준을 paper trigger 와 동일하게 쓰며, live-only strict-quality / live-reference 재차단은 제거했다. Real Asset Guard, live canary gate, wallet floor, same-mint/reentry guard, exit retry 는 그대로 적용된다. `rotation-lane-report` 는 live close rows 와 underfill entry-vs-KOL-fill diff 를 표시한다.
 - **2026-05-06** — **rotation chase-topup live canary + env operating profile 정리**. Historical note: 이후 2026-05-08 에 chase-topup live 는 강등되었다. `.env`는 secret 포함 운영 파일이라 Git 추적 금지이며, secret 없는 운영 override 는 `ops/env/production.env`로 추적한다. `scripts/deploy-remote.sh`는 원격 repo를 먼저 pull하고, 원격 `scripts/deploy.sh`가 `ops/env/production.env`를 `.env`에 병합한다.
 - **2026-05-06** — **smart-v3 MAE diagnostics/live behavior refinement**. Smart-v3 probe now has default-on `smart_v3_mae_fast_fail` for dead pre-T1 probes (low MFE, token-only MAE breach, no fresh participating KOL buy) and a bounded one-time MAE recovery hold for pre-T1 candidates that already reached meaningful MFE and have no participating KOL sell. Close ledgers/projection ledgers include recovery markers plus pre-T1 MFE band/giveback diagnostics; `smart-v3-evidence-report` renders MAE fast-fail, recovery-hold, and pre-T1 `10-20`/`20-30`/`30-50` counts. 운영 `.env` override 필수 없음.
 - **2026-05-05** — **Helius getTransfersByAddress KOL posterior integration**. `npm run kol:transfer-backfill` 로 active KOL transfer ledger 를 `data/research/kol-transfers.jsonl`에 적재하고, `npm run kol:transfer-report` 로 KOL별 rotation/smart-v3 fit posterior 를 생성한다. `npm run kol:transfer-refresh` 는 별도 sidecar 배치용 stale-aware wrapper(기본 7d, 22h stale, backup+overwrite)다. `sync-vps-data.sh`는 API 호출 없이 posterior report를 default 생성하고 stale 경고만 출력하며, `smart-v3-evidence-report` / `rotation-lane-report` 에 진단 전용 KOL transfer posterior 섹션을 붙인다. 운영 데이터는 VPS → local 로 가져오되 `data/research/kol-transfers.jsonl*` 는 local-only 분석 캐시라 rsync 기본 제외한다. 정책 자동 반영 없음. 운영 `.env` 변경 없음. sync-only knobs: `SKIP_KOL_TRANSFER_REPORT`, `KOL_TRANSFER_REPORT_SINCE`, `KOL_TRANSFER_INPUT`, `KOL_TRANSFER_STALE_WARN_HOURS`, `DATA_RSYNC_EXCLUDES`.
@@ -140,6 +143,7 @@ npm run env:generate            # generated 카탈로그 재생성
 npm run ops:canary:eval         # Stage 2/3 trade 결과 평가
 npm run kol:shadow-eval         # Phase 2 KOL Discovery go/no-go
 npm run kol:smart-v3-evidence-report -- --since 24h --realtime-dir data/realtime
+npm run kol:capitulation-report -- --since 24h --realtime-dir data/realtime
 
 # 테스트 단독
 npx jest test/kolSignalHandler  # Lane T state machine
@@ -165,6 +169,8 @@ npx jest test/utils/clock       # Clock interface
 | smart-v3 evidence 의 `maeFastFail` 증가 | pre-T1 에 거의 살아난 적 없는 probe 를 더 빨리 자른 cohort. live 에서는 hard-cut sell retry path 를 타야 정상 |
 | smart-v3 evidence 의 `preT1 20-30`/`30-50` 증가 | T1 전 수익권을 찍고 되밀린 케이스. exit 완화 후보지만 즉시 정책 변경 금지, sell-side T+와 winner-kill을 같이 봐야 함 |
 | smart-v3 evidence 의 `floorExit` 증가 | MFE stage floor 하향 돌파로 본절/소익절 stop 이 발동한 횟수. 이후 after-sell T+로 너무 이른 floor 인지 확인 |
+| capitulation report 의 `COLLECT` | paper 표본/coverage 부족. Live 검토 금지. no-trade counterfactual 과 T+15/T+30 post-cost median 을 먼저 본다 |
+| capitulation report 의 `PAUSE_REVIEW` | paper rebound 가 비용 후 음수이거나 route/coverage 문제가 큼. 설정 완화보다 hard-veto/quote 회복 로그를 먼저 점검 |
 | `5x winner` 라는 표현 | **mfe ≥ +400% 정의** (NOT netPct). live 의 received/actualIn 비율은 wallet axis 이지 mfe 아님 — paper mirror record 에서 mfePctPeak 직접 확인 |
 | `logs/bot.log` mtime stale | `bash scripts/sync-vps-data.sh` 미실행. sync script 가 freshness 검증 추가됨 (2026-04-29) — 30분 이상 stale 시 WARNING 출력 |
 | livecanary 활성 후 paper-only 분기 거의 0 | **의도된 정책 효과** (NOT incident) — `evaluateSmartV3Triggers` 의 `isLiveCanaryActive() && botCtx && !candIsShadow` 통과 시 enterLivePosition. paper-only 는 shadow KOL 또는 wallet_stop/entry_halt fallback 만 |

@@ -114,6 +114,11 @@ import {
   updateExcursionTelemetry,
   type ExcursionTelemetrySnapshot,
 } from './excursionTelemetry';
+import {
+  evaluateCapitulationReboundPolicy,
+  type CapitulationReboundDecision,
+  type CapitulationReboundTelemetry,
+} from './capitulationRebound/policy';
 
 const log = createModuleLogger('KolHunter');
 const LANE_STRATEGY = 'kol_hunter' as const;
@@ -141,6 +146,8 @@ export type CloseReason =
   | 'smart_v3_mae_fast_fail'
   | 'smart_v3_mfe_floor_exit'
   | 'rotation_flow_residual_timeout'
+  | 'capitulation_no_reaction'
+  | 'capitulation_no_post_cost'
   | 'hold_phase_sentinel_degraded_exit'
   | 'smart_v3_no_trigger'
   | 'smart_v3_price_timeout'
@@ -169,6 +176,7 @@ export type KolEntryReason =
   | 'legacy_v1'
   | 'swing_v2'
   | 'rotation_v1'
+  | 'capitulation_rebound'
   | 'pullback'
   | 'velocity'
   | 'pullback_and_velocity';
@@ -269,6 +277,10 @@ export interface PaperPosition {
   rotationFlowResidualUntilSec?: number;
   rotationFlowLastReducePct?: number;
   rotationMonetizableEdge?: RotationMonetizableEdgeEstimate | null;
+  capitulationTelemetry?: CapitulationReboundTelemetry;
+  capitulationEntryLowPrice?: number;
+  capitulationEntryLowAtMs?: number;
+  capitulationRecoveryConfirmations?: number;
   kolReinforcementCount: number;
   detectorVersion: string;
   independentKolCount: number;
@@ -406,6 +418,10 @@ interface PaperEntryOptions {
   smartV3HardCutEntryPrice?: number;
   smartV3HardCutExitPrice?: number;
   smartV3HardCutDiscountPct?: number;
+  capitulationTelemetry?: CapitulationReboundTelemetry;
+  capitulationEntryLowPrice?: number;
+  capitulationEntryLowAtMs?: number;
+  capitulationRecoveryConfirmations?: number;
 }
 
 interface DynamicExitParams {
@@ -434,6 +450,15 @@ interface PendingCandidate {
     noTradeReasonsEmitted: Set<string>;
     underfillNoTradeReasonsEmitted?: Set<string>;
     chaseTopupNoTradeReasonsEmitted?: Set<string>;
+  };
+  capitulation?: {
+    lowPrice?: number;
+    lowAtMs?: number;
+    recoveryConfirmations: number;
+    lastRecoveryAtMs?: number;
+    lastRecoveryPrice?: number;
+    enteredAtMs?: number;
+    noTradeReasonsEmitted: Set<string>;
   };
 }
 
@@ -872,6 +897,10 @@ function rotationV1MarkoutOffsetsSec(): number[] {
   return uniqSortedSeconds(config.kolHunterRotationV1MarkoutOffsetsSec ?? [15, 30, 60]);
 }
 
+function capitulationReboundMarkoutOffsetsSec(): number[] {
+  return uniqSortedSeconds(config.kolHunterCapitulationReboundMarkoutOffsetsSec ?? [15, 30, 60, 180, 300, 1800]);
+}
+
 function isRotationFamilyMarkoutPosition(
   pos?: Pick<PaperPosition, 'parameterVersion' | 'kolEntryReason' | 'armName'>
 ): boolean {
@@ -883,10 +912,23 @@ function isRotationFamilyMarkoutPosition(
   return pos.parameterVersion?.startsWith('rotation-') === true;
 }
 
+function isCapitulationReboundPosition(
+  pos?: Pick<PaperPosition, 'parameterVersion' | 'kolEntryReason' | 'armName'>
+): boolean {
+  if (!pos) return false;
+  if (pos.parameterVersion === config.kolHunterCapitulationReboundParameterVersion) return true;
+  if (pos.kolEntryReason === 'capitulation_rebound') return true;
+  if (pos.armName === 'kol_hunter_capitulation_rebound_v1') return true;
+  return pos.parameterVersion?.startsWith('capitulation-rebound-') === true;
+}
+
 function tradeMarkoutOffsetsSecForPosition(
   pos?: Pick<PaperPosition, 'parameterVersion' | 'kolEntryReason' | 'armName'>
 ): number[] {
   const base = config.tradeMarkoutObserverOffsetsSec ?? [30, 60, 300, 1800];
+  if (isCapitulationReboundPosition(pos)) {
+    return uniqSortedSeconds([...base, ...capitulationReboundMarkoutOffsetsSec()]);
+  }
   if (!isRotationFamilyMarkoutPosition(pos)) {
     return uniqSortedSeconds(base);
   }
@@ -1742,6 +1784,7 @@ function armNameForVersion(parameterVersion: string): string {
   if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) return 'rotation_underfill_v1';
   if (parameterVersion === config.kolHunterRotationExitFlowParameterVersion) return 'rotation_exit_kol_flow_v1';
   if (parameterVersion === config.kolHunterRotationChaseTopupParameterVersion) return 'rotation_chase_topup_v1';
+  if (parameterVersion === config.kolHunterCapitulationReboundParameterVersion) return 'kol_hunter_capitulation_rebound_v1';
   return 'kol_hunter_v1';
 }
 
@@ -1945,6 +1988,7 @@ function defaultEntryReasonForVersion(parameterVersion: string): KolEntryReason 
   if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) return 'rotation_v1';
   if (parameterVersion === config.kolHunterRotationExitFlowParameterVersion) return 'rotation_v1';
   if (parameterVersion === config.kolHunterRotationChaseTopupParameterVersion) return 'rotation_v1';
+  if (parameterVersion === config.kolHunterCapitulationReboundParameterVersion) return 'capitulation_rebound';
   return 'legacy_v1';
 }
 
@@ -1955,6 +1999,7 @@ function defaultConvictionForVersion(parameterVersion: string): KolConvictionLev
   if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) return 'MEDIUM_HIGH';
   if (parameterVersion === config.kolHunterRotationExitFlowParameterVersion) return 'MEDIUM_HIGH';
   if (parameterVersion === config.kolHunterRotationChaseTopupParameterVersion) return 'MEDIUM_HIGH';
+  if (parameterVersion === config.kolHunterCapitulationReboundParameterVersion) return 'MEDIUM_HIGH';
   return 'LOW';
 }
 
@@ -1988,6 +2033,14 @@ function dynamicExitParamsForEntry(reason: KolEntryReason): DynamicExitParams {
         t1ProfitFloorMult: config.kolHunterRotationV1ProfitFloorMult,
         probeFlatTimeoutSec: config.kolHunterRotationV1ProbeTimeoutSec,
       };
+    case 'capitulation_rebound':
+      return {
+        t1Mfe: config.kolHunterCapitulationReboundT1Mfe,
+        t1TrailPct: config.kolHunterCapitulationReboundT1TrailPct,
+        t1ProfitFloorMult: config.kolHunterCapitulationReboundProfitFloorMult,
+        probeFlatTimeoutSec: config.kolHunterCapitulationReboundProbeTimeoutSec,
+        probeHardCutPct: config.kolHunterCapitulationReboundHardCutPct,
+      };
     default:
       return {};
   }
@@ -2012,7 +2065,8 @@ function dynamicExitParamsForPosition(parameterVersion: string, reason: KolEntry
   }
   if (
     parameterVersion === config.kolHunterSmartV3ParameterVersion ||
-    parameterVersion === config.kolHunterRotationV1ParameterVersion
+    parameterVersion === config.kolHunterRotationV1ParameterVersion ||
+    parameterVersion === config.kolHunterCapitulationReboundParameterVersion
   ) {
     return dynamicExitParamsForEntry(reason);
   }
@@ -2681,7 +2735,7 @@ interface RotationV1TriggerResult {
 }
 
 interface KolEntrySignal {
-  label: 'smart-v3' | 'rotation-v1' | 'rotation-underfill' | 'rotation-chase-topup';
+  label: 'smart-v3' | 'rotation-v1' | 'rotation-underfill' | 'rotation-chase-topup' | 'capitulation-rebound';
   logTag: string;
   parameterVersion: string;
   entryReason: KolEntryReason;
@@ -2898,6 +2952,91 @@ function ensureRotationV1State(cand: PendingCandidate): NonNullable<PendingCandi
   return cand.rotationV1;
 }
 
+function ensureCapitulationReboundState(cand: PendingCandidate): NonNullable<PendingCandidate['capitulation']> {
+  if (!cand.capitulation) {
+    cand.capitulation = {
+      recoveryConfirmations: 0,
+      noTradeReasonsEmitted: new Set<string>(),
+    };
+  }
+  return cand.capitulation;
+}
+
+function updateCapitulationRecoveryState(cand: PendingCandidate, nowMs: number): NonNullable<PendingCandidate['capitulation']> {
+  const state = ensureCapitulationReboundState(cand);
+  const smart = cand.smartV3;
+  const currentPrice = smart?.currentPrice ?? 0;
+  if (!Number.isFinite(currentPrice) || currentPrice <= 0) return state;
+
+  if (!state.lowPrice || currentPrice < state.lowPrice) {
+    state.lowPrice = currentPrice;
+    state.lowAtMs = nowMs;
+    state.recoveryConfirmations = 0;
+    state.lastRecoveryAtMs = undefined;
+    state.lastRecoveryPrice = undefined;
+    return state;
+  }
+
+  const lowPrice = state.lowPrice;
+  const bouncePct = lowPrice > 0 ? currentPrice / lowPrice - 1 : 0;
+  const spacingMs = Math.max(0, config.kolHunterCapitulationReboundRecoverySpacingSec) * 1000;
+  const spacingOk = state.lastRecoveryAtMs == null || nowMs - state.lastRecoveryAtMs >= spacingMs;
+  const monotonicOk = state.lastRecoveryPrice == null || currentPrice > state.lastRecoveryPrice;
+  if (bouncePct >= config.kolHunterCapitulationReboundMinBouncePct && spacingOk && monotonicOk) {
+    state.recoveryConfirmations += 1;
+    state.lastRecoveryAtMs = nowMs;
+    state.lastRecoveryPrice = currentPrice;
+  }
+  return state;
+}
+
+interface CapitulationReboundTriggerResult extends CapitulationReboundDecision {
+  participatingKols?: KolDiscoveryScore['participatingKols'];
+}
+
+function evaluateCapitulationReboundTriggerState(
+  cand: PendingCandidate,
+  score: KolDiscoveryScore,
+  fresh: SmartV3FreshContext,
+  nowMs: number
+): CapitulationReboundTriggerResult {
+  const state = updateCapitulationRecoveryState(cand, nowMs);
+  const smart = cand.smartV3;
+  const decision = evaluateCapitulationReboundPolicy({
+    alreadyEntered: state.enteredAtMs != null,
+    currentPrice: smart?.currentPrice ?? 0,
+    peakPrice: smart?.peakPrice ?? 0,
+    lowPrice: state.lowPrice ?? smart?.currentPrice ?? 0,
+    kolScore: fresh.triggerFreshSignalScore || score.finalScore,
+    preEntrySellSol: fresh.preEntrySellSol,
+    preEntrySellKols: fresh.preEntrySellKols,
+    recoveryConfirmations: state.recoveryConfirmations,
+    survivalFlags: smart?.preEntryFlags ?? [],
+    config: {
+      enabled: config.kolHunterCapitulationReboundEnabled,
+      paperEnabled: config.kolHunterCapitulationReboundPaperEnabled,
+      minKolScore: config.kolHunterCapitulationReboundMinKolScore,
+      minDrawdownPct: config.kolHunterCapitulationReboundMinDrawdownPct,
+      maxDrawdownPct: config.kolHunterCapitulationReboundMaxDrawdownPct,
+      minBouncePct: config.kolHunterCapitulationReboundMinBouncePct,
+      requiredRecoveryConfirmations: config.kolHunterCapitulationReboundRecoveryConfirmations,
+      maxRecentSellSol: config.kolHunterCapitulationReboundMaxRecentSellSol,
+      maxRecentSellKols: config.kolHunterCapitulationReboundMaxRecentSellKols,
+    },
+  });
+
+  const participatingKols =
+    fresh.freshParticipatingKols.length > 0
+      ? fresh.freshParticipatingKols
+      : fresh.shadowFreshParticipatingKols.length > 0
+        ? fresh.shadowFreshParticipatingKols
+        : score.participatingKols;
+  return {
+    ...decision,
+    participatingKols,
+  };
+}
+
 function logRotationV1ConfigOnce(): void {
   if (rotationV1ConfigLogged) return;
   rotationV1ConfigLogged = true;
@@ -2998,47 +3137,17 @@ function rotationUnderfillReferencePriceFromTelemetry(
 }
 
 function evaluateRotationUnderfillLiveFallback(
-  entrySignal: KolEntrySignal,
-  entryFlags: string[]
+  entrySignal: KolEntrySignal
 ): { fallback: boolean; reason?: string; flags: string[] } {
   if (entrySignal.label !== 'rotation-underfill') return { fallback: false, flags: [] };
   const flags: string[] = [];
   if (!config.kolHunterRotationUnderfillLiveCanaryEnabled) {
     flags.push('ROTATION_UNDERFILL_LIVE_DISABLED');
   }
-  if (config.kolHunterRotationUnderfillLiveStrictQualityEnabled) {
-    const qualityFlags = entryFlags.filter(isSmartV3LiveStrictQualityFlag);
-    if (qualityFlags.length > 0) {
-      flags.push('ROTATION_UNDERFILL_LIVE_QUALITY_FALLBACK');
-      flags.push(...qualityFlags.map((flag) => `ROTATION_UNDERFILL_QUALITY_${flag}`));
-    }
-  }
-  const referencePrice = rotationUnderfillReferencePriceFromTelemetry(entrySignal.telemetry);
-  const currentPrice = entrySignal.telemetry?.currentPrice;
-  if (
-    referencePrice != null &&
-    typeof currentPrice === 'number' &&
-    Number.isFinite(currentPrice) &&
-    currentPrice > 0
-  ) {
-    const discountPct = 1 - currentPrice / referencePrice;
-    if (discountPct < config.kolHunterRotationUnderfillMinDiscountPct) {
-      flags.push('ROTATION_UNDERFILL_ENTRY_ADVANTAGE_ADVERSE');
-      flags.push(`ROTATION_UNDERFILL_DISCOUNT_PCT_${discountPct.toFixed(4)}`);
-    }
-  } else {
-    flags.push('ROTATION_UNDERFILL_MISSING_KOL_FILL_PRICE');
-  }
   if (flags.length === 0) return { fallback: false, flags: [] };
   return {
     fallback: true,
-    reason: flags.includes('ROTATION_UNDERFILL_LIVE_DISABLED')
-      ? 'rotation_underfill_live_disabled'
-      : flags.includes('ROTATION_UNDERFILL_LIVE_QUALITY_FALLBACK')
-      ? 'rotation_underfill_live_quality_fallback'
-      : flags.includes('ROTATION_UNDERFILL_ENTRY_ADVANTAGE_ADVERSE')
-      ? 'rotation_underfill_entry_advantage_adverse'
-      : 'rotation_underfill_missing_kol_fill_price',
+    reason: 'rotation_underfill_live_disabled',
     flags,
   };
 }
@@ -3695,6 +3804,13 @@ function shouldEmitRotationChaseTopupNoTrade(reason?: string): boolean {
     reason === 'chase_no_positive_step';
 }
 
+function shouldEmitCapitulationNoTrade(reason?: string): boolean {
+  return reason === 'hard_veto' ||
+    reason === 'sell_wave' ||
+    reason === 'drawdown_too_deep' ||
+    reason === 'bounce_not_confirmed';
+}
+
 function buildRotationNoTradeObserverConfig() {
   return {
     ...buildObserverConfig(),
@@ -3752,6 +3868,121 @@ function trackRotationNoTradeMarkout(
       },
     },
     buildRotationNoTradeObserverConfig()
+  );
+}
+
+function buildCapitulationNoTradeObserverConfig() {
+  return {
+    ...buildObserverConfig(),
+    offsetsSec: capitulationReboundMarkoutOffsetsSec(),
+    writeScheduleMarker: true,
+  };
+}
+
+function trackCapitulationNoTradeMarkout(
+  cand: PendingCandidate,
+  score: KolDiscoveryScore,
+  result: CapitulationReboundTriggerResult,
+  reason: string,
+  flags: string[]
+): void {
+  const signalPrice = result.telemetry.currentPrice > 0
+    ? result.telemetry.currentPrice
+    : cand.smartV3?.currentPrice ?? cand.smartV3?.kolEntryPrice ?? 0;
+  if (!Number.isFinite(signalPrice) || signalPrice <= 0) return;
+  const nowMs = Date.now();
+  trackRejectForMissedAlpha(
+    {
+      rejectCategory: 'viability',
+      rejectReason: `capitulation_rebound_${reason}`,
+      tokenMint: cand.tokenMint,
+      lane: LANE_STRATEGY,
+      signalPrice,
+      probeSolAmount: config.kolHunterTicketSol,
+      tokenDecimals: cand.smartV3?.tokenDecimals,
+      signalSource: 'kol_hunter_capitulation_rebound_v1',
+      extras: {
+        positionId: `capitulation-notrade-${cand.tokenMint.slice(0, 8)}-${reason}-${nowMs}`,
+        eventType: 'capitulation_rebound_no_trade',
+        armName: 'kol_hunter_capitulation_rebound_v1',
+        entryReason: 'capitulation_rebound',
+        parameterVersion: config.kolHunterCapitulationReboundParameterVersion,
+        tokenDecimalsSource: cand.smartV3?.tokenDecimalsSource ?? null,
+        noTradeReason: reason,
+        survivalFlags: flags,
+        kolCount: cand.kolTxs.length,
+        independentKolCount: score.independentKolCount,
+        effectiveIndependentCount: score.effectiveIndependentCount,
+        kolScore: score.finalScore,
+        participatingKols: result.participatingKols ?? score.participatingKols,
+        capitulation: result.telemetry,
+      },
+    },
+    buildCapitulationNoTradeObserverConfig()
+  );
+}
+
+function trackCapitulationEntryRejectMarkout(
+  cand: PendingCandidate,
+  score: KolDiscoveryScore,
+  reason: string,
+  signalPrice: number,
+  flags: string[],
+  options: PaperEntryOptions,
+  extra: Record<string, unknown> = {}
+): void {
+  if (!Number.isFinite(signalPrice) || signalPrice <= 0) return;
+  const nowMs = Date.now();
+  const survivalFlags = [
+    ...flags,
+    `CAPITULATION_NOTRADE_${reason.toUpperCase()}`,
+  ];
+  emitKolShadowPolicy({
+    eventKind: 'reject',
+    tokenMint: cand.tokenMint,
+    currentAction: 'block',
+    isLive: false,
+    isShadowArm: false,
+    armName: 'kol_hunter_capitulation_rebound_v1',
+    entryReason: 'capitulation_rebound',
+    rejectReason: `capitulation_rebound_${reason}`,
+    independentKolCount: options.entryIndependentKolCount ?? score.independentKolCount,
+    effectiveIndependentCount: options.entryIndependentKolCount ?? score.effectiveIndependentCount,
+    kolScore: options.entryKolScore ?? score.finalScore,
+    participatingKols: options.entryParticipatingKols ?? score.participatingKols,
+    survivalFlags,
+    recentJupiter429: currentRecentJupiter429(),
+    routeFound: survivalFlags.includes('NO_SELL_ROUTE') ? false : undefined,
+  });
+  trackRejectForMissedAlpha(
+    {
+      rejectCategory: 'viability',
+      rejectReason: `capitulation_rebound_${reason}`,
+      tokenMint: cand.tokenMint,
+      lane: LANE_STRATEGY,
+      signalPrice,
+      probeSolAmount: config.kolHunterTicketSol,
+      tokenDecimals: options.tokenDecimals,
+      signalSource: 'kol_hunter_capitulation_rebound_v1',
+      extras: {
+        positionId: `capitulation-notrade-${cand.tokenMint.slice(0, 8)}-${reason}-${nowMs}`,
+        eventType: 'capitulation_rebound_no_trade',
+        armName: 'kol_hunter_capitulation_rebound_v1',
+        entryReason: 'capitulation_rebound',
+        parameterVersion: config.kolHunterCapitulationReboundParameterVersion,
+        tokenDecimalsSource: options.tokenDecimalsSource ?? null,
+        noTradeReason: reason,
+        survivalFlags,
+        kolCount: cand.kolTxs.length,
+        independentKolCount: options.entryIndependentKolCount ?? score.independentKolCount,
+        effectiveIndependentCount: options.entryIndependentKolCount ?? score.effectiveIndependentCount,
+        kolScore: options.entryKolScore ?? score.finalScore,
+        participatingKols: options.entryParticipatingKols ?? score.participatingKols,
+        capitulation: options.capitulationTelemetry ?? null,
+        ...extra,
+      },
+    },
+    buildCapitulationNoTradeObserverConfig()
   );
 }
 
@@ -4112,6 +4343,39 @@ function emitRotationChaseTopupNoTradePolicy(
   trackRotationChaseTopupNoTradeMarkout(cand, score, result, reason, flags);
 }
 
+function emitCapitulationNoTradePolicy(
+  cand: PendingCandidate,
+  score: KolDiscoveryScore,
+  result: CapitulationReboundTriggerResult
+): void {
+  if (!shouldEmitCapitulationNoTrade(result.reason)) return;
+  const capState = ensureCapitulationReboundState(cand);
+  const reason = result.reason ?? 'unknown';
+  if (capState.noTradeReasonsEmitted.has(reason)) return;
+  capState.noTradeReasonsEmitted.add(reason);
+  const flags = [
+    ...result.flags,
+    `CAPITULATION_NOTRADE_${reason.toUpperCase()}`,
+  ];
+  emitKolShadowPolicy({
+    eventKind: 'reject',
+    tokenMint: cand.tokenMint,
+    currentAction: 'block',
+    isLive: false,
+    isShadowArm: false,
+    armName: 'kol_hunter_capitulation_rebound_v1',
+    entryReason: 'capitulation_rebound',
+    rejectReason: `capitulation_rebound_${reason}`,
+    independentKolCount: score.independentKolCount,
+    effectiveIndependentCount: score.effectiveIndependentCount,
+    kolScore: score.finalScore,
+    participatingKols: result.participatingKols ?? score.participatingKols,
+    survivalFlags: flags,
+    recentJupiter429: currentRecentJupiter429(),
+  });
+  trackCapitulationNoTradeMarkout(cand, score, result, reason, flags);
+}
+
 async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
   const smart = cand.smartV3;
   if (!smart || smart.resolving) return;
@@ -4129,6 +4393,10 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
   const chaseTopupTrigger = smartTrigger.reason || rotationTrigger?.triggered || underfillTrigger?.triggered
     ? undefined
     : evaluateRotationChaseTopupTriggerState(cand, nowMs);
+  const capitulationTrigger =
+    smartTrigger.reason || rotationTrigger?.triggered || underfillTrigger?.triggered || chaseTopupTrigger?.triggered
+      ? undefined
+      : evaluateCapitulationReboundTriggerState(cand, score, smartFresh, nowMs);
   const entrySignal: KolEntrySignal | undefined = smartTrigger.reason && smartTrigger.conviction
     ? {
         label: 'smart-v3',
@@ -4190,11 +4458,30 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
               ? undefined
               : 'rotation_chase_topup_paper_only',
           }
+      : capitulationTrigger?.triggered
+        ? {
+            label: 'capitulation-rebound',
+            logTag: 'KOL_HUNTER_CAPITULATION_REBOUND_TRIGGER',
+            parameterVersion: config.kolHunterCapitulationReboundParameterVersion,
+            entryReason: 'capitulation_rebound' as const,
+            conviction: 'MEDIUM_HIGH' as const,
+            extraFlags: [
+              ...capitulationTrigger.flags,
+              'CAPITULATION_PAPER_ONLY',
+              'CAPITULATION_ENTRY_SELL_QUOTE_SIZED_REQUIRED',
+            ],
+            entryParticipatingKols: capitulationTrigger.participatingKols,
+            entryIndependentKolCount: smartFresh.triggerFreshIndependentKolCount || score.independentKolCount,
+            entryKolScore: smartFresh.triggerFreshSignalScore || score.finalScore,
+            paperOnly: true,
+            paperOnlyReason: 'capitulation_rebound_paper_only',
+          }
       : undefined;
   if (!entrySignal) {
     if (rotationTrigger) emitRotationV1NoTradePolicy(cand, score, rotationTrigger);
     if (underfillTrigger) emitRotationUnderfillNoTradePolicy(cand, score, underfillTrigger);
     if (chaseTopupTrigger) emitRotationChaseTopupNoTradePolicy(cand, score, chaseTopupTrigger);
+    if (capitulationTrigger) emitCapitulationNoTradePolicy(cand, score, capitulationTrigger);
     return;
   }
 
@@ -4206,8 +4493,10 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     ensureRotationV1State(cand).enteredAtMs = nowMs;
   } else if (entrySignal.label === 'rotation-underfill') {
     ensureRotationV1State(cand).underfillEnteredAtMs = nowMs;
-  } else {
+  } else if (entrySignal.label === 'rotation-chase-topup') {
     ensureRotationV1State(cand).chaseTopupEnteredAtMs = nowMs;
+  } else {
+    ensureCapitulationReboundState(cand).enteredAtMs = nowMs;
   }
   log.info(
     `[${entrySignal.logTag}] ${cand.tokenMint.slice(0, 8)} reason=${entrySignal.entryReason} ` +
@@ -4221,6 +4510,11 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       ? ` buys=${entrySignal.telemetry.buyCount} smallBuys=${entrySignal.telemetry.smallBuyCount} ` +
         `grossBuy=${Number(entrySignal.telemetry.grossBuySol).toFixed(3)}SOL ` +
         `refMove=${(entrySignal.telemetry.priceResponsePct * 100).toFixed(2)}%`
+      : '') +
+    (entrySignal.label === 'capitulation-rebound' && capitulationTrigger
+      ? ` dd=${(capitulationTrigger.telemetry.drawdownFromPeakPct * 100).toFixed(1)}% ` +
+        `bounce=${(capitulationTrigger.telemetry.bounceFromLowPct * 100).toFixed(1)}% ` +
+        `recovery=${capitulationTrigger.telemetry.recoveryConfirmations}`
       : '')
   );
 
@@ -4343,6 +4637,18 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     smartV3HardCutEntryPrice: smartV3HardCutReentry.state?.parentEntryPrice,
     smartV3HardCutExitPrice: smartV3HardCutReentry.state?.hardCutPrice,
     smartV3HardCutDiscountPct: smartV3HardCutReentry.discountPct,
+    capitulationTelemetry: entrySignal.label === 'capitulation-rebound'
+      ? capitulationTrigger?.telemetry
+      : undefined,
+    capitulationEntryLowPrice: entrySignal.label === 'capitulation-rebound'
+      ? capitulationTrigger?.telemetry.lowPrice
+      : undefined,
+    capitulationEntryLowAtMs: entrySignal.label === 'capitulation-rebound'
+      ? ensureCapitulationReboundState(cand).lowAtMs
+      : undefined,
+    capitulationRecoveryConfirmations: entrySignal.label === 'capitulation-rebound'
+      ? capitulationTrigger?.telemetry.recoveryConfirmations
+      : undefined,
     entryIndependentKolCount: entrySignal.label === 'smart-v3'
       ? smartFresh.freshIndependentKolCount
       : entrySignal.entryIndependentKolCount,
@@ -4513,8 +4819,9 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       entrySignal.paperOnlyReason?.toUpperCase() ?? 'ROTATION_UNDERFILL_PAPER_ONLY',
     ];
     log.warn(
-      `[KOL_HUNTER_ROTATION_PAPER_ONLY] ${cand.tokenMint.slice(0, 8)} ` +
-      `label=${entrySignal.label} refMove=${(Number(entrySignal.telemetry?.priceResponsePct ?? 0) * 100).toFixed(2)}% ` +
+      `[KOL_HUNTER_PAPER_ONLY] ${cand.tokenMint.slice(0, 8)} ` +
+      `label=${entrySignal.label} reason=${entrySignal.paperOnlyReason ?? 'paper_only'} ` +
+      `refMove=${(Number(entrySignal.telemetry?.priceResponsePct ?? 0) * 100).toFixed(2)}% ` +
       `kols=${entrySignal.entryIndependentKolCount ?? 0} score=${(entrySignal.entryKolScore ?? 0).toFixed(2)}. ` +
       `enter paper.`
     );
@@ -4697,7 +5004,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       });
       return;
     }
-    const rotationUnderfillLiveFallback = evaluateRotationUnderfillLiveFallback(entrySignal, entryFlags);
+    const rotationUnderfillLiveFallback = evaluateRotationUnderfillLiveFallback(entrySignal);
     if (rotationUnderfillLiveFallback.fallback) {
       const policyFlags = [
         ...entryFlags,
@@ -5279,9 +5586,32 @@ async function enterPaperPosition(
       `[KOL_HUNTER_SELL_REJECT] ${tokenMint.slice(0, 8)} qty=${quantity.toFixed(2)} ticket=${ticketSol}SOL ` +
       `reason=${sellSized.reason ?? 'unknown'} flags=${sellSized.flags.join(',')}`
     );
+    const rejectFlags = [...survivalFlags, ...sellSized.flags];
+    if (options.entryReason === 'capitulation_rebound' || primaryVersion === config.kolHunterCapitulationReboundParameterVersion) {
+      trackCapitulationEntryRejectMarkout(
+        cand,
+        score,
+        'sell_quote_failed',
+        entryPrice,
+        rejectFlags,
+        {
+          ...options,
+          tokenDecimals: entryTokenDecimals.value,
+          tokenDecimalsSource: entryTokenDecimals.source,
+        },
+        {
+          survivalReason: sellSized.reason ?? null,
+          plannedQuantity: quantity,
+          ticketSol,
+          entryPrice,
+          sellQuoteFlags: sellSized.flags,
+        }
+      );
+      return;
+    }
     fireRejectObserver(tokenMint, 'stalk_expired_no_consensus', cand, score, {
       survivalReason: sellSized.reason ?? null,
-      survivalFlags: [...survivalFlags, ...sellSized.flags],
+      survivalFlags: rejectFlags,
       plannedQuantity: quantity,
       ticketSol,
       entryPrice,
@@ -5363,6 +5693,10 @@ async function enterPaperPosition(
       rotationFlowExitEnabled: options.rotationFlowExitEnabled === true ||
         parameterVersion === config.kolHunterRotationExitFlowParameterVersion ||
         parameterVersion === config.kolHunterRotationChaseTopupParameterVersion,
+      capitulationTelemetry: options.capitulationTelemetry,
+      capitulationEntryLowPrice: options.capitulationEntryLowPrice,
+      capitulationEntryLowAtMs: options.capitulationEntryLowAtMs,
+      capitulationRecoveryConfirmations: options.capitulationRecoveryConfirmations,
       smartV3LiveHardCutReentry: options.smartV3LiveHardCutReentry,
       smartV3LiveEligibleShadow: options.smartV3LiveEligibleShadow,
       smartV3LiveBlockReason: options.smartV3LiveBlockReason,
@@ -6141,6 +6475,24 @@ function onPriceTick(positionId: string, tick: PriceTick): void {
 
   switch (pos.state) {
     case 'PROBE': {
+      if (isCapitulationReboundPosition(pos)) {
+        const noReactionSec = config.kolHunterCapitulationReboundNoReactionSec;
+        if (
+          elapsedSec >= noReactionSec &&
+          mfePct < config.kolHunterCapitulationReboundT1Mfe &&
+          currentPct <= config.kolHunterPaperRoundTripCostPct
+        ) {
+          closePosition(pos, currentPrice, 'capitulation_no_reaction', nowSec, mfePct, maePct);
+          return;
+        }
+        if (
+          elapsedSec >= config.kolHunterCapitulationReboundProbeTimeoutSec &&
+          currentPct <= config.kolHunterPaperRoundTripCostPct
+        ) {
+          closePosition(pos, currentPrice, 'capitulation_no_post_cost', nowSec, mfePct, maePct);
+          return;
+        }
+      }
       if (maybeCloseRotationFlowResidual(pos, currentPrice, nowSec, mfePct, maePct)) {
         return;
       }
@@ -6991,6 +7343,10 @@ function buildKolBaseLedgerRecord(
     rotationMonetizableEdge: pos.rotationMonetizableEdge ?? null,
     rotationMonetizablePass: pos.rotationMonetizableEdge?.pass ?? null,
     rotationMonetizableCostRatio: pos.rotationMonetizableEdge?.costRatio ?? null,
+    capitulationTelemetry: pos.capitulationTelemetry ?? null,
+    capitulationEntryLowPrice: pos.capitulationEntryLowPrice ?? null,
+    capitulationEntryLowAtMs: pos.capitulationEntryLowAtMs ?? null,
+    capitulationRecoveryConfirmations: pos.capitulationRecoveryConfirmations ?? null,
     rotationMaeFastFail: reason === 'rotation_mae_fast_fail',
     smartV3MaeFastFail: reason === 'smart_v3_mae_fast_fail',
     smartV3LiveEligibleShadow: pos.smartV3LiveEligibleShadow ?? null,
@@ -7144,6 +7500,10 @@ function buildKolLedgerExtras(
     rotationFlowResidualUntilSec: pos.rotationFlowResidualUntilSec ?? null,
     rotationFlowLastReducePct: pos.rotationFlowLastReducePct ?? null,
     rotationMonetizableEdge: pos.rotationMonetizableEdge ?? null,
+    capitulationTelemetry: pos.capitulationTelemetry ?? null,
+    capitulationEntryLowPrice: pos.capitulationEntryLowPrice ?? null,
+    capitulationEntryLowAtMs: pos.capitulationEntryLowAtMs ?? null,
+    capitulationRecoveryConfirmations: pos.capitulationRecoveryConfirmations ?? null,
     rotationMaeFastFail: reason === 'rotation_mae_fast_fail',
     smartV3MaeFastFail: reason === 'smart_v3_mae_fast_fail',
   };
@@ -7152,6 +7512,9 @@ function buildKolLedgerExtras(
 type KolTradeProjectionMode = 'paper' | 'live';
 
 function kolTradeProjectionFileName(pos: PaperPosition, mode: KolTradeProjectionMode): string | null {
+  if (isCapitulationReboundPosition(pos)) {
+    return mode === 'paper' ? 'capitulation-rebound-paper-trades.jsonl' : null;
+  }
   if (isRotationFamilyMarkoutPosition(pos)) {
     return mode === 'paper' ? 'rotation-v1-paper-trades.jsonl' : 'rotation-v1-live-trades.jsonl';
   }
@@ -7320,6 +7683,10 @@ async function appendPaperLedger(
       rotationFlowResidualUntilSec: pos.rotationFlowResidualUntilSec ?? null,
       rotationFlowLastReducePct: pos.rotationFlowLastReducePct ?? null,
       rotationMonetizableEdge: pos.rotationMonetizableEdge ?? null,
+      capitulationTelemetry: pos.capitulationTelemetry ?? null,
+      capitulationEntryLowPrice: pos.capitulationEntryLowPrice ?? null,
+      capitulationEntryLowAtMs: pos.capitulationEntryLowAtMs ?? null,
+      capitulationRecoveryConfirmations: pos.capitulationRecoveryConfirmations ?? null,
       markoutOffsetsSec: tradeMarkoutOffsetsSecForPosition(pos),
     };
     // 2026-04-28: inactive KOL paper trade 결과는 별도 ledger 로 분리. active 분포 무결성 유지.
@@ -7468,47 +7835,6 @@ async function enterLivePosition(
   const referencePrice = referenceTick.price;
   const referenceResolvedAtMs = Date.now();
   const referenceAgeMs = Math.max(0, referenceResolvedAtMs - referenceTick.timestamp);
-  if (options.parameterVersion === config.kolHunterRotationUnderfillParameterVersion) {
-    const underfillReferencePrice = rotationUnderfillReferencePriceFromTelemetry({
-      underfillReferenceSolAmount: options.underfillReferenceSolAmount,
-      underfillReferenceTokenAmount: options.underfillReferenceTokenAmount,
-    } as RotationV1TriggerResult['telemetry']);
-    const liveReferenceDiscountPct = underfillReferencePrice != null && underfillReferencePrice > 0
-      ? 1 - referencePrice / underfillReferencePrice
-      : null;
-    if (
-      liveReferenceDiscountPct == null ||
-      liveReferenceDiscountPct < config.kolHunterRotationUnderfillMinDiscountPct
-    ) {
-      const reason = liveReferenceDiscountPct == null
-        ? 'rotation_underfill_missing_kol_fill_price'
-        : 'rotation_underfill_live_reference_adverse';
-      const discountFlag = liveReferenceDiscountPct == null
-        ? 'ROTATION_UNDERFILL_MISSING_KOL_FILL_PRICE'
-        : `ROTATION_UNDERFILL_LIVE_REFERENCE_DISCOUNT_PCT_${liveReferenceDiscountPct.toFixed(4)}`;
-      const policyFlags = [
-        ...survivalFlags,
-        'ROTATION_UNDERFILL_LIVE_REFERENCE_FALLBACK',
-        discountFlag,
-      ];
-      log.warn(
-        `[KOL_HUNTER_ROTATION_UNDERFILL_LIVE_REFERENCE_FALLBACK] ${tokenMint.slice(0, 8)} ` +
-        `reason=${reason}. fallback paper.`
-      );
-      const decimals = referenceTick.outputDecimals ?? firstTick.outputDecimals ?? undefined;
-      emitKolLiveFallbackPolicy(tokenMint, score, policyFlags, {
-        entryReason: options.entryReason,
-        armName: options.parameterVersion ? armNameForVersion(options.parameterVersion) : undefined,
-      });
-      await enterPaperPosition(tokenMint, cand, score, policyFlags, {
-        ...options,
-        tokenDecimals: options.tokenDecimals ?? decimals,
-        tokenDecimalsSource: options.tokenDecimalsSource ?? (decimals == null ? undefined : 'jupiter_quote'),
-        skipPolicyEntry: true,
-      });
-      return;
-    }
-  }
   const signalToReferenceMs = Number.isFinite(cand.firstKolEntryMs)
     ? Math.max(0, referenceResolvedAtMs - cand.firstKolEntryMs)
     : undefined;
@@ -7519,6 +7845,38 @@ async function enterLivePosition(
   const plannedQty = referencePrice > 0 ? ticketSol / referencePrice : 0;
   if (plannedQty <= 0) {
     unsubscribePriceIfIdle(tokenMint);
+    return;
+  }
+  const liveEntryTokenDecimals = typeof options.tokenDecimals === 'number'
+    ? options.tokenDecimals
+    : referenceTick.outputDecimals ?? undefined;
+  const liveSellSized = await checkKolSellQuoteSized(
+    tokenMint,
+    plannedQty,
+    ticketSol,
+    liveEntryTokenDecimals,
+  );
+  const liveSurvivalFlags = [
+    ...survivalFlags,
+    ...liveSellSized.flags,
+  ];
+  if (!liveSellSized.approved) {
+    unsubscribePriceIfIdle(tokenMint);
+    log.warn(
+      `[KOL_HUNTER_LIVE_SELL_REJECT] ${tokenMint.slice(0, 8)} qty=${plannedQty.toFixed(2)} ` +
+      `ticket=${ticketSol}SOL reason=${liveSellSized.reason ?? 'unknown'} ` +
+      `flags=${liveSellSized.flags.join(',')}`
+    );
+    fireRejectObserver(tokenMint, 'stalk_expired_no_consensus', cand, score, {
+      survivalReason: liveSellSized.reason ?? null,
+      survivalFlags: liveSurvivalFlags,
+      plannedQuantity: plannedQty,
+      ticketSol,
+      entryPrice: referencePrice,
+      entryReason: options.entryReason,
+      parameterVersion: options.parameterVersion,
+      liveSellQuoteSized: true,
+    });
     return;
   }
 
@@ -7880,7 +8238,7 @@ async function enterLivePosition(
     detectorVersion: config.kolHunterDetectorVersion,
     independentKolCount: entryIndependentKolCount,
     survivalFlags: [
-      ...survivalFlags,
+      ...liveSurvivalFlags,
       `LIVE_DECIMALS_${liveDecimals ?? 'UNKNOWN'}`,
     ],
     tokenDecimals: liveDecimals,
@@ -8009,7 +8367,7 @@ async function enterLivePosition(
       detectorVersion: config.kolHunterDetectorVersion,
       independentKolCount: score.independentKolCount,
       survivalFlags: [
-        ...survivalFlags,
+        ...liveSurvivalFlags,
         `LIVE_PAIRED_PAPER_SHADOW`,
         `DECIMALS_${liveDecimalsSource?.toUpperCase() ?? 'UNKNOWN'}`,
       ],

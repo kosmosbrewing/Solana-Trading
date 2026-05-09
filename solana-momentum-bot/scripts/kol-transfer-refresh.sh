@@ -9,7 +9,7 @@
 # Usage:
 #   npm run kol:transfer-refresh
 #   KOL_TRANSFER_REFRESH_FORCE=true npm run kol:transfer-refresh
-#   KOL_TRANSFER_REFRESH_MAX_AGE_HOURS=12 KOL_TRANSFER_REFRESH_SINCE=7d npm run kol:transfer-refresh
+#   KOL_TRANSFER_REFRESH_MAX_AGE_HOURS=168 KOL_TRANSFER_REFRESH_SINCE=7d npm run kol:transfer-refresh
 
 set -euo pipefail
 
@@ -17,7 +17,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 REFRESH_SINCE="${KOL_TRANSFER_REFRESH_SINCE:-7d}"
-MAX_AGE_HOURS="${KOL_TRANSFER_REFRESH_MAX_AGE_HOURS:-22}"
+# 2026-05-09 Helius containment: daily refresh can consume a large share of the remaining quota.
+# Default to weekly-ish cadence; force/manual runs remain available for incident analysis.
+MAX_AGE_HOURS="${KOL_TRANSFER_REFRESH_MAX_AGE_HOURS:-168}"
+MAX_PAGES_PER_WALLET="${KOL_TRANSFER_REFRESH_MAX_PAGES_PER_WALLET:-3}"
 FORCE="${KOL_TRANSFER_REFRESH_FORCE:-false}"
 SKIP_REPORT="${KOL_TRANSFER_REFRESH_SKIP_REPORT:-false}"
 INPUT_REL="${KOL_TRANSFER_INPUT:-data/research/kol-transfers.jsonl}"
@@ -87,7 +90,7 @@ log "START since=${REFRESH_SINCE} input=${INPUT_REL} force=${FORCE} maxAge=${MAX
 
 (
   cd "$ROOT_DIR"
-  npm run -s kol:transfer-backfill -- --since "$REFRESH_SINCE" --overwrite
+  npm run -s kol:transfer-backfill -- --since "$REFRESH_SINCE" --max-pages-per-wallet "$MAX_PAGES_PER_WALLET" --overwrite
 ) 2>&1 | tee -a "$LOG_FILE"
 
 if [ "$SKIP_REPORT" != "true" ]; then

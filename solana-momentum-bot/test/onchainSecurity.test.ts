@@ -123,4 +123,35 @@ describe('OnchainSecurityClient', () => {
 
     await expect(client.getExitLiquidity(VALID_MINT)).resolves.toBeNull();
   });
+
+  it('caches token security lookups for repeated same-mint requests', async () => {
+    const getParsedAccountInfo = jest.fn(async () => ({
+      value: {
+        data: {
+          program: 'spl-token',
+          parsed: {
+            type: 'mint',
+            info: {
+              mintAuthority: null,
+              freezeAuthority: null,
+              supply: '1000',
+              extensions: [],
+            },
+          },
+        },
+      },
+    }));
+    const getTokenLargestAccounts = jest.fn(async () => ({
+      value: [{ amount: '1000' }],
+    }));
+    const client = new OnchainSecurityClient('http://localhost:8899', {
+      connection: { getParsedAccountInfo, getTokenLargestAccounts },
+    });
+
+    await client.getTokenSecurityDetailed(VALID_MINT);
+    await client.getTokenSecurityDetailed(VALID_MINT);
+
+    expect(getParsedAccountInfo).toHaveBeenCalledTimes(1);
+    expect(getTokenLargestAccounts).toHaveBeenCalledTimes(1);
+  });
 });

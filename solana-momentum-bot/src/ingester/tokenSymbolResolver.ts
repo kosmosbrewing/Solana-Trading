@@ -21,6 +21,7 @@ import { appendFile, mkdir, readFile } from 'fs/promises';
 import path from 'path';
 import { config } from '../utils/config';
 import { createModuleLogger } from '../utils/logger';
+import { recordHeliusRpcCredit } from '../observability/heliusRpcAttribution';
 
 const log = createModuleLogger('TokenSymbolResolver');
 
@@ -102,6 +103,14 @@ async function fetchFromHelius(mint: string): Promise<string | null> {
     params: { id: mint },
   };
   try {
+    recordHeliusRpcCredit({
+      purpose: 'token_symbol',
+      surface: 'das',
+      method: 'getAsset',
+      feature: 'token_symbol_resolver',
+      tokenMint: mint,
+      traceId: `symbol-${mint.slice(0, 8)}`,
+    });
     const res = await axios.post(url, body, { timeout: REQUEST_TIMEOUT_MS });
     const symbol = extractHeliusSymbol(res.data);
     return symbol;

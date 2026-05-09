@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import { Connection, Logs, ParsedTransactionWithMeta, PublicKey } from '@solana/web3.js';
 import { SOL_MINT } from '../utils/constants';
 import { createModuleLogger } from '../utils/logger';
+import { recordHeliusRpcCredit } from '../observability/heliusRpcAttribution';
 import { ObservedPairCandidate } from '../utils/observedPair';
 import {
   METEORA_DAMM_V1_PROGRAM,
@@ -91,6 +92,7 @@ export class HeliusPoolDiscovery extends EventEmitter {
   private readonly seenSignatures = new Set<string>();
   private static readonly MAX_SEEN_SIGNATURES = 10_000;
   private readonly pendingSignatures = new Set<string>();
+  private readonly accountOwnerCache = new Map<string, string | null>();
   private readonly queue: QueuedPoolDiscoveryLog[] = [];
   private inFlight = 0;
   private cooldownUntil = 0;
@@ -232,6 +234,13 @@ export class HeliusPoolDiscovery extends EventEmitter {
 
   private async handleProgramLogs(programId: string, logs: Logs, slot: number): Promise<void> {
     try {
+      recordHeliusRpcCredit({
+        purpose: 'pool_discovery',
+        method: 'getParsedTransaction',
+        feature: 'realtime_pool_discovery',
+        txSignature: logs.signature,
+        traceId: `pool-disc-tx-${logs.signature.slice(0, 8)}`,
+      });
       const tx = await this.connection.getParsedTransaction(logs.signature, {
         commitment: 'confirmed',
         maxSupportedTransactionVersion: 0,
@@ -272,11 +281,27 @@ export class HeliusPoolDiscovery extends EventEmitter {
   private async resolveWritableOwners(tx: ParsedTransactionWithMeta): Promise<Map<string, string | null>> {
     const accountKeys = extractAccountKeys(tx).filter((account) => account.writable);
     const pubkeys = accountKeys.map((account) => account.pubkey).filter(Boolean);
+    const unresolved = pubkeys.filter((pubkey) => !this.accountOwnerCache.has(pubkey));
+
+    if (unresolved.length === 0) {
+      return new Map(pubkeys.map((pubkey) => [pubkey, this.accountOwnerCache.get(pubkey) ?? null]));
+    }
+
+    recordHeliusRpcCredit({
+      purpose: 'pool_discovery',
+      method: 'getMultipleAccounts',
+      requestCount: unresolved.length,
+      feature: 'realtime_pool_discovery',
+      traceId: `pool-disc-owners-${unresolved.length}`,
+    });
     const infos = await this.connection.getMultipleAccountsInfo(
-      pubkeys.map((pubkey) => new PublicKey(pubkey)),
+      unresolved.map((pubkey) => new PublicKey(pubkey)),
       'confirmed'
     );
-    return new Map(pubkeys.map((pubkey, index) => [pubkey, infos[index]?.owner?.toBase58() ?? null]));
+    unresolved.forEach((pubkey, index) => {
+      this.accountOwnerCache.set(pubkey, infos[index]?.owner?.toBase58() ?? null);
+    });
+    return new Map(pubkeys.map((pubkey) => [pubkey, this.accountOwnerCache.get(pubkey) ?? null]));
   }
 }
 

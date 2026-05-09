@@ -1,9 +1,13 @@
 import { Commitment, Connection, ParsedAccountData, PublicKey } from '@solana/web3.js';
 import { createModuleLogger } from '../utils/logger';
+import { recordHeliusRpcCredit } from '../observability/heliusRpcAttribution';
 import { computeHolderDistribution } from '../observability/holderDistribution';
 
 const log = createModuleLogger('OnchainSecurity');
 const RATIO_SCALE = 1_000_000n;
+const SECURITY_POSITIVE_TTL_MS = 5 * 60 * 1000;
+const SECURITY_NEGATIVE_TTL_MS = 30 * 60 * 1000;
+const DECIMALS_TTL_MS = 24 * 60 * 60 * 1000;
 
 export interface TokenSecurityData {
   isHoneypot: boolean;
@@ -63,6 +67,8 @@ interface ParsedMintInfo {
 export class OnchainSecurityClient {
   private readonly commitment: Commitment;
   private readonly connection: MintSecurityConnection;
+  private readonly securityCache = new Map<string, { expiresAt: number; data: TokenSecurityData | null }>();
+  private readonly decimalsCache = new Map<string, { expiresAt: number; decimals: number | null }>();
 
   constructor(
     rpcUrl: string,
@@ -73,8 +79,25 @@ export class OnchainSecurityClient {
   }
 
   async getTokenSecurityDetailed(tokenMint: string): Promise<TokenSecurityData | null> {
+    const cached = this.securityCache.get(tokenMint);
+    if (cached && cached.expiresAt > Date.now()) return cached.data;
+
     try {
       const mint = new PublicKey(tokenMint);
+      recordHeliusRpcCredit({
+        purpose: 'token_quality',
+        method: 'getParsedAccountInfo',
+        feature: 'onchain_security',
+        tokenMint,
+        traceId: `security-account-${tokenMint.slice(0, 8)}`,
+      });
+      recordHeliusRpcCredit({
+        purpose: 'token_quality',
+        method: 'getTokenLargestAccounts',
+        feature: 'onchain_security',
+        tokenMint,
+        traceId: `security-largest-${tokenMint.slice(0, 8)}`,
+      });
       const [parsedAccount, largestAccounts] = await Promise.all([
         this.connection.getParsedAccountInfo(mint, this.commitment),
         this.connection.getTokenLargestAccounts(mint, this.commitment),
@@ -83,6 +106,7 @@ export class OnchainSecurityClient {
       const mintInfo = extractMintInfo(accountData);
       if (!mintInfo) {
         log.warn(`Mint account parsing unavailable for ${tokenMint}`);
+        this.securityCache.set(tokenMint, { expiresAt: Date.now() + SECURITY_NEGATIVE_TTL_MS, data: null });
         return null;
       }
 
@@ -105,7 +129,7 @@ export class OnchainSecurityClient {
       }));
       const holderDist = computeHolderDistribution(holderEntries, supplyNum);
 
-      return {
+      const data: TokenSecurityData = {
         isHoneypot: false,
         isFreezable: freezeAuthorityPresent,
         isMintable: mintAuthorityPresent,
@@ -122,8 +146,11 @@ export class OnchainSecurityClient {
         holderCountApprox: holderDist.holderCountApprox,
         holderSampleBased: holderDist.sampleBased,
       };
+      this.securityCache.set(tokenMint, { expiresAt: Date.now() + SECURITY_POSITIVE_TTL_MS, data });
+      return data;
     } catch (error) {
       log.warn(`Onchain security fetch failed for ${tokenMint}: ${error}`);
+      this.securityCache.set(tokenMint, { expiresAt: Date.now() + SECURITY_NEGATIVE_TTL_MS, data: null });
       return null;
     }
   }
@@ -138,15 +165,28 @@ export class OnchainSecurityClient {
    * 필요 시 캐시. 실패 시 null.
    */
   async getMintDecimals(tokenMint: string): Promise<number | null> {
+    const cached = this.decimalsCache.get(tokenMint);
+    if (cached && cached.expiresAt > Date.now()) return cached.decimals;
+
     try {
       const mint = new PublicKey(tokenMint);
+      recordHeliusRpcCredit({
+        purpose: 'token_quality',
+        method: 'getParsedAccountInfo',
+        feature: 'onchain_security_decimals',
+        tokenMint,
+        traceId: `security-decimals-${tokenMint.slice(0, 8)}`,
+      });
       const parsed = await this.connection.getParsedAccountInfo(mint, this.commitment);
       const data = parsed.value?.data as ParsedAccountData | undefined;
       const info = extractMintInfo(data);
       const decimals = info?.decimals as number | undefined;
-      return typeof decimals === 'number' && Number.isFinite(decimals) ? decimals : null;
+      const normalized = typeof decimals === 'number' && Number.isFinite(decimals) ? decimals : null;
+      this.decimalsCache.set(tokenMint, { expiresAt: Date.now() + DECIMALS_TTL_MS, decimals: normalized });
+      return normalized;
     } catch (err) {
       log.warn(`Mint decimals fetch failed for ${tokenMint}: ${err}`);
+      this.decimalsCache.set(tokenMint, { expiresAt: Date.now() + SECURITY_NEGATIVE_TTL_MS, decimals: null });
       return null;
     }
   }

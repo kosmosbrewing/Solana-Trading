@@ -90,7 +90,7 @@ export function startWalletStopGuard(
   );
   const check = async (): Promise<void> => {
     try {
-      const balance = await walletManager.getBalance(config.walletName);
+      const balance = await walletManager.getBalance(config.walletName, { force: true });
       state.lastBalanceSol = balance;
       state.lastCheckAt = new Date();
       state.consecutiveRpcFailures = 0; // 성공 → reset

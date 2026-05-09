@@ -20,6 +20,7 @@
 | **Helius Phase 4 Policy Candidates Template** | `../exec-plans/active/helius-phase4-policy-candidates-template.md` | 🟡 template — 7-day data 도달 후 채울 4-track 정책 ADR placeholder. Track 1 (token quality hard gate) + Track 2 (pool prewarm) 즉시 / Track 3 (KOL role 자동화) 200-trade gate 까지 대기 / Track 4 (priority fee canary) S3 trigger 정합 | 2026-05-01 |
 | **Pure WS Bot-Flow Rebuild** | `pure-ws-botflow-rebuild-2026-05-02.md` | 🟡 Phase 2 sidecar paper simulator 구현 — legacy pure_ws breakout 를 new-pair bot-flow microstructure lane 으로 재정의. `purews:botflow-paper` 로 fee-payer bot-flow 후보/마크아웃/context coverage + paper simulation 산출. Live micro-canary 는 evidence gate 후 | 2026-05-02 |
 | **Lane Operating And Ledger Refactor** | `lane-operating-refactor-2026-05-03.md` | ✅ smart-v3 / rotation-v1 / pure_ws 운영 역할 정리 + lane별 trade projection ledger 추가. Aggregate KOL ledgers 유지, shared markout ledger 유지, rotation report/digest projection 우선 + fallback 적용 | 2026-05-03 |
+| **KOL Hunter Capitulation Rebound V1** | `kol-hunter-capitulation-rebound-v1-2026-05-08.md` | 🟡 paper 구현 완료 / live 금지 — KOL attention 이후 급락 토큰의 임시 liquidity shock rebound 만 별도 projection ledger + T+15/30/60/180/300/1800 으로 검증 | 2026-05-09 |
 | DEX_TRADE Phase 3 (Quick Reject + Hold Sentinel + Ruin Sim) | — | ✅ 구현 완료 (modules + script + tests) | 2026-04-18 |
 
 ## Pre-Pivot (historical — 현재 판정 근거로 사용 금지)
@@ -49,6 +50,7 @@ Stage 4 Lane-specific factor gate
           pure_ws botflow: paper/observe-only new-pair botflow measurement
           kol_hunter_smart_v3: fresh active KOL velocity / paper fallback
           kol_hunter_rotation_v1: T+15/T+30 post-cost fast-compound measurement
+          kol_hunter_capitulation_rebound_v1: paper-only liquidity-shock rebound validation
           bootstrap: vol + buyRatio (signal-only)
 Stage 5 Integrity                    — persistOpenTradeWithIntegrity (lane별 halt)
 Stage 6 Canary                       — auto-halt (loss streak / budget / max trades)

@@ -19,6 +19,7 @@
 #   SKIP_SMART_V3_EVIDENCE_REPORT=true bash scripts/sync-vps-data.sh  # smart-v3 evidence verdict 생략
 #   SKIP_TRADE_MARKOUT_REPORT=true bash scripts/sync-vps-data.sh  # buy/sell T+ markout report 생략
 #   SKIP_PUREWS_TRADE_MARKOUT_REPORT=true bash scripts/sync-vps-data.sh  # pure_ws T+ report 생략
+#   SKIP_CAPITULATION_REPORT=true bash scripts/sync-vps-data.sh   # capitulation rebound paper report 생략
 #   SKIP_WINNER_KILL_REPORT=true bash scripts/sync-vps-data.sh    # winner-kill report 생략
 #   SKIP_SYNC_HEALTH=true bash scripts/sync-vps-data.sh           # sync health manifest 생략
 #   RUN_SHADOW_EVAL=true bash scripts/sync-vps-data.sh     # KOL shadow eval 추가 (Jupiter API 사용)
@@ -68,6 +69,7 @@ fi
 # smart-v3-evidence-report: 파일 only → default ON. smart-v3 projection + shared T+ verdict.
 # trade-markout-report: 파일 only → default ON. 실제 buy/sell 이후 T+30/60/300/1800 coverage / continuation.
 # rotation-report: 파일 only → default ON. rotation lane T+15/30/60 entry/exit/no-trade feedback.
+# capitulation-report: 파일 only → default ON. capitulation rebound T+15/30/60/180/300/1800 feedback.
 # winner-kill-report: 파일 only → default ON. missed-alpha close-site 기반 tail-retain feedback.
 # sync-health: 파일 only → default ON. 핵심 JSONL row count / mtime manifest.
 # shadow-eval: Jupiter forward quote 호출 다수 → quota 절약을 위해 default OFF (opt-in).
@@ -79,6 +81,7 @@ SKIP_SMART_V3_EVIDENCE_REPORT="${SKIP_SMART_V3_EVIDENCE_REPORT:-false}"
 SKIP_TRADE_MARKOUT_REPORT="${SKIP_TRADE_MARKOUT_REPORT:-false}"
 SKIP_PUREWS_TRADE_MARKOUT_REPORT="${SKIP_PUREWS_TRADE_MARKOUT_REPORT:-false}"
 SKIP_ROTATION_REPORT="${SKIP_ROTATION_REPORT:-false}"
+SKIP_CAPITULATION_REPORT="${SKIP_CAPITULATION_REPORT:-false}"
 SKIP_WINNER_KILL_REPORT="${SKIP_WINNER_KILL_REPORT:-false}"
 SKIP_SYNC_HEALTH="${SKIP_SYNC_HEALTH:-false}"
 TOKEN_QUALITY_WINDOW_DAYS="${TOKEN_QUALITY_WINDOW_DAYS:-7}"
@@ -88,6 +91,7 @@ KOL_TRANSFER_INPUT="${KOL_TRANSFER_INPUT:-data/research/kol-transfers.jsonl}"
 KOL_TRANSFER_STALE_WARN_HOURS="${KOL_TRANSFER_STALE_WARN_HOURS:-30}"
 SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT="${SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT:-0.005}"
 ROTATION_REPORT_ROUND_TRIP_COST_PCT="${ROTATION_REPORT_ROUND_TRIP_COST_PCT:-0.005}"
+CAPITULATION_REPORT_ROUND_TRIP_COST_PCT="${CAPITULATION_REPORT_ROUND_TRIP_COST_PCT:-0.005}"
 WINNER_KILL_WINDOW_DAYS="${WINNER_KILL_WINDOW_DAYS:-7}"
 RUN_SHADOW_EVAL="${RUN_SHADOW_EVAL:-false}"
 # Local analysis cache. The operator analyzes VPS runtime data locally, so Helius
@@ -238,6 +242,7 @@ const ledgers = [
   ['smart-v3 live', 'data/realtime/smart-v3-live-trades.jsonl'],
   ['rotation-v1 paper', 'data/realtime/rotation-v1-paper-trades.jsonl'],
   ['rotation-v1 live', 'data/realtime/rotation-v1-live-trades.jsonl'],
+  ['capitulation paper', 'data/realtime/capitulation-rebound-paper-trades.jsonl'],
   ['pure_ws paper', 'data/realtime/pure-ws-paper-trades.jsonl'],
   ['pure_ws live', 'data/realtime/pure-ws-live-trades.jsonl'],
 ];
@@ -344,6 +349,7 @@ write_sync_health_report() {
       "data/realtime/smart-v3-live-trades.jsonl" \
       "data/realtime/rotation-v1-paper-trades.jsonl" \
       "data/realtime/rotation-v1-live-trades.jsonl" \
+      "data/realtime/capitulation-rebound-paper-trades.jsonl" \
       "data/realtime/pure-ws-paper-trades.jsonl" \
       "data/realtime/pure-ws-live-trades.jsonl" \
       "data/realtime/token-quality-observations.jsonl" \
@@ -678,6 +684,21 @@ if [ "$SKIP_ROTATION_REPORT" != "true" ]; then
   fi
 else
   echo "[sync-vps-data] rotation-report: SKIPPED (SKIP_ROTATION_REPORT=true)"
+fi
+
+# ─── 9b. Capitulation rebound report (file-only) ───
+# Why: capitulation rebound 는 paper-only liquidity-shock 실험이라 T+15/30/60/180/300/1800 을 별도 추적한다.
+if [ "$SKIP_CAPITULATION_REPORT" != "true" ]; then
+  CAPITULATION_MD="${ROOT_DIR}/reports/capitulation-rebound-$(date +%Y-%m-%d).md"
+  CAPITULATION_JSON="${ROOT_DIR}/reports/capitulation-rebound-$(date +%Y-%m-%d).json"
+  echo "[sync-vps-data] capitulation-report: generating since=${TRADE_MARKOUT_SINCE} roundTripCost=${CAPITULATION_REPORT_ROUND_TRIP_COST_PCT}"
+  if (cd "${ROOT_DIR}" && npm run -s kol:capitulation-report -- --since "${TRADE_MARKOUT_SINCE}" --horizons 15,30,60,180,300,1800 --realtime-dir data/realtime --round-trip-cost-pct "${CAPITULATION_REPORT_ROUND_TRIP_COST_PCT}" --md-out "${CAPITULATION_MD}" --json-out "${CAPITULATION_JSON}" 2>&1 | tail -12); then
+    echo "[sync-vps-data] capitulation-report: ok → ${CAPITULATION_MD}"
+  else
+    echo "[sync-vps-data] capitulation-report: WARN — generation failed (sync 자체는 정상)"
+  fi
+else
+  echo "[sync-vps-data] capitulation-report: SKIPPED (SKIP_CAPITULATION_REPORT=true)"
 fi
 
 # ─── 10. Winner-kill report (file-only) ───

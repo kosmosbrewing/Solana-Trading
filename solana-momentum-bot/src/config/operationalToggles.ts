@@ -32,7 +32,10 @@ export const operationalToggles = {
   exitMechanismMode: (process.env.EXIT_MECHANISM_MODE === 'hybrid_c5' ? 'hybrid_c5' : 'legacy') as 'legacy' | 'hybrid_c5',
   // Phase B2: CRITICAL_LIVE canary용 임시 backdoor — DO NOT enable in production.
   bypassEdgeBlacklist: boolOptional('BOT_BYPASS_EDGE_BLACKLIST', false),
-  realtimePoolDiscoveryEnabled: boolOptional('REALTIME_POOL_DISCOVERY_ENABLED', true),
+  // 2026-05-09: Helius usage containment.
+  // Broad program-level pool discovery consumes getTransaction/getMultipleAccounts at scale.
+  // Keep it opt-in; scanner/KOL paths remain available without this sidecar.
+  realtimePoolDiscoveryEnabled: boolOptional('REALTIME_POOL_DISCOVERY_ENABLED', false),
   realtimeSeedBackfillEnabled: boolOptional('REALTIME_SEED_BACKFILL_ENABLED', true),
   // 2026-04-11: Path A — cupsey-inspired lane (sandbox, post-entry state machine)
   cupseyLaneEnabled: boolOptional('CUPSEY_LANE_ENABLED', false),

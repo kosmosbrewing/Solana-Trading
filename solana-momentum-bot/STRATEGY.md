@@ -1,7 +1,7 @@
 # STRATEGY.md (post-pivot)
 
 > Status: current quick reference
-> Updated: 2026-05-07
+> Updated: 2026-05-09
 > Purpose: 현재 runtime 에서 읽어야 할 전략 / gate / risk / 핵심 파라미터를 짧게 정리한다.
 > Pivot decision: [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md)
 > Current lane refactor: [`docs/design-docs/lane-operating-refactor-2026-05-03.md`](./docs/design-docs/lane-operating-refactor-2026-05-03.md)
@@ -21,7 +21,7 @@
 > 수단과 방법을 가리지 않고 `1 SOL -> 100 SOL` 달성 확률을 최대화한다.
 > "왜 오르는가"보다 "지금 실제로 폭발하는가"를 본다.
 
-## Runtime Lane Set (2026-05-03 갱신)
+## Runtime Lane Set (2026-05-09 갱신)
 
 | Lane / arm | 상태 | 역할 |
 |---|---|---|
@@ -30,6 +30,7 @@
 | **`kol_hunter_smart_v3`** | **main 5x lane / live canary with strict paper fallback** | Fresh active 2+ KOL velocity 중심. A+A 허용, S+B/A+B 는 fresh S/A strength rule 미통과. Pullback-only / weak post-sell recovery / unclean quality / repeated losing KOL combo / adverse KOL-fill price 는 paper fallback. Pre-T1 dead probe 는 MAE fast-fail, 살아난 probe 는 bounded recovery-hold. |
 | ↳ `kol_hunter` swing-v2 | paper shadow (`KOL_HUNTER_SWING_V2_ENABLED`) | multi-KOL S/A ≥2 + score ≥5.0 자격 시 동시 생성. 600s stalk / 25% trail / 1.10 floor. |
 | **`kol_hunter_rotation_v1`** | **fast-compound auxiliary / canonical live off; underfill canary only** | T+15/T+30 post-cost harvesting 실험. Control + `rotation_fast15_v1` / `rotation_cost_guard_v1` / `rotation_quality_strict_v1` / `rotation_underfill_v1` / `rotation_chase_topup_v1`. Canonical live와 chase-topup live는 닫고, S/A KOL fill보다 유리한 `rotation_underfill_v1`만 별도 live canary 키로 연다. |
+| **`kol_hunter_capitulation_rebound_v1`** | **paper-only liquidity-shock experiment** | KOL attention 이후 큰 하락을 무조건 사지 않고, hard veto + bounce/recovery confirmation + sell-route 확인을 통과한 후보만 paper 진입한다. T+15/30/60/180/300/1800 post-cost 와 no-trade counterfactual 이 핵심이며 live 승격 금지. |
 | **`pure_ws botflow`** | **paper/observe-only rebuild candidate** | New-pair / botflow microstructure 관측. Mayhem copy 금지. T+15/30/60/180/300/1800 markout + 15분 digest + paper arms. |
 | `migration_reclaim` | signal-only (env) | Migration Handoff Reclaim. paper 대기. |
 | `volume_spike` / `fib_pullback` / `core_momentum` | **dormant** | 5m 해상도, 밈코인 비적합 |
@@ -51,6 +52,7 @@ data/realtime/smart-v3-paper-trades.jsonl
 data/realtime/smart-v3-live-trades.jsonl
 data/realtime/rotation-v1-paper-trades.jsonl
 data/realtime/rotation-v1-live-trades.jsonl
+data/realtime/capitulation-rebound-paper-trades.jsonl
 data/realtime/pure-ws-paper-trades.jsonl
 data/realtime/pure-ws-live-trades.jsonl
 ```
@@ -74,6 +76,32 @@ npm run kol:smart-v3-evidence-report -- --since 24h --realtime-dir data/realtime
 - Closed Trades also shows MAE fast-fail, recovery-hold, MFE floor-exit/stage counts, and pre-T1 MFE band counts (`10-20`, `20-30`, `30-50`).
 - It also summarizes paper rows that would have been live-blocked, including `smartV3LiveBlockReason` and `smartV3LiveBlockFlags`.
 - Runtime `.env` override is not required for the 2026-05-06 MAE or 2026-05-07 live-quality fallback changes; defaults are active. `SKIP_SMART_V3_EVIDENCE_REPORT` and `SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT` are sync/report-only shell knobs.
+
+Capitulation rebound paper report:
+
+```bash
+npm run kol:capitulation-report -- --since 24h --realtime-dir data/realtime
+```
+
+- Report-only; no live entry, exit, ticket, or guard behavior changes.
+- Projection ledger: `data/realtime/capitulation-rebound-paper-trades.jsonl`.
+- Shared markout horizons: `15,30,60,180,300,1800`.
+- The report separates closed paper outcomes, after-buy/after-sell continuation, and no-trade counterfactuals.
+- Live discussion requires at least 100 paper closes, sufficient ok coverage, positive T+15/T+30 post-cost evidence, and a separate ADR.
+
+Default paper-only knobs:
+
+```text
+KOL_HUNTER_CAPITULATION_REBOUND_ENABLED=false
+KOL_HUNTER_CAPITULATION_REBOUND_PAPER_ENABLED=true
+KOL_HUNTER_CAPITULATION_REBOUND_MIN_KOL_SCORE=4.5
+KOL_HUNTER_CAPITULATION_REBOUND_MIN_DRAWDOWN_PCT=0.35
+KOL_HUNTER_CAPITULATION_REBOUND_MAX_DRAWDOWN_PCT=0.65
+KOL_HUNTER_CAPITULATION_REBOUND_MIN_BOUNCE_PCT=0.06
+KOL_HUNTER_CAPITULATION_REBOUND_RECOVERY_CONFIRMATIONS=2
+KOL_HUNTER_CAPITULATION_REBOUND_HARD_CUT_PCT=0.06
+KOL_HUNTER_CAPITULATION_REBOUND_MARKOUT_OFFSETS_SEC=15,30,60,180,300,1800
+```
 
 Smart-v3 probe exit refinement (2026-05-06):
 
@@ -202,7 +230,6 @@ KOL_HUNTER_ROTATION_CHASE_TOPUP_MAX_RECENT_SELL_SEC=60
 KOL_HUNTER_ROTATION_UNDERFILL_PAPER_ENABLED=true
 KOL_HUNTER_ROTATION_UNDERFILL_LIVE_CANARY_ENABLED=true
 KOL_HUNTER_ROTATION_UNDERFILL_LIVE_EXIT_FLOW_ENABLED=true
-KOL_HUNTER_ROTATION_UNDERFILL_LIVE_STRICT_QUALITY_ENABLED=true
 ```
 
 `KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=true` opens the broader canonical rotation-v1 live path and is not the current operating intent.

@@ -1,5 +1,6 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { createModuleLogger } from '../utils/logger';
+import { recordHeliusRpcCredit } from '../observability/heliusRpcAttribution';
 
 const log = createModuleLogger('RealtimePoolOwnerResolver');
 
@@ -21,6 +22,13 @@ export class RealtimePoolOwnerResolver {
           unresolved.map((pool) => new PublicKey(pool)),
           'confirmed'
         );
+        recordHeliusRpcCredit({
+          purpose: 'pool_prewarm',
+          method: 'getMultipleAccounts',
+          requestCount: unresolved.length,
+          feature: 'realtime_pool_owner_resolver',
+          traceId: `pool-owner-${unresolved.length}`,
+        });
         unresolved.forEach((pool, index) => {
           this.cache.set(pool, accountInfos[index]?.owner.toBase58() ?? null);
         });

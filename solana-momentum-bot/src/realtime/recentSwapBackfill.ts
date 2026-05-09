@@ -1,4 +1,5 @@
 import { ParsedTransactionWithMeta, PublicKey } from '@solana/web3.js';
+import { recordHeliusRpcCredit } from '../observability/heliusRpcAttribution';
 import { parseSwapFromTransaction } from './swapParser';
 import { ParsedSwap, RealtimePoolMetadata } from './types';
 
@@ -53,6 +54,12 @@ export async function fetchRecentSwapsForPool(
 
   const nowSec = options.nowSec ?? Math.floor(Date.now() / 1000);
   const sinceSec = nowSec - options.lookbackSec;
+  recordHeliusRpcCredit({
+    purpose: 'pool_prewarm',
+    method: 'getSignaturesForAddress',
+    feature: 'recent_swap_backfill',
+    traceId: `recent-sigs-${pool.slice(0, 8)}`,
+  });
   const signatures = await connection.getSignaturesForAddress(poolKey, {
     limit: options.maxSignatures ?? DEFAULT_MAX_SIGNATURES,
   });
@@ -91,7 +98,15 @@ async function loadParsedTransactions(
   if (signatures.length === 0) return [];
 
   try {
-    return await connection.getParsedTransactions(signatures, PARSED_TX_OPTIONS);
+    recordHeliusRpcCredit({
+      purpose: 'pool_prewarm',
+      method: 'getParsedTransaction',
+      requestCount: signatures.length,
+      feature: 'recent_swap_backfill_batch',
+      traceId: `recent-batch-${signatures.length}`,
+    });
+    const txs = await connection.getParsedTransactions(signatures, PARSED_TX_OPTIONS);
+    return txs;
   } catch (error) {
     if (!allowSingleFetchFallback && isBatchUnsupportedError(error)) {
       return signatures.map(() => null);
@@ -100,7 +115,17 @@ async function loadParsedTransactions(
       throw error;
     }
     return Promise.all(
-      signatures.map((signature) => connection.getParsedTransaction(signature, PARSED_TX_OPTIONS))
+      signatures.map(async (signature) => {
+        recordHeliusRpcCredit({
+          purpose: 'pool_prewarm',
+          method: 'getParsedTransaction',
+          feature: 'recent_swap_backfill_single',
+          txSignature: signature,
+          traceId: `recent-single-${signature.slice(0, 8)}`,
+        });
+        const tx = await connection.getParsedTransaction(signature, PARSED_TX_OPTIONS);
+        return tx;
+      })
     );
   }
 }

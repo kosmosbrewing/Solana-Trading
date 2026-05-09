@@ -402,7 +402,6 @@ export const kolHunter = {
   // rotation live canary, while keeping chase-topup paper-only by default.
   kolHunterRotationUnderfillLiveCanaryEnabled: boolOptional('KOL_HUNTER_ROTATION_UNDERFILL_LIVE_CANARY_ENABLED', false),
   kolHunterRotationUnderfillLiveExitFlowEnabled: boolOptional('KOL_HUNTER_ROTATION_UNDERFILL_LIVE_EXIT_FLOW_ENABLED', true),
-  kolHunterRotationUnderfillLiveStrictQualityEnabled: boolOptional('KOL_HUNTER_ROTATION_UNDERFILL_LIVE_STRICT_QUALITY_ENABLED', true),
   kolHunterRotationUnderfillMinKolScore: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_MIN_KOL_SCORE', '0.45'),
   kolHunterRotationUnderfillMaxLastBuyAgeSec: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_MAX_LAST_BUY_AGE_SEC', '45'),
   kolHunterRotationUnderfillMaxRecentSellSec: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_MAX_RECENT_SELL_SEC', '60'),
@@ -425,6 +424,40 @@ export const kolHunter = {
   kolHunterRotationPaperDigestIntervalMs: numEnv('KOL_HUNTER_ROTATION_PAPER_DIGEST_INTERVAL_MS', '900000'),
   kolHunterRotationPaperRareMfePct: numEnv('KOL_HUNTER_ROTATION_PAPER_RARE_MFE_PCT', '0.30'),
   kolHunterRotationPaperRareAfterSellPct: numEnv('KOL_HUNTER_ROTATION_PAPER_RARE_AFTER_SELL_PCT', '0.50'),
+
+  // ─── 2026-05-08: kol_hunter_capitulation_rebound_v1 paper lane ───
+  // ADR: docs/design-docs/kol-hunter-capitulation-rebound-v1-2026-05-08.md
+  // Mission fit: KOL attention 이후 정보성 붕괴/rug 가 아닌 일시적 유동성 shock 만
+  // T+15/T+30 단위로 검증하는 paper-only fast-compound 후보. Live executor path 없음.
+  kolHunterCapitulationReboundEnabled: boolOptional('KOL_HUNTER_CAPITULATION_REBOUND_ENABLED', false),
+  kolHunterCapitulationReboundPaperEnabled: boolOptional('KOL_HUNTER_CAPITULATION_REBOUND_PAPER_ENABLED', true),
+  kolHunterCapitulationReboundParameterVersion:
+    process.env.KOL_HUNTER_CAPITULATION_REBOUND_PARAMETER_VERSION ?? 'capitulation-rebound-v1.0.0',
+  kolHunterCapitulationReboundMinKolScore: numEnv('KOL_HUNTER_CAPITULATION_REBOUND_MIN_KOL_SCORE', '4.5'),
+  kolHunterCapitulationReboundMinDrawdownPct: numEnv('KOL_HUNTER_CAPITULATION_REBOUND_MIN_DRAWDOWN_PCT', '0.35'),
+  kolHunterCapitulationReboundMaxDrawdownPct: numEnv('KOL_HUNTER_CAPITULATION_REBOUND_MAX_DRAWDOWN_PCT', '0.65'),
+  kolHunterCapitulationReboundMinBouncePct: numEnv('KOL_HUNTER_CAPITULATION_REBOUND_MIN_BOUNCE_PCT', '0.06'),
+  kolHunterCapitulationReboundRecoveryConfirmations:
+    numEnv('KOL_HUNTER_CAPITULATION_REBOUND_RECOVERY_CONFIRMATIONS', '2'),
+  kolHunterCapitulationReboundRecoverySpacingSec:
+    numEnv('KOL_HUNTER_CAPITULATION_REBOUND_RECOVERY_SPACING_SEC', '2'),
+  kolHunterCapitulationReboundMaxRecentSellSol:
+    numEnv('KOL_HUNTER_CAPITULATION_REBOUND_MAX_RECENT_SELL_SOL', '0'),
+  kolHunterCapitulationReboundMaxRecentSellKols:
+    numEnv('KOL_HUNTER_CAPITULATION_REBOUND_MAX_RECENT_SELL_KOLS', '0'),
+  kolHunterCapitulationReboundT1Mfe: numEnv('KOL_HUNTER_CAPITULATION_REBOUND_T1_MFE', '0.08'),
+  kolHunterCapitulationReboundT1TrailPct:
+    numEnv('KOL_HUNTER_CAPITULATION_REBOUND_T1_TRAIL_PCT', '0.05'),
+  kolHunterCapitulationReboundProfitFloorMult:
+    numEnv('KOL_HUNTER_CAPITULATION_REBOUND_PROFIT_FLOOR_MULT', '1.03'),
+  kolHunterCapitulationReboundNoReactionSec:
+    numEnv('KOL_HUNTER_CAPITULATION_REBOUND_NO_REACTION_SEC', '15'),
+  kolHunterCapitulationReboundProbeTimeoutSec:
+    numEnv('KOL_HUNTER_CAPITULATION_REBOUND_PROBE_TIMEOUT_SEC', '30'),
+  kolHunterCapitulationReboundHardCutPct:
+    numEnv('KOL_HUNTER_CAPITULATION_REBOUND_HARD_CUT_PCT', '0.06'),
+  kolHunterCapitulationReboundMarkoutOffsetsSec:
+    parseSecondsList(optional('KOL_HUNTER_CAPITULATION_REBOUND_MARKOUT_OFFSETS_SEC', '15,30,60,180,300,1800')),
 
   // ─── 2026-04-26: kol_hunter_smart_v3 main paper entry logic ───
   // 운영자 결정: 돈을 번 적 없는 v1 single-KOL wait entry 대신 smart-v3 trigger 를 main 으로 사용.

@@ -24,8 +24,13 @@ export type HeliusCreditPurpose =
   | 'kol_tx_enrichment'
   | 'token_quality'
   | 'pool_prewarm'
+  | 'pool_discovery'
   | 'markout_backfill'
   | 'wallet_style_backfill'
+  | 'runtime_wallet_balance'
+  | 'token_symbol'
+  | 'swap_cost_decomp'
+  | 'wallet_delta_reconcile'
   | 'execution_telemetry'
   | 'ops_check';
 

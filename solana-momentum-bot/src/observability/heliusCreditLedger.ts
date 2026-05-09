@@ -62,6 +62,9 @@ export interface HeliusCreditUsageRecord {
   tokenMint?: string;
   walletAddress?: string;
   txSignature?: string;
+  /** Runtime attribution: code feature / lane that caused the call. */
+  feature?: string;
+  lane?: string;
   /** 정확도 source — 'estimate' (catalog 기반) vs 'dashboard_reconcile' (운영자 수동 보정) */
   source: 'estimate' | 'dashboard_reconcile';
   /** caller 가 부여한 trace id (debug). dedupe 용도 아님. */
@@ -144,6 +147,8 @@ export function buildHeliusCreditUsage(input: {
   tokenMint?: string;
   walletAddress?: string;
   txSignature?: string;
+  feature?: string;
+  lane?: string;
   source?: 'estimate' | 'dashboard_reconcile';
   traceId?: string;
   timestamp?: string;
@@ -173,6 +178,8 @@ export function buildHeliusCreditUsage(input: {
     tokenMint: input.tokenMint,
     walletAddress: input.walletAddress,
     txSignature: input.txSignature,
+    feature: input.feature,
+    lane: input.lane,
     source: input.source ?? 'estimate',
     traceId: input.traceId,
   };

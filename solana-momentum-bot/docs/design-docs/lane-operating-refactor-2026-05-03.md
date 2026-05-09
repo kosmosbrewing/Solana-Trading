@@ -1,9 +1,9 @@
-# Lane Operating And Ledger Refactor — smart-v3 / rotation-v1 / pure_ws
+# Lane Operating And Ledger Refactor — smart-v3 / rotation-v1 / pure_ws / capitulation rebound
 
 > Date: 2026-05-03
 > Status: implemented for measurement/refactor layer
 > Authority: `MISSION_CONTROL.md` -> `docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md` -> this document
-> Scope: `kol_hunter_smart_v3`, `kol_hunter_rotation_v1`, `pure_ws botflow`
+> Scope: `kol_hunter_smart_v3`, `kol_hunter_rotation_v1`, `pure_ws botflow`, `kol_hunter_capitulation_rebound_v1`
 
 ## 0. Decision
 
@@ -13,6 +13,7 @@ The three active strategy surfaces now have separate operating roles:
 |---|---|---|---|
 | `kol_hunter_smart_v3` | Main 5x lane | Live canary allowed only through fresh 2+ active KOL velocity plus strict quality, distribution, combo, and entry-advantage gates | Paper fallback for pullback, weak recovery, dev risk, quality risk, prior sell risk, bad combo, halt, or guard fallback |
 | `kol_hunter_rotation_v1` | Fast-compound KOL auxiliary lane | Keep canonical live disabled; only promoted `rotation_underfill_v1` can run as live canary | Paper control plus parallel parameter arms, underfill arm, chase-topup paper, and entry-vs-KOL-fill canary evidence |
+| `kol_hunter_capitulation_rebound_v1` | Liquidity-shock rebound experiment | Live prohibited | Paper-only entry after hard veto, recovery confirmation, and sell-route check; no-trade counterfactuals are first-class evidence |
 | `pure_ws botflow` | New-pair / botflow rebuild candidate | Live off | Paper/observe-only with T+ markouts, digest, and parameter arms |
 
 The refactor keeps the old aggregate KOL ledgers for compatibility, but adds lane-level projection files for analysis.
@@ -22,6 +23,8 @@ The refactor keeps the old aggregate KOL ledgers for compatibility, but adds lan
 `smart-v3` remains the only current lane whose payoff shape is directly aligned with 5x+ winner discovery. It should not be weakened into a fast scalper.
 
 `rotation-v1` is deliberately not a runner lane. Its target is short continuation after known KOL flow. The primary validation horizons are T+15 and T+30, measured after realistic cost.
+
+`capitulation_rebound_v1` is not a smart-v3 extension. It tests whether KOL attention plus a severe but non-structural liquidity shock produces executable T+15/T+30 rebound after cost. It must stay paper-only until no-trade counterfactuals and closed paper rows show stable positive post-cost evidence.
 
 `pure_ws botflow` is not a Mayhem clone. It observes fresh-pair and botflow microstructure. It can become a future micro-compound lane only if paper outcomes are positive after cost and context coverage is high.
 
@@ -98,7 +101,22 @@ same-mint sell/rebuy damage
 
 Rotation must not inherit smart-v3 runner logic. It should fail fast, capture small winners, and avoid becoming a fee-churn lane.
 
-## 4. pure_ws Botflow Current Policy
+## 4. capitulation-rebound V1 Current Policy
+
+Implemented operating shape:
+
+- `KOL_HUNTER_CAPITULATION_REBOUND_ENABLED=true` arms only the paper experiment;
+- `KOL_HUNTER_CAPITULATION_REBOUND_PAPER_ENABLED=true` is required and there is no live path;
+- the trigger is evaluated after smart-v3, rotation, underfill, and chase-topup arbitration so it does not steal existing lane entries;
+- hard-veto flags include no sell route, exit liquidity unknown, missing/unsafe security, unclean token, holder concentration, rug-like and dangerous Token-2022 signals;
+- entry requires KOL attention, bounded drawdown, bounce from local low, recovery confirmations, no recent KOL sell wave, and the existing size-aware sell quote check;
+- exits are short monetization rules: no-reaction, no-post-cost, and hard-cut. Runner/tail-retain logic is intentionally not inherited;
+- projection ledger: `data/realtime/capitulation-rebound-paper-trades.jsonl`;
+- markout horizons: `15,30,60,180,300,1800`;
+- report: `reports/capitulation-rebound-YYYY-MM-DD.md/json` via `npm run kol:capitulation-report`;
+- live promotion requires a separate ADR after at least 100 paper closes, adequate ok coverage, and positive T+15/T+30 post-cost evidence.
+
+## 5. pure_ws Botflow Current Policy
 
 Implemented operating shape:
 
@@ -125,7 +143,7 @@ no same-pair concentration dominating results
 no Mayhem provenance ambiguity driving the cohort
 ```
 
-## 5. Ledger Refactor
+## 6. Ledger Refactor
 
 The aggregate ledgers remain the compatibility source:
 
@@ -141,6 +159,7 @@ data/realtime/smart-v3-paper-trades.jsonl
 data/realtime/smart-v3-live-trades.jsonl
 data/realtime/rotation-v1-paper-trades.jsonl
 data/realtime/rotation-v1-live-trades.jsonl
+data/realtime/capitulation-rebound-paper-trades.jsonl
 data/realtime/pure-ws-paper-trades.jsonl
 data/realtime/pure-ws-live-trades.jsonl
 ```
@@ -148,13 +167,13 @@ data/realtime/pure-ws-live-trades.jsonl
 Implementation rules:
 
 - aggregate KOL ledgers are still written first;
-- smart-v3 and rotation projection writes are dual-write projections;
+- smart-v3, rotation, and capitulation projection writes are dual-write projections;
 - projection write failure is fail-open and must not block trade close or existing ledger append;
 - rotation digest and rotation report prefer `rotation-v1-paper-trades.jsonl`;
 - when projection files are empty, rotation tools fall back to `kol-paper-trades.jsonl` for backward compatibility;
 - `sync-vps-data.sh` reports projection file freshness, row counts, and recent 24h W/L/net/last-trade summaries in sync health.
 
-## 6. Markout Policy
+## 7. Markout Policy
 
 Markout ledgers remain shared:
 
@@ -172,11 +191,12 @@ parameterVersion
 entryReason
 paperOnlyReason when applicable
 rotationAnchorKols / rotationScore when applicable
+capitulation telemetry when applicable
 ```
 
 Lane-specific reports should filter shared markouts by these fields.
 
-## 7. Operating Reports
+## 8. Operating Reports
 
 Daily sync should treat these as the primary operating artifacts:
 
@@ -186,13 +206,14 @@ Daily sync should treat these as the primary operating artifacts:
 | `reports/smart-v3-evidence-YYYY-MM-DD.md` | smart-v3 paper/live cohort verdicts using projection ledgers plus shared T+ |
 | `reports/trade-markout-YYYY-MM-DD.md` | shared buy/sell T+ coverage |
 | `reports/rotation-lane-YYYY-MM-DD.md` | rotation control, arms, no-trade markouts, post-cost T+ |
+| `reports/capitulation-rebound-YYYY-MM-DD.md` | paper-only rebound closes, no-trade counterfactuals, and post-cost T+ |
 | `reports/pure-ws-trade-markout-YYYY-MM-DD.md` | pure_ws paper T+ coverage and post-cost behavior |
 | `reports/token-quality-YYYY-MM-DD.md` | dev/token quality joins |
 | `reports/sync-health-YYYY-MM-DD.md` | artifact freshness, row counts, and lane trade ledger summary |
 
 Promotion decisions should not rely on raw win rate alone. Use post-cost markouts, wallet truth, and lane-specific objectives.
 
-## 8. Remaining Refactor Debt
+## 9. Remaining Refactor Debt
 
 High-value refactor targets:
 
@@ -200,12 +221,14 @@ High-value refactor targets:
 2. Add shared token-risk snapshot provider with in-flight dedupe for security and exit-liquidity calls.
 3. Always evaluate rotation/underfill shadow metrics even when smart-v3 wins the live arbitration.
 4. Separate pure_ws digest/report views into `all paper` and `live-eligible paper only`.
-5. Replace full JSONL scans in digest paths with cursor/offset incremental reads once file sizes grow.
+5. Move capitulation rebound policy orchestration out of `kolSignalHandler.ts` once the paper shape stabilizes.
+6. Replace full JSONL scans in digest paths with cursor/offset incremental reads once file sizes grow.
 
-## 9. Non-Goals
+## 10. Non-Goals
 
 - Do not relax Real Asset Guard.
 - Do not merge rotation into smart-v3.
+- Do not merge capitulation rebound into smart-v3 or rotation until paper evidence proves a stable cohort.
 - Do not activate pure_ws live from Mayhem or botflow context alone.
 - Do not treat dev allowlist as an entry bypass.
 - Do not split shared markout ledgers unless dedupe/retry semantics are redesigned.

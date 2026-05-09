@@ -96,6 +96,37 @@ describe('decomposeSwapCost (Sprint X+Z + Codex R1 regression)', () => {
     expect(result.walletInputSol).toBe(0.022179);
   });
 
+  it('null transaction result is not cached, so later retry can recover meta', async () => {
+    const conn = makeConnectionMock({ fee: 0.000105, newlyFundedSols: [0.002074] });
+    const getTransaction = conn.getTransaction as jest.Mock;
+    getTransaction
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        meta: {
+          fee: 0.000105 * 1e9,
+          preBalances: [1_000_000_000, 0],
+          postBalances: [997_821_000, 2_074_000],
+        },
+        transaction: {
+          message: {
+            getAccountKeys: () => ({
+              get: (i: number) => i === 0
+                ? { toBase58: () => 'SignerKeyMock' }
+                : (i === 1 ? { toBase58: () => 'NewAcctRetry' } : null),
+              length: 2,
+            }),
+          },
+        },
+      });
+
+    const first = await decomposeSwapCost(conn, 'sig-null-retry', 0.022179, 0);
+    const second = await decomposeSwapCost(conn, 'sig-null-retry', 0.022179, 0);
+
+    expect(first.swapInputSol).toBe(0.022179);
+    expect(second.swapInputSol).toBeCloseTo(0.020, 5);
+    expect(getTransaction).toHaveBeenCalledTimes(2);
+  });
+
   it('재진입 (newly funded 0) → ATA rent 0', async () => {
     const conn = makeConnectionMock({ fee: 0.000105, newlyFundedSols: [] });
     const result = await decomposeSwapCost(conn, 'sig-rentry', 0.020105, 0);

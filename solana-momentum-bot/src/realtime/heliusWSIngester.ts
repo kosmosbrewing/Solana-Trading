@@ -5,6 +5,7 @@ import { createModuleLogger } from '../utils/logger';
 import { fetchRecentSwapsForPool } from './recentSwapBackfill';
 import { RealtimeSwapSanitizer } from './swapSanitizer';
 import { HeliusWSConfig, ParsedSwap, RealtimePoolMetadata } from './types';
+import { recordHeliusRpcCredit } from '../observability/heliusRpcAttribution';
 import {
   isLikelyPumpSwapFallbackLog,
   parseSwapFromTransaction,
@@ -365,6 +366,13 @@ export class HeliusWSIngester extends EventEmitter {
       txs = await Promise.all(batch.map((entry) => this.fetchParsedTransaction(entry.signature)));
     } else {
       try {
+        recordHeliusRpcCredit({
+          purpose: 'live_hot_path',
+          method: 'getParsedTransaction',
+          requestCount: batch.length,
+          feature: 'helius_ws_fallback_batch',
+          traceId: `ws-fallback-batch-${batch.length}`,
+        });
         txs = await this.connection.getParsedTransactions(
           batch.map((entry) => entry.signature),
           {
@@ -423,10 +431,18 @@ export class HeliusWSIngester extends EventEmitter {
   }
 
   private fetchParsedTransaction(signature: string) {
-    return this.connection.getParsedTransaction(signature, {
+    const promise = this.connection.getParsedTransaction(signature, {
       commitment: 'confirmed',
       maxSupportedTransactionVersion: 0,
     });
+    recordHeliusRpcCredit({
+      purpose: 'live_hot_path',
+      method: 'getParsedTransaction',
+      feature: 'helius_ws_fallback_single',
+      txSignature: signature,
+      traceId: `ws-fallback-${signature.slice(0, 8)}`,
+    });
+    return promise;
   }
 
   private async reconnectSubscriptions(): Promise<void> {
@@ -508,6 +524,12 @@ export class HeliusWSIngester extends EventEmitter {
     const resolved: RealtimePoolMetadata = { ...metadata };
     if (!resolved.poolProgram) {
       try {
+        recordHeliusRpcCredit({
+          purpose: 'pool_prewarm',
+          method: 'getAccountInfo',
+          feature: 'helius_ws_pool_metadata',
+          traceId: `ws-pool-info-${pool.slice(0, 8)}`,
+        });
         const accountInfo = await this.connection.getAccountInfo(new PublicKey(pool), 'confirmed');
         resolved.poolProgram = accountInfo?.owner.toBase58();
       } catch (error) {
@@ -531,6 +553,13 @@ export class HeliusWSIngester extends EventEmitter {
     if (cached != null) return cached;
 
     try {
+      recordHeliusRpcCredit({
+        purpose: 'pool_prewarm',
+        method: 'getParsedAccountInfo',
+        feature: 'helius_ws_mint_decimals',
+        tokenMint: mint,
+        traceId: `ws-decimals-${mint.slice(0, 8)}`,
+      });
       const accountInfo = await this.connection.getParsedAccountInfo(new PublicKey(mint), 'confirmed');
       const parsed = accountInfo.value?.data as {
         parsed?: { info?: { decimals?: number } };

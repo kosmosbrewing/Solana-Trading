@@ -366,7 +366,7 @@ export async function startWalletDeltaComparator(
 
   // Baseline: capture current balance + ledger offsets
   try {
-    const balance = await walletManager.getBalance(cfg.walletName);
+    const balance = await walletManager.getBalance(cfg.walletName, { force: true });
     state.baselineBalanceSol = balance;
     state.baselineAt = new Date();
     state.baselineLedgerOffsets = await countLedgerLines(cfg.realtimeDataDir);
@@ -398,7 +398,7 @@ export async function startWalletDeltaComparator(
         state.lastCheckAt?.getTime() ??
         state.baselineAt?.getTime() ??
         checkAt.getTime() - cfg.pollIntervalMs;
-      const currentBalance = await walletManager.getBalance(cfg.walletName);
+      const currentBalance = await walletManager.getBalance(cfg.walletName, { force: true });
       const observedDelta = currentBalance - (state.baselineBalanceSol ?? currentBalance);
       const expectedDelta = await computeExpectedDelta(cfg);
       const drift = observedDelta - expectedDelta;
@@ -612,7 +612,7 @@ export async function runWalletDeltaCheckOnceForTests(
 ): Promise<Readonly<ComparatorState>> {
   const checkAt = new Date();
   if (state.baselineBalanceSol == null) {
-    const balance = await walletManager.getBalance(cfg.walletName);
+    const balance = await walletManager.getBalance(cfg.walletName, { force: true });
     state.baselineBalanceSol = balance;
     state.baselineAt = new Date();
     state.baselineLedgerOffsets = await countLedgerLines(cfg.realtimeDataDir);
@@ -621,7 +621,7 @@ export async function runWalletDeltaCheckOnceForTests(
     state.lastCheckAt?.getTime() ??
     state.baselineAt?.getTime() ??
     checkAt.getTime() - cfg.pollIntervalMs;
-  const currentBalance = await walletManager.getBalance(cfg.walletName);
+  const currentBalance = await walletManager.getBalance(cfg.walletName, { force: true });
   const observedDelta = currentBalance - state.baselineBalanceSol;
   const expectedDelta = await computeExpectedDelta(cfg);
   const drift = observedDelta - expectedDelta;

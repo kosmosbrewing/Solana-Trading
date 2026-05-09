@@ -3,6 +3,7 @@ import bs58 from 'bs58';
 import { Pool } from 'pg';
 import { createModuleLogger } from '../utils/logger';
 import { DailyPnlTracker, DailyLimitConfig } from './dailyPnlTracker';
+import { recordHeliusRpcCredit } from '../observability/heliusRpcAttribution';
 
 const log = createModuleLogger('WalletManager');
 
@@ -36,10 +37,16 @@ export interface WalletTradeLimitResult {
   reason?: string;
 }
 
+export interface GetWalletBalanceOptions {
+  /** Force fresh RPC read, bypassing the short-lived reporting cache. */
+  force?: boolean;
+}
+
 const DEFAULT_CONFIG: Partial<WalletManagerConfig> = {
   sandboxDailyLossLimitSol: 0.5,
   sandboxMaxPositionSol: 0.05,
 };
+const BALANCE_CACHE_TTL_MS = 5_000;
 
 /**
  * Isolated Wallet Manager — Phase 3 자본 격리.
@@ -53,6 +60,7 @@ const DEFAULT_CONFIG: Partial<WalletManagerConfig> = {
 export class WalletManager {
   private wallets = new Map<string, WalletProfile>();
   private connection: Connection;
+  private readonly balanceCache = new Map<string, { expiresAt: number; balanceSol: number }>();
   /** M-13: 일일 PnL 추적은 DailyPnlTracker에 위임 */
   readonly dailyPnlTracker: DailyPnlTracker;
 
@@ -128,11 +136,22 @@ export class WalletManager {
   /**
    * Get SOL balance for a wallet.
    */
-  async getBalance(name: string): Promise<number> {
+  async getBalance(name: string, options: GetWalletBalanceOptions = {}): Promise<number> {
     const profile = this.wallets.get(name);
     if (!profile) return 0;
+    const cached = this.balanceCache.get(name);
+    if (!options.force && cached && cached.expiresAt > Date.now()) return cached.balanceSol;
+    recordHeliusRpcCredit({
+      purpose: 'runtime_wallet_balance',
+      method: 'getBalance',
+      feature: 'wallet_manager',
+      walletAddress: profile.keypair.publicKey.toBase58(),
+      traceId: `wallet-manager-${name}-${Date.now()}`,
+    });
     const balance = await this.connection.getBalance(profile.keypair.publicKey);
-    return balance / 1e9;
+    const balanceSol = balance / 1e9;
+    this.balanceCache.set(name, { expiresAt: Date.now() + BALANCE_CACHE_TTL_MS, balanceSol });
+    return balanceSol;
   }
 
   /**

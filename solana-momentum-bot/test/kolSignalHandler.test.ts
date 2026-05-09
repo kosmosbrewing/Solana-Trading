@@ -318,7 +318,6 @@ jest.mock('../src/utils/config', () => ({
     kolHunterRotationUnderfillPaperEnabled: true,
     kolHunterRotationUnderfillLiveCanaryEnabled: false,
     kolHunterRotationUnderfillLiveExitFlowEnabled: true,
-    kolHunterRotationUnderfillLiveStrictQualityEnabled: true,
     kolHunterRotationUnderfillMinKolScore: 0.45,
     kolHunterRotationUnderfillMaxLastBuyAgeSec: 45,
     kolHunterRotationUnderfillMaxRecentSellSec: 60,
@@ -335,6 +334,24 @@ jest.mock('../src/utils/config', () => ({
     kolHunterRotationUnderfillParameterVersion: 'rotation-underfill-v1.0.0',
     kolHunterRotationPaperAssumedAtaRentSol: 0.00207408,
     kolHunterRotationPaperAssumedNetworkFeeSol: 0.000105,
+    kolHunterCapitulationReboundEnabled: false,
+    kolHunterCapitulationReboundPaperEnabled: true,
+    kolHunterCapitulationReboundParameterVersion: 'capitulation-rebound-v1.0.0',
+    kolHunterCapitulationReboundMinKolScore: 4.5,
+    kolHunterCapitulationReboundMinDrawdownPct: 0.35,
+    kolHunterCapitulationReboundMaxDrawdownPct: 0.65,
+    kolHunterCapitulationReboundMinBouncePct: 0.06,
+    kolHunterCapitulationReboundRecoveryConfirmations: 2,
+    kolHunterCapitulationReboundRecoverySpacingSec: 0,
+    kolHunterCapitulationReboundMaxRecentSellSol: 0,
+    kolHunterCapitulationReboundMaxRecentSellKols: 0,
+    kolHunterCapitulationReboundT1Mfe: 0.08,
+    kolHunterCapitulationReboundT1TrailPct: 0.05,
+    kolHunterCapitulationReboundProfitFloorMult: 1.03,
+    kolHunterCapitulationReboundNoReactionSec: 15,
+    kolHunterCapitulationReboundProbeTimeoutSec: 30,
+    kolHunterCapitulationReboundHardCutPct: 0.06,
+    kolHunterCapitulationReboundMarkoutOffsetsSec: [15, 30, 60, 180, 300, 1800],
     // 2026-04-26: smart-v3 는 production main default 이지만 기존 state-machine tests 는 v1 명시.
     kolHunterSmartV3Enabled: false,
     kolHunterSmartV3LiveEnabled: true,
@@ -610,7 +627,6 @@ describe('kolSignalHandler — state machine', () => {
     mockedConfig.kolHunterRotationUnderfillPaperEnabled = true;
     mockedConfig.kolHunterRotationUnderfillLiveCanaryEnabled = false;
     mockedConfig.kolHunterRotationUnderfillLiveExitFlowEnabled = true;
-    mockedConfig.kolHunterRotationUnderfillLiveStrictQualityEnabled = true;
     mockedConfig.kolHunterRotationUnderfillMinKolScore = 0.45;
     mockedConfig.kolHunterRotationUnderfillMaxLastBuyAgeSec = 45;
     mockedConfig.kolHunterRotationUnderfillMaxRecentSellSec = 60;
@@ -627,6 +643,24 @@ describe('kolSignalHandler — state machine', () => {
     mockedConfig.kolHunterRotationUnderfillParameterVersion = 'rotation-underfill-v1.0.0';
     mockedConfig.kolHunterRotationPaperAssumedAtaRentSol = 0.00207408;
     mockedConfig.kolHunterRotationPaperAssumedNetworkFeeSol = 0.000105;
+    mockedConfig.kolHunterCapitulationReboundEnabled = false;
+    mockedConfig.kolHunterCapitulationReboundPaperEnabled = true;
+    mockedConfig.kolHunterCapitulationReboundParameterVersion = 'capitulation-rebound-v1.0.0';
+    mockedConfig.kolHunterCapitulationReboundMinKolScore = 4.5;
+    mockedConfig.kolHunterCapitulationReboundMinDrawdownPct = 0.35;
+    mockedConfig.kolHunterCapitulationReboundMaxDrawdownPct = 0.65;
+    mockedConfig.kolHunterCapitulationReboundMinBouncePct = 0.06;
+    mockedConfig.kolHunterCapitulationReboundRecoveryConfirmations = 2;
+    mockedConfig.kolHunterCapitulationReboundRecoverySpacingSec = 0;
+    mockedConfig.kolHunterCapitulationReboundMaxRecentSellSol = 0;
+    mockedConfig.kolHunterCapitulationReboundMaxRecentSellKols = 0;
+    mockedConfig.kolHunterCapitulationReboundT1Mfe = 0.08;
+    mockedConfig.kolHunterCapitulationReboundT1TrailPct = 0.05;
+    mockedConfig.kolHunterCapitulationReboundProfitFloorMult = 1.03;
+    mockedConfig.kolHunterCapitulationReboundNoReactionSec = 15;
+    mockedConfig.kolHunterCapitulationReboundProbeTimeoutSec = 30;
+    mockedConfig.kolHunterCapitulationReboundHardCutPct = 0.06;
+    mockedConfig.kolHunterCapitulationReboundMarkoutOffsetsSec = [15, 30, 60, 180, 300, 1800];
     mockedConfig.missedAlphaObserverEnabled = false;
     mockedConfig.missedAlphaObserverOffsetsSec = [60, 300, 1800];
     mockedConfig.tradeMarkoutObserverEnabled = false;
@@ -640,6 +674,7 @@ describe('kolSignalHandler — state machine', () => {
     mockedConfig.kolHunterSmartV3MaxLastBuyAgeSec = 15;
     mockedConfig.kolHunterSmartV3PullbackLiveEnabled = false;
     mockedConfig.kolHunterSmartV3MinFreshAfterSellKols = 2;
+    mockedConfig.kolHunterSmartV3PullbackMinKolCount = 1;
     mockedConfig.kolHunterSmartV3MaeFastFailEnabled = true;
     mockedConfig.kolHunterSmartV3MaeFastFailMinElapsedSec = 5;
     mockedConfig.kolHunterSmartV3MaeFastFailMaxMfePct = 0.03;
@@ -665,6 +700,7 @@ describe('kolSignalHandler — state machine', () => {
     mockedConfig.kolHunterLiveFreshReferenceGuardEnabled = true;
     mockedConfig.kolHunterLiveFreshReferenceMaxAgeMs = 2_000;
     mockedConfig.kolHunterLiveFreshReferenceMaxAdverseDriftPct = 0.20;
+    mockedConfig.kolHunterRunSellQuoteProbe = false;
     // 2026-04-29 (Track 2B): test 간 격리. describe 블록에서 true 로 설정해도 다음 test 까지 leak 안 함.
     mockedConfig.kolHunterRejectOnNoSecurityData = false;
     stubFeed = new StubPaperPriceFeed();
@@ -1240,6 +1276,169 @@ describe('kolSignalHandler — state machine', () => {
       expect(anchorRows).toHaveLength(1);
       expect(anchorRows[0].extras.armName).toBe('kol_hunter_rotation_v1');
       expect(anchorRows[0].extras.markoutOffsetsSec).toEqual([15, 30, 60, 300, 1800]);
+    });
+
+    it('capitulation-rebound: 급락 후 회복 확인이 쌓이면 paper-only rebound lane 으로 진입한다', async () => {
+      mockedConfig.kolHunterCapitulationReboundEnabled = true;
+      mockedConfig.kolHunterCapitulationReboundMinKolScore = 4.0;
+      mockedConfig.kolHunterSmartV3VelocityScoreThreshold = 99;
+      mockedConfig.kolHunterSmartV3PullbackMinKolCount = 99;
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      stubFeed.emitTick(MINT_SMART, 0.0012);
+      await flushAsync();
+      stubFeed.emitTick(MINT_SMART, 0.0006);
+      await flushAsync();
+      stubFeed.emitTick(MINT_SMART, 0.00064);
+      await flushAsync();
+      stubFeed.emitTick(MINT_SMART, 0.00066);
+      await flushAsync();
+
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].armName).toBe('kol_hunter_capitulation_rebound_v1');
+      expect(positions[0].parameterVersion).toBe('capitulation-rebound-v1.0.0');
+      expect(positions[0].kolEntryReason).toBe('capitulation_rebound');
+      expect(positions[0].t1MfeOverride).toBe(0.08);
+      expect(positions[0].probeHardCutPctOverride).toBe(0.06);
+      expect(positions[0].capitulationTelemetry?.drawdownFromPeakPct).toBeGreaterThan(0.35);
+      expect(positions[0].capitulationRecoveryConfirmations).toBe(2);
+      expect(positions[0].survivalFlags).toContain('CAPITULATION_REBOUND_V1');
+    });
+
+    it('capitulation-rebound: 같은 가격 반복 tick 은 recovery confirmation 으로 중복 계산하지 않는다', async () => {
+      mockedConfig.kolHunterCapitulationReboundEnabled = true;
+      mockedConfig.kolHunterCapitulationReboundMinKolScore = 4.0;
+      mockedConfig.kolHunterSmartV3VelocityScoreThreshold = 99;
+      mockedConfig.kolHunterSmartV3PullbackMinKolCount = 99;
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      stubFeed.emitTick(MINT_SMART, 0.0012);
+      await flushAsync();
+      stubFeed.emitTick(MINT_SMART, 0.0006);
+      await flushAsync();
+      stubFeed.emitTick(MINT_SMART, 0.00064);
+      await flushAsync();
+      stubFeed.emitTick(MINT_SMART, 0.00064);
+      await flushAsync();
+
+      expect(__testGetActive()).toHaveLength(0);
+
+      stubFeed.emitTick(MINT_SMART, 0.00066);
+      await flushAsync();
+
+      expect(__testGetActive()).toHaveLength(1);
+      expect(__testGetActive()[0].capitulationRecoveryConfirmations).toBe(2);
+    });
+
+    it('capitulation-rebound: trade markout 은 fast rebound horizon 을 사용한다', async () => {
+      mockedConfig.kolHunterCapitulationReboundEnabled = true;
+      mockedConfig.kolHunterCapitulationReboundMinKolScore = 4.0;
+      mockedConfig.kolHunterSmartV3VelocityScoreThreshold = 99;
+      mockedConfig.kolHunterSmartV3PullbackMinKolCount = 99;
+      mockedConfig.tradeMarkoutObserverEnabled = true;
+      mockedConfig.tradeMarkoutObserverOffsetsSec = [30, 60, 300, 1800];
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      stubFeed.emitTick(MINT_SMART, 0.0012);
+      await flushAsync();
+      stubFeed.emitTick(MINT_SMART, 0.0006);
+      await flushAsync();
+      stubFeed.emitTick(MINT_SMART, 0.00064);
+      await flushAsync();
+      stubFeed.emitTick(MINT_SMART, 0.00066);
+      await flushAsync();
+
+      const anchorRows = mockAppendFile.mock.calls
+        .filter((call) => typeof call[0] === 'string' && call[0].includes('trade-markout-anchors.jsonl'))
+        .map((call) => JSON.parse(String(call[1]).trim()));
+      expect(anchorRows[0].extras.armName).toBe('kol_hunter_capitulation_rebound_v1');
+      expect(anchorRows[0].extras.markoutOffsetsSec).toEqual([15, 30, 60, 180, 300, 1800]);
+    });
+
+    it('capitulation-rebound: entry sell quote 실패도 전용 no-trade markout 으로 남긴다', async () => {
+      mockedConfig.kolHunterCapitulationReboundEnabled = true;
+      mockedConfig.kolHunterCapitulationReboundMinKolScore = 4.0;
+      mockedConfig.kolHunterSmartV3VelocityScoreThreshold = 99;
+      mockedConfig.kolHunterSmartV3PullbackMinKolCount = 99;
+      mockedConfig.kolHunterRunSellQuoteProbe = true;
+      mockedConfig.missedAlphaObserverEnabled = true;
+      const probeSpy = jest.spyOn(sellQuoteProbeModule, 'evaluateSellQuoteProbe').mockResolvedValue({
+        approved: false,
+        routeFound: false,
+        observedOutSol: 0,
+        observedImpactPct: 0,
+        roundTripPct: 0,
+        quoteFailed: false,
+        reason: 'no_sell_route',
+      } as any);
+      try {
+        stubFeed.setInitialPrice(MINT_SMART, 0.001);
+
+        await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+        stubFeed.emitTick(MINT_SMART, 0.0012);
+        await flushAsync();
+        stubFeed.emitTick(MINT_SMART, 0.0006);
+        await flushAsync();
+        stubFeed.emitTick(MINT_SMART, 0.00064);
+        await flushAsync();
+        stubFeed.emitTick(MINT_SMART, 0.00066);
+        await flushAsync();
+
+        expect(probeSpy).toHaveBeenCalledTimes(1);
+        expect(__testGetActive()).toHaveLength(0);
+        const markers = mockAppendFile.mock.calls
+          .filter((call) => typeof call[0] === 'string' && call[0].includes('missed-alpha.jsonl'))
+          .map((call) => JSON.parse(String(call[1]).trim()))
+          .filter((row) => row.rejectReason === 'capitulation_rebound_sell_quote_failed');
+        expect(markers).toHaveLength(1);
+        expect(markers[0].rejectReason).toBe('capitulation_rebound_sell_quote_failed');
+        expect(markers[0].signalSource).toBe('kol_hunter_capitulation_rebound_v1');
+        expect(markers[0].extras.noTradeReason).toBe('sell_quote_failed');
+        expect(markers[0].extras.survivalFlags).toContain('NO_SELL_ROUTE');
+        expect(markers[0].probe.offsetSec).toBe(0);
+      } finally {
+        mockedConfig.kolHunterRunSellQuoteProbe = false;
+        mockedConfig.missedAlphaObserverEnabled = false;
+        probeSpy.mockRestore();
+      }
+    });
+
+    it('capitulation-rebound: 무반응이면 빠르게 close 하고 전용 projection ledger 에 남긴다', async () => {
+      mockedConfig.kolHunterCapitulationReboundEnabled = true;
+      mockedConfig.kolHunterCapitulationReboundMinKolScore = 4.0;
+      mockedConfig.kolHunterSmartV3VelocityScoreThreshold = 99;
+      mockedConfig.kolHunterSmartV3PullbackMinKolCount = 99;
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      stubFeed.emitTick(MINT_SMART, 0.0012);
+      await flushAsync();
+      stubFeed.emitTick(MINT_SMART, 0.0006);
+      await flushAsync();
+      stubFeed.emitTick(MINT_SMART, 0.00064);
+      await flushAsync();
+      stubFeed.emitTick(MINT_SMART, 0.00066);
+      await flushAsync();
+
+      const pos = __testGetActive()[0];
+      pos.entryTimeSec = Math.floor(Date.now() / 1000) - 16;
+      let captured: any = null;
+      kolHunterEvents.once('paper_close', (evt) => { captured = evt; });
+      __testTriggerTick(pos.positionId, pos.entryPrice * 1.001);
+      await flushAsync();
+
+      expect(captured?.reason).toBe('capitulation_no_reaction');
+      const projectionRows = mockAppendFile.mock.calls
+        .filter((call) => typeof call[0] === 'string' && call[0].includes('capitulation-rebound-paper-trades.jsonl'))
+        .map((call) => JSON.parse(String(call[1]).trim()));
+      expect(projectionRows).toHaveLength(1);
+      expect(projectionRows[0].entryReason).toBe('capitulation_rebound');
+      expect(projectionRows[0].capitulationTelemetry.drawdownFromPeakPct).toBeGreaterThan(0.35);
+      expect(projectionRows[0].extras.capitulationRecoveryConfirmations).toBe(2);
     });
 
     it('rotation-v1 paper arms enabled: 동일 trigger 에 fast/cost/quality shadow arms 를 병렬 생성한다', async () => {
@@ -2659,6 +2858,38 @@ describe('kolSignalHandler — state machine', () => {
       expect(policyRecordsWithFlag('SMART_V3_LIVE_DISABLED').length).toBeGreaterThan(0);
     });
 
+    it('smart-v3 live 는 buy 직전 paper 와 같은 size-aware sell quote 실패를 존중한다', async () => {
+      const { ctx, executeBuy, insertTrade } = buildLiveCtx();
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterRunSellQuoteProbe = true;
+      const probeSpy = jest.spyOn(sellQuoteProbeModule, 'evaluateSellQuoteProbe').mockResolvedValue({
+        approved: false,
+        routeFound: false,
+        observedOutSol: 0,
+        observedImpactPct: 0,
+        roundTripPct: 0,
+        quoteFailed: false,
+        reason: 'no_sell_route',
+      } as any);
+
+      try {
+        stubFeed.setInitialPrice(MINT_SMART, 0.001);
+        await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+        await handleKolSwap(buyTx('ghost', 'A', MINT_SMART));
+        await flushAsync();
+
+        expect(probeSpy).toHaveBeenCalledTimes(1);
+        expect(executeBuy).not.toHaveBeenCalled();
+        expect(insertTrade).not.toHaveBeenCalled();
+        expect(__testGetActive()).toHaveLength(0);
+      } finally {
+        mockedConfig.kolHunterRunSellQuoteProbe = false;
+        probeSpy.mockRestore();
+      }
+    });
+
     it('fresh S/A velocity trigger 는 live canary 에 진입한다', async () => {
       const { ctx, executeBuy, insertTrade } = buildLiveCtx();
       __testInit({ priceFeed: stubFeed as unknown as never, ctx });
@@ -3122,7 +3353,7 @@ describe('kolSignalHandler — state machine', () => {
       expect(live?.survivalFlags).not.toContain('ROTATION_V1_LIVE_DISABLED');
     });
 
-    it('rotation-underfill live canary: exit liquidity unknown 은 live 대신 paper fallback 한다', async () => {
+    it('rotation-underfill live canary: exit liquidity unknown 은 paper 기준과 동일하게 live 진입을 막지 않는다', async () => {
       const { ctx, executeBuy, insertTrade } = buildLiveCtx();
       __testInit({
         priceFeed: stubFeed as unknown as never,
@@ -3138,22 +3369,42 @@ describe('kolSignalHandler — state machine', () => {
       mockedConfig.kolHunterRotationV1LiveEnabled = false;
       mockedConfig.kolHunterRotationV1MinIndependentKol = 1;
       mockedConfig.kolHunterRotationUnderfillLiveCanaryEnabled = true;
-      mockedConfig.kolHunterRotationUnderfillLiveStrictQualityEnabled = true;
 
       stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
       await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
       stubFeed.emitTick(MINT_ROTATION, 0.00096);
       await flushAsync();
 
-      expect(executeBuy).not.toHaveBeenCalled();
-      expect(insertTrade).not.toHaveBeenCalled();
-      const paper = __testGetActive().find((p) => p.isLive !== true);
-      expect(paper?.armName).toBe('rotation_underfill_v1');
-      expect(paper?.survivalFlags).toEqual(expect.arrayContaining([
+      expect(executeBuy).toHaveBeenCalledTimes(1);
+      expect(insertTrade).toHaveBeenCalledTimes(1);
+      const live = __testGetActive().find((p) => p.isLive === true);
+      expect(live?.armName).toBe('rotation_underfill_v1');
+      expect(live?.survivalFlags).toEqual(expect.arrayContaining([
         'EXIT_LIQUIDITY_UNKNOWN',
-        'ROTATION_UNDERFILL_LIVE_QUALITY_FALLBACK',
       ]));
-      expect(policyRecordsWithFlag('ROTATION_UNDERFILL_LIVE_QUALITY_FALLBACK').length).toBeGreaterThan(0);
+      expect(policyRecordsWithFlag('ROTATION_UNDERFILL_LIVE_QUALITY_FALLBACK')).toHaveLength(0);
+    });
+
+    it('rotation-underfill live canary: live fresh quote 가 KOL fill 위로 올라가도 underfill trigger 를 재차단하지 않는다', async () => {
+      const { ctx, executeBuy, insertTrade } = buildLiveCtx();
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterRotationV1LiveEnabled = false;
+      mockedConfig.kolHunterRotationV1MinIndependentKol = 1;
+      mockedConfig.kolHunterRotationUnderfillLiveCanaryEnabled = true;
+      mockedConfig.kolHunterLiveFreshReferenceMaxAdverseDriftPct = 0.20;
+
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      stubFeed.setFreshPrice(MINT_ROTATION, 0.00103);
+      await flushAsync();
+
+      expect(executeBuy).toHaveBeenCalledTimes(1);
+      expect(insertTrade).toHaveBeenCalledTimes(1);
+      expect(policyRecordsWithFlag('ROTATION_UNDERFILL_LIVE_REFERENCE_FALLBACK')).toHaveLength(0);
     });
 
     it('rotation-underfill live flow: 약한 anchor sell 은 partial sell 없이 관측만 한다', async () => {

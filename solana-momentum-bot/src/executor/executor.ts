@@ -1,4 +1,4 @@
-import axios, { AxiosError, AxiosInstance } from 'axios';
+import axios, { AxiosInstance } from 'axios';
 import {
   Connection,
   Keypair,
@@ -15,6 +15,7 @@ import { JitoClient } from './jitoClient';
 import { normalizeJupiterSwapApiUrl } from '../utils/jupiterApi';
 import { BPS_DENOMINATOR_BIGINT, decimalToBps } from '../utils/units';
 import { recordJupiter429 } from '../observability/jupiterRateLimitMetric';
+import { recordHeliusRpcCredit } from '../observability/heliusRpcAttribution';
 
 /**
  * 2026-04-28 (Sprint B1): Jupiter 429 retry 강화.
@@ -35,8 +36,9 @@ import { recordJupiter429 } from '../observability/jupiterRateLimitMetric';
  */
 /** Sprint B1 회귀 검증용 export. */
 export function is429Error(error: unknown): boolean {
-  if (error instanceof AxiosError) {
-    return error.response?.status === 429;
+  const maybeAxios = error as { response?: { status?: number } } | undefined;
+  if (maybeAxios?.response?.status === 429) {
+    return true;
   }
   // Jupiter rate-limit message 도 fallback detect (axios 가 wrap 안 한 경우)
   const msg = (error as Error)?.message ?? '';
@@ -279,6 +281,81 @@ export function resolveSellReceivedSolFromSwapResult(params: {
  *         decomposition 은 측정용이라 missing 해도 wallet truth 영향 0.
  */
 const DECOMPOSE_RPC_TIMEOUT_MS = 1500;
+type ConfirmedTxForCost = Awaited<ReturnType<Connection['getTransaction']>>;
+const TX_META_CACHE_TTL_MS = 30 * 60 * 1000;
+const TX_META_CACHE_MAX = 2000;
+const txMetaCaches = new WeakMap<Connection, Map<string, { expiresAt: number; tx: ConfirmedTxForCost }>>();
+const txMetaInFlights = new WeakMap<Connection, Map<string, Promise<ConfirmedTxForCost>>>();
+
+function getTxMetaCache(connection: Connection): Map<string, { expiresAt: number; tx: ConfirmedTxForCost }> {
+  let cache = txMetaCaches.get(connection);
+  if (!cache) {
+    cache = new Map();
+    txMetaCaches.set(connection, cache);
+  }
+  return cache;
+}
+
+function getTxMetaInFlight(connection: Connection): Map<string, Promise<ConfirmedTxForCost>> {
+  let inFlight = txMetaInFlights.get(connection);
+  if (!inFlight) {
+    inFlight = new Map();
+    txMetaInFlights.set(connection, inFlight);
+  }
+  return inFlight;
+}
+
+function trimTxMetaCache(cache: Map<string, { expiresAt: number; tx: ConfirmedTxForCost }>): void {
+  if (cache.size <= TX_META_CACHE_MAX) return;
+  const now = Date.now();
+  for (const [signature, row] of cache.entries()) {
+    if (row.expiresAt <= now || cache.size > TX_META_CACHE_MAX) {
+      cache.delete(signature);
+    }
+    if (cache.size <= TX_META_CACHE_MAX) return;
+  }
+}
+
+function getTransactionForCostCached(
+  connection: Connection,
+  signature: string,
+  feature: string
+): Promise<ConfirmedTxForCost> {
+  const now = Date.now();
+  const cache = getTxMetaCache(connection);
+  const inFlight = getTxMetaInFlight(connection);
+  const cached = cache.get(signature);
+  if (cached && cached.expiresAt > now) return Promise.resolve(cached.tx);
+
+  const existing = inFlight.get(signature);
+  if (existing) return existing;
+
+  recordHeliusRpcCredit({
+    purpose: 'swap_cost_decomp',
+    method: 'getTransaction',
+    feature,
+    txSignature: signature,
+    traceId: `${feature}-${signature.slice(0, 8)}`,
+  });
+  const txPromise = connection.getTransaction(signature, {
+    maxSupportedTransactionVersion: 0,
+    commitment: 'confirmed',
+  });
+  const promise = Promise.race([
+    txPromise,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), DECOMPOSE_RPC_TIMEOUT_MS)),
+  ]).then((tx) => {
+    if (tx) {
+      cache.set(signature, { expiresAt: Date.now() + TX_META_CACHE_TTL_MS, tx });
+      trimTxMetaCache(cache);
+    }
+    return tx;
+  }).finally(() => {
+    inFlight.delete(signature);
+  });
+  inFlight.set(signature, promise);
+  return promise;
+}
 
 export async function decomposeSwapCost(
   connection: Connection,
@@ -296,14 +373,7 @@ export async function decomposeSwapCost(
   };
   try {
     // Codex H2 fix: timeout race — hot path 영향 보호.
-    const txPromise = connection.getTransaction(signature, {
-      maxSupportedTransactionVersion: 0,
-      commitment: 'confirmed',
-    });
-    const tx = await Promise.race([
-      txPromise,
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), DECOMPOSE_RPC_TIMEOUT_MS)),
-    ]);
+    const tx = await getTransactionForCostCached(connection, signature, 'executor_cost_decomp');
     if (!tx?.meta) return fallback;
 
     const fee = tx.meta.fee / 1e9;
@@ -821,14 +891,7 @@ export class Executor {
     outputMint: string
   ): Promise<Pick<SwapResult, 'actualInputAmount' | 'actualOutAmount'>> {
     try {
-      const txPromise = this.connection.getTransaction(signature, {
-        maxSupportedTransactionVersion: 0,
-        commitment: 'confirmed',
-      });
-      const tx = await Promise.race([
-        txPromise,
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), DECOMPOSE_RPC_TIMEOUT_MS)),
-      ]);
+      const tx = await getTransactionForCostCached(this.connection, signature, 'executor_meta_delta_recovery');
       if (!tx?.meta) return {};
       const accountKeys = resolveAccountKeysForCostDecomp(
         tx.transaction.message as MessageWithAccountKeys,
@@ -845,6 +908,13 @@ export class Executor {
    * SOL 잔고 조회
    */
   async getBalance(): Promise<number> {
+    recordHeliusRpcCredit({
+      purpose: 'runtime_wallet_balance',
+      method: 'getBalance',
+      feature: 'executor_get_balance',
+      walletAddress: this.wallet.publicKey.toBase58(),
+      traceId: `executor-balance-${Date.now()}`,
+    });
     const balance = await this.connection.getBalance(this.wallet.publicKey);
     return balance / 1e9;
   }
@@ -853,6 +923,14 @@ export class Executor {
    * SPL 토큰 잔고 조회 (raw amount)
    */
   async getTokenBalance(tokenMint: string): Promise<bigint> {
+    recordHeliusRpcCredit({
+      purpose: 'live_hot_path',
+      method: 'getTokenAccountsByOwner',
+      feature: 'executor_token_balance',
+      walletAddress: this.wallet.publicKey.toBase58(),
+      tokenMint,
+      traceId: `token-accounts-${tokenMint.slice(0, 8)}`,
+    });
     const accounts = await this.connection.getTokenAccountsByOwner(
       this.wallet.publicKey,
       { mint: new PublicKey(tokenMint) }
@@ -861,6 +939,15 @@ export class Executor {
 
     const balances = await Promise.all(
       accounts.value.map(async ({ pubkey }) => {
+        const tokenAccount = typeof pubkey === 'string' ? pubkey : pubkey.toBase58();
+        recordHeliusRpcCredit({
+          purpose: 'live_hot_path',
+          method: 'getTokenAccountBalance',
+          feature: 'executor_token_balance',
+          walletAddress: this.wallet.publicKey.toBase58(),
+          tokenMint,
+          traceId: `token-balance-${tokenAccount.slice(0, 8)}`,
+        });
         const info = await this.connection.getTokenAccountBalance(pubkey);
         return BigInt(info.value.amount);
       })
@@ -870,7 +957,16 @@ export class Executor {
 
   private async getAssetBalanceRaw(mint: string): Promise<bigint> {
     if (mint === SOL_MINT) {
-      return BigInt(await this.connection.getBalance(this.wallet.publicKey));
+      recordHeliusRpcCredit({
+        purpose: 'runtime_wallet_balance',
+        method: 'getBalance',
+        feature: 'executor_asset_balance_raw',
+        walletAddress: this.wallet.publicKey.toBase58(),
+        tokenMint: mint,
+        traceId: `asset-balance-${Date.now()}`,
+      });
+      const balance = await this.connection.getBalance(this.wallet.publicKey);
+      return BigInt(balance);
     }
     return this.getTokenBalance(mint);
   }
@@ -928,6 +1024,13 @@ export class Executor {
     const cached = this.mintDecimals.get(mint);
     if (cached != null) return cached;
     try {
+      recordHeliusRpcCredit({
+        purpose: 'live_hot_path',
+        method: 'getParsedAccountInfo',
+        feature: 'executor_mint_decimals',
+        tokenMint: mint,
+        traceId: `executor-decimals-${mint.slice(0, 8)}`,
+      });
       const accountInfo = await this.connection.getParsedAccountInfo(new PublicKey(mint));
       const parsed = accountInfo.value?.data as { parsed?: { info?: { decimals?: number } } } | undefined;
       const decimals = parsed?.parsed?.info?.decimals;

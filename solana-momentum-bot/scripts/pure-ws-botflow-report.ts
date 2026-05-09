@@ -1,4 +1,3 @@
-#!/usr/bin/env ts-node
 import { mkdir, writeFile } from 'fs/promises';
 import path from 'path';
 import dotenv from 'dotenv';

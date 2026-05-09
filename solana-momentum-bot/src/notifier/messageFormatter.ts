@@ -121,8 +121,10 @@ export function buildTradeOpenMessage(order: Order, txSignature?: string): strin
   const tp2Pct = ((order.takeProfit2 - order.price) / order.price) * 100;
   const txShort = txSignature ? txSignature.slice(0, 12) : '';
   const fallbackFlag = order.partialFillDataMissing ? ' · ⚠ planned (RPC 측정 누락)' : '';
+  const strategyBadge = buildTradeStrategyBadge(order);
+  const strategySuffix = strategyBadge ? ` · <code>${escapeHtml(strategyBadge)}</code>` : '';
 
-  const headline = `🟢 <b>진입</b> <b>${escapeHtml(symbol)}</b>${shortTradeId ? ` <code>${escapeHtml(shortTradeId)}</code>` : ''}`;
+  const headline = `🟢 <b>진입</b> <b>${escapeHtml(symbol)}</b>${shortTradeId ? ` <code>${escapeHtml(shortTradeId)}</code>` : ''}${strategySuffix}`;
   const detail = `${entryNotionalSol.toFixed(4)} SOL @ ${order.price.toFixed(8)} · SL ${slPct.toFixed(0)}% / TP +${tp1Pct.toFixed(0)}% / +${tp2Pct.toFixed(0)}%${fallbackFlag}`;
   // 2026-05-01 (Sprint Y2): cost decomposition. swap + rent + fee 분리 표시 → 외부 explorer USD 비교 정합.
   //   ATA rent 자동 회수 정책 (운영자 manual) 정합 — 실 token 가격은 swap-only 기준 분명히.
@@ -154,8 +156,10 @@ export function buildTradeCloseMessage(trade: Trade): string {
   const exit = trade.exitPrice != null ? trade.exitPrice.toFixed(8) : 'N/A';
   const pnlText = `${formatSignedSol(pnl)}${pnlPct != null ? ` (${formatSignedPercent(pnlPct)})` : ''}`;
   const txShort = trade.txSignature ? trade.txSignature.slice(0, 12) : '';
+  const strategyBadge = buildTradeStrategyBadge(trade);
+  const strategySuffix = strategyBadge ? ` · <code>${escapeHtml(strategyBadge)}</code>` : '';
 
-  const headline = `🔴 <b>종료</b> <b>${escapeHtml(symbol)}</b> <code>${escapeHtml(shortId)}</code> · ${pnlText}`;
+  const headline = `🔴 <b>종료</b> <b>${escapeHtml(symbol)}</b> <code>${escapeHtml(shortId)}</code>${strategySuffix} · ${pnlText}`;
   const meta = [reasonText, duration ? `보유 ${duration}` : '', `${trade.entryPrice.toFixed(8)} → ${exit}`]
     .filter(Boolean).join(' · ');
   // 2026-05-01 (Sprint Z+1): entry rent 분 visibility 보조 line.
@@ -206,6 +210,38 @@ function formatCloseReason(value?: CloseReason): string {
   return CLOSE_REASON_LABELS[value] ?? value;
 }
 
+function buildTradeStrategyBadge(trade: Pick<Order | Trade, 'strategy' | 'sourceLabel' | 'discoverySource'>): string | null {
+  const source = trade.sourceLabel?.trim();
+  if (source && source !== 'unknown') {
+    return formatSourceLabelBadge(source);
+  }
+  if (trade.strategy === 'kol_hunter') return 'kol';
+  if (trade.strategy === 'pure_ws_breakout') return 'pure-ws';
+  if (trade.strategy === 'pure_ws_swing_v2') return 'pure-ws swing';
+  return null;
+}
+
+function formatSourceLabelBadge(sourceLabel: string): string {
+  const known: Record<string, string> = {
+    kol_hunter_smart_v3: 'smart-v3',
+    smart_v3_fast_fail: 'smart-v3 fast',
+    smart_v3_runner_relaxed: 'smart-v3 runner',
+    kol_hunter_swing_v2: 'swing-v2',
+    kol_hunter_rotation_v1: 'rotation-v1',
+    rotation_underfill_v1: 'rotation underfill',
+    rotation_exit_kol_flow_v1: 'rotation exit-flow',
+    rotation_chase_topup_v1: 'rotation chase',
+    kol_hunter_capitulation_rebound_v1: 'capitulation',
+    ws_burst_v2: 'pure-ws',
+  };
+  if (known[sourceLabel]) return known[sourceLabel];
+  return sourceLabel
+    .replace(/^kol_hunter_/, '')
+    .replace(/_v\d+$/, '')
+    .replace(/_/g, ' ')
+    .slice(0, 32);
+}
+
 export function formatEdgeState(value: string): string {
   return EDGE_STATE_LABELS[value] ?? value;
 }
@@ -216,4 +252,3 @@ function buildInstrumentLine(symbol: string | undefined, pairAddress: string): s
   }
   return `- 종목: <b>${escapeHtml(shortenAddress(pairAddress))}</b> (ticker 미확인)`;
 }
-

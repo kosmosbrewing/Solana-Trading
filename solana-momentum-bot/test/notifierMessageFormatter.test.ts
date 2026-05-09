@@ -158,6 +158,51 @@ describe('messageFormatter', () => {
     expect(closeMessage).not.toContain('슬리피지');
   });
 
+  it('adds compact strategy badges to live canary trade alerts', () => {
+    const order: Order = {
+      tradeId: 'kol-live-1',
+      pairAddress: 'MINT1234567890',
+      strategy: 'kol_hunter',
+      side: 'BUY',
+      tokenSymbol: 'KOL',
+      price: 0.000001,
+      quantity: 20_000,
+      sourceLabel: 'rotation_chase_topup_v1',
+      stopLoss: 0.0000009,
+      takeProfit1: 0.0000015,
+      takeProfit2: 0.000005,
+      timeStopMinutes: 3,
+      actualNotionalSol: 0.02,
+    };
+
+    const openMessage = buildTradeOpenMessage(order, 'BUYTX123456789');
+    expect(openMessage).toContain('🟢 <b>진입</b> <b>KOL</b> <code>kol-live</code> · <code>rotation chase</code>');
+
+    const trade: Trade = {
+      id: 'kol-live-1',
+      pairAddress: 'MINT1234567890',
+      strategy: 'kol_hunter',
+      side: 'SELL',
+      tokenSymbol: 'KOL',
+      entryPrice: 0.000001,
+      exitPrice: 0.0000012,
+      quantity: 20_000,
+      pnl: 0.004,
+      sourceLabel: 'kol_hunter_smart_v3',
+      status: 'CLOSED',
+      createdAt: new Date('2026-05-09T00:00:00Z'),
+      closedAt: new Date('2026-05-09T00:01:00Z'),
+      stopLoss: 0.0000009,
+      takeProfit1: 0.0000015,
+      takeProfit2: 0.000005,
+      timeStopAt: new Date('2026-05-09T00:03:00Z'),
+      exitReason: 'WINNER_TRAILING',
+    };
+
+    const closeMessage = buildTradeCloseMessage(trade);
+    expect(closeMessage).toContain('🔴 <b>종료</b> <b>KOL</b> <code>kol-live</code> · <code>smart-v3</code> · +0.0040 SOL');
+  });
+
   it('uses "으로" particle for close reasons without 받침-ㄹ', () => {
     const trade: Trade = {
       id: 'trade-hc',

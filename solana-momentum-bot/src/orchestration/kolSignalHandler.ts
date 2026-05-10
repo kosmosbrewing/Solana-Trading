@@ -5726,6 +5726,8 @@ function evaluateKolLiveCanaryGate(
   const balance = getWalletStopGuardState().lastBalanceSol;
   const balanceKnown = Number.isFinite(balance) && balance !== Number.POSITIVE_INFINITY;
   const liveKolCount = options.independentKolCountOverride ?? score.independentKolCount;
+  const liveMinKol = options.minIndependentKol ?? config.kolHunterLiveMinIndependentKol;
+  const yellowZoneMinKol = options.minIndependentKol ?? config.kolHunterYellowZoneMinIndependentKol;
 
   if (config.kolHunterDevWalletLiveGateEnabled) {
     if (survivalFlags.includes('DEV_WALLET_BLACKLIST')) {
@@ -5760,17 +5762,16 @@ function evaluateKolLiveCanaryGate(
     config.kolHunterYellowZoneEnabled &&
     balanceKnown &&
     balance < config.kolHunterYellowZoneStartSol;
-  if (inYellowZone && liveKolCount < config.kolHunterYellowZoneMinIndependentKol) {
+  if (inYellowZone && yellowZoneMinKol > 1 && liveKolCount < yellowZoneMinKol) {
     return {
       allowLive: false,
       reason:
         `wallet ${balance.toFixed(4)} yellow zone requires fresh independentKolCount >= ` +
-        `${config.kolHunterYellowZoneMinIndependentKol}`,
+        `${yellowZoneMinKol}`,
       flags: ['YELLOW_ZONE_MIN_KOL'],
     };
   }
 
-  const liveMinKol = options.minIndependentKol ?? config.kolHunterLiveMinIndependentKol;
   if (liveMinKol > 1 && liveKolCount < liveMinKol) {
     return {
       allowLive: false,

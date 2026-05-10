@@ -242,6 +242,8 @@ KOL_HUNTER_CANARY_MAX_BUDGET_SOL=0.35
 KOL_HUNTER_CANARY_MAX_TRADES=300
 KOL_HUNTER_LIVE_MIN_INDEPENDENT_KOL=2
 KOL_HUNTER_LIVE_CANARY_ARMS=smart_v3_clean,rotation_underfill_v1
+KOL_HUNTER_YELLOW_ZONE_START_SOL=0.85
+KOL_HUNTER_YELLOW_ZONE_PAPER_FALLBACK_BELOW_SOL=0.70
 KOL_HUNTER_SMART_V3_PARAMETER_VERSION=smart-v3.0.1-live-canary-2026-05-09
 
 KOL_HUNTER_ROTATION_V1_ENABLED=true
@@ -261,6 +263,8 @@ PUREWS_LANE_ENABLED=true
 PUREWS_LIVE_CANARY_ENABLED=false
 PUREWS_SWING_V2_LIVE_CANARY_ENABLED=false
 ```
+
+Yellow-zone is not a second halt condition. `WALLET_STOP_MIN_SOL=0.7` is the hard live stop; between 0.70 and 0.85 SOL, live canary uses each promoted arm's own minimum-KOL rule. That means `smart_v3_clean` still needs 2+ fresh independent KOLs, while `rotation_underfill_v1` may test its S/A 1-KOL discounted-entry hypothesis if security-data and Jupiter-pressure gates pass.
 
 This should be the default operator-facing `.env` size. Add experiment overrides only for the duration of a measured sprint, then remove them.
 

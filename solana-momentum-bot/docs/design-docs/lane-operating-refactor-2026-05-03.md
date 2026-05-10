@@ -91,6 +91,7 @@ Implemented operating shape:
 - `rotation_underfill_v1` tests the S/A 1 KOL / 1 buy discounted-entry hypothesis as paper-only;
 - underfill uses the incoming `KolTx` fill reference (`solAmount / tokenAmount`) and does not add a hot-path RPC call;
 - underfill rejects such as missing fill price, too-shallow discount, too-deep discount, stale buy, and recent sell are recorded as no-trade markouts;
+- when promoted to live canary, underfill keeps its own 1-KOL minimum even in yellow-zone; the 0.7 SOL wallet floor remains the hard stop, while 0.70-0.85 SOL is an arm-aware quality zone;
 - rotation paper visibility uses a low-noise 15-minute Telegram digest and rare MFE alerts.
 
 Primary validation:

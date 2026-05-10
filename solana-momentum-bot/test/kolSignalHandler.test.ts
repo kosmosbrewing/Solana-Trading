@@ -427,7 +427,7 @@ jest.mock('../src/utils/config', () => ({
     kolHunterLiveMinIndependentKol: 2,
     kolHunterYellowZoneEnabled: true,
     kolHunterYellowZoneStartSol: 0.85,
-    kolHunterYellowZonePaperFallbackBelowSol: 0.75,
+    kolHunterYellowZonePaperFallbackBelowSol: 0.70,
     kolHunterYellowZoneMinIndependentKol: 2,
     kolHunterYellowZoneMaxRecentJupiter429: 20,
     kolHunterLiveExecutionQualityCooldownEnabled: true,
@@ -3468,6 +3468,35 @@ describe('kolSignalHandler — state machine', () => {
       expect(live?.survivalFlags).not.toContain('ROTATION_V1_LIVE_DISABLED');
     });
 
+    it('rotation-underfill live canary: yellow-zone 에서도 arm별 1-KOL 기준을 따른다', async () => {
+      const { ctx, executeBuy, insertTrade } = buildLiveCtx();
+      const { setWalletStopGuardStateForTests } = require('../src/risk/walletStopGuard');
+      setWalletStopGuardStateForTests(false, 'yellow-zone-test', 0.80);
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx, securityClient: buildSecurityClient() as never });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterLiveMinIndependentKol = 2;
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterRotationV1LiveEnabled = false;
+      mockedConfig.kolHunterRotationV1MinIndependentKol = 1;
+      mockedConfig.kolHunterRotationChaseTopupLiveCanaryEnabled = false;
+      mockedConfig.kolHunterRotationUnderfillLiveCanaryEnabled = true;
+      mockedConfig.kolHunterRotationUnderfillLiveExitFlowEnabled = true;
+
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+
+      expect(executeBuy).toHaveBeenCalledTimes(1);
+      expect(insertTrade).toHaveBeenCalledTimes(1);
+      const live = __testGetActive().find((p) => p.isLive === true);
+      expect(live?.armName).toBe('rotation_underfill_v1');
+      expect(live?.survivalFlags).toContain('ROTATION_UNDERFILL_LIVE_CANARY_ENABLED');
+      expect(live?.survivalFlags).not.toContain('YELLOW_ZONE_MIN_KOL');
+      expect(live?.survivalFlags).not.toContain('YELLOW_ZONE_PAPER_FALLBACK');
+    });
+
     it('rotation-underfill live canary: exit liquidity unknown 은 paper 기준과 동일하게 live 진입을 막지 않는다', async () => {
       const { ctx, executeBuy, insertTrade } = buildLiveCtx();
       __testInit({
@@ -3919,10 +3948,10 @@ describe('kolSignalHandler — state machine', () => {
       expect(live?.armName).toBe('kol_hunter_smart_v3');
     });
 
-    it('yellow-zone: wallet 0.75 미만이면 live 대신 paper fallback', async () => {
+    it('yellow-zone: wallet 0.70 미만이면 live 대신 paper fallback', async () => {
       const { ctx, executeBuy } = buildLiveCtx();
       const { setWalletStopGuardStateForTests } = require('../src/risk/walletStopGuard');
-      setWalletStopGuardStateForTests(false, 'yellow-zone-test', 0.74);
+      setWalletStopGuardStateForTests(false, 'yellow-zone-test', 0.69);
       __testInit({ priceFeed: stubFeed as unknown as never, ctx });
       mockedConfig.kolHunterPaperOnly = false;
       mockedConfig.kolHunterLiveCanaryEnabled = true;
@@ -3940,7 +3969,7 @@ describe('kolSignalHandler — state machine', () => {
       expect(positions[0].survivalFlags).toContain('YELLOW_ZONE_PAPER_FALLBACK');
     });
 
-    it('yellow-zone: 0.75~0.85 에서 single-KOL live 는 paper fallback', async () => {
+    it('yellow-zone: smart-v3 single-KOL live 는 paper fallback', async () => {
       const { ctx, executeBuy } = buildLiveCtx();
       const { setWalletStopGuardStateForTests } = require('../src/risk/walletStopGuard');
       setWalletStopGuardStateForTests(false, 'yellow-zone-test', 0.80);

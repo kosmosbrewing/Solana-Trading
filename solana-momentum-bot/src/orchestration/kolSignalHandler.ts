@@ -1648,9 +1648,10 @@ function emitKolLiveFallbackPolicy(
 function buildLiveEquivalenceCandidateId(
   tokenMint: string,
   entrySignal: KolEntrySignal,
-  nowMs: number
+  nowMs: number,
+  parameterVersionOverride?: string
 ): string {
-  const arm = armNameForVersion(entrySignal.parameterVersion);
+  const arm = armNameForVersion(parameterVersionOverride ?? entrySignal.parameterVersion);
   return `${tokenMint}:${entrySignal.label}:${arm}:${nowMs}`;
 }
 
@@ -1703,14 +1704,17 @@ function emitKolLiveEquivalence(input: {
   const effectiveIndependentKolCount =
     input.entryOptions.entryIndependentKolCount ?? input.score.effectiveIndependentCount;
   const kolScore = input.entryOptions.entryKolScore ?? input.score.finalScore;
+  const effectiveParameterVersion =
+    input.entryOptions.parameterVersion ?? input.entrySignal.parameterVersion;
+  const effectiveArmName = armNameForVersion(effectiveParameterVersion);
   const record: KolLiveEquivalenceRow = {
     schemaVersion: KOL_LIVE_EQUIVALENCE_SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
     candidateId: input.candidateId,
     tokenMint: input.tokenMint,
     entrySignalLabel: input.entrySignal.label,
-    armName: armNameForVersion(input.entrySignal.parameterVersion),
-    parameterVersion: input.entrySignal.parameterVersion,
+    armName: effectiveArmName,
+    parameterVersion: effectiveParameterVersion,
     entryReason: input.entryOptions.entryReason ?? input.entrySignal.entryReason,
     convictionLevel: input.entryOptions.convictionLevel ?? input.entrySignal.conviction,
     paperWouldEnter: input.paperWouldEnter ?? true,
@@ -1894,6 +1898,7 @@ function isRotationV1Position(pos: PaperPosition): boolean {
 
 function armNameForVersion(parameterVersion: string): string {
   if (parameterVersion === config.kolHunterSmartV3ParameterVersion) return 'kol_hunter_smart_v3';
+  if (parameterVersion === config.kolHunterSmartV3QualityUnknownMicroParameterVersion) return 'smart_v3_quality_unknown_micro';
   if (parameterVersion === 'smart-v3-fast-fail-v1.0.0') return 'smart_v3_fast_fail';
   if (parameterVersion === 'smart-v3-runner-relaxed-v1.0.0') return 'smart_v3_runner_relaxed';
   if (parameterVersion === config.kolHunterSwingV2ParameterVersion) return 'kol_hunter_swing_v2';
@@ -2182,6 +2187,7 @@ function dynamicExitParamsForPosition(parameterVersion: string, reason: KolEntry
   }
   if (
     parameterVersion === config.kolHunterSmartV3ParameterVersion ||
+    parameterVersion === config.kolHunterSmartV3QualityUnknownMicroParameterVersion ||
     parameterVersion === config.kolHunterRotationV1ParameterVersion ||
     parameterVersion === config.kolHunterCapitulationReboundParameterVersion
   ) {
@@ -2273,8 +2279,8 @@ export function initKolHunter(
     `[KOL_HUNTER] initialized — paperOnly=${config.kolHunterPaperOnly} ` +
     `survival=${securityClient ? 'enabled' : 'skipped (no client)'} ` +
     `liveCanary=${liveCapable ? 'ENABLED (live wallet exposure)' : 'disabled'} ` +
-    `smartV3Live=${config.kolHunterSmartV3LiveEnabled ? 'enabled' : 'disabled'} ` +
-    `rotationChaseTopupLiveCanary=${config.kolHunterRotationChaseTopupLiveCanaryEnabled ? 'configured' : 'disabled'}`
+    `liveCanaryArms=${configuredLiveCanaryArmsForLog()} ` +
+    `liveCanaryArmMode=${hasExplicitLiveCanaryArmPortfolio() ? 'explicit' : 'legacy'}`
   );
 }
 
@@ -2292,6 +2298,56 @@ function isLiveCanaryActive(): boolean {
   if (config.kolHunterPaperOnly) return false;
   if (!config.kolHunterLiveCanaryEnabled) return false;
   return true;
+}
+
+type KolLiveCanaryArm =
+  | 'smart_v3_clean'
+  | 'smart_v3_quality_unknown_micro'
+  | 'rotation_v1'
+  | 'rotation_chase_topup_v1'
+  | 'rotation_underfill_v1';
+
+function normalizedLiveCanaryArmSet(): Set<string> {
+  const configured = Array.isArray(config.kolHunterLiveCanaryArms)
+    ? config.kolHunterLiveCanaryArms
+    : [];
+  return new Set(
+    configured
+      .map((arm) => arm.trim().toLowerCase())
+      .filter((arm) => arm.length > 0)
+  );
+}
+
+function hasExplicitLiveCanaryArmPortfolio(): boolean {
+  return normalizedLiveCanaryArmSet().size > 0;
+}
+
+function isKolLiveCanaryArmEnabled(arm: KolLiveCanaryArm): boolean {
+  const explicit = normalizedLiveCanaryArmSet();
+  if (explicit.size > 0) return explicit.has(arm);
+  switch (arm) {
+    case 'smart_v3_clean':
+      return config.kolHunterSmartV3LiveEnabled;
+    case 'smart_v3_quality_unknown_micro':
+      return false;
+    case 'rotation_v1':
+      return config.kolHunterRotationV1LiveEnabled;
+    case 'rotation_chase_topup_v1':
+      return config.kolHunterRotationChaseTopupLiveCanaryEnabled;
+    case 'rotation_underfill_v1':
+      return config.kolHunterRotationUnderfillLiveCanaryEnabled;
+  }
+}
+
+function configuredLiveCanaryArmsForLog(): string {
+  const explicit = normalizedLiveCanaryArmSet();
+  if (explicit.size > 0) return [...explicit].sort().join(',');
+  const legacy: string[] = [];
+  if (config.kolHunterSmartV3LiveEnabled) legacy.push('smart_v3_clean');
+  if (config.kolHunterRotationV1LiveEnabled) legacy.push('rotation_v1');
+  if (config.kolHunterRotationChaseTopupLiveCanaryEnabled) legacy.push('rotation_chase_topup_v1');
+  if (config.kolHunterRotationUnderfillLiveCanaryEnabled) legacy.push('rotation_underfill_v1');
+  return legacy.length > 0 ? legacy.join(',') : 'none';
 }
 
 function getLiveCanaryInactiveReason(candIsShadow: boolean): { reason: string; flag: string } | null {
@@ -2878,6 +2934,23 @@ function isSmartV3LiveStrictQualityFlag(flag: string): boolean {
   return false;
 }
 
+function isSmartV3QualityUnknownMicroFlag(flag: string): boolean {
+  const upper = flag.toUpperCase();
+  return upper === 'SMART_V3_LIVE_QUALITY_FALLBACK' ||
+    upper === 'SMART_V3_LIVE_DISABLED' ||
+    upper === 'SMART_V3_QUALITY_EXIT_LIQUIDITY_UNKNOWN' ||
+    upper === 'SMART_V3_QUALITY_TOKEN_QUALITY_UNKNOWN';
+}
+
+function canRouteSmartV3FallbackToQualityUnknownMicro(
+  fallback: { fallback: boolean; reason?: string; flags: string[] }
+): boolean {
+  if (!fallback.fallback) return false;
+  if (!isKolLiveCanaryArmEnabled('smart_v3_quality_unknown_micro')) return false;
+  if (!fallback.flags.includes('SMART_V3_LIVE_QUALITY_FALLBACK')) return false;
+  return fallback.flags.every(isSmartV3QualityUnknownMicroFlag);
+}
+
 function smartV3KolWeightedFillPrice(cand: PendingCandidate, fresh: SmartV3FreshContext): number | null {
   if (!config.kolHunterSmartV3KolFillAdvantageEnabled) return null;
   const freshKolIds = new Set(fresh.freshParticipatingKols.map((k) => k.id.toLowerCase()));
@@ -2905,7 +2978,7 @@ function evaluateSmartV3LiveFallback(
 ): { fallback: boolean; reason?: string; flags: string[] } {
   if (entrySignal.label !== 'smart-v3') return { fallback: false, flags: [] };
   const flags: string[] = [];
-  if (!config.kolHunterSmartV3LiveEnabled) {
+  if (!isKolLiveCanaryArmEnabled('smart_v3_clean')) {
     flags.push('SMART_V3_LIVE_DISABLED');
   }
   if (entrySignal.entryReason === 'pullback' && !config.kolHunterSmartV3PullbackLiveEnabled) {
@@ -2951,12 +3024,12 @@ function evaluateSmartV3LiveFallback(
   if (flags.length === 0) return { fallback: false, flags: [] };
   return {
     fallback: true,
-    reason: flags.includes('SMART_V3_LIVE_DISABLED')
+    reason: flags.includes('SMART_V3_LIVE_QUALITY_FALLBACK')
+      ? 'smart_v3_live_quality_fallback'
+      : flags.includes('SMART_V3_LIVE_DISABLED')
       ? 'smart_v3_live_disabled'
       : flags.includes('SMART_V3_PULLBACK_LIVE_DISABLED')
       ? 'smart_v3_pullback_live_disabled'
-      : flags.includes('SMART_V3_LIVE_QUALITY_FALLBACK')
-      ? 'smart_v3_live_quality_fallback'
       : flags.includes('SMART_V3_PRE_ENTRY_SELL_LIVE_DISABLED') || flags.includes('SMART_V3_RECENT_SELL_NO_SELL_WINDOW')
       ? 'smart_v3_pre_entry_sell_risk'
       : flags.includes('SMART_V3_COMBO_DECAY')
@@ -3025,6 +3098,17 @@ function buildSmartV3LiveEligibilityShadow(options: {
   }
   const fallback = evaluateSmartV3LiveFallback(cand, entrySignal, smartFresh, entryFlags);
   if (fallback.fallback) {
+    if (canRouteSmartV3FallbackToQualityUnknownMicro(fallback)) {
+      return {
+        smartV3LiveEligibleShadow: true,
+        smartV3LiveBlockReason: null,
+        smartV3LiveBlockFlags: [
+          'SMART_V3_QUALITY_UNKNOWN_MICRO_CANARY',
+          ...fallback.flags,
+        ],
+        smartV3LiveEligibilityEvaluatedAtMs: evaluatedAtMs,
+      };
+    }
     return blocked(fallback.reason ?? 'smart_v3_live_fallback', fallback.flags);
   }
   return {
@@ -3159,7 +3243,7 @@ function logRotationV1ConfigOnce(): void {
   rotationV1ConfigLogged = true;
   log.info(
     `[KOL_HUNTER_ROTATION_V1_CONFIG] enabled=${config.kolHunterRotationV1Enabled} ` +
-    `live=${config.kolHunterRotationV1LiveEnabled} minKols=${config.kolHunterRotationV1MinIndependentKol} ` +
+    `live=${isKolLiveCanaryArmEnabled('rotation_v1')} minKols=${config.kolHunterRotationV1MinIndependentKol} ` +
     `minScore=${config.kolHunterRotationV1MinKolScore} window=${config.kolHunterRotationV1WindowSec}s ` +
     `buys>=${config.kolHunterRotationV1MinBuyCount} smallBuys>=${config.kolHunterRotationV1MinSmallBuyCount} ` +
     `gross>=${config.kolHunterRotationV1MinGrossBuySol}SOL recentSellBlock=${config.kolHunterRotationV1MaxRecentSellSec}s ` +
@@ -3258,7 +3342,7 @@ function evaluateRotationUnderfillLiveFallback(
 ): { fallback: boolean; reason?: string; flags: string[] } {
   if (entrySignal.label !== 'rotation-underfill') return { fallback: false, flags: [] };
   const flags: string[] = [];
-  if (!config.kolHunterRotationUnderfillLiveCanaryEnabled) {
+  if (!isKolLiveCanaryArmEnabled('rotation_underfill_v1')) {
     flags.push('ROTATION_UNDERFILL_LIVE_DISABLED');
   }
   if (flags.length === 0) return { fallback: false, flags: [] };
@@ -3733,7 +3817,7 @@ function evaluateRotationUnderfillTriggerState(cand: PendingCandidate, nowMs: nu
     triggered: true,
     flags: [
       'ROTATION_UNDERFILL_V1',
-      config.kolHunterRotationUnderfillLiveCanaryEnabled
+      isKolLiveCanaryArmEnabled('rotation_underfill_v1')
         ? 'ROTATION_UNDERFILL_LIVE_CANARY_ENABLED'
         : 'ROTATION_UNDERFILL_PAPER_ONLY',
       `ROTATION_UNDERFILL_DISCOUNT_PCT_${discountPct.toFixed(4)}`,
@@ -4547,8 +4631,8 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
             entryParticipatingKols: underfillTrigger.participatingKols,
             entryIndependentKolCount: underfillTrigger.telemetry.distinctRotationKols,
             entryKolScore: underfillTrigger.telemetry.rotationScore,
-            paperOnly: !config.kolHunterRotationUnderfillLiveCanaryEnabled,
-            paperOnlyReason: config.kolHunterRotationUnderfillLiveCanaryEnabled
+            paperOnly: !isKolLiveCanaryArmEnabled('rotation_underfill_v1'),
+            paperOnlyReason: isKolLiveCanaryArmEnabled('rotation_underfill_v1')
               ? undefined
               : 'rotation_underfill_paper_only',
           }
@@ -4561,7 +4645,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
             conviction: 'MEDIUM_HIGH' as const,
             extraFlags: [
               ...chaseTopupTrigger.flags.filter((flag) => flag !== 'ROTATION_CHASE_TOPUP_PAPER_ONLY'),
-              ...(config.kolHunterRotationChaseTopupLiveCanaryEnabled
+              ...(isKolLiveCanaryArmEnabled('rotation_chase_topup_v1')
                 ? ['ROTATION_CHASE_TOPUP_LIVE_CANARY_ENABLED']
                 : ['ROTATION_CHASE_TOPUP_PAPER_ONLY']),
             ],
@@ -4570,8 +4654,8 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
             entryParticipatingKols: chaseTopupTrigger.participatingKols,
             entryIndependentKolCount: chaseTopupTrigger.telemetry.distinctRotationKols,
             entryKolScore: chaseTopupTrigger.telemetry.rotationScore,
-            paperOnly: !config.kolHunterRotationChaseTopupLiveCanaryEnabled,
-            paperOnlyReason: config.kolHunterRotationChaseTopupLiveCanaryEnabled
+            paperOnly: !isKolLiveCanaryArmEnabled('rotation_chase_topup_v1'),
+            paperOnlyReason: isKolLiveCanaryArmEnabled('rotation_chase_topup_v1')
               ? undefined
               : 'rotation_chase_topup_paper_only',
           }
@@ -4748,7 +4832,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     underfillReferenceSolAmount: entrySignal.telemetry?.underfillReferenceSolAmount,
     underfillReferenceTokenAmount: entrySignal.telemetry?.underfillReferenceTokenAmount,
     rotationFlowExitEnabled: entrySignal.label === 'rotation-underfill' &&
-      config.kolHunterRotationUnderfillLiveCanaryEnabled &&
+      isKolLiveCanaryArmEnabled('rotation_underfill_v1') &&
       config.kolHunterRotationUnderfillLiveExitFlowEnabled,
     smartV3LiveHardCutReentry: smartV3HardCutReentry.allowed,
     smartV3HardCutParentPositionId: smartV3HardCutReentry.state?.parentPositionId,
@@ -4902,7 +4986,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
   ): PaperEntryOptions => ({
     ...base,
     ...buildLiveEquivalenceOptionPatch({
-      candidateId: liveEquivalenceCandidateId,
+      candidateId: base.liveEquivalenceCandidateId ?? liveEquivalenceCandidateId,
       stage,
       liveWouldEnter,
       reason,
@@ -5039,7 +5123,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       });
       return;
     }
-    if (entrySignal.label === 'rotation-v1' && !config.kolHunterRotationV1LiveEnabled) {
+    if (entrySignal.label === 'rotation-v1' && !isKolLiveCanaryArmEnabled('rotation_v1')) {
       const policyFlags = [
         ...entryFlags,
         'ROTATION_V1_LIVE_DISABLED',
@@ -5334,11 +5418,42 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       return;
     }
     const smartV3LiveFallback = evaluateSmartV3LiveFallback(cand, entrySignal, smartFresh, entryFlags);
+    let liveEntryFlags = entryFlags;
+    let liveEntryOptions = entryOptionsWithLiveShadow;
     if (smartV3LiveFallback.fallback) {
       const policyFlags = [
         ...entryFlags,
         ...smartV3LiveFallback.flags,
       ];
+      if (canRouteSmartV3FallbackToQualityUnknownMicro(smartV3LiveFallback)) {
+        const qualityUnknownCanaryCandidateId = buildLiveEquivalenceCandidateId(
+          cand.tokenMint,
+          entrySignal,
+          Date.now(),
+          config.kolHunterSmartV3QualityUnknownMicroParameterVersion
+        );
+        liveEntryFlags = [
+          ...policyFlags,
+          'SMART_V3_QUALITY_UNKNOWN_MICRO_CANARY',
+        ];
+        liveEntryOptions = {
+          ...entryOptionsWithLiveShadow,
+          parameterVersion: config.kolHunterSmartV3QualityUnknownMicroParameterVersion,
+          liveEquivalenceCandidateId: qualityUnknownCanaryCandidateId,
+          smartV3LiveEligibleShadow: true,
+          smartV3LiveBlockReason: null,
+          smartV3LiveBlockFlags: [
+            'SMART_V3_QUALITY_UNKNOWN_MICRO_CANARY',
+            ...smartV3LiveFallback.flags,
+          ],
+          smartV3LiveEligibilityEvaluatedAtMs: Date.now(),
+        };
+        log.warn(
+          `[KOL_HUNTER_SMART_V3_QUALITY_UNKNOWN_MICRO_CANARY] ${cand.tokenMint.slice(0, 8)} ` +
+          `entryReason=${entrySignal.entryReason} flags=${smartV3LiveFallback.flags.join(',')} ` +
+          `— restricted quality-unknown live canary.`
+        );
+      } else {
       if (smartV3HardCutReentryLiveOnly) {
         rejectSmartV3HardCutReentryLiveOnlyFallback(
           smartV3LiveFallback.reason ?? 'smart_v3_live_fallback',
@@ -5381,14 +5496,15 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         skipPolicyEntry: true,
       });
       return;
+      }
     }
     emitKolLiveEquivalence({
-      candidateId: liveEquivalenceCandidateId,
+      candidateId: liveEntryOptions.liveEquivalenceCandidateId ?? liveEquivalenceCandidateId,
       tokenMint: cand.tokenMint,
       entrySignal,
       score,
-      entryOptions: entryOptionsWithLiveShadow,
-      survivalFlags: entryFlags,
+      entryOptions: liveEntryOptions,
+      survivalFlags: liveEntryFlags,
       candIsShadow,
       stage: 'pre_execution_live_allowed',
       liveWouldEnter: true,
@@ -5400,9 +5516,9 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       cand.tokenMint,
       cand,
       score,
-      entryFlags,
+      liveEntryFlags,
       botCtx,
-      withLiveEquivalence(entryOptionsWithLiveShadow, 'pre_execution_live_allowed', true, null, [])
+      withLiveEquivalence(liveEntryOptions, 'pre_execution_live_allowed', true, null, [])
     );
     return;
   }
@@ -5411,7 +5527,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     inactiveLiveGate != null &&
     (
       entrySignal.label === 'rotation-chase-topup' ||
-      config.kolHunterRotationChaseTopupLiveCanaryEnabled ||
+      isKolLiveCanaryArmEnabled('rotation_chase_topup_v1') ||
       config.kolHunterLiveCanaryEnabled ||
       !config.kolHunterPaperOnly
     );

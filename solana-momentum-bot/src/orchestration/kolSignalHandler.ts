@@ -130,6 +130,9 @@ import {
 
 const log = createModuleLogger('KolHunter');
 const LANE_STRATEGY = 'kol_hunter' as const;
+const ROTATION_UNDERFILL_ARM = 'rotation_underfill_v1';
+const ROTATION_EXIT_FLOW_ARM = 'rotation_exit_kol_flow_v1';
+const ROTATION_UNDERFILL_EXIT_FLOW_PROFILE_ARM = 'rotation_underfill_exit_flow_v1';
 
 // ─── State Types ─────────────────────────────────────────
 
@@ -249,6 +252,10 @@ export interface PaperPosition {
   // arm identity / discovery cluster / parameter version 이 trade 단위로 기록되어야 한다.
   armName: string;
   parameterVersion: string;
+  /** Comparable promoted profile when entry and exit arms are intentionally combined. */
+  profileArm?: string;
+  entryArm?: string;
+  exitArm?: string;
   isShadowArm: boolean;
   parentPositionId?: string;
   /**
@@ -402,6 +409,9 @@ interface SmartV3PendingState {
 
 interface PaperEntryOptions {
   parameterVersion?: string;
+  profileArm?: string;
+  entryArm?: string;
+  exitArm?: string;
   entryReason?: KolEntryReason;
   convictionLevel?: KolConvictionLevel;
   tokenDecimals?: number;
@@ -992,6 +1002,9 @@ function trackPaperPositionMarkout(
       extras: {
         mode: pos.isLive === true ? 'live' : 'paper',
         armName: pos.armName,
+        profileArm: pos.profileArm ?? null,
+        entryArm: pos.entryArm ?? pos.armName,
+        exitArm: pos.exitArm ?? pos.armName,
         parameterVersion: pos.parameterVersion,
         isShadowArm: pos.isShadowArm,
         isShadowKol: pos.isShadowKol ?? false,
@@ -1649,9 +1662,10 @@ function buildLiveEquivalenceCandidateId(
   tokenMint: string,
   entrySignal: KolEntrySignal,
   nowMs: number,
-  parameterVersionOverride?: string
+  parameterVersionOverride?: string,
+  profileArmOverride?: string
 ): string {
-  const arm = armNameForVersion(parameterVersionOverride ?? entrySignal.parameterVersion);
+  const arm = profileArmOverride ?? armNameForVersion(parameterVersionOverride ?? entrySignal.parameterVersion);
   return `${tokenMint}:${entrySignal.label}:${arm}:${nowMs}`;
 }
 
@@ -1707,6 +1721,7 @@ function emitKolLiveEquivalence(input: {
   const effectiveParameterVersion =
     input.entryOptions.parameterVersion ?? input.entrySignal.parameterVersion;
   const effectiveArmName = armNameForVersion(effectiveParameterVersion);
+  const effectiveProfileArm = input.entryOptions.profileArm ?? effectiveArmName;
   const record: KolLiveEquivalenceRow = {
     schemaVersion: KOL_LIVE_EQUIVALENCE_SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
@@ -1714,6 +1729,9 @@ function emitKolLiveEquivalence(input: {
     tokenMint: input.tokenMint,
     entrySignalLabel: input.entrySignal.label,
     armName: effectiveArmName,
+    profileArm: effectiveProfileArm,
+    entryArm: input.entryOptions.entryArm ?? effectiveArmName,
+    exitArm: input.entryOptions.exitArm ?? effectiveArmName,
     parameterVersion: effectiveParameterVersion,
     entryReason: input.entryOptions.entryReason ?? input.entrySignal.entryReason,
     convictionLevel: input.entryOptions.convictionLevel ?? input.entrySignal.conviction,
@@ -1903,8 +1921,8 @@ function armNameForVersion(parameterVersion: string): string {
   if (parameterVersion === 'smart-v3-runner-relaxed-v1.0.0') return 'smart_v3_runner_relaxed';
   if (parameterVersion === config.kolHunterSwingV2ParameterVersion) return 'kol_hunter_swing_v2';
   if (parameterVersion === config.kolHunterRotationV1ParameterVersion) return 'kol_hunter_rotation_v1';
-  if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) return 'rotation_underfill_v1';
-  if (parameterVersion === config.kolHunterRotationExitFlowParameterVersion) return 'rotation_exit_kol_flow_v1';
+  if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) return ROTATION_UNDERFILL_ARM;
+  if (parameterVersion === config.kolHunterRotationExitFlowParameterVersion) return ROTATION_EXIT_FLOW_ARM;
   if (parameterVersion === config.kolHunterRotationChaseTopupParameterVersion) return 'rotation_chase_topup_v1';
   if (parameterVersion === config.kolHunterCapitulationReboundParameterVersion) return 'kol_hunter_capitulation_rebound_v1';
   return 'kol_hunter_v1';
@@ -1962,7 +1980,7 @@ function buildRotationPaperArmSpecs(primaryVersion: string): RotationPaperArmSpe
   if (!config.kolHunterRotationPaperArmsEnabled) return [];
   const flowSpec: RotationPaperArmSpec = {
     suffix: 'exit-flow',
-    armName: 'rotation_exit_kol_flow_v1',
+    armName: ROTATION_EXIT_FLOW_ARM,
     parameterVersion: config.kolHunterRotationExitFlowParameterVersion,
     enabled: config.kolHunterRotationExitFlowPaperEnabled,
     t1Mfe: config.kolHunterRotationUnderfillT1Mfe,
@@ -2068,8 +2086,14 @@ function rotationPaperArmRejectReason(
 }
 
 function applyRotationPaperArmSpec(pos: PaperPosition, spec: RotationPaperArmSpec): void {
+  const parentArmName = pos.armName;
   pos.armName = spec.armName;
   pos.parameterVersion = spec.parameterVersion;
+  pos.entryArm = pos.entryArm ?? parentArmName;
+  pos.exitArm = spec.flowExit === true ? spec.armName : pos.exitArm ?? spec.armName;
+  if (spec.flowExit === true && parentArmName === ROTATION_UNDERFILL_ARM) {
+    pos.profileArm = ROTATION_UNDERFILL_EXIT_FLOW_PROFILE_ARM;
+  }
   pos.kolEntryReason = 'rotation_v1';
   pos.kolConvictionLevel = 'MEDIUM_HIGH';
   pos.t1MfeOverride = spec.t1Mfe;
@@ -2305,7 +2329,8 @@ type KolLiveCanaryArm =
   | 'smart_v3_quality_unknown_micro'
   | 'rotation_v1'
   | 'rotation_chase_topup_v1'
-  | 'rotation_underfill_v1';
+  | 'rotation_underfill_v1'
+  | 'rotation_underfill_exit_flow_v1';
 
 function normalizedLiveCanaryArmSet(): Set<string> {
   const configured = Array.isArray(config.kolHunterLiveCanaryArms)
@@ -2336,7 +2361,29 @@ function isKolLiveCanaryArmEnabled(arm: KolLiveCanaryArm): boolean {
       return config.kolHunterRotationChaseTopupLiveCanaryEnabled;
     case 'rotation_underfill_v1':
       return config.kolHunterRotationUnderfillLiveCanaryEnabled;
+    case 'rotation_underfill_exit_flow_v1':
+      return config.kolHunterRotationUnderfillLiveCanaryEnabled &&
+        config.kolHunterRotationUnderfillLiveExitFlowEnabled;
   }
+}
+
+function isRotationUnderfillExitFlowLiveCanaryEnabled(): boolean {
+  const explicit = normalizedLiveCanaryArmSet();
+  if (explicit.size > 0) return explicit.has(ROTATION_UNDERFILL_EXIT_FLOW_PROFILE_ARM);
+  return config.kolHunterRotationUnderfillLiveCanaryEnabled &&
+    config.kolHunterRotationUnderfillLiveExitFlowEnabled;
+}
+
+function isRotationUnderfillLiveCanaryEnabled(): boolean {
+  return isKolLiveCanaryArmEnabled('rotation_underfill_v1') ||
+    isRotationUnderfillExitFlowLiveCanaryEnabled();
+}
+
+function rotationUnderfillLiveProfileArm(): string | undefined {
+  if (isRotationUnderfillExitFlowLiveCanaryEnabled()) {
+    return ROTATION_UNDERFILL_EXIT_FLOW_PROFILE_ARM;
+  }
+  return undefined;
 }
 
 function configuredLiveCanaryArmsForLog(): string {
@@ -2346,7 +2393,11 @@ function configuredLiveCanaryArmsForLog(): string {
   if (config.kolHunterSmartV3LiveEnabled) legacy.push('smart_v3_clean');
   if (config.kolHunterRotationV1LiveEnabled) legacy.push('rotation_v1');
   if (config.kolHunterRotationChaseTopupLiveCanaryEnabled) legacy.push('rotation_chase_topup_v1');
-  if (config.kolHunterRotationUnderfillLiveCanaryEnabled) legacy.push('rotation_underfill_v1');
+  if (config.kolHunterRotationUnderfillLiveCanaryEnabled) {
+    legacy.push(config.kolHunterRotationUnderfillLiveExitFlowEnabled
+      ? 'rotation_underfill_exit_flow_v1'
+      : 'rotation_underfill_v1');
+  }
   return legacy.length > 0 ? legacy.join(',') : 'none';
 }
 
@@ -3342,7 +3393,7 @@ function evaluateRotationUnderfillLiveFallback(
 ): { fallback: boolean; reason?: string; flags: string[] } {
   if (entrySignal.label !== 'rotation-underfill') return { fallback: false, flags: [] };
   const flags: string[] = [];
-  if (!isKolLiveCanaryArmEnabled('rotation_underfill_v1')) {
+  if (!isRotationUnderfillLiveCanaryEnabled()) {
     flags.push('ROTATION_UNDERFILL_LIVE_DISABLED');
   }
   if (flags.length === 0) return { fallback: false, flags: [] };
@@ -3817,7 +3868,7 @@ function evaluateRotationUnderfillTriggerState(cand: PendingCandidate, nowMs: nu
     triggered: true,
     flags: [
       'ROTATION_UNDERFILL_V1',
-      isKolLiveCanaryArmEnabled('rotation_underfill_v1')
+      isRotationUnderfillLiveCanaryEnabled()
         ? 'ROTATION_UNDERFILL_LIVE_CANARY_ENABLED'
         : 'ROTATION_UNDERFILL_PAPER_ONLY',
       `ROTATION_UNDERFILL_DISCOUNT_PCT_${discountPct.toFixed(4)}`,
@@ -4631,8 +4682,8 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
             entryParticipatingKols: underfillTrigger.participatingKols,
             entryIndependentKolCount: underfillTrigger.telemetry.distinctRotationKols,
             entryKolScore: underfillTrigger.telemetry.rotationScore,
-            paperOnly: !isKolLiveCanaryArmEnabled('rotation_underfill_v1'),
-            paperOnlyReason: isKolLiveCanaryArmEnabled('rotation_underfill_v1')
+            paperOnly: !isRotationUnderfillLiveCanaryEnabled(),
+            paperOnlyReason: isRotationUnderfillLiveCanaryEnabled()
               ? undefined
               : 'rotation_underfill_paper_only',
           }
@@ -4813,9 +4864,27 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     return;
   }
 
-  const liveEquivalenceCandidateId = buildLiveEquivalenceCandidateId(cand.tokenMint, entrySignal, Date.now());
+  const profileArm = entrySignal.label === 'rotation-underfill'
+    ? rotationUnderfillLiveProfileArm()
+    : undefined;
+  const entryArm = entrySignal.label === 'rotation-underfill'
+    ? ROTATION_UNDERFILL_ARM
+    : undefined;
+  const exitArm = entrySignal.label === 'rotation-underfill' && profileArm
+    ? ROTATION_EXIT_FLOW_ARM
+    : undefined;
+  const liveEquivalenceCandidateId = buildLiveEquivalenceCandidateId(
+    cand.tokenMint,
+    entrySignal,
+    Date.now(),
+    undefined,
+    profileArm
+  );
   const entryOptions: PaperEntryOptions = {
     parameterVersion: entrySignal.parameterVersion,
+    profileArm,
+    entryArm,
+    exitArm,
     entryReason: entrySignal.entryReason,
     convictionLevel: entrySignal.conviction,
     liveEquivalenceCandidateId,
@@ -4832,8 +4901,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     underfillReferenceSolAmount: entrySignal.telemetry?.underfillReferenceSolAmount,
     underfillReferenceTokenAmount: entrySignal.telemetry?.underfillReferenceTokenAmount,
     rotationFlowExitEnabled: entrySignal.label === 'rotation-underfill' &&
-      isKolLiveCanaryArmEnabled('rotation_underfill_v1') &&
-      config.kolHunterRotationUnderfillLiveExitFlowEnabled,
+      isRotationUnderfillExitFlowLiveCanaryEnabled(),
     smartV3LiveHardCutReentry: smartV3HardCutReentry.allowed,
     smartV3HardCutParentPositionId: smartV3HardCutReentry.state?.parentPositionId,
     smartV3HardCutAtMs: smartV3HardCutReentry.state?.closedAtMs,
@@ -6158,6 +6226,9 @@ async function enterPaperPosition(
       kolScore: entryKolScore,
       armName: armNameForVersion(parameterVersion),
       parameterVersion,
+      profileArm: options.profileArm,
+      entryArm: options.entryArm,
+      exitArm: options.exitArm,
       isShadowArm,
       parentPositionId,
       kolEntryReason: entryReason,
@@ -6332,6 +6403,9 @@ async function enterPaperPosition(
       {
         eventType: 'paper_entry',
         survivalFlags: pos.survivalFlags,
+        profileArm: pos.profileArm ?? null,
+        entryArm: pos.entryArm ?? pos.armName,
+        exitArm: pos.exitArm ?? pos.armName,
         smartV3LiveEligibleShadow: pos.smartV3LiveEligibleShadow ?? null,
         smartV3LiveBlockReason: pos.smartV3LiveBlockReason ?? null,
         smartV3LiveBlockFlags: pos.smartV3LiveBlockFlags ?? null,
@@ -7822,6 +7896,9 @@ function buildKolBaseLedgerRecord(
     lane: LANE_STRATEGY,
     armName: pos.armName,
     parameterVersion: pos.parameterVersion,
+    profileArm: pos.profileArm ?? null,
+    entryArm: pos.entryArm ?? pos.armName,
+    exitArm: pos.exitArm ?? pos.armName,
     isShadowArm: pos.isShadowArm,
     parentPositionId: pos.parentPositionId ?? null,
     entryReason: pos.kolEntryReason,
@@ -7917,6 +7994,9 @@ function buildKolLedgerExtras(
     positionId: pos.positionId,
     tokenMint: pos.tokenMint,
     armName: pos.armName,
+    profileArm: pos.profileArm ?? null,
+    entryArm: pos.entryArm ?? pos.armName,
+    exitArm: pos.exitArm ?? pos.armName,
     entryReason: pos.kolEntryReason,
     convictionLevel: pos.kolConvictionLevel,
     parameterVersion: pos.parameterVersion,
@@ -8658,6 +8738,9 @@ async function enterLivePosition(
       independentKolCount: entryIndependentKolCount,
       entryReason: options.entryReason,
       parameterVersion: options.parameterVersion,
+      profileArm: options.profileArm ?? null,
+      entryArm: options.entryArm ?? null,
+      exitArm: options.exitArm ?? null,
       rotationAnchorKols: options.rotationAnchorKols ?? null,
       rotationAnchorPrice: options.rotationAnchorPrice ?? null,
       rotationFirstBuyAtMs: options.rotationFirstBuyAtMs ?? null,
@@ -8720,6 +8803,9 @@ async function enterLivePosition(
     kolScore: entryKolScore,
     armName,
     parameterVersion: primaryVersion,
+    profileArm: options.profileArm,
+    entryArm: options.entryArm,
+    exitArm: options.exitArm,
     isShadowArm: false,
     kolEntryReason: entryReason,
     kolConvictionLevel: conviction,
@@ -8793,6 +8879,9 @@ async function enterLivePosition(
       extras: {
         mode: 'live',
         armName: position.armName,
+        profileArm: position.profileArm ?? null,
+        entryArm: position.entryArm ?? position.armName,
+        exitArm: position.exitArm ?? position.armName,
         parameterVersion: position.parameterVersion,
         entryReason: position.kolEntryReason,
         convictionLevel: position.kolConvictionLevel,
@@ -9224,6 +9313,9 @@ async function closeLivePosition(
         kolScore: pos.kolScore,
         independentKolCount: pos.independentKolCount,
         armName: pos.armName,
+        profileArm: pos.profileArm ?? null,
+        entryArm: pos.entryArm ?? pos.armName,
+        exitArm: pos.exitArm ?? pos.armName,
         parameterVersion: pos.parameterVersion,
         entryReason: pos.kolEntryReason,
         rotationAnchorKols: pos.rotationAnchorKols ?? null,
@@ -9252,6 +9344,9 @@ async function closeLivePosition(
           extras: {
             mode: 'live',
             armName: pos.armName,
+            profileArm: pos.profileArm ?? null,
+            entryArm: pos.entryArm ?? pos.armName,
+            exitArm: pos.exitArm ?? pos.armName,
             parameterVersion: pos.parameterVersion,
             entryReason: pos.kolEntryReason,
             convictionLevel: pos.kolConvictionLevel,

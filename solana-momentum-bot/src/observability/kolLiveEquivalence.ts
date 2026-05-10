@@ -33,6 +33,9 @@ export interface KolLiveEquivalenceRow {
   tokenMint: string;
   entrySignalLabel: string;
   armName: string;
+  profileArm?: string;
+  entryArm?: string;
+  exitArm?: string;
   parameterVersion: string;
   entryReason: string;
   convictionLevel: string;

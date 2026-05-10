@@ -139,8 +139,14 @@ KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=false
 Preferred live canary portfolio form:
 
 ```dotenv
-KOL_HUNTER_LIVE_CANARY_ARMS=rotation_underfill_v1
+KOL_HUNTER_LIVE_CANARY_ARMS=rotation_underfill_exit_flow_v1
 ```
+
+`rotation_underfill_exit_flow_v1` is the promoted comparison profile: it uses
+the same entry predicate as `rotation_underfill_v1` and the same exit overlay as
+`rotation_exit_kol_flow_v1`. Runtime ledgers still keep `armName` for the
+mechanical entry/exit arm, and add `profileArm=rotation_underfill_exit_flow_v1`
+so paper and live canary can be compared without relabeling by hand.
 
 Legacy equivalent for the single underfill arm:
 
@@ -241,14 +247,14 @@ KOL_HUNTER_LIVE_CANARY_ENABLED=true
 KOL_HUNTER_CANARY_MAX_BUDGET_SOL=0.35
 KOL_HUNTER_CANARY_MAX_TRADES=300
 KOL_HUNTER_LIVE_MIN_INDEPENDENT_KOL=2
-KOL_HUNTER_LIVE_CANARY_ARMS=smart_v3_clean,rotation_underfill_v1
+KOL_HUNTER_LIVE_CANARY_ARMS=smart_v3_clean,rotation_underfill_exit_flow_v1
 KOL_HUNTER_YELLOW_ZONE_START_SOL=0.85
 KOL_HUNTER_YELLOW_ZONE_PAPER_FALLBACK_BELOW_SOL=0.70
 KOL_HUNTER_SMART_V3_PARAMETER_VERSION=smart-v3.0.1-live-canary-2026-05-09
 
 KOL_HUNTER_ROTATION_V1_ENABLED=true
 KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=false
-# Promoted rotation live canary is underfill only; chase-topup stays paper.
+# Promoted rotation live canary is underfill entry + exit-flow profile; chase-topup stays paper.
 KOL_HUNTER_ROTATION_CHASE_TOPUP_LIVE_CANARY_ENABLED=false
 KOL_HUNTER_ROTATION_CHASE_TOPUP_PARAMETER_VERSION=rotation-chase-topup-v1.0.0
 KOL_HUNTER_ROTATION_CHASE_TOPUP_PAPER_ENABLED=true
@@ -264,7 +270,7 @@ PUREWS_LIVE_CANARY_ENABLED=false
 PUREWS_SWING_V2_LIVE_CANARY_ENABLED=false
 ```
 
-Yellow-zone is not a second halt condition. `WALLET_STOP_MIN_SOL=0.7` is the hard live stop; between 0.70 and 0.85 SOL, live canary uses each promoted arm's own minimum-KOL rule. That means `smart_v3_clean` still needs 2+ fresh independent KOLs, while `rotation_underfill_v1` may test its S/A 1-KOL discounted-entry hypothesis if security-data and Jupiter-pressure gates pass.
+Yellow-zone is not a second halt condition. `WALLET_STOP_MIN_SOL=0.7` is the hard live stop; between 0.70 and 0.85 SOL, live canary uses each promoted arm's own minimum-KOL rule. That means `smart_v3_clean` still needs 2+ fresh independent KOLs, while `rotation_underfill_exit_flow_v1` may test the S/A 1-KOL discounted-entry hypothesis plus exit-flow overlay if security-data and Jupiter-pressure gates pass.
 
 This should be the default operator-facing `.env` size. Add experiment overrides only for the duration of a measured sprint, then remove them.
 

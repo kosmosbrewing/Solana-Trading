@@ -70,7 +70,9 @@ function extrasOf(row: JsonRow): JsonRow {
 
 function rowArmName(row: JsonRow): string {
   const extras = extrasOf(row);
-  return str(row.armName) ||
+  return str(row.profileArm) ||
+    str(extras.profileArm) ||
+    str(row.armName) ||
     str(row.signalSource) ||
     str(extras.armName) ||
     str(row.parameterVersion) ||

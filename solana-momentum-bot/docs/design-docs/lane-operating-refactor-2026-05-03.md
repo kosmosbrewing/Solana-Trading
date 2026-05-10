@@ -12,7 +12,7 @@ The three active strategy surfaces now have separate operating roles:
 | Strategy surface | Role | Live stance | Paper / observation stance |
 |---|---|---|---|
 | `kol_hunter_smart_v3` | Main 5x lane | Live canary is arm-based: `smart_v3_clean` for strict-quality entries, optional `smart_v3_quality_unknown_micro` for unknown-only quality fallbacks. `micro` is a restricted-arm label and keeps the same live canary ticket for cost comparability | Paper fallback for pullback, weak recovery, dev risk, hard quality risk, prior sell risk, bad combo, halt, or guard fallback |
-| `kol_hunter_rotation_v1` | Fast-compound KOL auxiliary lane | Keep canonical live disabled unless explicitly listed; promoted arms are selected through `KOL_HUNTER_LIVE_CANARY_ARMS` | Paper control plus parallel parameter arms, underfill arm, chase-topup paper, and entry-vs-KOL-fill canary evidence |
+| `kol_hunter_rotation_v1` | Fast-compound KOL auxiliary lane | Keep canonical live disabled unless explicitly listed; promoted profiles are selected through `KOL_HUNTER_LIVE_CANARY_ARMS` | Paper control plus parallel parameter arms, underfill arm, chase-topup paper, and entry-vs-KOL-fill canary evidence |
 | `kol_hunter_capitulation_rebound_v1` | Liquidity-shock rebound experiment | Live prohibited | Paper-only entry after hard veto, recovery confirmation, and sell-route check; no-trade counterfactuals are first-class evidence |
 | `pure_ws botflow` | New-pair / botflow rebuild candidate | Live off | Paper/observe-only with T+ markouts, digest, and parameter arms |
 
@@ -89,9 +89,10 @@ Implemented operating shape:
   - `rotation_cost_guard_v1`;
   - `rotation_quality_strict_v1`;
 - `rotation_underfill_v1` tests the S/A 1 KOL / 1 buy discounted-entry hypothesis as paper-only;
+- `rotation_underfill_exit_flow_v1` is the promoted comparison profile: `entryArm=rotation_underfill_v1`, `exitArm=rotation_exit_kol_flow_v1`, and `profileArm=rotation_underfill_exit_flow_v1`;
 - underfill uses the incoming `KolTx` fill reference (`solAmount / tokenAmount`) and does not add a hot-path RPC call;
 - underfill rejects such as missing fill price, too-shallow discount, too-deep discount, stale buy, and recent sell are recorded as no-trade markouts;
-- when promoted to live canary, underfill keeps its own 1-KOL minimum even in yellow-zone; the 0.7 SOL wallet floor remains the hard stop, while 0.70-0.85 SOL is an arm-aware quality zone;
+- when promoted to live canary, the underfill + exit-flow profile keeps its own 1-KOL minimum even in yellow-zone; the 0.7 SOL wallet floor remains the hard stop, while 0.70-0.85 SOL is an arm-aware quality zone;
 - rotation paper visibility uses a low-noise 15-minute Telegram digest and rare MFE alerts.
 
 Primary validation:

@@ -61,6 +61,10 @@ interface KolLiveBuyLedger {
   partialFillDataReason?: string;
   kolScore?: number;
   independentKolCount?: number;
+  armName?: string;
+  profileArm?: string;
+  entryArm?: string;
+  exitArm?: string;
 }
 
 interface KolLiveSellLedger {
@@ -106,6 +110,9 @@ interface KolLiveSellLedger {
   kolScore?: number;
   independentKolCount?: number;
   armName?: string;
+  profileArm?: string;
+  entryArm?: string;
+  exitArm?: string;
   parameterVersion?: string;
   kolEntryReason?: string;
   kolConvictionLevel?: string;
@@ -127,6 +134,9 @@ interface KolPaperTradeLedger {
   survivalFlags?: string[];
   closedAt?: string;
   armName?: string;
+  profileArm?: string;
+  entryArm?: string;
+  exitArm?: string;
   parameterVersion?: string;
   independentKolCount?: number;
   kolScore?: number;
@@ -160,6 +170,9 @@ interface PairedKolLiveTrade {
   exitTxSignature?: string;
   exitReason: string;
   armName: string;
+  profileArm?: string;
+  entryArm?: string;
+  exitArm?: string;
   parameterVersion: string;
   netSol: number;
   walletTruthSource: 'walletDeltaSol' | 'dbPnlSol' | 'solSpentNominal' | 'buyFillEstimate' | 'unknown';
@@ -707,6 +720,9 @@ function pairKolLiveTrades(
       exitTxSignature: sell.txSignature,
       exitReason: sell.exitReason ?? 'unknown',
       armName: sell.armName ?? 'unknown',
+      profileArm: sell.profileArm ?? buy?.profileArm,
+      entryArm: sell.entryArm ?? buy?.entryArm,
+      exitArm: sell.exitArm ?? buy?.exitArm,
       parameterVersion: sell.parameterVersion ?? 'unknown',
       netSol: net.netSol,
       walletTruthSource: net.source,
@@ -774,6 +790,9 @@ function paperFallbackToTrade(row: KolPaperTradeLedger): PairedKolLiveTrade {
     tokenMint: row.tokenMint,
     exitReason: row.exitReason ?? 'unknown',
     armName: row.armName ?? 'unknown',
+    profileArm: row.profileArm,
+    entryArm: row.entryArm,
+    exitArm: row.exitArm,
     parameterVersion: row.parameterVersion ?? 'unknown',
     netSol,
     walletTruthSource: 'unknown',
@@ -965,7 +984,8 @@ function actualMfeBucket(trade: PairedKolLiveTrade): string {
 }
 
 function armBucket(trade: PairedKolLiveTrade): string {
-  return `${trade.armName}/${trade.parameterVersion}`;
+  const arm = trade.profileArm ?? trade.armName;
+  return `${arm}/${trade.parameterVersion}`;
 }
 
 const ENTRY_ADVANTAGE_ANOMALY_ABS_PCT = 0.5;

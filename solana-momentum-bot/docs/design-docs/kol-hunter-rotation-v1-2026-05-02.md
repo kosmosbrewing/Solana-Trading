@@ -428,9 +428,9 @@ This keeps historical reports working while making daily rotation paper review m
 ## Rollout
 
 1. Paper: enable `KOL_HUNTER_ROTATION_V1_ENABLED=true`, leave canonical live disabled when a paper-only shakeout is desired.
-2. Promoted underfill live canary: keep `KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=false`, keep `KOL_HUNTER_ROTATION_CHASE_TOPUP_LIVE_CANARY_ENABLED=false`, and enable only `KOL_HUNTER_ROTATION_UNDERFILL_LIVE_CANARY_ENABLED=true`. This routes the S/A underfill arm through existing live canary gates without opening the broader rotation-v1 live path. Underfill live uses the same strategy trigger criterion as paper; Real Asset Guard, live canary gate, wallet floor, reentry guard, and execution failure handling remain active. `KOL_HUNTER_ROTATION_UNDERFILL_LIVE_EXIT_FLOW_ENABLED=true` applies the exit-flow policy to the live underfill position.
+2. Promoted underfill + exit-flow live canary: keep `KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=false`, keep `KOL_HUNTER_ROTATION_CHASE_TOPUP_LIVE_CANARY_ENABLED=false`, and select `KOL_HUNTER_LIVE_CANARY_ARMS=rotation_underfill_exit_flow_v1`. This profile uses `rotation_underfill_v1` as the entry predicate and `rotation_exit_kol_flow_v1` as the exit overlay. Ledgers keep `armName`, `entryArm`, and `exitArm`, and add `profileArm=rotation_underfill_exit_flow_v1` so paper and live canary cohorts compare on the same experiment identity.
 3. Full canonical rotation live: only after a separate ADR/evidence review, enable both `KOL_HUNTER_ROTATION_V1_ENABLED=true` and `KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=true`. Existing canary gates still apply, but this is not the current operating intent.
-4. Measure by `armName/kolEntryReason`:
+4. Measure by `profileArm` first, then `armName/kolEntryReason`:
    - closed netSol and token-only netPct;
    - median hold;
    - hard-cut rate;

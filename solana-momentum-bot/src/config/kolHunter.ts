@@ -256,7 +256,7 @@ export const kolHunter = {
   kolHunterLiveCanaryEnabled: boolOptional('KOL_HUNTER_LIVE_CANARY_ENABLED', false),
   // 2026-05-10: live canary 를 단일 on/off 가 아니라 arm portfolio 로 운영한다.
   // 값이 비어 있으면 기존 arm-specific env 들로 fallback 하여 운영 호환성을 보존한다.
-  // 예: smart_v3_clean,smart_v3_quality_unknown_micro,rotation_chase_topup_v1
+  // 예: smart_v3_clean,smart_v3_quality_unknown_micro,rotation_underfill_exit_flow_v1
   // smart_v3_quality_unknown_micro 는 ticket 축소가 아니라 unknown-only restricted arm label 이다.
   kolHunterLiveCanaryArms: parseStringList(optional('KOL_HUNTER_LIVE_CANARY_ARMS', '')),
   // 2026-04-30 Sprint: live canary 실측에서 single-KOL cohort 가 손실 대부분을 차지.
@@ -415,6 +415,9 @@ export const kolHunter = {
   kolHunterRotationUnderfillPaperEnabled: boolOptional('KOL_HUNTER_ROTATION_UNDERFILL_PAPER_ENABLED', true),
   // 2026-05-08: promote the stronger underfill entry profile as the narrow
   // rotation live canary, while keeping chase-topup paper-only by default.
+  // 2026-05-10: preferred allowlist label is `rotation_underfill_exit_flow_v1`,
+  // meaning underfill entry plus exit-flow overlay; ledgers store profileArm for
+  // paper/live comparability.
   kolHunterRotationUnderfillLiveCanaryEnabled: boolOptional('KOL_HUNTER_ROTATION_UNDERFILL_LIVE_CANARY_ENABLED', false),
   kolHunterRotationUnderfillLiveExitFlowEnabled: boolOptional('KOL_HUNTER_ROTATION_UNDERFILL_LIVE_EXIT_FLOW_ENABLED', true),
   kolHunterRotationUnderfillMinKolScore: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_MIN_KOL_SCORE', '0.45'),

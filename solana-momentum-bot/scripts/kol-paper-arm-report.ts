@@ -20,6 +20,7 @@ interface PaperTradeRecord {
   positionId: string;
   tokenMint: string;
   armName?: string;
+  profileArm?: string;
   parameterVersion?: string;
   kolEntryReason?: string;
   kolConvictionLevel?: string;
@@ -123,7 +124,7 @@ async function readJsonl<T>(file: string): Promise<T[]> {
 }
 
 function armNameOf(row: PaperTradeRecord): string {
-  const arm = row.armName ?? row.parameterVersion ?? 'unknown';
+  const arm = row.profileArm ?? row.armName ?? row.parameterVersion ?? 'unknown';
   if (!row.kolEntryReason) return arm;
   return `${arm}/${row.kolEntryReason}/${row.kolConvictionLevel ?? 'UNKNOWN'}`;
 }

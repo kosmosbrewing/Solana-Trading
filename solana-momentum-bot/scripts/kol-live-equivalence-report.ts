@@ -119,6 +119,10 @@ function bool(row: JsonRecord, key: string): boolean {
   return row[key] === true;
 }
 
+function armKey(row: JsonRecord): string {
+  return str(row, 'profileArm') ?? str(row, 'armName') ?? 'unknown';
+}
+
 function countBy(rows: JsonRecord[], key: string): Array<[string, number]> {
   const counts = new Map<string, number>();
   for (const row of rows) {
@@ -224,7 +228,7 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
   const byArm = new Map<string, SummaryBucket>();
   const mfeByArm = new Map<string, number[]>();
   for (const row of equivalence) {
-    const arm = str(row, 'armName') ?? 'unknown';
+    const arm = armKey(row);
     const bucket = byArm.get(arm) ?? emptyBucket();
     bucket.rows += 1;
     if (bool(row, 'liveWouldEnter')) bucket.liveWouldEnter += 1;

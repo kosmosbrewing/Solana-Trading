@@ -3468,6 +3468,80 @@ describe('kolSignalHandler — state machine', () => {
       expect(live?.survivalFlags).not.toContain('ROTATION_V1_LIVE_DISABLED');
     });
 
+    it('rotation-underfill exit-flow profile allowlist: paper/live 비교용 profileArm 을 보존한다', async () => {
+      const { ctx, executeBuy, insertTrade } = buildLiveCtx();
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterLiveCanaryArms = ['rotation_underfill_exit_flow_v1'];
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterRotationV1LiveEnabled = false;
+      mockedConfig.kolHunterRotationV1MinIndependentKol = 1;
+      mockedConfig.kolHunterRotationUnderfillLiveCanaryEnabled = false;
+      mockedConfig.kolHunterRotationUnderfillLiveExitFlowEnabled = false;
+
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+
+      expect(executeBuy).toHaveBeenCalledTimes(1);
+      expect(insertTrade).toHaveBeenCalledTimes(1);
+      const live = __testGetActive().find((p) => p.isLive === true);
+      expect(live?.armName).toBe('rotation_underfill_v1');
+      expect(live?.profileArm).toBe('rotation_underfill_exit_flow_v1');
+      expect(live?.entryArm).toBe('rotation_underfill_v1');
+      expect(live?.exitArm).toBe('rotation_exit_kol_flow_v1');
+      expect(live?.rotationFlowExitEnabled).toBe(true);
+      const equivalenceRows = mockAppendFile.mock.calls
+        .filter((call) => typeof call[0] === 'string' && call[0].includes('kol-live-equivalence.jsonl'))
+        .map((call) => JSON.parse(String(call[1]).trim()));
+      expect(equivalenceRows.at(-1)).toEqual(expect.objectContaining({
+        armName: 'rotation_underfill_v1',
+        profileArm: 'rotation_underfill_exit_flow_v1',
+        entryArm: 'rotation_underfill_v1',
+        exitArm: 'rotation_exit_kol_flow_v1',
+        liveWouldEnter: true,
+      }));
+    });
+
+    it('rotation-underfill raw allowlist: exit-flow env 가 켜져도 profile 로 승격하지 않는다', async () => {
+      const { ctx, executeBuy, insertTrade } = buildLiveCtx();
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterLiveCanaryArms = ['rotation_underfill_v1'];
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterRotationV1LiveEnabled = false;
+      mockedConfig.kolHunterRotationV1MinIndependentKol = 1;
+      mockedConfig.kolHunterRotationUnderfillLiveCanaryEnabled = false;
+      mockedConfig.kolHunterRotationUnderfillLiveExitFlowEnabled = true;
+
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+
+      expect(executeBuy).toHaveBeenCalledTimes(1);
+      expect(insertTrade).toHaveBeenCalledTimes(1);
+      const live = __testGetActive().find((p) => p.isLive === true);
+      expect(live?.armName).toBe('rotation_underfill_v1');
+      expect(live?.profileArm).toBeUndefined();
+      expect(live?.entryArm).toBe('rotation_underfill_v1');
+      expect(live?.exitArm).toBeUndefined();
+      expect(live?.rotationFlowExitEnabled).toBe(false);
+      const equivalenceRows = mockAppendFile.mock.calls
+        .filter((call) => typeof call[0] === 'string' && call[0].includes('kol-live-equivalence.jsonl'))
+        .map((call) => JSON.parse(String(call[1]).trim()));
+      expect(equivalenceRows.at(-1)).toEqual(expect.objectContaining({
+        armName: 'rotation_underfill_v1',
+        profileArm: 'rotation_underfill_v1',
+        entryArm: 'rotation_underfill_v1',
+        exitArm: 'rotation_underfill_v1',
+        liveWouldEnter: true,
+      }));
+    });
+
     it('rotation-underfill live canary: yellow-zone 에서도 arm별 1-KOL 기준을 따른다', async () => {
       const { ctx, executeBuy, insertTrade } = buildLiveCtx();
       const { setWalletStopGuardStateForTests } = require('../src/risk/walletStopGuard');
@@ -3492,6 +3566,10 @@ describe('kolSignalHandler — state machine', () => {
       expect(insertTrade).toHaveBeenCalledTimes(1);
       const live = __testGetActive().find((p) => p.isLive === true);
       expect(live?.armName).toBe('rotation_underfill_v1');
+      expect(live?.profileArm).toBe('rotation_underfill_exit_flow_v1');
+      expect(live?.entryArm).toBe('rotation_underfill_v1');
+      expect(live?.exitArm).toBe('rotation_exit_kol_flow_v1');
+      expect(live?.rotationFlowExitEnabled).toBe(true);
       expect(live?.survivalFlags).toContain('ROTATION_UNDERFILL_LIVE_CANARY_ENABLED');
       expect(live?.survivalFlags).not.toContain('YELLOW_ZONE_MIN_KOL');
       expect(live?.survivalFlags).not.toContain('YELLOW_ZONE_PAPER_FALLBACK');

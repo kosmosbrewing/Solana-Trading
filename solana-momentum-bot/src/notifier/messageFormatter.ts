@@ -230,6 +230,7 @@ function formatSourceLabelBadge(sourceLabel: string): string {
     kol_hunter_rotation_v1: 'rotation-v1',
     rotation_underfill_v1: 'rotation underfill',
     rotation_exit_kol_flow_v1: 'rotation exit-flow',
+    rotation_underfill_exit_flow_v1: 'rotation underfill+flow',
     rotation_chase_topup_v1: 'rotation chase',
     kol_hunter_capitulation_rebound_v1: 'capitulation',
     ws_burst_v2: 'pure-ws',

@@ -359,7 +359,9 @@ function rowTokenMint(row: JsonRow): string {
 
 function rowArmName(row: JsonRow): string {
   const extras = obj(row.extras);
-  return str(row.armName) ||
+  return str(row.profileArm) ||
+    str(extras.profileArm) ||
+    str(row.armName) ||
     str(extras.armName) ||
     str(row.signalSource) ||
     str(row.parameterVersion) ||
@@ -613,7 +615,10 @@ function buildUnderfillEntryQualityStats(
 ): UnderfillEntryQualityStats {
   const underfillRows = rows.filter((row) => {
     const arm = rowArmName(row);
-    return arm === 'rotation_underfill_v1';
+    const entryArm = str(row.entryArm) || str(obj(row.extras).entryArm);
+    return arm === 'rotation_underfill_v1' ||
+      arm === 'rotation_underfill_exit_flow_v1' ||
+      entryArm === 'rotation_underfill_v1';
   });
   const diffs = underfillRows
     .map((row) => {

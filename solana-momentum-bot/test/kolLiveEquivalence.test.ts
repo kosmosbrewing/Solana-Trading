@@ -94,4 +94,58 @@ describe('kol live equivalence observability', () => {
     expect(report.json.verdict).toBe('OK');
     expect(report.md).toContain('| rotation_underfill_v1 | 1 | 0 | 0 | 1 | 1/0 | +0.0100 | +0.0120 | 25.0% | 0 | +0.0000 |');
   });
+
+  it('groups promoted underfill + exit-flow rows by profile arm', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'kol-live-equivalence-profile-'));
+    await writeFile(path.join(dir, 'kol-live-equivalence.jsonl'), JSON.stringify({
+      schemaVersion: KOL_LIVE_EQUIVALENCE_SCHEMA_VERSION,
+      generatedAt: new Date().toISOString(),
+      candidateId: 'candidate-profile-1',
+      tokenMint: 'mint',
+      entrySignalLabel: 'rotation-underfill',
+      armName: 'rotation_underfill_v1',
+      profileArm: 'rotation_underfill_exit_flow_v1',
+      entryArm: 'rotation_underfill_v1',
+      exitArm: 'rotation_exit_kol_flow_v1',
+      parameterVersion: 'rotation-underfill-v1.0.0',
+      entryReason: 'rotation_v1',
+      convictionLevel: 'MEDIUM_HIGH',
+      paperWouldEnter: true,
+      liveWouldEnter: true,
+      liveAttempted: true,
+      decisionStage: 'pre_execution_live_allowed',
+      liveBlockReason: null,
+      liveBlockFlags: [],
+      paperOnlyReason: null,
+      isShadowKol: false,
+      isLiveCanaryActive: true,
+      hasBotContext: true,
+      independentKolCount: 1,
+      effectiveIndependentKolCount: 1,
+      kolScore: 5,
+      participatingKols: [],
+      survivalFlags: [],
+      source: 'runtime',
+    }) + '\n', 'utf8');
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), JSON.stringify({
+      positionId: 'pos-profile-1',
+      liveEquivalenceCandidateId: 'candidate-profile-1',
+      closedAt: new Date().toISOString(),
+      armName: 'rotation_exit_kol_flow_v1',
+      profileArm: 'rotation_underfill_exit_flow_v1',
+      entryArm: 'rotation_underfill_v1',
+      exitArm: 'rotation_exit_kol_flow_v1',
+      netSol: 0.02,
+      netSolTokenOnly: 0.021,
+      mfePctPeakTokenOnly: 0.30,
+    }) + '\n', 'utf8');
+
+    const report = await buildReport({
+      realtimeDir: dir,
+      sinceMs: Date.now() - 60_000,
+    });
+
+    expect(report.md).toContain('| rotation_underfill_exit_flow_v1 | 1 | 1 | 1 | 0 | 1/0 | +0.0200 | +0.0210 | 30.0% | 0 | +0.0000 |');
+    expect(report.md).not.toContain('| rotation_underfill_v1 | 1 |');
+  });
 });

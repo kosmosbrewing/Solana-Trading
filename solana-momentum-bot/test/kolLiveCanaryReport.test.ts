@@ -170,6 +170,36 @@ describe('kol-live-canary-report', () => {
     expect(paired.orphanSells).toBe(0);
   });
 
+  it('preserves promoted profile arms for live canary attribution', () => {
+    const buys = [
+      buy({
+        armName: 'rotation_underfill_v1',
+        profileArm: 'rotation_underfill_exit_flow_v1',
+        entryArm: 'rotation_underfill_v1',
+        exitArm: 'rotation_exit_kol_flow_v1',
+      }),
+    ];
+    const sells = [
+      sell({
+        armName: 'rotation_underfill_v1',
+        profileArm: 'rotation_underfill_exit_flow_v1',
+        entryArm: 'rotation_underfill_v1',
+        exitArm: 'rotation_exit_kol_flow_v1',
+      }),
+    ];
+    const paired = pairKolLiveTrades(buys, sells);
+
+    expect(paired.trades[0].armName).toBe('rotation_underfill_v1');
+    expect(paired.trades[0].profileArm).toBe('rotation_underfill_exit_flow_v1');
+    expect(paired.trades[0].entryArm).toBe('rotation_underfill_v1');
+    expect(paired.trades[0].exitArm).toBe('rotation_exit_kol_flow_v1');
+
+    const report = buildKolLiveCanaryReport(buys, sells);
+
+    expect(report.byArm.some((row) => row.bucket.startsWith('rotation_underfill_exit_flow_v1/'))).toBe(true);
+    expect(report.byArm.some((row) => row.bucket.startsWith('rotation_underfill_v1/'))).toBe(false);
+  });
+
   it('falls back through wallet-truth sources and counts orphan/open rows', () => {
     const buys = [
       buy(),

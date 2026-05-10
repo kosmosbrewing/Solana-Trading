@@ -44,7 +44,7 @@
 | Guard | 값 | 근거 |
 |---|---|---|
 | `KOL_HUNTER_LIVE_MIN_INDEPENDENT_KOL` | `2` | single-KOL live cohort net negative |
-| Yellow-zone live gate | 0.75~0.85 SOL 조건 강화 / 0.70~0.75 SOL paper fallback | floor 0.7 보호 |
+| Yellow-zone live gate | 0.70~0.85 SOL arm별 live 기준 적용 / 0.70 미만 paper fallback | floor 0.7 보호와 promoted arm 검증 병행 |
 | Canary budget hydration | restart 시 `executed-sells.jsonl` replay | budget reset hole 차단 |
 | Daily report | `npm run kol:live-canary-report` | live/paper divergence 추적 |
 

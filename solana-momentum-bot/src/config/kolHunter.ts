@@ -264,12 +264,15 @@ export const kolHunter = {
   kolHunterLiveMinIndependentKol: numEnv('KOL_HUNTER_LIVE_MIN_INDEPENDENT_KOL', '2'),
   // 2026-04-30: KOL live canary stabilization sprint — floor 0.7 확정 전제.
   // Wallet 이 floor 근처로 내려오면 live canary 를 끄지 않고 entry 품질만 강화한다.
+  // 2026-05-10: floor 와 중복되는 blanket paper fallback 을 줄이고, yellow-zone 에서도
+  // arm-specific live 기준을 존중한다. smart-v3 는 여전히 default 2 KOL, rotation_underfill 처럼
+  // 명시 승격된 1-KOL arm 은 0.70~0.85 SOL 에서도 보안/429 게이트만 통과하면 live 검증 가능.
   // - balance < paperFallbackBelowSol: live 대신 paper fallback
-  // - paperFallbackBelowSol <= balance < startSol: independent KOL / security / Jupiter pressure gate
+  // - paperFallbackBelowSol <= balance < startSol: arm별 independent KOL / security / Jupiter pressure gate
   // - maxRecentJupiter429 <= 0 이면 429 gate disabled
   kolHunterYellowZoneEnabled: boolOptional('KOL_HUNTER_YELLOW_ZONE_ENABLED', true),
   kolHunterYellowZoneStartSol: numEnv('KOL_HUNTER_YELLOW_ZONE_START_SOL', '0.85'),
-  kolHunterYellowZonePaperFallbackBelowSol: numEnv('KOL_HUNTER_YELLOW_ZONE_PAPER_FALLBACK_BELOW_SOL', '0.75'),
+  kolHunterYellowZonePaperFallbackBelowSol: numEnv('KOL_HUNTER_YELLOW_ZONE_PAPER_FALLBACK_BELOW_SOL', '0.70'),
   kolHunterYellowZoneMinIndependentKol: numEnv('KOL_HUNTER_YELLOW_ZONE_MIN_INDEPENDENT_KOL', '2'),
   kolHunterYellowZoneMaxRecentJupiter429: numEnv('KOL_HUNTER_YELLOW_ZONE_MAX_RECENT_JUPITER_429', '20'),
   // 2026-04-30: live execution quality cooldown.

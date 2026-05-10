@@ -40,7 +40,7 @@ export function formatStatusMessage(processes: Pm2ProcessStatus[]): string {
         : `<b>${escapeHtml(process.name)}</b>`;
       return [
         `${icon} ${title}`,
-        `상태 ${escapeHtml(statusLabel)} | pid ${pid} | 재시작 ${process.restarts}회 | CPU ${process.cpuPct}% | 메모리 ${process.memoryMb}MB | 가동 ${uptime}`,
+        `상태 ${escapeHtml(statusLabel)} | pid ${pid} | 재시작 ${process.restarts}회 | CPU ${process.cpuPct}% | 메모리 ${escapeHtml(formatMemory(process))} | 가동 ${uptime}`,
       ].join(' ');
     });
 
@@ -94,6 +94,12 @@ function formatDuration(durationMs: number): string {
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
   return `${hours}h ${minutes}m ${seconds}s`;
+}
+
+function formatMemory(process: Pm2ProcessStatus): string {
+  if (process.maxMemoryMb == null || process.maxMemoryMb <= 0) return `${process.memoryMb}MB`;
+  const ratio = Math.round((process.memoryMb / process.maxMemoryMb) * 100);
+  return `${process.memoryMb}MB/${process.maxMemoryMb}MB (${ratio}%)`;
 }
 
 function truncateText(value: string, maxLength: number): string {

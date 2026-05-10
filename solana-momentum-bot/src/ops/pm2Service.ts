@@ -9,6 +9,7 @@ export interface Pm2ProcessStatus {
   restarts: number;
   cpuPct: number;
   memoryMb: number;
+  maxMemoryMb: number | null;
   uptimeMs: number | null;
 }
 
@@ -52,6 +53,7 @@ export class Pm2Service {
         restarts: typeof pm2Env.restart_time === 'number' ? pm2Env.restart_time : 0,
         cpuPct: typeof monit.cpu === 'number' ? monit.cpu : 0,
         memoryMb: typeof monit.memory === 'number' ? Math.round(monit.memory / 1024 / 1024) : 0,
+        maxMemoryMb: parseMemoryLimitMb(pm2Env.max_memory_restart),
         uptimeMs: uptime,
       };
     });
@@ -183,4 +185,21 @@ function toRecord(value: unknown): Record<string, number | string> {
     return value as Record<string, number | string>;
   }
   return {};
+}
+
+function parseMemoryLimitMb(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return Math.round(value / 1024 / 1024);
+  }
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  const match = trimmed.match(/^(\d+(?:\.\d+)?)([KMG])?B?$/i);
+  if (!match) return null;
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  const unit = (match[2] || 'B').toUpperCase();
+  if (unit === 'G') return Math.round(amount * 1024);
+  if (unit === 'M') return Math.round(amount);
+  if (unit === 'K') return Math.round(amount / 1024);
+  return Math.round(amount / 1024 / 1024);
 }

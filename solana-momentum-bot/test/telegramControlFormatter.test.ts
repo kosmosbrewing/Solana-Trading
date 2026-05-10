@@ -26,6 +26,7 @@ describe('telegramControlFormatter', () => {
         restarts: 1,
         cpuPct: 12,
         memoryMb: 256,
+        maxMemoryMb: 1536,
         uptimeMs: 3_661_000,
       },
     ];
@@ -33,7 +34,7 @@ describe('telegramControlFormatter', () => {
     const message = formatStatusMessage(processes);
     expect(message).toContain('<b>PM2 상태</b>');
     expect(message).toContain('🟢 <b>momentum-bot</b>');
-    expect(message).toContain('상태 정상 | pid 123 | 재시작 1회 | CPU 12% | 메모리 256MB | 가동 1h 1m 1s');
+    expect(message).toContain('상태 정상 | pid 123 | 재시작 1회 | CPU 12% | 메모리 256MB/1536MB (17%) | 가동 1h 1m 1s');
   });
 
   it('formats health and action/log outputs with Korean labels', () => {
@@ -48,6 +49,7 @@ describe('telegramControlFormatter', () => {
             restarts: 2,
             cpuPct: 5,
             memoryMb: 64,
+            maxMemoryMb: 256,
             uptimeMs: 120_000,
           },
           level: 'degraded',

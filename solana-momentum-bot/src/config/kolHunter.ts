@@ -420,8 +420,8 @@ export const kolHunter = {
   kolHunterRotationPaperAssumedNetworkFeeSol: numEnv('KOL_HUNTER_ROTATION_PAPER_ASSUMED_NETWORK_FEE_SOL', '0.000105'),
   kolHunterRotationPaperNotifyEnabled: boolOptional('KOL_HUNTER_ROTATION_PAPER_NOTIFY_ENABLED', true),
   kolHunterRotationPaperDigestEnabled: boolOptional('KOL_HUNTER_ROTATION_PAPER_DIGEST_ENABLED', true),
-  // Fast paper lane: keep operator feedback frequent without per-open/per-close spam.
-  kolHunterRotationPaperDigestIntervalMs: numEnv('KOL_HUNTER_ROTATION_PAPER_DIGEST_INTERVAL_MS', '900000'),
+  // Match smart-v3 hourly digest cadence; keep per-trade noise out of Telegram.
+  kolHunterRotationPaperDigestIntervalMs: numEnv('KOL_HUNTER_ROTATION_PAPER_DIGEST_INTERVAL_MS', '3600000'),
   kolHunterRotationPaperRareMfePct: numEnv('KOL_HUNTER_ROTATION_PAPER_RARE_MFE_PCT', '0.30'),
   kolHunterRotationPaperRareAfterSellPct: numEnv('KOL_HUNTER_ROTATION_PAPER_RARE_AFTER_SELL_PCT', '0.50'),
 

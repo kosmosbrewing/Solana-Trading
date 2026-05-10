@@ -14,6 +14,7 @@ export interface Pm2HealthSummary {
 }
 
 const RECENT_RESTART_WINDOW_MS = 15 * 60 * 1000;
+const MEMORY_DEGRADED_RATIO = 0.8;
 
 export function buildPm2HealthSummary(processes: Pm2ProcessStatus[]): Pm2HealthSummary {
   const evaluated = processes.map(evaluateProcessHealth);
@@ -43,6 +44,14 @@ export function evaluateProcessHealth(process: Pm2ProcessStatus): ProcessHealth 
   if (process.memoryMb === 0 && process.status === 'online' && process.uptimeMs != null && process.uptimeMs > 60_000) {
     reasons.push('memory report is 0MB');
     if (level === 'healthy') level = 'degraded';
+  }
+
+  if (process.maxMemoryMb != null && process.maxMemoryMb > 0) {
+    const ratio = process.memoryMb / process.maxMemoryMb;
+    if (ratio >= MEMORY_DEGRADED_RATIO) {
+      reasons.push(`memory ${process.memoryMb}MB/${process.maxMemoryMb}MB (${Math.round(ratio * 100)}%)`);
+      if (level === 'healthy') level = 'degraded';
+    }
   }
 
   return { process, level, reasons };

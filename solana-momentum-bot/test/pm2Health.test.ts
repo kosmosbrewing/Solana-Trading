@@ -9,6 +9,7 @@ function buildProcess(overrides: Partial<Pm2ProcessStatus> = {}): Pm2ProcessStat
     restarts: 0,
     cpuPct: 1,
     memoryMb: 64,
+    maxMemoryMb: 1536,
     uptimeMs: 60_000,
     ...overrides,
   };
@@ -28,6 +29,12 @@ describe('pm2Health', () => {
   test('marks offline process as down', () => {
     const health = evaluateProcessHealth(buildProcess({ status: 'stopped', pid: null }));
     expect(health.level).toBe('down');
+  });
+
+  test('marks near-memory-limit process as degraded', () => {
+    const health = evaluateProcessHealth(buildProcess({ memoryMb: 1300, maxMemoryMb: 1536 }));
+    expect(health.level).toBe('degraded');
+    expect(health.reasons).toContain('memory 1300MB/1536MB (85%)');
   });
 
   test('builds down overall state when one process is down', () => {

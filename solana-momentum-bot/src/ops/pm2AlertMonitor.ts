@@ -5,11 +5,16 @@ import { Pm2ProcessStatus, Pm2Service } from './pm2Service';
 const log = createModuleLogger('Pm2AlertMonitor');
 const MONITOR_INTERVAL_MS = 60_000;
 const MANUAL_ACTION_SUPPRESS_MS = 120_000;
+const MEMORY_WARNING_RATIO = 0.85;
+const MEMORY_CRITICAL_RATIO = 0.95;
 
 interface SnapshotEntry {
   status: string;
   restarts: number;
+  memoryPressure: MemoryPressureLevel;
 }
+
+type MemoryPressureLevel = 'normal' | 'warning' | 'critical';
 
 export class Pm2AlertMonitor {
   private lastCheckedAt = 0;
@@ -54,8 +59,19 @@ export class Pm2AlertMonitor {
         const delta = process.restarts - previous.restarts;
         await this.notifier.sendWarning(
           `PM2 Restart ${process.name}`,
-          `${process.name} restarted ${delta} time(s) | status=${process.status} | uptime=${formatUptime(process.uptimeMs)}`
+          `${process.name} restarted ${delta} time(s) | status=${process.status} | uptime=${formatUptime(process.uptimeMs)} | memory=${formatMemory(process)}`
         );
+      }
+
+      if (!suppressed && shouldNotifyMemoryPressure(previous.memoryPressure, process)) {
+        const nextPressure = evaluateMemoryPressure(process);
+        const title = nextPressure === 'critical' ? `PM2 Memory Critical ${process.name}` : `PM2 Memory Warning ${process.name}`;
+        const body = `${process.name} memory=${formatMemory(process)} | status=${process.status} | uptime=${formatUptime(process.uptimeMs)}`;
+        if (nextPressure === 'critical') {
+          await this.notifier.sendCritical(title, body);
+        } else {
+          await this.notifier.sendWarning(title, body);
+        }
       }
     }
 
@@ -76,7 +92,7 @@ export class Pm2AlertMonitor {
   private buildSnapshot(processes: Pm2ProcessStatus[]): Map<string, SnapshotEntry> {
     return new Map(processes.map((process) => [
       process.name,
-      { status: process.status, restarts: process.restarts },
+      { status: process.status, restarts: process.restarts, memoryPressure: evaluateMemoryPressure(process) },
     ]));
   }
 
@@ -106,4 +122,35 @@ function formatUptime(uptimeMs: number | null): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}m ${seconds}s`;
+}
+
+function shouldNotifyMemoryPressure(previous: MemoryPressureLevel, process: Pm2ProcessStatus): boolean {
+  const next = evaluateMemoryPressure(process);
+  if (next === 'normal') return false;
+  return memoryPressureRank(next) > memoryPressureRank(previous);
+}
+
+function evaluateMemoryPressure(process: Pm2ProcessStatus): MemoryPressureLevel {
+  if (process.maxMemoryMb == null || process.maxMemoryMb <= 0) return 'normal';
+  const ratio = process.memoryMb / process.maxMemoryMb;
+  if (ratio >= MEMORY_CRITICAL_RATIO) return 'critical';
+  if (ratio >= MEMORY_WARNING_RATIO) return 'warning';
+  return 'normal';
+}
+
+function memoryPressureRank(level: MemoryPressureLevel): number {
+  switch (level) {
+    case 'normal':
+      return 0;
+    case 'warning':
+      return 1;
+    case 'critical':
+      return 2;
+  }
+}
+
+function formatMemory(process: Pm2ProcessStatus): string {
+  if (process.maxMemoryMb == null || process.maxMemoryMb <= 0) return `${process.memoryMb}MB`;
+  const ratio = Math.round((process.memoryMb / process.maxMemoryMb) * 100);
+  return `${process.memoryMb}MB/${process.maxMemoryMb}MB (${ratio}%)`;
 }

@@ -14,6 +14,13 @@ function parseSecondsList(raw: string): number[] {
     .filter((n) => Number.isFinite(n) && n > 0);
 }
 
+function parseStringList(raw: string): string[] {
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
 export const kolHunter = {
   // ─── KOL Wallet Tracker (Phase 1 passive logging) ───
   kolTrackerEnabled: boolOptional('KOL_TRACKER_ENABLED', false),
@@ -247,6 +254,11 @@ export const kolHunter = {
   // Phase 5 P1-15 (2026-04-25): KOL live canary 명시적 opt-in.
   // Why: KOL_HUNTER_PAPER_ONLY=false 만으로는 live 안 돔 (review feedback P0). 별도 flag 필요.
   kolHunterLiveCanaryEnabled: boolOptional('KOL_HUNTER_LIVE_CANARY_ENABLED', false),
+  // 2026-05-10: live canary 를 단일 on/off 가 아니라 arm portfolio 로 운영한다.
+  // 값이 비어 있으면 기존 arm-specific env 들로 fallback 하여 운영 호환성을 보존한다.
+  // 예: smart_v3_clean,smart_v3_quality_unknown_micro,rotation_chase_topup_v1
+  // smart_v3_quality_unknown_micro 는 ticket 축소가 아니라 unknown-only restricted arm label 이다.
+  kolHunterLiveCanaryArms: parseStringList(optional('KOL_HUNTER_LIVE_CANARY_ARMS', '')),
   // 2026-04-30 Sprint: live canary 실측에서 single-KOL cohort 가 손실 대부분을 차지.
   // live wallet 진입은 최소 independent KOL 2명부터 허용하고, 미달은 paper 로만 관측한다.
   kolHunterLiveMinIndependentKol: numEnv('KOL_HUNTER_LIVE_MIN_INDEPENDENT_KOL', '2'),
@@ -466,6 +478,9 @@ export const kolHunter = {
   // KOL_HUNTER_LIVE_CANARY_ENABLED 는 KOL live 공통 상위 gate 이다. smart-v3 live 는
   // 별도 flag 로 막고, rotation arm 은 arm-specific live canary flag 로 승격한다.
   kolHunterSmartV3LiveEnabled: boolOptional('KOL_HUNTER_SMART_V3_LIVE_ENABLED', true),
+  kolHunterSmartV3QualityUnknownMicroParameterVersion:
+    process.env.KOL_HUNTER_SMART_V3_QUALITY_UNKNOWN_MICRO_PARAMETER_VERSION ??
+    'smart-v3-quality-unknown-micro-v1.0.0',
   // 2026-05-07: smart-v3 live 품질 fallback. 최근 live 근거에서 live entry 대부분이
   // EXIT_LIQUIDITY_UNKNOWN 또는 holder concentration flag 를 동반했다. Paper 는 계속
   // 관측하되 live 는 unknown/unclean 품질에서 fail-closed 로 둔다.

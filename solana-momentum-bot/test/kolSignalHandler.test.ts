@@ -355,6 +355,8 @@ jest.mock('../src/utils/config', () => ({
     // 2026-04-26: smart-v3 는 production main default 이지만 기존 state-machine tests 는 v1 명시.
     kolHunterSmartV3Enabled: false,
     kolHunterSmartV3LiveEnabled: true,
+    kolHunterLiveCanaryArms: [],
+    kolHunterSmartV3QualityUnknownMicroParameterVersion: 'smart-v3-quality-unknown-micro-v1.0.0',
     kolHunterSmartV3LiveStrictQualityEnabled: true,
     kolHunterSmartV3LiveBlockExitLiquidityUnknown: true,
     kolHunterSmartV3LiveBlockTokenQualityUnknown: true,
@@ -497,6 +499,12 @@ function policyDecisionRecords(): any[] {
 
 function policyRecordsWithFlag(flag: string): any[] {
   return policyDecisionRecords().filter((row) => Array.isArray(row.riskFlags) && row.riskFlags.includes(flag));
+}
+
+function liveEquivalenceRecords(): any[] {
+  return mockAppendFile.mock.calls
+    .filter((call) => typeof call[0] === 'string' && call[0].includes('kol-live-equivalence.jsonl'))
+    .map((call) => JSON.parse(String(call[1]).trim()));
 }
 
 describe('kolSignalHandler — state machine', () => {
@@ -703,6 +711,8 @@ describe('kolSignalHandler — state machine', () => {
     mockedConfig.kolHunterRunSellQuoteProbe = false;
     // 2026-04-29 (Track 2B): test 간 격리. describe 블록에서 true 로 설정해도 다음 test 까지 leak 안 함.
     mockedConfig.kolHunterRejectOnNoSecurityData = false;
+    mockedConfig.kolHunterLiveCanaryArms = [];
+    mockedConfig.kolHunterSmartV3QualityUnknownMicroParameterVersion = 'smart-v3-quality-unknown-micro-v1.0.0';
     stubFeed = new StubPaperPriceFeed();
     __testInit({ priceFeed: stubFeed as unknown as never });
   });
@@ -2998,6 +3008,40 @@ describe('kolSignalHandler — state machine', () => {
       expect(policyRecordsWithFlag('SMART_V3_LIVE_QUALITY_FALLBACK').length).toBeGreaterThan(0);
     });
 
+    it('smart-v3 quality unknown micro arm: allowlist 에 있으면 unknown-only fallback 을 live canary 로 분리한다', async () => {
+      const { ctx, executeBuy, insertTrade } = buildLiveCtx();
+      __testInit({
+        priceFeed: stubFeed as unknown as never,
+        ctx,
+        securityClient: {
+          ...buildSecurityClient(),
+          getExitLiquidity: jest.fn().mockResolvedValue(null),
+        } as never,
+      });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterLiveCanaryArms = ['smart_v3_quality_unknown_micro'];
+
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      await handleKolSwap(buyTx('ghost', 'A', MINT_SMART));
+      await flushAsync();
+
+      expect(executeBuy).toHaveBeenCalledTimes(1);
+      expect(insertTrade).toHaveBeenCalledTimes(1);
+      const live = __testGetActive().find((p) => p.isLive === true);
+      expect(live?.armName).toBe('smart_v3_quality_unknown_micro');
+      expect(live?.parameterVersion).toBe('smart-v3-quality-unknown-micro-v1.0.0');
+      expect(live?.survivalFlags).toEqual(expect.arrayContaining([
+        'EXIT_LIQUIDITY_UNKNOWN',
+        'SMART_V3_QUALITY_UNKNOWN_MICRO_CANARY',
+      ]));
+      const equivalence = liveEquivalenceRecords().find((row) => row.liveAttempted === true);
+      expect(equivalence?.armName).toBe('smart_v3_quality_unknown_micro');
+      expect(equivalence?.parameterVersion).toBe('smart-v3-quality-unknown-micro-v1.0.0');
+      expect(equivalence?.candidateId).toContain(':smart_v3_quality_unknown_micro:');
+    });
+
     it('smart-v3 live strict quality: unclean holder concentration 은 paper fallback 한다', async () => {
       const { ctx, executeBuy, insertTrade } = buildLiveCtx();
       __testInit({
@@ -3020,6 +3064,30 @@ describe('kolSignalHandler — state machine', () => {
       expect(paper.smartV3LiveBlockReason).toBe('smart_v3_live_quality_fallback');
       expect(paper.survivalFlags.some((flag) => flag.startsWith('UNCLEAN_TOKEN'))).toBe(true);
       expect(paper.survivalFlags).toContain('SMART_V3_LIVE_QUALITY_FALLBACK');
+    });
+
+    it('smart-v3 quality unknown micro arm: holder/unclean hard-risk 는 allowlist 가 있어도 paper fallback 한다', async () => {
+      const { ctx, executeBuy, insertTrade } = buildLiveCtx();
+      __testInit({
+        priceFeed: stubFeed as unknown as never,
+        ctx,
+        securityClient: buildSecurityClient({ top10HolderPct: 0.65 }) as never,
+      });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterLiveCanaryArms = ['smart_v3_quality_unknown_micro'];
+
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      await handleKolSwap(buyTx('ghost', 'A', MINT_SMART));
+      await flushAsync();
+
+      expect(executeBuy).not.toHaveBeenCalled();
+      expect(insertTrade).not.toHaveBeenCalled();
+      const paper = __testGetActive()[0];
+      expect(paper.isLive).toBeFalsy();
+      expect(paper.smartV3LiveBlockReason).toBe('smart_v3_live_quality_fallback');
+      expect(paper.survivalFlags.some((flag) => flag.startsWith('UNCLEAN_TOKEN'))).toBe(true);
     });
 
     it('smart-v3 pre-entry sell 후 fresh re-buy 부족이면 live 대신 paper fallback 한다', async () => {
@@ -3253,6 +3321,53 @@ describe('kolSignalHandler — state machine', () => {
       ]));
       expect(live?.survivalFlags).not.toContain('ROTATION_CHASE_TOPUP_PAPER_ONLY');
       expect(live?.survivalFlags).not.toContain('ROTATION_V1_LIVE_DISABLED');
+    });
+
+    it('live canary arm allowlist: chase topup old flag 없이도 allowlist 로 executor 진입한다', async () => {
+      const { ctx, executeBuy, insertTrade } = buildLiveCtx();
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterLiveMinIndependentKol = 2;
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterRotationV1LiveEnabled = false;
+      mockedConfig.kolHunterRotationV1MinIndependentKol = 1;
+      mockedConfig.kolHunterRotationChaseTopupLiveCanaryEnabled = false;
+      mockedConfig.kolHunterLiveCanaryArms = ['rotation_chase_topup_v1'];
+
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 1.0, 2_000));
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.00105, 0.2, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00106);
+      await flushAsync();
+
+      expect(executeBuy).toHaveBeenCalledTimes(1);
+      expect(insertTrade).toHaveBeenCalledTimes(1);
+      const live = __testGetActive().find((p) => p.isLive === true);
+      expect(live?.armName).toBe('rotation_chase_topup_v1');
+    });
+
+    it('live canary arm allowlist: 명시 목록에 없으면 기존 arm flag 가 켜져도 paper-only 로 둔다', async () => {
+      const { ctx, executeBuy, insertTrade } = buildLiveCtx();
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterRotationV1MinIndependentKol = 1;
+      mockedConfig.kolHunterRotationChaseTopupLiveCanaryEnabled = true;
+      mockedConfig.kolHunterLiveCanaryArms = ['smart_v3_clean'];
+
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 1.0, 2_000));
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.00105, 0.2, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00106);
+      await flushAsync();
+
+      expect(executeBuy).not.toHaveBeenCalled();
+      expect(insertTrade).not.toHaveBeenCalled();
+      const paper = __testGetActive()[0];
+      expect(paper.isLive).toBeFalsy();
+      expect(paper.survivalFlags).toContain('ROTATION_CHASE_TOPUP_PAPER_ONLY');
     });
 
     it('rotation-chase-topup live canary: MAE fast-fail 은 live hard-cut sell path 를 탄다', async () => {

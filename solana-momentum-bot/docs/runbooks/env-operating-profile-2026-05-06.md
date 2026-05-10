@@ -88,9 +88,18 @@ KOL_TRACKER_ENABLED=true
 KOL_HUNTER_ENABLED=true
 KOL_HUNTER_PAPER_ONLY=false
 KOL_HUNTER_LIVE_CANARY_ENABLED=true
-KOL_HUNTER_SMART_V3_LIVE_ENABLED=true
+KOL_HUNTER_LIVE_CANARY_ARMS=smart_v3_clean
 KOL_HUNTER_CANARY_MAX_BUDGET_SOL=0.35
 ```
+
+`KOL_HUNTER_LIVE_CANARY_ARMS` is the preferred control. If it is omitted, the
+legacy arm flags are still honored for backward compatibility. Add
+`smart_v3_quality_unknown_micro` only when intentionally testing unknown-only
+quality fallbacks. That arm can route `EXIT_LIQUIDITY_UNKNOWN` /
+`TOKEN_QUALITY_UNKNOWN` to live canary, but `NO_ROUTE`, rug, unclean token, and
+holder-risk flags remain hard paper fallbacks. The `micro` suffix is a
+restricted-arm label only; it uses the same live canary ticket as the rest of
+KOL Hunter so paper/live cost ratios remain comparable.
 
 Usually omit because code defaults are current mission defaults:
 
@@ -127,7 +136,13 @@ KOL_HUNTER_ROTATION_V1_ENABLED=true
 KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=false
 ```
 
-Promoted live canary for the single underfill arm:
+Preferred live canary portfolio form:
+
+```dotenv
+KOL_HUNTER_LIVE_CANARY_ARMS=rotation_underfill_v1
+```
+
+Legacy equivalent for the single underfill arm:
 
 ```dotenv
 KOL_HUNTER_ROTATION_CHASE_TOPUP_LIVE_CANARY_ENABLED=false
@@ -226,7 +241,7 @@ KOL_HUNTER_LIVE_CANARY_ENABLED=true
 KOL_HUNTER_CANARY_MAX_BUDGET_SOL=0.35
 KOL_HUNTER_CANARY_MAX_TRADES=300
 KOL_HUNTER_LIVE_MIN_INDEPENDENT_KOL=2
-KOL_HUNTER_SMART_V3_LIVE_ENABLED=true
+KOL_HUNTER_LIVE_CANARY_ARMS=smart_v3_clean,rotation_underfill_v1
 KOL_HUNTER_SMART_V3_PARAMETER_VERSION=smart-v3.0.1-live-canary-2026-05-09
 
 KOL_HUNTER_ROTATION_V1_ENABLED=true

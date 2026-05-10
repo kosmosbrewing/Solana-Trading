@@ -11,12 +11,17 @@ The three active strategy surfaces now have separate operating roles:
 
 | Strategy surface | Role | Live stance | Paper / observation stance |
 |---|---|---|---|
-| `kol_hunter_smart_v3` | Main 5x lane | Live canary allowed only through fresh 2+ active KOL velocity plus strict quality, distribution, combo, and entry-advantage gates | Paper fallback for pullback, weak recovery, dev risk, quality risk, prior sell risk, bad combo, halt, or guard fallback |
-| `kol_hunter_rotation_v1` | Fast-compound KOL auxiliary lane | Keep canonical live disabled; only promoted `rotation_underfill_v1` can run as live canary | Paper control plus parallel parameter arms, underfill arm, chase-topup paper, and entry-vs-KOL-fill canary evidence |
+| `kol_hunter_smart_v3` | Main 5x lane | Live canary is arm-based: `smart_v3_clean` for strict-quality entries, optional `smart_v3_quality_unknown_micro` for unknown-only quality fallbacks. `micro` is a restricted-arm label and keeps the same live canary ticket for cost comparability | Paper fallback for pullback, weak recovery, dev risk, hard quality risk, prior sell risk, bad combo, halt, or guard fallback |
+| `kol_hunter_rotation_v1` | Fast-compound KOL auxiliary lane | Keep canonical live disabled unless explicitly listed; promoted arms are selected through `KOL_HUNTER_LIVE_CANARY_ARMS` | Paper control plus parallel parameter arms, underfill arm, chase-topup paper, and entry-vs-KOL-fill canary evidence |
 | `kol_hunter_capitulation_rebound_v1` | Liquidity-shock rebound experiment | Live prohibited | Paper-only entry after hard veto, recovery confirmation, and sell-route check; no-trade counterfactuals are first-class evidence |
 | `pure_ws botflow` | New-pair / botflow rebuild candidate | Live off | Paper/observe-only with T+ markouts, digest, and parameter arms |
 
 The refactor keeps the old aggregate KOL ledgers for compatibility, but adds lane-level projection files for analysis.
+
+Live canary is not a single strategy anymore. `KOL_HUNTER_LIVE_CANARY_ENABLED`
+only opens the runtime; `KOL_HUNTER_LIVE_CANARY_ARMS` selects which arm may spend
+real canary budget. Empty arm list keeps legacy env flags working. A non-empty
+arm list is authoritative and blocks every unlisted arm.
 
 ## 1. Mission Fit
 

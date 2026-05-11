@@ -13,7 +13,7 @@ The three active strategy surfaces now have separate operating roles:
 |---|---|---|---|
 | `kol_hunter_smart_v3` | Main 5x lane | Live canary is arm-based: `smart_v3_clean` for strict-quality entries, optional `smart_v3_quality_unknown_micro` for unknown-only quality fallbacks, and optional `smart_v3_fast_canary_v1` for rotation-like relaxed testing of unknown/medium holder-risk candidates. These labels keep the same live canary ticket for cost comparability | Paper fallback for pullback, weak recovery, dev risk, hard quality risk, prior sell risk, bad combo, halt, or guard fallback |
 | `kol_hunter_rotation_v1` | Fast-compound KOL auxiliary lane | Keep canonical live disabled unless explicitly listed; promoted profiles are selected through `KOL_HUNTER_LIVE_CANARY_ARMS` | Paper control plus parallel parameter arms, underfill arm, chase-topup paper, and entry-vs-KOL-fill canary evidence |
-| `kol_hunter_capitulation_rebound_v1` | Liquidity-shock rebound experiment | Live prohibited | Paper-only entry after hard veto, recovery confirmation, and sell-route check; no-trade counterfactuals are first-class evidence |
+| `kol_hunter_capitulation_rebound_v1` / `kol_hunter_capitulation_rebound_rr_v1` | Liquidity-shock rebound experiment | Live prohibited | Strict baseline keeps recent sell-wave veto; RR sidecar allows pre-low sell but requires clean post-low/post-bounce flow and favorable stop/target RR |
 | `pure_ws botflow` | New-pair / botflow rebuild candidate | Live off | Paper/observe-only with T+ markouts, digest, and parameter arms |
 
 The refactor keeps the old aggregate KOL ledgers for compatibility, but adds lane-level projection files for analysis.
@@ -29,7 +29,7 @@ arm list is authoritative and blocks every unlisted arm.
 
 `rotation-v1` is deliberately not a runner lane. Its target is short continuation after known KOL flow. The primary validation horizons are T+15 and T+30, measured after realistic cost.
 
-`capitulation_rebound_v1` is not a smart-v3 extension. It tests whether KOL attention plus a severe but non-structural liquidity shock produces executable T+15/T+30 rebound after cost. It must stay paper-only until no-trade counterfactuals and closed paper rows show stable positive post-cost evidence.
+`capitulation_rebound_v1` is not a smart-v3 extension. It tests whether KOL attention plus a severe but non-structural liquidity shock produces executable T+15/T+30 rebound after cost. `capitulation_rebound_rr_v1` is the 2026-05-11 sidecar variant: KOL sell before the local low is measured as pressure, not a full veto, while KOL sell after the low/bounce still blocks. Both must stay paper-only until no-trade counterfactuals and closed paper rows show stable positive post-cost evidence.
 
 `pure_ws botflow` is not a Mayhem clone. It observes fresh-pair and botflow microstructure. It can become a future micro-compound lane only if paper outcomes are positive after cost and context coverage is high.
 
@@ -114,10 +114,13 @@ Rotation must not inherit smart-v3 runner logic. It should fail fast, capture sm
 Implemented operating shape:
 
 - `KOL_HUNTER_CAPITULATION_REBOUND_ENABLED=true` arms only the paper experiment;
+- `KOL_HUNTER_CAPITULATION_REBOUND_RR_ENABLED=true` arms the RR paper sidecar; default is off;
 - `KOL_HUNTER_CAPITULATION_REBOUND_PAPER_ENABLED=true` is required and there is no live path;
 - the trigger is evaluated after smart-v3, rotation, underfill, and chase-topup arbitration so it does not steal existing lane entries;
+- the RR sidecar is evaluated independently as paper-only and does not consume or block smart-v3/rotation entries;
 - hard-veto flags include no sell route, exit liquidity unknown, missing/unsafe security, unclean token, holder concentration, rug-like and dangerous Token-2022 signals;
 - entry requires KOL attention, bounded drawdown, bounce from local low, recovery confirmations, no recent KOL sell wave, and the existing size-aware sell quote check;
+- RR entry replaces the recent-sell-wave veto with clean post-low/post-bounce sell-flow plus `minRR` validation;
 - exits are short monetization rules: no-reaction, no-post-cost, and hard-cut. Runner/tail-retain logic is intentionally not inherited;
 - projection ledger: `data/realtime/capitulation-rebound-paper-trades.jsonl`;
 - markout horizons: `15,30,60,180,300,1800`;

@@ -124,12 +124,15 @@ import {
 } from './excursionTelemetry';
 import {
   evaluateCapitulationReboundPolicy,
+  evaluateCapitulationReboundRrPolicy,
   type CapitulationReboundDecision,
   type CapitulationReboundTelemetry,
 } from './capitulationRebound/policy';
 
 const log = createModuleLogger('KolHunter');
 const LANE_STRATEGY = 'kol_hunter' as const;
+const CAPITULATION_REBOUND_ARM = 'kol_hunter_capitulation_rebound_v1';
+const CAPITULATION_REBOUND_RR_ARM = 'kol_hunter_capitulation_rebound_rr_v1';
 const ROTATION_UNDERFILL_ARM = 'rotation_underfill_v1';
 const ROTATION_EXIT_FLOW_ARM = 'rotation_exit_kol_flow_v1';
 const ROTATION_UNDERFILL_EXIT_FLOW_PROFILE_ARM = 'rotation_underfill_exit_flow_v1';
@@ -412,6 +415,7 @@ interface SmartV3PendingState {
 
 interface PaperEntryOptions {
   parameterVersion?: string;
+  positionIdSuffix?: string;
   profileArm?: string;
   entryArm?: string;
   exitArm?: string;
@@ -490,7 +494,9 @@ interface PendingCandidate {
     lastRecoveryAtMs?: number;
     lastRecoveryPrice?: number;
     enteredAtMs?: number;
+    rrEnteredAtMs?: number;
     noTradeReasonsEmitted: Set<string>;
+    rrNoTradeReasonsEmitted?: Set<string>;
   };
 }
 
@@ -948,10 +954,16 @@ function isCapitulationReboundPosition(
   pos?: Pick<PaperPosition, 'parameterVersion' | 'kolEntryReason' | 'armName'>
 ): boolean {
   if (!pos) return false;
-  if (pos.parameterVersion === config.kolHunterCapitulationReboundParameterVersion) return true;
+  if (isCapitulationParameterVersion(pos.parameterVersion)) return true;
   if (pos.kolEntryReason === 'capitulation_rebound') return true;
-  if (pos.armName === 'kol_hunter_capitulation_rebound_v1') return true;
+  if (pos.armName === CAPITULATION_REBOUND_ARM || pos.armName === CAPITULATION_REBOUND_RR_ARM) return true;
   return pos.parameterVersion?.startsWith('capitulation-rebound-') === true;
+}
+
+function isCapitulationParameterVersion(parameterVersion?: string): boolean {
+  return parameterVersion === config.kolHunterCapitulationReboundParameterVersion ||
+    parameterVersion === config.kolHunterCapitulationReboundRrParameterVersion ||
+    parameterVersion?.startsWith('capitulation-rebound-') === true;
 }
 
 function tradeMarkoutOffsetsSecForPosition(
@@ -1928,7 +1940,8 @@ function armNameForVersion(parameterVersion: string): string {
   if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) return ROTATION_UNDERFILL_ARM;
   if (parameterVersion === config.kolHunterRotationExitFlowParameterVersion) return ROTATION_EXIT_FLOW_ARM;
   if (parameterVersion === config.kolHunterRotationChaseTopupParameterVersion) return 'rotation_chase_topup_v1';
-  if (parameterVersion === config.kolHunterCapitulationReboundParameterVersion) return 'kol_hunter_capitulation_rebound_v1';
+  if (parameterVersion === config.kolHunterCapitulationReboundParameterVersion) return CAPITULATION_REBOUND_ARM;
+  if (parameterVersion === config.kolHunterCapitulationReboundRrParameterVersion) return CAPITULATION_REBOUND_RR_ARM;
   return 'kol_hunter_v1';
 }
 
@@ -2138,7 +2151,7 @@ function defaultEntryReasonForVersion(parameterVersion: string): KolEntryReason 
   if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) return 'rotation_v1';
   if (parameterVersion === config.kolHunterRotationExitFlowParameterVersion) return 'rotation_v1';
   if (parameterVersion === config.kolHunterRotationChaseTopupParameterVersion) return 'rotation_v1';
-  if (parameterVersion === config.kolHunterCapitulationReboundParameterVersion) return 'capitulation_rebound';
+  if (isCapitulationParameterVersion(parameterVersion)) return 'capitulation_rebound';
   return 'legacy_v1';
 }
 
@@ -2149,7 +2162,7 @@ function defaultConvictionForVersion(parameterVersion: string): KolConvictionLev
   if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) return 'MEDIUM_HIGH';
   if (parameterVersion === config.kolHunterRotationExitFlowParameterVersion) return 'MEDIUM_HIGH';
   if (parameterVersion === config.kolHunterRotationChaseTopupParameterVersion) return 'MEDIUM_HIGH';
-  if (parameterVersion === config.kolHunterCapitulationReboundParameterVersion) return 'MEDIUM_HIGH';
+  if (isCapitulationParameterVersion(parameterVersion)) return 'MEDIUM_HIGH';
   return 'LOW';
 }
 
@@ -2218,7 +2231,7 @@ function dynamicExitParamsForPosition(parameterVersion: string, reason: KolEntry
     parameterVersion === config.kolHunterSmartV3QualityUnknownMicroParameterVersion ||
     parameterVersion === config.kolHunterSmartV3FastCanaryParameterVersion ||
     parameterVersion === config.kolHunterRotationV1ParameterVersion ||
-    parameterVersion === config.kolHunterCapitulationReboundParameterVersion
+    isCapitulationParameterVersion(parameterVersion)
   ) {
     return dynamicExitParamsForEntry(reason);
   }
@@ -3300,7 +3313,10 @@ function ensureCapitulationReboundState(cand: PendingCandidate): NonNullable<Pen
     cand.capitulation = {
       recoveryConfirmations: 0,
       noTradeReasonsEmitted: new Set<string>(),
+      rrNoTradeReasonsEmitted: new Set<string>(),
     };
+  } else if (!cand.capitulation.rrNoTradeReasonsEmitted) {
+    cand.capitulation.rrNoTradeReasonsEmitted = new Set<string>();
   }
   return cand.capitulation;
 }
@@ -3325,12 +3341,63 @@ function updateCapitulationRecoveryState(cand: PendingCandidate, nowMs: number):
   const spacingMs = Math.max(0, config.kolHunterCapitulationReboundRecoverySpacingSec) * 1000;
   const spacingOk = state.lastRecoveryAtMs == null || nowMs - state.lastRecoveryAtMs >= spacingMs;
   const monotonicOk = state.lastRecoveryPrice == null || currentPrice > state.lastRecoveryPrice;
-  if (bouncePct >= config.kolHunterCapitulationReboundMinBouncePct && spacingOk && monotonicOk) {
+  const recoveryBouncePct = config.kolHunterCapitulationReboundRrEnabled
+    ? Math.min(config.kolHunterCapitulationReboundMinBouncePct, config.kolHunterCapitulationReboundRrMinBouncePct)
+    : config.kolHunterCapitulationReboundMinBouncePct;
+  if (bouncePct >= recoveryBouncePct && spacingOk && monotonicOk) {
     state.recoveryConfirmations += 1;
     state.lastRecoveryAtMs = nowMs;
     state.lastRecoveryPrice = currentPrice;
   }
   return state;
+}
+
+function buildCapitulationSellSplit(
+  cand: PendingCandidate,
+  state: NonNullable<PendingCandidate['capitulation']>,
+  nowMs: number
+): {
+  preLowSellSol: number;
+  preLowSellKols: number;
+  postLowSellSol: number;
+  postLowSellKols: number;
+  postBounceSellSol: number;
+  postBounceSellKols: number;
+} {
+  const sellWindowMs = Math.max(1, config.kolHunterPostDistributionWindowSec) * 1000;
+  const sellStartMs = nowMs - sellWindowMs;
+  const lowAtMs = state.lowAtMs ?? nowMs;
+  const bounceAtMs = state.lastRecoveryAtMs ?? Number.POSITIVE_INFINITY;
+  const preLowKols = new Set<string>();
+  const postLowKols = new Set<string>();
+  const postBounceKols = new Set<string>();
+  let preLowSellSol = 0;
+  let postLowSellSol = 0;
+  let postBounceSellSol = 0;
+  for (const tx of mergeRecentAndCandidateTxs(cand)) {
+    if (tx.tokenMint !== cand.tokenMint || tx.action !== 'sell') continue;
+    if (tx.timestamp < sellStartMs || tx.timestamp > nowMs) continue;
+    const sol = Math.max(0, tx.solAmount ?? 0);
+    if (tx.timestamp < lowAtMs) {
+      preLowSellSol += sol;
+      preLowKols.add(tx.kolId);
+      continue;
+    }
+    postLowSellSol += sol;
+    postLowKols.add(tx.kolId);
+    if (tx.timestamp >= bounceAtMs) {
+      postBounceSellSol += sol;
+      postBounceKols.add(tx.kolId);
+    }
+  }
+  return {
+    preLowSellSol,
+    preLowSellKols: preLowKols.size,
+    postLowSellSol,
+    postLowSellKols: postLowKols.size,
+    postBounceSellSol,
+    postBounceSellKols: postBounceKols.size,
+  };
 }
 
 interface CapitulationReboundTriggerResult extends CapitulationReboundDecision {
@@ -3365,6 +3432,58 @@ function evaluateCapitulationReboundTriggerState(
       requiredRecoveryConfirmations: config.kolHunterCapitulationReboundRecoveryConfirmations,
       maxRecentSellSol: config.kolHunterCapitulationReboundMaxRecentSellSol,
       maxRecentSellKols: config.kolHunterCapitulationReboundMaxRecentSellKols,
+    },
+  });
+
+  const participatingKols =
+    fresh.freshParticipatingKols.length > 0
+      ? fresh.freshParticipatingKols
+      : fresh.shadowFreshParticipatingKols.length > 0
+        ? fresh.shadowFreshParticipatingKols
+        : score.participatingKols;
+  return {
+    ...decision,
+    participatingKols,
+  };
+}
+
+function evaluateCapitulationReboundRrTriggerState(
+  cand: PendingCandidate,
+  score: KolDiscoveryScore,
+  fresh: SmartV3FreshContext,
+  nowMs: number
+): CapitulationReboundTriggerResult {
+  const state = updateCapitulationRecoveryState(cand, nowMs);
+  const smart = cand.smartV3;
+  const sellSplit = buildCapitulationSellSplit(cand, state, nowMs);
+  const decision = evaluateCapitulationReboundRrPolicy({
+    alreadyEntered: state.rrEnteredAtMs != null,
+    currentPrice: smart?.currentPrice ?? 0,
+    peakPrice: smart?.peakPrice ?? 0,
+    lowPrice: state.lowPrice ?? smart?.currentPrice ?? 0,
+    kolScore: fresh.triggerFreshSignalScore || score.finalScore,
+    preEntrySellSol: fresh.preEntrySellSol,
+    preEntrySellKols: fresh.preEntrySellKols,
+    ...sellSplit,
+    recoveryConfirmations: state.recoveryConfirmations,
+    survivalFlags: smart?.preEntryFlags ?? [],
+    config: {
+      enabled: config.kolHunterCapitulationReboundRrEnabled,
+      paperEnabled: config.kolHunterCapitulationReboundRrPaperEnabled,
+      minKolScore: config.kolHunterCapitulationReboundRrMinKolScore,
+      minDrawdownPct: config.kolHunterCapitulationReboundRrMinDrawdownPct,
+      maxDrawdownPct: config.kolHunterCapitulationReboundRrMaxDrawdownPct,
+      minBouncePct: config.kolHunterCapitulationReboundRrMinBouncePct,
+      requiredRecoveryConfirmations: config.kolHunterCapitulationReboundRrRecoveryConfirmations,
+      maxRecentSellSol: Number.POSITIVE_INFINITY,
+      maxRecentSellKols: Number.POSITIVE_INFINITY,
+      minRr: config.kolHunterCapitulationReboundRrMinRr,
+      stopBufferPct: config.kolHunterCapitulationReboundRrStopBufferPct,
+      targetPct: config.kolHunterCapitulationReboundRrTargetPct,
+      maxPostLowSellSol: config.kolHunterCapitulationReboundRrMaxPostLowSellSol,
+      maxPostLowSellKols: config.kolHunterCapitulationReboundRrMaxPostLowSellKols,
+      maxPostBounceSellSol: config.kolHunterCapitulationReboundRrMaxPostBounceSellSol,
+      maxPostBounceSellKols: config.kolHunterCapitulationReboundRrMaxPostBounceSellKols,
     },
   });
 
@@ -4150,8 +4269,17 @@ function shouldEmitRotationChaseTopupNoTrade(reason?: string): boolean {
 function shouldEmitCapitulationNoTrade(reason?: string): boolean {
   return reason === 'hard_veto' ||
     reason === 'sell_wave' ||
+    reason === 'post_low_sell' ||
+    reason === 'post_bounce_sell' ||
     reason === 'drawdown_too_deep' ||
-    reason === 'bounce_not_confirmed';
+    reason === 'bounce_not_confirmed' ||
+    reason === 'rr_too_low';
+}
+
+function capitulationParameterVersionForResult(result: CapitulationReboundTriggerResult): string {
+  return result.flags.some((flag) => flag.startsWith('CAPITULATION_RR') || flag === 'CAPITULATION_REBOUND_RR_V1')
+    ? config.kolHunterCapitulationReboundRrParameterVersion
+    : config.kolHunterCapitulationReboundParameterVersion;
 }
 
 function buildRotationNoTradeObserverConfig() {
@@ -4234,6 +4362,8 @@ function trackCapitulationNoTradeMarkout(
     : cand.smartV3?.currentPrice ?? cand.smartV3?.kolEntryPrice ?? 0;
   if (!Number.isFinite(signalPrice) || signalPrice <= 0) return;
   const nowMs = Date.now();
+  const parameterVersion = capitulationParameterVersionForResult(result);
+  const armName = armNameForVersion(parameterVersion);
   trackRejectForMissedAlpha(
     {
       rejectCategory: 'viability',
@@ -4243,13 +4373,13 @@ function trackCapitulationNoTradeMarkout(
       signalPrice,
       probeSolAmount: config.kolHunterTicketSol,
       tokenDecimals: cand.smartV3?.tokenDecimals,
-      signalSource: 'kol_hunter_capitulation_rebound_v1',
+      signalSource: armName,
       extras: {
         positionId: `capitulation-notrade-${cand.tokenMint.slice(0, 8)}-${reason}-${nowMs}`,
         eventType: 'capitulation_rebound_no_trade',
-        armName: 'kol_hunter_capitulation_rebound_v1',
+        armName,
         entryReason: 'capitulation_rebound',
-        parameterVersion: config.kolHunterCapitulationReboundParameterVersion,
+        parameterVersion,
         tokenDecimalsSource: cand.smartV3?.tokenDecimalsSource ?? null,
         noTradeReason: reason,
         survivalFlags: flags,
@@ -4276,6 +4406,8 @@ function trackCapitulationEntryRejectMarkout(
 ): void {
   if (!Number.isFinite(signalPrice) || signalPrice <= 0) return;
   const nowMs = Date.now();
+  const parameterVersion = options.parameterVersion ?? config.kolHunterCapitulationReboundParameterVersion;
+  const armName = armNameForVersion(parameterVersion);
   const survivalFlags = [
     ...flags,
     `CAPITULATION_NOTRADE_${reason.toUpperCase()}`,
@@ -4286,7 +4418,7 @@ function trackCapitulationEntryRejectMarkout(
     currentAction: 'block',
     isLive: false,
     isShadowArm: false,
-    armName: 'kol_hunter_capitulation_rebound_v1',
+    armName,
     entryReason: 'capitulation_rebound',
     rejectReason: `capitulation_rebound_${reason}`,
     independentKolCount: options.entryIndependentKolCount ?? score.independentKolCount,
@@ -4306,13 +4438,13 @@ function trackCapitulationEntryRejectMarkout(
       signalPrice,
       probeSolAmount: config.kolHunterTicketSol,
       tokenDecimals: options.tokenDecimals,
-      signalSource: 'kol_hunter_capitulation_rebound_v1',
+      signalSource: armName,
       extras: {
         positionId: `capitulation-notrade-${cand.tokenMint.slice(0, 8)}-${reason}-${nowMs}`,
         eventType: 'capitulation_rebound_no_trade',
-        armName: 'kol_hunter_capitulation_rebound_v1',
+        armName,
         entryReason: 'capitulation_rebound',
-        parameterVersion: config.kolHunterCapitulationReboundParameterVersion,
+        parameterVersion,
         tokenDecimalsSource: options.tokenDecimalsSource ?? null,
         noTradeReason: reason,
         survivalFlags,
@@ -4694,8 +4826,13 @@ function emitCapitulationNoTradePolicy(
   if (!shouldEmitCapitulationNoTrade(result.reason)) return;
   const capState = ensureCapitulationReboundState(cand);
   const reason = result.reason ?? 'unknown';
-  if (capState.noTradeReasonsEmitted.has(reason)) return;
-  capState.noTradeReasonsEmitted.add(reason);
+  const parameterVersion = capitulationParameterVersionForResult(result);
+  const armName = armNameForVersion(parameterVersion);
+  const emitted = parameterVersion === config.kolHunterCapitulationReboundRrParameterVersion
+    ? capState.rrNoTradeReasonsEmitted ?? capState.noTradeReasonsEmitted
+    : capState.noTradeReasonsEmitted;
+  if (emitted.has(reason)) return;
+  emitted.add(reason);
   const flags = [
     ...result.flags,
     `CAPITULATION_NOTRADE_${reason.toUpperCase()}`,
@@ -4706,7 +4843,7 @@ function emitCapitulationNoTradePolicy(
     currentAction: 'block',
     isLive: false,
     isShadowArm: false,
-    armName: 'kol_hunter_capitulation_rebound_v1',
+    armName,
     entryReason: 'capitulation_rebound',
     rejectReason: `capitulation_rebound_${reason}`,
     independentKolCount: score.independentKolCount,
@@ -4717,6 +4854,52 @@ function emitCapitulationNoTradePolicy(
     recentJupiter429: currentRecentJupiter429(),
   });
   trackCapitulationNoTradeMarkout(cand, score, result, reason, flags);
+}
+
+async function enterCapitulationRrPaperSidecar(
+  cand: PendingCandidate,
+  score: KolDiscoveryScore,
+  smartFresh: SmartV3FreshContext,
+  result: CapitulationReboundTriggerResult,
+  nowMs: number
+): Promise<void> {
+  if (!result.triggered || !cand.smartV3) return;
+  const capState = ensureCapitulationReboundState(cand);
+  if (capState.rrEnteredAtMs != null) return;
+  capState.rrEnteredAtMs = nowMs;
+  const flags = [
+    ...result.flags,
+    'CAPITULATION_RR_PAPER_ONLY',
+    'CAPITULATION_ENTRY_SELL_QUOTE_SIZED_REQUIRED',
+  ];
+  log.info(
+    `[KOL_HUNTER_CAPITULATION_REBOUND_RR_TRIGGER] ${cand.tokenMint.slice(0, 8)} ` +
+    `dd=${(result.telemetry.drawdownFromPeakPct * 100).toFixed(1)}% ` +
+    `bounce=${(result.telemetry.bounceFromLowPct * 100).toFixed(1)}% ` +
+    `rr=${(result.telemetry.rr ?? 0).toFixed(2)} ` +
+    `postLowSell=${(result.telemetry.postLowSellSol ?? 0).toFixed(3)}SOL`
+  );
+  await enterPaperPosition(
+    cand.tokenMint,
+    cand,
+    score,
+    flags,
+    {
+      parameterVersion: config.kolHunterCapitulationReboundRrParameterVersion,
+      positionIdSuffix: 'cap-rr',
+      entryReason: 'capitulation_rebound',
+      convictionLevel: 'MEDIUM_HIGH',
+      tokenDecimals: cand.smartV3.tokenDecimals,
+      tokenDecimalsSource: cand.smartV3.tokenDecimalsSource,
+      capitulationTelemetry: result.telemetry,
+      capitulationEntryLowPrice: result.telemetry.lowPrice,
+      capitulationEntryLowAtMs: capState.lowAtMs,
+      capitulationRecoveryConfirmations: result.telemetry.recoveryConfirmations,
+      entryIndependentKolCount: smartFresh.triggerFreshIndependentKolCount || score.independentKolCount,
+      entryKolScore: smartFresh.triggerFreshSignalScore || score.finalScore,
+      entryParticipatingKols: result.participatingKols ?? score.participatingKols,
+    }
+  );
 }
 
 async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
@@ -4740,6 +4923,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     smartTrigger.reason || rotationTrigger?.triggered || underfillTrigger?.triggered || chaseTopupTrigger?.triggered
       ? undefined
       : evaluateCapitulationReboundTriggerState(cand, score, smartFresh, nowMs);
+  const capitulationRrTrigger = evaluateCapitulationReboundRrTriggerState(cand, score, smartFresh, nowMs);
   const entrySignal: KolEntrySignal | undefined = smartTrigger.reason && smartTrigger.conviction
     ? {
         label: 'smart-v3',
@@ -4820,11 +5004,22 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
             paperOnlyReason: 'capitulation_rebound_paper_only',
           }
       : undefined;
+  const capitulationRrSidecar = capitulationRrTrigger.triggered
+    ? enterCapitulationRrPaperSidecar(cand, score, smartFresh, capitulationRrTrigger, nowMs)
+        .catch((err) => {
+          const message = err instanceof Error ? err.message : String(err);
+          log.warn(`[KOL_HUNTER_CAPITULATION_REBOUND_RR_ERROR] ${cand.tokenMint.slice(0, 8)} ${message}`);
+        })
+    : undefined;
   if (!entrySignal) {
+    if (capitulationRrSidecar) await capitulationRrSidecar;
     if (rotationTrigger) emitRotationV1NoTradePolicy(cand, score, rotationTrigger);
     if (underfillTrigger) emitRotationUnderfillNoTradePolicy(cand, score, underfillTrigger);
     if (chaseTopupTrigger) emitRotationChaseTopupNoTradePolicy(cand, score, chaseTopupTrigger);
     if (capitulationTrigger) emitCapitulationNoTradePolicy(cand, score, capitulationTrigger);
+    if (capitulationRrTrigger && !capitulationRrTrigger.triggered) {
+      emitCapitulationNoTradePolicy(cand, score, capitulationRrTrigger);
+    }
     return;
   }
 
@@ -6322,7 +6517,10 @@ async function enterPaperPosition(
   const ticketSol = config.kolHunterTicketSol;
   const entryAtMs = Date.now();
   const nowSec = Math.floor(entryAtMs / 1000);
-  const positionId = `kolh-${tokenMint.slice(0, 8)}-${nowSec}`;
+  const positionIdBase = `kolh-${tokenMint.slice(0, 8)}-${nowSec}`;
+  const positionId = options.positionIdSuffix
+    ? `${positionIdBase}-${options.positionIdSuffix}`
+    : positionIdBase;
   const quantity = entryPrice > 0 ? ticketSol / entryPrice : 0;
   const primaryVersion = options.parameterVersion ?? config.kolHunterParameterVersion;
   const entryParticipatingKols = options.entryParticipatingKols ?? score.participatingKols;
@@ -6340,7 +6538,7 @@ async function enterPaperPosition(
       `reason=${sellSized.reason ?? 'unknown'} flags=${sellSized.flags.join(',')}`
     );
     const rejectFlags = [...survivalFlags, ...sellSized.flags];
-    if (options.entryReason === 'capitulation_rebound' || primaryVersion === config.kolHunterCapitulationReboundParameterVersion) {
+    if (options.entryReason === 'capitulation_rebound' || isCapitulationParameterVersion(primaryVersion)) {
       trackCapitulationEntryRejectMarkout(
         cand,
         score,

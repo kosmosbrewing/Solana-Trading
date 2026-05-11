@@ -6,6 +6,10 @@ const CAPITULATION_PAPER_TRADES_FILE = 'capitulation-rebound-paper-trades.jsonl'
 const TRADE_MARKOUTS_FILE = 'trade-markouts.jsonl';
 const MISSED_ALPHA_FILE = 'missed-alpha.jsonl';
 const DEFAULT_HORIZONS_SEC = [15, 30, 60, 180, 300, 1800];
+const CAPITULATION_ARMS = new Set([
+  'kol_hunter_capitulation_rebound_v1',
+  'kol_hunter_capitulation_rebound_rr_v1',
+]);
 
 interface Args {
   realtimeDir: string;
@@ -190,9 +194,9 @@ function quoteOk(row: JsonRow): boolean {
 function isCapitulationSource(row: JsonRow): boolean {
   const source = str(row.signalSource);
   const extra = extras(row);
-  return source === 'kol_hunter_capitulation_rebound_v1' ||
-    str(extra.armName) === 'kol_hunter_capitulation_rebound_v1' ||
-    str(row.armName) === 'kol_hunter_capitulation_rebound_v1';
+  return (source != null && CAPITULATION_ARMS.has(source)) ||
+    CAPITULATION_ARMS.has(str(extra.armName) ?? '') ||
+    CAPITULATION_ARMS.has(str(row.armName) ?? '');
 }
 
 function summarizeHorizons(rows: JsonRow[], horizonsSec: number[], roundTripCostPct: number): HorizonStats[] {

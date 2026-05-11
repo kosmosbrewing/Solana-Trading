@@ -77,6 +77,15 @@ describe('capitulation-rebound-report', () => {
         deltaPct: 0.05,
         recordedAt: '2026-05-08T00:00:50.000Z',
       },
+      {
+        anchorType: 'buy',
+        positionId: 'cap-rr-pos-1',
+        signalSource: 'kol_hunter_capitulation_rebound_rr_v1',
+        horizonSec: 15,
+        quoteStatus: 'ok',
+        deltaPct: 0.03,
+        recordedAt: '2026-05-08T00:15:15.000Z',
+      },
     ]));
     await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([
       {
@@ -85,6 +94,13 @@ describe('capitulation-rebound-report', () => {
         rejectedAt: '2026-05-08T00:10:00.000Z',
         extras: { eventType: 'capitulation_rebound_no_trade', noTradeReason: 'bounce_not_confirmed' },
         probe: { offsetSec: 15, firedAt: '2026-05-08T00:10:15.000Z', quoteStatus: 'ok', deltaPct: 0.01 },
+      },
+      {
+        rejectReason: 'capitulation_rebound_rr_too_low',
+        signalSource: 'kol_hunter_capitulation_rebound_rr_v1',
+        rejectedAt: '2026-05-08T00:20:00.000Z',
+        extras: { eventType: 'capitulation_rebound_no_trade', noTradeReason: 'rr_too_low' },
+        probe: { offsetSec: 15, firedAt: '2026-05-08T00:20:15.000Z', quoteStatus: 'ok', deltaPct: 0.02 },
       },
     ]));
 
@@ -97,9 +113,9 @@ describe('capitulation-rebound-report', () => {
 
     expect(report.paperTrades.rows).toBe(2);
     expect(report.paperTrades.wins).toBe(1);
-    expect(report.tradeMarkouts.afterBuy[0].positivePostCostRows).toBe(1);
-    expect(report.noTrade.rows).toBe(1);
-    expect(report.noTrade.byHorizon[0].positivePostCostRows).toBe(1);
+    expect(report.tradeMarkouts.afterBuy[0].positivePostCostRows).toBe(2);
+    expect(report.noTrade.rows).toBe(2);
+    expect(report.noTrade.byHorizon[0].positivePostCostRows).toBe(2);
     expect(renderCapitulationReboundReportMarkdown(report)).toContain('Capitulation Rebound V1 Paper Report');
   });
 

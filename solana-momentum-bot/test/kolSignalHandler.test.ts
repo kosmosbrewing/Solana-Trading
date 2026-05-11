@@ -353,6 +353,21 @@ jest.mock('../src/utils/config', () => ({
     kolHunterCapitulationReboundProbeTimeoutSec: 30,
     kolHunterCapitulationReboundHardCutPct: 0.06,
     kolHunterCapitulationReboundMarkoutOffsetsSec: [15, 30, 60, 180, 300, 1800],
+    kolHunterCapitulationReboundRrEnabled: false,
+    kolHunterCapitulationReboundRrPaperEnabled: true,
+    kolHunterCapitulationReboundRrParameterVersion: 'capitulation-rebound-rr-v1.0.0',
+    kolHunterCapitulationReboundRrMinKolScore: 2,
+    kolHunterCapitulationReboundRrMinDrawdownPct: 0.25,
+    kolHunterCapitulationReboundRrMaxDrawdownPct: 0.75,
+    kolHunterCapitulationReboundRrMinBouncePct: 0.03,
+    kolHunterCapitulationReboundRrRecoveryConfirmations: 1,
+    kolHunterCapitulationReboundRrMinRr: 1.5,
+    kolHunterCapitulationReboundRrStopBufferPct: 0.02,
+    kolHunterCapitulationReboundRrTargetPct: 0.18,
+    kolHunterCapitulationReboundRrMaxPostLowSellSol: 0,
+    kolHunterCapitulationReboundRrMaxPostLowSellKols: 0,
+    kolHunterCapitulationReboundRrMaxPostBounceSellSol: 0,
+    kolHunterCapitulationReboundRrMaxPostBounceSellKols: 0,
     // 2026-04-26: smart-v3 는 production main default 이지만 기존 state-machine tests 는 v1 명시.
     kolHunterSmartV3Enabled: false,
     kolHunterSmartV3LiveEnabled: true,
@@ -670,6 +685,21 @@ describe('kolSignalHandler — state machine', () => {
     mockedConfig.kolHunterCapitulationReboundProbeTimeoutSec = 30;
     mockedConfig.kolHunterCapitulationReboundHardCutPct = 0.06;
     mockedConfig.kolHunterCapitulationReboundMarkoutOffsetsSec = [15, 30, 60, 180, 300, 1800];
+    mockedConfig.kolHunterCapitulationReboundRrEnabled = false;
+    mockedConfig.kolHunterCapitulationReboundRrPaperEnabled = true;
+    mockedConfig.kolHunterCapitulationReboundRrParameterVersion = 'capitulation-rebound-rr-v1.0.0';
+    mockedConfig.kolHunterCapitulationReboundRrMinKolScore = 2;
+    mockedConfig.kolHunterCapitulationReboundRrMinDrawdownPct = 0.25;
+    mockedConfig.kolHunterCapitulationReboundRrMaxDrawdownPct = 0.75;
+    mockedConfig.kolHunterCapitulationReboundRrMinBouncePct = 0.03;
+    mockedConfig.kolHunterCapitulationReboundRrRecoveryConfirmations = 1;
+    mockedConfig.kolHunterCapitulationReboundRrMinRr = 1.5;
+    mockedConfig.kolHunterCapitulationReboundRrStopBufferPct = 0.02;
+    mockedConfig.kolHunterCapitulationReboundRrTargetPct = 0.18;
+    mockedConfig.kolHunterCapitulationReboundRrMaxPostLowSellSol = 0;
+    mockedConfig.kolHunterCapitulationReboundRrMaxPostLowSellKols = 0;
+    mockedConfig.kolHunterCapitulationReboundRrMaxPostBounceSellSol = 0;
+    mockedConfig.kolHunterCapitulationReboundRrMaxPostBounceSellKols = 0;
     mockedConfig.missedAlphaObserverEnabled = false;
     mockedConfig.missedAlphaObserverOffsetsSec = [60, 300, 1800];
     mockedConfig.tradeMarkoutObserverEnabled = false;
@@ -1317,6 +1347,34 @@ describe('kolSignalHandler — state machine', () => {
       expect(positions[0].capitulationTelemetry?.drawdownFromPeakPct).toBeGreaterThan(0.35);
       expect(positions[0].capitulationRecoveryConfirmations).toBe(2);
       expect(positions[0].survivalFlags).toContain('CAPITULATION_REBOUND_V1');
+    });
+
+    it('capitulation-rebound-rr: 저점 전 KOL sell 은 허용하고 손익비가 맞으면 paper sidecar 로 진입한다', async () => {
+      mockedConfig.kolHunterCapitulationReboundEnabled = false;
+      mockedConfig.kolHunterCapitulationReboundRrEnabled = true;
+      mockedConfig.kolHunterCapitulationReboundRrMinKolScore = 2.0;
+      mockedConfig.kolHunterSmartV3VelocityScoreThreshold = 99;
+      mockedConfig.kolHunterSmartV3PullbackMinKolCount = 99;
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+
+      await handleKolSwap(sellTx('seller_alpha', 'A', MINT_SMART, 0.20, 2_000));
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      stubFeed.emitTick(MINT_SMART, 0.0012);
+      await flushAsync();
+      stubFeed.emitTick(MINT_SMART, 0.0006);
+      await flushAsync();
+      stubFeed.emitTick(MINT_SMART, 0.00064);
+      await flushAsync();
+
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].armName).toBe('kol_hunter_capitulation_rebound_rr_v1');
+      expect(positions[0].parameterVersion).toBe('capitulation-rebound-rr-v1.0.0');
+      expect(positions[0].positionId).toContain('cap-rr');
+      expect(positions[0].survivalFlags).toContain('CAPITULATION_REBOUND_RR_V1');
+      expect(positions[0].capitulationTelemetry?.preEntrySellSol).toBeGreaterThan(0);
+      expect(positions[0].capitulationTelemetry?.postLowSellSol).toBe(0);
+      expect(positions[0].capitulationTelemetry?.rr).toBeGreaterThanOrEqual(1.5);
     });
 
     it('capitulation-rebound: 같은 가격 반복 tick 은 recovery confirmation 으로 중복 계산하지 않는다', async () => {

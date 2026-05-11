@@ -48,11 +48,20 @@ export interface CanaryCloseLedgerRecord {
   strategy?: string;
   wallet?: string;
   positionId?: string;
+  eventType?: string;
+  isPartialReduce?: boolean;
+  positionStillOpen?: boolean;
   walletDeltaSol?: number;
   dbPnlSol?: number;
   receivedSol?: number;
   solSpentNominal?: number;
   recordedAt?: string;
+}
+
+function isPartialReduceLedgerRow(row: CanaryCloseLedgerRecord): boolean {
+  return row.isPartialReduce === true ||
+    row.positionStillOpen === true ||
+    row.eventType === 'rotation_flow_live_reduce';
 }
 
 export interface CanaryHydrationSummary {
@@ -248,6 +257,10 @@ export function hydrateCanaryStatesFromCloseRecords(
   for (const row of ordered) {
     const rowMs = parseRecordedAtMs(row.recordedAt);
     if (sinceMs != null && (rowMs == null || rowMs < sinceMs)) {
+      summary.skippedRows += 1;
+      continue;
+    }
+    if (isPartialReduceLedgerRow(row)) {
       summary.skippedRows += 1;
       continue;
     }

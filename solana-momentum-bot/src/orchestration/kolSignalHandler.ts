@@ -291,6 +291,9 @@ export interface PaperPosition {
   rotationFlowReducedAtSec?: number;
   rotationFlowResidualUntilSec?: number;
   rotationFlowLastReducePct?: number;
+  rotationFlowReduceInFlight?: boolean;
+  rotationFlowLiveReduceTxSignature?: string;
+  rotationFlowLiveReduceAttempts?: number;
   rotationMonetizableEdge?: RotationMonetizableEdgeEstimate | null;
   capitulationTelemetry?: CapitulationReboundTelemetry;
   capitulationEntryLowPrice?: number;
@@ -2505,7 +2508,7 @@ export async function handleKolSwap(tx: KolTx): Promise<void> {
   }
 
   if (tx.action === 'sell') {
-    handleKolSellSignal(tx);
+    await handleKolSellSignal(tx);
     return;
   }
 
@@ -2621,7 +2624,7 @@ export function evaluateInsiderExitDecision(
   return { action: 'close', reason: `unknown style, conservative close` };
 }
 
-function handleKolSellSignal(tx: KolTx): void {
+async function handleKolSellSignal(tx: KolTx): Promise<void> {
   invalidateSmartV3LiveHardCutReentryOnSell(tx);
   const cand = pending.get(tx.tokenMint);
   const positions = getActivePositionsByMint(tx.tokenMint).filter((p) =>
@@ -2671,7 +2674,7 @@ function handleKolSellSignal(tx: KolTx): void {
       (pos.rotationAnchorKols ?? []).some((id) => id.toLowerCase() === tx.kolId.toLowerCase());
 
     if (anchorSell) {
-      if (handleRotationFlowAnchorSell(pos, tx, nowSec, mfePct, maePct)) {
+      if (await handleRotationFlowAnchorSell(pos, tx, nowSec, mfePct, maePct)) {
         continue;
       }
       log.info(
@@ -3052,6 +3055,31 @@ function canRouteSmartV3FallbackToFastCanary(
   if (!isKolLiveCanaryArmEnabled('smart_v3_fast_canary_v1')) return false;
   if (!fallback.flags.includes('SMART_V3_LIVE_QUALITY_FALLBACK')) return false;
   return fallback.flags.every((flag) => isSmartV3FastCanaryFlag(flag, fallback.flags));
+}
+
+function isSmartV3StrategyGateFlag(flag: string): boolean {
+  const upper = flag.toUpperCase();
+  return upper === 'SMART_V3_LIVE_DISABLED' ||
+    upper === 'SMART_V3_PULLBACK_LIVE_DISABLED' ||
+    upper === 'SMART_V3_POST_SELL_RECOVERY_WEAK' ||
+    upper === 'SMART_V3_PRE_ENTRY_SELL_LIVE_DISABLED' ||
+    upper === 'SMART_V3_RECENT_SELL_NO_SELL_WINDOW' ||
+    upper === 'SMART_V3_LIVE_QUALITY_FALLBACK' ||
+    upper.startsWith('SMART_V3_QUALITY_') ||
+    upper === 'SMART_V3_COMBO_DECAY' ||
+    upper.startsWith('SMART_V3_COMBO_DECAY_') ||
+    upper === 'SMART_V3_ENTRY_ADVANTAGE_ADVERSE' ||
+    upper.startsWith('SMART_V3_KOL_FILL_ADVERSE_') ||
+    upper === 'DEV_WALLET_LIVE_BLOCK' ||
+    upper === 'LIVE_MIN_KOL' ||
+    upper === 'YELLOW_ZONE_MIN_KOL';
+}
+
+function shouldSuppressSmartV3PaperFallbackForStrategy(
+  entrySignal: KolEntrySignal,
+  flags: string[]
+): boolean {
+  return entrySignal.label === 'smart-v3' && flags.some(isSmartV3StrategyGateFlag);
 }
 
 function smartV3KolWeightedFillPrice(cand: PendingCandidate, fresh: SmartV3FreshContext): number | null {
@@ -5063,6 +5091,66 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     });
     cleanupPendingCandidate(cand, true);
   };
+  const rejectSmartV3StrategyFallbackWithoutPaper = (
+    blockReason: string,
+    flags: string[],
+    stage: KolLiveEquivalenceDecisionStage,
+    extras: Record<string, unknown> = {}
+  ): void => {
+    const survivalFlags = [
+      ...flags,
+      'SMART_V3_STRATEGY_NO_PAPER_FALLBACK',
+    ];
+    log.warn(
+      `[KOL_HUNTER_SMART_V3_STRATEGY_REJECT] ${cand.tokenMint.slice(0, 8)} ` +
+      `reason=${blockReason} stage=${stage} — no paper fallback`
+    );
+    emitKolShadowPolicy({
+      eventKind: 'reject',
+      tokenMint: cand.tokenMint,
+      currentAction: 'block',
+      isLive: false,
+      isShadowArm: false,
+      armName: entryOptions.parameterVersion ? armNameForVersion(entryOptions.parameterVersion) : 'kol_hunter_smart_v3',
+      entryReason: entryOptions.entryReason,
+      rejectReason: blockReason,
+      independentKolCount: smartFresh.freshIndependentKolCount,
+      effectiveIndependentCount: smartFresh.freshIndependentKolCount,
+      kolScore: smartFresh.freshSignalScore,
+      participatingKols: entryOptions.entryParticipatingKols ?? score.participatingKols,
+      survivalFlags,
+      recentJupiter429: currentRecentJupiter429(),
+    });
+    emitKolLiveEquivalence({
+      candidateId: liveEquivalenceCandidateId,
+      tokenMint: cand.tokenMint,
+      entrySignal,
+      score,
+      entryOptions: entryOptionsWithLiveShadow,
+      survivalFlags,
+      candIsShadow,
+      stage,
+      paperWouldEnter: false,
+      liveWouldEnter: false,
+      liveBlockReason: blockReason,
+      liveBlockFlags: survivalFlags,
+      ...extras,
+    });
+    fireRejectObserver(cand.tokenMint, 'smart_v3_no_trigger', cand, score, {
+      survivalReason: blockReason,
+      survivalFlags,
+      liveBlockReason: blockReason,
+      liveBlockFlags: survivalFlags,
+      smartV3StrategyNoPaperFallback: true,
+      skipPolicyEntry: true,
+      entryReason: entryOptions.entryReason,
+      parameterVersion: entryOptions.parameterVersion,
+      signalPrice: smart.currentPrice,
+      tokenDecimals: smart.tokenDecimals,
+      ...extras,
+    });
+    cleanupPendingCandidate(cand, true);
+  };
   if (postDistribution.blocked) {
     log.warn(
       `[KOL_HUNTER_POST_DISTRIBUTION_BLOCK] ${cand.tokenMint.slice(0, 8)} ${entrySignal.label} trigger — ` +
@@ -5474,6 +5562,14 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         rejectSmartV3HardCutReentryLiveOnlyFallback(liveGate.reason ?? 'live_gate_blocked', policyFlags);
         return;
       }
+      if (shouldSuppressSmartV3PaperFallbackForStrategy(entrySignal, policyFlags)) {
+        rejectSmartV3StrategyFallbackWithoutPaper(
+          liveGate.reason ?? 'live_gate_blocked',
+          policyFlags,
+          'yellow_zone'
+        );
+        return;
+      }
       log.warn(
         `[KOL_HUNTER_YELLOW_ZONE] ${cand.tokenMint.slice(0, 8)} ${entrySignal.label} trigger — ` +
         `${liveGate.reason}. fallback paper.`
@@ -5617,6 +5713,14 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
           rejectSmartV3HardCutReentryLiveOnlyFallback(
             smartV3LiveFallback.reason ?? 'smart_v3_live_fallback',
             policyFlags
+          );
+          return;
+        }
+        if (shouldSuppressSmartV3PaperFallbackForStrategy(entrySignal, policyFlags)) {
+          rejectSmartV3StrategyFallbackWithoutPaper(
+            smartV3LiveFallback.reason ?? 'smart_v3_live_fallback',
+            policyFlags,
+            'smart_v3_live_fallback'
           );
           return;
         }
@@ -6807,7 +6911,7 @@ function applyRotationFlowReduce(
   nowSec: number,
   mfePct: number
 ): boolean {
-  if (pos.rotationFlowReducedAtSec != null) return false;
+  if (pos.rotationFlowReducedAtSec != null || pos.rotationFlowReduceInFlight === true) return false;
   const didReduce = executePaperPartialTake(
     pos,
     currentPrice,
@@ -6834,6 +6938,236 @@ function applyRotationFlowReduce(
   return true;
 }
 
+function markRotationFlowLiveReduceStarted(
+  pos: PaperPosition,
+  decision: RotationFlowExitDecision,
+  nowSec: number
+): void {
+  pos.rotationFlowDecision = decision.reason;
+  pos.rotationFlowReducedAtSec = nowSec;
+  pos.rotationFlowLastReducePct = decision.reducePct;
+  pos.rotationFlowResidualUntilSec = nowSec + decision.residualHoldSec;
+  pos.rotationFlowReduceInFlight = true;
+  pos.survivalFlags = [
+    ...pos.survivalFlags,
+    `ROTATION_FLOW_${decision.action.toUpperCase()}`,
+    `ROTATION_FLOW_REASON_${decision.reason.toUpperCase()}`,
+    'ROTATION_FLOW_LIVE_REDUCE',
+  ];
+}
+
+async function executeLiveRotationFlowReduce(
+  pos: PaperPosition,
+  decision: RotationFlowExitDecision,
+  currentPrice: number,
+  nowSec: number,
+  mfePct: number
+): Promise<boolean> {
+  if (!botCtx) {
+    log.error(`[KOL_HUNTER_ROTATION_FLOW_REDUCE_LIVE_BLOCKED] ${pos.positionId} no botCtx`);
+    return false;
+  }
+  if (decision.reducePct <= 0 || decision.reducePct >= 1) return false;
+  if (pos.rotationFlowReducedAtSec != null || pos.rotationFlowReduceInFlight === true) return false;
+
+  const previous = {
+    rotationFlowDecision: pos.rotationFlowDecision,
+    rotationFlowReducedAtSec: pos.rotationFlowReducedAtSec,
+    rotationFlowLastReducePct: pos.rotationFlowLastReducePct,
+    rotationFlowResidualUntilSec: pos.rotationFlowResidualUntilSec,
+    rotationFlowReduceInFlight: pos.rotationFlowReduceInFlight,
+    survivalFlags: [...pos.survivalFlags],
+  };
+  markRotationFlowLiveReduceStarted(pos, decision, nowSec);
+
+  const ctx = botCtx;
+  try {
+    const sellExecutor = getKolHunterExecutor(ctx);
+    const initialBalanceProbe = await resolveLiveSellInitialTokenBalance({
+      executor: sellExecutor,
+      tokenMint: pos.tokenMint,
+      context: `kol_hunter:${pos.positionId}:rotation_flow_reduce`,
+      reason: decision.reason,
+      entryTxSignature: pos.entryTxSignature,
+      entryTimeSec: pos.entryTimeSec,
+    });
+    const tokenBalance = initialBalanceProbe.balance;
+    if (tokenBalance <= 0n) {
+      throw new Error(`zero token balance for live rotation reduce (attempts=${initialBalanceProbe.attempts})`);
+    }
+
+    const reduceBps = BigInt(Math.max(1, Math.min(9999, Math.round(decision.reducePct * 10_000))));
+    const requestedSellAmount = (tokenBalance * reduceBps) / 10_000n;
+    if (requestedSellAmount <= 0n) {
+      throw new Error(`requested sell amount resolved to zero (balance=${tokenBalance.toString()})`);
+    }
+    const expectedRemainingBalance = tokenBalance > requestedSellAmount
+      ? tokenBalance - requestedSellAmount
+      : 0n;
+    const solBefore = await sellExecutor.getBalance();
+    const sellExecution = await executeLiveSellWithImmediateRetries({
+      executor: sellExecutor,
+      tokenMint: pos.tokenMint,
+      initialTokenBalance: tokenBalance,
+      requestedSellAmount,
+      expectedRemainingBalance,
+      context: `kol_hunter:${pos.positionId}:rotation_flow_reduce`,
+      reason: decision.reason,
+      syntheticSignature: `KOL_ROTATION_FLOW_REDUCE_BALANCE_RECOVERED_${pos.positionId}`,
+      urgency: 'hard_cut',
+      allowBalanceRecovered: initialBalanceProbe.source !== 'entry_tx_post_balance',
+    });
+    const sellResult = sellExecution.sellResult;
+    const solAfter = await sellExecutor.getBalance();
+    const balanceDeltaSol = Number.isFinite(solAfter - solBefore) ? solAfter - solBefore : 0;
+    const receivedSol = resolveSellReceivedSolFromSwapResult({
+      balanceDeltaSol,
+      sellResult,
+      context: `kol_hunter:${pos.positionId}:rotation_flow_reduce`,
+    });
+    const soldRatio = Math.max(0, Math.min(1, sellExecution.soldRatio));
+    if (soldRatio <= 0) {
+      throw new Error(`live rotation reduce sold ratio is zero (tx=${sellResult.txSignature})`);
+    }
+
+    const lockedQuantity = pos.quantity * soldRatio;
+    const lockedTicketSol = pos.ticketSol * soldRatio;
+    const tokenEntryRef = pos.entryPriceTokenOnly ?? pos.entryPrice;
+    const soldCostSol = pos.swapInputSol != null && pos.swapInputSol > 0
+      ? pos.swapInputSol * soldRatio
+      : tokenEntryRef * lockedQuantity;
+    const realizedPrice = lockedQuantity > 0 ? receivedSol / lockedQuantity : currentPrice;
+    const lockedNetPct = pos.entryPrice > 0 ? (realizedPrice - pos.entryPrice) / pos.entryPrice : 0;
+    const lockedNetSol = receivedSol - soldCostSol;
+    const tokenOnlyCostSol = tokenEntryRef * lockedQuantity;
+    const netPctTokenOnly = tokenEntryRef > 0 ? (realizedPrice - tokenEntryRef) / tokenEntryRef : 0;
+    const netSolTokenOnly = receivedSol - tokenOnlyCostSol;
+
+    pos.quantity *= (1 - soldRatio);
+    pos.ticketSol *= (1 - soldRatio);
+    pos.partialTakeAtSec = nowSec;
+    pos.partialTakeRealizedSol = (pos.partialTakeRealizedSol ?? 0) + lockedNetSol;
+    pos.partialTakeLockedTicketSol = (pos.partialTakeLockedTicketSol ?? 0) + lockedTicketSol;
+    pos.rotationFlowReduceInFlight = false;
+    pos.rotationFlowLiveReduceTxSignature = sellResult.txSignature;
+    pos.rotationFlowLiveReduceAttempts = sellExecution.attempts;
+
+    log.info(
+      `[KOL_HUNTER_ROTATION_FLOW_REDUCE] ${pos.positionId} mode=live ` +
+      `reason=${decision.reason} take=${(soldRatio * 100).toFixed(1)}% ` +
+      `received=${receivedSol.toFixed(6)}SOL attempts=${sellExecution.attempts} ` +
+      `remaining_ticket=${pos.ticketSol.toFixed(6)}`
+    );
+    trackPaperPositionMarkout(
+      pos,
+      'sell',
+      currentPrice,
+      lockedTicketSol,
+      nowSec * 1000,
+      {
+        eventType: 'rotation_flow_live_reduce',
+        exitReason: decision.reason,
+        mfePctAtTake: mfePct,
+        lockedQuantity,
+        lockedTicketSol,
+        lockedNetPct,
+        lockedNetSol,
+        remainingQuantity: pos.quantity,
+        remainingTicketSol: pos.ticketSol,
+        liveReduceTxSignature: sellResult.txSignature,
+        liveReduceAttempts: sellExecution.attempts,
+        liveReduceRecoveredFromBalanceOnly: sellExecution.recoveredFromBalanceOnly,
+      }
+    );
+    void appendPartialTakeLedger(
+      pos,
+      currentPrice,
+      nowSec,
+      mfePct,
+      lockedQuantity,
+      lockedTicketSol,
+      lockedNetPct,
+      lockedNetSol,
+      'rotation_flow_live_reduce',
+      decision.reason
+    ).catch(() => {});
+    await appendEntryLedger('sell', {
+      positionId: pos.positionId,
+      dbTradeId: pos.dbTradeId,
+      txSignature: sellResult.txSignature,
+      entryTxSignature: pos.entryTxSignature,
+      strategy: LANE_STRATEGY,
+      wallet: 'main',
+      pairAddress: pos.tokenMint,
+      exitReason: 'rotation_flow_live_reduce',
+      eventType: 'rotation_flow_live_reduce',
+      isPartialReduce: true,
+      positionStillOpen: true,
+      partialReduceReason: decision.reason,
+      partialReducePct: soldRatio,
+      receivedSol,
+      actualExitPrice: realizedPrice,
+      slippageBps: sellResult.slippageBps,
+      entryPrice: pos.entryPrice,
+      holdSec: nowSec - pos.entryTimeSec,
+      mfePctPeak: mfePct,
+      mfePctPeakTokenOnly: mfePct,
+      mfePctPeakWalletBased: pos.entryPrice > 0 ? (pos.peakPrice - pos.entryPrice) / pos.entryPrice : mfePct,
+      maePctTokenOnly: tokenEntryRef > 0 ? (pos.troughPrice - tokenEntryRef) / tokenEntryRef : 0,
+      exitPriceTokenOnly: currentPrice,
+      netPctTokenOnly,
+      netSolTokenOnly,
+      entryPriceTokenOnly: pos.entryPriceTokenOnly,
+      entryPriceWalletDelta: pos.entryPriceWalletDelta,
+      ataRentSol: pos.ataRentSol,
+      swapInputSol: pos.swapInputSol,
+      peakPrice: pos.peakPrice,
+      troughPrice: pos.troughPrice,
+      marketReferencePrice: pos.marketReferencePrice,
+      sellRetryUrgency: 'hard_cut',
+      sellRetryAttempts: sellExecution.attempts,
+      sellRecoveredFromBalanceOnly: sellExecution.recoveredFromBalanceOnly,
+      sellRetrySoldRatio: soldRatio,
+      dbPnlSol: lockedNetSol,
+      walletDeltaSol: lockedNetSol,
+      dbPnlDriftSol: 0,
+      solSpentNominal: soldCostSol,
+      kolScore: pos.kolScore,
+      independentKolCount: pos.independentKolCount,
+      armName: pos.armName,
+      profileArm: pos.profileArm ?? null,
+      entryArm: pos.entryArm ?? pos.armName,
+      exitArm: pos.exitArm ?? pos.armName,
+      parameterVersion: pos.parameterVersion,
+      entryReason: pos.kolEntryReason,
+      rotationAnchorKols: pos.rotationAnchorKols ?? null,
+      rotationEntryAtMs: pos.rotationEntryAtMs ?? null,
+      rotationAnchorPrice: pos.rotationAnchorPrice ?? null,
+      rotationFirstBuyAtMs: pos.rotationFirstBuyAtMs ?? null,
+      rotationLastBuyAtMs: pos.rotationLastBuyAtMs ?? null,
+      rotationLastBuyAgeMs: pos.rotationLastBuyAgeMs ?? null,
+      rotationScore: pos.rotationScore ?? null,
+      rotationFlowDecision: decision.reason,
+      rotationFlowReducedAtSec: nowSec,
+      rotationFlowResidualUntilSec: pos.rotationFlowResidualUntilSec ?? null,
+    });
+    return true;
+  } catch (err) {
+    pos.rotationFlowDecision = previous.rotationFlowDecision;
+    pos.rotationFlowReducedAtSec = previous.rotationFlowReducedAtSec;
+    pos.rotationFlowLastReducePct = previous.rotationFlowLastReducePct;
+    pos.rotationFlowResidualUntilSec = previous.rotationFlowResidualUntilSec;
+    pos.rotationFlowReduceInFlight = previous.rotationFlowReduceInFlight;
+    pos.survivalFlags = previous.survivalFlags;
+    log.warn(`[KOL_HUNTER_ROTATION_FLOW_REDUCE_FAIL] ${pos.positionId} ${err}`);
+    await ctx.notifier.sendCritical(
+      'kol_live_rotation_flow_reduce_failed',
+      `${pos.positionId} ${pos.tokenMint} reason=${decision.reason} partial sell failed — full close fallback required`
+    ).catch(() => {});
+    return false;
+  }
+}
+
 function markRotationFlowDecision(
   pos: PaperPosition,
   decision: RotationFlowExitDecision,
@@ -6848,7 +7182,7 @@ function markRotationFlowDecision(
   ];
 }
 
-function handleLiveRotationFlowDecision(
+async function handleLiveRotationFlowDecision(
   pos: PaperPosition,
   decision: RotationFlowExitDecision,
   currentPrice: number,
@@ -6857,8 +7191,8 @@ function handleLiveRotationFlowDecision(
   mfePct: number,
   maePct: number,
   logTag: string
-): boolean {
-  if (decision.action === 'close_full' || decision.action === 'reduce_strong') {
+): Promise<boolean> {
+  if (decision.action === 'close_full') {
     markRotationFlowDecision(pos, decision, 'close_full');
     log.info(
       `[${logTag}] ${pos.positionId} live action=close_full source=${decision.action} ` +
@@ -6867,12 +7201,21 @@ function handleLiveRotationFlowDecision(
     closePosition(pos, currentPrice, reason, nowSec, mfePct, maePct);
     return true;
   }
-  if (decision.action === 'reduce_light') {
-    markRotationFlowDecision(pos, decision, 'observe');
+  if (decision.action === 'reduce_light' || decision.action === 'reduce_strong') {
+    if (pos.rotationFlowReducedAtSec != null || pos.rotationFlowReduceInFlight === true) {
+      return true;
+    }
     log.info(
-      `[${logTag}] ${pos.positionId} live action=observe source=reduce_light ` +
-      `reason=${decision.reason}`
+      `[${logTag}] ${pos.positionId} live action=reduce source=${decision.action} ` +
+      `reason=${decision.reason} reducePct=${decision.reducePct.toFixed(2)}`
     );
+    const reduced = await executeLiveRotationFlowReduce(pos, decision, currentPrice, nowSec, mfePct);
+    if (reduced) return true;
+    log.warn(
+      `[${logTag}] ${pos.positionId} live partial reduce failed; ` +
+      `fallback=full_close reason=${reason} flowReason=${decision.reason}`
+    );
+    closePosition(pos, currentPrice, reason, nowSec, mfePct, maePct);
     return true;
   }
   markRotationFlowDecision(pos, decision, 'observe');
@@ -6900,13 +7243,13 @@ function maybeCloseRotationFlowResidual(
   return true;
 }
 
-function handleRotationFlowAnchorSell(
+async function handleRotationFlowAnchorSell(
   pos: PaperPosition,
   tx: KolTx,
   nowSec: number,
   mfePct: number,
   maePct: number
-): boolean {
+): Promise<boolean> {
   if (!pos.rotationFlowExitEnabled) return false;
   const metrics = updateRotationFlowMetrics(pos, Date.now());
   if (!metrics) return false;
@@ -6962,11 +7305,7 @@ function handleRotationFlowPriceKill(
     `freshTopup=${metrics.freshTopup ? 'y' : 'n'}`
   );
   if (pos.isLive === true) {
-    if (decision.action === 'reduce_light') {
-      markRotationFlowDecision(pos, decision, 'observe');
-      return false;
-    }
-    return handleLiveRotationFlowDecision(
+    void handleLiveRotationFlowDecision(
       pos,
       decision,
       currentPrice,
@@ -6975,7 +7314,10 @@ function handleRotationFlowPriceKill(
       mfePct,
       maePct,
       'KOL_HUNTER_ROTATION_FLOW_PRICE_KILL'
-    );
+    ).catch((err) => {
+      log.warn(`[KOL_HUNTER_ROTATION_FLOW_PRICE_KILL] ${pos.positionId} live reduce failed: ${err}`);
+    });
+    return true;
   }
   return applyRotationFlowReduce(pos, decision, currentPrice, nowSec, mfePct);
 }
@@ -9013,6 +9355,11 @@ async function enterLivePosition(
       `[KOL_HUNTER_LIVE_ENTRY_ADVANTAGE_EXIT] ${positionId} ${tokenMint.slice(0, 8)} ` +
       `${entryAdvantageReason} — emergency close before shadow/open notification`
     );
+    // entry-quality emergency exit 도 일반 closePosition 과 동일하게 즉시 closing 상태로 전환한다.
+    // 그렇지 않으면 async sell 진행 중 price tick 이 같은 live position 을 다시 close 할 수 있어
+    // sell retry / balance-recovered 경로가 중복 close ledger 를 남긴다.
+    const previousState = position.state;
+    position.state = 'CLOSED';
     await closeLivePosition(
       position,
       referencePrice,
@@ -9020,7 +9367,7 @@ async function enterLivePosition(
       nowSec,
       0,
       0,
-      'PROBE'
+      previousState
     );
     return;
   }
@@ -9197,7 +9544,7 @@ async function closeLivePosition(
     return;
   }
   const ctx = botCtx;
-  const previousState = pos.state;
+  const previousState = callerPreviousState ?? pos.state;
   let actualExitPrice = exitPrice;
   let executionSlippage = 0;
   let exitTxSignature = pos.entryTxSignature;
@@ -9741,28 +10088,31 @@ function fireRejectObserver(
   extras: Record<string, unknown> = {}
 ): void {
   const survivalFlags = extractStringArray(extras.survivalFlags);
+  const skipPolicyEntry = extras.skipPolicyEntry === true;
   const signalPrice = typeof extras.signalPrice === 'number' && Number.isFinite(extras.signalPrice) && extras.signalPrice > 0
     ? extras.signalPrice
     : 0.01;
   const tokenDecimals = typeof extras.tokenDecimals === 'number' && Number.isFinite(extras.tokenDecimals)
     ? extras.tokenDecimals
     : undefined;
-  emitKolShadowPolicy({
-    eventKind: 'reject',
-    tokenMint,
-    currentAction: 'block',
-    isLive: false,
-    isShadowArm: false,
-    entryReason: typeof extras.entryReason === 'string' ? extras.entryReason : undefined,
-    rejectReason: reason,
-    independentKolCount: score.independentKolCount,
-    effectiveIndependentCount: score.effectiveIndependentCount,
-    kolScore: score.finalScore,
-    participatingKols: score.participatingKols,
-    survivalFlags,
-    recentJupiter429: currentRecentJupiter429(),
-    routeFound: survivalFlags.includes('NO_SELL_ROUTE') ? false : undefined,
-  });
+  if (!skipPolicyEntry) {
+    emitKolShadowPolicy({
+      eventKind: 'reject',
+      tokenMint,
+      currentAction: 'block',
+      isLive: false,
+      isShadowArm: false,
+      entryReason: typeof extras.entryReason === 'string' ? extras.entryReason : undefined,
+      rejectReason: reason,
+      independentKolCount: score.independentKolCount,
+      effectiveIndependentCount: score.effectiveIndependentCount,
+      kolScore: score.finalScore,
+      participatingKols: score.participatingKols,
+      survivalFlags,
+      recentJupiter429: currentRecentJupiter429(),
+      routeFound: survivalFlags.includes('NO_SELL_ROUTE') ? false : undefined,
+    });
+  }
 
   // Pre-entry reject — 진입 안 된 pair 의 trajectory 관측
   trackRejectForMissedAlpha(

@@ -50,6 +50,9 @@ export interface SellLedgerRecord {
   txSignature?: string;
   entryTxSignature?: string;
   strategy?: string;
+  eventType?: string;
+  isPartialReduce?: boolean;
+  positionStillOpen?: boolean;
   pairAddress?: string;
   tokenSymbol?: string;
   exitReason?: string;
@@ -69,6 +72,12 @@ export interface SellLedgerRecord {
   // 신규 lane 메타
   laneName?: string;
   armName?: string;
+}
+
+function isPartialReduceLedgerRow(row: SellLedgerRecord): boolean {
+  return row.isPartialReduce === true ||
+    row.positionStillOpen === true ||
+    row.eventType === 'rotation_flow_live_reduce';
 }
 
 export interface ReconcileConfig {
@@ -164,6 +173,7 @@ export function reconcileLaneOutcomes(
   // 2. Sell index by entryTxSignature
   const sellByEntryTx = new Map<string, SellLedgerRecord[]>();
   for (const sell of sells) {
+    if (isPartialReduceLedgerRow(sell)) continue;
     if (!sell.entryTxSignature) continue;
     const arr = sellByEntryTx.get(sell.entryTxSignature) ?? [];
     arr.push(sell);

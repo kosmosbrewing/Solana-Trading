@@ -367,5 +367,24 @@ describe('canaryAutoHalt', () => {
       expect(getCanaryState('kol_hunter').tradeCount).toBe(0);
       expect(isEntryHaltActive('kol_hunter')).toBe(false);
     });
+
+    it('skips live partial reduce sell rows because the position is still open', () => {
+      const summary = hydrateCanaryStatesFromCloseRecords([
+        {
+          strategy: 'kol_hunter',
+          wallet: 'main',
+          positionId: 'kolh-live-partial',
+          eventType: 'rotation_flow_live_reduce',
+          isPartialReduce: true,
+          positionStillOpen: true,
+          walletDeltaSol: -0.01,
+          recordedAt: '2026-04-30T00:00:01.000Z',
+        },
+      ], { resetBeforeHydrate: true });
+
+      expect(summary.replayedRows).toBe(0);
+      expect(summary.skippedRows).toBe(1);
+      expect(getCanaryState('kol_hunter').tradeCount).toBe(0);
+    });
   });
 });

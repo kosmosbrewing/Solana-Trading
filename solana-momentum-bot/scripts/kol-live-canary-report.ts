@@ -74,6 +74,9 @@ interface KolLiveSellLedger {
   entryTxSignature?: string;
   strategy?: string;
   wallet?: string;
+  eventType?: string;
+  isPartialReduce?: boolean;
+  positionStillOpen?: boolean;
   pairAddress?: string;
   tokenSymbol?: string;
   exitReason?: string;
@@ -514,6 +517,13 @@ function isKolLiveBuy(row: KolLiveBuyLedger): boolean {
 }
 
 function isKolLiveSell(row: KolLiveSellLedger, liveEntryTx: Set<string>): boolean {
+  if (
+    row.isPartialReduce === true ||
+    row.positionStillOpen === true ||
+    row.eventType === 'rotation_flow_live_reduce'
+  ) {
+    return false;
+  }
   return row.strategy === 'kol_hunter' &&
     (row.wallet === 'main' || isKolLivePositionId(row.positionId) ||
       (typeof row.entryTxSignature === 'string' && liveEntryTx.has(row.entryTxSignature)));

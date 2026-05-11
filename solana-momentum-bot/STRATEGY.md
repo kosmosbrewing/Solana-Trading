@@ -27,7 +27,7 @@
 |---|---|---|
 | **`cupsey_flip_10s`** | **benchmark (frozen, env disabled)** | A/B 비교 기준선. **개조 금지.** |
 | `bootstrap_10s` | **signal-only** | cupsey/pure_ws trigger source. `executionRrReject=99.0` 로 실거래 100% 억제. |
-| **`kol_hunter_smart_v3`** | **main 5x lane / live canary with strict paper fallback** | Fresh active 2+ KOL velocity 중심. A+A 허용, S+B/A+B 는 fresh S/A strength rule 미통과. Pullback-only / weak post-sell recovery / unclean quality / repeated losing KOL combo / adverse KOL-fill price 는 paper fallback. Pre-T1 dead probe 는 MAE fast-fail, 살아난 probe 는 bounded recovery-hold. |
+| **`kol_hunter_smart_v3`** | **main 5x lane / live canary with strategy no-trade + safety fallback** | Fresh active 2+ KOL velocity 중심. A+A 허용, S+B/A+B 는 fresh S/A strength rule 미통과. Pullback-only / weak post-sell recovery / unclean quality / repeated losing KOL combo / adverse KOL-fill price 는 live-canary 전략 탈락으로 기록하고 main paper 포지션을 만들지 않는다. Pre-T1 dead probe 는 MAE fast-fail, 살아난 probe 는 bounded recovery-hold. |
 | ↳ `kol_hunter` swing-v2 | paper shadow (`KOL_HUNTER_SWING_V2_ENABLED`) | multi-KOL S/A ≥2 + score ≥5.0 자격 시 동시 생성. 600s stalk / 25% trail / 1.10 floor. |
 | **`kol_hunter_rotation_v1`** | **fast-compound auxiliary / canonical live off; underfill canary only** | T+15/T+30 post-cost harvesting 실험. Control + `rotation_fast15_v1` / `rotation_cost_guard_v1` / `rotation_quality_strict_v1` / `rotation_underfill_v1` / `rotation_chase_topup_v1`. Canonical live와 chase-topup live는 닫고, S/A KOL fill보다 유리한 `rotation_underfill_v1`만 별도 live canary 키로 연다. |
 | **`kol_hunter_capitulation_rebound_v1`** | **paper-only liquidity-shock experiment** | KOL attention 이후 큰 하락을 무조건 사지 않고, hard veto + bounce/recovery confirmation + sell-route 확인을 통과한 후보만 paper 진입한다. T+15/30/60/180/300/1800 post-cost 와 no-trade counterfactual 이 핵심이며 live 승격 금지. |
@@ -74,7 +74,7 @@ npm run kol:smart-v3-evidence-report -- --since 24h --realtime-dir data/realtime
 - Verdict T+ coverage is close-anchor based by `positionId × anchorType × horizon`, not just observed-row ok-rate.
 - Closed Trades uses copyable/wallet-first W/L and shows token-only W/L separately.
 - Closed Trades also shows MAE fast-fail, recovery-hold, MFE floor-exit/stage counts, and pre-T1 MFE band counts (`10-20`, `20-30`, `30-50`).
-- It also summarizes paper rows that would have been live-blocked, including `smartV3LiveBlockReason` and `smartV3LiveBlockFlags`.
+- It also summarizes live-equivalence/no-trade rows that would not have entered live, including `smartV3LiveBlockReason`, `smartV3LiveBlockFlags`, and `paperWouldEnter=false`.
 - Runtime `.env` override is not required for the 2026-05-06 MAE or 2026-05-07 live-quality fallback changes; defaults are active. `SKIP_SMART_V3_EVIDENCE_REPORT` and `SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT` are sync/report-only shell knobs.
 
 Capitulation rebound paper report:
@@ -169,30 +169,34 @@ KOL_HUNTER_SMART_V3_MFE_RUNNER_FLOOR_PCT=0.10
 KOL_HUNTER_SMART_V3_MFE_CONVEXITY_FLOOR_PCT=0.20
 ```
 
-Smart-v3 live entry hardening (2026-05-07):
+Smart-v3 live entry hardening (2026-05-07, live-canary paper/live alignment updated 2026-05-11):
 
 ```text
 Strict quality fallback:
   EXIT_LIQUIDITY_UNKNOWN / TOKEN_QUALITY_UNKNOWN / UNCLEAN_TOKEN*
   holder-risk / no-route / rug-like flags
-  live fallback = SMART_V3_LIVE_QUALITY_FALLBACK
+  live strategy block = SMART_V3_LIVE_QUALITY_FALLBACK unless selected arm routes the exact bucket
 
 Pre-entry sell fallback:
   same-mint KOL sell before entry requires enough fresh independent re-buy
   and a clean no-sell window
-  live fallback = SMART_V3_PRE_ENTRY_SELL_LIVE_DISABLED
+  live strategy block = SMART_V3_PRE_ENTRY_SELL_LIVE_DISABLED
   or SMART_V3_RECENT_SELL_NO_SELL_WINDOW
 
 Combo decay:
-  repeated losing fresh KOL combinations fallback to paper temporarily.
+  repeated losing fresh KOL combinations reject live temporarily.
   The combo key is fixed at entry-time fresh KOLs, not later reinforcement KOLs.
   Primary paper and live closes both feed the decay memory; live losses can block
   with fewer samples. Shadow arms are excluded.
-  live fallback = SMART_V3_COMBO_DECAY
+  live strategy block = SMART_V3_COMBO_DECAY
 
 KOL fill-price advantage:
   if our quote is materially above fresh KOL weighted fill price,
-  live fallback = SMART_V3_ENTRY_ADVANTAGE_ADVERSE
+  live strategy block = SMART_V3_ENTRY_ADVANTAGE_ADVERSE
+
+Live-canary strategy blocks emit SMART_V3_STRATEGY_NO_PAPER_FALLBACK and live-equivalence
+paperWouldEnter=false. Paper-only mode still measures raw smart-v3 candidates; live-only
+execution safety gates may still fall back to paper for audit.
 ```
 
 Default knobs:

@@ -101,6 +101,14 @@ holder-risk flags remain hard paper fallbacks. The `micro` suffix is a
 restricted-arm label only; it uses the same live canary ticket as the rest of
 KOL Hunter so paper/live cost ratios remain comparable.
 
+Use `smart_v3_fast_canary_v1` when intentionally testing smart-v3 with a
+rotation-like relaxed quality stance. It can route unknown quality and medium
+holder concentration fallbacks (`HOLDER_TOP1_HIGH`, `HOLDER_TOP5_HIGH`,
+`HOLDER_HHI_HIGH`) to live, but still blocks `HOLDER_TOP10_HIGH`, explicit
+high-concentration, non-top10 unclean-token reasons, no-route/rug-like
+conditions, pre-entry sell risk, repeated losing combos, and KOL-fill adverse
+entries. It is an explicit sprint arm, not a default production profile.
+
 Usually omit because code defaults are current mission defaults:
 
 ```dotenv
@@ -248,6 +256,8 @@ KOL_HUNTER_CANARY_MAX_BUDGET_SOL=0.35
 KOL_HUNTER_CANARY_MAX_TRADES=300
 KOL_HUNTER_LIVE_MIN_INDEPENDENT_KOL=2
 KOL_HUNTER_LIVE_CANARY_ARMS=smart_v3_clean,rotation_underfill_exit_flow_v1
+# Optional measured sprint, not default:
+# KOL_HUNTER_LIVE_CANARY_ARMS=smart_v3_fast_canary_v1,rotation_underfill_exit_flow_v1
 KOL_HUNTER_YELLOW_ZONE_START_SOL=0.85
 KOL_HUNTER_YELLOW_ZONE_PAPER_FALLBACK_BELOW_SOL=0.70
 KOL_HUNTER_SMART_V3_PARAMETER_VERSION=smart-v3.0.1-live-canary-2026-05-09

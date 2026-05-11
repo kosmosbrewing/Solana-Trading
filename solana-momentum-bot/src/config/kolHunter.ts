@@ -256,8 +256,11 @@ export const kolHunter = {
   kolHunterLiveCanaryEnabled: boolOptional('KOL_HUNTER_LIVE_CANARY_ENABLED', false),
   // 2026-05-10: live canary 를 단일 on/off 가 아니라 arm portfolio 로 운영한다.
   // 값이 비어 있으면 기존 arm-specific env 들로 fallback 하여 운영 호환성을 보존한다.
-  // 예: smart_v3_clean,smart_v3_quality_unknown_micro,rotation_underfill_exit_flow_v1
+  // 예: smart_v3_clean,smart_v3_quality_unknown_micro,smart_v3_fast_canary_v1,rotation_underfill_exit_flow_v1
   // smart_v3_quality_unknown_micro 는 ticket 축소가 아니라 unknown-only restricted arm label 이다.
+  // smart_v3_fast_canary_v1 은 rotation underfill 처럼 unknown/medium holder-risk 를 허용해
+  // paper/live 괴리를 줄이는 explicit canary arm 이다. HOLDER_TOP10_HIGH / high-concentration /
+  // no-route/rug/entry-adverse 는 계속 차단한다.
   kolHunterLiveCanaryArms: parseStringList(optional('KOL_HUNTER_LIVE_CANARY_ARMS', '')),
   // 2026-04-30 Sprint: live canary 실측에서 single-KOL cohort 가 손실 대부분을 차지.
   // live wallet 진입은 최소 independent KOL 2명부터 허용하고, 미달은 paper 로만 관측한다.
@@ -487,6 +490,9 @@ export const kolHunter = {
   kolHunterSmartV3QualityUnknownMicroParameterVersion:
     process.env.KOL_HUNTER_SMART_V3_QUALITY_UNKNOWN_MICRO_PARAMETER_VERSION ??
     'smart-v3-quality-unknown-micro-v1.0.0',
+  kolHunterSmartV3FastCanaryParameterVersion:
+    process.env.KOL_HUNTER_SMART_V3_FAST_CANARY_PARAMETER_VERSION ??
+    'smart-v3-fast-canary-v1.0.0',
   // 2026-05-07: smart-v3 live 품질 fallback. 최근 live 근거에서 live entry 대부분이
   // EXIT_LIQUIDITY_UNKNOWN 또는 holder concentration flag 를 동반했다. Paper 는 계속
   // 관측하되 live 는 unknown/unclean 품질에서 fail-closed 로 둔다.

@@ -42,6 +42,7 @@ import {
   __testIsPriceKillReason,
   __testSetKolLiveSellRetryDelaysMs,
   __testRecordSmartV3ComboClose,
+  __testCanRouteSmartV3FastCanary,
   hydrateLiveExecutionQualityCooldownsFromBuyRecords,
   hydrateLiveExecutionQualityCooldownsFromLedger,
   recoverKolHunterOpenPositions,
@@ -713,6 +714,7 @@ describe('kolSignalHandler — state machine', () => {
     mockedConfig.kolHunterRejectOnNoSecurityData = false;
     mockedConfig.kolHunterLiveCanaryArms = [];
     mockedConfig.kolHunterSmartV3QualityUnknownMicroParameterVersion = 'smart-v3-quality-unknown-micro-v1.0.0';
+    mockedConfig.kolHunterSmartV3FastCanaryParameterVersion = 'smart-v3-fast-canary-v1.0.0';
     stubFeed = new StubPaperPriceFeed();
     __testInit({ priceFeed: stubFeed as unknown as never });
   });
@@ -3090,6 +3092,81 @@ describe('kolSignalHandler — state machine', () => {
       expect(paper.survivalFlags.some((flag) => flag.startsWith('UNCLEAN_TOKEN'))).toBe(true);
     });
 
+    it('smart-v3 fast canary arm: medium holder/unknown quality fallback 은 live canary 로 분리한다', async () => {
+      const { ctx, executeBuy, insertTrade } = buildLiveCtx();
+      __testInit({
+        priceFeed: stubFeed as unknown as never,
+        ctx,
+        securityClient: buildSecurityClient({ top10HolderPct: 0.65 }) as never,
+      });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterLiveCanaryArms = ['smart_v3_fast_canary_v1'];
+
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      await handleKolSwap(buyTx('ghost', 'A', MINT_SMART));
+      await flushAsync();
+
+      expect(executeBuy).toHaveBeenCalledTimes(1);
+      expect(insertTrade).toHaveBeenCalledTimes(1);
+      const live = __testGetActive().find((p) => p.isLive === true);
+      expect(live?.armName).toBe('smart_v3_fast_canary_v1');
+      expect(live?.parameterVersion).toBe('smart-v3-fast-canary-v1.0.0');
+      expect(live?.survivalFlags).toContain('SMART_V3_FAST_CANARY');
+      expect(live?.survivalFlags.some((flag) => flag.startsWith('UNCLEAN_TOKEN'))).toBe(true);
+      const equivalence = liveEquivalenceRecords().find((row) => row.liveAttempted === true);
+      expect(equivalence?.armName).toBe('smart_v3_fast_canary_v1');
+      expect(equivalence?.candidateId).toContain(':smart_v3_fast_canary_v1:');
+    });
+
+    it('smart-v3 fast canary arm: 중간 holder-risk 는 허용하고 극단 집중은 계속 차단한다', () => {
+      mockedConfig.kolHunterLiveCanaryArms = ['smart_v3_fast_canary_v1'];
+
+      expect(__testCanRouteSmartV3FastCanary([
+        'SMART_V3_LIVE_QUALITY_FALLBACK',
+        'SMART_V3_QUALITY_HOLDER_TOP1_HIGH',
+        'SMART_V3_QUALITY_HOLDER_TOP5_HIGH',
+        'SMART_V3_QUALITY_HOLDER_HHI_HIGH',
+      ])).toBe(true);
+
+      expect(__testCanRouteSmartV3FastCanary([
+        'SMART_V3_LIVE_QUALITY_FALLBACK',
+        'SMART_V3_QUALITY_HOLDER_TOP1_HIGH',
+        'SMART_V3_QUALITY_HOLDER_TOP10_HIGH',
+      ])).toBe(false);
+
+      expect(__testCanRouteSmartV3FastCanary([
+        'SMART_V3_LIVE_QUALITY_FALLBACK',
+        'SMART_V3_QUALITY_UNCLEAN_TOKEN:top10_85pct',
+      ])).toBe(false);
+
+      expect(__testCanRouteSmartV3FastCanary([
+        'SMART_V3_LIVE_QUALITY_FALLBACK',
+        'SMART_V3_QUALITY_UNCLEAN_TOKEN:creator_40pct',
+      ])).toBe(false);
+    });
+
+    it('smart-v3 fast canary arm: clean 후보는 smart_v3_clean 없이 암묵 live 진입하지 않는다', async () => {
+      const { ctx, executeBuy, insertTrade } = buildLiveCtx();
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterLiveCanaryArms = ['smart_v3_fast_canary_v1'];
+
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      await handleKolSwap(buyTx('ghost', 'A', MINT_SMART));
+      await flushAsync();
+
+      expect(executeBuy).not.toHaveBeenCalled();
+      expect(insertTrade).not.toHaveBeenCalled();
+      const paper = __testGetActive()[0];
+      expect(paper.isLive).toBeFalsy();
+      expect(paper.smartV3LiveBlockReason).toBe('smart_v3_live_disabled');
+      expect(paper.survivalFlags).toContain('SMART_V3_LIVE_DISABLED');
+    });
+
     it('smart-v3 pre-entry sell 후 fresh re-buy 부족이면 live 대신 paper fallback 한다', async () => {
       const { ctx, executeBuy, insertTrade } = buildLiveCtx();
       __testInit({ priceFeed: stubFeed as unknown as never, ctx });
@@ -3115,6 +3192,7 @@ describe('kolSignalHandler — state machine', () => {
       __testInit({ priceFeed: stubFeed as unknown as never, ctx });
       mockedConfig.kolHunterPaperOnly = false;
       mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterLiveCanaryArms = ['smart_v3_fast_canary_v1'];
 
       stubFeed.setInitialPrice(MINT_SMART, 0.00106);
       await handleKolSwap(buyTxWithFill('pain', 'S', MINT_SMART, 0.00100, 0.10));

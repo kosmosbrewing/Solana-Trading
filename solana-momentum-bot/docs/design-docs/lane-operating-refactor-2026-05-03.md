@@ -41,14 +41,14 @@ Implemented operating shape:
 - fresh 2+ active KOLs are required for default live velocity entry;
 - A+A fresh consensus is allowed at the default smart-v3 velocity score threshold `5.0`;
 - inactive/shadow KOLs are auxiliary confirmation only and cannot create live eligibility;
-- pure pullback live entry falls back to paper via `SMART_V3_PULLBACK_LIVE_DISABLED`;
-- weak post-sell recovery falls back to paper via `SMART_V3_POST_SELL_RECOVERY_WEAK`;
-- live strict quality is fail-closed by default: `EXIT_LIQUIDITY_UNKNOWN`, `TOKEN_QUALITY_UNKNOWN`, `UNCLEAN_TOKEN*`, holder-risk, no-route, and rug-like flags fallback to paper via `SMART_V3_LIVE_QUALITY_FALLBACK`;
+- pure pullback, weak post-sell recovery, strict-quality miss, pre-entry sell risk, combo decay, adverse KOL-fill price, dev-wallet block, `LIVE_MIN_KOL`, and `YELLOW_ZONE_MIN_KOL` are strategy gates under live canary. They emit `SMART_V3_STRATEGY_NO_PAPER_FALLBACK`, live-equivalence `paperWouldEnter=false`, and no-trade/reject markout instead of creating a main smart-v3 paper fallback row;
+- paper-only operation still measures smart-v3 candidates as paper, but live-canary mode no longer lets strategy rejects inflate aggregate paper close performance;
+- live strict quality is fail-closed by default: `EXIT_LIQUIDITY_UNKNOWN`, `TOKEN_QUALITY_UNKNOWN`, `UNCLEAN_TOKEN*`, holder-risk, no-route, and rug-like flags block live unless an explicitly selected smart-v3 live canary arm routes the exact quality bucket to live;
 - `smart_v3_fast_canary_v1` is an explicit live-canary arm for reducing paper/live divergence. It may route `EXIT_LIQUIDITY_UNKNOWN`, `TOKEN_QUALITY_UNKNOWN`, medium `UNCLEAN_TOKEN:top10_*`, and moderate holder-risk (`HOLDER_TOP1_HIGH` / `HOLDER_TOP5_HIGH` / `HOLDER_HHI_HIGH`) fallbacks to live, matching the rotation-underfill philosophy more closely. It still blocks `HOLDER_TOP10_HIGH`, explicit high-concentration, non-top10 unclean reasons, no-route/rug-like conditions, pre-entry sell risk, combo decay, wallet/halt guards, and `SMART_V3_ENTRY_ADVANTAGE_ADVERSE`;
-- any pre-entry same-mint KOL sell requires enough fresh independent re-buy plus a no-sell window before live; otherwise it falls back to paper via `SMART_V3_PRE_ENTRY_SELL_LIVE_DISABLED` or `SMART_V3_RECENT_SELL_NO_SELL_WINDOW`;
-- repeated losing smart-v3 KOL combinations are tracked in-memory and temporarily fallback to paper via `SMART_V3_COMBO_DECAY`; the combo key is fixed from entry-time fresh KOLs, primary paper and live closes both feed the memory, live losses are weighted as stronger evidence, and shadow arms are excluded;
-- if fresh KOL fill-price data exists and our quote is materially above the KOL weighted entry, live falls back to paper via `SMART_V3_ENTRY_ADVANTAGE_ADVERSE`;
-- dev wallet blacklist/watchlist status gates live to paper, while allowlist is telemetry only;
+- any pre-entry same-mint KOL sell requires enough fresh independent re-buy plus a no-sell window before live; otherwise it is a strategy reject via `SMART_V3_PRE_ENTRY_SELL_LIVE_DISABLED` or `SMART_V3_RECENT_SELL_NO_SELL_WINDOW`;
+- repeated losing smart-v3 KOL combinations are tracked in-memory and temporarily rejected via `SMART_V3_COMBO_DECAY`; the combo key is fixed from entry-time fresh KOLs, primary paper and live closes both feed the memory, live losses are weighted as stronger evidence, and shadow arms are excluded;
+- if fresh KOL fill-price data exists and our quote is materially above the KOL weighted entry, live is rejected via `SMART_V3_ENTRY_ADVANTAGE_ADVERSE`;
+- dev wallet blacklist/watchlist status is a strategy live block, while allowlist is telemetry only;
 - unknown dev status remains fail-open and does not bypass survival, sell-route, drift, halt, or canary guards.
 - MAE fast-fail is default-on for smart-v3 probe positions: if pre-T1 MFE stays below `+3%`, token-only MAE reaches `-6%`, minimum elapsed is met, and no participating KOL has freshly topped up, the position closes as `smart_v3_mae_fast_fail`;
 - pre-T1 MFE recovery hold is default-on: if smart-v3 has reached at least `+10%` MFE, token-only MAE has not exceeded `-18%`, and no participating KOL has sold after entry, the first hard-cut event receives a short one-time hold window instead of immediate close;
@@ -73,7 +73,7 @@ Implemented diagnostic transfer from rotation/deep-research work:
 - smart-v3 close ledgers also carry `smartV3EntryComboKey`, so later reinforcement KOLs do not rewrite the entry combo used for posterior-lite decay;
 - smart-v3 closed-trade W/L is copyable/wallet-first, with token-only W/L shown separately because token-only wins can still be non-copyable after wallet drag;
 - smart-v3 closed-trade cohorts show MAE fast-fail, recovery-hold, MFE floor-exit counts, stage counts (`>=20`, `>=50`, `>=100`), and pre-T1 MFE band counts (`10-20`, `20-30`, `30-50`) as diagnostics;
-- smart-v3 evidence now summarizes paper rows that would have been live-blocked, including top `smartV3LiveBlockReason` and `smartV3LiveBlockFlags`, so strict gates can be audited against false-negative T+ markouts;
+- smart-v3 evidence now summarizes live-equivalence/no-trade rows that would not have entered live, including top `smartV3LiveBlockReason` and `smartV3LiveBlockFlags`, so strict gates can be audited against false-negative T+ markouts without mixing those rows into main paper PnL;
 - live smart-v3 buy/sell markout anchors carry `mode`, `armName`, `parameterVersion`, and `entryReason` to avoid paper/live or pullback/velocity cohort bleed;
 - the report adds no runtime strategy env; `SKIP_SMART_V3_EVIDENCE_REPORT` and `SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT` are sync/report-only shell knobs;
 - verdicts are report-only and must not change live eligibility, hard-cut, trail, or ticket sizing without a separate ADR.

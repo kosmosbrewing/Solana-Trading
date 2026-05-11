@@ -46,6 +46,9 @@ interface LedgerSell {
   txSignature?: string;
   entryTxSignature?: string;
   strategy?: string;
+  eventType?: string;
+  isPartialReduce?: boolean;
+  positionStillOpen?: boolean;
   pairAddress?: string;
   tokenSymbol?: string;
   exitReason?: string;
@@ -71,6 +74,12 @@ interface LedgerSell {
   solSpentNominal?: number;
   // 2026-04-25 Phase 2 P1-3 — T1 promotion 이 quote-based 신호로 발동됐는지.
   t1ViaQuote?: boolean;
+}
+
+function isPartialReduceLedgerRow(row: LedgerSell): boolean {
+  return row.isPartialReduce === true ||
+    row.positionStillOpen === true ||
+    row.eventType === 'rotation_flow_live_reduce';
 }
 
 interface PairedTrade {
@@ -246,6 +255,7 @@ function pairTrades(buys: LedgerBuy[], sells: LedgerSell[], since: Date | undefi
   const consumedBuys = new Set<string>(); // `${strategy}:${txSignature}`
 
   for (const s of sells) {
+    if (isPartialReduceLedgerRow(s)) continue;
     if (!within(since, s.recordedAt)) continue;
     if (!s.strategy || !s.entryTxSignature) {
       orphanSells++;

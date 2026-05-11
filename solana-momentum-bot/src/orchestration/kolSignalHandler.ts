@@ -1917,6 +1917,7 @@ function isRotationV1Position(pos: PaperPosition): boolean {
 function armNameForVersion(parameterVersion: string): string {
   if (parameterVersion === config.kolHunterSmartV3ParameterVersion) return 'kol_hunter_smart_v3';
   if (parameterVersion === config.kolHunterSmartV3QualityUnknownMicroParameterVersion) return 'smart_v3_quality_unknown_micro';
+  if (parameterVersion === config.kolHunterSmartV3FastCanaryParameterVersion) return 'smart_v3_fast_canary_v1';
   if (parameterVersion === 'smart-v3-fast-fail-v1.0.0') return 'smart_v3_fast_fail';
   if (parameterVersion === 'smart-v3-runner-relaxed-v1.0.0') return 'smart_v3_runner_relaxed';
   if (parameterVersion === config.kolHunterSwingV2ParameterVersion) return 'kol_hunter_swing_v2';
@@ -2212,6 +2213,7 @@ function dynamicExitParamsForPosition(parameterVersion: string, reason: KolEntry
   if (
     parameterVersion === config.kolHunterSmartV3ParameterVersion ||
     parameterVersion === config.kolHunterSmartV3QualityUnknownMicroParameterVersion ||
+    parameterVersion === config.kolHunterSmartV3FastCanaryParameterVersion ||
     parameterVersion === config.kolHunterRotationV1ParameterVersion ||
     parameterVersion === config.kolHunterCapitulationReboundParameterVersion
   ) {
@@ -2327,6 +2329,7 @@ function isLiveCanaryActive(): boolean {
 type KolLiveCanaryArm =
   | 'smart_v3_clean'
   | 'smart_v3_quality_unknown_micro'
+  | 'smart_v3_fast_canary_v1'
   | 'rotation_v1'
   | 'rotation_chase_topup_v1'
   | 'rotation_underfill_v1'
@@ -2354,6 +2357,8 @@ function isKolLiveCanaryArmEnabled(arm: KolLiveCanaryArm): boolean {
     case 'smart_v3_clean':
       return config.kolHunterSmartV3LiveEnabled;
     case 'smart_v3_quality_unknown_micro':
+      return false;
+    case 'smart_v3_fast_canary_v1':
       return false;
     case 'rotation_v1':
       return config.kolHunterRotationV1LiveEnabled;
@@ -2993,6 +2998,44 @@ function isSmartV3QualityUnknownMicroFlag(flag: string): boolean {
     upper === 'SMART_V3_QUALITY_TOKEN_QUALITY_UNKNOWN';
 }
 
+function parseSmartV3Top10PctFromFlag(flag: string): number | null {
+  const match = flag.toUpperCase().match(/TOP10_(\d+(?:\.\d+)?)PCT/);
+  if (!match) return null;
+  const pct = Number(match[1]);
+  if (!Number.isFinite(pct)) return null;
+  return pct / 100;
+}
+
+function isSmartV3FastCanaryModerateHolderFlag(flag: string): boolean {
+  const upper = flag.toUpperCase();
+  return upper === 'SMART_V3_QUALITY_HOLDER_TOP1_HIGH' ||
+    upper === 'SMART_V3_QUALITY_HOLDER_TOP5_HIGH' ||
+    upper === 'SMART_V3_QUALITY_HOLDER_HHI_HIGH';
+}
+
+function hasSmartV3FastCanaryHardConcentrationFlag(flags: string[]): boolean {
+  return flags.some((flag) => {
+    const upper = flag.toUpperCase();
+    if (upper.includes('HIGH_CONCENTRATION')) return true;
+    if (upper === 'SMART_V3_QUALITY_HOLDER_TOP10_HIGH') return true;
+    const top10Pct = parseSmartV3Top10PctFromFlag(flag);
+    return top10Pct !== null && top10Pct > config.kolHunterSurvivalMaxTop10HolderPct;
+  });
+}
+
+function isSmartV3FastCanaryFlag(flag: string, allFlags: string[]): boolean {
+  const upper = flag.toUpperCase();
+  if (isSmartV3QualityUnknownMicroFlag(flag)) return true;
+  if (upper.startsWith('SMART_V3_QUALITY_UNCLEAN_TOKEN')) {
+    const top10Pct = parseSmartV3Top10PctFromFlag(flag);
+    return top10Pct !== null && top10Pct <= config.kolHunterSurvivalMaxTop10HolderPct;
+  }
+  if (isSmartV3FastCanaryModerateHolderFlag(flag)) {
+    return !hasSmartV3FastCanaryHardConcentrationFlag(allFlags);
+  }
+  return false;
+}
+
 function canRouteSmartV3FallbackToQualityUnknownMicro(
   fallback: { fallback: boolean; reason?: string; flags: string[] }
 ): boolean {
@@ -3000,6 +3043,15 @@ function canRouteSmartV3FallbackToQualityUnknownMicro(
   if (!isKolLiveCanaryArmEnabled('smart_v3_quality_unknown_micro')) return false;
   if (!fallback.flags.includes('SMART_V3_LIVE_QUALITY_FALLBACK')) return false;
   return fallback.flags.every(isSmartV3QualityUnknownMicroFlag);
+}
+
+function canRouteSmartV3FallbackToFastCanary(
+  fallback: { fallback: boolean; reason?: string; flags: string[] }
+): boolean {
+  if (!fallback.fallback) return false;
+  if (!isKolLiveCanaryArmEnabled('smart_v3_fast_canary_v1')) return false;
+  if (!fallback.flags.includes('SMART_V3_LIVE_QUALITY_FALLBACK')) return false;
+  return fallback.flags.every((flag) => isSmartV3FastCanaryFlag(flag, fallback.flags));
 }
 
 function smartV3KolWeightedFillPrice(cand: PendingCandidate, fresh: SmartV3FreshContext): number | null {
@@ -3077,8 +3129,6 @@ function evaluateSmartV3LiveFallback(
     fallback: true,
     reason: flags.includes('SMART_V3_LIVE_QUALITY_FALLBACK')
       ? 'smart_v3_live_quality_fallback'
-      : flags.includes('SMART_V3_LIVE_DISABLED')
-      ? 'smart_v3_live_disabled'
       : flags.includes('SMART_V3_PULLBACK_LIVE_DISABLED')
       ? 'smart_v3_pullback_live_disabled'
       : flags.includes('SMART_V3_PRE_ENTRY_SELL_LIVE_DISABLED') || flags.includes('SMART_V3_RECENT_SELL_NO_SELL_WINDOW')
@@ -3087,6 +3137,8 @@ function evaluateSmartV3LiveFallback(
       ? 'smart_v3_combo_decay'
       : flags.includes('SMART_V3_ENTRY_ADVANTAGE_ADVERSE')
       ? 'smart_v3_entry_advantage_adverse'
+      : flags.includes('SMART_V3_LIVE_DISABLED')
+      ? 'smart_v3_live_disabled'
       : 'smart_v3_post_sell_recovery_weak',
     flags,
   };
@@ -3155,6 +3207,17 @@ function buildSmartV3LiveEligibilityShadow(options: {
         smartV3LiveBlockReason: null,
         smartV3LiveBlockFlags: [
           'SMART_V3_QUALITY_UNKNOWN_MICRO_CANARY',
+          ...fallback.flags,
+        ],
+        smartV3LiveEligibilityEvaluatedAtMs: evaluatedAtMs,
+      };
+    }
+    if (canRouteSmartV3FallbackToFastCanary(fallback)) {
+      return {
+        smartV3LiveEligibleShadow: true,
+        smartV3LiveBlockReason: null,
+        smartV3LiveBlockFlags: [
+          'SMART_V3_FAST_CANARY',
           ...fallback.flags,
         ],
         smartV3LiveEligibilityEvaluatedAtMs: evaluatedAtMs,
@@ -5521,49 +5584,77 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
           `entryReason=${entrySignal.entryReason} flags=${smartV3LiveFallback.flags.join(',')} ` +
           `— restricted quality-unknown live canary.`
         );
-      } else {
-      if (smartV3HardCutReentryLiveOnly) {
-        rejectSmartV3HardCutReentryLiveOnlyFallback(
-          smartV3LiveFallback.reason ?? 'smart_v3_live_fallback',
-          policyFlags
+      } else if (canRouteSmartV3FallbackToFastCanary(smartV3LiveFallback)) {
+        const fastCanaryCandidateId = buildLiveEquivalenceCandidateId(
+          cand.tokenMint,
+          entrySignal,
+          Date.now(),
+          config.kolHunterSmartV3FastCanaryParameterVersion
         );
+        liveEntryFlags = [
+          ...policyFlags,
+          'SMART_V3_FAST_CANARY',
+        ];
+        liveEntryOptions = {
+          ...entryOptionsWithLiveShadow,
+          parameterVersion: config.kolHunterSmartV3FastCanaryParameterVersion,
+          liveEquivalenceCandidateId: fastCanaryCandidateId,
+          smartV3LiveEligibleShadow: true,
+          smartV3LiveBlockReason: null,
+          smartV3LiveBlockFlags: [
+            'SMART_V3_FAST_CANARY',
+            ...smartV3LiveFallback.flags,
+          ],
+          smartV3LiveEligibilityEvaluatedAtMs: Date.now(),
+        };
+        log.warn(
+          `[KOL_HUNTER_SMART_V3_FAST_CANARY] ${cand.tokenMint.slice(0, 8)} ` +
+          `entryReason=${entrySignal.entryReason} flags=${smartV3LiveFallback.flags.join(',')} ` +
+          `— relaxed smart-v3 live canary.`
+        );
+      } else {
+        if (smartV3HardCutReentryLiveOnly) {
+          rejectSmartV3HardCutReentryLiveOnlyFallback(
+            smartV3LiveFallback.reason ?? 'smart_v3_live_fallback',
+            policyFlags
+          );
+          return;
+        }
+        log.warn(
+          `[KOL_HUNTER_SMART_V3_LIVE_FALLBACK] ${cand.tokenMint.slice(0, 8)} reason=${smartV3LiveFallback.reason} ` +
+          `entryReason=${entrySignal.entryReason} freshKols=${smartFresh.freshIndependentKolCount} ` +
+          `freshAfterSell=${smartFresh.freshBuyKolsAfterLastSell} sellSol=${smartFresh.preEntrySellSol.toFixed(3)}. ` +
+          `fallback paper.`
+        );
+        emitKolLiveFallbackPolicy(cand.tokenMint, score, policyFlags, {
+          ...entryPolicyMetrics,
+          entryReason: entryOptions.entryReason,
+          armName: entryOptions.parameterVersion ? armNameForVersion(entryOptions.parameterVersion) : undefined,
+        });
+        emitKolLiveEquivalence({
+          candidateId: liveEquivalenceCandidateId,
+          tokenMint: cand.tokenMint,
+          entrySignal,
+          score,
+          entryOptions: entryOptionsWithLiveShadow,
+          survivalFlags: policyFlags,
+          candIsShadow,
+          stage: 'smart_v3_live_fallback',
+          liveWouldEnter: false,
+          liveBlockReason: smartV3LiveFallback.reason ?? 'smart_v3_live_fallback',
+          liveBlockFlags: policyFlags,
+        });
+        await enterPaperPosition(cand.tokenMint, cand, score, policyFlags, {
+          ...withLiveEquivalence(
+            entryOptionsWithLiveShadow,
+            'smart_v3_live_fallback',
+            false,
+            smartV3LiveFallback.reason ?? 'smart_v3_live_fallback',
+            policyFlags,
+          ),
+          skipPolicyEntry: true,
+        });
         return;
-      }
-      log.warn(
-        `[KOL_HUNTER_SMART_V3_LIVE_FALLBACK] ${cand.tokenMint.slice(0, 8)} reason=${smartV3LiveFallback.reason} ` +
-        `entryReason=${entrySignal.entryReason} freshKols=${smartFresh.freshIndependentKolCount} ` +
-        `freshAfterSell=${smartFresh.freshBuyKolsAfterLastSell} sellSol=${smartFresh.preEntrySellSol.toFixed(3)}. ` +
-        `fallback paper.`
-      );
-      emitKolLiveFallbackPolicy(cand.tokenMint, score, policyFlags, {
-        ...entryPolicyMetrics,
-        entryReason: entryOptions.entryReason,
-        armName: entryOptions.parameterVersion ? armNameForVersion(entryOptions.parameterVersion) : undefined,
-      });
-      emitKolLiveEquivalence({
-        candidateId: liveEquivalenceCandidateId,
-        tokenMint: cand.tokenMint,
-        entrySignal,
-        score,
-        entryOptions: entryOptionsWithLiveShadow,
-        survivalFlags: policyFlags,
-        candIsShadow,
-        stage: 'smart_v3_live_fallback',
-        liveWouldEnter: false,
-        liveBlockReason: smartV3LiveFallback.reason ?? 'smart_v3_live_fallback',
-        liveBlockFlags: policyFlags,
-      });
-      await enterPaperPosition(cand.tokenMint, cand, score, policyFlags, {
-        ...withLiveEquivalence(
-          entryOptionsWithLiveShadow,
-          'smart_v3_live_fallback',
-          false,
-          smartV3LiveFallback.reason ?? 'smart_v3_live_fallback',
-          policyFlags,
-        ),
-        skipPolicyEntry: true,
-      });
-      return;
       }
     }
     emitKolLiveEquivalence({
@@ -9921,6 +10012,14 @@ export function __testInit(options: {
 /** 테스트 전용: live canary triple-flag gate 평가 결과 노출. */
 export function __testIsLiveCanaryActive(): boolean {
   return isLiveCanaryActive();
+}
+
+export function __testCanRouteSmartV3FastCanary(flags: string[]): boolean {
+  return canRouteSmartV3FallbackToFastCanary({
+    fallback: true,
+    reason: 'smart_v3_live_quality_fallback',
+    flags,
+  });
 }
 
 export function __testGetActive(): PaperPosition[] {

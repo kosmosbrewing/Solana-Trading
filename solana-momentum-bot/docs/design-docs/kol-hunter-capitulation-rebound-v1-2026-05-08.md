@@ -15,6 +15,34 @@ The strategy is not "buy every large drop." The intended edge is narrower:
 
 This lane is closer to `rotation-v1` than to `smart-v3`. It targets short, post-cost rebound capture, not 5x runner discovery.
 
+### 2026-05-11 Update: RR Sidecar Arm
+
+The original `kol_hunter_capitulation_rebound_v1` remains the strict baseline: any recent KOL sell wave blocks entry. That baseline is useful for proving whether "no distribution pressure" is required.
+
+The active follow-up experiment is `kol_hunter_capitulation_rebound_rr_v1`:
+
+- universe: still KOL-buy tokens only;
+- live: prohibited;
+- purpose: test whether KOL sell before the low can be treated as a feature/penalty rather than a full veto;
+- entry: drawdown + bounce + recovery confirmation + clean post-low/post-bounce sell flow + stop/target RR;
+- hard veto: unchanged for route/security/token-quality structural risk;
+- ledger: same `capitulation-rebound-paper-trades.jsonl` projection, with `armName=kol_hunter_capitulation_rebound_rr_v1`;
+- report: `npm run kol:capitulation-report` includes both strict and RR arms.
+
+Runtime knobs:
+
+| Knob | Default | Meaning |
+|---|---:|---|
+| `KOL_HUNTER_CAPITULATION_REBOUND_RR_ENABLED` | `false` | opt-in paper sidecar |
+| `KOL_HUNTER_CAPITULATION_REBOUND_RR_PAPER_ENABLED` | `true` | paper write gate |
+| `KOL_HUNTER_CAPITULATION_REBOUND_RR_MIN_RR` | `1.5` | minimum target/stop ratio |
+| `KOL_HUNTER_CAPITULATION_REBOUND_RR_TARGET_PCT` | `0.18` | paper target used for RR calculation |
+| `KOL_HUNTER_CAPITULATION_REBOUND_RR_STOP_BUFFER_PCT` | `0.02` | invalidation below local low |
+| `KOL_HUNTER_CAPITULATION_REBOUND_RR_MAX_POST_LOW_SELL_KOLS` | `0` | KOL sell after the low blocks |
+| `KOL_HUNTER_CAPITULATION_REBOUND_RR_MAX_POST_BOUNCE_SELL_KOLS` | `0` | KOL sell after bounce confirmation blocks |
+
+This update intentionally does not make `capitulation_rebound` a live canary candidate. The only promotion path is paper evidence first: enough closes, T+15/T+30 ok coverage, post-cost positive continuation, and no excessive no-route/rug rejects.
+
 ## Why This Is Separate From Smart-v3
 
 `smart-v3` is the main 5x lane. It looks for KOL consensus and trend continuation after controlled entry triggers.

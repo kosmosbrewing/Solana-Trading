@@ -479,6 +479,39 @@ export const kolHunter = {
     numEnv('KOL_HUNTER_CAPITULATION_REBOUND_HARD_CUT_PCT', '0.06'),
   kolHunterCapitulationReboundMarkoutOffsetsSec:
     parseSecondsList(optional('KOL_HUNTER_CAPITULATION_REBOUND_MARKOUT_OFFSETS_SEC', '15,30,60,180,300,1800')),
+  // 2026-05-11: capitulation_rebound_rr_v1 paper sidecar.
+  // KOL buy 가 만든 universe 는 유지하되, KOL sell wave 를 전면 veto 하지 않고
+  // 저점 이후 sell 재개 여부 + stop/target 손익비로만 paper 진입을 검증한다. Live path 없음.
+  kolHunterCapitulationReboundRrEnabled:
+    boolOptional('KOL_HUNTER_CAPITULATION_REBOUND_RR_ENABLED', false),
+  kolHunterCapitulationReboundRrPaperEnabled:
+    boolOptional('KOL_HUNTER_CAPITULATION_REBOUND_RR_PAPER_ENABLED', true),
+  kolHunterCapitulationReboundRrParameterVersion:
+    process.env.KOL_HUNTER_CAPITULATION_REBOUND_RR_PARAMETER_VERSION ?? 'capitulation-rebound-rr-v1.0.0',
+  kolHunterCapitulationReboundRrMinKolScore:
+    numEnv('KOL_HUNTER_CAPITULATION_REBOUND_RR_MIN_KOL_SCORE', '2.0'),
+  kolHunterCapitulationReboundRrMinDrawdownPct:
+    numEnv('KOL_HUNTER_CAPITULATION_REBOUND_RR_MIN_DRAWDOWN_PCT', '0.25'),
+  kolHunterCapitulationReboundRrMaxDrawdownPct:
+    numEnv('KOL_HUNTER_CAPITULATION_REBOUND_RR_MAX_DRAWDOWN_PCT', '0.75'),
+  kolHunterCapitulationReboundRrMinBouncePct:
+    numEnv('KOL_HUNTER_CAPITULATION_REBOUND_RR_MIN_BOUNCE_PCT', '0.03'),
+  kolHunterCapitulationReboundRrRecoveryConfirmations:
+    numEnv('KOL_HUNTER_CAPITULATION_REBOUND_RR_RECOVERY_CONFIRMATIONS', '1'),
+  kolHunterCapitulationReboundRrMinRr:
+    numEnv('KOL_HUNTER_CAPITULATION_REBOUND_RR_MIN_RR', '1.5'),
+  kolHunterCapitulationReboundRrStopBufferPct:
+    numEnv('KOL_HUNTER_CAPITULATION_REBOUND_RR_STOP_BUFFER_PCT', '0.02'),
+  kolHunterCapitulationReboundRrTargetPct:
+    numEnv('KOL_HUNTER_CAPITULATION_REBOUND_RR_TARGET_PCT', '0.18'),
+  kolHunterCapitulationReboundRrMaxPostLowSellSol:
+    numEnv('KOL_HUNTER_CAPITULATION_REBOUND_RR_MAX_POST_LOW_SELL_SOL', '0'),
+  kolHunterCapitulationReboundRrMaxPostLowSellKols:
+    numEnv('KOL_HUNTER_CAPITULATION_REBOUND_RR_MAX_POST_LOW_SELL_KOLS', '0'),
+  kolHunterCapitulationReboundRrMaxPostBounceSellSol:
+    numEnv('KOL_HUNTER_CAPITULATION_REBOUND_RR_MAX_POST_BOUNCE_SELL_SOL', '0'),
+  kolHunterCapitulationReboundRrMaxPostBounceSellKols:
+    numEnv('KOL_HUNTER_CAPITULATION_REBOUND_RR_MAX_POST_BOUNCE_SELL_KOLS', '0'),
 
   // ─── 2026-04-26: kol_hunter_smart_v3 main paper entry logic ───
   // 운영자 결정: 돈을 번 적 없는 v1 single-KOL wait entry 대신 smart-v3 trigger 를 main 으로 사용.

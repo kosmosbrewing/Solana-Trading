@@ -1,7 +1,9 @@
 import {
   evaluateCapitulationReboundPolicy,
+  evaluateCapitulationReboundRrPolicy,
   isCapitulationHardVetoFlag,
   type CapitulationReboundPolicyConfig,
+  type CapitulationReboundRrPolicyConfig,
 } from '../src/orchestration/capitulationRebound/policy';
 
 const baseConfig: CapitulationReboundPolicyConfig = {
@@ -14,6 +16,22 @@ const baseConfig: CapitulationReboundPolicyConfig = {
   requiredRecoveryConfirmations: 2,
   maxRecentSellSol: 0,
   maxRecentSellKols: 0,
+};
+
+const rrConfig: CapitulationReboundRrPolicyConfig = {
+  ...baseConfig,
+  minKolScore: 2,
+  minDrawdownPct: 0.25,
+  maxDrawdownPct: 0.75,
+  minBouncePct: 0.03,
+  requiredRecoveryConfirmations: 1,
+  minRr: 1.5,
+  stopBufferPct: 0.02,
+  targetPct: 0.18,
+  maxPostLowSellSol: 0,
+  maxPostLowSellKols: 0,
+  maxPostBounceSellSol: 0,
+  maxPostBounceSellKols: 0,
 };
 
 describe('capitulation rebound policy', () => {
@@ -93,5 +111,79 @@ describe('capitulation rebound policy', () => {
     expect(decision.triggered).toBe(false);
     expect(decision.reason).toBe('sell_wave');
     expect(decision.flags).toContain('CAPITULATION_SELL_WAVE');
+  });
+
+  it('allows rr rebounds after pre-low KOL sells when the post-low flow is clean', () => {
+    const decision = evaluateCapitulationReboundRrPolicy({
+      alreadyEntered: false,
+      currentPrice: 0.60,
+      peakPrice: 1,
+      lowPrice: 0.55,
+      kolScore: 3,
+      preEntrySellSol: 2,
+      preEntrySellKols: 2,
+      preLowSellSol: 2,
+      preLowSellKols: 2,
+      postLowSellSol: 0,
+      postLowSellKols: 0,
+      postBounceSellSol: 0,
+      postBounceSellKols: 0,
+      recoveryConfirmations: 1,
+      survivalFlags: [],
+      config: rrConfig,
+    });
+
+    expect(decision.triggered).toBe(true);
+    expect(decision.reason).toBe('triggered');
+    expect(decision.flags).toContain('CAPITULATION_REBOUND_RR_V1');
+    expect(decision.telemetry.rr).toBeGreaterThanOrEqual(1.5);
+  });
+
+  it('blocks rr rebounds when KOL sell resumes after the low', () => {
+    const decision = evaluateCapitulationReboundRrPolicy({
+      alreadyEntered: false,
+      currentPrice: 0.60,
+      peakPrice: 1,
+      lowPrice: 0.55,
+      kolScore: 3,
+      preEntrySellSol: 2,
+      preEntrySellKols: 2,
+      preLowSellSol: 2,
+      preLowSellKols: 2,
+      postLowSellSol: 0.1,
+      postLowSellKols: 1,
+      postBounceSellSol: 0,
+      postBounceSellKols: 0,
+      recoveryConfirmations: 1,
+      survivalFlags: [],
+      config: rrConfig,
+    });
+
+    expect(decision.triggered).toBe(false);
+    expect(decision.reason).toBe('post_low_sell');
+    expect(decision.flags).toContain('CAPITULATION_RR_POST_LOW_SELL');
+  });
+
+  it('rejects rr rebounds when the stop-to-target ratio is not favorable enough', () => {
+    const decision = evaluateCapitulationReboundRrPolicy({
+      alreadyEntered: false,
+      currentPrice: 0.72,
+      peakPrice: 1,
+      lowPrice: 0.55,
+      kolScore: 3,
+      preEntrySellSol: 0,
+      preEntrySellKols: 0,
+      postLowSellSol: 0,
+      postLowSellKols: 0,
+      postBounceSellSol: 0,
+      postBounceSellKols: 0,
+      recoveryConfirmations: 1,
+      survivalFlags: [],
+      config: { ...rrConfig, targetPct: 0.12 },
+    });
+
+    expect(decision.triggered).toBe(false);
+    expect(decision.reason).toBe('rr_too_low');
+    expect(decision.telemetry.rr).toBeLessThan(1.5);
   });
 });

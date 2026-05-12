@@ -195,7 +195,8 @@ export const kolHunter = {
   //   - paper: pos.quantity *= (1 - takePct), ticketSol 도 동일 비율로 축소
   //   - live: closeLivePosition 패턴 재사용 (별도 partial sell tx, DB row 유지)
   //   - structural / quick reject / probe_hard_cut 등 PROBE 단계 close 와 무관
-  // paper-only first (default OFF — 1주 측정 후 별도 ADR 로 live 활성).
+  // default OFF. Live 는 KOL_HUNTER_PARTIAL_TAKE_LIVE_ENABLED=true 를 별도 opt-in 해야 하며,
+  // 실패 시 runner 수량을 임의 축소하지 않고 pending full-close 를 drain 한다.
   kolHunterPartialTakeEnabled: boolOptional('KOL_HUNTER_PARTIAL_TAKE_ENABLED', false),
   kolHunterPartialTakePct: numEnv('KOL_HUNTER_PARTIAL_TAKE_PCT', '0.30'),  // T1 promote 시 30% lock-in
   kolHunterPartialTakeLiveEnabled: boolOptional('KOL_HUNTER_PARTIAL_TAKE_LIVE_ENABLED', false),

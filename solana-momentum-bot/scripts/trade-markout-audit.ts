@@ -280,8 +280,17 @@ async function main(): Promise<void> {
     const positionId = str(row.positionId);
     const atMs = timeMs(row.promotedAt);
     if (!positionId || !Number.isFinite(atMs)) continue;
-    const key = anchorKeyFromParts(positionId, 'sell', atMs);
-    if (!expectedAnchors.has(key)) expectedAnchors.set(key, { key, anchorType: 'sell', atMs, mode: 'paper', eventType: 'paper_partial_take_fallback' });
+    const isLive = row.isLive === true || str(row.mode) === 'live';
+    const key = anchorKeyFromParts(positionId, 'sell', atMs, str(row.txSignature));
+    if (!expectedAnchors.has(key)) {
+      expectedAnchors.set(key, {
+        key,
+        anchorType: 'sell',
+        atMs,
+        mode: isLive ? 'live' : 'paper',
+        eventType: str(row.eventType) || (isLive ? 'live_partial_take_fallback' : 'paper_partial_take_fallback'),
+      });
+    }
   }
 
   const latestByKey = new Map<string, JsonRow>();

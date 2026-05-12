@@ -1781,9 +1781,12 @@ describe('kolSignalHandler — state machine', () => {
       expect(row.rotationMonetizableEdge.costRatio).toBeLessThan(0.06);
       expect(row.rotationMonetizableEdge.walletDragRatio).toBeGreaterThan(0.06);
       expect(row.rotationMonetizableCostRatio).toBeLessThan(0.06);
+      expect(row.wouldLivePassExecutionGuard).toBe(true);
+      expect(row.liveCostShadowReason).toBe('rotation_monetizable_edge_pass');
       expect(row.extras.entryReason).toBe('rotation_v1');
       expect(row.extras.armName).toBe('rotation_underfill_v1');
       expect(row.extras.rotationMonetizableEdge.pass).toBe(true);
+      expect(row.extras.wouldLivePassExecutionGuard).toBe(true);
       expect(row.extras.exitPrice).toBeCloseTo(0.00102, 10);
       expect(row.extras.maxPrice).toBeCloseTo(0.00105, 10);
       expect(row.extras.rotationAnchorKols).toEqual(['decu']);
@@ -2422,6 +2425,7 @@ describe('kolSignalHandler — state machine', () => {
         // RUNNER_T1 promote + partial take 발화
         expect(pos!.state).toBe('RUNNER_T1');
         expect(pos!.partialTakeAtSec).toBeGreaterThan(0);
+        expect(pos!.partialTakeT1AtSec).toBe(pos!.partialTakeAtSec);
         // quantity / ticketSol 축소 (1 - 0.30 = 0.70)
         expect(pos!.quantity).toBeCloseTo(initialQty * 0.70, 4);
         expect(pos!.ticketSol).toBeCloseTo(initialTicket * 0.70, 6);
@@ -2462,18 +2466,20 @@ describe('kolSignalHandler — state machine', () => {
         await flushAsync();
         const qtyAfterFirst = pos.quantity;
         const markerAfterFirst = pos.partialTakeAtSec;
+        const t1MarkerAfterFirst = pos.partialTakeT1AtSec;
         // 추가 tick (가격 더 올라가도 partial take 재실행 안 됨)
         __testTriggerTick(pos.positionId, pos.entryPrice * 1.80);
         await flushAsync();
         expect(pos.partialTakeAtSec).toBe(markerAfterFirst);  // marker 동일
+        expect(pos.partialTakeT1AtSec).toBe(t1MarkerAfterFirst);
         expect(pos.quantity).toBe(qtyAfterFirst);  // quantity 동일
       } finally {
         mockedConfig.kolHunterPartialTakeEnabled = false;
       }
     });
 
-    // 2026-05-01 (F2 critical 회귀): live position 의 partial take 차단 — wiring 미구현 상태 안전판.
-    it('F2 fix: live parent (isLive=true) → partial take 차단, quantity 변경 없음', async () => {
+    // 2026-05-01/12 회귀: paper helper 가 live position 을 mutation 하지 않아야 한다.
+    it('F2 fix: live parent direct paper helper call → mutation 없이 차단', async () => {
       mockedConfig.kolHunterPartialTakeEnabled = true;
       mockedConfig.kolHunterPartialTakePct = 0.30;
       try {
@@ -3761,7 +3767,7 @@ describe('kolSignalHandler — state machine', () => {
       expect(policyRecordsWithFlag('ROTATION_UNDERFILL_LIVE_QUALITY_FALLBACK')).toHaveLength(0);
     });
 
-    it('rotation-underfill live canary: live fresh quote 가 KOL fill 위로 올라가도 underfill trigger 를 재차단하지 않는다', async () => {
+    it('rotation-underfill live canary: live fresh quote 가 underfill 을 잃으면 buy 전에 paper fallback 한다', async () => {
       const { ctx, executeBuy, insertTrade } = buildLiveCtx();
       __testInit({ priceFeed: stubFeed as unknown as never, ctx });
       mockedConfig.kolHunterPaperOnly = false;
@@ -3778,9 +3784,50 @@ describe('kolSignalHandler — state machine', () => {
       stubFeed.setFreshPrice(MINT_ROTATION, 0.00103);
       await flushAsync();
 
+      expect(executeBuy).not.toHaveBeenCalled();
+      expect(insertTrade).not.toHaveBeenCalled();
+      const paper = __testGetActive().find((p) => p.isLive !== true);
+      expect(paper?.armName).toBe('rotation_underfill_v1');
+      expect(paper?.executionGuardAction).toBe('pretrade_reject');
+      expect(paper?.executionGuardReason).toContain('rotation_underfill_pretrade_discount_pct');
+      expect(paper?.survivalFlags).toContain('ROTATION_UNDERFILL_LIVE_PRETRADE_REJECT');
+    });
+
+    it('rotation-underfill live canary: post-fill underfill 미달은 즉시매도 대신 telemetry/cooldown 으로만 남긴다', async () => {
+      const executeBuy = jest.fn().mockResolvedValue({
+        txSignature: 'KOL_LIVE_UNDERFILL_WEAK_FILL_SIG',
+        expectedOutAmount: 20n,
+        actualOutUiAmount: 20.1,
+        actualInputUiAmount: 0.0221,
+        swapInputUiAmount: 0.02,
+        walletInputUiAmount: 0.0221,
+        ataRentSol: 0.002,
+        slippageBps: 12,
+      });
+      const { ctx, executeSell, insertTrade } = buildLiveCtx({ executeBuy });
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterRotationV1LiveEnabled = false;
+      mockedConfig.kolHunterRotationV1MinIndependentKol = 1;
+      mockedConfig.kolHunterRotationUnderfillLiveCanaryEnabled = true;
+      mockedConfig.kolHunterRotationUnderfillMinDiscountPct = 0.02;
+
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+      await flushAsync();
+
       expect(executeBuy).toHaveBeenCalledTimes(1);
       expect(insertTrade).toHaveBeenCalledTimes(1);
-      expect(policyRecordsWithFlag('ROTATION_UNDERFILL_LIVE_REFERENCE_FALLBACK')).toHaveLength(0);
+      expect(executeSell).not.toHaveBeenCalled();
+      const live = __testGetActive().find((p) => p.isLive === true);
+      expect(live?.armName).toBe('rotation_underfill_v1');
+      expect(live?.executionGuardAction).toBe('telemetry_only');
+      expect(live?.executionGuardReason).toBe('rotation_underfill_actual_discount_pct=0.0050');
+      expect(live?.state).toBe('PROBE');
     });
 
     it('rotation-underfill live flow: 약한 anchor sell 은 paper 와 동일하게 부분 축소한다', async () => {
@@ -4645,6 +4692,9 @@ describe('kolSignalHandler — state machine', () => {
       mockedConfig.kolHunterLiveCanaryEnabled = false;
       mockedConfig.canaryGlobalConcurrencyEnabled = false;
       mockedConfig.kolHunterReentryCooldownMs = 0;
+      mockedConfig.kolHunterPartialTakeEnabled = false;
+      mockedConfig.kolHunterPartialTakeLiveEnabled = false;
+      mockedConfig.kolHunterPartialTakePct = 0.30;
       __testSetKolLiveSellRetryDelaysMs();
       resetCanaryConcurrencyGuardForTests();
     });
@@ -4655,6 +4705,7 @@ describe('kolSignalHandler — state machine', () => {
       executeSell?: jest.Mock;
       getTokenBalance?: jest.Mock;
       getTokenBalanceFromTransaction?: jest.Mock;
+      getBalance?: jest.Mock;
       solBefore?: number;
       solAfter?: number;
       insertTradeId?: string;
@@ -4682,7 +4733,7 @@ describe('kolSignalHandler — state machine', () => {
       const solBefore = opts.solBefore ?? 1.0;
       const solAfter = opts.solAfter ?? 1.05;
       // getBalance 는 sell 전후 2회 호출 — sequential mock.
-      const getBalance = jest.fn()
+      const getBalance = opts.getBalance ?? jest.fn()
         .mockResolvedValueOnce(solBefore)
         .mockResolvedValueOnce(solAfter);
       const sendCritical = jest.fn().mockResolvedValue(undefined);
@@ -4796,6 +4847,177 @@ describe('kolSignalHandler — state machine', () => {
       // event payload
       expect(captured?.reason).toBe('winner_trailing_t1');
       expect(__testGetActive()).toHaveLength(0);
+    });
+
+    it('1a. live T1 profit floor uses paper/token-only entry reference, not wallet rent-inclusive entry', async () => {
+      const tokenOnlyBuy = jest.fn().mockResolvedValue({
+        txSignature: 'KOL_LIVE_TOKEN_ONLY_BUY_SIG',
+        expectedInAmount: 10_000_000n,
+        actualInputAmount: 12_000_000n,
+        actualInputUiAmount: 0.012,
+        inputDecimals: 9,
+        expectedOutAmount: 10_000_000n,
+        actualOutAmount: 10_000_000n,
+        actualOutUiAmount: 10,
+        outputDecimals: 6,
+        swapInputUiAmount: 0.01,
+        walletInputUiAmount: 0.012,
+        ataRentSol: 0.002,
+        slippageBps: 12,
+      });
+      const fx = buildE2EFixtures({
+        executeBuy: tokenOnlyBuy,
+        solBefore: 1.0,
+        solAfter: 1.012,
+      });
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx: fx.ctx });
+
+      await triggerSmartV3LiveEntry(MINT_SMART);
+
+      const live = __testGetActive().find((p) => p.isLive === true)!;
+      expect(live).toBeDefined();
+      expect(live.entryPrice).toBeCloseTo(0.0012, 8);
+      expect(live.entryPriceTokenOnly).toBeCloseTo(0.001, 8);
+      expect(live.marketReferencePrice).toBeCloseTo(0.001, 8);
+      expect(live.peakPrice).toBeCloseTo(0.001, 8);
+      expect(live.t1ProfitFloorMult).toBeGreaterThan(1);
+      expect(live.t1TrailPctOverride).toBeGreaterThan(0);
+
+      __testTriggerTick(live.positionId, live.marketReferencePrice * 1.5);
+      expect(live.state).toBe('RUNNER_T1');
+
+      const paperTrailStop = Math.max(
+        live.peakPrice * (1 - (live.t1TrailPctOverride ?? 0)),
+        live.marketReferencePrice * (live.t1ProfitFloorMult ?? 1)
+      );
+      const walletTrailStop = Math.max(
+        live.peakPrice * (1 - (live.t1TrailPctOverride ?? 0)),
+        live.entryPrice * (live.t1ProfitFloorMult ?? 1)
+      );
+      const betweenPaperAndWalletStop = (paperTrailStop + walletTrailStop) / 2;
+      expect(betweenPaperAndWalletStop).toBeGreaterThan(paperTrailStop);
+      expect(betweenPaperAndWalletStop).toBeLessThan(walletTrailStop);
+
+      // wallet 기준 stop 과 token-only 기준 stop 사이.
+      // paper 기준이면 유지, wallet/rent-inclusive 기준이면 잘못 종료된다.
+      __testTriggerTick(live.positionId, betweenPaperAndWalletStop);
+      await flushAsync();
+
+      expect(fx.executeSell).not.toHaveBeenCalled();
+      expect(__testGetActive().some((p) => p.positionId === live.positionId)).toBe(true);
+
+      __testTriggerTick(live.positionId, paperTrailStop * 0.999);
+      await flushAsync();
+
+      expect(fx.executeSell).toHaveBeenCalledTimes(1);
+      expect(fx.closeTrade).toHaveBeenCalledWith(expect.objectContaining({
+        exitReason: 'winner_trailing_t1',
+      }));
+      expect(__testGetActive().some((p) => p.positionId === live.positionId)).toBe(false);
+    });
+
+    it('1b. live T1 partial take sells configured fraction and final close sells remaining runner', async () => {
+      mockedConfig.kolHunterPartialTakeEnabled = true;
+      mockedConfig.kolHunterPartialTakeLiveEnabled = true;
+      mockedConfig.kolHunterPartialTakePct = 0.30;
+      const executeSell = jest.fn()
+        .mockResolvedValueOnce({ txSignature: 'KOL_LIVE_PARTIAL_T1_SIG', slippageBps: 11 })
+        .mockResolvedValueOnce({ txSignature: 'KOL_LIVE_FINAL_SELL_SIG', slippageBps: 18 });
+      const getTokenBalance = jest.fn()
+        .mockResolvedValueOnce(1_000_000n)
+        .mockResolvedValueOnce(700_000n);
+      const getBalance = jest.fn()
+        .mockResolvedValueOnce(1.000)
+        .mockResolvedValueOnce(1.009)
+        .mockResolvedValueOnce(1.009)
+        .mockResolvedValueOnce(1.023);
+      const fx = buildE2EFixtures({ executeSell, getTokenBalance, getBalance });
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx: fx.ctx });
+
+      await triggerSmartV3LiveEntry(MINT_SMART);
+      const live = __testGetActive().find((p) => p.isLive === true)!;
+      const initialQty = live.quantity;
+      const initialTicket = live.ticketSol;
+
+      __testTriggerTick(live.positionId, live.entryPrice * 1.5);
+      await flushAsync();
+      await flushAsync();
+
+      expect(live.state).toBe('RUNNER_T1');
+      expect(live.partialTakeT1AtSec).toBeGreaterThan(0);
+      expect(live.partialTakeAtSec).toBe(live.partialTakeT1AtSec);
+      expect(live.quantity).toBeCloseTo(initialQty * 0.70, 6);
+      expect(live.ticketSol).toBeCloseTo(initialTicket * 0.70, 6);
+      expect(executeSell).toHaveBeenCalledTimes(1);
+      expect(executeSell).toHaveBeenNthCalledWith(1, live.tokenMint, 300_000n);
+
+      const partialLedgerCalls = mockAppendFile.mock.calls.filter((c) =>
+        typeof c[0] === 'string' && c[0].includes('kol-partial-takes.jsonl')
+      );
+      expect(partialLedgerCalls.length).toBeGreaterThanOrEqual(1);
+      const partialRecord = JSON.parse(String(partialLedgerCalls[partialLedgerCalls.length - 1][1]).trim());
+      expect(partialRecord.isLive).toBe(true);
+      expect(partialRecord.mode).toBe('live');
+      expect(partialRecord.eventType).toBe('partial_take_t1');
+      expect(partialRecord.partialKind).toBe('t1_partial_take');
+      expect(partialRecord.txSignature).toBe('KOL_LIVE_PARTIAL_T1_SIG');
+
+      __testTriggerTick(live.positionId, live.peakPrice * 0.77);
+      await flushAsync();
+
+      expect(executeSell).toHaveBeenCalledTimes(2);
+      expect(executeSell).toHaveBeenNthCalledWith(2, live.tokenMint, 700_000n);
+      expect(fx.closeTrade).toHaveBeenCalledWith(expect.objectContaining({
+        exitReason: 'winner_trailing_t1',
+      }));
+      expect(__testGetActive().some((p) => p.positionId === live.positionId)).toBe(false);
+    });
+
+    it('1c. live T1 partial failure keeps full quantity and defers pending close until failure settles', async () => {
+      mockedConfig.kolHunterPartialTakeEnabled = true;
+      mockedConfig.kolHunterPartialTakeLiveEnabled = true;
+      mockedConfig.kolHunterPartialTakePct = 0.30;
+      const executeSell = jest.fn()
+        .mockRejectedValueOnce(new Error('partial send fail 1'))
+        .mockRejectedValueOnce(new Error('partial send fail 2'))
+        .mockRejectedValueOnce(new Error('partial send fail 3'))
+        .mockRejectedValueOnce(new Error('partial send fail 4'))
+        .mockRejectedValueOnce(new Error('partial send fail 5'))
+        .mockRejectedValueOnce(new Error('partial send fail 6'))
+        .mockResolvedValueOnce({ txSignature: 'KOL_LIVE_FINAL_AFTER_PARTIAL_FAIL', slippageBps: 18 });
+      const getTokenBalance = jest.fn().mockResolvedValue(1_000_000n);
+      const getBalance = jest.fn()
+        .mockResolvedValueOnce(1.000)
+        .mockResolvedValueOnce(1.000)
+        .mockResolvedValueOnce(1.012);
+      const fx = buildE2EFixtures({ executeSell, getTokenBalance, getBalance });
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx: fx.ctx });
+
+      await triggerSmartV3LiveEntry(MINT_SMART);
+      const live = __testGetActive().find((p) => p.isLive === true)!;
+      const initialQty = live.quantity;
+      const initialTicket = live.ticketSol;
+
+      __testTriggerTick(live.positionId, live.entryPrice * 1.5);
+      expect(live.partialTakeT1InFlight).toBe(true);
+      __testTriggerTick(live.positionId, live.peakPrice * 0.77);
+
+      await flushAsync();
+      await flushAsync();
+      await flushAsync();
+
+      expect(executeSell).toHaveBeenCalledTimes(7);
+      for (let i = 1; i <= 6; i += 1) {
+        expect(executeSell).toHaveBeenNthCalledWith(i, live.tokenMint, 300_000n);
+      }
+      expect(executeSell).toHaveBeenNthCalledWith(7, live.tokenMint, 1_000_000n);
+      expect(live.partialTakeT1AtSec).toBeUndefined();
+      expect(live.quantity).toBeCloseTo(initialQty, 6);
+      expect(live.ticketSol).toBeCloseTo(initialTicket, 6);
+      expect(fx.closeTrade).toHaveBeenCalledWith(expect.objectContaining({
+        exitReason: 'winner_trailing_t1',
+      }));
+      expect(__testGetActive().some((p) => p.positionId === live.positionId)).toBe(false);
     });
 
     it('1a. live smart-v3 도 paper 와 같은 MAE fast-fail exit reason 을 사용한다', async () => {

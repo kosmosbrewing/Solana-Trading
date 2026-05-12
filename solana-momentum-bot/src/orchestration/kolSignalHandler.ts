@@ -298,6 +298,8 @@ export interface PaperPosition {
   rotationFlowLiveReduceTxSignature?: string;
   rotationFlowLiveReduceAttempts?: number;
   rotationMonetizableEdge?: RotationMonetizableEdgeEstimate | null;
+  executionGuardReason?: string | null;
+  executionGuardAction?: 'pretrade_reject' | 'telemetry_only' | 'forced_exit' | null;
   capitulationTelemetry?: CapitulationReboundTelemetry;
   capitulationEntryLowPrice?: number;
   capitulationEntryLowAtMs?: number;
@@ -331,10 +333,27 @@ export interface PaperPosition {
   isTailPosition?: boolean;
   /**
    * 2026-05-01 (Phase 2.A2 P0): partial take 발화 시각 (재실행 방지).
-   * RUNNER_T1 promote 시 1회만 partial sell — pos.quantity 가 줄어든 후에도 재 promote 시 중복 차단.
-   * partial sell 비율은 config.kolHunterPartialTakePct (default 30%).
+   * Backward-compatible aggregate marker. T1 partial take 와 rotation flow reduce 는
+   * 아래 전용 marker 로 분리하고, 이 필드는 legacy reports/research schema 의 "partial 있음"으로만 쓴다.
    */
   partialTakeAtSec?: number;
+  /** T1 promote partial take marker — rotation_flow_reduce 와 독립. */
+  partialTakeT1AtSec?: number;
+  /** Live T1 partial sell 진행 중 marker. Tick 중복 발화를 막는다. */
+  partialTakeT1InFlight?: boolean;
+  /** Live T1 partial sell 실패 cooldown marker. 실패 시 runner 는 계속 보유한다. */
+  partialTakeT1LiveFailedAtSec?: number;
+  partialTakeT1LiveFailureCount?: number;
+  partialTakeT1LiveFailureReason?: string;
+  partialTakeT1LiveTxSignature?: string;
+  partialTakeT1LiveAttempts?: number;
+  pendingCloseAfterPartialTake?: {
+    exitPrice: number;
+    reason: CloseReason;
+    nowSec: number;
+    mfePctAtClose: number;
+    maePctAtClose: number;
+  };
   /**
    * 2026-05-01 (codex F-A fix): partial take 시 lock-in 된 SOL 손익 누적.
    * close 시 runner netSol 에 합산 → appendPaperLedger / markKolClosed / DSR validator 가 보는
@@ -435,6 +454,8 @@ interface PaperEntryOptions {
   underfillReferenceSolAmount?: number;
   underfillReferenceTokenAmount?: number;
   rotationFlowExitEnabled?: boolean;
+  executionGuardReason?: string | null;
+  executionGuardAction?: 'pretrade_reject' | 'telemetry_only' | 'forced_exit' | null;
   entryIndependentKolCount?: number;
   entryKolScore?: number;
   entryParticipatingKols?: KolDiscoveryScore['participatingKols'];
@@ -867,6 +888,53 @@ function liveExecutionQualityEntryAdvantageReason(
   const entryAdvantagePct = actualEntryPrice / plannedEntryPrice - 1;
   if (Math.abs(entryAdvantagePct) < threshold) return null;
   return `entry_advantage_pct=${entryAdvantagePct.toFixed(6)}`;
+}
+
+function rotationUnderfillReferencePriceFromOptions(options: PaperEntryOptions): number | null {
+  return rotationUnderfillReferencePriceFromTelemetry({
+    underfillReferenceSolAmount:
+      options.underfillReferenceSolAmount ?? options.rotationTelemetry?.underfillReferenceSolAmount,
+    underfillReferenceTokenAmount:
+      options.underfillReferenceTokenAmount ?? options.rotationTelemetry?.underfillReferenceTokenAmount,
+  } as RotationV1TriggerResult['telemetry']);
+}
+
+function rotationUnderfillLivePretradeGuard(
+  referencePrice: number,
+  options: PaperEntryOptions
+): { reason: string; discountPct: number | null; referencePrice: number | null } | null {
+  if (options.parameterVersion !== config.kolHunterRotationUnderfillParameterVersion) return null;
+  const underfillReferencePrice = rotationUnderfillReferencePriceFromOptions(options);
+  if (underfillReferencePrice == null || underfillReferencePrice <= 0) {
+    return {
+      reason: 'rotation_underfill_live_missing_reference',
+      discountPct: null,
+      referencePrice: null,
+    };
+  }
+  if (!Number.isFinite(referencePrice) || referencePrice <= 0) {
+    return {
+      reason: 'rotation_underfill_live_invalid_reference_price',
+      discountPct: null,
+      referencePrice: underfillReferencePrice,
+    };
+  }
+  const discountPct = 1 - referencePrice / underfillReferencePrice;
+  if (discountPct < config.kolHunterRotationUnderfillMinDiscountPct) {
+    return {
+      reason: `rotation_underfill_pretrade_discount_pct=${discountPct.toFixed(4)}`,
+      discountPct,
+      referencePrice: underfillReferencePrice,
+    };
+  }
+  if (discountPct > config.kolHunterRotationUnderfillMaxDiscountPct) {
+    return {
+      reason: `rotation_underfill_pretrade_discount_too_deep_pct=${discountPct.toFixed(4)}`,
+      discountPct,
+      referencePrice: underfillReferencePrice,
+    };
+  }
+  return null;
 }
 
 export function hydrateLiveExecutionQualityCooldownsFromBuyRecords(
@@ -1837,10 +1905,18 @@ function smartV3ProfitFloorPctForStage(stage: SmartV3MfeStage): number | null {
   return null;
 }
 
+function strategyEntryReferencePrice(pos: Pick<PaperPosition, 'marketReferencePrice' | 'entryPriceTokenOnly' | 'entryPrice'>): number {
+  if (Number.isFinite(pos.marketReferencePrice) && pos.marketReferencePrice > 0) {
+    return pos.marketReferencePrice;
+  }
+  if (pos.entryPriceTokenOnly != null && Number.isFinite(pos.entryPriceTokenOnly) && pos.entryPriceTokenOnly > 0) {
+    return pos.entryPriceTokenOnly;
+  }
+  return pos.entryPrice;
+}
+
 function smartV3TokenEntryReference(pos: PaperPosition): number {
-  return pos.entryPriceTokenOnly && pos.entryPriceTokenOnly > 0
-    ? pos.entryPriceTokenOnly
-    : pos.marketReferencePrice;
+  return strategyEntryReferencePrice(pos);
 }
 
 function refreshSmartV3MfeFloorState(
@@ -6647,6 +6723,8 @@ async function enterPaperPosition(
       rotationFlowExitEnabled: options.rotationFlowExitEnabled === true ||
         parameterVersion === config.kolHunterRotationExitFlowParameterVersion ||
         parameterVersion === config.kolHunterRotationChaseTopupParameterVersion,
+      executionGuardReason: options.executionGuardReason ?? null,
+      executionGuardAction: options.executionGuardAction ?? null,
       capitulationTelemetry: options.capitulationTelemetry,
       capitulationEntryLowPrice: options.capitulationEntryLowPrice,
       capitulationEntryLowAtMs: options.capitulationEntryLowAtMs,
@@ -7121,6 +7199,7 @@ function applyRotationFlowReduce(
       ledgerEventType: 'rotation_flow_reduce',
       logTag: 'KOL_HUNTER_ROTATION_FLOW_REDUCE',
       reason: decision.reason,
+      partialKind: 'rotation_flow_reduce',
     }
   );
   if (!didReduce) return false;
@@ -7243,7 +7322,7 @@ async function executeLiveRotationFlowReduce(
 
     pos.quantity *= (1 - soldRatio);
     pos.ticketSol *= (1 - soldRatio);
-    pos.partialTakeAtSec = nowSec;
+    pos.partialTakeAtSec = pos.partialTakeAtSec ?? nowSec;
     pos.partialTakeRealizedSol = (pos.partialTakeRealizedSol ?? 0) + lockedNetSol;
     pos.partialTakeLockedTicketSol = (pos.partialTakeLockedTicketSol ?? 0) + lockedTicketSol;
     pos.rotationFlowReduceInFlight = false;
@@ -7287,7 +7366,15 @@ async function executeLiveRotationFlowReduce(
       lockedNetPct,
       lockedNetSol,
       'rotation_flow_live_reduce',
-      decision.reason
+      decision.reason,
+      {
+        partialKind: 'rotation_flow_reduce',
+        txSignature: sellResult.txSignature,
+        attempts: sellExecution.attempts,
+        soldRatio,
+        receivedSol,
+        recoveredFromBalanceOnly: sellExecution.recoveredFromBalanceOnly,
+      }
     ).catch(() => {});
     await appendEntryLedger('sell', {
       positionId: pos.positionId,
@@ -7746,7 +7833,7 @@ function onPriceTick(positionId: string, tick: PriceTick): void {
         }
       }
       // 4. Probe trail (flat band 벗어난 후 pullback)
-      if (pos.peakPrice > pos.entryPrice) {
+      if (pos.peakPrice > ref) {
         const trailStop = pos.peakPrice * (1 - KOL_PAPER_PROBE_TRAIL_PCT);
         if (currentPrice <= trailStop) {
           closePosition(pos, currentPrice, 'probe_flat_cut', nowSec, mfePct, maePct);
@@ -7764,7 +7851,8 @@ function onPriceTick(positionId: string, tick: PriceTick): void {
         if (
           config.kolHunterPartialTakeEnabled &&
           !pos.isTailPosition &&
-          pos.partialTakeAtSec == null
+          pos.partialTakeT1AtSec == null &&
+          pos.partialTakeT1InFlight !== true
         ) {
           executePartialTake(pos, currentPrice, nowSec, mfePct);
         }
@@ -7795,8 +7883,9 @@ function onPriceTick(positionId: string, tick: PriceTick): void {
       const rawTrailStop = pos.peakPrice * (1 - t1TrailPct);
       const profitFloorMult = pos.t1ProfitFloorMult
         ?? (isSwingV2Position(pos) ? config.kolHunterSwingV2T1ProfitFloorMult : undefined);
+      const entryRef = strategyEntryReferencePrice(pos);
       const trailStop = profitFloorMult != null
-        ? Math.max(rawTrailStop, pos.entryPrice * profitFloorMult)
+        ? Math.max(rawTrailStop, entryRef * profitFloorMult)
         : rawTrailStop;
       if (currentPrice <= trailStop) {
         closePosition(pos, currentPrice, 'winner_trailing_t1', nowSec, mfePct, maePct);
@@ -7849,9 +7938,10 @@ function onPriceTick(positionId: string, tick: PriceTick): void {
       // 2. Tail trail — peak 대비 looser pullback (default 30% — RUNNER_T1 의 15% 보다 관대)
       //    tail 의 entry 는 parent close price 이므로 mfe 는 parent close 시점 대비 추가 상승만 측정.
       const tailTrailStop = pos.peakPrice * (1 - config.kolHunterTailTrailPct);
-      if (currentPrice <= tailTrailStop && pos.peakPrice > pos.entryPrice) {
+      const tailEntryRef = strategyEntryReferencePrice(pos);
+      if (currentPrice <= tailTrailStop && pos.peakPrice > tailEntryRef) {
         // tail 자체가 5x+ 도달 (mfePct ≥ kolHunterT2Mfe = 4.0) 이면 winner 분리
-        const tailMfe = (pos.peakPrice - pos.entryPrice) / pos.entryPrice;
+        const tailMfe = (pos.peakPrice - tailEntryRef) / tailEntryRef;
         const reason: CloseReason = tailMfe >= config.kolHunterT2Mfe
           ? 'tail_winner_capture'
           : 'tail_trail_close';
@@ -7962,6 +8052,20 @@ function closePosition(
   // 2026-04-27 (KOL live canary): live position 은 비동기 sell + DB close 별도 분기.
   // fire-and-forget — tickMonitor 흐름은 막지 않음. 실패 시 critical alert.
   if (pos.isLive === true) {
+    if (pos.partialTakeT1InFlight === true) {
+      pos.pendingCloseAfterPartialTake = {
+        exitPrice,
+        reason,
+        nowSec,
+        mfePctAtClose,
+        maePctAtClose,
+      };
+      log.warn(
+        `[KOL_HUNTER_LIVE_CLOSE_DEFERRED_PARTIAL_TAKE] ${pos.positionId} ` +
+        `reason=${reason} — waiting for live T1 partial sell to settle`
+      );
+      return;
+    }
     // 2026-04-27 race fix: tickMonitor 가 동시에 close signal 두 번 발사 시 (예: hardcut + insider_exit)
     // closeLivePosition 가 비동기라 두 번째 invocation 이 첫 sell 완료 전 진입 → 2중 sell 위험.
     // 즉시 state='CLOSED' 로 mark + closing flag 로 추가 동시 호출 차단. 실제 sell/DB close 는 비동기.
@@ -8181,11 +8285,271 @@ function liveSellUrgencyForCloseReason(reason: CloseReason): LiveSellRetryUrgenc
  *   - Moskowitz et al. TSMOM — winner truncation 위험 차단 (전량 close 회피)
  */
 function executePartialTake(pos: PaperPosition, currentPrice: number, nowSec: number, mfePct: number): void {
+  if (pos.isLive === true) {
+    if (!config.kolHunterPartialTakeLiveEnabled) {
+      log.debug(
+        `[KOL_HUNTER_PARTIAL_TAKE_PAPER_ONLY] ${pos.positionId} live parent — ` +
+        `partial take skipped because live flag is disabled`
+      );
+      return;
+    }
+    if (pos.partialTakeT1InFlight === true || pos.partialTakeT1AtSec != null) return;
+    pos.partialTakeT1InFlight = true;
+    void executeLiveT1PartialTake(pos, currentPrice, nowSec, mfePct).catch((err) => {
+      pos.partialTakeT1InFlight = false;
+      pos.partialTakeT1LiveFailedAtSec = Math.floor(Date.now() / 1000);
+      pos.partialTakeT1LiveFailureCount = (pos.partialTakeT1LiveFailureCount ?? 0) + 1;
+      pos.partialTakeT1LiveFailureReason = String(err);
+      log.warn(`[KOL_HUNTER_PARTIAL_TAKE_LIVE_FAIL] ${pos.positionId} ${err}`);
+      drainPendingCloseAfterPartialTake(pos);
+    });
+    return;
+  }
   executePaperPartialTake(pos, currentPrice, nowSec, mfePct, config.kolHunterPartialTakePct, {
     eventType: 'paper_partial_take',
     ledgerEventType: 'partial_take',
     logTag: 'KOL_HUNTER_PARTIAL_TAKE',
+    partialKind: 't1_partial_take',
   });
+}
+
+function drainPendingCloseAfterPartialTake(pos: PaperPosition): void {
+  const pendingClose = pos.pendingCloseAfterPartialTake;
+  if (!pendingClose || pos.state === 'CLOSED') return;
+  pos.pendingCloseAfterPartialTake = undefined;
+  closePosition(
+    pos,
+    pendingClose.exitPrice,
+    pendingClose.reason,
+    pendingClose.nowSec,
+    pendingClose.mfePctAtClose,
+    pendingClose.maePctAtClose,
+  );
+}
+
+async function executeLiveT1PartialTake(
+  pos: PaperPosition,
+  currentPrice: number,
+  nowSec: number,
+  mfePct: number
+): Promise<boolean> {
+  if (!botCtx) {
+    throw new Error('botCtx missing for live T1 partial take');
+  }
+  const takePct = config.kolHunterPartialTakePct;
+  if (takePct <= 0 || takePct >= 1) {
+    pos.partialTakeT1InFlight = false;
+    return false;
+  }
+  const ctx = botCtx;
+  const sellExecutor = getKolHunterExecutor(ctx);
+  try {
+    const initialBalanceProbe = await resolveLiveSellInitialTokenBalance({
+      executor: sellExecutor,
+      tokenMint: pos.tokenMint,
+      context: `kol_hunter:${pos.positionId}:partial_take_t1`,
+      reason: 'partial_take_t1',
+      entryTxSignature: pos.entryTxSignature,
+      entryTimeSec: pos.entryTimeSec,
+    });
+    const tokenBalance = initialBalanceProbe.balance;
+    if (tokenBalance <= 0n) {
+      throw new Error(`zero token balance for live T1 partial take (attempts=${initialBalanceProbe.attempts})`);
+    }
+    const takeBps = BigInt(Math.max(1, Math.min(9999, Math.round(takePct * 10_000))));
+    const requestedSellAmount = (tokenBalance * takeBps) / 10_000n;
+    if (requestedSellAmount <= 0n) {
+      throw new Error(`requested T1 partial sell amount resolved to zero (balance=${tokenBalance.toString()})`);
+    }
+    const expectedRemainingBalance = tokenBalance > requestedSellAmount
+      ? tokenBalance - requestedSellAmount
+      : 0n;
+    const solBefore = await sellExecutor.getBalance();
+    const sellExecution = await executeLiveSellWithImmediateRetries({
+      executor: sellExecutor,
+      tokenMint: pos.tokenMint,
+      initialTokenBalance: tokenBalance,
+      requestedSellAmount,
+      expectedRemainingBalance,
+      context: `kol_hunter:${pos.positionId}:partial_take_t1`,
+      reason: 'partial_take_t1',
+      syntheticSignature: `KOL_PARTIAL_TAKE_T1_BALANCE_RECOVERED_${pos.positionId}`,
+      urgency: 'normal',
+      allowBalanceRecovered: initialBalanceProbe.source !== 'entry_tx_post_balance',
+    });
+    const sellResult = sellExecution.sellResult;
+    const solAfter = await sellExecutor.getBalance();
+    const balanceDeltaSol = Number.isFinite(solAfter - solBefore) ? solAfter - solBefore : 0;
+    const receivedSol = resolveSellReceivedSolFromSwapResult({
+      balanceDeltaSol,
+      sellResult,
+      context: `kol_hunter:${pos.positionId}:partial_take_t1`,
+    });
+    const soldRatio = Math.max(0, Math.min(1, sellExecution.soldRatio));
+    if (soldRatio <= 0) {
+      throw new Error(`live T1 partial sold ratio is zero (tx=${sellResult.txSignature})`);
+    }
+
+    const lockedQuantity = pos.quantity * soldRatio;
+    const lockedTicketSol = pos.ticketSol * soldRatio;
+    const walletCostSol = pos.entryPrice * lockedQuantity;
+    const tokenEntryRef = pos.entryPriceTokenOnly && pos.entryPriceTokenOnly > 0
+      ? pos.entryPriceTokenOnly
+      : pos.marketReferencePrice;
+    const realizedPrice = lockedQuantity > 0 ? receivedSol / lockedQuantity : currentPrice;
+    const lockedNetPct = pos.entryPrice > 0 ? (realizedPrice - pos.entryPrice) / pos.entryPrice : 0;
+    const lockedNetSol = receivedSol - walletCostSol;
+    const netPctTokenOnly = tokenEntryRef > 0 ? (currentPrice - tokenEntryRef) / tokenEntryRef : 0;
+    const netSolTokenOnly = tokenEntryRef > 0 ? (currentPrice - tokenEntryRef) * lockedQuantity : lockedNetSol;
+
+    pos.quantity *= (1 - soldRatio);
+    pos.ticketSol *= (1 - soldRatio);
+    if (pos.swapInputSol != null && pos.swapInputSol > 0) {
+      pos.swapInputSol *= (1 - soldRatio);
+    }
+    pos.partialTakeAtSec = pos.partialTakeAtSec ?? nowSec;
+    pos.partialTakeT1AtSec = nowSec;
+    pos.partialTakeT1InFlight = false;
+    pos.partialTakeT1LiveFailedAtSec = undefined;
+    pos.partialTakeT1LiveFailureReason = undefined;
+    pos.partialTakeT1LiveTxSignature = sellResult.txSignature;
+    pos.partialTakeT1LiveAttempts = sellExecution.attempts;
+    pos.partialTakeRealizedSol = (pos.partialTakeRealizedSol ?? 0) + lockedNetSol;
+    pos.partialTakeLockedTicketSol = (pos.partialTakeLockedTicketSol ?? 0) + lockedTicketSol;
+
+    log.info(
+      `[KOL_HUNTER_PARTIAL_TAKE] ${pos.positionId} mode=live reason=t1_partial_take ` +
+      `take=${(soldRatio * 100).toFixed(1)}% received=${receivedSol.toFixed(6)}SOL ` +
+      `attempts=${sellExecution.attempts} remaining_ticket=${pos.ticketSol.toFixed(6)}`
+    );
+
+    trackTradeMarkout(
+      {
+        anchorType: 'sell',
+        positionId: pos.positionId,
+        tokenMint: pos.tokenMint,
+        anchorTxSignature: sellResult.txSignature,
+        anchorAtMs: Date.now(),
+        anchorPrice: currentPrice,
+        anchorPriceKind: 'exit_token_only',
+        probeSolAmount: lockedTicketSol,
+        tokenDecimals: pos.tokenDecimals,
+        signalSource: pos.armName,
+        extras: {
+          mode: 'live',
+          eventType: 'live_partial_take_t1',
+          exitReason: 'partial_take_t1',
+          partialKind: 't1_partial_take',
+          armName: pos.armName,
+          profileArm: pos.profileArm ?? null,
+          entryArm: pos.entryArm ?? pos.armName,
+          exitArm: pos.exitArm ?? pos.armName,
+          parameterVersion: pos.parameterVersion,
+          mfePctAtTake: mfePct,
+          lockedQuantity,
+          lockedTicketSol,
+          lockedNetPct,
+          lockedNetSol,
+          remainingQuantity: pos.quantity,
+          remainingTicketSol: pos.ticketSol,
+          txSignature: sellResult.txSignature,
+          attempts: sellExecution.attempts,
+          recoveredFromBalanceOnly: sellExecution.recoveredFromBalanceOnly,
+          receivedSol,
+          netPctTokenOnly,
+          netSolTokenOnly,
+        },
+      },
+      buildTradeMarkoutObserverConfig(pos)
+    );
+    void appendPartialTakeLedger(
+      pos,
+      currentPrice,
+      nowSec,
+      mfePct,
+      lockedQuantity,
+      lockedTicketSol,
+      lockedNetPct,
+      lockedNetSol,
+      'partial_take_t1',
+      'partial_take_t1',
+      {
+        partialKind: 't1_partial_take',
+        mode: 'live',
+        txSignature: sellResult.txSignature,
+        attempts: sellExecution.attempts,
+        soldRatio,
+        receivedSol,
+        recoveredFromBalanceOnly: sellExecution.recoveredFromBalanceOnly,
+        netPctTokenOnly,
+        netSolTokenOnly,
+      }
+    ).catch(() => {});
+    await appendEntryLedger('sell', {
+      positionId: pos.positionId,
+      dbTradeId: pos.dbTradeId,
+      txSignature: sellResult.txSignature,
+      entryTxSignature: pos.entryTxSignature,
+      strategy: LANE_STRATEGY,
+      wallet: 'main',
+      pairAddress: pos.tokenMint,
+      exitReason: 'partial_take_t1',
+      eventType: 'partial_take_t1',
+      isPartialTake: true,
+      partialTakeKind: 't1_partial_take',
+      positionStillOpen: true,
+      partialTakePct: soldRatio,
+      receivedSol,
+      actualExitPrice: realizedPrice,
+      slippageBps: sellResult.slippageBps,
+      entryPrice: pos.entryPrice,
+      holdSec: nowSec - pos.entryTimeSec,
+      mfePctPeak: mfePct,
+      mfePctPeakTokenOnly: mfePct,
+      mfePctPeakWalletBased: pos.entryPrice > 0 ? (pos.peakPrice - pos.entryPrice) / pos.entryPrice : mfePct,
+      maePctTokenOnly: tokenEntryRef > 0 ? (pos.troughPrice - tokenEntryRef) / tokenEntryRef : 0,
+      exitPriceTokenOnly: currentPrice,
+      netPctTokenOnly,
+      netSolTokenOnly,
+      entryPriceTokenOnly: pos.entryPriceTokenOnly,
+      entryPriceWalletDelta: pos.entryPriceWalletDelta,
+      ataRentSol: pos.ataRentSol,
+      swapInputSol: pos.swapInputSol,
+      peakPrice: pos.peakPrice,
+      troughPrice: pos.troughPrice,
+      marketReferencePrice: pos.marketReferencePrice,
+      sellRetryUrgency: 'normal',
+      sellRetryAttempts: sellExecution.attempts,
+      sellRecoveredFromBalanceOnly: sellExecution.recoveredFromBalanceOnly,
+      sellRetrySoldRatio: soldRatio,
+      dbPnlSol: lockedNetSol,
+      walletDeltaSol: lockedNetSol,
+      dbPnlDriftSol: 0,
+      solSpentNominal: walletCostSol,
+      kolScore: pos.kolScore,
+      independentKolCount: pos.independentKolCount,
+      armName: pos.armName,
+      profileArm: pos.profileArm ?? null,
+      entryArm: pos.entryArm ?? pos.armName,
+      exitArm: pos.exitArm ?? pos.armName,
+      parameterVersion: pos.parameterVersion,
+      entryReason: pos.kolEntryReason,
+      partialTakeAtSec: pos.partialTakeAtSec ?? null,
+      partialTakeT1AtSec: pos.partialTakeT1AtSec ?? null,
+      partialTakeT1LiveTxSignature: pos.partialTakeT1LiveTxSignature ?? null,
+      partialTakeT1LiveAttempts: pos.partialTakeT1LiveAttempts ?? null,
+    });
+    drainPendingCloseAfterPartialTake(pos);
+    return true;
+  } catch (err) {
+    pos.partialTakeT1InFlight = false;
+    pos.partialTakeT1LiveFailedAtSec = Math.floor(Date.now() / 1000);
+    pos.partialTakeT1LiveFailureCount = (pos.partialTakeT1LiveFailureCount ?? 0) + 1;
+    pos.partialTakeT1LiveFailureReason = String(err);
+    log.warn(`[KOL_HUNTER_PARTIAL_TAKE_LIVE_FAIL] ${pos.positionId} ${err}`);
+    drainPendingCloseAfterPartialTake(pos);
+    return false;
+  }
 }
 
 function executePaperPartialTake(
@@ -8199,24 +8563,22 @@ function executePaperPartialTake(
     ledgerEventType: string;
     logTag: string;
     reason?: string;
+    partialKind?: 't1_partial_take' | 'rotation_flow_reduce';
   }
 ): boolean {
   if (takePct <= 0 || takePct >= 1) return false;
 
-  // 2026-05-01 (F2 critical fix): live wiring 미구현 — flag 활성화되어도 isLive parent 면 차단.
-  //   이전 코드는 warn log + paper accounting 만 적용 → 실제 sell tx 없이 quantity 가 줄어든
-  //   상태로 close 되면 wallet ledger 와 코드 상태 drift 발생.
-  //   현 sprint 는 paper-shadow only — live wiring 별도 sprint 후 본 차단 제거.
-  //   ⚠ mutation 전에 차단 (이전 fix 위치 오류 — quantity 줄어든 후 return 시 wallet drift).
+  // Paper helper 는 live parent 를 절대 mutation 하지 않는다.
+  // Live T1 partial take 는 executeLiveT1PartialTake 경로에서 실제 sell tx 로만 처리한다.
   if (pos.isLive === true) {
     if (config.kolHunterPartialTakeLiveEnabled === true) {
       log.error(
-        `[${meta.logTag}_LIVE_BLOCKED] ${pos.positionId} flag enabled 됐으나 live wiring ` +
-        `미구현 — wallet drift 방지 위해 partial take 발화 차단. 별도 sprint 후 코드 변경 필수.`
+        `[${meta.logTag}_LIVE_PAPER_HELPER_BLOCKED] ${pos.positionId} live parent reached paper ` +
+        `partial helper — wallet drift 방지 위해 helper mutation 차단.`
       );
     } else {
       log.debug(
-        `[${meta.logTag}_PAPER_ONLY] ${pos.positionId} live parent — partial take skip (paper-only sprint).`
+        `[${meta.logTag}_PAPER_HELPER_ONLY] ${pos.positionId} live parent — paper partial helper skipped.`
       );
     }
     return false;
@@ -8230,7 +8592,10 @@ function executePaperPartialTake(
   // paper accounting: pos.quantity / ticketSol 축소 (잔여 runner)
   pos.quantity *= (1 - takePct);
   pos.ticketSol *= (1 - takePct);
-  pos.partialTakeAtSec = nowSec;
+  pos.partialTakeAtSec = pos.partialTakeAtSec ?? nowSec;
+  if ((meta.partialKind ?? 't1_partial_take') === 't1_partial_take') {
+    pos.partialTakeT1AtSec = nowSec;
+  }
   // 2026-05-01 (codex F-A fix): close netSol 합산용 누적. 다중 partial 발화 시 누적 가능 (현 정책은
   //   1회만이지만, 향후 multi-tier partial 채택 시에도 정합).
   pos.partialTakeRealizedSol = (pos.partialTakeRealizedSol ?? 0) + lockedNetSol;
@@ -8258,6 +8623,7 @@ function executePaperPartialTake(
       lockedNetSol,
       remainingQuantity: pos.quantity,
       remainingTicketSol: pos.ticketSol,
+      partialKind: meta.partialKind ?? 't1_partial_take',
     }
   );
 
@@ -8272,7 +8638,10 @@ function executePaperPartialTake(
     lockedNetPct,
     lockedNetSol,
     meta.ledgerEventType,
-    meta.reason
+    meta.reason,
+    {
+      partialKind: meta.partialKind ?? 't1_partial_take',
+    }
   ).catch(() => {});
   return true;
 }
@@ -8289,6 +8658,7 @@ async function appendPartialTakeLedger(
   lockedNetSol: number,
   eventType: string = 'partial_take',
   reason?: string,
+  extra: Record<string, unknown> = {},
 ): Promise<void> {
   try {
     const dir = config.realtimeDataDir;
@@ -8303,6 +8673,7 @@ async function appendPartialTakeLedger(
       tokenDecimalsSource: pos.tokenDecimalsSource ?? null,
       isShadowArm: pos.isShadowArm,
       isLive: pos.isLive ?? false,
+      mode: pos.isLive === true ? 'live' : 'paper',
       eventType,
       reason: reason ?? null,
       promotedAt: new Date(nowSec * 1000).toISOString(),
@@ -8315,6 +8686,9 @@ async function appendPartialTakeLedger(
       lockedNetSol,
       remainingQuantity: pos.quantity,
       remainingTicketSol: pos.ticketSol,
+      partialTakeAtSec: pos.partialTakeAtSec ?? null,
+      partialTakeT1AtSec: pos.partialTakeT1AtSec ?? null,
+      ...extra,
     };
     await appendFile(path.join(dir, 'kol-partial-takes.jsonl'), JSON.stringify(record) + '\n', 'utf8');
   } catch (err) {
@@ -8521,6 +8895,10 @@ function buildKolBaseLedgerRecord(
     t1VisitAtSec: pos.t1VisitAtSec ?? null,
     t2VisitAtSec: pos.t2VisitAtSec ?? null,
     t3VisitAtSec: pos.t3VisitAtSec ?? null,
+    partialTakeAtSec: pos.partialTakeAtSec ?? null,
+    partialTakeT1AtSec: pos.partialTakeT1AtSec ?? null,
+    partialTakeT1LiveFailedAtSec: pos.partialTakeT1LiveFailedAtSec ?? null,
+    partialTakeT1LiveFailureCount: pos.partialTakeT1LiveFailureCount ?? 0,
     kols: pos.participatingKols,
     kolScore: pos.kolScore,
     // MISSION_CONTROL §Control 5 telemetry — arm identity + discovery context + parameter trace.
@@ -8546,6 +8924,12 @@ function buildKolBaseLedgerRecord(
     rotationMonetizableEdge: pos.rotationMonetizableEdge ?? null,
     rotationMonetizablePass: pos.rotationMonetizableEdge?.pass ?? null,
     rotationMonetizableCostRatio: pos.rotationMonetizableEdge?.costRatio ?? null,
+    wouldLivePassExecutionGuard: pos.rotationMonetizableEdge?.pass ?? null,
+    liveCostShadowReason: pos.rotationMonetizableEdge
+      ? (pos.rotationMonetizableEdge.pass ? 'rotation_monetizable_edge_pass' : pos.rotationMonetizableEdge.reason)
+      : null,
+    executionGuardReason: pos.executionGuardReason ?? null,
+    executionGuardAction: pos.executionGuardAction ?? null,
     capitulationTelemetry: pos.capitulationTelemetry ?? null,
     capitulationEntryLowPrice: pos.capitulationEntryLowPrice ?? null,
     capitulationEntryLowAtMs: pos.capitulationEntryLowAtMs ?? null,
@@ -8716,6 +9100,12 @@ function buildKolLedgerExtras(
     rotationFlowResidualUntilSec: pos.rotationFlowResidualUntilSec ?? null,
     rotationFlowLastReducePct: pos.rotationFlowLastReducePct ?? null,
     rotationMonetizableEdge: pos.rotationMonetizableEdge ?? null,
+    wouldLivePassExecutionGuard: pos.rotationMonetizableEdge?.pass ?? null,
+    liveCostShadowReason: pos.rotationMonetizableEdge
+      ? (pos.rotationMonetizableEdge.pass ? 'rotation_monetizable_edge_pass' : pos.rotationMonetizableEdge.reason)
+      : null,
+    executionGuardReason: pos.executionGuardReason ?? null,
+    executionGuardAction: pos.executionGuardAction ?? null,
     capitulationTelemetry: pos.capitulationTelemetry ?? null,
     capitulationEntryLowPrice: pos.capitulationEntryLowPrice ?? null,
     capitulationEntryLowAtMs: pos.capitulationEntryLowAtMs ?? null,
@@ -8944,6 +9334,10 @@ async function appendLiveLedger(
     sellRetryAttempts: number | null;
     sellRecoveredFromBalanceOnly: boolean | null;
     sellRetrySoldRatio: number | null;
+    exitRequestedAtMs?: number;
+    exitCompletedAtMs?: number;
+    exitLatencyMs?: number;
+    holdSecReal?: number;
   },
 ): Promise<void> {
   try {
@@ -8964,6 +9358,10 @@ async function appendLiveLedger(
       sellRetryAttempts: liveSellTelemetry?.sellRetryAttempts ?? null,
       sellRecoveredFromBalanceOnly: liveSellTelemetry?.sellRecoveredFromBalanceOnly ?? null,
       sellRetrySoldRatio: liveSellTelemetry?.sellRetrySoldRatio ?? null,
+      exitRequestedAtMs: liveSellTelemetry?.exitRequestedAtMs ?? null,
+      exitCompletedAtMs: liveSellTelemetry?.exitCompletedAtMs ?? null,
+      exitLatencyMs: liveSellTelemetry?.exitLatencyMs ?? null,
+      holdSecReal: liveSellTelemetry?.holdSecReal ?? holdSec,
     };
     await appendFile(path.join(dir, 'kol-live-trades.jsonl'), JSON.stringify(record) + '\n', 'utf8');
     await appendKolTradeProjection(dir, pos, 'live', record);
@@ -9065,6 +9463,49 @@ async function enterLivePosition(
   const signalToReferenceMs = Number.isFinite(cand.firstKolEntryMs)
     ? Math.max(0, referenceResolvedAtMs - cand.firstKolEntryMs)
     : undefined;
+  const rotationUnderfillPretradeGuard = rotationUnderfillLivePretradeGuard(referencePrice, options);
+  if (rotationUnderfillPretradeGuard) {
+    const reason = rotationUnderfillPretradeGuard.reason;
+    const policyFlags = [
+      ...survivalFlags,
+      'ROTATION_UNDERFILL_LIVE_PRETRADE_REJECT',
+      reason.toUpperCase(),
+    ];
+    log.warn(
+      `[KOL_HUNTER_ROTATION_UNDERFILL_LIVE_PRETRADE_REJECT] ${tokenMint.slice(0, 8)} ` +
+      `${reason} liveRef=${referencePrice.toFixed(10)} ` +
+      `kolRef=${rotationUnderfillPretradeGuard.referencePrice?.toFixed(10) ?? 'n/a'} ` +
+      `discount=${rotationUnderfillPretradeGuard.discountPct != null
+        ? (rotationUnderfillPretradeGuard.discountPct * 100).toFixed(2)
+        : 'n/a'}% — fallback paper`
+    );
+    const decimals = referenceTick.outputDecimals ?? firstTick.outputDecimals ?? undefined;
+    emitKolLiveFallbackPolicy(tokenMint, score, policyFlags, {
+      entryReason: options.entryReason,
+      armName: options.parameterVersion ? armNameForVersion(options.parameterVersion) : undefined,
+    });
+    await enterPaperPosition(tokenMint, cand, score, policyFlags, {
+      ...options,
+      ...(
+        options.liveEquivalenceCandidateId
+          ? buildLiveEquivalenceOptionPatch({
+              candidateId: options.liveEquivalenceCandidateId,
+              stage: 'rotation_underfill_live_fallback',
+              liveWouldEnter: false,
+              reason,
+              flags: policyFlags,
+            })
+          : {}
+      ),
+      tokenDecimals: options.tokenDecimals ?? decimals,
+      tokenDecimalsSource: options.tokenDecimalsSource ?? (decimals == null ? undefined : 'jupiter_quote'),
+      executionGuardReason: reason,
+      executionGuardAction: 'pretrade_reject',
+      skipPolicyEntry: true,
+    });
+    unsubscribePriceIfIdle(tokenMint);
+    return;
+  }
   const entryParticipatingKols = options.entryParticipatingKols ?? score.participatingKols;
   const entryKolScore = options.entryKolScore ?? score.finalScore;
   const entryIndependentKolCount = options.entryIndependentKolCount ?? score.independentKolCount;
@@ -9159,6 +9600,8 @@ async function enterLivePosition(
   let swapQuoteEntryAdvantagePct: number | undefined;
   let referenceToSwapQuotePct: number | undefined;
   let entryAdvantageReason: string | null = null;
+  let executionGuardReason: string | null = null;
+  let executionGuardAction: PaperPosition['executionGuardAction'] = null;
   const nowSec = Math.floor(Date.now() / 1000);
   const positionId = `kolh-live-${tokenMint.slice(0, 8)}-${nowSec}`;
   const buyStartedAtMs = Date.now();
@@ -9266,16 +9709,20 @@ async function enterLivePosition(
       markLiveExecutionQualityCooldown(tokenMint, qualityReasons.join('+'));
     }
     if (options.parameterVersion === config.kolHunterRotationUnderfillParameterVersion) {
-      const underfillReferencePrice = rotationUnderfillReferencePriceFromTelemetry({
-        underfillReferenceSolAmount: options.underfillReferenceSolAmount,
-        underfillReferenceTokenAmount: options.underfillReferenceTokenAmount,
-      } as RotationV1TriggerResult['telemetry']);
+      const underfillReferencePrice = rotationUnderfillReferencePriceFromOptions(options);
       if (underfillReferencePrice != null && underfillReferencePrice > 0) {
-        const actualDiscountPct = 1 - actualEntryPrice / underfillReferencePrice;
+        const tokenOnlyEntryForDiscount = entryPriceTokenOnly ?? actualEntryPrice;
+        const actualDiscountPct = 1 - tokenOnlyEntryForDiscount / underfillReferencePrice;
         if (actualDiscountPct < config.kolHunterRotationUnderfillMinDiscountPct) {
           const reason = `rotation_underfill_actual_discount_pct=${actualDiscountPct.toFixed(4)}`;
           markLiveExecutionQualityCooldown(tokenMint, reason);
-          entryAdvantageReason = entryAdvantageReason ?? reason;
+          executionGuardReason = reason;
+          executionGuardAction = 'telemetry_only';
+          log.warn(
+            `[KOL_HUNTER_ROTATION_UNDERFILL_ACTUAL_DISCOUNT_WARN] ${positionId} ` +
+            `${reason} tokenOnlyEntry=${tokenOnlyEntryForDiscount.toFixed(10)} ` +
+            `kolRef=${underfillReferencePrice.toFixed(10)} — telemetry only`
+          );
         }
       }
     }
@@ -9357,6 +9804,8 @@ async function enterLivePosition(
       referenceResolvedAtMs,
       referenceAgeMs,
       signalToReferenceMs,
+      executionGuardReason,
+      executionGuardAction,
       buyStartedAtMs,
       buyCompletedAtMs,
       buyExecutionMs,
@@ -9407,6 +9856,8 @@ async function enterLivePosition(
     ? options.tokenDecimals
     : referenceTick.outputDecimals ?? undefined;
   const liveDecimalsSource = options.tokenDecimalsSource;
+  const liveTokenEntryPrice = entryPriceTokenOnly ?? actualEntryPrice;
+  const liveWalletEntryPrice = entryPriceWalletDelta ?? actualEntryPrice;
   const position: PaperPosition = {
     positionId,
     tokenMint,
@@ -9416,20 +9867,20 @@ async function enterLivePosition(
     // entryPriceTokenOnly = swap input / qty (사명 §3 5x peak 측정 — paper/live 통일).
     // entryPriceWalletDelta = wallet delta / qty (실 wallet 손익 — Real Asset Guard).
     // 둘 중 swap 분해 실패 시 actualEntryPrice 로 fallback.
-    entryPriceTokenOnly: entryPriceTokenOnly ?? actualEntryPrice,
-    entryPriceWalletDelta: entryPriceWalletDelta ?? actualEntryPrice,
+    entryPriceTokenOnly: liveTokenEntryPrice,
+    entryPriceWalletDelta: liveWalletEntryPrice,
     ataRentSol,
     swapInputSol: swapInputUiAmount,
     entryTimeSec: nowSec,
     entryOpenedAtMs: buyCompletedAtMs,
     ticketSol,
     quantity: actualQuantity,
-    // live state-machine 판정은 pre-buy probe 기준가가 아니라 wallet fill truth 를 기준으로 한다.
-    // probe 기준가는 entry-quality 분석용으로 executed-buys.plannedEntryPrice 에 보존.
-    marketReferencePrice: actualEntryPrice,
-    peakPrice: actualEntryPrice,
-    troughPrice: actualEntryPrice,
-    lastPrice: actualEntryPrice,
+    // live strategy state-machine 은 paper 와 같은 token-only 가격 축을 쓴다.
+    // wallet-delta/rent 는 entryPriceWalletDelta + wallet PnL 로 별도 보존한다.
+    marketReferencePrice: liveTokenEntryPrice,
+    peakPrice: liveTokenEntryPrice,
+    troughPrice: liveTokenEntryPrice,
+    lastPrice: liveTokenEntryPrice,
     participatingKols: entryParticipatingKols.map((k) => ({ ...k })),
     kolScore: entryKolScore,
     armName,
@@ -9456,6 +9907,8 @@ async function enterLivePosition(
     rotationFlowExitEnabled: options.rotationFlowExitEnabled === true ||
       primaryVersion === config.kolHunterRotationExitFlowParameterVersion ||
       primaryVersion === config.kolHunterRotationChaseTopupParameterVersion,
+    executionGuardReason,
+    executionGuardAction,
     smartV3LiveHardCutReentry: options.smartV3LiveHardCutReentry,
     smartV3LiveEligibleShadow: options.smartV3LiveEligibleShadow,
     smartV3LiveBlockReason: options.smartV3LiveBlockReason,
@@ -9536,6 +9989,8 @@ async function enterLivePosition(
           underfillReferenceTokenAmount: position.underfillReferenceTokenAmount,
         } as RotationV1TriggerResult['telemetry']) ?? null,
         rotationFlowExitEnabled: position.rotationFlowExitEnabled ?? false,
+        executionGuardReason: position.executionGuardReason ?? null,
+        executionGuardAction: position.executionGuardAction ?? null,
         smartV3LiveHardCutReentry: position.smartV3LiveHardCutReentry ?? false,
         smartV3HardCutParentPositionId: position.smartV3HardCutParentPositionId ?? null,
         smartV3HardCutAtMs: position.smartV3HardCutAtMs ?? null,
@@ -9558,11 +10013,12 @@ async function enterLivePosition(
     // sell retry / balance-recovered 경로가 중복 close ledger 를 남긴다.
     const previousState = position.state;
     position.state = 'CLOSED';
+    const closeRequestedSec = Math.floor(Date.now() / 1000);
     await closeLivePosition(
       position,
       referencePrice,
       'entry_advantage_emergency_exit',
-      nowSec,
+      closeRequestedSec,
       0,
       0,
       previousState
@@ -9753,6 +10209,10 @@ async function closeLivePosition(
   let sellRetryAttempts: number | null = null;
   let sellRecoveredFromBalanceOnly: boolean | null = null;
   let sellRetrySoldRatio: number | null = null;
+  const exitRequestedAtMs = Date.now();
+  let exitCompletedAtMs = exitRequestedAtMs;
+  let exitLatencyMs = 0;
+  let liveHoldSec = Math.max(0, nowSec - pos.entryTimeSec);
   // 2026-05-01 (Phase D P0-3 fix): soldQuantity / isPriceKillParent 를 함수 scope 로 hoist.
   //   이전엔 try block scope 안에서만 사용 → DB closeTrade / canary / ledger / notifier 가
   //   pos.quantity 전체 기준으로 잘못 계산. partial sell 일관 정합 보장.
@@ -9830,6 +10290,9 @@ async function closeLivePosition(
       if (soldQuantity > 0) {
         actualExitPrice = receivedSol / soldQuantity;
       }
+      exitCompletedAtMs = Date.now();
+      exitLatencyMs = Math.max(0, exitCompletedAtMs - exitRequestedAtMs);
+      liveHoldSec = Math.max(0, Math.floor(exitCompletedAtMs / 1000) - pos.entryTimeSec);
       executionSlippage = bpsToDecimal(sellResult.slippageBps);
       exitTxSignature = sellResult.txSignature;
       sellCompleted = true;
@@ -9886,7 +10349,7 @@ async function closeLivePosition(
       const excursionTelemetryRecord = buildExcursionTelemetryRecord(pos.excursionTelemetry, {
         reason: effectiveReason,
         maePctAtClose: maePctTokenOnly,
-        elapsedSec: nowSec - pos.entryTimeSec,
+        elapsedSec: liveHoldSec,
       });
       // exitPriceTokenOnly = 정책 trigger 가 본 시장 가격. wallet-delta 와 동일 단위지만 의미는 token 시장 가격.
       const exitPriceTokenOnly = exitPrice;
@@ -9931,6 +10394,12 @@ async function closeLivePosition(
         entryPriceWalletDelta: pos.entryPriceWalletDelta,
         ataRentSol: pos.ataRentSol,
         swapInputSol: pos.swapInputSol,
+        executionGuardReason: pos.executionGuardReason ?? null,
+        executionGuardAction: pos.executionGuardAction ?? null,
+        exitRequestedAtMs,
+        exitCompletedAtMs,
+        exitLatencyMs,
+        holdSecReal: liveHoldSec,
         peakPrice: pos.peakPrice,
         troughPrice: pos.troughPrice,
         marketReferencePrice: pos.marketReferencePrice,
@@ -9994,7 +10463,10 @@ async function closeLivePosition(
             parentPositionId: pos.parentPositionId ?? null,
             exitReason: effectiveReason,
             closeState: pos.state,
-            holdSec: nowSec - pos.entryTimeSec,
+            holdSec: liveHoldSec,
+            exitRequestedAtMs,
+            exitCompletedAtMs,
+            exitLatencyMs,
             mfePctAtClose: mfePctAtClose,
             maePctAtClose: maePctAtClose,
             netSolTokenOnly,
@@ -10034,6 +10506,9 @@ async function closeLivePosition(
       actualExitPrice = pos.entryPrice;
       sellCompleted = true;
       exitTxSignature = pos.entryTxSignature ?? 'ORPHAN_NO_TX';
+      exitCompletedAtMs = Date.now();
+      exitLatencyMs = Math.max(0, exitCompletedAtMs - exitRequestedAtMs);
+      liveHoldSec = Math.max(0, Math.floor(exitCompletedAtMs / 1000) - pos.entryTimeSec);
       await ctx.notifier.sendCritical(
         'kol_live_orphan',
         `${pos.positionId} ${pos.tokenMint} zero balance at close — force closing 0 pnl`
@@ -10067,9 +10542,9 @@ async function closeLivePosition(
   //   tail position 의 별도 close 에서 산출. canary / DB / notifier / ledger 일관 적용.
   const rawPnl = (actualExitPrice - pos.entryPrice) * soldQuantity;
   const runnerPnl = rawPnl;  // live: round-trip cost 는 wallet delta 에 이미 반영됨
-  // 2026-05-01 (codex F-A fix): partial take realized PnL 합산.
-  //   현재 live partial 은 차단 상태 (kolHunterPartialTake live wiring 미구현) 라 partialTake* 는
-  //   live position 에서 항상 0 — 그러나 paper→live promotion 과 future Phase 정합 위해 aggregation 적용.
+  // 2026-05-01/12 (codex F-A fix + live partial): partial take realized PnL 합산.
+  //   live T1 partial / rotation reduce 모두 선행 부분실현이 있을 수 있으므로,
+  //   runner close 에서 partial realized leg 를 합산한다.
   //   DB closeTrade.pnl / appendLiveLedger / markKolClosed / canary / sendTradeClose 모두 aggregatedPnl 사용.
   const partialNetSol = pos.partialTakeRealizedSol ?? 0;
   const partialTicketSol = pos.partialTakeLockedTicketSol ?? 0;
@@ -10111,7 +10586,8 @@ async function closeLivePosition(
   log.info(
     `[KOL_HUNTER_LIVE_CLOSED] ${pos.positionId} reason=${effectiveReason} state=${previousState} ` +
     `pnl=${pnl >= 0 ? '+' : ''}${pnl.toFixed(6)} SOL (${pnlPct >= 0 ? '+' : ''}${(pnlPct * 100).toFixed(2)}%) ` +
-    `hold=${nowSec - pos.entryTimeSec}s mfe=${(mfePctAtClose * 100).toFixed(2)}% mae=${(maePctAtClose * 100).toFixed(2)}%`
+    `hold=${liveHoldSec}s exitLatency=${exitLatencyMs}ms ` +
+    `mfe=${(mfePctAtClose * 100).toFixed(2)}% mae=${(maePctAtClose * 100).toFixed(2)}%`
   );
 
   // 2026-04-29: 다른 lane (cupsey / pure_ws / migration) 과 동일하게 sendTradeClose 사용.
@@ -10162,7 +10638,7 @@ async function closeLivePosition(
       'kol_live_close_no_db',
       `${pos.positionId} ${pos.tokenMint.slice(0, 12)} reason=${effectiveReason} ` +
       `pnl=${pnl >= 0 ? '+' : ''}${pnl.toFixed(6)} SOL (${pnlPct >= 0 ? '+' : ''}${(pnlPct * 100).toFixed(2)}%) ` +
-      `hold=${nowSec - pos.entryTimeSec}s [NO_DB_RECORD — manual reconcile]`
+      `hold=${liveHoldSec}s [NO_DB_RECORD — manual reconcile]`
     ).catch(() => {});
   }
 
@@ -10178,7 +10654,6 @@ async function closeLivePosition(
 
   // 2026-04-30 (Sprint 1.B3): live trade outcome 을 jsonl 로 persist (DSR validator 입력).
   if (!pos.isShadowArm) {
-    const liveHoldSec = nowSec - pos.entryTimeSec;
     // 2026-05-01 (codex F-A fix): liveNetPct → pnlPct (aggregated, partial 합산 기준).
     //   paper appendPaperLedger 와 schema 정합 — DSR validator 입력 일관성.
     void appendLiveLedger(
@@ -10200,6 +10675,10 @@ async function closeLivePosition(
         sellRetryAttempts,
         sellRecoveredFromBalanceOnly,
         sellRetrySoldRatio,
+        exitRequestedAtMs,
+        exitCompletedAtMs,
+        exitLatencyMs,
+        holdSecReal: liveHoldSec,
       }
     ).catch(() => {});
   }
@@ -10219,7 +10698,7 @@ async function closeLivePosition(
       tokenDecimalsSource: pos.tokenDecimalsSource,
       state: pos.state,
       entryTimeSec: pos.entryTimeSec,
-      nowSec,
+      nowSec: Math.floor(exitCompletedAtMs / 1000),
       mfePct: mfePctAtClose,
       maePct: maePctAtClose,
       entryPrice: pos.entryPrice,
@@ -10263,7 +10742,7 @@ async function closeLivePosition(
     : 0;
   kolHunterEvents.emit('paper_close', {
     pos, reason: effectiveReason, exitPrice: actualExitPrice,
-    netSol: pnl, netPct: pnlPct, mfePctPeak, holdSec: nowSec - pos.entryTimeSec,
+    netSol: pnl, netPct: pnlPct, mfePctPeak, holdSec: liveHoldSec,
   });
   void exitTxSignature;
 
@@ -10528,6 +11007,9 @@ export async function recoverKolHunterOpenPositions(ctx: BotContext): Promise<nu
       // (parent quantity 와 현 token balance 비교가 정확하나 schema 변경 필요).
       // 보수적 fallback — RUNNER_T1 이상 inferredState 만 marker set (PROBE 는 미발생 가정).
       partialTakeAtSec: (inferredState === 'RUNNER_T1' || inferredState === 'RUNNER_T2' || inferredState === 'RUNNER_T3')
+        ? entryTimeSec
+        : undefined,
+      partialTakeT1AtSec: (inferredState === 'RUNNER_T1' || inferredState === 'RUNNER_T2' || inferredState === 'RUNNER_T3')
         ? entryTimeSec
         : undefined,
     };

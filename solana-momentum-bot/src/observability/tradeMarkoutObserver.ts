@@ -954,11 +954,12 @@ function buildPartialTakeAnchor(row: Record<string, unknown>): TradeMarkoutAncho
   const anchorPrice = numberField(row.exitPrice);
   const probeSolAmount = numberField(row.lockedTicketSol);
   if (!positionId || !tokenMint || anchorAtMs == null || anchorPrice == null || probeSolAmount == null) return null;
+  const isLive = row.isLive === true || stringField(row.mode) === 'live';
   return {
     anchorType: 'sell',
     positionId,
     tokenMint,
-    anchorTxSignature: null,
+    anchorTxSignature: stringField(row.txSignature),
     anchorAtMs,
     anchorPrice,
     anchorPriceKind: 'exit_token_only',
@@ -966,14 +967,19 @@ function buildPartialTakeAnchor(row: Record<string, unknown>): TradeMarkoutAncho
     tokenDecimals: numberField(row.tokenDecimals),
     signalSource: stringField(row.armName) ?? stringField(row.strategy),
     extras: {
-      mode: 'paper',
+      mode: isLive ? 'live' : 'paper',
       eventType: stringField(row.eventType) ?? 'partial_take',
+      partialKind: stringField(row.partialKind),
       armName: stringField(row.armName),
       parameterVersion: stringField(row.parameterVersion),
       isShadowArm: row.isShadowArm === true,
+      isLive,
       mfePctAtTake: numberField(row.mfePctAtTake),
       lockedQuantity: numberField(row.lockedQuantity),
       lockedNetPct: numberField(row.lockedNetPct),
+      txSignature: stringField(row.txSignature),
+      attempts: numberField(row.attempts),
+      receivedSol: numberField(row.receivedSol),
     },
   };
 }

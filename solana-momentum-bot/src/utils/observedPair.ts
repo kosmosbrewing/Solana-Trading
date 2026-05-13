@@ -1,6 +1,8 @@
 export interface ObservedPairCandidate {
   pairAddress: string;
   dexId?: string;
+  discoverySource?: string;
+  observedAtMs?: number;
   baseTokenAddress: string;
   baseTokenSymbol?: string;
   quoteTokenAddress: string;

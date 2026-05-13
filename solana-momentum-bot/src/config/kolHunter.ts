@@ -596,5 +596,11 @@ export const kolHunter = {
   kolHunterSmartV3PaperArmsEnabled: boolOptional('KOL_HUNTER_SMART_V3_PAPER_ARMS_ENABLED', true),
   kolHunterSmartV3FastFailPaperEnabled: boolOptional('KOL_HUNTER_SMART_V3_FAST_FAIL_PAPER_ENABLED', true),
   kolHunterSmartV3RunnerRelaxedPaperEnabled: boolOptional('KOL_HUNTER_SMART_V3_RUNNER_RELAXED_PAPER_ENABLED', true),
+  kolHunterSmartV3NewPoolConfirmedPaperEnabled: boolOptional('KOL_HUNTER_SMART_V3_NEW_POOL_CONFIRMED_PAPER_ENABLED', true),
+  kolHunterSmartV3NewPoolConfirmedParameterVersion:
+    process.env.KOL_HUNTER_SMART_V3_NEW_POOL_CONFIRMED_PARAMETER_VERSION ??
+    'smart-v3-new-pool-confirmed-v1.0.0',
+  kolHunterSmartV3NewPoolConfirmedMaxContextAgeSec:
+    numEnv('KOL_HUNTER_SMART_V3_NEW_POOL_CONFIRMED_MAX_CONTEXT_AGE_SEC', '3600'),
   kolHunterSmartV3ParameterVersion: process.env.KOL_HUNTER_SMART_V3_PARAMETER_VERSION ?? 'smart-v3.0.0',
 } as const;

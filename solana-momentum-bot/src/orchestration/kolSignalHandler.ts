@@ -95,6 +95,7 @@ import {
 // 2026-04-27 (KOL live canary): pure_ws live path 와 동일 패턴.
 import type { Order, PartialFillDataReason, Trade } from '../utils/types';
 import type { BotContext } from './types';
+import { isPureWsNewPairDiscoverySource } from './pureWs/sourceGate';
 import { acquireCanarySlot, releaseCanarySlot } from '../risk/canaryConcurrencyGuard';
 import { reportCanaryClose } from '../risk/canaryAutoHalt';
 import { reportBleed } from '../risk/dailyBleedBudget';
@@ -2220,6 +2221,7 @@ function armNameForVersion(parameterVersion: string): string {
   if (parameterVersion === config.kolHunterSmartV3QualityUnknownMicroParameterVersion) return 'smart_v3_quality_unknown_micro';
   if (parameterVersion === config.kolHunterSmartV3FastCanaryParameterVersion) return 'smart_v3_fast_canary_v1';
   if (parameterVersion === config.kolHunterSmartV3FastFailLiveParameterVersion) return 'smart_v3_fast_fail_live_v1';
+  if (parameterVersion === config.kolHunterSmartV3NewPoolConfirmedParameterVersion) return 'smart_v3_new_pool_confirmed_v1';
   if (parameterVersion === 'smart-v3-fast-fail-v1.0.0') return 'smart_v3_fast_fail';
   if (parameterVersion === 'smart-v3-runner-relaxed-v1.0.0') return 'smart_v3_runner_relaxed';
   if (parameterVersion === config.kolHunterSwingV2ParameterVersion) return 'kol_hunter_swing_v2';
@@ -2247,14 +2249,45 @@ interface SmartV3PaperArmSpec extends DynamicExitParams {
   armName: string;
   parameterVersion: string;
   enabled: boolean;
+  extraSurvivalFlags?: string[];
 }
 
-function buildSmartV3PaperArmSpecs(reason: KolEntryReason): SmartV3PaperArmSpec[] {
+interface SmartV3NewPoolContext {
+  pairAddress: string;
+  discoverySource: string;
+  observedAgeSec: number;
+}
+
+function resolveSmartV3NewPoolContext(tokenMint: string): SmartV3NewPoolContext | null {
+  if (!heliusPoolRegistry) return null;
+  const maxAgeSec = config.kolHunterSmartV3NewPoolConfirmedMaxContextAgeSec;
+  if (maxAgeSec <= 0) return null;
+  const nowMs = Date.now();
+  const contexts = heliusPoolRegistry
+    .getObservedPairContexts(tokenMint)
+    .filter((ctx) => ctx.discoverySource && isPureWsNewPairDiscoverySource(ctx.discoverySource));
+  for (const ctx of contexts) {
+    const observedAgeSec = Math.max(0, (nowMs - ctx.lastObservedAtMs) / 1000);
+    if (observedAgeSec <= maxAgeSec && ctx.discoverySource) {
+      return {
+        pairAddress: ctx.pairAddress,
+        discoverySource: ctx.discoverySource,
+        observedAgeSec,
+      };
+    }
+  }
+  return null;
+}
+
+function buildSmartV3PaperArmSpecs(
+  reason: KolEntryReason,
+  newPoolContext: SmartV3NewPoolContext | null = null
+): SmartV3PaperArmSpec[] {
   if (!config.kolHunterSmartV3PaperArmsEnabled) return [];
   const base = dynamicExitParamsForEntry(reason);
   const baseTrail = base.t1TrailPct ?? config.kolHunterSmartV3T1TrailVelocity;
   const baseFloor = base.t1ProfitFloorMult ?? 1.08;
-  return [
+  const specs: SmartV3PaperArmSpec[] = [
     {
       suffix: 'fast-fail',
       armName: 'smart_v3_fast_fail',
@@ -2278,6 +2311,25 @@ function buildSmartV3PaperArmSpecs(reason: KolEntryReason): SmartV3PaperArmSpec[
       probeHardCutPct: base.probeHardCutPct,
     },
   ];
+  if (newPoolContext) {
+    specs.push({
+      suffix: 'new-pool-confirmed',
+      armName: 'smart_v3_new_pool_confirmed_v1',
+      parameterVersion: config.kolHunterSmartV3NewPoolConfirmedParameterVersion,
+      enabled: config.kolHunterSmartV3NewPoolConfirmedPaperEnabled,
+      t1Mfe: base.t1Mfe,
+      t1TrailPct: Math.min(0.35, baseTrail + 0.05),
+      t1ProfitFloorMult: Math.max(1.02, baseFloor - 0.04),
+      probeFlatTimeoutSec: base.probeFlatTimeoutSec,
+      probeHardCutPct: base.probeHardCutPct,
+      extraSurvivalFlags: [
+        'SMART_V3_NEW_POOL_CONFIRMED_ARM',
+        `SMART_V3_NEW_POOL_SOURCE_${newPoolContext.discoverySource.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}`,
+        `SMART_V3_NEW_POOL_CONTEXT_AGE_${Math.round(newPoolContext.observedAgeSec)}S`,
+      ],
+    });
+  }
+  return specs;
 }
 
 function buildRotationPaperArmSpecs(primaryVersion: string): RotationPaperArmSpec[] {
@@ -2428,6 +2480,7 @@ function applySmartV3PaperArmSpec(pos: PaperPosition, spec: SmartV3PaperArmSpec)
     ...pos.survivalFlags,
     'SMART_V3_PAPER_PARAM_ARM',
     `SMART_V3_PAPER_ARM_${spec.suffix.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}`,
+    ...(spec.extraSurvivalFlags ?? []),
   ];
 }
 
@@ -7088,8 +7141,10 @@ async function enterPaperPosition(
     );
   }
   if (primaryVersion === config.kolHunterSmartV3ParameterVersion) {
+    const newPoolContext = resolveSmartV3NewPoolContext(tokenMint);
     const smartArmSpecs = buildSmartV3PaperArmSpecs(
-      options.entryReason ?? defaultEntryReasonForVersion(primaryVersion)
+      options.entryReason ?? defaultEntryReasonForVersion(primaryVersion),
+      newPoolContext
     );
     for (const spec of smartArmSpecs) {
       if (!spec.enabled) continue;
@@ -10395,7 +10450,10 @@ async function enterLivePosition(
     );
   }
   if (primaryVersion === config.kolHunterSmartV3ParameterVersion) {
-    const smartArmSpecs = buildSmartV3PaperArmSpecs(entryReason);
+    const smartArmSpecs = buildSmartV3PaperArmSpecs(
+      entryReason,
+      resolveSmartV3NewPoolContext(tokenMint)
+    );
     const addedArms: string[] = [];
     for (const spec of smartArmSpecs) {
       if (!spec.enabled) continue;
@@ -11347,9 +11405,16 @@ export function __testInit(options: {
   priceFeed: PaperPriceFeed;
   ctx?: BotContext;
   securityClient?: OnchainSecurityClient;
+  heliusPoolRegistry?: HeliusPoolRegistry;
 }): void {
   stopKolHunter();
-  initKolHunter({ priceFeed: options.priceFeed, ctx: options.ctx, securityClient: options.securityClient });
+  setHeliusPoolRegistryForKolHunter(options.heliusPoolRegistry);
+  initKolHunter({
+    priceFeed: options.priceFeed,
+    ctx: options.ctx,
+    securityClient: options.securityClient,
+    heliusPoolRegistry: options.heliusPoolRegistry,
+  });
 }
 
 /** 테스트 전용: live canary triple-flag gate 평가 결과 노출. */

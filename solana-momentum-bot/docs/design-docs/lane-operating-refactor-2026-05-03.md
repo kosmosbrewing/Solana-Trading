@@ -56,6 +56,7 @@ Implemented operating shape:
 - MFE winner preservation is default-on: once smart-v3 reaches `+10%/+20%/+50%/+100%` MFE, it enters `breakeven_watch` / `profit_lock` / `runner` / `convexity` and raises the stop to `+0.5%/+2%/+10%/+20%` token-only floor;
 - floor breach is an exit trigger (`smart_v3_mfe_floor_exit`), not a close blocker. Structural/liquidity/insider exits remain highest priority. The goal is not to inflate win-rate; it is to stop proven MFE candidates from being closed as losses before the 5x payoff has time to express;
 - pre-T1 MFE giveback remains measured: close rows record `smartV3PreT1MfeBand`, close pct, giveback pct, breakeven-lock diagnostic flags, MFE stage, profit floor, and floor-exit counters.
+- `smart_v3_new_pool_confirmed_v1` is paper-only. It is created only when a smart-v3 trigger also has recent new-pool context in the in-memory pool registry (`gecko_new_pool` / equivalent source). The arm keeps smart-v3 long-hold/tail-retain exits and exists to test whether pure_ws/new-pool discovery improves smart-v3 entry timing without letting pure_ws trade by itself.
 
 Required analysis before scaling:
 

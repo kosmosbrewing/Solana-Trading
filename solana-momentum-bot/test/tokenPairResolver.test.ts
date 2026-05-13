@@ -33,6 +33,30 @@ describe('HeliusPoolRegistry', () => {
     await expect(registry.getBestPoolAddress('So11111111111111111111111111111111111111112'))
       .resolves.toBe('pair-observed');
   });
+
+  it('retains discovery source context for new-pool strategy joins', () => {
+    const registry = new HeliusPoolRegistry();
+    registry.upsertObservedPair({
+      pairAddress: 'pair-new',
+      dexId: 'pumpswap',
+      discoverySource: 'gecko_new_pool',
+      observedAtMs: 1_000,
+      baseTokenAddress: 'mint-new',
+      baseTokenSymbol: 'NEW',
+      quoteTokenAddress: 'So11111111111111111111111111111111111111112',
+      quoteTokenSymbol: 'SOL',
+      liquidityUsd: 25_000,
+    });
+
+    expect(registry.getObservedPairContexts('mint-new')).toEqual([
+      expect.objectContaining({
+        pairAddress: 'pair-new',
+        discoverySource: 'gecko_new_pool',
+        firstObservedAtMs: 1_000,
+        lastObservedAtMs: 1_000,
+      }),
+    ]);
+  });
 });
 
 describe('CompositeTokenPairResolver', () => {

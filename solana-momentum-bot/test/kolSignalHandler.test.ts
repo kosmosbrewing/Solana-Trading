@@ -62,6 +62,7 @@ import {
   getMissedAlphaObserverStats,
   resetMissedAlphaObserverState,
 } from '../src/observability/missedAlphaObserver';
+import { HeliusPoolRegistry } from '../src/scanner/heliusPoolRegistry';
 
 // 최소 Stub PaperPriceFeed — subscribe/unsubscribe + getLastPrice + on/off 지원
 class StubPaperPriceFeed extends EventEmitter {
@@ -746,6 +747,9 @@ describe('kolSignalHandler — state machine', () => {
     mockedConfig.kolHunterSmartV3PaperArmsEnabled = false;
     mockedConfig.kolHunterSmartV3FastFailPaperEnabled = true;
     mockedConfig.kolHunterSmartV3RunnerRelaxedPaperEnabled = true;
+    mockedConfig.kolHunterSmartV3NewPoolConfirmedPaperEnabled = true;
+    mockedConfig.kolHunterSmartV3NewPoolConfirmedParameterVersion = 'smart-v3-new-pool-confirmed-v1.0.0';
+    mockedConfig.kolHunterSmartV3NewPoolConfirmedMaxContextAgeSec = 3600;
     mockedConfig.kolHunterYellowZoneEnabled = true;
     mockedConfig.kolHunterLiveFreshReferenceGuardEnabled = true;
     mockedConfig.kolHunterLiveFreshReferenceMaxAgeMs = 2_000;
@@ -1002,6 +1006,45 @@ describe('kolSignalHandler — state machine', () => {
       expect(runner?.parameterVersion).toBe('smart-v3-runner-relaxed-v1.0.0');
       expect(runner?.t1TrailPctOverride).toBeGreaterThan(control?.t1TrailPctOverride ?? 0);
       expect(runner?.t1ProfitFloorMult).toBeLessThan(control?.t1ProfitFloorMult ?? 99);
+    });
+
+    it('smart-v3 new-pool context 가 있으면 new_pool_confirmed paper arm 을 추가한다', async () => {
+      mockedConfig.kolHunterSmartV3FreshWindowSec = 120;
+      mockedConfig.kolHunterSmartV3PaperArmsEnabled = true;
+      mockedConfig.kolHunterSmartV3NewPoolConfirmedPaperEnabled = true;
+      const registry = new HeliusPoolRegistry();
+      registry.upsertObservedPair({
+        pairAddress: 'pool-smart-new',
+        dexId: 'pumpswap',
+        discoverySource: 'gecko_new_pool',
+        observedAtMs: Date.now(),
+        baseTokenAddress: MINT_SMART,
+        baseTokenSymbol: 'SMART',
+        quoteTokenAddress: 'So11111111111111111111111111111111111111112',
+        quoteTokenSymbol: 'SOL',
+        liquidityUsd: 25_000,
+      });
+      __testInit({ priceFeed: stubFeed as unknown as never, heliusPoolRegistry: registry });
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+
+      await handleKolSwap(buyTx('k1', 'S', MINT_SMART, 70_000));
+      await handleKolSwap(buyTx('k2', 'A', MINT_SMART));
+      await flushAsync();
+
+      const positions = __testGetActive();
+      expect(positions.map((pos) => pos.armName).sort()).toEqual([
+        'kol_hunter_smart_v3',
+        'smart_v3_fast_fail',
+        'smart_v3_new_pool_confirmed_v1',
+        'smart_v3_runner_relaxed',
+      ]);
+      const newPool = positions.find((pos) => pos.armName === 'smart_v3_new_pool_confirmed_v1');
+      const control = positions.find((pos) => pos.armName === 'kol_hunter_smart_v3');
+      expect(newPool?.isShadowArm).toBe(true);
+      expect(newPool?.parentPositionId).toBe(control?.positionId);
+      expect(newPool?.parameterVersion).toBe('smart-v3-new-pool-confirmed-v1.0.0');
+      expect(newPool?.survivalFlags).toContain('SMART_V3_NEW_POOL_CONFIRMED_ARM');
+      expect(newPool?.survivalFlags).toContain('SMART_V3_NEW_POOL_SOURCE_GECKO_NEW_POOL');
     });
 
     it('smart-v3 entry-filter shadow 는 실제 진입을 막지 않고 missed-alpha 로 비교군을 남긴다', async () => {

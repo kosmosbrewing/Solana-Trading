@@ -819,6 +819,8 @@ async function main() {
             heliusPoolRegistry.upsertObservedPair({
               pairAddress: entry.pairAddress,
               dexId: entry.dexId,
+              discoverySource: entry.discoverySource,
+              observedAtMs: entry.addedAt.getTime(),
               baseTokenAddress: entry.baseTokenAddress || entry.tokenMint,
               baseTokenSymbol: entry.symbol,
               quoteTokenAddress: entry.quoteTokenAddress,
@@ -880,6 +882,8 @@ async function main() {
             heliusPoolRegistry.upsertObservedPair({
               pairAddress: realtimeEligibility.pair.pairAddress,
               dexId: realtimeEligibility.pair.dexId,
+              discoverySource: entry.discoverySource,
+              observedAtMs: entry.addedAt.getTime(),
               baseTokenAddress: realtimeEligibility.pair.baseToken?.address || entry.tokenMint,
               baseTokenSymbol: realtimeEligibility.pair.baseToken?.symbol || entry.symbol,
               quoteTokenAddress: realtimeEligibility.pair.quoteToken?.address || SOL_MINT,

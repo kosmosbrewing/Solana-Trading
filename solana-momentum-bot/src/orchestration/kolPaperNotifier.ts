@@ -67,6 +67,7 @@ const ARMS = [
   'kol_hunter_smart_v3',
   'smart_v3_fast_fail',
   'smart_v3_runner_relaxed',
+  'smart_v3_new_pool_confirmed_v1',
   'kol_hunter_swing_v2',
 ] as const;
 type ArmName = typeof ARMS[number] | 'unknown';

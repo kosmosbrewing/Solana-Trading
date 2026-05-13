@@ -228,6 +228,7 @@ function formatSourceLabelBadge(sourceLabel: string): string {
     smart_v3_runner_relaxed: 'smart-v3 runner',
     smart_v3_quality_unknown_micro: 'smart-v3 unknown',
     smart_v3_fast_canary_v1: 'smart-v3 fast canary',
+    smart_v3_fast_fail_live_v1: 'smart-v3 fast live',
     kol_hunter_swing_v2: 'swing-v2',
     kol_hunter_rotation_v1: 'rotation-v1',
     rotation_underfill_v1: 'rotation underfill',

@@ -784,6 +784,11 @@ export interface LiveExecutionQualityHydrationSummary {
   hydrated: number;
   skippedExpired: number;
 }
+export interface RotationLiveKolDecayHydrationSummary {
+  loaded: number;
+  hydrated: number;
+  skippedExpired: number;
+}
 const liveExecutionQualityCooldowns = new Map<string, LiveExecutionQualityCooldown>();
 
 function pruneLiveExecutionQualityCooldowns(nowMs: number): void {
@@ -839,6 +844,19 @@ function parseJsonlRows<T>(raw: string): T[] {
     }
   }
   return rows;
+}
+
+async function readJsonlRowsMaybe<T>(filePath: string): Promise<T[]> {
+  try {
+    const raw = await readFile(filePath, 'utf8');
+    return parseJsonlRows<T>(raw);
+  } catch (err) {
+    const code = (err as { code?: string })?.code;
+    if (code !== 'ENOENT') {
+      log.warn(`[KOL_HUNTER] jsonl read failed ${path.basename(filePath)}: ${err}`);
+    }
+    return [];
+  }
 }
 
 function liveExecutionQualityReasonFromBuyRecord(record: LiveExecutionQualityBuyRecord): string | null {
@@ -1013,7 +1031,7 @@ function capitulationReboundMarkoutOffsetsSec(): number[] {
 }
 
 function isRotationFamilyMarkoutPosition(
-  pos?: Pick<PaperPosition, 'parameterVersion' | 'kolEntryReason' | 'armName'>
+  pos?: { parameterVersion?: string | null; kolEntryReason?: string | null; armName?: string | null }
 ): boolean {
   if (!pos) return false;
   if (pos.parameterVersion === config.kolHunterRotationV1ParameterVersion) return true;
@@ -1235,6 +1253,191 @@ function checkKolAlphaDecay(kolIds: string[]): { blocked: boolean; reason?: stri
   return { blocked: false };
 }
 
+const recentRotationLiveKolCloses = new Map<string, KolCloseRecord[]>();
+const ROTATION_LIVE_KOL_DECAY_RING_SIZE = 5;
+
+interface RotationLiveKolDecayCloseRecord {
+  positionId?: string;
+  isLive?: boolean;
+  parentPositionId?: string | null;
+  isTailPosition?: boolean;
+  armName?: string | null;
+  profileArm?: string | null;
+  entryArm?: string | null;
+  parameterVersion?: string | null;
+  entryReason?: string | null;
+  kolEntryReason?: string | null;
+  netSol?: number | null;
+  closedAt?: string | null;
+  exitTimeSec?: number | null;
+  kols?: Array<{ id?: string | null }>;
+  extras?: {
+    parentPositionId?: string | null;
+    isTailPosition?: boolean;
+    armName?: string | null;
+    profileArm?: string | null;
+    entryArm?: string | null;
+    parameterVersion?: string | null;
+    entryReason?: string | null;
+    rotationAnchorKols?: string[];
+    participatingKols?: Array<{ id?: string | null }>;
+  };
+}
+
+function pushRotationLiveKolClose(kolIds: string[], pnlSol: number, closedAtMs: number): number {
+  if (!Number.isFinite(pnlSol) || !Number.isFinite(closedAtMs)) return 0;
+  const isWin = pnlSol > 0;
+  let pushed = 0;
+  for (const kolId of [...new Set(kolIds.map((id) => id.trim()).filter(Boolean))]) {
+    const buf = recentRotationLiveKolCloses.get(kolId) ?? [];
+    buf.push({ closedAtMs, pnlSol, isWin });
+    while (buf.length > ROTATION_LIVE_KOL_DECAY_RING_SIZE) buf.shift();
+    recentRotationLiveKolCloses.set(kolId, buf);
+    pushed += 1;
+  }
+  return pushed;
+}
+
+function markRotationLiveKolClosed(pos: PaperPosition, pnlSol: number): void {
+  if (!config.kolHunterRotationLiveKolDecayEnabled) return;
+  if (!isRotationFamilyMarkoutPosition(pos)) return;
+  const nowMs = Date.now();
+  const kolIds = [...new Set(
+    [
+      ...(pos.rotationAnchorKols ?? []),
+      ...pos.participatingKols.map((kol) => kol.id),
+    ].map((id) => id.trim()).filter(Boolean)
+  )];
+  pushRotationLiveKolClose(kolIds, pnlSol, nowMs);
+  if (recentRotationLiveKolCloses.size > 200) {
+    const cutoff = nowMs - 24 * 60 * 60 * 1000;
+    for (const [id, recs] of recentRotationLiveKolCloses) {
+      const last = recs[recs.length - 1];
+      if (last && last.closedAtMs < cutoff) recentRotationLiveKolCloses.delete(id);
+    }
+  }
+}
+
+function checkRotationLiveKolDecay(kolIds: string[]): { blocked: boolean; reason?: string; flags: string[] } {
+  if (!config.kolHunterRotationLiveKolDecayEnabled) return { blocked: false, flags: [] };
+  const minCloses = Math.max(1, config.kolHunterRotationLiveKolDecayMinCloses);
+  const cooldownMs = config.kolHunterRotationLiveKolDecayCooldownMs;
+  if (cooldownMs <= 0) return { blocked: false, flags: [] };
+  for (const kolId of [...new Set(kolIds.map((id) => id.trim()).filter(Boolean))]) {
+    const buf = recentRotationLiveKolCloses.get(kolId);
+    if (!buf || buf.length < minCloses) continue;
+    const recent = buf.slice(-minCloses);
+    const losses = recent.filter((row) => !row.isWin).length;
+    const lossRatio = losses / recent.length;
+    const cumPnl = recent.reduce((sum, row) => sum + row.pnlSol, 0);
+    const elapsedMs = Date.now() - recent[recent.length - 1].closedAtMs;
+    if (cumPnl >= 0) continue;
+    if (lossRatio < config.kolHunterRotationLiveKolDecayLossRatio) continue;
+    if (elapsedMs >= cooldownMs) continue;
+    return {
+      blocked: true,
+      reason: `rotation_live_kol_decay:${kolId}:cum=${cumPnl.toFixed(4)}:losses=${losses}/${recent.length}`,
+      flags: [
+        'ROTATION_LIVE_KOL_DECAY',
+        `ROTATION_LIVE_KOL_DECAY_KOL_${kolId.toUpperCase()}`,
+        `ROTATION_LIVE_KOL_DECAY_LOSSES_${losses}_OF_${recent.length}`,
+      ],
+    };
+  }
+  return { blocked: false, flags: [] };
+}
+
+function recordClosedAtMs(record: RotationLiveKolDecayCloseRecord): number | null {
+  if (typeof record.closedAt === 'string') {
+    const parsed = new Date(record.closedAt).getTime();
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  if (typeof record.exitTimeSec === 'number' && Number.isFinite(record.exitTimeSec)) {
+    return record.exitTimeSec * 1000;
+  }
+  return null;
+}
+
+function rotationLiveKolIdsFromRecord(record: RotationLiveKolDecayCloseRecord): string[] {
+  return [
+    ...(record.extras?.rotationAnchorKols ?? []),
+    ...(record.extras?.participatingKols ?? []).map((kol) => kol.id ?? ''),
+    ...(record.kols ?? []).map((kol) => kol.id ?? ''),
+  ].map((id) => id.trim()).filter(Boolean);
+}
+
+function isRotationLiveKolDecayHydratableRecord(record: RotationLiveKolDecayCloseRecord): boolean {
+  if (record.isLive === false) return false;
+  if (record.isTailPosition === true || record.extras?.isTailPosition === true) return false;
+  if (record.parentPositionId || record.extras?.parentPositionId) return false;
+  if (record.positionId?.endsWith('-tail')) return false;
+  const probe = {
+    parameterVersion: record.parameterVersion ?? record.extras?.parameterVersion ?? undefined,
+    kolEntryReason: record.kolEntryReason ?? record.entryReason ?? record.extras?.entryReason ?? undefined,
+    armName: record.profileArm ??
+      record.extras?.profileArm ??
+      record.armName ??
+      record.extras?.armName ??
+      record.entryArm ??
+      record.extras?.entryArm ??
+      undefined,
+  };
+  return isRotationFamilyMarkoutPosition(probe);
+}
+
+export function hydrateRotationLiveKolDecayFromCloseRecords(
+  records: RotationLiveKolDecayCloseRecord[],
+  nowMs = Date.now()
+): RotationLiveKolDecayHydrationSummary {
+  if (!config.kolHunterRotationLiveKolDecayEnabled) {
+    return { loaded: records.length, hydrated: 0, skippedExpired: 0 };
+  }
+  const cooldownMs = config.kolHunterRotationLiveKolDecayCooldownMs;
+  if (cooldownMs <= 0) return { loaded: records.length, hydrated: 0, skippedExpired: 0 };
+  let hydrated = 0;
+  let skippedExpired = 0;
+  const seen = new Set<string>();
+  for (const record of records) {
+    if (!isRotationLiveKolDecayHydratableRecord(record)) continue;
+    const positionId = record.positionId?.trim();
+    const pnlSol = record.netSol;
+    if (typeof pnlSol !== 'number' || !Number.isFinite(pnlSol)) continue;
+    const closedAtMs = recordClosedAtMs(record);
+    if (closedAtMs == null) continue;
+    if (closedAtMs + cooldownMs <= nowMs) {
+      skippedExpired += 1;
+      continue;
+    }
+    const kolIds = rotationLiveKolIdsFromRecord(record);
+    if (kolIds.length === 0) continue;
+    if (positionId) {
+      if (seen.has(positionId)) continue;
+      seen.add(positionId);
+    }
+    if (pushRotationLiveKolClose(kolIds, pnlSol, closedAtMs) > 0) {
+      hydrated += 1;
+    }
+  }
+  return { loaded: records.length, hydrated, skippedExpired };
+}
+
+export async function hydrateRotationLiveKolDecayFromLedger(
+  ledgerDir = config.realtimeDataDir
+): Promise<RotationLiveKolDecayHydrationSummary> {
+  const rows = [
+    ...await readJsonlRowsMaybe<RotationLiveKolDecayCloseRecord>(path.join(ledgerDir, 'rotation-v1-live-trades.jsonl')),
+    ...await readJsonlRowsMaybe<RotationLiveKolDecayCloseRecord>(path.join(ledgerDir, 'kol-live-trades.jsonl')),
+  ];
+  const summary = hydrateRotationLiveKolDecayFromCloseRecords(rows);
+  if (summary.hydrated > 0 || summary.skippedExpired > 0) {
+    log.warn(
+      `[KOL_HUNTER_ROTATION_LIVE_KOL_DECAY_HYDRATE] ` +
+      `loaded=${summary.loaded} hydrated=${summary.hydrated} expired=${summary.skippedExpired}`
+    );
+  }
+  return summary;
+}
+
 interface SmartV3ComboCloseRecord {
   closedAtMs: number;
   pnlSol: number;
@@ -1311,6 +1514,7 @@ function checkSmartV3ComboDecay(kolIds: string[]): { blocked: boolean; reason?: 
 export function resetKolDecayForTests(): void {
   recentKolCloses.clear();
   recentSmartV3ComboCloses.clear();
+  recentRotationLiveKolCloses.clear();
 }
 // 2026-04-26 P1 audit fix #5: O(N) `[...active.values()].filter(p => p.tokenMint === X)` 패턴이
 // 매 price tick / kol_swap 마다 hot path 에 등장. token → positionId Set 인덱스로 O(1) 화.
@@ -2015,6 +2219,7 @@ function armNameForVersion(parameterVersion: string): string {
   if (parameterVersion === config.kolHunterSmartV3ParameterVersion) return 'kol_hunter_smart_v3';
   if (parameterVersion === config.kolHunterSmartV3QualityUnknownMicroParameterVersion) return 'smart_v3_quality_unknown_micro';
   if (parameterVersion === config.kolHunterSmartV3FastCanaryParameterVersion) return 'smart_v3_fast_canary_v1';
+  if (parameterVersion === config.kolHunterSmartV3FastFailLiveParameterVersion) return 'smart_v3_fast_fail_live_v1';
   if (parameterVersion === 'smart-v3-fast-fail-v1.0.0') return 'smart_v3_fast_fail';
   if (parameterVersion === 'smart-v3-runner-relaxed-v1.0.0') return 'smart_v3_runner_relaxed';
   if (parameterVersion === config.kolHunterSwingV2ParameterVersion) return 'kol_hunter_swing_v2';
@@ -2312,6 +2517,7 @@ function dynamicExitParamsForPosition(parameterVersion: string, reason: KolEntry
     parameterVersion === config.kolHunterSmartV3ParameterVersion ||
     parameterVersion === config.kolHunterSmartV3QualityUnknownMicroParameterVersion ||
     parameterVersion === config.kolHunterSmartV3FastCanaryParameterVersion ||
+    parameterVersion === config.kolHunterSmartV3FastFailLiveParameterVersion ||
     parameterVersion === config.kolHunterRotationV1ParameterVersion ||
     isCapitulationParameterVersion(parameterVersion)
   ) {
@@ -2428,6 +2634,7 @@ type KolLiveCanaryArm =
   | 'smart_v3_clean'
   | 'smart_v3_quality_unknown_micro'
   | 'smart_v3_fast_canary_v1'
+  | 'smart_v3_fast_fail_live_v1'
   | 'rotation_v1'
   | 'rotation_chase_topup_v1'
   | 'rotation_underfill_v1'
@@ -2457,6 +2664,8 @@ function isKolLiveCanaryArmEnabled(arm: KolLiveCanaryArm): boolean {
     case 'smart_v3_quality_unknown_micro':
       return false;
     case 'smart_v3_fast_canary_v1':
+      return false;
+    case 'smart_v3_fast_fail_live_v1':
       return false;
     case 'rotation_v1':
       return config.kolHunterRotationV1LiveEnabled;
@@ -3198,6 +3407,64 @@ function isSmartV3FastCanaryFlag(flag: string, allFlags: string[]): boolean {
   return false;
 }
 
+function parseSmartV3KolFillAdversePctFromFlag(flag: string): number | null {
+  const match = flag.toUpperCase().match(/SMART_V3_KOL_FILL_ADVERSE_(\d+(?:\.\d+)?)/);
+  if (!match) return null;
+  const pct = Number(match[1]);
+  return Number.isFinite(pct) ? pct : null;
+}
+
+function smartV3FastFailLiveMaxTop10HolderPct(): number {
+  return Math.min(
+    config.kolHunterSurvivalMaxTop10HolderPct,
+    config.kolHunterSmartV3FastFailLiveMaxTop10HolderPct
+  );
+}
+
+function isSmartV3FastFailLiveAllowedFlag(flag: string, allFlags: string[]): boolean {
+  const upper = flag.toUpperCase();
+  if (
+    upper === 'SMART_V3_LIVE_DISABLED' ||
+    upper === 'SMART_V3_LIVE_QUALITY_FALLBACK' ||
+    upper === 'SMART_V3_PULLBACK_LIVE_DISABLED' ||
+    upper === 'SMART_V3_POST_SELL_RECOVERY_WEAK' ||
+    upper === 'SMART_V3_PRE_ENTRY_SELL_LIVE_DISABLED' ||
+    upper === 'SMART_V3_RECENT_SELL_NO_SELL_WINDOW' ||
+    upper === 'SMART_V3_QUALITY_EXIT_LIQUIDITY_UNKNOWN' ||
+    upper === 'SMART_V3_QUALITY_TOKEN_QUALITY_UNKNOWN'
+  ) {
+    return true;
+  }
+  if (upper.includes('NO_ROUTE') || upper.includes('RUG') || upper.includes('HIGH_CONCENTRATION')) {
+    return false;
+  }
+  if (upper === 'SMART_V3_COMBO_DECAY' || upper.startsWith('SMART_V3_COMBO_DECAY_')) {
+    return false;
+  }
+  if (upper === 'SMART_V3_QUALITY_HOLDER_TOP10_HIGH') {
+    return false;
+  }
+  if (isSmartV3FastCanaryModerateHolderFlag(flag)) {
+    return true;
+  }
+  if (upper.startsWith('SMART_V3_QUALITY_UNCLEAN_TOKEN')) {
+    const top10Pct = parseSmartV3Top10PctFromFlag(flag);
+    return top10Pct !== null && top10Pct <= smartV3FastFailLiveMaxTop10HolderPct();
+  }
+  const adversePct = parseSmartV3KolFillAdversePctFromFlag(flag);
+  if (adversePct !== null) {
+    return adversePct <= config.kolHunterSmartV3FastFailLiveMaxAdverseKolFillPct;
+  }
+  if (upper === 'SMART_V3_ENTRY_ADVANTAGE_ADVERSE') {
+    return allFlags.some((other) => {
+      const otherAdversePct = parseSmartV3KolFillAdversePctFromFlag(other);
+      return otherAdversePct !== null &&
+        otherAdversePct <= config.kolHunterSmartV3FastFailLiveMaxAdverseKolFillPct;
+    });
+  }
+  return false;
+}
+
 function canRouteSmartV3FallbackToQualityUnknownMicro(
   fallback: { fallback: boolean; reason?: string; flags: string[] }
 ): boolean {
@@ -3214,6 +3481,14 @@ function canRouteSmartV3FallbackToFastCanary(
   if (!isKolLiveCanaryArmEnabled('smart_v3_fast_canary_v1')) return false;
   if (!fallback.flags.includes('SMART_V3_LIVE_QUALITY_FALLBACK')) return false;
   return fallback.flags.every((flag) => isSmartV3FastCanaryFlag(flag, fallback.flags));
+}
+
+function canRouteSmartV3FallbackToFastFailLive(
+  fallback: { fallback: boolean; reason?: string; flags: string[] }
+): boolean {
+  if (!fallback.fallback) return false;
+  if (!isKolLiveCanaryArmEnabled('smart_v3_fast_fail_live_v1')) return false;
+  return fallback.flags.every((flag) => isSmartV3FastFailLiveAllowedFlag(flag, fallback.flags));
 }
 
 function smartV3KolWeightedFillPrice(cand: PendingCandidate, fresh: SmartV3FreshContext): number | null {
@@ -3719,18 +3994,44 @@ function rotationUnderfillReferencePriceFromTelemetry(
   return solAmount / tokenAmount;
 }
 
+function isRotationUnderfillExitRouteUnknownFlag(flag: string): boolean {
+  const upper = flag.toUpperCase();
+  return upper === 'EXIT_LIQUIDITY_UNKNOWN' ||
+    upper === 'NO_SELL_ROUTE' ||
+    upper === 'SELL_NO_ROUTE' ||
+    upper === 'NO_ROUTE' ||
+    upper.includes('NO_SELL_ROUTE');
+}
+
 function evaluateRotationUnderfillLiveFallback(
-  entrySignal: KolEntrySignal
+  entrySignal: KolEntrySignal,
+  entryFlags: string[] = []
 ): { fallback: boolean; reason?: string; flags: string[] } {
   if (entrySignal.label !== 'rotation-underfill') return { fallback: false, flags: [] };
   const flags: string[] = [];
   if (!isRotationUnderfillLiveCanaryEnabled()) {
     flags.push('ROTATION_UNDERFILL_LIVE_DISABLED');
   }
+  if (entryFlags.some(isRotationUnderfillExitRouteUnknownFlag)) {
+    flags.push('ROTATION_UNDERFILL_LIVE_EXIT_ROUTE_UNKNOWN');
+  }
+  const decayCheck = checkRotationLiveKolDecay(
+    (entrySignal.entryParticipatingKols ?? [])
+      .map((kol) => kol.id)
+      .concat(entrySignal.rotationAnchorKols ?? [])
+  );
+  if (decayCheck.blocked) {
+    flags.push(...decayCheck.flags);
+  }
   if (flags.length === 0) return { fallback: false, flags: [] };
+  const reason = flags.includes('ROTATION_UNDERFILL_LIVE_DISABLED')
+    ? 'rotation_underfill_live_disabled'
+    : flags.includes('ROTATION_UNDERFILL_LIVE_EXIT_ROUTE_UNKNOWN')
+      ? 'rotation_underfill_live_exit_route_unknown'
+      : decayCheck.reason ?? 'rotation_underfill_live_kol_decay';
   return {
     fallback: true,
-    reason: 'rotation_underfill_live_disabled',
+    reason,
     flags,
   };
 }
@@ -5857,7 +6158,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       });
       return;
     }
-    const rotationUnderfillLiveFallback = evaluateRotationUnderfillLiveFallback(entrySignal);
+    const rotationUnderfillLiveFallback = evaluateRotationUnderfillLiveFallback(entrySignal, entryFlags);
     if (rotationUnderfillLiveFallback.fallback) {
       const policyFlags = [
         ...entryFlags,
@@ -5960,6 +6261,34 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
           `[KOL_HUNTER_SMART_V3_FAST_CANARY] ${cand.tokenMint.slice(0, 8)} ` +
           `entryReason=${entrySignal.entryReason} flags=${smartV3LiveFallback.flags.join(',')} ` +
           `— relaxed smart-v3 live canary.`
+        );
+      } else if (canRouteSmartV3FallbackToFastFailLive(smartV3LiveFallback)) {
+        const fastFailLiveCandidateId = buildLiveEquivalenceCandidateId(
+          cand.tokenMint,
+          entrySignal,
+          Date.now(),
+          config.kolHunterSmartV3FastFailLiveParameterVersion
+        );
+        liveEntryFlags = [
+          ...policyFlags,
+          'SMART_V3_FAST_FAIL_LIVE_CANARY',
+        ];
+        liveEntryOptions = {
+          ...entryOptionsWithLiveShadow,
+          parameterVersion: config.kolHunterSmartV3FastFailLiveParameterVersion,
+          liveEquivalenceCandidateId: fastFailLiveCandidateId,
+          smartV3LiveEligibleShadow: true,
+          smartV3LiveBlockReason: null,
+          smartV3LiveBlockFlags: [
+            'SMART_V3_FAST_FAIL_LIVE_CANARY',
+            ...smartV3LiveFallback.flags,
+          ],
+          smartV3LiveEligibilityEvaluatedAtMs: Date.now(),
+        };
+        log.warn(
+          `[KOL_HUNTER_SMART_V3_FAST_FAIL_LIVE_CANARY] ${cand.tokenMint.slice(0, 8)} ` +
+          `entryReason=${entrySignal.entryReason} flags=${smartV3LiveFallback.flags.join(',')} ` +
+          `— paper-like smart-v3 fast-fail live canary.`
         );
       } else {
         if (smartV3HardCutReentryLiveOnly) {
@@ -8209,6 +8538,7 @@ function closePosition(
     config.kolHunterTailRetainEnabled &&
     !pos.isShadowArm &&
     !pos.isTailPosition &&  // tail 의 close 에서 다시 tail spawn 차단
+    !isRotationFamilyMarkoutPosition(pos) &&
     isPriceKillReason(reason)
   ) {
     spawnTailSubPosition(pos, exitPrice, nowSec);
@@ -10220,6 +10550,7 @@ async function closeLivePosition(
         config.kolHunterTailRetainLiveEnabled === true &&
         config.kolHunterTailRetainEnabled === true &&
         !pos.isTailPosition &&
+        !isRotationFamilyMarkoutPosition(pos) &&
         isPriceKillReason(reason);
       const retainPct = isPriceKillParent ? config.kolHunterTailRetainPct : 0;
       const sellAmount = isPriceKillParent
@@ -10631,6 +10962,7 @@ async function closeLivePosition(
     // 2026-04-29 (P0-2): KOL alpha decay tracking — live close 가 우선 신호 (real wallet delta).
     markKolClosed(pos.participatingKols.map((k) => k.id), pnl);
     markSmartV3ComboClosed(pos, pnl, 'live');
+    markRotationLiveKolClosed(pos, pnl);
   }
 
   // 2026-04-30 (Sprint 1.B3): live trade outcome 을 jsonl 로 persist (DSR validator 입력).
@@ -11033,6 +11365,14 @@ export function __testCanRouteSmartV3FastCanary(flags: string[]): boolean {
   });
 }
 
+export function __testCanRouteSmartV3FastFailLive(flags: string[]): boolean {
+  return canRouteSmartV3FallbackToFastFailLive({
+    fallback: true,
+    reason: 'smart_v3_fast_fail_live_canary',
+    flags,
+  });
+}
+
 export function __testGetActive(): PaperPosition[] {
   return [...active.values()];
 }
@@ -11076,4 +11416,8 @@ export function __testRecordSmartV3ComboClose(
   const key = smartV3ComboKey(kolIds);
   if (!key) return;
   pushSmartV3ComboCloseRecord(key, pnlSol, mode);
+}
+
+export function __testRecordRotationLiveKolClose(kolIds: string[], pnlSol: number): void {
+  pushRotationLiveKolClose(kolIds, pnlSol, Date.now());
 }

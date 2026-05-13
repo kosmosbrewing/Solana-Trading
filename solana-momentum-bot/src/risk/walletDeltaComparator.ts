@@ -341,7 +341,7 @@ function haltAllLanes(reason: string): void {
   // 가 계속 진입 가능. 두 lane 도 추가하여 EntryLane 전체 정합.
   const lanes: EntryLane[] = [
     'cupsey', 'migration', 'main', 'strategy_d', 'pure_ws_breakout',
-    'pure_ws_swing_v2', 'kol_hunter',
+    'pure_ws_swing_v2', 'kol_hunter', 'kol_hunter_smart_v3', 'kol_hunter_rotation',
   ];
   for (const lane of lanes) {
     triggerEntryHalt(lane, reason);

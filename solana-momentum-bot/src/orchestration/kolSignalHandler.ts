@@ -100,7 +100,7 @@ import { reportCanaryClose } from '../risk/canaryAutoHalt';
 import { reportBleed } from '../risk/dailyBleedBudget';
 import { getHardTradingHaltReason, isDrawdownGuardHaltReason } from '../risk/tradingHaltPolicy';
 import { isWalletStopActive, getWalletStopGuardState } from '../risk/walletStopGuard';
-import { persistOpenTradeWithIntegrity, appendEntryLedger, isEntryHaltActive, triggerEntryHalt } from './entryIntegrity';
+import { persistOpenTradeWithIntegrity, appendEntryLedger, isEntryHaltActive, triggerEntryHalt, type EntryLane } from './entryIntegrity';
 import { resolveActualEntryMetrics } from './signalProcessor';
 import { bpsToDecimal } from '../utils/units';
 import {
@@ -131,6 +131,8 @@ import {
 
 const log = createModuleLogger('KolHunter');
 const LANE_STRATEGY = 'kol_hunter' as const;
+const LANE_KOL_SMART_V3 = 'kol_hunter_smart_v3' as const;
+const LANE_KOL_ROTATION = 'kol_hunter_rotation' as const;
 const CAPITULATION_REBOUND_ARM = 'kol_hunter_capitulation_rebound_v1';
 const CAPITULATION_REBOUND_RR_ARM = 'kol_hunter_capitulation_rebound_rr_v1';
 const ROTATION_UNDERFILL_ARM = 'rotation_underfill_v1';
@@ -259,6 +261,8 @@ export interface PaperPosition {
   profileArm?: string;
   entryArm?: string;
   exitArm?: string;
+  /** Internal live canary circuit lane. DB strategy remains kol_hunter for backward compatibility. */
+  canaryLane?: EntryLane;
   isShadowArm: boolean;
   parentPositionId?: string;
   /**
@@ -438,6 +442,7 @@ interface PaperEntryOptions {
   profileArm?: string;
   entryArm?: string;
   exitArm?: string;
+  canaryLane?: EntryLane;
   entryReason?: KolEntryReason;
   convictionLevel?: KolConvictionLevel;
   tokenDecimals?: number;
@@ -1088,6 +1093,7 @@ function trackPaperPositionMarkout(
         profileArm: pos.profileArm ?? null,
         entryArm: pos.entryArm ?? pos.armName,
         exitArm: pos.exitArm ?? pos.armName,
+        canaryLane: pos.canaryLane ?? null,
         parameterVersion: pos.parameterVersion,
         isShadowArm: pos.isShadowArm,
         isShadowKol: pos.isShadowKol ?? false,
@@ -3071,11 +3077,75 @@ interface KolEntrySignal {
   paperOnlyReason?: string;
 }
 
+function isRotationCanaryArmName(armName?: string | null): boolean {
+  const lower = String(armName ?? '').toLowerCase();
+  return lower.includes('rotation') || lower.includes('underfill') || lower.includes('chase_topup');
+}
+
+function isSmartV3CanaryArmName(armName?: string | null): boolean {
+  const lower = String(armName ?? '').toLowerCase();
+  return lower.includes('smart_v3') || lower.includes('kol_hunter_smart_v3');
+}
+
+function kolHunterCanaryLaneForEntrySignal(entrySignal: Pick<KolEntrySignal, 'label'>): EntryLane {
+  if (
+    entrySignal.label === 'rotation-v1' ||
+    entrySignal.label === 'rotation-underfill' ||
+    entrySignal.label === 'rotation-chase-topup'
+  ) {
+    return LANE_KOL_ROTATION;
+  }
+  if (entrySignal.label === 'smart-v3') return LANE_KOL_SMART_V3;
+  return LANE_STRATEGY;
+}
+
+function kolHunterCanaryLaneForOptions(options: PaperEntryOptions): EntryLane {
+  if (options.canaryLane) return options.canaryLane;
+  if (isRotationCanaryArmName(options.profileArm) || isRotationCanaryArmName(options.entryArm)) {
+    return LANE_KOL_ROTATION;
+  }
+  if (isSmartV3CanaryArmName(options.profileArm) || isSmartV3CanaryArmName(options.entryArm)) {
+    return LANE_KOL_SMART_V3;
+  }
+  const armName = options.parameterVersion ? armNameForVersion(options.parameterVersion) : null;
+  if (isRotationCanaryArmName(armName)) return LANE_KOL_ROTATION;
+  if (isSmartV3CanaryArmName(armName)) return LANE_KOL_SMART_V3;
+  return LANE_STRATEGY;
+}
+
+function kolHunterCanaryLaneForPosition(pos: PaperPosition): EntryLane {
+  if (pos.canaryLane) return pos.canaryLane;
+  if (
+    isRotationCanaryArmName(pos.profileArm) ||
+    isRotationCanaryArmName(pos.entryArm) ||
+    isRotationCanaryArmName(pos.armName)
+  ) {
+    return LANE_KOL_ROTATION;
+  }
+  if (
+    isSmartV3CanaryArmName(pos.profileArm) ||
+    isSmartV3CanaryArmName(pos.entryArm) ||
+    isSmartV3CanaryArmName(pos.armName)
+  ) {
+    return LANE_KOL_SMART_V3;
+  }
+  return LANE_STRATEGY;
+}
+
+const SMART_V3_LIVE_HARD_TOP10_HOLDER_PCT = 0.60;
+
+function smartV3LiveHardTop10HolderPct(): number {
+  return Math.min(config.kolHunterSurvivalMaxTop10HolderPct, SMART_V3_LIVE_HARD_TOP10_HOLDER_PCT);
+}
+
 function isSmartV3LiveStrictQualityFlag(flag: string): boolean {
   const upper = flag.toUpperCase();
   if (config.kolHunterSmartV3LiveBlockExitLiquidityUnknown && upper === 'EXIT_LIQUIDITY_UNKNOWN') return true;
   if (config.kolHunterSmartV3LiveBlockTokenQualityUnknown && upper === 'TOKEN_QUALITY_UNKNOWN') return true;
-  if (config.kolHunterSmartV3LiveBlockUncleanToken && upper.startsWith('UNCLEAN_TOKEN')) return true;
+  if (config.kolHunterSmartV3LiveBlockUncleanToken && upper.startsWith('UNCLEAN_TOKEN')) {
+    const top10Pct = parseSmartV3Top10PctFromFlag(flag);
+    return top10Pct === null || top10Pct > smartV3LiveHardTop10HolderPct();
+  }
   if (config.kolHunterSmartV3LiveBlockUncleanToken && upper.startsWith('HOLDER_')) return true;
   if (upper === 'NO_SELL_ROUTE' || upper === 'SELL_NO_ROUTE' || upper === 'NO_ROUTE') return true;
   if (upper.includes('NO_SELL_ROUTE') || upper.includes('RUG')) return true;
@@ -3111,7 +3181,7 @@ function hasSmartV3FastCanaryHardConcentrationFlag(flags: string[]): boolean {
     if (upper.includes('HIGH_CONCENTRATION')) return true;
     if (upper === 'SMART_V3_QUALITY_HOLDER_TOP10_HIGH') return true;
     const top10Pct = parseSmartV3Top10PctFromFlag(flag);
-    return top10Pct !== null && top10Pct > config.kolHunterSurvivalMaxTop10HolderPct;
+    return top10Pct !== null && top10Pct > smartV3LiveHardTop10HolderPct();
   });
 }
 
@@ -3120,7 +3190,7 @@ function isSmartV3FastCanaryFlag(flag: string, allFlags: string[]): boolean {
   if (isSmartV3QualityUnknownMicroFlag(flag)) return true;
   if (upper.startsWith('SMART_V3_QUALITY_UNCLEAN_TOKEN')) {
     const top10Pct = parseSmartV3Top10PctFromFlag(flag);
-    return top10Pct !== null && top10Pct <= config.kolHunterSurvivalMaxTop10HolderPct;
+    return top10Pct !== null && top10Pct <= smartV3LiveHardTop10HolderPct();
   }
   if (isSmartV3FastCanaryModerateHolderFlag(flag)) {
     return !hasSmartV3FastCanaryHardConcentrationFlag(allFlags);
@@ -3144,31 +3214,6 @@ function canRouteSmartV3FallbackToFastCanary(
   if (!isKolLiveCanaryArmEnabled('smart_v3_fast_canary_v1')) return false;
   if (!fallback.flags.includes('SMART_V3_LIVE_QUALITY_FALLBACK')) return false;
   return fallback.flags.every((flag) => isSmartV3FastCanaryFlag(flag, fallback.flags));
-}
-
-function isSmartV3StrategyGateFlag(flag: string): boolean {
-  const upper = flag.toUpperCase();
-  return upper === 'SMART_V3_LIVE_DISABLED' ||
-    upper === 'SMART_V3_PULLBACK_LIVE_DISABLED' ||
-    upper === 'SMART_V3_POST_SELL_RECOVERY_WEAK' ||
-    upper === 'SMART_V3_PRE_ENTRY_SELL_LIVE_DISABLED' ||
-    upper === 'SMART_V3_RECENT_SELL_NO_SELL_WINDOW' ||
-    upper === 'SMART_V3_LIVE_QUALITY_FALLBACK' ||
-    upper.startsWith('SMART_V3_QUALITY_') ||
-    upper === 'SMART_V3_COMBO_DECAY' ||
-    upper.startsWith('SMART_V3_COMBO_DECAY_') ||
-    upper === 'SMART_V3_ENTRY_ADVANTAGE_ADVERSE' ||
-    upper.startsWith('SMART_V3_KOL_FILL_ADVERSE_') ||
-    upper === 'DEV_WALLET_LIVE_BLOCK' ||
-    upper === 'LIVE_MIN_KOL' ||
-    upper === 'YELLOW_ZONE_MIN_KOL';
-}
-
-function shouldSuppressSmartV3PaperFallbackForStrategy(
-  entrySignal: KolEntrySignal,
-  flags: string[]
-): boolean {
-  return entrySignal.label === 'smart-v3' && flags.some(isSmartV3StrategyGateFlag);
 }
 
 function smartV3KolWeightedFillPrice(cand: PendingCandidate, fresh: SmartV3FreshContext): number | null {
@@ -3303,7 +3348,7 @@ function buildSmartV3LiveEligibilityShadow(options: {
   if (isWalletStopActive()) {
     return blocked('wallet_stop_active', ['WALLET_STOP_ACTIVE']);
   }
-  if (isEntryHaltActive(LANE_STRATEGY)) {
+  if (isEntryHaltActive(LANE_KOL_SMART_V3)) {
     return blocked('entry_halt_active', ['ENTRY_HALT_ACTIVE']);
   }
   const qualityCooldown = isInLiveExecutionQualityCooldown(cand.tokenMint);
@@ -5362,66 +5407,6 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     });
     cleanupPendingCandidate(cand, true);
   };
-  const rejectSmartV3StrategyFallbackWithoutPaper = (
-    blockReason: string,
-    flags: string[],
-    stage: KolLiveEquivalenceDecisionStage,
-    extras: Record<string, unknown> = {}
-  ): void => {
-    const survivalFlags = [
-      ...flags,
-      'SMART_V3_STRATEGY_NO_PAPER_FALLBACK',
-    ];
-    log.warn(
-      `[KOL_HUNTER_SMART_V3_STRATEGY_REJECT] ${cand.tokenMint.slice(0, 8)} ` +
-      `reason=${blockReason} stage=${stage} — no paper fallback`
-    );
-    emitKolShadowPolicy({
-      eventKind: 'reject',
-      tokenMint: cand.tokenMint,
-      currentAction: 'block',
-      isLive: false,
-      isShadowArm: false,
-      armName: entryOptions.parameterVersion ? armNameForVersion(entryOptions.parameterVersion) : 'kol_hunter_smart_v3',
-      entryReason: entryOptions.entryReason,
-      rejectReason: blockReason,
-      independentKolCount: smartFresh.freshIndependentKolCount,
-      effectiveIndependentCount: smartFresh.freshIndependentKolCount,
-      kolScore: smartFresh.freshSignalScore,
-      participatingKols: entryOptions.entryParticipatingKols ?? score.participatingKols,
-      survivalFlags,
-      recentJupiter429: currentRecentJupiter429(),
-    });
-    emitKolLiveEquivalence({
-      candidateId: liveEquivalenceCandidateId,
-      tokenMint: cand.tokenMint,
-      entrySignal,
-      score,
-      entryOptions: entryOptionsWithLiveShadow,
-      survivalFlags,
-      candIsShadow,
-      stage,
-      paperWouldEnter: false,
-      liveWouldEnter: false,
-      liveBlockReason: blockReason,
-      liveBlockFlags: survivalFlags,
-      ...extras,
-    });
-    fireRejectObserver(cand.tokenMint, 'smart_v3_no_trigger', cand, score, {
-      survivalReason: blockReason,
-      survivalFlags,
-      liveBlockReason: blockReason,
-      liveBlockFlags: survivalFlags,
-      smartV3StrategyNoPaperFallback: true,
-      skipPolicyEntry: true,
-      entryReason: entryOptions.entryReason,
-      parameterVersion: entryOptions.parameterVersion,
-      signalPrice: smart.currentPrice,
-      tokenDecimals: smart.tokenDecimals,
-      ...extras,
-    });
-    cleanupPendingCandidate(cand, true);
-  };
   if (postDistribution.blocked) {
     log.warn(
       `[KOL_HUNTER_POST_DISTRIBUTION_BLOCK] ${cand.tokenMint.slice(0, 8)} ${entrySignal.label} trigger — ` +
@@ -5449,6 +5434,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
   }
 
   const candIsShadow = cand.kolTxs.length > 0 && cand.kolTxs.every((t) => t.isShadow === true);
+  const liveCanaryLane = kolHunterCanaryLaneForEntrySignal(entrySignal);
   const hardTradingHaltReasonForShadow = botCtx
     ? getHardTradingHaltReason(botCtx.tradingHaltedReason)
     : null;
@@ -5464,9 +5450,13 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
   const entryOptionsWithLiveShadow: PaperEntryOptions = smartV3LiveEligibilityShadow
     ? {
         ...entryOptions,
+        canaryLane: liveCanaryLane,
         ...smartV3LiveEligibilityShadow,
       }
-    : entryOptions;
+    : {
+        ...entryOptions,
+        canaryLane: liveCanaryLane,
+      };
   const withLiveEquivalence = (
     base: PaperEntryOptions,
     stage: KolLiveEquivalenceDecisionStage,
@@ -5728,7 +5718,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       );
       return;
     }
-    if (isEntryHaltActive(LANE_STRATEGY)) {
+    if (isEntryHaltActive(liveCanaryLane)) {
       if (smartV3HardCutReentryLiveOnly) {
         rejectSmartV3HardCutReentryLiveOnlyFallback('entry_halt_active', [
           ...entryFlags,
@@ -5738,7 +5728,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       }
       log.warn(
         `[KOL_HUNTER_ENTRY_HALT] ${cand.tokenMint.slice(0, 8)} ${entrySignal.label} trigger — ` +
-        `lane halt active. fallback paper.`
+        `lane=${liveCanaryLane} halt active. fallback paper.`
       );
       const policyFlags = [...entryFlags, 'ENTRY_HALT_ACTIVE'];
       emitKolLiveEquivalence({
@@ -5831,14 +5821,6 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       const policyFlags = [...entryFlags, ...liveGate.flags];
       if (smartV3HardCutReentryLiveOnly) {
         rejectSmartV3HardCutReentryLiveOnlyFallback(liveGate.reason ?? 'live_gate_blocked', policyFlags);
-        return;
-      }
-      if (shouldSuppressSmartV3PaperFallbackForStrategy(entrySignal, policyFlags)) {
-        rejectSmartV3StrategyFallbackWithoutPaper(
-          liveGate.reason ?? 'live_gate_blocked',
-          policyFlags,
-          'yellow_zone'
-        );
         return;
       }
       log.warn(
@@ -5984,14 +5966,6 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
           rejectSmartV3HardCutReentryLiveOnlyFallback(
             smartV3LiveFallback.reason ?? 'smart_v3_live_fallback',
             policyFlags
-          );
-          return;
-        }
-        if (shouldSuppressSmartV3PaperFallbackForStrategy(entrySignal, policyFlags)) {
-          rejectSmartV3StrategyFallbackWithoutPaper(
-            smartV3LiveFallback.reason ?? 'smart_v3_live_fallback',
-            policyFlags,
-            'smart_v3_live_fallback'
           );
           return;
         }
@@ -6567,6 +6541,7 @@ async function enterPaperPosition(
   survivalFlags: string[] = [],
   options: PaperEntryOptions = {}
 ): Promise<void> {
+  const canaryLane = kolHunterCanaryLaneForOptions(options);
   if (!priceFeed) {
     log.warn(`[KOL_HUNTER] priceFeed not initialized — cannot enter`);
     return;
@@ -6698,6 +6673,7 @@ async function enterPaperPosition(
       profileArm: options.profileArm,
       entryArm: options.entryArm,
       exitArm: options.exitArm,
+      canaryLane,
       isShadowArm,
       parentPositionId,
       kolEntryReason: entryReason,
@@ -9354,6 +9330,7 @@ async function appendLiveLedger(
       entryTxSignature: pos.entryTxSignature ?? null,
       exitTxSignature: exitTxSignature ?? null,
       ticketSol: pos.ticketSol,
+      canaryLane: pos.canaryLane ?? null,
       sellRetryUrgency: liveSellTelemetry?.sellRetryUrgency ?? null,
       sellRetryAttempts: liveSellTelemetry?.sellRetryAttempts ?? null,
       sellRecoveredFromBalanceOnly: liveSellTelemetry?.sellRecoveredFromBalanceOnly ?? null,
@@ -9382,6 +9359,7 @@ async function enterLivePosition(
   ctx: BotContext,
   options: PaperEntryOptions = {}
 ): Promise<void> {
+  const canaryLane = kolHunterCanaryLaneForOptions(options);
   if (!priceFeed) {
     log.warn(`[KOL_HUNTER_LIVE] priceFeed not initialized — fallback paper`);
     await enterPaperPosition(tokenMint, cand, score, survivalFlags, options);
@@ -9549,8 +9527,8 @@ async function enterLivePosition(
   }
 
   // 2. Real Asset Guard — global canary slot.
-  if (!acquireCanarySlot(LANE_STRATEGY)) {
-    log.debug(`[KOL_HUNTER_LIVE] global canary slot full — defer ${tokenMint.slice(0, 8)}`);
+  if (!acquireCanarySlot(canaryLane)) {
+    log.debug(`[KOL_HUNTER_LIVE] canary slot full lane=${canaryLane} — defer ${tokenMint.slice(0, 8)}`);
     unsubscribePriceIfIdle(tokenMint);
     return;
   }
@@ -9565,7 +9543,7 @@ async function enterLivePosition(
         `[KOL_HUNTER_SMART_V3_HARDCUT_REENTRY_INFLIGHT_BLOCK] ${tokenMint.slice(0, 8)} ` +
         `parent=${options.smartV3HardCutParentPositionId ?? 'unknown'} — skip duplicate live buy`
       );
-      releaseCanarySlot(LANE_STRATEGY);
+      releaseCanarySlot(canaryLane);
       unsubscribePriceIfIdle(tokenMint);
       return;
     }
@@ -9735,7 +9713,7 @@ async function enterLivePosition(
     if (smartV3HardCutReentryAttempting) {
       releaseSmartV3LiveHardCutReentryAttempt(tokenMint, options.smartV3HardCutParentPositionId);
     }
-    releaseCanarySlot(LANE_STRATEGY);
+    releaseCanarySlot(canaryLane);
     unsubscribePriceIfIdle(tokenMint);
     return;
   }
@@ -9743,7 +9721,7 @@ async function enterLivePosition(
   // 4. DB persist (entryIntegrity halt 보호).
   const persistResult = await persistOpenTradeWithIntegrity({
     ctx,
-    lane: LANE_STRATEGY,
+    lane: canaryLane,
     tradeData: {
       pairAddress: tokenMint,
       strategy: LANE_STRATEGY,
@@ -9821,6 +9799,7 @@ async function enterLivePosition(
       profileArm: options.profileArm ?? null,
       entryArm: options.entryArm ?? null,
       exitArm: options.exitArm ?? null,
+      canaryLane,
       rotationAnchorKols: options.rotationAnchorKols ?? null,
       rotationAnchorPrice: options.rotationAnchorPrice ?? null,
       rotationFirstBuyAtMs: options.rotationFirstBuyAtMs ?? null,
@@ -9888,6 +9867,7 @@ async function enterLivePosition(
     profileArm: options.profileArm,
     entryArm: options.entryArm,
     exitArm: options.exitArm,
+    canaryLane,
     isShadowArm: false,
     kolEntryReason: entryReason,
     kolConvictionLevel: conviction,
@@ -10554,6 +10534,7 @@ async function closeLivePosition(
   const pnlPct = effectiveTicketSol > 0
     ? pnl / effectiveTicketSol
     : (pos.entryPrice > 0 ? (actualExitPrice - pos.entryPrice) / pos.entryPrice : 0);
+  const canaryLane = kolHunterCanaryLaneForPosition(pos);
 
   // DB closeTrade.
   let dbCloseSucceeded = false;
@@ -10573,12 +10554,12 @@ async function closeLivePosition(
   } catch (err) {
     log.warn(`[KOL_HUNTER_LIVE_CLOSE_PERSIST] ${pos.positionId}: ${err}`);
     // 2026-04-27 fix: live sell 성공 후 DB close 실패 → wallet ↔ DB drift 누적 가능.
-    // pure_ws/cupsey 패턴 동일 적용 — kol_hunter lane entry halt 트리거.
-    // 운영자 reconciliation 후 resetEntryHalt('kol_hunter') 로 해제 필요.
-    triggerEntryHalt('kol_hunter', `KOL live close persist failed for ${pos.positionId}: ${err}`);
+    // smart-v3/rotation canary 분리 이후에는 실제 canary sublane 을 멈춰야 재진입이 차단된다.
+    // 운영자 reconciliation 후 resetEntryHalt(canaryLane) 로 해제 필요.
+    triggerEntryHalt(canaryLane, `KOL live close persist failed for ${pos.positionId}: ${err}`);
     await ctx.notifier.sendCritical(
       'kol_live_close_persist',
-      `${pos.positionId} ${pos.tokenMint} sell ok but DB close failed — NEW POSITIONS HALTED`
+      `${pos.positionId} ${pos.tokenMint} sell ok but DB close failed — ${canaryLane} NEW POSITIONS HALTED`
     ).catch(() => {});
   }
   void dbCloseSucceeded;
@@ -10722,8 +10703,8 @@ async function closeLivePosition(
   unsubscribePriceIfIdle(pos.tokenMint);
 
   // Real Asset Guard feed: canary auto-halt + bleed budget.
-  reportCanaryClose(LANE_STRATEGY, pnl);
-  releaseCanarySlot(LANE_STRATEGY);
+  reportCanaryClose(canaryLane, pnl);
+  releaseCanarySlot(canaryLane);
   if (config.dailyBleedBudgetEnabled) {
     const walletState = getWalletStopGuardState();
     const walletBaselineSol = walletState.lastBalanceSol > 0 && Number.isFinite(walletState.lastBalanceSol)

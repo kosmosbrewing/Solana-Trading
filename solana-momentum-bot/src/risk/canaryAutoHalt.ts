@@ -46,6 +46,10 @@ interface LaneCanaryState {
 
 export interface CanaryCloseLedgerRecord {
   strategy?: string;
+  armName?: string;
+  profileArm?: string | null;
+  entryArm?: string | null;
+  canaryLane?: string | null;
   wallet?: string;
   positionId?: string;
   eventType?: string;
@@ -75,7 +79,7 @@ export interface CanaryHydrationSummary {
 // 2026-04-27 fix: kol_hunter live canary lane 추가 — auto-reset / state query API 가 KOL 인지 가능.
 const DEFAULT_LANES: EntryLane[] = [
   'cupsey', 'migration', 'main', 'strategy_d', 'pure_ws_breakout',
-  'pure_ws_swing_v2', 'kol_hunter',
+  'pure_ws_swing_v2', 'kol_hunter', 'kol_hunter_smart_v3', 'kol_hunter_rotation',
 ];
 
 const laneStates: Map<EntryLane, LaneCanaryState> = new Map();
@@ -102,7 +106,7 @@ function readConfig(lane?: EntryLane): CanaryAutoHaltConfig {
     };
   }
   // 2026-04-28 Sprint 2: kol_hunter 도 별도 cap. 공용 0.3 SOL 분리 — paper n=401 5x+ 1건 입증 단계.
-  if (lane === 'kol_hunter') {
+  if (lane === 'kol_hunter' || lane === 'kol_hunter_smart_v3' || lane === 'kol_hunter_rotation') {
     return {
       enabled: config.canaryAutoHaltEnabled,
       maxConsecutiveLosers: config.kolHunterCanaryMaxConsecLosers,
@@ -127,10 +131,22 @@ function parseRecordedAtMs(recordedAt?: string): number | null {
 }
 
 function resolveCanaryLaneFromLedger(row: CanaryCloseLedgerRecord): EntryLane | null {
+  if (row.canaryLane === 'kol_hunter_smart_v3' || row.canaryLane === 'kol_hunter_rotation') {
+    return row.canaryLane;
+  }
   if (row.strategy === 'cupsey_flip_10s') return 'cupsey';
   if (row.strategy === 'pure_ws_breakout') return 'pure_ws_breakout';
   if (row.strategy === 'pure_ws_swing_v2') return 'pure_ws_swing_v2';
-  if (row.strategy === 'kol_hunter') return 'kol_hunter';
+  if (row.strategy === 'kol_hunter') {
+    const arm = String(row.profileArm ?? row.entryArm ?? row.armName ?? '').toLowerCase();
+    if (arm.includes('rotation') || arm.includes('underfill') || arm.includes('chase_topup')) {
+      return 'kol_hunter_rotation';
+    }
+    if (arm.includes('smart_v3') || arm.includes('kol_hunter_smart_v3')) {
+      return 'kol_hunter_smart_v3';
+    }
+    return 'kol_hunter';
+  }
   if (row.strategy === 'migration' || row.strategy?.startsWith('migration_')) return 'migration';
   if (row.strategy === 'main') return 'main';
   if (row.strategy === 'strategy_d') return 'strategy_d';

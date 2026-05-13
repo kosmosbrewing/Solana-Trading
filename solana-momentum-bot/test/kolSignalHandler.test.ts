@@ -374,8 +374,8 @@ jest.mock('../src/utils/config', () => ({
     kolHunterLiveCanaryArms: [],
     kolHunterSmartV3QualityUnknownMicroParameterVersion: 'smart-v3-quality-unknown-micro-v1.0.0',
     kolHunterSmartV3LiveStrictQualityEnabled: true,
-    kolHunterSmartV3LiveBlockExitLiquidityUnknown: true,
-    kolHunterSmartV3LiveBlockTokenQualityUnknown: true,
+    kolHunterSmartV3LiveBlockExitLiquidityUnknown: false,
+    kolHunterSmartV3LiveBlockTokenQualityUnknown: false,
     kolHunterSmartV3LiveBlockUncleanToken: true,
     kolHunterSmartV3PreEntrySellLiveBlockEnabled: true,
     kolHunterSmartV3PreEntrySellMinNoSellSec: 60,
@@ -562,8 +562,8 @@ describe('kolSignalHandler — state machine', () => {
     mockedConfig.kolHunterSmartV3Enabled = false;
     mockedConfig.kolHunterSmartV3LiveEnabled = true;
     mockedConfig.kolHunterSmartV3LiveStrictQualityEnabled = true;
-    mockedConfig.kolHunterSmartV3LiveBlockExitLiquidityUnknown = true;
-    mockedConfig.kolHunterSmartV3LiveBlockTokenQualityUnknown = true;
+    mockedConfig.kolHunterSmartV3LiveBlockExitLiquidityUnknown = false;
+    mockedConfig.kolHunterSmartV3LiveBlockTokenQualityUnknown = false;
     mockedConfig.kolHunterSmartV3LiveBlockUncleanToken = true;
     mockedConfig.kolHunterSmartV3PreEntrySellLiveBlockEnabled = true;
     mockedConfig.kolHunterSmartV3PreEntrySellMinNoSellSec = 60;
@@ -2803,8 +2803,8 @@ describe('kolSignalHandler — state machine', () => {
       mockedConfig.kolHunterSmartV3PullbackLiveEnabled = false;
       mockedConfig.kolHunterSmartV3MinFreshAfterSellKols = 2;
       mockedConfig.kolHunterSmartV3LiveStrictQualityEnabled = true;
-      mockedConfig.kolHunterSmartV3LiveBlockExitLiquidityUnknown = true;
-      mockedConfig.kolHunterSmartV3LiveBlockTokenQualityUnknown = true;
+      mockedConfig.kolHunterSmartV3LiveBlockExitLiquidityUnknown = false;
+      mockedConfig.kolHunterSmartV3LiveBlockTokenQualityUnknown = false;
       mockedConfig.kolHunterSmartV3LiveBlockUncleanToken = true;
       mockedConfig.kolHunterSmartV3PreEntrySellLiveBlockEnabled = true;
       mockedConfig.kolHunterSmartV3PreEntrySellMinNoSellSec = 60;
@@ -2886,7 +2886,7 @@ describe('kolSignalHandler — state machine', () => {
       };
     }
 
-    it('smart-v3 pullback live-disabled 는 전략 탈락으로 보고 paper fallback 하지 않는다', async () => {
+    it('smart-v3 pullback live-disabled 는 live 차단 후 paper fallback 으로 비교군을 남긴다', async () => {
       const { ctx, executeBuy, insertTrade } = buildLiveCtx();
       __testInit({ priceFeed: stubFeed as unknown as never, ctx });
       mockedConfig.kolHunterPaperOnly = false;
@@ -2904,16 +2904,18 @@ describe('kolSignalHandler — state machine', () => {
       expect(executeBuy).not.toHaveBeenCalled();
       expect(insertTrade).not.toHaveBeenCalled();
 
-      expect(__testGetActive()).toHaveLength(0);
-      expect(policyRecordsWithFlag('SMART_V3_STRATEGY_NO_PAPER_FALLBACK')).toHaveLength(1);
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].isLive).toBeFalsy();
+      expect(policyRecordsWithFlag('SMART_V3_STRATEGY_NO_PAPER_FALLBACK')).toHaveLength(0);
       const equivalence = liveEquivalenceRecords().find((row) =>
         row.liveBlockFlags.includes('SMART_V3_PULLBACK_LIVE_DISABLED')
       );
-      expect(equivalence?.paperWouldEnter).toBe(false);
+      expect(equivalence?.paperWouldEnter).toBe(true);
       expect(equivalence?.liveWouldEnter).toBe(false);
     });
 
-    it('smart-v3 live arm 미선택이면 main paper fallback 하지 않는다', async () => {
+    it('smart-v3 live arm 미선택이면 live 차단 후 main paper fallback 으로 비교군을 남긴다', async () => {
       const { ctx, executeBuy, insertTrade } = buildLiveCtx();
       __testInit({ priceFeed: stubFeed as unknown as never, ctx });
       mockedConfig.kolHunterPaperOnly = false;
@@ -2928,12 +2930,14 @@ describe('kolSignalHandler — state machine', () => {
       expect(executeBuy).not.toHaveBeenCalled();
       expect(insertTrade).not.toHaveBeenCalled();
 
-      expect(__testGetActive()).toHaveLength(0);
-      expect(policyRecordsWithFlag('SMART_V3_STRATEGY_NO_PAPER_FALLBACK')).toHaveLength(1);
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].isLive).toBeFalsy();
+      expect(policyRecordsWithFlag('SMART_V3_STRATEGY_NO_PAPER_FALLBACK')).toHaveLength(0);
       const equivalence = liveEquivalenceRecords().find((row) =>
         row.liveBlockFlags.includes('SMART_V3_LIVE_DISABLED')
       );
-      expect(equivalence?.paperWouldEnter).toBe(false);
+      expect(equivalence?.paperWouldEnter).toBe(true);
       expect(equivalence?.liveWouldEnter).toBe(false);
     });
 
@@ -3045,7 +3049,7 @@ describe('kolSignalHandler — state machine', () => {
       expect(live?.kolScore).toBeCloseTo(5.0, 6);
     });
 
-    it('smart-v3 live strict quality: exit liquidity unknown 은 strategy reject 로 남기고 paper fallback 하지 않는다', async () => {
+    it('smart-v3 live strict quality override: exit liquidity unknown 은 live 차단 후 paper fallback 으로 비교군을 남긴다', async () => {
       const { ctx, executeBuy, insertTrade } = buildLiveCtx();
       __testInit({
         priceFeed: stubFeed as unknown as never,
@@ -3057,6 +3061,8 @@ describe('kolSignalHandler — state machine', () => {
       });
       mockedConfig.kolHunterPaperOnly = false;
       mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterSmartV3LiveBlockExitLiquidityUnknown = true;
+      mockedConfig.kolHunterSmartV3LiveBlockTokenQualityUnknown = true;
 
       stubFeed.setInitialPrice(MINT_SMART, 0.001);
       await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
@@ -3065,19 +3071,21 @@ describe('kolSignalHandler — state machine', () => {
 
       expect(executeBuy).not.toHaveBeenCalled();
       expect(insertTrade).not.toHaveBeenCalled();
-      expect(__testGetActive()).toHaveLength(0);
-      expect(policyRecordsWithFlag('SMART_V3_STRATEGY_NO_PAPER_FALLBACK')).toHaveLength(1);
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].isLive).toBeFalsy();
+      expect(policyRecordsWithFlag('SMART_V3_STRATEGY_NO_PAPER_FALLBACK')).toHaveLength(0);
       const equivalence = liveEquivalenceRecords().find((row) =>
         row.liveBlockReason === 'smart_v3_live_quality_fallback'
       );
-      expect(equivalence?.paperWouldEnter).toBe(false);
+      expect(equivalence?.paperWouldEnter).toBe(true);
       expect(equivalence?.liveBlockFlags).toEqual(expect.arrayContaining([
         'EXIT_LIQUIDITY_UNKNOWN',
         'SMART_V3_LIVE_QUALITY_FALLBACK',
       ]));
     });
 
-    it('smart-v3 quality unknown micro arm: allowlist 에 있으면 unknown-only fallback 을 live canary 로 분리한다', async () => {
+    it('smart-v3 unknown-only quality 는 smart_v3_clean live 로 유지한다', async () => {
       const { ctx, executeBuy, insertTrade } = buildLiveCtx();
       __testInit({
         priceFeed: stubFeed as unknown as never,
@@ -3089,7 +3097,7 @@ describe('kolSignalHandler — state machine', () => {
       });
       mockedConfig.kolHunterPaperOnly = false;
       mockedConfig.kolHunterLiveCanaryEnabled = true;
-      mockedConfig.kolHunterLiveCanaryArms = ['smart_v3_quality_unknown_micro'];
+      mockedConfig.kolHunterLiveCanaryArms = ['smart_v3_clean'];
 
       stubFeed.setInitialPrice(MINT_SMART, 0.001);
       await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
@@ -3099,19 +3107,18 @@ describe('kolSignalHandler — state machine', () => {
       expect(executeBuy).toHaveBeenCalledTimes(1);
       expect(insertTrade).toHaveBeenCalledTimes(1);
       const live = __testGetActive().find((p) => p.isLive === true);
-      expect(live?.armName).toBe('smart_v3_quality_unknown_micro');
-      expect(live?.parameterVersion).toBe('smart-v3-quality-unknown-micro-v1.0.0');
+      expect(live?.armName).toBe('kol_hunter_smart_v3');
+      expect(live?.parameterVersion).toBe('smart-v3.0.0');
       expect(live?.survivalFlags).toEqual(expect.arrayContaining([
         'EXIT_LIQUIDITY_UNKNOWN',
-        'SMART_V3_QUALITY_UNKNOWN_MICRO_CANARY',
       ]));
       const equivalence = liveEquivalenceRecords().find((row) => row.liveAttempted === true);
-      expect(equivalence?.armName).toBe('smart_v3_quality_unknown_micro');
-      expect(equivalence?.parameterVersion).toBe('smart-v3-quality-unknown-micro-v1.0.0');
-      expect(equivalence?.candidateId).toContain(':smart_v3_quality_unknown_micro:');
+      expect(equivalence?.armName).toBe('kol_hunter_smart_v3');
+      expect(equivalence?.parameterVersion).toBe('smart-v3.0.0');
+      expect(equivalence?.candidateId).toContain(':kol_hunter_smart_v3:');
     });
 
-    it('smart-v3 live strict quality: unclean holder concentration 은 strategy reject 로 남긴다', async () => {
+    it('smart-v3 live strict quality: unclean holder concentration 은 live 차단 후 paper fallback 으로 남긴다', async () => {
       const { ctx, executeBuy, insertTrade } = buildLiveCtx();
       __testInit({
         priceFeed: stubFeed as unknown as never,
@@ -3128,16 +3135,18 @@ describe('kolSignalHandler — state machine', () => {
 
       expect(executeBuy).not.toHaveBeenCalled();
       expect(insertTrade).not.toHaveBeenCalled();
-      expect(__testGetActive()).toHaveLength(0);
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].isLive).toBeFalsy();
       const equivalence = liveEquivalenceRecords().find((row) =>
         row.liveBlockReason === 'smart_v3_live_quality_fallback'
       );
-      expect(equivalence?.paperWouldEnter).toBe(false);
+      expect(equivalence?.paperWouldEnter).toBe(true);
       expect(equivalence?.liveBlockFlags.some((flag: string) => flag.startsWith('UNCLEAN_TOKEN'))).toBe(true);
       expect(equivalence?.liveBlockFlags).toContain('SMART_V3_LIVE_QUALITY_FALLBACK');
     });
 
-    it('smart-v3 quality unknown micro arm: holder/unclean hard-risk 는 allowlist 가 있어도 strategy reject 로 남긴다', async () => {
+    it('smart-v3 quality unknown micro arm: holder/unclean hard-risk 는 allowlist 가 있어도 live 차단 후 paper fallback 으로 남긴다', async () => {
       const { ctx, executeBuy, insertTrade } = buildLiveCtx();
       __testInit({
         priceFeed: stubFeed as unknown as never,
@@ -3155,20 +3164,22 @@ describe('kolSignalHandler — state machine', () => {
 
       expect(executeBuy).not.toHaveBeenCalled();
       expect(insertTrade).not.toHaveBeenCalled();
-      expect(__testGetActive()).toHaveLength(0);
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].isLive).toBeFalsy();
       const equivalence = liveEquivalenceRecords().find((row) =>
         row.liveBlockReason === 'smart_v3_live_quality_fallback'
       );
-      expect(equivalence?.paperWouldEnter).toBe(false);
+      expect(equivalence?.paperWouldEnter).toBe(true);
       expect(equivalence?.liveBlockFlags.some((flag: string) => flag.startsWith('UNCLEAN_TOKEN'))).toBe(true);
     });
 
-    it('smart-v3 fast canary arm: medium holder/unknown quality fallback 은 live canary 로 분리한다', async () => {
+    it('smart-v3 fast canary arm: medium holder-risk 도 smart_v3_clean 없이 암묵 live 진입하지 않는다', async () => {
       const { ctx, executeBuy, insertTrade } = buildLiveCtx();
       __testInit({
         priceFeed: stubFeed as unknown as never,
         ctx,
-        securityClient: buildSecurityClient({ top10HolderPct: 0.65 }) as never,
+        securityClient: buildSecurityClient({ top10HolderPct: 0.55 }) as never,
       });
       mockedConfig.kolHunterPaperOnly = false;
       mockedConfig.kolHunterLiveCanaryEnabled = true;
@@ -3179,16 +3190,16 @@ describe('kolSignalHandler — state machine', () => {
       await handleKolSwap(buyTx('ghost', 'A', MINT_SMART));
       await flushAsync();
 
-      expect(executeBuy).toHaveBeenCalledTimes(1);
-      expect(insertTrade).toHaveBeenCalledTimes(1);
-      const live = __testGetActive().find((p) => p.isLive === true);
-      expect(live?.armName).toBe('smart_v3_fast_canary_v1');
-      expect(live?.parameterVersion).toBe('smart-v3-fast-canary-v1.0.0');
-      expect(live?.survivalFlags).toContain('SMART_V3_FAST_CANARY');
-      expect(live?.survivalFlags.some((flag) => flag.startsWith('UNCLEAN_TOKEN'))).toBe(true);
-      const equivalence = liveEquivalenceRecords().find((row) => row.liveAttempted === true);
-      expect(equivalence?.armName).toBe('smart_v3_fast_canary_v1');
-      expect(equivalence?.candidateId).toContain(':smart_v3_fast_canary_v1:');
+      expect(executeBuy).not.toHaveBeenCalled();
+      expect(insertTrade).not.toHaveBeenCalled();
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].isLive).toBeFalsy();
+      const equivalence = liveEquivalenceRecords().find((row) =>
+        row.liveBlockReason === 'smart_v3_live_disabled'
+      );
+      expect(equivalence?.paperWouldEnter).toBe(true);
+      expect(equivalence?.liveBlockFlags).toContain('SMART_V3_LIVE_DISABLED');
     });
 
     it('smart-v3 fast canary arm: 중간 holder-risk 는 허용하고 극단 집중은 계속 차단한다', () => {
@@ -3232,15 +3243,17 @@ describe('kolSignalHandler — state machine', () => {
 
       expect(executeBuy).not.toHaveBeenCalled();
       expect(insertTrade).not.toHaveBeenCalled();
-      expect(__testGetActive()).toHaveLength(0);
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].isLive).toBeFalsy();
       const equivalence = liveEquivalenceRecords().find((row) =>
         row.liveBlockReason === 'smart_v3_live_disabled'
       );
-      expect(equivalence?.paperWouldEnter).toBe(false);
+      expect(equivalence?.paperWouldEnter).toBe(true);
       expect(equivalence?.liveBlockFlags).toContain('SMART_V3_LIVE_DISABLED');
     });
 
-    it('smart-v3 pre-entry sell 후 fresh re-buy 부족이면 strategy reject 로 남긴다', async () => {
+    it('smart-v3 pre-entry sell 후 fresh re-buy 부족이면 live 차단 후 paper fallback 으로 남긴다', async () => {
       const { ctx, executeBuy, insertTrade } = buildLiveCtx();
       __testInit({ priceFeed: stubFeed as unknown as never, ctx });
       mockedConfig.kolHunterPaperOnly = false;
@@ -3254,15 +3267,17 @@ describe('kolSignalHandler — state machine', () => {
 
       expect(executeBuy).not.toHaveBeenCalled();
       expect(insertTrade).not.toHaveBeenCalled();
-      expect(__testGetActive()).toHaveLength(0);
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].isLive).toBeFalsy();
       const equivalence = liveEquivalenceRecords().find((row) =>
         row.liveBlockReason === 'smart_v3_pre_entry_sell_risk'
       );
-      expect(equivalence?.paperWouldEnter).toBe(false);
+      expect(equivalence?.paperWouldEnter).toBe(true);
       expect(equivalence?.liveBlockFlags).toContain('SMART_V3_RECENT_SELL_NO_SELL_WINDOW');
     });
 
-    it('smart-v3 KOL fill 대비 불리한 가격이면 strategy reject 로 남긴다', async () => {
+    it('smart-v3 KOL fill 대비 불리한 가격이면 live 차단 후 paper fallback 으로 남긴다', async () => {
       const { ctx, executeBuy, insertTrade } = buildLiveCtx();
       __testInit({ priceFeed: stubFeed as unknown as never, ctx });
       mockedConfig.kolHunterPaperOnly = false;
@@ -3276,15 +3291,17 @@ describe('kolSignalHandler — state machine', () => {
 
       expect(executeBuy).not.toHaveBeenCalled();
       expect(insertTrade).not.toHaveBeenCalled();
-      expect(__testGetActive()).toHaveLength(0);
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].isLive).toBeFalsy();
       const equivalence = liveEquivalenceRecords().find((row) =>
         row.liveBlockReason === 'smart_v3_entry_advantage_adverse'
       );
-      expect(equivalence?.paperWouldEnter).toBe(false);
+      expect(equivalence?.paperWouldEnter).toBe(true);
       expect(equivalence?.liveBlockFlags).toContain('SMART_V3_ENTRY_ADVANTAGE_ADVERSE');
     });
 
-    it('smart-v3 combo posterior-lite: 반복 손실 조합은 strategy reject 로 남긴다', async () => {
+    it('smart-v3 combo posterior-lite: 반복 손실 조합은 live 차단 후 paper fallback 으로 남긴다', async () => {
       mockedConfig.kolHunterPaperOnly = true;
       mockedConfig.kolHunterLiveCanaryEnabled = false;
       mockedConfig.kolHunterSmartV3ComboDecayMinCloses = 2;
@@ -3319,15 +3336,16 @@ describe('kolSignalHandler — state machine', () => {
 
       expect(executeBuy).not.toHaveBeenCalled();
       expect(insertTrade).not.toHaveBeenCalled();
-      expect(__testGetActive().find((p) => p.tokenMint === mintC)).toBeUndefined();
+      const blockedPaper = __testGetActive().find((p) => p.tokenMint === mintC);
+      expect(blockedPaper?.isLive).toBeFalsy();
       const equivalence = liveEquivalenceRecords().find((row) =>
         row.tokenMint === mintC && row.liveBlockReason === 'smart_v3_combo_decay'
       );
-      expect(equivalence?.paperWouldEnter).toBe(false);
+      expect(equivalence?.paperWouldEnter).toBe(true);
       expect(equivalence?.liveBlockFlags).toContain('SMART_V3_COMBO_DECAY');
     });
 
-    it('smart-v3 combo posterior-lite: live 손실 1건은 같은 entry combo 를 즉시 strategy reject 한다', async () => {
+    it('smart-v3 combo posterior-lite: live 손실 1건은 같은 entry combo 를 live 차단 후 paper fallback 으로 남긴다', async () => {
       const mintB = `${MINT_SMART.slice(0, -1)}M`;
       mockedConfig.kolHunterSmartV3ComboDecayMinCloses = 2;
       __testRecordSmartV3ComboClose(['pain', 'ghost'], -0.01, 'live');
@@ -3346,11 +3364,12 @@ describe('kolSignalHandler — state machine', () => {
       await flushAsync();
 
       expect(second.executeBuy).not.toHaveBeenCalled();
-      expect(__testGetActive().find((p) => p.tokenMint === mintB)).toBeUndefined();
+      const blockedPaper = __testGetActive().find((p) => p.tokenMint === mintB);
+      expect(blockedPaper?.isLive).toBeFalsy();
       const equivalence = liveEquivalenceRecords().find((row) =>
         row.tokenMint === mintB && row.liveBlockReason === 'smart_v3_combo_decay'
       );
-      expect(equivalence?.paperWouldEnter).toBe(false);
+      expect(equivalence?.paperWouldEnter).toBe(true);
       expect(equivalence?.liveBlockFlags).toContain('SMART_V3_COMBO_DECAY_LIVE_LOSSES_1');
     });
 
@@ -3370,7 +3389,7 @@ describe('kolSignalHandler — state machine', () => {
       expect(__testGetActive()).toHaveLength(0);
     });
 
-    it('dev wallet blacklist 는 ownerAddress 만 매칭되어도 smart-v3 strategy reject 로 남긴다', async () => {
+    it('dev wallet blacklist 는 ownerAddress 만 매칭되어도 live 차단 후 paper fallback 으로 남긴다', async () => {
       const { ctx, executeBuy, insertTrade } = buildLiveCtx();
       mockResolveDevStatus.mockImplementation((address?: string) =>
         address === 'BAD_DEV' ? 'blacklist' : 'unknown'
@@ -3390,11 +3409,13 @@ describe('kolSignalHandler — state machine', () => {
 
       expect(executeBuy).not.toHaveBeenCalled();
       expect(insertTrade).not.toHaveBeenCalled();
-      expect(__testGetActive()).toHaveLength(0);
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].isLive).toBeFalsy();
       const equivalence = liveEquivalenceRecords().find((row) =>
         row.liveBlockFlags.includes('DEV_WALLET_LIVE_BLOCK')
       );
-      expect(equivalence?.paperWouldEnter).toBe(false);
+      expect(equivalence?.paperWouldEnter).toBe(true);
       expect(equivalence?.liveBlockFlags).toEqual(expect.arrayContaining([
         'DEV_WALLET_BLACKLIST',
         'DEV_WALLET_LIVE_BLOCK',
@@ -4243,18 +4264,15 @@ describe('kolSignalHandler — state machine', () => {
       await flushAsync();
 
       expect(executeBuy).not.toHaveBeenCalled();
-      expect(__testGetActive()).toHaveLength(0);
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].isLive).toBeFalsy();
       const equivalence = liveEquivalenceRecords().find((row) =>
         row.liveBlockFlags.includes('LIVE_MIN_KOL')
       );
-      expect(equivalence?.paperWouldEnter).toBe(false);
+      expect(equivalence?.paperWouldEnter).toBe(true);
       expect(equivalence?.liveWouldEnter).toBe(false);
-      const minKolPolicies = policyRecordsWithFlag('LIVE_MIN_KOL');
-      const strategyRejectPolicy = minKolPolicies.find((row) =>
-        row.riskFlags.includes('SMART_V3_STRATEGY_NO_PAPER_FALLBACK')
-      );
-      expect(strategyRejectPolicy?.currentAction).toBe('block');
-      expect(strategyRejectPolicy?.riskFlags).toContain('LIVE_MIN_KOL');
+      expect(equivalence?.liveBlockFlags).toContain('LIVE_MIN_KOL');
     });
 
     // 2026-04-30 (P1.5 회귀): daily-loss halt 시 KOL lane 도 fallback paper.
@@ -4320,7 +4338,7 @@ describe('kolSignalHandler — state machine', () => {
       expect(positions[0].survivalFlags).toContain('YELLOW_ZONE_PAPER_FALLBACK');
     });
 
-    it('yellow-zone: smart-v3 single-KOL live 는 strategy reject 로 남긴다', async () => {
+    it('yellow-zone: smart-v3 single-KOL live 는 paper fallback 으로 비교군을 남긴다', async () => {
       const { ctx, executeBuy } = buildLiveCtx();
       const { setWalletStopGuardStateForTests } = require('../src/risk/walletStopGuard');
       setWalletStopGuardStateForTests(false, 'yellow-zone-test', 0.80);
@@ -4335,13 +4353,15 @@ describe('kolSignalHandler — state machine', () => {
       await flushAsync();
 
       expect(executeBuy).not.toHaveBeenCalled();
-      expect(__testGetActive()).toHaveLength(0);
+      const positions = __testGetActive();
+      expect(positions).toHaveLength(1);
+      expect(positions[0].isLive).toBeFalsy();
       const equivalence = liveEquivalenceRecords().find((row) =>
         row.liveBlockFlags.includes('YELLOW_ZONE_MIN_KOL')
       );
-      expect(equivalence?.paperWouldEnter).toBe(false);
+      expect(equivalence?.paperWouldEnter).toBe(true);
       expect(equivalence?.liveWouldEnter).toBe(false);
-      expect(equivalence?.liveBlockFlags).toContain('SMART_V3_STRATEGY_NO_PAPER_FALLBACK');
+      expect(equivalence?.liveBlockFlags).not.toContain('SMART_V3_STRATEGY_NO_PAPER_FALLBACK');
     });
 
     it('yellow-zone: multi-KOL + low 429 pressure 는 live 허용', async () => {

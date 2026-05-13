@@ -22,7 +22,16 @@ import { createModuleLogger } from '../utils/logger';
 
 const log = createModuleLogger('EntryHaltState');
 
-export type EntryLane = 'cupsey' | 'migration' | 'main' | 'strategy_d' | 'pure_ws_breakout' | 'pure_ws_swing_v2' | 'kol_hunter';
+export type EntryLane =
+  | 'cupsey'
+  | 'migration'
+  | 'main'
+  | 'strategy_d'
+  | 'pure_ws_breakout'
+  | 'pure_ws_swing_v2'
+  | 'kol_hunter'
+  | 'kol_hunter_smart_v3'
+  | 'kol_hunter_rotation';
 
 export interface LaneIntegrityState {
   haltActive: boolean;
@@ -77,7 +86,7 @@ export function getAllLaneIntegrityState(): Record<EntryLane, Readonly<LaneInteg
   // canaryAutoHalt 의 auto-reset 등 모든 lane state 조회 API 가 두 lane 인지 가능하도록.
   const lanes: EntryLane[] = [
     'cupsey', 'migration', 'main', 'strategy_d', 'pure_ws_breakout',
-    'pure_ws_swing_v2', 'kol_hunter',
+    'pure_ws_swing_v2', 'kol_hunter', 'kol_hunter_smart_v3', 'kol_hunter_rotation',
   ];
   for (const lane of lanes) {
     out[lane] = { ...getLaneState(lane) };

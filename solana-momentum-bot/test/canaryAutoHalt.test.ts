@@ -228,6 +228,21 @@ describe('canaryAutoHalt', () => {
       expect(isEntryHaltActive('pure_ws_breakout')).toBe(false);
     });
 
+    it('isolates smart-v3 and rotation KOL canary halt streaks', () => {
+      setCfg({
+        canaryMaxConsecutiveLosers: 100,
+        kolHunterCanaryMaxConsecLosers: 2,
+        kolHunterCanaryMaxBudgetSol: 999,
+        kolHunterCanaryMaxTrades: 999,
+      });
+      reportCanaryClose('kol_hunter_rotation', -0.001);
+      reportCanaryClose('kol_hunter_rotation', -0.001);
+
+      expect(isEntryHaltActive('kol_hunter_rotation')).toBe(true);
+      expect(isEntryHaltActive('kol_hunter_smart_v3')).toBe(false);
+      expect(isEntryHaltActive('kol_hunter')).toBe(false);
+    });
+
     it('uses kolHunterCanaryMaxBudgetSol (more conservative than default)', () => {
       setCfg({
         canaryMaxBudgetSol: 0.5,                 // 공용은 0.5

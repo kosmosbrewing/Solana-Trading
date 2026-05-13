@@ -527,12 +527,12 @@ export const kolHunter = {
   kolHunterSmartV3FastCanaryParameterVersion:
     process.env.KOL_HUNTER_SMART_V3_FAST_CANARY_PARAMETER_VERSION ??
     'smart-v3-fast-canary-v1.0.0',
-  // 2026-05-07: smart-v3 live 품질 fallback. 최근 live 근거에서 live entry 대부분이
-  // EXIT_LIQUIDITY_UNKNOWN 또는 holder concentration flag 를 동반했다. Paper 는 계속
-  // 관측하되 live 는 unknown/unclean 품질에서 fail-closed 로 둔다.
+  // 2026-05-13: smart-v3 live 품질 fallback. Paper/live 괴리를 줄이기 위해
+  // unknown-only 품질은 관측 신호로 두고, live 차단은 no-route/rug/holder concentration
+  // 같은 hard-risk 중심으로 둔다.
   kolHunterSmartV3LiveStrictQualityEnabled: boolOptional('KOL_HUNTER_SMART_V3_LIVE_STRICT_QUALITY_ENABLED', true),
-  kolHunterSmartV3LiveBlockExitLiquidityUnknown: boolOptional('KOL_HUNTER_SMART_V3_LIVE_BLOCK_EXIT_LIQUIDITY_UNKNOWN', true),
-  kolHunterSmartV3LiveBlockTokenQualityUnknown: boolOptional('KOL_HUNTER_SMART_V3_LIVE_BLOCK_TOKEN_QUALITY_UNKNOWN', true),
+  kolHunterSmartV3LiveBlockExitLiquidityUnknown: boolOptional('KOL_HUNTER_SMART_V3_LIVE_BLOCK_EXIT_LIQUIDITY_UNKNOWN', false),
+  kolHunterSmartV3LiveBlockTokenQualityUnknown: boolOptional('KOL_HUNTER_SMART_V3_LIVE_BLOCK_TOKEN_QUALITY_UNKNOWN', false),
   kolHunterSmartV3LiveBlockUncleanToken: boolOptional('KOL_HUNTER_SMART_V3_LIVE_BLOCK_UNCLEAN_TOKEN', true),
   // 진입 전 참여 KOL sell 이 있으면 분배 위험으로 본다. 충분한 fresh independent
   // re-buy 와 no-sell window 가 확인될 때만 live 를 허용한다.

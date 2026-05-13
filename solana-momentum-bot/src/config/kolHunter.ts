@@ -257,7 +257,8 @@ export const kolHunter = {
   kolHunterLiveCanaryEnabled: boolOptional('KOL_HUNTER_LIVE_CANARY_ENABLED', false),
   // 2026-05-10: live canary 를 단일 on/off 가 아니라 arm portfolio 로 운영한다.
   // 값이 비어 있으면 기존 arm-specific env 들로 fallback 하여 운영 호환성을 보존한다.
-  // 예: smart_v3_clean,smart_v3_quality_unknown_micro,smart_v3_fast_canary_v1,rotation_underfill_exit_flow_v1
+  // 예: smart_v3_clean,smart_v3_quality_unknown_micro,smart_v3_fast_canary_v1,
+  // smart_v3_fast_fail_live_v1,rotation_underfill_exit_flow_v1
   // smart_v3_quality_unknown_micro 는 ticket 축소가 아니라 unknown-only restricted arm label 이다.
   // smart_v3_fast_canary_v1 은 rotation underfill 처럼 unknown/medium holder-risk 를 허용해
   // paper/live 괴리를 줄이는 explicit canary arm 이다. HOLDER_TOP10_HIGH / high-concentration /
@@ -341,8 +342,8 @@ export const kolHunter = {
   // 2026-05-06: MAE-based fast-fail for rotation PROBE positions.
   // Runs after the existing DOA guard and before hard cut, so it only tightens late failing probes.
   kolHunterRotationMaeFastFailEnabled: boolOptional('KOL_HUNTER_ROTATION_MAE_FAST_FAIL_ENABLED', true),
-  kolHunterRotationMaeFastFailMinElapsedSec: numEnv('KOL_HUNTER_ROTATION_MAE_FAST_FAIL_MIN_ELAPSED_SEC', '5'),
-  kolHunterRotationMaeFastFailMaxMaePct: numEnv('KOL_HUNTER_ROTATION_MAE_FAST_FAIL_MAX_MAE_PCT', '0.03'),
+  kolHunterRotationMaeFastFailMinElapsedSec: numEnv('KOL_HUNTER_ROTATION_MAE_FAST_FAIL_MIN_ELAPSED_SEC', '3'),
+  kolHunterRotationMaeFastFailMaxMaePct: numEnv('KOL_HUNTER_ROTATION_MAE_FAST_FAIL_MAX_MAE_PCT', '0.02'),
   kolHunterRotationMaeFastFailMaxMfePct: numEnv('KOL_HUNTER_ROTATION_MAE_FAST_FAIL_MAX_MFE_PCT', '0.015'),
   // Rotation is a fast-compound lane. Primary validation horizons are immediate continuation (15s),
   // DOA/failure classification (30s), and short continuation (60s). Long-tail 300/1800s stays global.
@@ -434,9 +435,9 @@ export const kolHunter = {
   kolHunterRotationUnderfillProfitFloorMult: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_PROFIT_FLOOR_MULT', '1.02'),
   kolHunterRotationUnderfillProbeTimeoutSec: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_PROBE_TIMEOUT_SEC', '30'),
   kolHunterRotationUnderfillHardCutPct: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_HARD_CUT_PCT', '0.04'),
-  kolHunterRotationUnderfillDoaWindowSec: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_DOA_WINDOW_SEC', '15'),
+  kolHunterRotationUnderfillDoaWindowSec: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_DOA_WINDOW_SEC', '10'),
   kolHunterRotationUnderfillDoaMinMfePct: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_DOA_MIN_MFE_PCT', '0.015'),
-  kolHunterRotationUnderfillDoaMaxMaePct: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_DOA_MAX_MAE_PCT', '0.03'),
+  kolHunterRotationUnderfillDoaMaxMaePct: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_DOA_MAX_MAE_PCT', '0.02'),
   kolHunterRotationUnderfillParameterVersion: process.env.KOL_HUNTER_ROTATION_UNDERFILL_PARAMETER_VERSION ?? 'rotation-underfill-v1.0.0',
   kolHunterRotationPaperAssumedAtaRentSol: numEnv('KOL_HUNTER_ROTATION_PAPER_ASSUMED_ATA_RENT_SOL', '0.00207408'),
   kolHunterRotationPaperAssumedNetworkFeeSol: numEnv('KOL_HUNTER_ROTATION_PAPER_ASSUMED_NETWORK_FEE_SOL', '0.000105'),
@@ -446,6 +447,12 @@ export const kolHunter = {
   kolHunterRotationPaperDigestIntervalMs: numEnv('KOL_HUNTER_ROTATION_PAPER_DIGEST_INTERVAL_MS', '3600000'),
   kolHunterRotationPaperRareMfePct: numEnv('KOL_HUNTER_ROTATION_PAPER_RARE_MFE_PCT', '0.30'),
   kolHunterRotationPaperRareAfterSellPct: numEnv('KOL_HUNTER_ROTATION_PAPER_RARE_AFTER_SELL_PCT', '0.50'),
+  // 2026-05-13: rotation live short-memory guard. Paper keeps running, but a KOL
+  // that just produced consecutive live rotation losses is temporarily paper-only.
+  kolHunterRotationLiveKolDecayEnabled: boolOptional('KOL_HUNTER_ROTATION_LIVE_KOL_DECAY_ENABLED', true),
+  kolHunterRotationLiveKolDecayMinCloses: numEnv('KOL_HUNTER_ROTATION_LIVE_KOL_DECAY_MIN_CLOSES', '2'),
+  kolHunterRotationLiveKolDecayLossRatio: numEnv('KOL_HUNTER_ROTATION_LIVE_KOL_DECAY_LOSS_RATIO', '1'),
+  kolHunterRotationLiveKolDecayCooldownMs: numEnv('KOL_HUNTER_ROTATION_LIVE_KOL_DECAY_COOLDOWN_MS', '7200000'),
 
   // ─── 2026-05-08: kol_hunter_capitulation_rebound_v1 paper lane ───
   // ADR: docs/design-docs/kol-hunter-capitulation-rebound-v1-2026-05-08.md
@@ -527,6 +534,9 @@ export const kolHunter = {
   kolHunterSmartV3FastCanaryParameterVersion:
     process.env.KOL_HUNTER_SMART_V3_FAST_CANARY_PARAMETER_VERSION ??
     'smart-v3-fast-canary-v1.0.0',
+  kolHunterSmartV3FastFailLiveParameterVersion:
+    process.env.KOL_HUNTER_SMART_V3_FAST_FAIL_LIVE_PARAMETER_VERSION ??
+    'smart-v3-fast-fail-live-v1.0.0',
   // 2026-05-13: smart-v3 live 품질 fallback. Paper/live 괴리를 줄이기 위해
   // unknown-only 품질은 관측 신호로 두고, live 차단은 no-route/rug/holder concentration
   // 같은 hard-risk 중심으로 둔다.
@@ -548,6 +558,12 @@ export const kolHunter = {
   // 가중 평균 진입가보다 현저히 불리한 quote 를 추격하지 않는다.
   kolHunterSmartV3KolFillAdvantageEnabled: boolOptional('KOL_HUNTER_SMART_V3_KOL_FILL_ADVANTAGE_ENABLED', true),
   kolHunterSmartV3MaxAdverseKolFillPct: numEnv('KOL_HUNTER_SMART_V3_MAX_ADVERSE_KOL_FILL_PCT', '0.03'),
+  // Paper 성과가 좋았지만 기존 live quality fallback 에 막히던 smart-v3 후보를
+  // 별도 canary arm 으로 검증한다. no-route/rug/극단 집중은 계속 차단한다.
+  kolHunterSmartV3FastFailLiveMaxTop10HolderPct:
+    numEnv('KOL_HUNTER_SMART_V3_FAST_FAIL_LIVE_MAX_TOP10_HOLDER_PCT', '0.80'),
+  kolHunterSmartV3FastFailLiveMaxAdverseKolFillPct:
+    numEnv('KOL_HUNTER_SMART_V3_FAST_FAIL_LIVE_MAX_ADVERSE_KOL_FILL_PCT', '0.75'),
   // observe window: anti-correlation 60s 와 충돌하지 않도록 120s default. 60s 는 env override 가능.
   kolHunterSmartV3ObserveWindowSec: numEnv('KOL_HUNTER_SMART_V3_OBSERVE_WINDOW_SEC', '120'),
   kolHunterSmartV3MinPullbackPct: numEnv('KOL_HUNTER_SMART_V3_MIN_PULLBACK_PCT', '0.10'),

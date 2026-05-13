@@ -109,6 +109,15 @@ high-concentration, non-top10 unclean-token reasons, no-route/rug-like
 conditions, pre-entry sell risk, repeated losing combos, and KOL-fill adverse
 entries. It is an explicit sprint arm, not a default production profile.
 
+Use `smart_v3_fast_fail_live_v1` only when intentionally testing paper-like
+smart-v3 reproduction under live canary. It uses the same KOL live ticket/cap
+as other smart-v3 canary arms, but routes more live-only strategy fallbacks to
+real execution so paper/live divergence can be measured. It still blocks
+no-route/rug-like conditions, explicit high concentration, `HOLDER_TOP10_HIGH`,
+top10 concentration above `KOL_HUNTER_SMART_V3_FAST_FAIL_LIVE_MAX_TOP10_HOLDER_PCT`,
+repeated losing combos, and KOL-fill adverse above
+`KOL_HUNTER_SMART_V3_FAST_FAIL_LIVE_MAX_ADVERSE_KOL_FILL_PCT`.
+
 Usually omit because code defaults are current mission defaults:
 
 ```dotenv
@@ -173,11 +182,22 @@ KOL_HUNTER_ROTATION_UNDERFILL_LIVE_EXIT_FLOW_ENABLED=true
 Usually omit because code defaults are active:
 
 ```dotenv
-# default true / 5s / 1.5% MFE / 3% MAE
+# underfill default DOA: 10s window / MFE <1.5% / MAE <= -2%
+KOL_HUNTER_ROTATION_UNDERFILL_DOA_WINDOW_SEC=10
+KOL_HUNTER_ROTATION_UNDERFILL_DOA_MIN_MFE_PCT=0.015
+KOL_HUNTER_ROTATION_UNDERFILL_DOA_MAX_MAE_PCT=0.02
+
+# default true / 3s / 1.5% MFE / 2% MAE
 KOL_HUNTER_ROTATION_MAE_FAST_FAIL_ENABLED=true
-KOL_HUNTER_ROTATION_MAE_FAST_FAIL_MIN_ELAPSED_SEC=5
+KOL_HUNTER_ROTATION_MAE_FAST_FAIL_MIN_ELAPSED_SEC=3
 KOL_HUNTER_ROTATION_MAE_FAST_FAIL_MAX_MFE_PCT=0.015
-KOL_HUNTER_ROTATION_MAE_FAST_FAIL_MAX_MAE_PCT=0.03
+KOL_HUNTER_ROTATION_MAE_FAST_FAIL_MAX_MAE_PCT=0.02
+
+# default true / 2 recent live losses / 2h cooldown; omit unless explicitly tuning
+KOL_HUNTER_ROTATION_LIVE_KOL_DECAY_ENABLED=true
+KOL_HUNTER_ROTATION_LIVE_KOL_DECAY_MIN_CLOSES=2
+KOL_HUNTER_ROTATION_LIVE_KOL_DECAY_LOSS_RATIO=1
+KOL_HUNTER_ROTATION_LIVE_KOL_DECAY_COOLDOWN_MS=7200000
 
 # default paper validation arms are enabled
 KOL_HUNTER_ROTATION_PAPER_ARMS_ENABLED=true
@@ -258,6 +278,8 @@ KOL_HUNTER_LIVE_MIN_INDEPENDENT_KOL=2
 KOL_HUNTER_LIVE_CANARY_ARMS=smart_v3_clean,rotation_underfill_exit_flow_v1
 # Optional measured sprint, not default:
 # KOL_HUNTER_LIVE_CANARY_ARMS=smart_v3_fast_canary_v1,rotation_underfill_exit_flow_v1
+# More progressive paper-reproduction sprint, not default:
+# KOL_HUNTER_LIVE_CANARY_ARMS=smart_v3_fast_fail_live_v1,rotation_underfill_exit_flow_v1
 KOL_HUNTER_YELLOW_ZONE_START_SOL=0.85
 KOL_HUNTER_YELLOW_ZONE_PAPER_FALLBACK_BELOW_SOL=0.70
 KOL_HUNTER_SMART_V3_PARAMETER_VERSION=smart-v3.0.1-live-canary-2026-05-09

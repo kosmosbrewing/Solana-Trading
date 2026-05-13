@@ -17,6 +17,11 @@ interface LiveExecutionQualityHydrationSummary {
   hydrated: number;
   skippedExpired: number;
 }
+interface RotationLiveKolDecayHydrationSummary {
+  loaded: number;
+  hydrated: number;
+  skippedExpired: number;
+}
 
 interface TradeMarkoutHydrationSummary {
   scheduled: number;
@@ -29,6 +34,7 @@ interface KolHunterStartupRuntime {
     ctx?: BotContext;
   }): void;
   hydrateLiveExecutionQualityCooldownsFromLedger(): Promise<LiveExecutionQualityHydrationSummary>;
+  hydrateRotationLiveKolDecayFromLedger?(): Promise<RotationLiveKolDecayHydrationSummary>;
   hydrateTradeMarkoutsFromLedger?(): Promise<TradeMarkoutHydrationSummary>;
   handleKolSwap(tx: KolTx): Promise<void>;
   initKolPaperNotifier(notifier: Notifier): void;
@@ -52,6 +58,7 @@ export async function startKolTrackerWithPreparedHunter(
   const {
     initKolHunter,
     hydrateLiveExecutionQualityCooldownsFromLedger,
+    hydrateRotationLiveKolDecayFromLedger,
     hydrateTradeMarkoutsFromLedger,
     handleKolSwap,
     initKolPaperNotifier,
@@ -75,6 +82,15 @@ export async function startKolTrackerWithPreparedHunter(
         `hydrated=${qualityCooldownHydration.hydrated} ` +
         `expired=${qualityCooldownHydration.skippedExpired}`
       );
+      if (hydrateRotationLiveKolDecayFromLedger) {
+        const rotationKolDecayHydration = await hydrateRotationLiveKolDecayFromLedger();
+        options.log.info(
+          `[KOL_HUNTER] rotation live KOL decay hydration completed before tracker start: ` +
+          `loaded=${rotationKolDecayHydration.loaded} ` +
+          `hydrated=${rotationKolDecayHydration.hydrated} ` +
+          `expired=${rotationKolDecayHydration.skippedExpired}`
+        );
+      }
       if (hydrateTradeMarkoutsFromLedger) {
         const tradeMarkoutHydration = await hydrateTradeMarkoutsFromLedger();
         if (tradeMarkoutHydration.scheduled > 0) {

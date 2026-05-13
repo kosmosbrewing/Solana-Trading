@@ -89,6 +89,7 @@ import { startKolTrackerWithPreparedHunter } from './init/kolHunterStartup';
 import {
   handleKolSwap,
   hydrateLiveExecutionQualityCooldownsFromLedger,
+  hydrateRotationLiveKolDecayFromLedger,
   hydrateTradeMarkoutsFromLedger,
   initKolHunter,
   setHeliusPoolRegistryForKolHunter,
@@ -1315,6 +1316,7 @@ async function main() {
         runtime: {
           initKolHunter,
           hydrateLiveExecutionQualityCooldownsFromLedger,
+          hydrateRotationLiveKolDecayFromLedger,
           hydrateTradeMarkoutsFromLedger,
           handleKolSwap,
           initKolPaperNotifier,

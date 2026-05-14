@@ -29,7 +29,7 @@ npm run check:fast
 
 1. **`MISSION_CONTROL.md`** — 6 control framework (survival/universe/payoff/execution/experiment/discipline). 모든 변경의 4-layer reporting 의무.
 2. **`docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md`** — **현 active paradigm**. KOL Wallet = 1st-class Discovery, 자체 Execution 구조 유지 + Lane T 파라미터 재조정.
-3. **`docs/design-docs/mission-refinement-2026-04-21.md`** — 원 사명 정의. 현재 운영 floor 는 2026-04-28 B안으로 **0.7 SOL** 확정 + 200 live trades + 5x+ winner 실측. 100 SOL 은 tail outcome.
+3. **`docs/design-docs/mission-refinement-2026-04-21.md`** — 원 사명 정의. 현재 운영 floor 는 2026-05-14 운영자 override 로 **0.6 SOL** + 200 live trades + 5x+ winner 실측. 100 SOL 은 tail outcome.
 4. **`REFACTORING_v1.0.md`** — Option 5 의 Phase 0-5 실행 가이드 (현 active sprint).
 
 ### Lane 표 (2026-05-09 갱신 — 3 live/observe surfaces + 1 paper experiment)
@@ -48,7 +48,7 @@ npm run check:fast
 
 | 항목 | 값 | 위반 시 |
 |------|-----|---------|
-| Wallet floor | 0.7 SOL (2026-04-28 B안) | **commit 거부** — 명시적 ADR 없으면 변경 금지 |
+| Wallet floor | 0.6 SOL (2026-05-14 operator override) | 추가 완화는 **commit 거부** — 명시적 ADR 없으면 변경 금지 |
 | Cupsey canary cap (default lane) | -0.3 SOL | 동일 |
 | KOL canary cap (별도) | -0.2 SOL | 동일 |
 | Fixed ticket | pure_ws/cupsey/migration 0.01 / **kol_hunter 0.02** | 동일 |
@@ -65,6 +65,7 @@ npm run check:fast
 ## 4. 5 분 안에 알아야 할 것
 
 ### 최근 무엇을 했나
+- **2026-05-14** — **wallet hard floor 0.6 SOL 완화**. 운영자가 기존 0.7 SOL threshold 근접으로 live evidence 수집이 닫힐 위험을 승인하고 `WALLET_STOP_MIN_SOL` default 를 0.6 으로 낮췄다. Yellow-zone paper fallback 하한도 `KOL_HUNTER_YELLOW_ZONE_PAPER_FALLBACK_BELOW_SOL=0.60` 으로 맞춰 0.60~0.85 SOL 구간에서는 promoted arm별 live 기준을 계속 적용한다. Ticket/KOL cap/drift halt/max concurrent/security hard reject 는 변경 없음.
 - **2026-05-13** — **rotation live canary 손실 축소 hardening**. `rotation_underfill_exit_flow_v1` live canary 는 smart-v3 tail-retain 을 더 이상 상속하지 않는다. Underfill live 는 `EXIT_LIQUIDITY_UNKNOWN`/no-route 계열이면 executor 호출 없이 paper fallback + live-equivalence 로 남기고, DOA/MAE fast-fail 기본값은 더 빠르게 조정했다(`underfill DOA 10s/-2%`, `rotation_mae_fast_fail 3s/-2%`). 같은 KOL 이 rotation live 에서 최근 연속 손실을 만들면 `ROTATION_LIVE_KOL_DECAY` 로 live 를 일시 차단하고 paper 관측만 유지한다. 이 decay state 는 startup 때 `rotation-v1-live-trades.jsonl` + `kol-live-trades.jsonl` 에서 hydrate 되며 tail child row 는 제외한다. 운영 `.env` override 필수 없음.
 - **2026-05-13** — **smart-v3 fast-fail live canary arm 추가**. 최근 smart-v3 paper/live 괴리 분석에서 paper winner 상당수가 `smart_v3_live_quality_fallback` / live-only strict gate 에 막힌 것으로 확인되어, 기존 `smart_v3_clean` 과 `smart_v3_fast_canary_v1` 은 유지한 채 새 explicit arm `smart_v3_fast_fail_live_v1` 을 추가했다. 이 arm 은 운영자가 `KOL_HUNTER_LIVE_CANARY_ARMS`에 명시할 때만 동작하며, paper-like smart-v3 후보를 live canary 로 라우팅한다. 단 no-route/rug/high-concentration/극단 top10/반복손실 combo/과도한 KOL-fill adverse 는 계속 차단한다. 기본 ticket/floor/cap/max concurrent/exit retry 는 기존 KOL live canary 와 동일하다.
 - **2026-05-11** — **capitulation rebound RR sidecar 추가**. 기존 strict `kol_hunter_capitulation_rebound_v1` 은 recent KOL sell wave 를 계속 veto 하는 baseline 으로 남겼고, 새 `kol_hunter_capitulation_rebound_rr_v1` 은 KOL sell before-low 를 feature/penalty 로 보되 post-low/post-bounce sell 재개와 불리한 stop/target RR 은 차단하는 paper-only sidecar 로 추가했다. `KOL_HUNTER_CAPITULATION_REBOUND_RR_ENABLED=true` 로 opt-in 하며 live path 는 없다. Projection ledger 는 기존 `capitulation-rebound-paper-trades.jsonl`을 공유하고 `armName`으로 구분한다. `kol:capitulation-report`는 strict/RR 양쪽 T+와 no-trade를 함께 본다.
@@ -114,7 +115,7 @@ npm run check:fast
 
 **선택 C — KOL live canary stabilization sprint (현 active)**:
 - `.env` 는 `KOL_HUNTER_PAPER_ONLY=false` + `KOL_HUNTER_LIVE_CANARY_ENABLED=true` 로 운영 중
-- 안전망: floor 0.7 / KOL cap 0.2 / ticket 0.02 / independent KOL ≥ 2 / Track 1 cooldown / Track 2B reject / Daily loss override
+- 안전망: floor 0.6 / KOL cap 0.2 / ticket 0.02 / independent KOL ≥ 2 / Track 1 cooldown / Track 2B reject / Daily loss override
 - 구현 완료: yellow-zone live gate, single-KOL smart-v3 strategy no-paper-fallback, canary budget ledger hydration, `npm run kol:live-canary-report`
 - 다음 sprint 초점: hardcut/slippage root-cause + live/paper divergence deep-dive
 
@@ -125,7 +126,7 @@ npm run check:fast
 - ❌ KOL DB 자동 추가 (수동 편집 only)
 - ❌ trail/sentinel 파라미터 변경을 observer 회복 전에 (가설 (A) 검증 도구 부재)
 - ❌ single-KOL cohort 를 live 로 재허용 (`KOL_HUNTER_LIVE_MIN_INDEPENDENT_KOL<2`) — 새 근거 + ADR 전 금지
-- ❌ 0.75 SOL 미만 yellow-zone 에서 KOL live canary 조건 완화
+- ❌ 0.60 SOL 미만 wallet hard floor 에서 KOL live canary 조건 완화
 - ❌ KST cutoff 으로 UTC 데이터 분석 (시간대 함정 — `date -u` 기준 일관 사용)
 - ❌ ESLint disable / `STRUCTURE_BASELINE freeze` 같은 임시방편 (Phase H2-H4 에서 근본 refactor)
 - ❌ `npm run check:fast` 가 빨강인 채로 commit

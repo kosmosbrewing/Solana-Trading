@@ -16,7 +16,7 @@
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │ Layer A — Real Asset Guard (불변, 모든 paradigm 공통)             │
-│   default ticket 0.01 / KOL ticket 0.02 / floor 0.7 /             │
+│   default ticket 0.01 / KOL ticket 0.02 / floor 0.6 /             │
 │   canary budget caps / drift halt 0.2 / max concurrent 3 /        │
 │   security gate / sell quote probe                                │
 │   → src/risk/* + src/state/entryHaltState (no orchestration 의존) │
@@ -61,7 +61,7 @@
 
 | Hard constraint | 코드 변수 | 모듈 | env override |
 |-----------------|-----------|------|--------------|
-| Wallet floor | `walletStopMinSol=0.7` | `src/risk/walletStopGuard.ts` | `WALLET_STOP_MIN_SOL` |
+| Wallet floor | `walletStopMinSol=0.6` | `src/risk/walletStopGuard.ts` | `WALLET_STOP_MIN_SOL` |
 | Canary cumulative loss cap (primary lanes) | `canaryMaxBudgetSol=0.3` | `src/risk/canaryAutoHalt.ts` | `CANARY_MAX_BUDGET_SOL` |
 | Canary loss cap (swing-v2 lane 별도) | `canarySwingV2MaxBudgetSol=0.1` | `src/risk/canaryAutoHalt.ts` | `CANARY_SWING_V2_MAX_BUDGET_SOL` |
 | Fixed ticket (primary lanes) | default `0.01`, KOL `0.02` | `src/utils/tradingParams.ts`, `src/config/kolHunter.ts` | lane 별 |

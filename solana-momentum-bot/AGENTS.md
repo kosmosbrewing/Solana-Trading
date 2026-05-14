@@ -11,7 +11,7 @@
 ### Stage 1 (5분) — Paradigm authority
 2. **[`MISSION_CONTROL.md`](./MISSION_CONTROL.md)** — 6 control framework (survival/universe/payoff/execution/experiment/discipline)
 3. **[`docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md`](./docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md)** — **현 active paradigm**
-4. **[`docs/design-docs/mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md)** — 원 사명 정의 (historical 0.8 SOL; 현재 운영 floor 는 `SESSION_START.md`의 0.7 SOL)
+4. **[`docs/design-docs/mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md)** — 원 사명 정의 (historical 0.8 SOL; 현재 운영 floor 는 `SESSION_START.md`의 0.6 SOL)
 
 ### Stage 2 (10분) — 현재 작업
 5. **[`REFACTORING_v1.0.md`](./REFACTORING_v1.0.md)** — Option 5 Phase 0-5 진행 상태
@@ -23,7 +23,7 @@
 
 ### 코드 작업 시작 전
 - 1줄 신뢰 명령: `npm run check:fast` (typecheck + jest + env drift)
-- Real Asset Guard (wallet floor 0.7 / KOL ticket 0.02 / default ticket 0.01 / default canary -0.3 / KOL canary -0.2 / drift halt 0.2 / max concurrent 3) **변경 금지**
+- Real Asset Guard (wallet floor 0.6 / KOL ticket 0.02 / default ticket 0.01 / default canary -0.3 / KOL canary -0.2 / drift halt 0.2 / max concurrent 3) **변경 금지**
 - `npm run check:strict` (lint + structure 포함) 빨강은 **Phase H2-H4 에서 점진 해소 deferred**, 의도
 
 ### 운영 로그 / 거래 분석 표준

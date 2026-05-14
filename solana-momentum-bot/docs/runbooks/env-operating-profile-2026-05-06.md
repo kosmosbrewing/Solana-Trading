@@ -74,7 +74,7 @@ EXECUTION_RR_REJECT=false
 These safety values match code defaults, but they are worth keeping visible during live operations:
 
 ```dotenv
-WALLET_STOP_MIN_SOL=0.7
+WALLET_STOP_MIN_SOL=0.6
 KOL_HUNTER_CANARY_MAX_TRADES=300
 KOL_HUNTER_LIVE_MIN_INDEPENDENT_KOL=2
 ```
@@ -266,7 +266,7 @@ CANARY_GLOBAL_CONCURRENCY_ENABLED=true
 CANARY_GLOBAL_MAX_CONCURRENT=3
 WALLET_DELTA_DRIFT_WARN_SOL=0.03
 EXECUTION_RR_REJECT=false
-WALLET_STOP_MIN_SOL=0.7
+WALLET_STOP_MIN_SOL=0.6
 
 KOL_TRACKER_ENABLED=true
 KOL_HUNTER_ENABLED=true
@@ -281,7 +281,7 @@ KOL_HUNTER_LIVE_CANARY_ARMS=smart_v3_clean,rotation_underfill_exit_flow_v1
 # More progressive paper-reproduction sprint, not default:
 # KOL_HUNTER_LIVE_CANARY_ARMS=smart_v3_fast_fail_live_v1,rotation_underfill_exit_flow_v1
 KOL_HUNTER_YELLOW_ZONE_START_SOL=0.85
-KOL_HUNTER_YELLOW_ZONE_PAPER_FALLBACK_BELOW_SOL=0.70
+KOL_HUNTER_YELLOW_ZONE_PAPER_FALLBACK_BELOW_SOL=0.60
 KOL_HUNTER_SMART_V3_PARAMETER_VERSION=smart-v3.0.1-live-canary-2026-05-09
 
 KOL_HUNTER_ROTATION_V1_ENABLED=true
@@ -302,7 +302,7 @@ PUREWS_LIVE_CANARY_ENABLED=false
 PUREWS_SWING_V2_LIVE_CANARY_ENABLED=false
 ```
 
-Yellow-zone is not a second halt condition. `WALLET_STOP_MIN_SOL=0.7` is the hard live stop; between 0.70 and 0.85 SOL, live canary uses each promoted arm's own minimum-KOL rule. That means `smart_v3_clean` still needs 2+ fresh independent KOLs, while `rotation_underfill_exit_flow_v1` may test the S/A 1-KOL discounted-entry hypothesis plus exit-flow overlay if security-data and Jupiter-pressure gates pass.
+Yellow-zone is not a second halt condition. `WALLET_STOP_MIN_SOL=0.6` is the hard live stop; between 0.60 and 0.85 SOL, live canary uses each promoted arm's own minimum-KOL rule. That means `smart_v3_clean` still needs 2+ fresh independent KOLs, while `rotation_underfill_exit_flow_v1` may test the S/A 1-KOL discounted-entry hypothesis plus exit-flow overlay if security-data and Jupiter-pressure gates pass.
 
 This should be the default operator-facing `.env` size. Add experiment overrides only for the duration of a measured sprint, then remove them.
 

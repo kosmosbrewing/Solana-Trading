@@ -11,7 +11,7 @@ Stage 1-2 만 읽으면 (5-10분) 코드 변경 가능. Stage 3+ 는 필요 시.
 ### Stage 1 — Paradigm authority (5분)
 2. **[`MISSION_CONTROL.md`](./MISSION_CONTROL.md)** — 6 control framework (survival/universe/payoff/execution/experiment/discipline)
 3. **[`docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md`](./docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md)** — 현 active paradigm
-4. **[`docs/design-docs/mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md)** — 원 사명 정의 (historical 0.8 SOL; 현재 운영 floor 는 `SESSION_START.md`의 0.7 SOL)
+4. **[`docs/design-docs/mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md)** — 원 사명 정의 (historical 0.8 SOL; 현재 운영 floor 는 `SESSION_START.md`의 0.6 SOL)
 
 ### Stage 2 — 현재 active 작업 (10분)
 5. **[`REFACTORING_v1.0.md`](./REFACTORING_v1.0.md)** — Option 5 Phase 0-5 진행 상태 (어디까지 왔나)
@@ -38,7 +38,7 @@ Stage 1-2 만 읽으면 (5-10분) 코드 변경 가능. Stage 3+ 는 필요 시.
 - **2026-04-23 Option 5 Adoption (현 active paradigm)**: [`docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md`](./docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md) — KOL Wallet = 1st-class Discovery, 자체 Execution 구조 유지 + Lane T 파라미터 재조정. Real Asset Guard 불변. Phase 2 shadow eval = go/no-go first filter.
 - **대담 기록 (append-only)**: [`docs/debates/kol-discovery-debate-2026-04-23.md`](./docs/debates/kol-discovery-debate-2026-04-23.md)
 - **현 active refactoring plan**: [`REFACTORING_v1.0.md`](./REFACTORING_v1.0.md) — Phase 0-5 checkbox
-- **2026-04-21 Mission Refinement (historical refinement)**: [`docs/design-docs/mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md) — 100 SOL 은 tail outcome, 판단 KPI 아님. 원 성공 기준은 0.8 SOL floor + 200 trades + 5x+ winner 실측이며, 현재 운영 floor 는 2026-04-28 B안 이후 0.7 SOL.
+- **2026-04-21 Mission Refinement (historical refinement)**: [`docs/design-docs/mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md) — 100 SOL 은 tail outcome, 판단 KPI 아님. 원 성공 기준은 0.8 SOL floor + 200 trades + 5x+ winner 실측이며, 현재 운영 floor 는 2026-05-14 운영자 override 이후 0.6 SOL.
 - **2026-04-18 Mission Pivot** (하위): [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md) — explainability → convexity. Cupsey는 benchmark로 유지(개조 금지), `pure_ws_breakout` 새 primary 후보.
 - 아키텍처/의존성 방향: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
 - 에이전트 규칙 + 문서 맵: [`AGENTS.md`](./AGENTS.md)
@@ -47,9 +47,9 @@ Stage 1-2 만 읽으면 (5-10분) 코드 변경 가능. Stage 3+ 는 필요 시.
 - **현재 운영 모드 (2026-04-21 refined)**: Stage 1 (Safety Pass). 판단 KPI 는 일/주 수익률 아님 — 4개 질문 (drift / survival pass rate / trade count / bleed per probe).
 - **현재 binding constraint (2026-05-06)**: lane별 실거래/페이퍼 evidence 품질. smart-v3는 MAE fast-fail/recovery/pre-T1 giveback을 live+paper 동일하게 관측하고, rotation은 canonical live를 닫은 채 `rotation_chase_topup_v1`만 canary로 검증하며, pure_ws는 paper evidence 확보 전 live 승격 금지.
 - **Ground truth**: wallet delta 만 유일한 판정 기준. DB pnl 단독 판정 금지 (drift `+18.34 SOL` 전력).
-- **Success redefined (current operating)**: 0.7 SOL floor 유지 + 200 live trades + 5x+ winner 분포 실측 = 기술적 성공. 100 SOL 달성 여부 무관.
+- **Success redefined (current operating)**: 0.6 SOL floor 유지 + 200 live trades + 5x+ winner 분포 실측 = 기술적 성공. 100 SOL 달성 여부 무관.
 - **Trade-count 구간 의미 (2026-04-21)**: `50 trades` = safety checkpoint (관측 전용, 승격 결정 없음) / `100 trades` = preliminary edge/bleed/quickReject 검토 (Stage 2) / `200 trades` = scale/retire decision gate (Stage 4). 50 을 승격 기준으로 쓰지 말 것.
-- **Real Asset Guard 정책값 (current)**: `wallet floor=0.7 SOL` / default ticket `0.01 SOL` / `kol_hunter=0.02 SOL` / max concurrent `3` / wallet drift halt `0.2 SOL` / canary budgets는 current operating profile과 env report를 따른다. smart-v3 MAE fast-fail/recovery knobs는 default-on이며 운영 env override 불필요. 운영 override profile은 `ops/env/production.env`가 기준이고, runtime secret `.env`는 Git 추적 금지.
+- **Real Asset Guard 정책값 (current)**: `wallet floor=0.6 SOL` / default ticket `0.01 SOL` / `kol_hunter=0.02 SOL` / max concurrent `3` / wallet drift halt `0.2 SOL` / canary budgets는 current operating profile과 env report를 따른다. smart-v3 MAE fast-fail/recovery knobs는 default-on이며 운영 env override 불필요. 운영 override profile은 `ops/env/production.env`가 기준이고, runtime secret `.env`는 Git 추적 금지.
 - archive: [`PLAN_CMPL.md`](./PLAN_CMPL.md), [`docs/historical/pre-pivot-2026-04-18/`](./docs/historical/pre-pivot-2026-04-18/)
 - 현재 전략 quick reference: [`STRATEGY.md`](./STRATEGY.md)
 - 전략 방향/다음 가설: [`STRATEGY_NOTES.md`](./STRATEGY_NOTES.md)

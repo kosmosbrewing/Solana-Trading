@@ -71,7 +71,7 @@ More post-exit/post-reject replay truth:   yes
 
 This plan must not relax Real Asset Guard:
 
-- Wallet floor remains 0.7 SOL.
+- Wallet floor remains 0.6 SOL.
 - KOL live ticket remains fixed by current guard policy.
 - Max concurrent remains 3.
 - Drift halt and wallet comparator remain active.

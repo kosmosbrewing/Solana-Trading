@@ -1,6 +1,6 @@
 # Solana Momentum Bot
 
-> **Mission (current operating)**: `0.7 SOL floor + 200 live trades + 5x+ winner 실측` 이 성공 기준. 100 SOL 은 tail outcome (관찰 변수).
+> **Mission (current operating)**: `0.6 SOL floor + 200 live trades + 5x+ winner 실측` 이 성공 기준. 100 SOL 은 tail outcome (관찰 변수).
 > **Active paradigm (2026-04-23)**: **Option 5 — KOL Wallet Discovery + 자체 Execution**.
 
 Solana DEX 순수 실전형 momentum / sniper 봇이다.
@@ -34,7 +34,7 @@ Solana DEX 순수 실전형 momentum / sniper 봇이다.
 ## Current Status (2026-05-06)
 
 - **Active paradigm**: Option 5 — KOL Wallet Discovery + 자체 Execution ([ADR](./docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md)).
-- **Current operating floor**: 0.7 SOL. Historical 0.8 SOL mission-refinement 문서는 원 사명 정의로만 읽고, 운영 판단은 `SESSION_START.md` / `MISSION_CONTROL.md` / `STRATEGY.md`를 따른다.
+- **Current operating floor**: 0.6 SOL. Historical 0.8 SOL mission-refinement 문서와 2026-04-28 0.7 SOL 운영 기준은 이전 기준으로만 읽고, 운영 판단은 `SESSION_START.md` / `MISSION_CONTROL.md` / `STRATEGY.md`를 따른다.
 - **Lane 상태**:
   - `kol_hunter_smart_v3` — main 5x lane. live canary + paper arms, 2+ fresh active KOL 중심, dev quality는 보조신호, MAE fast-fail / bounded recovery-hold / pre-T1 giveback telemetry 적용.
   - `kol_hunter_rotation_v1` — fast-compound 보조 lane. canonical rotation live는 닫고, 검증된 `rotation_chase_topup_v1`만 별도 live canary 키로 열 수 있다. S/A 1-KOL better-entry, chase/top-up arm, partialized sell-follow, T+ evidence를 본다.
@@ -104,7 +104,7 @@ Stage 4: Gate (loose factor-based)
   lane-specific factor gate (vol accel + buy ratio + tx density + price acceleration)
 
 Stage 5: Guard (shared hard guardrails, 불변)
-  Wallet Stop Guard < 0.7 SOL
+  Wallet Stop Guard < 0.6 SOL
   Wallet delta comparator (always-on drift halt)
   entryIntegrity per-lane halt
   canary auto-halt (consecutive losers / budget / max trades)

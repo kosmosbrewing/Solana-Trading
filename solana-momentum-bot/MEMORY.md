@@ -6,7 +6,7 @@
 ## Current Mission Decision
 
 - 2026-04-21: `1 SOL -> 100 SOL` 은 **deterministic KPI 가 아니라 convex tail outcome**.
-- **Current success definition**: current operating `0.7 SOL floor + 200 live trades + 5x+ winner distribution`.
+- **Current success definition**: current operating `0.6 SOL floor + 200 live trades + 5x+ winner distribution`.
 - **Operating model**: survival-first positive-optionality engine.
 
 ## Trade-Count 구간 의미 (2026-04-21)
@@ -17,7 +17,7 @@
 
 ## Real Asset Guard 정책값 (불변)
 
-- wallet floor: `0.7 SOL`
+- wallet floor: `0.6 SOL`
 - canary cumulative loss cap: lane-specific budget caps from current operating profile
 - max concurrent: `3`
 - fixed ticket: default `0.01 SOL`, KOL `0.02 SOL`
@@ -27,7 +27,7 @@ Startup `[REAL_ASSET_GUARD]` 로그에서 effective 값 확인 가능.
 ## Authority
 
 - `SESSION_START.md` / `MISSION_CONTROL.md` — current operating override
-- `docs/design-docs/mission-refinement-2026-04-21.md` — historical mission refinement; original 0.8 floor is superseded by current 0.7 operating floor
+- `docs/design-docs/mission-refinement-2026-04-21.md` — historical mission refinement; original 0.8 floor is superseded by current 0.6 operating floor
 - `docs/design-docs/mission-pivot-2026-04-18.md` — pivot 결정 근거
 - `PLAN.md`
 - `PROJECT.md`

@@ -84,7 +84,7 @@ export const kolHunter = {
   kolHunterPostDistributionCancelQuarantineSec: numEnv('KOL_HUNTER_POST_DISTRIBUTION_CANCEL_QUARANTINE_SEC', '600'),
   // 2026-04-28 B안: 운영자 결정 — live 24h n=44 데이터 (ROI -2.55%, catastrophic 4.5%) 도착 후
   // 0.03 → 0.02 SOL 후퇴. policyGuards POLICY_TICKET_MAX_SOL_BY_LANE.kol_hunter = 0.02 정합.
-  // 200 trade 여정 시뮬: catastrophic 9건 + bleed 0.102 = 0.282 drawdown → wallet 0.718 (floor 0.7 +0.018 margin).
+  // 200 trade 여정 시뮬: catastrophic 9건 + bleed 0.102 = 0.282 drawdown → wallet 0.718 (floor 0.6 +0.118 margin).
   // 100 trade 검증 후 catastrophic < 2% + ROI > 0% 시 0.025 승격, ≥ 4% 시 0.015 후퇴.
   kolHunterTicketSol: numEnv('KOL_HUNTER_TICKET_SOL', '0.02'),
   kolHunterMaxConcurrent: numEnv('KOL_HUNTER_MAX_CONCURRENT', '3'),
@@ -267,17 +267,18 @@ export const kolHunter = {
   // 2026-04-30 Sprint: live canary 실측에서 single-KOL cohort 가 손실 대부분을 차지.
   // live wallet 진입은 최소 independent KOL 2명부터 허용하고, 미달은 paper 로만 관측한다.
   kolHunterLiveMinIndependentKol: numEnv('KOL_HUNTER_LIVE_MIN_INDEPENDENT_KOL', '2'),
-  // 2026-04-30: KOL live canary stabilization sprint — floor 0.7 확정 전제.
+  // 2026-04-30: KOL live canary stabilization sprint — floor 0.6 확정 전제.
+  // 2026-05-14: wallet hard floor 0.6 완화에 맞춰 paper-fallback 하한도 0.60 으로 조정.
   // Wallet 이 floor 근처로 내려오면 live canary 를 끄지 않고 entry 품질만 강화한다.
   // 2026-05-10: floor 와 중복되는 blanket paper fallback 을 줄이고, yellow-zone 에서도
   // arm-specific live 기준을 존중한다. smart-v3 는 여전히 default 2 KOL, rotation_underfill 처럼
-  // 명시 승격된 1-KOL arm 은 0.70~0.85 SOL 에서도 보안/429 게이트만 통과하면 live 검증 가능.
+  // 명시 승격된 1-KOL arm 은 0.60~0.85 SOL 에서도 보안/429 게이트만 통과하면 live 검증 가능.
   // - balance < paperFallbackBelowSol: live 대신 paper fallback
   // - paperFallbackBelowSol <= balance < startSol: arm별 independent KOL / security / Jupiter pressure gate
   // - maxRecentJupiter429 <= 0 이면 429 gate disabled
   kolHunterYellowZoneEnabled: boolOptional('KOL_HUNTER_YELLOW_ZONE_ENABLED', true),
   kolHunterYellowZoneStartSol: numEnv('KOL_HUNTER_YELLOW_ZONE_START_SOL', '0.85'),
-  kolHunterYellowZonePaperFallbackBelowSol: numEnv('KOL_HUNTER_YELLOW_ZONE_PAPER_FALLBACK_BELOW_SOL', '0.70'),
+  kolHunterYellowZonePaperFallbackBelowSol: numEnv('KOL_HUNTER_YELLOW_ZONE_PAPER_FALLBACK_BELOW_SOL', '0.60'),
   kolHunterYellowZoneMinIndependentKol: numEnv('KOL_HUNTER_YELLOW_ZONE_MIN_INDEPENDENT_KOL', '2'),
   kolHunterYellowZoneMaxRecentJupiter429: numEnv('KOL_HUNTER_YELLOW_ZONE_MAX_RECENT_JUPITER_429', '20'),
   // 2026-04-30: live execution quality cooldown.
@@ -439,6 +440,17 @@ export const kolHunter = {
   kolHunterRotationUnderfillDoaMinMfePct: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_DOA_MIN_MFE_PCT', '0.015'),
   kolHunterRotationUnderfillDoaMaxMaePct: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_DOA_MAX_MAE_PCT', '0.02'),
   kolHunterRotationUnderfillParameterVersion: process.env.KOL_HUNTER_ROTATION_UNDERFILL_PARAMETER_VERSION ?? 'rotation-underfill-v1.0.0',
+  // 2026-05-14: cost-aware underfill exit is shadow/paper-only until live wallet evidence proves it.
+  kolHunterRotationUnderfillCostAwarePaperEnabled: boolOptional('KOL_HUNTER_ROTATION_UNDERFILL_COST_AWARE_PAPER_ENABLED', true),
+  kolHunterRotationUnderfillCostAwareT1MinMfe: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_COST_AWARE_T1_MIN_MFE', '0.12'),
+  kolHunterRotationUnderfillCostAwareT1BufferPct: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_COST_AWARE_T1_BUFFER_PCT', '0.03'),
+  kolHunterRotationUnderfillCostAwareT1MaxMfe: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_COST_AWARE_T1_MAX_MFE', '0.18'),
+  kolHunterRotationUnderfillCostAwareT1TrailPct: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_COST_AWARE_T1_TRAIL_PCT', '0.045'),
+  kolHunterRotationUnderfillCostAwareProfitFloorMult: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_COST_AWARE_PROFIT_FLOOR_MULT', '1.10'),
+  kolHunterRotationUnderfillCostAwareProfitFloorBufferPct: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_COST_AWARE_PROFIT_FLOOR_BUFFER_PCT', '0.02'),
+  kolHunterRotationUnderfillCostAwareProbeTimeoutSec: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_COST_AWARE_PROBE_TIMEOUT_SEC', '30'),
+  kolHunterRotationUnderfillCostAwareHardCutPct: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_COST_AWARE_HARD_CUT_PCT', '0.04'),
+  kolHunterRotationUnderfillCostAwareParameterVersion: process.env.KOL_HUNTER_ROTATION_UNDERFILL_COST_AWARE_PARAMETER_VERSION ?? 'rotation-underfill-cost-aware-exit-v2.0.0',
   kolHunterRotationPaperAssumedAtaRentSol: numEnv('KOL_HUNTER_ROTATION_PAPER_ASSUMED_ATA_RENT_SOL', '0.00207408'),
   kolHunterRotationPaperAssumedNetworkFeeSol: numEnv('KOL_HUNTER_ROTATION_PAPER_ASSUMED_NETWORK_FEE_SOL', '0.000105'),
   kolHunterRotationPaperNotifyEnabled: boolOptional('KOL_HUNTER_ROTATION_PAPER_NOTIFY_ENABLED', true),

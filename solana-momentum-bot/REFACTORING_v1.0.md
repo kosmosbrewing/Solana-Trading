@@ -43,7 +43,7 @@
 | Canary budget persistence | restart 후 ledger 복원 | `CANARY_AUTO_HALT_HYDRATE_ON_START=true` | ✅ |
 | 다음 작업 | — | hardcut/slippage root-cause + live/paper divergence deep-dive | ⏳ |
 
-→ Phase 4 는 활성 상태. 아직 SCALE 이 아니므로 live canary 는 floor 0.7 / KOL cap 0.2 / independent KOL ≥ 2 / yellow-zone rule / restart budget hydration 안에서만 계속한다.
+→ Phase 4 는 활성 상태. 아직 SCALE 이 아니므로 live canary 는 floor 0.6 / KOL canary cap / independent KOL ≥ 2 / yellow-zone rule / restart budget hydration 안에서만 계속한다.
 
 ### Phase 4 활성화 시 .env
 
@@ -81,7 +81,7 @@ ADR §5 로부터 그대로. 본 문서 모든 Phase 에서 불변.
 
 | 항목 | 값 | 코드 변수 |
 |------|-----|-----------|
-| Wallet floor | 0.7 SOL | `walletStopMinSol` |
+| Wallet floor | 0.6 SOL | `walletStopMinSol` |
 | Canary cumulative loss cap | -0.3 SOL | `canaryMaxBudgetSol` |
 | Fixed ticket | pure_ws/cupsey/migration 0.01 SOL / KOL 0.02 SOL | `pureWsLaneTicketSol` / `kolHunterTicketSol` |
 | Max concurrent | 3 | `pureWsMaxConcurrent` (전역) |
@@ -417,9 +417,9 @@ KOL_HUNTER_QUICK_REJECT_FACTOR_COUNT=3
 - [x] KOL ticket 0.02 SOL, max concurrent 3 (전역) 유지
 - [x] Canary budget -0.2 SOL cap (Lane T 전용) ledger-persistent enforcement
 - [x] Live single-KOL paper fallback (`KOL_HUNTER_LIVE_MIN_INDEPENDENT_KOL=2`)
-- [x] Yellow-zone live gate (0.75~0.85 SOL 강화 / 0.70~0.75 SOL paper fallback)
+- [x] Yellow-zone live gate (0.60~0.85 SOL arm-aware live 기준 / 0.60 미만 hard stop)
 - [x] KOL live canary report (`npm run kol:live-canary-report`)
-- [ ] Live 50 trade 까지 halt 미발동 시 Phase 5 진행
+- [ ] Live 50 close safety checkpoint 통과 후 100 close preliminary review 까지 관측
 - [ ] Telegram notification:
   - [ ] Lane T entry / exit / halt
   - [ ] 5x+ winner alert
@@ -430,14 +430,14 @@ KOL_HUNTER_QUICK_REJECT_FACTOR_COUNT=3
 
 - [ ] Live 50 trade 누적
 - [ ] **net 5x+ OR T2 visit ≥ 1건**
-- [ ] 0.7 floor 위반 0건
+- [ ] 0.6 floor 위반 0건
 - [ ] paper vs live gap (slippage / friction) 허용 범위
 - [ ] `canary-eval.ts` Lane T report
 
 ### 9.3 Rollback
 
 - single-KOL live 시도 → paper fallback (`LIVE_MIN_KOL`)
-- 0.75~0.85 SOL yellow-zone → live 조건 강화 / 0.70~0.75 SOL → paper fallback / budget -0.2 소진 → 즉시 halt
+- 0.60~0.85 SOL yellow-zone → arm-aware live 조건 / wallet <0.60 SOL → 즉시 halt
 - 50 trade 내 5x+ winner 0 AND T2 visit 0 → Phase 3 재조정 복귀
 
 ### 9.4 ADR Gate 3 참조
@@ -500,9 +500,8 @@ KOL_HUNTER_QUICK_REJECT_FACTOR_COUNT=3
 | Phase 3 재조정 2차 실패 (Gate 2) | 동일 |
 | Phase 4 5x+ / T2 visit 0 (Gate 3) | Paper 복귀 → Phase 3 재조정 |
 | KOL live independent KOL < 2 | paper fallback, live entry 금지 |
-| Wallet 0.75~0.85 SOL | yellow-zone live 조건 강화 |
-| Wallet 0.70~0.75 SOL | KOL live paper fallback, manual review |
-| Wallet < 0.70 SOL | 전 lane halt, manual review |
+| Wallet 0.60~0.85 SOL | yellow-zone arm-aware live 조건 |
+| Wallet < 0.60 SOL | 전 lane halt, manual review |
 | KOL DB 해킹 / 유출 | 즉시 Lane T halt, DB 재정제 |
 | Helius rate limit 초과 | tier degrade (S 만 실시간) |
 | 운영자 수동 중단 요청 | 즉시 Lane T halt, paper 유지 |

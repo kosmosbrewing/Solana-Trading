@@ -10,7 +10,7 @@
 - 1인 개발자, 자동화 수익 파이프라인을 축적하는 CTO
 - Solana 트레이딩 봇은 여러 자동화 시스템 중 하나
 - 24/7 무인 운영 전제, 수동 개입 최소화
-- 리스크 성향: convexity 추구 + wallet 기준 하한선 고정 (current operating floor `0.7 SOL`)
+- 리스크 성향: convexity 추구 + wallet 기준 하한선 고정 (current operating floor `0.6 SOL`)
 
 ### 봇
 - 이름: Solana Momentum Bot
@@ -21,17 +21,17 @@
 
 ### 최종 성공 기준 (2026-04-21 refined)
 
-> **현재 운영 floor 0.7 SOL 을 깨지 않고 200 live trades 를 통과하며, 5x+ winner 분포를 실측했다.**
+> **현재 운영 floor 0.6 SOL 을 깨지 않고 200 live trades 를 통과하며, 5x+ winner 분포를 실측했다.**
 
 100 SOL 도달은 **tail outcome — 관찰 변수이지 KPI 가 아님**. 100 SOL 을 달성 못해도 Stage 4 통과하면 프로젝트는 **기술적 성공**.
 
-원 사명 정제 문서는 0.8 SOL floor 로 작성됐지만, 2026-04-28 이후 실제 운영 기준은 `SESSION_START.md`의 0.7 SOL floor 를 따른다.
+원 사명 정제 문서는 0.8 SOL floor 로 작성됐고 2026-04-28에는 0.7 SOL로 낮췄지만, 2026-05-14 이후 실제 운영 기준은 `SESSION_START.md`의 0.6 SOL floor 를 따른다.
 
 ### 4단계 Maturity Gate
 
 | Stage | 통과 기준 |
 |-------|----------|
-| 1. Safety Pass | 48h drift < 0.01 / survival filter pass >= 90% / 0.7 floor 무위반 |
+| 1. Safety Pass | 48h drift < 0.01 / survival filter pass >= 90% / 0.6 floor 무위반 |
 | 2. Sample Accumulation | 100 live trades / max DD < 30% / wallet stop 0회 |
 | 3. Winner Distribution | 5x+ winner >= 1건 실측 |
 | 4. Scale Decision | 200+ trades / lane log growth > 0 / ruin probability < 5% |
@@ -84,7 +84,7 @@ baseline: cupsey_flip_10s는 기존 구조 그대로 유지 (benchmark)
 - Exitability 확인
 - Duplicate / race 방지 (Patch A: STALK→PROBE reentrancy guard, Patch B1: close mutex)
 - HWM / price sanity bound (Patch B2: cupseyMaxPeakMultiplier = 15x)
-- Wallet Stop Guard `< 0.7 SOL` halt
+- Wallet Stop Guard `< 0.6 SOL` halt
 - RPC fail-safe halt (연속 RPC 실패 → lane halt)
 - Entry integrity (`persistOpenTradeWithIntegrity` 모든 lane 필수)
 - Wallet truth accounting (executed-buys/sells.jsonl + FIFO reconcile)
@@ -123,7 +123,7 @@ baseline: cupsey_flip_10s는 기존 구조 그대로 유지 (benchmark)
 
 | Stage | 통과 기준 | 현 상태 |
 |-------|---------|--------|
-| 1. Safety Pass | 48h 운영 / drift 정상 / survival filter pass / 0.7 floor 무위반 | **진행 중** — lane별 evidence report 기준 |
+| 1. Safety Pass | 48h 운영 / drift 정상 / survival filter pass / 0.6 floor 무위반 | **진행 중** — lane별 evidence report 기준 |
 | 2. Sample Accumulation | 100 live trades / max DD < 30% / wallet stop 0회 | 미진입 — Stage 1 통과 후 |
 | 3. Winner Distribution | 5x+ winner >= 1건 실측 | 미진입 |
 | 4. Scale Decision | 200+ live trades / lane log growth > 0 / ruin probability < 5% | 미진입 |
@@ -132,7 +132,7 @@ baseline: cupsey_flip_10s는 기존 구조 그대로 유지 (benchmark)
 
 | 가드 | 값 |
 |---|---|
-| Wallet Stop Guard | `wallet_sol < 0.7` 전 lane halt |
+| Wallet Stop Guard | `wallet_sol < 0.6` 전 lane halt |
 | Canary cumulative loss cap | `-0.3 SOL` (lane별) |
 | Fixed ticket | default `0.01 SOL`, KOL `0.02 SOL` canary |
 | Max concurrent ticket | `3` 전역 |

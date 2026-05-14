@@ -95,7 +95,7 @@ Implemented operating shape:
 - `rotation_underfill_exit_flow_v1` is the promoted comparison profile: `entryArm=rotation_underfill_v1`, `exitArm=rotation_exit_kol_flow_v1`, and `profileArm=rotation_underfill_exit_flow_v1`;
 - underfill uses the incoming `KolTx` fill reference (`solAmount / tokenAmount`) and does not add a hot-path RPC call;
 - underfill rejects such as missing fill price, too-shallow discount, too-deep discount, stale buy, and recent sell are recorded as no-trade markouts;
-- when promoted to live canary, the underfill + exit-flow profile keeps its own 1-KOL minimum even in yellow-zone; the 0.7 SOL wallet floor remains the hard stop, while 0.70-0.85 SOL is an arm-aware quality zone;
+- when promoted to live canary, the underfill + exit-flow profile keeps its own 1-KOL minimum even in yellow-zone; the 0.6 SOL wallet floor remains the hard stop, while 0.60-0.85 SOL is an arm-aware quality zone;
 - live underfill does not inherit smart-v3 tail-retain; rotation is a fast-compound lane, so price-kill closes sell the rotation position rather than retaining a runner tail;
 - live underfill blocks executor spend on unknown/no sell-route evidence (`EXIT_LIQUIDITY_UNKNOWN`, `NO_SELL_ROUTE`, `SELL_NO_ROUTE`, `NO_ROUTE`) and keeps the candidate as paper fallback/equivalence evidence;
 - live underfill has a short-memory KOL decay guard: consecutive recent live rotation losses by the same anchor KOL temporarily move that KOL's next underfill signal to paper-only (`ROTATION_LIVE_KOL_DECAY`). The state hydrates on startup from `rotation-v1-live-trades.jsonl` plus the compatibility `kol-live-trades.jsonl`, deduped by `positionId`, with tail child rows excluded;

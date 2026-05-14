@@ -1,6 +1,6 @@
 # Mission Control Framework
 
-> Updated: 2026-05-03
+> Updated: 2026-05-14
 > Document type: control-plane policy
 > Authority chain: `mission-refinement-2026-04-21.md` -> `mission-pivot-2026-04-18.md` -> `PLAN.md` / `MEASUREMENT.md` -> this document
 
@@ -11,12 +11,12 @@ This project is not searching for one perfect trading rule. The mission is to ke
 `100 SOL` is a tail outcome, not a planning KPI. Operational success remains:
 
 ```text
-Keep the 0.7 SOL floor intact (2026-04-28 B안 갱신: 이전 0.8),
+Keep the 0.6 SOL floor intact (2026-05-14 운영자 override: 이전 0.7),
 survive 200 live trades,
 measure whether 5x+ winners exist in the selected universe.
 ```
 
-> 2026-04-28 B안 갱신 사유: KOL ticket scale 0.01→0.02 (paper proof 후) 시 drawdown budget 확장 필요. 1.0 - 0.7 = **0.3 SOL** budget (이전 0.2). 200 trade 여정 시뮬레이션 (catastrophic 4.5% × 9건 + bleed 0.102) = 0.282 drawdown 정합. 사명 §3 정합 — wallet ground truth 우선.
+> 2026-05-14 갱신 사유: 운영 wallet 이 기존 0.7 hard floor 에 근접해 live evidence 수집이 중단될 위험이 커졌고, 운영자가 명시적으로 0.6 SOL 완화를 승인했다. 1.0 SOL 기준 drawdown budget 은 0.4 SOL 이며, 기존 ticket/canary cap/drift halt/max concurrent 는 유지한다. 사명 §3 정합 — wallet ground truth 우선.
 
 The bot optimizes for positive optionality:
 
@@ -39,7 +39,7 @@ to justify the bleed budget?
 
 ## Control 1: Survival Budget
 
-`0.7 SOL` is the current hard floor. Survival accounting includes realized PnL, failed transaction fees, base fee, priority fee, tip, slippage, bad fill drift, and open inventory equity view. DB-only PnL is reconciliation evidence only.
+`0.6 SOL` is the current hard floor. Survival accounting includes realized PnL, failed transaction fees, base fee, priority fee, tip, slippage, bad fill drift, and open inventory equity view. DB-only PnL is reconciliation evidence only.
 
 Required controls:
 
@@ -195,7 +195,7 @@ Guardrail relaxation must not depend on emotion after losses.
 
 Hard rules:
 
-- Never weaken the `0.7 SOL` wallet floor.
+- Never weaken the `0.6 SOL` wallet floor.
 - Never weaken wallet delta halt because it is inconvenient.
 - Never increase ticket size after a loss streak.
 - Never enable live for a new lane before paper/shadow criteria pass.
@@ -278,7 +278,7 @@ Detector edge before expensive infrastructure.
 Daily review answers only:
 
 1. Did wallet truth remain valid?
-2. Did the 0.7 SOL floor remain protected?
+2. Did the 0.6 SOL floor remain protected?
 3. Which arm consumed bleed, and did it produce runner visits?
 4. Which cohort improved or degraded the 5x conditional probability?
 
@@ -332,7 +332,7 @@ The mission is won by preserving survival while repeatedly buying cheap optional
 
 | Control | Real Asset Guard 항목 | 변경 절차 |
 |---------|----------------------|----------|
-| C1 Survival Budget | wallet floor 0.7 / canary -0.3 / KOL canary -0.2 / drift halt 0.2 | 별도 ADR + 48h cooldown + 운영자 ack + 단계적 |
+| C1 Survival Budget | wallet floor 0.6 / canary -0.3 / KOL canary -0.2 / drift halt 0.2 | 별도 ADR + 48h cooldown + 운영자 ack + 단계적 |
 | C3 Payoff | pure_ws/cupsey/migration ticket 0.01 / KOL ticket 0.02 / max concurrent 3 / KOL live independent KOL ≥ 2 | 동일 |
 | C4 Execution | security gate / sell probe / drift guard | 정책 완화 절대 금지 (Stage 4 SCALE 후만 검토) |
 

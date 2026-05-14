@@ -44,7 +44,7 @@
 | Guard | 값 | 근거 |
 |---|---|---|
 | `KOL_HUNTER_LIVE_MIN_INDEPENDENT_KOL` | `2` | single-KOL live cohort net negative |
-| Yellow-zone live gate | 0.70~0.85 SOL arm별 live 기준 적용 / 0.70 미만 paper fallback | floor 0.7 보호와 promoted arm 검증 병행 |
+| Yellow-zone live gate | 0.60~0.85 SOL arm별 live 기준 적용 / 0.60 미만 hard stop | floor 0.6 보호와 promoted arm 검증 병행 |
 | Canary budget hydration | restart 시 `executed-sells.jsonl` replay | budget reset hole 차단 |
 | Daily report | `npm run kol:live-canary-report` | live/paper divergence 추적 |
 
@@ -178,7 +178,7 @@ Day 21-35 : Track 4 (tick-level + live mfe)      IDEAL 60% → 80%
 
 | 사명 조건 | Track 영향 |
 |---------|---------|
-| 0.7 SOL floor 유지 | Track 1+2 가 직접 보호 (big-loss 차단 = floor 사수) |
+| 0.6 SOL floor 유지 | Track 1+2 가 직접 보호 (big-loss 차단 = floor 사수) |
 | 200 paper trades | 이미 438건 충족 — Track 3 의 데이터 기반 |
 | 5x winner ≥ 1 | paper 1건 ✓, **live 0건** — Track 4 의 live mfe schema 후 정확 측정 |
 | ADR + Telegram critical ack | Track 1+2 완료 + live 5x winner 1건 입증 후 작성 권고 |

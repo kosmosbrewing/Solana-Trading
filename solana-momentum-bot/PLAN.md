@@ -25,11 +25,11 @@
 
 ### 성공 기준 (기술적 성공)
 
-> **현재 운영 floor 0.7 SOL 을 깨지 않고 200 live trades 를 통과하며, 5x+ winner 분포를 실측했다** 면 성공.
+> **현재 운영 floor 0.6 SOL 을 깨지 않고 200 live trades 를 통과하며, 5x+ winner 분포를 실측했다** 면 성공.
 
 그 이후 tail outcome (10x / 50x / 100x) 은 운 — 실패해도 학습.
 
-원 사명 정제 문서는 0.8 SOL floor 로 작성됐지만, 2026-04-28 이후 실제 운영 기준은 `SESSION_START.md`의 0.7 SOL floor 를 따른다.
+원 사명 정제 문서는 0.8 SOL floor 로 작성됐고 2026-04-28에는 0.7 SOL 로 낮췄지만, 2026-05-14 이후 실제 운영 기준은 `SESSION_START.md`의 0.6 SOL floor 를 따른다.
 
 ### Why Pivoted (2026-04-18)
 
@@ -66,7 +66,7 @@
 - Exitability 확인
 - Duplicate / race 방지 (Patch A, B1)
 - HWM / price sanity (Patch B2)
-- Wallet Stop Guard `< 0.7 SOL` halt
+- Wallet Stop Guard `< 0.6 SOL` halt
 - RPC fail-safe halt
 
 이 항목은 convexity 최우선 원칙보다도 위에 있다.

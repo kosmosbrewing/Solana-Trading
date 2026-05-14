@@ -22,7 +22,7 @@ Important current state:
   - `kol_hunter_rotation_v1`: fast-compound auxiliary lane. Canonical live remains disabled; `rotation_chase_topup_v1` is paper-only and only promoted `rotation_underfill_v1` may run as a live canary.
   - `pure_ws botflow`: paper/observe-only new-pair botflow rebuild candidate.
 - Current Real Asset Guard:
-  - wallet floor `0.7 SOL`;
+  - wallet floor `0.6 SOL`;
   - default lane canary cap `-0.3 SOL`;
   - KOL canary cap `-0.2 SOL`;
   - pure_ws/cupsey/migration ticket `0.01 SOL`;
@@ -87,7 +87,7 @@ Verification already run:
 
 Known doc consistency note:
 
-- `docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md` still quotes the original `0.8 SOL` mission sentence as historical text, but immediately states the current operating floor is `0.7 SOL`.
+- `docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md` still quotes the original `0.8 SOL` mission sentence as historical text, but immediately states the current operating floor is `0.6 SOL`.
 
 Do not:
 

@@ -8,6 +8,7 @@ const DEFAULT_LIVE_SELL_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000, 4_000] as con
 const HARD_CUT_LIVE_SELL_RETRY_DELAYS_MS = [0, 150, 300, 600, 1_200] as const;
 const STRUCTURAL_LIVE_SELL_RETRY_DELAYS_MS = [0, 100, 200, 400, 800] as const;
 const DEFAULT_INITIAL_BALANCE_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000, 4_000] as const;
+const DEFAULT_ZERO_BALANCE_CONFIRM_DELAYS_MS = [0, 500] as const;
 const DEFAULT_ENTRY_TX_FALLBACK_MAX_AGE_MS = 30_000;
 
 export type LiveSellRetryUrgency = 'normal' | 'hard_cut' | 'structural';
@@ -18,6 +19,7 @@ let liveSellRetryDelaysMsByUrgency: Record<LiveSellRetryUrgency, readonly number
   structural: STRUCTURAL_LIVE_SELL_RETRY_DELAYS_MS,
 };
 let initialBalanceRetryDelaysMs: readonly number[] = DEFAULT_INITIAL_BALANCE_RETRY_DELAYS_MS;
+let zeroBalanceConfirmDelaysMs: readonly number[] = DEFAULT_ZERO_BALANCE_CONFIRM_DELAYS_MS;
 
 export interface LiveSellRetryExecutor {
   executeSell(tokenMint: string, amountRaw: bigint): Promise<SwapResult>;
@@ -54,6 +56,13 @@ export interface LiveSellInitialBalanceProbe {
   source: 'rpc_balance' | 'entry_tx_post_balance' | 'zero_confirmed';
 }
 
+export interface LiveSellZeroBalanceConfirmResult {
+  confirmedZero: boolean;
+  attempts: number;
+  zeroConfirmations: number;
+  lastBalance: bigint | null;
+}
+
 export interface LiveSellInitialBalanceParams {
   executor: LiveSellRetryExecutor;
   tokenMint: string;
@@ -63,6 +72,14 @@ export interface LiveSellInitialBalanceParams {
   entryTimeSec?: number;
   nowMs?: number;
   entryTxFallbackMaxAgeMs?: number;
+}
+
+export interface LiveSellZeroBalanceConfirmParams {
+  executor: LiveSellRetryExecutor;
+  tokenMint: string;
+  context: string;
+  reason: string;
+  minZeroConfirmations?: number;
 }
 
 function waitLiveSellRetry(delayMs: number): Promise<void> {
@@ -125,6 +142,47 @@ export async function resolveLiveSellInitialTokenBalance(
   }
 
   return { balance: 0n, attempts: maxAttempts, source: 'zero_confirmed' };
+}
+
+export async function confirmLiveSellZeroTokenBalance(
+  params: LiveSellZeroBalanceConfirmParams
+): Promise<LiveSellZeroBalanceConfirmResult> {
+  const minZeroConfirmations = Math.max(2, Math.floor(params.minZeroConfirmations ?? 2));
+  let zeroConfirmations = 0;
+  let lastBalance: bigint | null = null;
+
+  for (let attempt = 1; attempt <= minZeroConfirmations; attempt += 1) {
+    const delayMs = zeroBalanceConfirmDelaysMs[attempt - 1] ?? zeroBalanceConfirmDelaysMs[zeroBalanceConfirmDelaysMs.length - 1] ?? 0;
+    if (delayMs > 0) {
+      await waitLiveSellRetry(delayMs);
+    }
+
+    try {
+      const balance = await params.executor.getTokenBalance(params.tokenMint);
+      lastBalance = balance;
+      if (balance !== 0n) {
+        log.warn(
+          `[LIVE_SELL_ZERO_BALANCE_NOT_CONFIRMED] ${params.context} reason=${params.reason} ` +
+          `attempt=${attempt}/${minZeroConfirmations} balance=${balance.toString()}`
+        );
+        return { confirmedZero: false, attempts: attempt, zeroConfirmations, lastBalance };
+      }
+      zeroConfirmations += 1;
+    } catch (err) {
+      log.warn(
+        `[LIVE_SELL_ZERO_BALANCE_CONFIRM_FAILED] ${params.context} reason=${params.reason} ` +
+        `attempt=${attempt}/${minZeroConfirmations}: ${err}`
+      );
+      return { confirmedZero: false, attempts: attempt, zeroConfirmations, lastBalance };
+    }
+  }
+
+  return {
+    confirmedZero: zeroConfirmations >= minZeroConfirmations,
+    attempts: minZeroConfirmations,
+    zeroConfirmations,
+    lastBalance,
+  };
 }
 
 function rawAmountRatio(numerator: bigint, denominator: bigint): number {
@@ -255,4 +313,8 @@ export function setLiveSellRetryDelaysMsForTests(
 
 export function setLiveSellInitialBalanceRetryDelaysMsForTests(delays?: readonly number[]): void {
   initialBalanceRetryDelaysMs = delays ?? DEFAULT_INITIAL_BALANCE_RETRY_DELAYS_MS;
+}
+
+export function setLiveSellZeroBalanceConfirmDelaysMsForTests(delays?: readonly number[]): void {
+  zeroBalanceConfirmDelaysMs = delays ?? DEFAULT_ZERO_BALANCE_CONFIRM_DELAYS_MS;
 }

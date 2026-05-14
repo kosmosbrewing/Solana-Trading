@@ -167,6 +167,17 @@ export function isSandboxStrategy(s: StrategyName): boolean {
   return SANDBOX_STRATEGIES.has(s);
 }
 
+// Why: 일부 lane은 DB trades row를 남기더라도 자체 state machine이 exit를 전담한다.
+// 공통 candle/tick monitor가 이 row를 닫으면 live wallet sell과 lane ledger가 중복/오염된다.
+export const SELF_MANAGED_POSITION_STRATEGIES: ReadonlySet<StrategyName> = new Set([
+  ...SANDBOX_STRATEGIES,
+  'kol_hunter',
+]);
+
+export function isSelfManagedPositionStrategy(s: StrategyName): boolean {
+  return SELF_MANAGED_POSITION_STRATEGIES.has(s);
+}
+
 export interface StrategyConfig {
   name: StrategyName;
   timeframeSec: number;
@@ -418,6 +429,9 @@ export interface HealthStatus {
   lastTradeAt?: Date;
   dbConnected: boolean;
   wsConnected: boolean;
+  /** 공통 monitor 대상 포지션 수. self-managed lane(KOL 등)은 lane 전용 health/report에서 본다. */
+  monitoredPositions: number;
+  /** Backward-compatible alias for monitoredPositions. */
   openPositions: number;
   dailyPnl: number;
 }

@@ -4,7 +4,7 @@
 // 범위: SL 즉시 실행 + HWM 갱신만 담당.
 // TP1/TP2는 polling에 위임 — runner Grade A/B 판정(shouldActivateRunner, runnerStateMap)
 // 및 TP1 partial 분할(handleTakeProfit1Partial)이 필요하므로 tick monitor에서 직접 처리 불가.
-import { Trade, isSandboxStrategy } from '../utils/types';
+import { Trade, isSelfManagedPositionStrategy } from '../utils/types';
 import { createModuleLogger } from '../utils/logger';
 import { closeTrade } from './tradeExecution';
 import { BotContext } from './types';
@@ -24,7 +24,7 @@ async function getOpenTradesCached(ctx: BotContext): Promise<Trade[]> {
   const now = Date.now();
   if (now - cachedAt > CACHE_TTL_MS) {
     cachedOpenTrades = (await ctx.tradeStore.getOpenTrades())
-      .filter((trade) => !isSandboxStrategy(trade.strategy));
+      .filter((trade) => !isSelfManagedPositionStrategy(trade.strategy));
     cachedAt = now;
   }
   return cachedOpenTrades;

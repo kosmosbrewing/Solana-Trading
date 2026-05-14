@@ -85,11 +85,13 @@ import { getJupiter429Stats } from '../observability/jupiterRateLimitMetric';
 import { resolveTokenSymbol, lookupCachedSymbol } from '../ingester/tokenSymbolResolver';
 import { resolveSellReceivedSolFromSwapResult } from '../executor/executor';
 import {
+  confirmLiveSellZeroTokenBalance,
   executeLiveSellWithImmediateRetries,
   liveSellRetryMaxAttempts,
   resolveLiveSellInitialTokenBalance,
   setLiveSellInitialBalanceRetryDelaysMsForTests,
   setLiveSellRetryDelaysMsForTests,
+  setLiveSellZeroBalanceConfirmDelaysMsForTests,
   type LiveSellRetryUrgency,
 } from '../executor/liveSellRetry';
 // 2026-04-27 (KOL live canary): pure_ws live path 와 동일 패턴.
@@ -10586,9 +10588,11 @@ async function closeLivePosition(
   //   pos.quantity 전체 기준으로 잘못 계산. partial sell 일관 정합 보장.
   let isPriceKillParent = false;
   let soldQuantity = pos.quantity;
+  let sellExecutorForFailureProbe: ReturnType<typeof getKolHunterExecutor> | null = null;
 
   try {
     const sellExecutor = getKolHunterExecutor(ctx);
+    sellExecutorForFailureProbe = sellExecutor;
     const initialBalanceProbe = await resolveLiveSellInitialTokenBalance({
       executor: sellExecutor,
       tokenMint: pos.tokenMint,
@@ -10884,25 +10888,56 @@ async function closeLivePosition(
       ).catch(() => {});
     }
   } catch (sellErr) {
-    log.warn(
-      `[KOL_HUNTER_LIVE_SELL] ${pos.positionId} sell failed after ` +
-      `${liveSellRetryMaxAttempts()} attempts: ${sellErr}`
-    );
-    // 2026-04-28 F1 fix: callerPreviousState 가 있으면 그걸 사용 (closePosition mutation 이전 값).
-    // 없으면 기존 previousState fallback (recovery 경로 등 직접 호출자).
-    pos.state = callerPreviousState ?? previousState;
-    // 2026-04-28 F2 fix: critical notifier cooldown — 마지막 critical 발사 시각 비교.
-    // cupsey/pure_ws/migration 패턴 동일. 이전 코드 (entryTimeSec >= 60s 비교) 는
-    // entry 직후 60s 내 sell 실패 시 critical 미발사 → 운영자 무지각 위험.
-    if (!pos.lastCloseFailureAtSec || nowSec - pos.lastCloseFailureAtSec >= 60) {
-      pos.lastCloseFailureAtSec = nowSec;
+    const zeroBalanceConfirm = sellExecutorForFailureProbe
+      ? await confirmLiveSellZeroTokenBalance({
+        executor: sellExecutorForFailureProbe,
+        tokenMint: pos.tokenMint,
+        context: `kol_hunter:${pos.positionId}`,
+        reason,
+        minZeroConfirmations: 2,
+      })
+      : null;
+    if (zeroBalanceConfirm?.confirmedZero === true) {
+      log.warn(
+        `[KOL_HUNTER_LIVE_ORPHAN_AFTER_SELL_RETRY] ${pos.positionId} ${pos.tokenMint.slice(0, 12)} ` +
+        `zero balance confirmed ${zeroBalanceConfirm.zeroConfirmations}/${zeroBalanceConfirm.attempts} ` +
+        `after failed sell retries — force closing pnl=0 (previousReason=${reason})`
+      );
+      effectiveReason = 'ORPHAN_NO_BALANCE';
+      actualExitPrice = pos.entryPrice;
+      sellCompleted = true;
+      exitTxSignature = pos.entryTxSignature ?? 'ORPHAN_NO_TX';
+      sellRetryAttempts = liveSellRetryMaxAttempts();
+      sellRecoveredFromBalanceOnly = true;
+      sellRetrySoldRatio = 1;
+      exitCompletedAtMs = Date.now();
+      exitLatencyMs = Math.max(0, exitCompletedAtMs - exitRequestedAtMs);
+      liveHoldSec = Math.max(0, Math.floor(exitCompletedAtMs / 1000) - pos.entryTimeSec);
       await ctx.notifier.sendCritical(
-        'kol_live_close_failed',
-        `${pos.positionId} ${pos.tokenMint} reason=${reason} sell failed after ` +
-        `${liveSellRetryMaxAttempts()} attempts — OPEN 유지`
+        'kol_live_orphan',
+        `${pos.positionId} ${pos.tokenMint} zero balance confirmed after failed sell retries — force closing 0 pnl`
       ).catch(() => {});
+    } else {
+      log.warn(
+        `[KOL_HUNTER_LIVE_SELL] ${pos.positionId} sell failed after ` +
+        `${liveSellRetryMaxAttempts()} attempts: ${sellErr}`
+      );
+      // 2026-04-28 F1 fix: callerPreviousState 가 있으면 그걸 사용 (closePosition mutation 이전 값).
+      // 없으면 기존 previousState fallback (recovery 경로 등 직접 호출자).
+      pos.state = callerPreviousState ?? previousState;
+      // 2026-04-28 F2 fix: critical notifier cooldown — 마지막 critical 발사 시각 비교.
+      // cupsey/pure_ws/migration 패턴 동일. 이전 코드 (entryTimeSec >= 60s 비교) 는
+      // entry 직후 60s 내 sell 실패 시 critical 미발사 → 운영자 무지각 위험.
+      if (!pos.lastCloseFailureAtSec || nowSec - pos.lastCloseFailureAtSec >= 60) {
+        pos.lastCloseFailureAtSec = nowSec;
+        await ctx.notifier.sendCritical(
+          'kol_live_close_failed',
+          `${pos.positionId} ${pos.tokenMint} reason=${reason} sell failed after ` +
+          `${liveSellRetryMaxAttempts()} attempts — OPEN 유지`
+        ).catch(() => {});
+      }
+      return;
     }
-    return;
   }
   void liveReceivedSol;
 
@@ -10929,7 +10964,7 @@ async function closeLivePosition(
   let dbCloseSucceeded = false;
   try {
     if (pos.dbTradeId && sellCompleted) {
-      await ctx.tradeStore.closeTrade({
+      const closeUpdated = await ctx.tradeStore.closeTrade({
         id: pos.dbTradeId,
         exitPrice: actualExitPrice,
         pnl,
@@ -10938,7 +10973,7 @@ async function closeLivePosition(
         exitSlippageBps: Math.round(executionSlippage * 10_000),
         decisionPrice: exitPrice,
       });
-      dbCloseSucceeded = true;
+      dbCloseSucceeded = closeUpdated !== false;
     }
   } catch (err) {
     log.warn(`[KOL_HUNTER_LIVE_CLOSE_PERSIST] ${pos.positionId}: ${err}`);
@@ -10965,6 +11000,7 @@ async function closeLivePosition(
   //   - 현재: 구조화된 Trade 객체 → notifier.sendTradeClose 가 OPEN 알림과 동일 톤 출력
   // dbCloseSucceeded 시에만 sendTradeClose. DB 미기록은 sendCritical 로 분리 (별도 reconcile 경로).
   // P0-B fix: fire-and-forget 유지 (Telegram 429 close path blocking 차단).
+  const isLedgerOnlyLiveTailClose = pos.isLive === true && pos.isTailPosition === true && !pos.dbTradeId;
   if (dbCloseSucceeded && pos.dbTradeId) {
     const closedTrade: Trade = {
       id: pos.dbTradeId,
@@ -11002,6 +11038,12 @@ async function closeLivePosition(
     };
     void ctx.notifier.sendTradeClose(closedTrade)
       .catch((err) => log.warn(`[KOL_HUNTER_LIVE_NOTIFY_CLOSE_FAIL] ${pos.positionId} ${err}`));
+  } else if (isLedgerOnlyLiveTailClose) {
+    log.info(
+      `[KOL_HUNTER_LIVE_TAIL_LEDGER_ONLY_CLOSED] ${pos.positionId} ` +
+      `reason=${effectiveReason} pnl=${pnl >= 0 ? '+' : ''}${pnl.toFixed(6)} SOL ` +
+      `hold=${liveHoldSec}s — DB row intentionally absent for retained tail`
+    );
   } else {
     // DB 미기록 경로 — operator 가 manual reconcile 필요. 별도 critical 로 분리.
     void ctx.notifier.sendCritical(
@@ -11275,7 +11317,7 @@ export async function recoverKolHunterOpenPositions(ctx: BotContext): Promise<nu
             exitReason: 'ORPHAN_NO_BALANCE',
             exitSlippageBps: undefined,
             decisionPrice: trade.entryPrice,
-          }).then(() => true).catch((err) => {
+          }).then((updated) => updated !== false).catch((err) => {
             log.error(`[KOL_HUNTER_RECOVERY_ORPHAN] DB close failed for ${trade.id}: ${err}`);
             return false;
           });
@@ -11299,7 +11341,7 @@ export async function recoverKolHunterOpenPositions(ctx: BotContext): Promise<nu
             exitReason: 'ORPHAN_DUST_BALANCE',
             exitSlippageBps: undefined,
             decisionPrice: trade.entryPrice,
-          }).then(() => true).catch((err) => {
+          }).then((updated) => updated !== false).catch((err) => {
             log.error(`[KOL_HUNTER_RECOVERY_DUST] DB close failed for ${trade.id}: ${err}`);
             return false;
           });
@@ -11465,9 +11507,11 @@ export function __testSetKolLiveSellRetryDelaysMs(delays?: readonly number[]): v
   if (delays == null) {
     setLiveSellRetryDelaysMsForTests();
     setLiveSellInitialBalanceRetryDelaysMsForTests();
+    setLiveSellZeroBalanceConfirmDelaysMsForTests();
     return;
   }
   setLiveSellInitialBalanceRetryDelaysMsForTests(delays);
+  setLiveSellZeroBalanceConfirmDelaysMsForTests(delays);
   setLiveSellRetryDelaysMsForTests(delays, 'normal');
   setLiveSellRetryDelaysMsForTests(delays, 'hard_cut');
   setLiveSellRetryDelaysMsForTests(delays, 'structural');

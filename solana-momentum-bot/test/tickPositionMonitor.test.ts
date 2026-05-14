@@ -58,6 +58,19 @@ describe('checkTickLevelExit', () => {
     expect(ctx.tradeStore.updateHighWaterMark).not.toHaveBeenCalled();
   });
 
+  it('should ignore KOL hunter rows because the lane owns its live exits', async () => {
+    const kolTrade = makeTrade({
+      strategy: 'kol_hunter',
+      stopLoss: 1.5,
+    });
+    const ctx = makeCtx([kolTrade]);
+
+    await checkTickLevelExit('PAIR_A', 1.0, ctx);
+
+    expect(ctx.tradeStore.getOpenTrades).toHaveBeenCalledTimes(1);
+    expect(ctx.tradeStore.updateHighWaterMark).not.toHaveBeenCalled();
+  });
+
   it('should skip when execution lock is held', async () => {
     const trade = makeTrade();
     const ctx = makeCtx([trade]);

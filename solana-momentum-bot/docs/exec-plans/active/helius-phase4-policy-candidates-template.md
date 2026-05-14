@@ -87,7 +87,7 @@ ALL must be true:
 
 ### §4.1 trigger
 - `mode='live'` 의 `kol-live-trades.jsonl` 누적 close ≥ 200
-- 동시에 사명 §3 의 0.7 SOL wallet floor 유지
+- 동시에 사명 §3 의 0.6 SOL wallet floor 유지
 
 ### §4.2 채택 시
 - `scripts/kol-wallet-style-backfill.ts` 의 diff report 가 7-day 마다 자동 생성

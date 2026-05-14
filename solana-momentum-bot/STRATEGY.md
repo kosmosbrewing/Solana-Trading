@@ -449,7 +449,7 @@ env overrides: PUREWS_GATE_* / PUREWS_LANE_TICKET_SOL / PUREWS_MAX_CONCURRENT / 
 
 ### Shared Guardrails (Block 1/2 공유, 불변)
 
-- Wallet Stop Guard `< 0.7 SOL` halt
+- Wallet Stop Guard `< 0.6 SOL` halt
 - Wallet delta comparator halt (Block 1)
 - `entryIntegrity('pure_ws_breakout')` halt
 - Close mutex (`swapSerializer`)
@@ -523,7 +523,7 @@ Close   Sell-side impact
 |---|---|
 | Ticket | `0.01 SOL` fixed |
 | Max concurrent | `3` ticket (canary) |
-| Wallet Stop Guard | `< 0.7 SOL` lane halt |
+| Wallet Stop Guard | `< 0.6 SOL` lane halt |
 | RPC fail-safe | 연속 RPC 실패 시 lane halt |
 | Per-trade loss floor | lane 별 설계 시 확정 |
 

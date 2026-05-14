@@ -69,6 +69,15 @@ interface SmartV3CohortStats {
   copyablePassRows: number;
   hardCutRows: number;
   maeFastFailRows: number;
+  stagedMae5Rows: number;
+  stagedMae15Rows: number;
+  stagedMaeAnyRows: number;
+  stagedMaeTailRiskRows: number;
+  tokenOnlyWinnerWalletLoserRows: number;
+  mfe5WalletLoserRows: number;
+  mfe12WalletLoserRows: number;
+  mae5Within15Rows: number;
+  mae10BeforeT1Rows: number;
   maeRecoveryHoldRows: number;
   mfeStageProbeRows: number;
   mfeStageBreakevenRows: number;
@@ -240,6 +249,12 @@ function firstNum(row: JsonRow, keys: string[]): number | null {
     if (value != null) return value;
   }
   return null;
+}
+
+function firstNumWithExtras(row: JsonRow, keys: string[]): number | null {
+  const direct = firstNum(row, keys);
+  if (direct != null) return direct;
+  return firstNum(extrasOf(row), keys);
 }
 
 function timeMs(value: unknown): number {
@@ -435,8 +450,9 @@ function tokenOnlyIsWin(row: JsonRow): boolean {
   return tradeNetSolTokenOnly(row) > 0;
 }
 
-function hasField(row: JsonRow, keys: string[]): boolean {
-  return keys.some((key) => row[key] != null && row[key] !== '');
+function hasFieldWithExtras(row: JsonRow, keys: string[]): boolean {
+  const extras = extrasOf(row);
+  return keys.some((key) => (row[key] != null && row[key] !== '') || (extras[key] != null && extras[key] !== ''));
 }
 
 function maxMfe(row: JsonRow): number {
@@ -461,6 +477,42 @@ function isSmartV3MaeFastFail(row: JsonRow): boolean {
 function isSmartV3MaeRecoveryHold(row: JsonRow): boolean {
   const extras = extrasOf(row);
   return row.smartV3MaeRecoveryHold === true || extras.smartV3MaeRecoveryHold === true;
+}
+
+function maeAt5sPctOf(row: JsonRow): number | null {
+  return normalizeReturnFraction(firstNumWithExtras(row, ['maeAt5s', 'smartV3MaeAt5s']));
+}
+
+function maeAt15sPctOf(row: JsonRow): number | null {
+  return normalizeReturnFraction(firstNumWithExtras(row, ['maeAt15s', 'smartV3MaeAt15s']));
+}
+
+function wouldSmartV3StagedMae5(row: JsonRow): boolean {
+  const maeAt5s = maeAt5sPctOf(row);
+  return maeAt5s != null && maeAt5s <= -0.04 && maxMfe(row) < 0.015;
+}
+
+function wouldSmartV3StagedMae15(row: JsonRow): boolean {
+  const maeAt15s = maeAt15sPctOf(row);
+  return maeAt15s != null && maeAt15s <= -0.05 && maxMfe(row) < 0.03;
+}
+
+function wouldSmartV3StagedMaeAny(row: JsonRow): boolean {
+  const maeWorst = maeWorstPctOf(row);
+  return maeWorst != null && maeWorst <= -0.10 && maxMfe(row) < 0.05;
+}
+
+function hasSmartV3StagedMaePressure(row: JsonRow): boolean {
+  const maeAt5s = maeAt5sPctOf(row);
+  const maeAt15s = maeAt15sPctOf(row);
+  const maeWorst = maeWorstPctOf(row);
+  return (maeAt5s != null && maeAt5s <= -0.04) ||
+    (maeAt15s != null && maeAt15s <= -0.05) ||
+    (maeWorst != null && maeWorst <= -0.10);
+}
+
+function isSmartV3TailCandidate(row: JsonRow): boolean {
+  return maxMfe(row) >= 0.20 || hasFieldWithExtras(row, ['t1VisitAtSec', 't1VisitedAt', 't1ReachedAt']);
 }
 
 function smartV3PreT1MfeBand(row: JsonRow): string | null {
@@ -517,6 +569,7 @@ function summarizeTradeCohort(
   const holds = rows.map(tradeHoldSec).filter((value): value is number => value != null);
   const copyableEdges = rows.map(smartV3CopyableEdgeOf).filter((edge): edge is JsonRow => edge != null);
   const copyableNetSol = copyableNetByRow.reduce((sum, value) => sum + value, 0);
+  const rowsWithCopyableNet = rows.map((row, index) => ({ row, copyableNetSol: copyableNetByRow[index] }));
   const maeWorstValues = rows.map(maeWorstPctOf).filter((value): value is number => value != null);
   const hardCutMaeValues = rows
     .filter(isHardCut)
@@ -539,6 +592,28 @@ function summarizeTradeCohort(
     copyablePassRows: copyableEdges.filter((edge) => edge.pass === true).length,
     hardCutRows: rows.filter(isHardCut).length,
     maeFastFailRows: rows.filter(isSmartV3MaeFastFail).length,
+    stagedMae5Rows: rows.filter(wouldSmartV3StagedMae5).length,
+    stagedMae15Rows: rows.filter(wouldSmartV3StagedMae15).length,
+    stagedMaeAnyRows: rows.filter(wouldSmartV3StagedMaeAny).length,
+    stagedMaeTailRiskRows: rows.filter((row) => hasSmartV3StagedMaePressure(row) && isSmartV3TailCandidate(row)).length,
+    tokenOnlyWinnerWalletLoserRows: rowsWithCopyableNet
+      .filter(({ row, copyableNetSol: rowCopyableNetSol }) => tokenOnlyIsWin(row) && rowCopyableNetSol <= 0)
+      .length,
+    mfe5WalletLoserRows: rowsWithCopyableNet
+      .filter(({ row, copyableNetSol: rowCopyableNetSol }) => maxMfe(row) >= 0.05 && rowCopyableNetSol <= 0)
+      .length,
+    mfe12WalletLoserRows: rowsWithCopyableNet
+      .filter(({ row, copyableNetSol: rowCopyableNetSol }) => maxMfe(row) >= 0.12 && rowCopyableNetSol <= 0)
+      .length,
+    mae5Within15Rows: rows.filter((row) => {
+      const maeAt5s = maeAt5sPctOf(row);
+      const maeAt15s = maeAt15sPctOf(row);
+      return (maeAt5s != null && maeAt5s <= -0.05) || (maeAt15s != null && maeAt15s <= -0.05);
+    }).length,
+    mae10BeforeT1Rows: rows.filter((row) => {
+      const maeWorst = maeWorstPctOf(row);
+      return maeWorst != null && maeWorst <= -0.10 && !hasFieldWithExtras(row, ['t1VisitAtSec', 't1VisitedAt', 't1ReachedAt']);
+    }).length,
     maeRecoveryHoldRows: rows.filter(isSmartV3MaeRecoveryHold).length,
     mfeStageProbeRows: rows.filter((row) => smartV3MfeStageOf(row) === 'probe').length,
     mfeStageBreakevenRows: rows.filter((row) => smartV3MfeStageOf(row) === 'breakeven_watch').length,
@@ -551,9 +626,9 @@ function summarizeTradeCohort(
     preT1Mfe30_50Rows: rows.filter((row) => smartV3PreT1MfeBand(row) === '30_50').length,
     medianMaeWorstPct: median(maeWorstValues),
     medianHardCutMaePct: median(hardCutMaeValues),
-    t1Rows: rows.filter((row) => hasField(row, ['t1VisitAtSec', 't1VisitedAt', 't1ReachedAt'])).length,
-    t2Rows: rows.filter((row) => hasField(row, ['t2VisitAtSec', 't2VisitedAt', 't2ReachedAt'])).length,
-    t3Rows: rows.filter((row) => hasField(row, ['t3VisitAtSec', 't3VisitedAt', 't3ReachedAt'])).length,
+    t1Rows: rows.filter((row) => hasFieldWithExtras(row, ['t1VisitAtSec', 't1VisitedAt', 't1ReachedAt'])).length,
+    t2Rows: rows.filter((row) => hasFieldWithExtras(row, ['t2VisitAtSec', 't2VisitedAt', 't2ReachedAt'])).length,
+    t3Rows: rows.filter((row) => hasFieldWithExtras(row, ['t3VisitAtSec', 't3VisitedAt', 't3ReachedAt'])).length,
     fiveXRows: rows.filter((row) => maxMfe(row) >= 4).length,
     medianHoldSec: median(holds),
     topExitReasons: countTop(rows, (row) => str(row.exitReason) || str(row.closeReason)),
@@ -1008,8 +1083,8 @@ export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceRepor
     lines.push(`- live block flags: ${report.tradeRows.paperLiveBlockFlags.map((entry) => `${entry.reason}:${entry.count}`).join(', ')}`);
   }
   lines.push('');
-  lines.push('| cohort | rows | copyable W/L | token W/L | netSOL | tokenOnly | rent-adj | edgeRows | hardCut | maeFastFail | recoveryHold | floorExit | stage>=20 | stage>=50 | stage>=100 | preT1 10-20 | preT1 20-30 | preT1 30-50 | med worst MAE | med hardCut MAE | T1 | T2 | T3 | 5x | medHold | top exits |');
-  lines.push('|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|');
+  lines.push('| cohort | rows | copyable W/L | token W/L | netSOL | tokenOnly | rent-adj | edgeRows | hardCut | maeFastFail | stagedFF5 | stagedFF15 | stagedFFAny | stagedTailRisk | tokenWinWalletLose | MFE>=5 walletLose | MFE>=12 walletLose | MAE<=-5 within15 | MAE<=-10 preT1 | recoveryHold | floorExit | stage>=20 | stage>=50 | stage>=100 | preT1 10-20 | preT1 20-30 | preT1 30-50 | med worst MAE | med hardCut MAE | T1 | T2 | T3 | 5x | medHold | top exits |');
+  lines.push('|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|');
   for (const cohort of report.tradeRows.byCohort) {
     lines.push([
       `| ${cohort.cohort}`,
@@ -1022,6 +1097,15 @@ export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceRepor
       `${cohort.copyablePassRows}/${cohort.copyableEdgeRows}`,
       cohort.hardCutRows,
       cohort.maeFastFailRows,
+      cohort.stagedMae5Rows,
+      cohort.stagedMae15Rows,
+      cohort.stagedMaeAnyRows,
+      cohort.stagedMaeTailRiskRows,
+      cohort.tokenOnlyWinnerWalletLoserRows,
+      cohort.mfe5WalletLoserRows,
+      cohort.mfe12WalletLoserRows,
+      cohort.mae5Within15Rows,
+      cohort.mae10BeforeT1Rows,
       cohort.maeRecoveryHoldRows,
       cohort.profitFloorExitRows,
       cohort.mfeStageProfitLockRows + cohort.mfeStageRunnerRows + cohort.mfeStageConvexityRows,
@@ -1040,7 +1124,7 @@ export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceRepor
       cohort.topExitReasons.map((entry) => `${entry.reason}:${entry.count}`).join(', ') || 'n/a',
     ].join(' | ') + ' |');
   }
-  if (report.tradeRows.byCohort.length === 0) lines.push('| n/a | 0 | 0/0 | 0/0 | +0.0000 | +0.0000 | +0.0000 | 0/0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | n/a | n/a | 0 | 0 | 0 | 0 | n/a | n/a |');
+  if (report.tradeRows.byCohort.length === 0) lines.push('| n/a | 0 | 0/0 | 0/0 | +0.0000 | +0.0000 | +0.0000 | 0/0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | n/a | n/a | 0 | 0 | 0 | 0 | n/a | n/a |');
   lines.push('');
 
   lines.push('## T+ After Buy');

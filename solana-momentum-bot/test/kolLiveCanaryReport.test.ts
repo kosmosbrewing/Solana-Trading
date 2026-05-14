@@ -936,6 +936,7 @@ describe('kol-live-canary-report', () => {
     expect(report.phase4Gate.verdict).toBe('CONTINUE_SAMPLE');
     expect(report.phase4Gate.hasActualRunner).toBe(false);
     expect(report.phase4Gate.reasons).toContain('49/50 closed live trades sampled');
+    expect(report.phase4Gate.decisionCheckpoints.find((row) => row.closeCount === 50)?.status).toBe('pending');
   });
 
   it('pauses Phase 4 review after 50 losing live trades without an actual runner', () => {
@@ -959,9 +960,11 @@ describe('kol-live-canary-report', () => {
     expect(report.actualFiveXVisits).toBe(0);
     expect(report.phase4Gate.verdict).toBe('PAUSE_REVIEW');
     expect(report.phase4Gate.reasons).toContain('no actual live T2/5x runner observed');
+    expect(report.phase4Gate.decisionCheckpoints.find((row) => row.closeCount === 50)?.allowedDecision)
+      .toContain('no promotion');
   });
 
-  it('marks Phase 5 ready only when 50 live trades include actual runner evidence and positive net', () => {
+  it('holds Phase 4 review at 50 live trades even with runner evidence and positive net', () => {
     const rows = Array.from({ length: 50 }, (_, i) =>
       liveRoundTrip(i + 1, {}, i === 0
         ? {
@@ -987,12 +990,44 @@ describe('kol-live-canary-report', () => {
     expect(report.netSol).toBeCloseTo(0.02, 6);
     expect(report.actualT2Visits).toBe(1);
     expect(report.actualFiveXVisits).toBe(1);
+    expect(report.phase4Gate.verdict).toBe('HOLD_REVIEW');
+    expect(report.phase4Gate.reasons).toContain('promotion review requires 100+ closes; 50 closes is safety-only');
+    expect(report.phase4Gate.decisionCheckpoints.find((row) => row.closeCount === 100)?.status).toBe('pending');
+  });
+
+  it('marks Phase 5 ready only when 100 live trades include actual runner evidence and positive net', () => {
+    const rows = Array.from({ length: 100 }, (_, i) =>
+      liveRoundTrip(i + 1, {}, i === 0
+        ? {
+            walletDeltaSol: 0.02,
+            exitReason: 'winner_trailing_t2',
+            mfePctPeak: 4,
+            peakPrice: 0.005,
+            t2VisitAtSec: 240,
+          }
+        : {
+            walletDeltaSol: 0,
+            mfePctPeak: 0.1,
+            peakPrice: 0.0011,
+          })
+    );
+
+    const report = buildKolLiveCanaryReport(
+      rows.map((row) => row.buy),
+      rows.map((row) => row.sell)
+    );
+
+    expect(report.closedTrades).toBe(100);
+    expect(report.netSol).toBeCloseTo(0.02, 6);
+    expect(report.actualT2Visits).toBe(1);
+    expect(report.actualFiveXVisits).toBe(1);
     expect(report.phase4Gate.verdict).toBe('PHASE5_READY');
     expect(report.phase4Gate.dataQualityClear).toBe(true);
     expect(report.phase4Gate.guardCalibrationClear).toBe(true);
     expect(report.phase4Gate.executionQualityCooldownPaperFallbacks).toBe(0);
     expect(report.phase4Gate.executionQualityCooldownT2Visits).toBe(0);
     expect(report.phase4Gate.executionQualityCooldownFiveXVisits).toBe(0);
+    expect(report.phase4Gate.decisionCheckpoints.find((row) => row.closeCount === 100)?.status).toBe('reached');
   });
 
   it('holds Phase 4 review when execution-quality cooldown blocked a runner candidate', () => {

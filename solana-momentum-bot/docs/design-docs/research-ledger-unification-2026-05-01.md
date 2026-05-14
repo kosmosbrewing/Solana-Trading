@@ -300,7 +300,7 @@ interface KolCallFunnelV1 {
 
 ## §11. Mission §3 정합
 
-- **0.7 SOL wallet floor**: live `walletDeltaSol` cumulative + survival 보호 (gate reject 가 funnel 에 기록되어 보호 효과 측정 가능).
+- **0.6 SOL wallet floor**: live `walletDeltaSol` cumulative + survival 보호 (gate reject 가 funnel 에 기록되어 보호 효과 측정 가능).
 - **200 trade gate**: `mode='live'` 의 `position_close` 누적 200 도달 시 Phase 4 report 의 DSR Prob>0 / fat tail (γ4) / fold k(5x rate) 자동 산출 → Stage 4 promote 결정 input.
 - **5x+ winner**: `actual5xPeak=true` 의 `exitReason` × `netPct` 분포 → mission §3 의 "5x bucket alive" 정의 정합.
 

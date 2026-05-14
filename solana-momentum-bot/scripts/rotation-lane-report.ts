@@ -89,6 +89,12 @@ interface PaperArmStats {
   medianEdgeWalletDragRatio: number | null;
   medianRequiredGrossMovePct: number | null;
   hardCutRows: number;
+  t1Rows: number;
+  tokenOnlyWinnerRefundLoserRows: number;
+  mfe5RefundLoserRows: number;
+  mfe12RefundLoserRows: number;
+  mae5Within15Rows: number;
+  mae10BeforeT1Rows: number;
   medianMaeWorstPct: number | null;
   medianHardCutMaePct: number | null;
   medianHoldSec: number | null;
@@ -570,8 +576,38 @@ function rowMaeWorstPct(row: JsonRow): number | null {
   return normalizeReturnFraction(num(row.maeWorstPct) ?? num(row.maePctTokenOnly) ?? num(row.maePct));
 }
 
+function rowNumWithExtras(row: JsonRow, keys: string[]): number | null {
+  const extras = obj(row.extras);
+  for (const key of keys) {
+    const direct = num(row[key]);
+    if (direct != null) return direct;
+    const extra = num(extras[key]);
+    if (extra != null) return extra;
+  }
+  return null;
+}
+
+function rowMaeAt5sPct(row: JsonRow): number | null {
+  return normalizeReturnFraction(rowNumWithExtras(row, ['maeAt5s', 'rotationMaeAt5s']));
+}
+
+function rowMaeAt15sPct(row: JsonRow): number | null {
+  return normalizeReturnFraction(rowNumWithExtras(row, ['maeAt15s', 'rotationMaeAt15s']));
+}
+
 function rowMfePct(row: JsonRow): number | null {
   return normalizeReturnFraction(num(row.mfePctPeak) ?? num(row.mfePctTokenOnly) ?? num(row.mfePct));
+}
+
+function rowHasT1(row: JsonRow): boolean {
+  const extras = obj(row.extras);
+  return row.t1VisitAtSec != null ||
+    row.t1VisitedAt != null ||
+    row.t1ReachedAt != null ||
+    extras.t1VisitAtSec != null ||
+    extras.t1VisitedAt != null ||
+    extras.t1ReachedAt != null ||
+    str(row.exitReason) === 'winner_trailing_t1';
 }
 
 function rowHardCutMaePct(row: JsonRow): number | null {
@@ -699,6 +735,11 @@ function buildPaperArmStats(
         .filter((value): value is number => value != null && Number.isFinite(value));
       const netSol = netSolValues.reduce((sum, value) => sum + value, 0);
       const netSolTokenOnly = tokenOnlyValues.reduce((sum, value) => sum + value, 0);
+      const rowMetrics = scoped.map((row, index) => ({
+        row,
+        tokenOnlyNetSol: tokenOnlyValues[index],
+        refundAdjustedNetSol: tokenOnlyValues[index] - assumedNetworkFeeSol,
+      }));
       const maeWorstValues = scoped.map(rowMaeWorstPct).filter((value): value is number => value != null);
       const hardCutRows = scoped.filter(isHardCutTrade);
       const hardCutMaeValues = hardCutRows.map(rowHardCutMaePct).filter((value): value is number => value != null);
@@ -722,6 +763,25 @@ function buildPaperArmStats(
         medianEdgeWalletDragRatio: percentile(edgeWalletDragRatios, 0.5),
         medianRequiredGrossMovePct: percentile(edgeRequiredMoves, 0.5),
         hardCutRows: hardCutRows.length,
+        t1Rows: scoped.filter(rowHasT1).length,
+        tokenOnlyWinnerRefundLoserRows: rowMetrics
+          .filter(({ tokenOnlyNetSol, refundAdjustedNetSol }) => tokenOnlyNetSol > 0 && refundAdjustedNetSol <= 0)
+          .length,
+        mfe5RefundLoserRows: rowMetrics
+          .filter(({ row, refundAdjustedNetSol }) => (rowMfePct(row) ?? 0) >= 0.05 && refundAdjustedNetSol <= 0)
+          .length,
+        mfe12RefundLoserRows: rowMetrics
+          .filter(({ row, refundAdjustedNetSol }) => (rowMfePct(row) ?? 0) >= 0.12 && refundAdjustedNetSol <= 0)
+          .length,
+        mae5Within15Rows: scoped.filter((row) => {
+          const maeAt5s = rowMaeAt5sPct(row);
+          const maeAt15s = rowMaeAt15sPct(row);
+          return (maeAt5s != null && maeAt5s <= -0.05) || (maeAt15s != null && maeAt15s <= -0.05);
+        }).length,
+        mae10BeforeT1Rows: scoped.filter((row) => {
+          const maeWorst = rowMaeWorstPct(row);
+          return maeWorst != null && maeWorst <= -0.10 && !rowHasT1(row);
+        }).length,
         medianMaeWorstPct: percentile(maeWorstValues, 0.5),
         medianHardCutMaePct: percentile(hardCutMaeValues, 0.5),
         medianHoldSec: percentile(holdSec, 0.5),
@@ -1193,14 +1253,16 @@ function renderStatsTable(rows: HorizonStats[]): string {
 function renderPaperArmTable(rows: PaperArmStats[]): string {
   if (rows.length === 0) return '_No rotation paper trade rows._';
   return [
-    '| arm | closes | W/L | net SOL | token-only SOL | refund-adjusted SOL | wallet-drag stress SOL | edge pass/fail | median cost ratio | wallet drag ratio | required gross move | hardCut | med worst MAE | med hardCut MAE | median hold | top exits |',
-    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|',
+    '| arm | closes | W/L | net SOL | token-only SOL | refund-adjusted SOL | wallet-drag stress SOL | edge pass/fail | median cost ratio | wallet drag ratio | required gross move | T1 hit | hardCut | tokenWinRefundLose | MFE>=5 refundLose | MFE>=12 refundLose | MAE<=-5 within15 | MAE<=-10 preT1 | med worst MAE | med hardCut MAE | median hold | top exits |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|',
     ...rows.map((row) =>
       `| ${row.armName} | ${row.rows} | ${row.wins}/${row.losses} | ${formatSol(row.netSol)} | ` +
       `${formatSol(row.netSolTokenOnly)} | ${formatSol(row.refundAdjustedNetSol)} | ${formatSol(row.rentAdjustedNetSol)} | ` +
       `${row.edgePassRows}/${row.edgeFailRows}${row.edgeRows === 0 ? ' (n/a)' : ''} | ` +
       `${formatPct(row.medianEdgeCostRatio)} | ${formatPct(row.medianEdgeWalletDragRatio)} | ${formatPct(row.medianRequiredGrossMovePct)} | ` +
-      `${row.hardCutRows} | ${formatPct(row.medianMaeWorstPct)} | ${formatPct(row.medianHardCutMaePct)} | ` +
+      `${row.t1Rows}/${row.rows} | ${row.hardCutRows} | ${row.tokenOnlyWinnerRefundLoserRows} | ` +
+      `${row.mfe5RefundLoserRows} | ${row.mfe12RefundLoserRows} | ${row.mae5Within15Rows} | ${row.mae10BeforeT1Rows} | ` +
+      `${formatPct(row.medianMaeWorstPct)} | ${formatPct(row.medianHardCutMaePct)} | ` +
       `${row.medianHoldSec == null ? 'n/a' : `${row.medianHoldSec.toFixed(0)}s`} | ` +
       `${row.topExitReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'} |`
     ),

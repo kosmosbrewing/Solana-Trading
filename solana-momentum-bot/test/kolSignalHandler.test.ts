@@ -337,6 +337,16 @@ jest.mock('../src/utils/config', () => ({
     kolHunterRotationUnderfillDoaMinMfePct: 0.015,
     kolHunterRotationUnderfillDoaMaxMaePct: 0.02,
     kolHunterRotationUnderfillParameterVersion: 'rotation-underfill-v1.0.0',
+    kolHunterRotationUnderfillCostAwarePaperEnabled: false,
+    kolHunterRotationUnderfillCostAwareT1MinMfe: 0.12,
+    kolHunterRotationUnderfillCostAwareT1BufferPct: 0.03,
+    kolHunterRotationUnderfillCostAwareT1MaxMfe: 0.18,
+    kolHunterRotationUnderfillCostAwareT1TrailPct: 0.045,
+    kolHunterRotationUnderfillCostAwareProfitFloorMult: 1.10,
+    kolHunterRotationUnderfillCostAwareProfitFloorBufferPct: 0.02,
+    kolHunterRotationUnderfillCostAwareProbeTimeoutSec: 30,
+    kolHunterRotationUnderfillCostAwareHardCutPct: 0.04,
+    kolHunterRotationUnderfillCostAwareParameterVersion: 'rotation-underfill-cost-aware-exit-v2.0.0',
     kolHunterRotationPaperAssumedAtaRentSol: 0.00207408,
     kolHunterRotationPaperAssumedNetworkFeeSol: 0.000105,
     kolHunterRotationLiveKolDecayEnabled: true,
@@ -451,7 +461,7 @@ jest.mock('../src/utils/config', () => ({
     kolHunterLiveMinIndependentKol: 2,
     kolHunterYellowZoneEnabled: true,
     kolHunterYellowZoneStartSol: 0.85,
-    kolHunterYellowZonePaperFallbackBelowSol: 0.70,
+    kolHunterYellowZonePaperFallbackBelowSol: 0.60,
     kolHunterYellowZoneMinIndependentKol: 2,
     kolHunterYellowZoneMaxRecentJupiter429: 20,
     kolHunterLiveExecutionQualityCooldownEnabled: true,
@@ -656,6 +666,13 @@ describe('kolSignalHandler — state machine', () => {
     mockedConfig.kolHunterRotationMaeFastFailMinElapsedSec = 3;
     mockedConfig.kolHunterRotationMaeFastFailMaxMaePct = 0.02;
     mockedConfig.kolHunterRotationMaeFastFailMaxMfePct = 0.015;
+    mockedConfig.kolHunterRotationEdgeShadowEnabled = true;
+    mockedConfig.kolHunterRotationEdgeMaxCostRatio = 0.06;
+    mockedConfig.kolHunterRotationEdgeAssumedAtaRentSol = 0.00207408;
+    mockedConfig.kolHunterRotationEdgePriorityFeeSol = 0.0001;
+    mockedConfig.kolHunterRotationEdgeTipSol = 0;
+    mockedConfig.kolHunterRotationEdgeEntrySlippageBps = 50;
+    mockedConfig.kolHunterRotationEdgeQuickExitSlippageBps = 75;
     mockedConfig.kolHunterRotationUnderfillPaperEnabled = true;
     mockedConfig.kolHunterRotationUnderfillLiveCanaryEnabled = false;
     mockedConfig.kolHunterRotationUnderfillLiveExitFlowEnabled = true;
@@ -673,6 +690,16 @@ describe('kolSignalHandler — state machine', () => {
     mockedConfig.kolHunterRotationUnderfillDoaMinMfePct = 0.015;
     mockedConfig.kolHunterRotationUnderfillDoaMaxMaePct = 0.02;
     mockedConfig.kolHunterRotationUnderfillParameterVersion = 'rotation-underfill-v1.0.0';
+    mockedConfig.kolHunterRotationUnderfillCostAwarePaperEnabled = false;
+    mockedConfig.kolHunterRotationUnderfillCostAwareT1MinMfe = 0.12;
+    mockedConfig.kolHunterRotationUnderfillCostAwareT1BufferPct = 0.03;
+    mockedConfig.kolHunterRotationUnderfillCostAwareT1MaxMfe = 0.18;
+    mockedConfig.kolHunterRotationUnderfillCostAwareT1TrailPct = 0.045;
+    mockedConfig.kolHunterRotationUnderfillCostAwareProfitFloorMult = 1.10;
+    mockedConfig.kolHunterRotationUnderfillCostAwareProfitFloorBufferPct = 0.02;
+    mockedConfig.kolHunterRotationUnderfillCostAwareProbeTimeoutSec = 30;
+    mockedConfig.kolHunterRotationUnderfillCostAwareHardCutPct = 0.04;
+    mockedConfig.kolHunterRotationUnderfillCostAwareParameterVersion = 'rotation-underfill-cost-aware-exit-v2.0.0';
     mockedConfig.kolHunterRotationPaperAssumedAtaRentSol = 0.00207408;
     mockedConfig.kolHunterRotationPaperAssumedNetworkFeeSol = 0.000105;
     mockedConfig.kolHunterRotationLiveKolDecayEnabled = true;
@@ -1779,6 +1806,61 @@ describe('kolSignalHandler — state machine', () => {
       stubFeed.emitTick(MINT_ROTATION, 0.00090);
       await flushAsync();
       expect(__testGetActive().some((p) => p.armName === 'rotation_exit_kol_flow_v1')).toBe(false);
+    });
+
+    it('rotation-underfill: 비용 인식 exit shadow arm 은 T1/floor 를 edge 비용 이상으로 올린다', async () => {
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterRotationPaperArmsEnabled = true;
+      mockedConfig.kolHunterRotationUnderfillCostAwarePaperEnabled = true;
+      mockedConfig.kolHunterSmartV3VelocityScoreThreshold = 99;
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+
+      const positions = __testGetActive();
+      expect(positions.map((p) => p.armName).sort()).toEqual([
+        'rotation_exit_kol_flow_v1',
+        'rotation_underfill_cost_aware_exit_v2',
+        'rotation_underfill_v1',
+      ]);
+      const costAware = positions.find((p) => p.armName === 'rotation_underfill_cost_aware_exit_v2')!;
+      expect(costAware).toBeDefined();
+      expect(costAware.isShadowArm).toBe(true);
+      expect(costAware.profileArm).toBe('rotation_underfill_cost_aware_exit_v2');
+      expect(costAware.entryArm).toBe('rotation_underfill_v1');
+      expect(costAware.exitArm).toBe('rotation_underfill_cost_aware_exit_v2');
+      expect(costAware.rotationFlowExitEnabled).toBe(true);
+      expect(costAware.t1MfeOverride).toBe(0.12);
+      expect(costAware.t1TrailPctOverride).toBe(0.045);
+      expect(costAware.t1ProfitFloorMult).toBe(1.10);
+      expect(costAware.probeFlatTimeoutSec).toBe(30);
+      expect(costAware.probeHardCutPctOverride).toBe(0.04);
+      expect(costAware.survivalFlags).toContain('ROTATION_COST_AWARE_EXIT_V2');
+      expect(costAware.survivalFlags.some((flag) => flag.startsWith('ROTATION_COST_AWARE_REQUIRED_GROSS_')))
+        .toBe(true);
+    });
+
+    it('rotation-underfill: 비용 인식 floor 는 T1 위로 올라가 즉시 self-trigger 되지 않는다', async () => {
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterRotationPaperArmsEnabled = true;
+      mockedConfig.kolHunterRotationUnderfillCostAwarePaperEnabled = true;
+      mockedConfig.kolHunterRotationEdgePriorityFeeSol = 0.002;
+      mockedConfig.kolHunterSmartV3VelocityScoreThreshold = 99;
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+
+      const costAware = __testGetActive()
+        .find((p) => p.armName === 'rotation_underfill_cost_aware_exit_v2')!;
+      expect(costAware).toBeDefined();
+      expect(costAware.t1MfeOverride).toBe(0.18);
+      expect(costAware.t1ProfitFloorMult).toBeCloseTo(1.18);
+      expect(costAware.t1ProfitFloorMult).toBeLessThanOrEqual(1 + (costAware.t1MfeOverride ?? 0));
+      expect(costAware.survivalFlags).toContain('ROTATION_COST_AWARE_FLOOR_CAPPED_TO_T1');
     });
 
     it('rotation-chase-topup: S/A KOL top-up 이 더 높은 fill price 로 붙으면 paper-only 진입한다', async () => {
@@ -4619,10 +4701,10 @@ describe('kolSignalHandler — state machine', () => {
       expect(live?.armName).toBe('kol_hunter_smart_v3');
     });
 
-    it('yellow-zone: wallet 0.70 미만이면 live 대신 paper fallback', async () => {
+    it('yellow-zone: wallet 0.60 미만이면 live 대신 paper fallback', async () => {
       const { ctx, executeBuy } = buildLiveCtx();
       const { setWalletStopGuardStateForTests } = require('../src/risk/walletStopGuard');
-      setWalletStopGuardStateForTests(false, 'yellow-zone-test', 0.69);
+      setWalletStopGuardStateForTests(false, 'yellow-zone-test', 0.59);
       __testInit({ priceFeed: stubFeed as unknown as never, ctx });
       mockedConfig.kolHunterPaperOnly = false;
       mockedConfig.kolHunterLiveCanaryEnabled = true;

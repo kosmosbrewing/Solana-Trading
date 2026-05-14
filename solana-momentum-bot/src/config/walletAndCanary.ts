@@ -1,6 +1,6 @@
 // Real Asset Guard 의 운영 layer — wallet floor + canary auto-halt + delta drift comparator.
 // REFACTORING_v1.0 §2.1 hard constraint:
-//   wallet floor=0.7 SOL · default canary cap=-0.3 SOL · KOL cap=-0.2 SOL ·
+//   wallet floor=0.6 SOL · default canary cap=-0.3 SOL · KOL cap=-0.2 SOL ·
 //   max concurrent=3 · fixed ticket per lane (KOL 0.02 SOL, others 0.01 SOL)
 
 import { boolOptional, numEnv, optional } from './helpers';
@@ -37,11 +37,12 @@ export const walletAndCanary = {
 
   // ─── KOL hunter live canary 별도 cap (Sprint 2, 2026-04-28) ───
   // 2026-04-28 B안: ticket 0.03 → 0.02 후퇴 + wallet floor 0.8 → 0.7. cap 도 비례 조정.
+  // 2026-05-14: 운영자 명시 요청 — floor 0.7 → 0.6. near-floor live evidence 확보 목적.
   // 2026-05-02: 운영자 결정 — cap 0.35 / 300 trades 로 canary 연장. wallet floor 가 최종 hardstop.
-  //   - cap 0.35 SOL: 0.7 SOL floor 기준 wallet room 을 넘기지 않는 범위에서 KOL 표본 확장
+  //   - cap 0.35 SOL: 0.6 SOL floor 기준 wallet room 을 넘기지 않는 범위에서 KOL 표본 확장
   //   - max consec losers 5 유지: 0.02 × 5 = 0.10 SOL streak halt (cap 절반)
   //   - max trades 300: 200 trade mission checkpoint 이후 추가 표본 확보
-  //   - drawdown budget = wallet - floor = 1.0 - 0.7 = 0.3 SOL
+  //   - drawdown budget = wallet - floor = 1.0 - 0.6 = 0.4 SOL
   //     KOL cap 은 운영 wallet 과 floor buffer 를 함께 확인해야 함
   //     단 cupsey/migration 동시 운영 시 합산 cap 0.5 SOL → wallet floor 가 최종 차단
   // Real Asset Guard wallet floor (walletStopGuard) 가 absolute hardstop.
@@ -62,11 +63,12 @@ export const walletAndCanary = {
   // wallet balance < threshold 시 cupsey + migration 신규 진입 차단. exit 영향 없음.
   walletStopGuardEnabled: boolOptional('WALLET_STOP_GUARD_ENABLED', true),
   // 2026-04-28 B안 운영자 결정: floor 0.8 → 0.7 SOL.
+  // 2026-05-14 운영자 명시 요청: floor 0.7 → 0.6 SOL.
   // 배경: KOL ticket 0.03 → 0.02 후퇴와 동시 적용. drawdown budget 0.2 → 0.3 SOL 으로 50% 확장 →
   //   200 trade Stage 4 gate 도달 가능성 확보 (catastrophic 9건 + bleed 0.102 = 0.282 drawdown).
   //   ralph-loop fix (429 backoff 단축 / inflight dedup / RPC 병렬화 / notifier fire-and-forget)
   //   배포 후 PNL_DRIFT 개선 시 catastrophic rate 감소 기대 — 그 측정 시간 확보.
-  walletStopMinSol: numEnv('WALLET_STOP_MIN_SOL', '0.7'),
+  walletStopMinSol: numEnv('WALLET_STOP_MIN_SOL', '0.6'),
   walletStopPollIntervalMs: numEnv('WALLET_STOP_POLL_INTERVAL_MS', '30000'),
   walletStopWalletName: process.env.WALLET_STOP_WALLET_NAME ?? 'main',
   walletStopRpcFailSafeThreshold: numEnv('WALLET_STOP_RPC_FAIL_SAFE', '3'),
@@ -92,7 +94,7 @@ export const walletAndCanary = {
 
   // ─── 2026-04-29: Risk daily loss limit override (D 옵션) ───
   // Why: 2026-04-29 KOL hunter live 운영에서 dailyLoss -0.0943 SOL 으로 halt 발생.
-  //   wallet floor 0.7 + canary cap 0.2 가 catastrophic 방어 cover 하는데 5%/15% % equity 가
+  //   wallet floor 0.6 + canary cap 0.2 가 catastrophic 방어 cover 하는데 5%/15% % equity 가
   //   misalignment. floor 까지 여유 충분한 상황에서 mission §3 측정 차단 = 5x discovery 지연.
   // 본 env 가 set 되면 portfolio.riskTier?.maxDailyLoss 와 무관하게 모든 tier 에 강제 적용.
   // unset (null) 이면 기존 tier 정책 그대로 (Bootstrap 5% / Calibration 15% / Confirmed/Proven 15%).

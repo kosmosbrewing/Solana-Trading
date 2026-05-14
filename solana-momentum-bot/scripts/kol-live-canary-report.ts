@@ -378,6 +378,12 @@ interface Phase4GateSummary {
   verdict: Phase4GateVerdict;
   minClosedTrades: number;
   closedTrades: number;
+  decisionCheckpoints: Array<{
+    closeCount: number;
+    status: 'reached' | 'pending';
+    label: string;
+    allowedDecision: string;
+  }>;
   hasActualRunner: boolean;
   dataQualityClear: boolean;
   guardCalibrationClear: boolean;
@@ -1344,6 +1350,37 @@ function summarizeFreshReferenceRejectFallbacks(
 }
 
 const PHASE4_MIN_CLOSED_LIVE_TRADES = 50;
+const PHASE4_PROMOTION_REVIEW_LIVE_TRADES = 100;
+
+const PHASE4_DECISION_CHECKPOINTS = [
+  {
+    closeCount: 30,
+    label: 'early bleed sanity',
+    allowedDecision: 'emergency pause only; no promotion',
+  },
+  {
+    closeCount: 50,
+    label: 'safety checkpoint',
+    allowedDecision: 'pause/continue review only; no promotion',
+  },
+  {
+    closeCount: 100,
+    label: 'preliminary edge review',
+    allowedDecision: 'promotion review only if wallet, runner, and coverage gates pass',
+  },
+  {
+    closeCount: 200,
+    label: 'scale/retire/hold',
+    allowedDecision: 'scale, retire, or hold with statistically useful evidence',
+  },
+] as const;
+
+function buildPhase4DecisionCheckpoints(closedTrades: number): Phase4GateSummary['decisionCheckpoints'] {
+  return PHASE4_DECISION_CHECKPOINTS.map((checkpoint) => ({
+    ...checkpoint,
+    status: closedTrades >= checkpoint.closeCount ? 'reached' : 'pending',
+  }));
+}
 
 function evaluatePhase4Gate(metrics: {
   closedTrades: number;
@@ -1418,8 +1455,20 @@ function evaluatePhase4Gate(metrics: {
   let verdict: Phase4GateVerdict;
   if (metrics.closedTrades < PHASE4_MIN_CLOSED_LIVE_TRADES) {
     verdict = 'CONTINUE_SAMPLE';
-  } else if (hasActualRunner && metrics.netSol > 0 && dataQualityClear && guardCalibrationClear) {
+  } else if (
+    hasActualRunner &&
+    metrics.netSol > 0 &&
+    dataQualityClear &&
+    guardCalibrationClear &&
+    metrics.closedTrades >= PHASE4_PROMOTION_REVIEW_LIVE_TRADES
+  ) {
     verdict = 'PHASE5_READY';
+  } else if (hasActualRunner && metrics.netSol > 0 && dataQualityClear && guardCalibrationClear) {
+    verdict = 'HOLD_REVIEW';
+    reasons.push(
+      `promotion review requires ${PHASE4_PROMOTION_REVIEW_LIVE_TRADES}+ closes; ` +
+      `${PHASE4_MIN_CLOSED_LIVE_TRADES} closes is safety-only`
+    );
   } else if (hasActualRunner || metrics.netSol > 0 || !guardCalibrationClear) {
     verdict = 'HOLD_REVIEW';
   } else {
@@ -1430,6 +1479,7 @@ function evaluatePhase4Gate(metrics: {
     verdict,
     minClosedTrades: PHASE4_MIN_CLOSED_LIVE_TRADES,
     closedTrades: metrics.closedTrades,
+    decisionCheckpoints: buildPhase4DecisionCheckpoints(metrics.closedTrades),
     hasActualRunner,
     dataQualityClear,
     guardCalibrationClear,
@@ -1722,6 +1772,12 @@ function formatPhase4GateSection(gate: Phase4GateSummary): string[] {
     '',
     `- Verdict: ${gate.verdict}`,
     `- Closed live trades: ${gate.closedTrades}/${gate.minClosedTrades}`,
+    '- Decision checkpoints:',
+    '| closes | status | label | allowed decision |',
+    '|---:|---|---|---|',
+    ...gate.decisionCheckpoints.map((checkpoint) =>
+      `| ${checkpoint.closeCount} | ${checkpoint.status} | ${checkpoint.label} | ${checkpoint.allowedDecision} |`
+    ),
     `- Actual runner observed: ${gate.hasActualRunner ? 'yes' : 'no'}`,
     `- Data quality clear: ${gate.dataQualityClear ? 'yes' : 'no'}`,
     `- Guard calibration clear: ${gate.guardCalibrationClear ? 'yes' : 'no'}`,

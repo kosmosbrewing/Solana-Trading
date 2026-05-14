@@ -141,6 +141,7 @@ const CAPITULATION_REBOUND_RR_ARM = 'kol_hunter_capitulation_rebound_rr_v1';
 const ROTATION_UNDERFILL_ARM = 'rotation_underfill_v1';
 const ROTATION_EXIT_FLOW_ARM = 'rotation_exit_kol_flow_v1';
 const ROTATION_UNDERFILL_EXIT_FLOW_PROFILE_ARM = 'rotation_underfill_exit_flow_v1';
+const ROTATION_UNDERFILL_COST_AWARE_PROFILE_ARM = 'rotation_underfill_cost_aware_exit_v2';
 
 // ─── State Types ─────────────────────────────────────────
 
@@ -2229,6 +2230,7 @@ function armNameForVersion(parameterVersion: string): string {
   if (parameterVersion === config.kolHunterSwingV2ParameterVersion) return 'kol_hunter_swing_v2';
   if (parameterVersion === config.kolHunterRotationV1ParameterVersion) return 'kol_hunter_rotation_v1';
   if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) return ROTATION_UNDERFILL_ARM;
+  if (parameterVersion === config.kolHunterRotationUnderfillCostAwareParameterVersion) return ROTATION_UNDERFILL_COST_AWARE_PROFILE_ARM;
   if (parameterVersion === config.kolHunterRotationExitFlowParameterVersion) return ROTATION_EXIT_FLOW_ARM;
   if (parameterVersion === config.kolHunterRotationChaseTopupParameterVersion) return 'rotation_chase_topup_v1';
   if (parameterVersion === config.kolHunterCapitulationReboundParameterVersion) return CAPITULATION_REBOUND_ARM;
@@ -2244,6 +2246,13 @@ interface RotationPaperArmSpec extends DynamicExitParams {
   minPriceResponsePct?: number;
   strictQuality?: boolean;
   flowExit?: boolean;
+  profileArm?: string;
+  costAwareExit?: boolean;
+  costAwareT1MinMfe?: number;
+  costAwareT1BufferPct?: number;
+  costAwareT1MaxMfe?: number;
+  costAwareProfitFloorMult?: number;
+  costAwareProfitFloorBufferPct?: number;
 }
 
 interface SmartV3PaperArmSpec extends DynamicExitParams {
@@ -2351,8 +2360,30 @@ function buildRotationPaperArmSpecs(primaryVersion: string): RotationPaperArmSpe
     rotationDoaMaxMaePct: config.kolHunterRotationUnderfillDoaMaxMaePct,
     flowExit: true,
   };
+  const underfillCostAwareSpec: RotationPaperArmSpec = {
+    suffix: 'cost-aware-exit',
+    armName: ROTATION_UNDERFILL_COST_AWARE_PROFILE_ARM,
+    profileArm: ROTATION_UNDERFILL_COST_AWARE_PROFILE_ARM,
+    parameterVersion: config.kolHunterRotationUnderfillCostAwareParameterVersion,
+    enabled: config.kolHunterRotationUnderfillCostAwarePaperEnabled,
+    t1Mfe: config.kolHunterRotationUnderfillCostAwareT1MinMfe,
+    t1TrailPct: config.kolHunterRotationUnderfillCostAwareT1TrailPct,
+    t1ProfitFloorMult: config.kolHunterRotationUnderfillCostAwareProfitFloorMult,
+    probeFlatTimeoutSec: config.kolHunterRotationUnderfillCostAwareProbeTimeoutSec,
+    probeHardCutPct: config.kolHunterRotationUnderfillCostAwareHardCutPct,
+    rotationDoaWindowSec: config.kolHunterRotationUnderfillDoaWindowSec,
+    rotationDoaMinMfePct: config.kolHunterRotationUnderfillDoaMinMfePct,
+    rotationDoaMaxMaePct: config.kolHunterRotationUnderfillDoaMaxMaePct,
+    flowExit: true,
+    costAwareExit: true,
+    costAwareT1MinMfe: config.kolHunterRotationUnderfillCostAwareT1MinMfe,
+    costAwareT1BufferPct: config.kolHunterRotationUnderfillCostAwareT1BufferPct,
+    costAwareT1MaxMfe: config.kolHunterRotationUnderfillCostAwareT1MaxMfe,
+    costAwareProfitFloorMult: config.kolHunterRotationUnderfillCostAwareProfitFloorMult,
+    costAwareProfitFloorBufferPct: config.kolHunterRotationUnderfillCostAwareProfitFloorBufferPct,
+  };
   if (primaryVersion === config.kolHunterRotationUnderfillParameterVersion) {
-    return [flowSpec];
+    return [flowSpec, underfillCostAwareSpec];
   }
   return [
     {
@@ -2449,7 +2480,9 @@ function applyRotationPaperArmSpec(pos: PaperPosition, spec: RotationPaperArmSpe
   pos.parameterVersion = spec.parameterVersion;
   pos.entryArm = pos.entryArm ?? parentArmName;
   pos.exitArm = spec.flowExit === true ? spec.armName : pos.exitArm ?? spec.armName;
-  if (spec.flowExit === true && parentArmName === ROTATION_UNDERFILL_ARM) {
+  if (spec.profileArm) {
+    pos.profileArm = spec.profileArm;
+  } else if (spec.flowExit === true && parentArmName === ROTATION_UNDERFILL_ARM) {
     pos.profileArm = ROTATION_UNDERFILL_EXIT_FLOW_PROFILE_ARM;
   }
   pos.kolEntryReason = 'rotation_v1';
@@ -2463,10 +2496,36 @@ function applyRotationPaperArmSpec(pos: PaperPosition, spec: RotationPaperArmSpe
   pos.rotationDoaMinMfePctOverride = spec.rotationDoaMinMfePct;
   pos.rotationDoaMaxMaePctOverride = spec.rotationDoaMaxMaePct;
   pos.rotationFlowExitEnabled = spec.flowExit === true;
+  const costAwareFlags: string[] = [];
+  if (spec.costAwareExit) {
+    const rawRequiredGrossMove = pos.rotationMonetizableEdge?.requiredGrossMovePct ?? pos.rotationMonetizableEdge?.costRatio;
+    const requiredGrossMove = typeof rawRequiredGrossMove === 'number' && Number.isFinite(rawRequiredGrossMove)
+      ? Math.max(0, rawRequiredGrossMove)
+      : 0;
+    const minT1 = spec.costAwareT1MinMfe ?? spec.t1Mfe ?? 0.12;
+    const maxT1 = spec.costAwareT1MaxMfe ?? Math.max(minT1, 0.18);
+    const t1Buffer = spec.costAwareT1BufferPct ?? 0.03;
+    const floorBuffer = spec.costAwareProfitFloorBufferPct ?? 0.02;
+    const baseFloor = spec.costAwareProfitFloorMult ?? spec.t1ProfitFloorMult ?? 1.10;
+    const costAwareT1 = Math.min(maxT1, Math.max(minT1, requiredGrossMove + t1Buffer));
+    const rawCostAwareFloor = Math.max(baseFloor, 1 + requiredGrossMove + floorBuffer);
+    const maxExecutableFloor = 1 + costAwareT1;
+    const costAwareFloor = Math.min(rawCostAwareFloor, maxExecutableFloor);
+    pos.t1MfeOverride = costAwareT1;
+    pos.t1ProfitFloorMult = costAwareFloor;
+    costAwareFlags.push(
+      'ROTATION_COST_AWARE_EXIT_V2',
+      `ROTATION_COST_AWARE_REQUIRED_GROSS_${requiredGrossMove.toFixed(3)}`,
+      `ROTATION_COST_AWARE_T1_${costAwareT1.toFixed(3)}`,
+      `ROTATION_COST_AWARE_FLOOR_${costAwareFloor.toFixed(3)}`,
+      ...(rawCostAwareFloor > maxExecutableFloor ? ['ROTATION_COST_AWARE_FLOOR_CAPPED_TO_T1'] : [])
+    );
+  }
   pos.survivalFlags = [
     ...pos.survivalFlags,
     'ROTATION_V1_PAPER_PARAM_ARM',
     `ROTATION_V1_PAPER_ARM_${spec.suffix.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}`,
+    ...costAwareFlags,
   ];
 }
 

@@ -304,7 +304,10 @@ describe('rotation-lane-report', () => {
         exitReason: 'probe_hard_cut',
         holdSec: 24,
         netSol: -0.001,
-        netSolTokenOnly: 0.001,
+        netSolTokenOnly: 0.00005,
+        mfePctPeak: 0.12,
+        maeAt15s: -0.06,
+        maeWorstPct: -0.11,
         rotationMonetizableEdge: {
           pass: false,
           costRatio: 0.12,
@@ -352,6 +355,7 @@ describe('rotation-lane-report', () => {
     expect(fast?.edgePassRows).toBe(1);
     expect(fast?.medianEdgeCostRatio).toBeCloseTo(0.04);
     expect(fast?.medianRequiredGrossMovePct).toBeCloseTo(0.04);
+    expect(fast?.t1Rows).toBe(1);
     expect(report.paperTrades.winnerEntryPairings.find((row) =>
       row.armName === 'rotation_fast15_v1' && row.exitBucket === 'winner_trailing_t1'
     )?.refundAdjustedNetSol).toBeCloseTo(0.0029);
@@ -367,8 +371,13 @@ describe('rotation-lane-report', () => {
     expect(report.paperTrades.winnerEntryDiagnostics.find((row) =>
       row.armName === 'rotation_cost_guard_v1' && row.exitBucket === 'other_exits'
     )?.highRiskFlagRate).toBe(1);
-    expect(cost?.refundAdjustedNetSol).toBeCloseTo(0.0009);
-    expect(cost?.rentAdjustedNetSol).toBeCloseTo(-0.0001);
+    expect(cost?.refundAdjustedNetSol).toBeCloseTo(-0.00005);
+    expect(cost?.rentAdjustedNetSol).toBeCloseTo(-0.00105);
+    expect(cost?.tokenOnlyWinnerRefundLoserRows).toBe(1);
+    expect(cost?.mfe5RefundLoserRows).toBe(1);
+    expect(cost?.mfe12RefundLoserRows).toBe(1);
+    expect(cost?.mae5Within15Rows).toBe(1);
+    expect(cost?.mae10BeforeT1Rows).toBe(1);
     expect(cost?.edgeFailRows).toBe(1);
     expect(cost?.medianRequiredGrossMovePct).toBeCloseTo(0.12);
     expect(report.tradeMarkouts.byArm[0].armName).toBe('rotation_fast15_v1');
@@ -386,6 +395,8 @@ describe('rotation-lane-report', () => {
     expect(markdown).toContain('refund-adjusted');
     expect(markdown).toContain('wallet-drag stress');
     expect(markdown).toContain('required gross move');
+    expect(markdown).toContain('MFE>=12 refundLose');
+    expect(markdown).toContain('T1 hit');
     expect(markdown).toContain('## Markouts By Arm');
   });
 

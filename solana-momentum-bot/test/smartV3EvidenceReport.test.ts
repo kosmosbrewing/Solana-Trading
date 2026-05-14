@@ -158,6 +158,69 @@ describe('smart-v3-evidence-report', () => {
     expect(markdown).toContain('| paper:velocity | 9');
   });
 
+  it('adds staged MAE would-exit diagnostics without treating later tail candidates as kills', async () => {
+    const rows = [
+      ...smartV3TradeRows(1, {
+        positionId: 'stage-mae-5',
+        t1VisitAtSec: null,
+        mfePctPeak: 0.01,
+        maeAt5s: -0.045,
+        maeWorstPct: -0.045,
+        netSol: -0.001,
+      }),
+      ...smartV3TradeRows(1, {
+        positionId: 'stage-mae-15',
+        t1VisitAtSec: null,
+        mfePctPeak: 0.02,
+        maeAt15s: -0.055,
+        maeWorstPct: -0.055,
+        netSol: -0.001,
+      }),
+      ...smartV3TradeRows(1, {
+        positionId: 'stage-mae-any',
+        t1VisitAtSec: null,
+        mfePctPeak: 0.04,
+        maeWorstPct: -0.11,
+        netSol: -0.001,
+      }),
+      ...smartV3TradeRows(1, {
+        positionId: 'stage-mae-tail-risk',
+        t1VisitAtSec: 1_778_870_460,
+        mfePctPeak: 0.25,
+        maeAt5s: -0.06,
+        maeWorstPct: -0.08,
+        netSol: 0.001,
+      }),
+    ];
+    await writeFile(path.join(dir, 'smart-v3-paper-trades.jsonl'), jsonl(rows));
+    await writeFile(path.join(dir, 'smart-v3-live-trades.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+
+    const report = await buildSmartV3EvidenceReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [30, 60, 300, 1800],
+      roundTripCostPct: 0.005,
+      assumedAtaRentSol: 0.002,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    const cohort = report.tradeRows.byCohort.find((entry) => entry.cohort === 'paper:velocity');
+    expect(cohort?.stagedMae5Rows).toBe(1);
+    expect(cohort?.stagedMae15Rows).toBe(1);
+    expect(cohort?.stagedMaeAnyRows).toBe(1);
+    expect(cohort?.stagedMaeTailRiskRows).toBe(1);
+    expect(cohort?.tokenOnlyWinnerWalletLoserRows).toBe(4);
+    expect(cohort?.mfe5WalletLoserRows).toBe(1);
+    expect(cohort?.mfe12WalletLoserRows).toBe(1);
+    expect(cohort?.mae5Within15Rows).toBe(2);
+    expect(cohort?.mae10BeforeT1Rows).toBe(1);
+    const markdown = renderSmartV3EvidenceReportMarkdown(report);
+    expect(markdown).toContain('stagedFF5');
+    expect(markdown).toContain('stagedTailRisk');
+    expect(markdown).toContain('MFE>=12 walletLose');
+  });
+
   it('splits smart-v3 paper rows and markout coverage by armName', async () => {
     const mainRows = smartV3TradeRows(6);
     const fastFailRows = smartV3TradeRows(4, {

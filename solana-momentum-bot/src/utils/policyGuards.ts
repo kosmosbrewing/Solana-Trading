@@ -41,10 +41,10 @@ export const POLICY_TICKET_MAX_SOL = 0.01;
  *     - Live raw Kelly = 0% (-100% tail 영향)
  *
  * 0.02 SOL 산정 근거 (200-trade Stage 4 여정):
- *   - Wallet floor 0.7 SOL 신규 (이전 0.8 → 0.3 SOL drawdown budget)
+ *   - Wallet floor 0.6 SOL (2026-05-14 override; 이전 0.7 → 0.4 SOL drawdown budget)
  *   - 200 trade × 4.5% catastrophic = 9 events × 0.02 = 0.18 SOL
  *   - 200 trade × -2.55% ROI bleed = 0.102 SOL
- *   - 합계 drawdown ≈ 0.282 SOL → wallet 0.718 SOL (floor 0.7 margin +0.018)
+ *   - 합계 drawdown ≈ 0.282 SOL → wallet 0.718 SOL (floor 0.6 margin +0.118)
  *   - Catastrophic 견딤: 15 events (예상 9건 + 6 buffer)
  *
  * 100-trade 검증 조건 (Tier 2 승격):

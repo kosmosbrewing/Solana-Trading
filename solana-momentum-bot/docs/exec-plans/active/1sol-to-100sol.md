@@ -20,7 +20,7 @@
 ## Baseline (Ground Truth)
 
 - 미션 (2026-04-21 refined): **Positive-optionality engine** — 100 SOL 은 tail outcome 으로 관찰, 판단 KPI 아님
-- 성공 기준: 현재 운영 0.7 SOL floor 유지 + 200 live trades + 5x+ winner 분포 실측
+- 성공 기준: 현재 운영 0.6 SOL floor 유지 + 200 live trades + 5x+ winner 분포 실측
 - 실제 wallet baseline (2026-04-17 실측): 시작 `1.3 SOL` → 현재 `1.07 SOL` (`−17.7%`)
 - **wallet delta 만이 유일한 ground truth**. DB `pnl` 은 drift `+18.34 SOL` 전력 있어 단독 판정 금지.
 - 평가 지표: [`MEASUREMENT.md`](../../../MEASUREMENT.md) 의 **4단계 Stage gate** + wallet log growth + winner distribution + ruin probability.
@@ -68,11 +68,11 @@ CANARY_GLOBAL_CONCURRENCY_ENABLED=true    # 전역 동시 3 ticket 강제
 CANARY_GLOBAL_MAX_CONCURRENT=3
 CANARY_MAX_TRADES=200                     # Stage 4 scale/retire decision gate 에서 halt
 CANARY_MAX_BUDGET_SOL=0.3                 # Real Asset Guard — cumulative loss cap
-WALLET_STOP_MIN_SOL=0.7                   # Real Asset Guard — current operating wallet floor
+WALLET_STOP_MIN_SOL=0.6                   # Real Asset Guard — current operating wallet floor
 ```
 
 Hard guardrails (Real Asset Guard, 불변):
-- Wallet Stop Guard `< 0.7 SOL` → 전 lane entry halt
+- Wallet Stop Guard `< 0.6 SOL` → 전 lane entry halt
 - Canary cumulative loss cap `-0.3 SOL` → 해당 lane halt
 - Wallet delta comparator drift ≥ 0.20 SOL → 전 lane halt
 - Security hard reject (top-holder %, mint/freeze authority, honeypot)

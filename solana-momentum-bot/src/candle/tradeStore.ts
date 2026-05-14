@@ -179,7 +179,7 @@ export class TradeStore {
    * Positional 11개로 부풀어 호출처 가독성이 무너지므로, 하나의 options 객체로 통합.
    * 필수 필드(id/exitPrice/pnl/slippage)와 선택 필드(나머지)를 동일 객체에 둔다.
    */
-  async closeTrade(opts: CloseTradeOptions): Promise<void> {
+  async closeTrade(opts: CloseTradeOptions): Promise<boolean> {
     const {
       id,
       exitPrice,
@@ -265,11 +265,16 @@ export class TradeStore {
       params.push(preSubmitTickPrice);
     }
 
-    await this.pool.query(
+    const result = await this.pool.query(
       `UPDATE trades SET ${setClauses.join(', ')}
-       WHERE id = $1`,
+       WHERE id = $1 AND status = 'OPEN'`,
       params
     );
+    const updated = result.rowCount == null ? true : result.rowCount > 0;
+    if (!updated) {
+      log.warn(`Trade ${id} close skipped: row is missing or already not OPEN`);
+    }
+    return updated;
   }
 
   async updateHighWaterMark(id: string, highWaterMark: number): Promise<void> {

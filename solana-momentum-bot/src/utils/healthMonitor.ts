@@ -9,7 +9,7 @@ export class HealthMonitor {
   private lastTradeAt?: Date;
   private dbConnected = false;
   private wsConnected = false;
-  private openPositions = 0;
+  private monitoredPositions = 0;
   private dailyPnl = 0;
   private checkInterval?: NodeJS.Timeout;
 
@@ -45,7 +45,7 @@ export class HealthMonitor {
   }
 
   updatePositions(count: number): void {
-    this.openPositions = count;
+    this.monitoredPositions = count;
   }
 
   updateDailyPnl(pnl: number): void {
@@ -59,7 +59,8 @@ export class HealthMonitor {
       lastTradeAt: this.lastTradeAt,
       dbConnected: this.dbConnected,
       wsConnected: this.wsConnected,
-      openPositions: this.openPositions,
+      monitoredPositions: this.monitoredPositions,
+      openPositions: this.monitoredPositions,
       dailyPnl: this.dailyPnl,
     };
   }
@@ -70,7 +71,7 @@ export class HealthMonitor {
 
     log.info(
       `Uptime: ${uptimeMin}m | DB: ${status.dbConnected ? 'OK' : 'DOWN'} | ` +
-      `Positions: ${status.openPositions} | Daily PnL: ${status.dailyPnl.toFixed(4)} SOL | ` +
+      `Monitored positions: ${status.monitoredPositions} | Daily PnL: ${status.dailyPnl.toFixed(4)} SOL | ` +
       `Last candle: ${status.lastCandleAt?.toISOString() || 'never'}`
     );
 

@@ -5735,6 +5735,91 @@ describe('kolSignalHandler — state machine', () => {
       expect(__testGetActive()).toHaveLength(0);
     });
 
+    it('3b-1. retry 실패 후 token balance 0이면 OPEN 유지 대신 ORPHAN terminal close', async () => {
+      __testSetKolLiveSellRetryDelaysMs([0, 0, 0, 0, 0]);
+      const failSell = jest.fn().mockRejectedValue(new Error('route simulation failed after send'));
+      const getTokenBalance = jest.fn()
+        .mockResolvedValueOnce(0n) // initial RPC balance miss
+        .mockResolvedValueOnce(0n)
+        .mockResolvedValueOnce(0n)
+        .mockResolvedValueOnce(0n)
+        .mockResolvedValueOnce(0n)
+        .mockResolvedValueOnce(0n)
+        .mockResolvedValueOnce(0n)
+        .mockResolvedValueOnce(0n); // final terminal probes: 2x zero-confirm
+      const getTokenBalanceFromTransaction = jest.fn().mockResolvedValue(1_000_000n);
+      const fx = buildE2EFixtures({
+        executeSell: failSell,
+        getTokenBalance,
+        getTokenBalanceFromTransaction,
+      });
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx: fx.ctx });
+
+      try {
+        await triggerSmartV3LiveEntry(MINT_SMART);
+        const live = __testGetActive().find((p) => p.isLive === true)!;
+
+        __testTriggerTick(live.positionId, live.entryPrice * 0.85);
+        await flushAsync();
+
+        expect(failSell).toHaveBeenCalledTimes(1);
+        expect(getTokenBalanceFromTransaction).toHaveBeenCalledWith('KOL_LIVE_BUY_SIG', live.tokenMint);
+        expect(getTokenBalance).toHaveBeenCalledTimes(8);
+        expect(fx.closeTrade).toHaveBeenCalledTimes(1);
+        expect(fx.closeTrade).toHaveBeenCalledWith(expect.objectContaining({
+          id: 'db-kolh-live-e2e',
+          exitReason: 'ORPHAN_NO_BALANCE',
+          pnl: 0,
+        }));
+        expect(fx.sendCritical).toHaveBeenCalledTimes(1);
+        expect(fx.sendCritical).toHaveBeenCalledWith(
+          'kol_live_orphan',
+          expect.stringContaining('zero balance confirmed after failed sell retries')
+        );
+        expect(fx.sendCritical).not.toHaveBeenCalledWith('kol_live_close_failed', expect.any(String));
+        expect(__testGetActive()).toHaveLength(0);
+      } finally {
+        __testSetKolLiveSellRetryDelaysMs();
+      }
+    });
+
+    it('3b-1b. retry 실패 후 2회 zero-confirm 이 안 되면 OPEN 유지', async () => {
+      __testSetKolLiveSellRetryDelaysMs([0, 0, 0, 0, 0]);
+      const failSell = jest.fn().mockRejectedValue(new Error('route simulation failed after send'));
+      const getTokenBalance = jest.fn()
+        .mockResolvedValueOnce(0n) // initial RPC balance miss
+        .mockResolvedValueOnce(0n)
+        .mockResolvedValueOnce(0n)
+        .mockResolvedValueOnce(0n)
+        .mockResolvedValueOnce(0n)
+        .mockResolvedValueOnce(0n)
+        .mockResolvedValueOnce(0n) // final confirm #1
+        .mockResolvedValueOnce(10n); // final confirm #2: token still exists
+      const fx = buildE2EFixtures({
+        executeSell: failSell,
+        getTokenBalance,
+        getTokenBalanceFromTransaction: jest.fn().mockResolvedValue(1_000_000n),
+      });
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx: fx.ctx });
+
+      try {
+        await triggerSmartV3LiveEntry(MINT_SMART);
+        const live = __testGetActive().find((p) => p.isLive === true)!;
+
+        __testTriggerTick(live.positionId, live.entryPrice * 0.85);
+        await flushAsync();
+
+        expect(fx.closeTrade).not.toHaveBeenCalled();
+        expect(fx.sendCritical).toHaveBeenCalledWith(
+          'kol_live_close_failed',
+          expect.stringContaining('OPEN 유지')
+        );
+        expect(__testGetActive()).toHaveLength(1);
+      } finally {
+        __testSetKolLiveSellRetryDelaysMs();
+      }
+    });
+
     it('3b-2. smart-v3 live hardcut 후 참여 KOL sell 이 없으면 할인 재진입은 cooldown 을 1회 우회', async () => {
       mockedConfig.kolHunterReentryCooldownMs = 1_800_000;
       const fx = buildE2EFixtures();
@@ -5944,6 +6029,44 @@ describe('kolSignalHandler — state machine', () => {
       expect(fx.closeTrade.mock.calls[0][0].exitReason).toBe('probe_hard_cut');
       expect(fx.sendCritical).not.toHaveBeenCalledWith('kol_live_orphan', expect.any(String));
       expect(__testGetActive()).toHaveLength(0);
+    });
+
+    it('4c. live retained tail close is ledger-only and does not raise NO_DB critical', async () => {
+      mockedConfig.kolHunterTailRetainEnabled = true;
+      mockedConfig.kolHunterTailRetainLiveEnabled = true;
+      mockedConfig.kolHunterTailMaxHoldSec = 1;
+      const getBalance = jest.fn()
+        .mockResolvedValueOnce(1.000)
+        .mockResolvedValueOnce(1.006)
+        .mockResolvedValueOnce(1.006)
+        .mockResolvedValueOnce(1.007);
+      const fx = buildE2EFixtures({ getBalance });
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx: fx.ctx });
+
+      try {
+        await triggerSmartV3LiveEntry(MINT_SMART);
+        const parent = __testGetActive().find((p) => p.isLive === true && !p.isTailPosition)!;
+
+        __testTriggerTick(parent.positionId, parent.entryPrice * 0.85);
+        await flushAsync();
+
+        const tail = __testGetActive().find((p) => p.isLive === true && p.isTailPosition === true)!;
+        expect(tail).toBeDefined();
+        expect(tail.dbTradeId).toBeUndefined();
+
+        tail.entryTimeSec -= 10;
+        __testTriggerTick(tail.positionId, tail.entryPrice);
+        await flushAsync();
+
+        expect(fx.closeTrade).toHaveBeenCalledTimes(1); // parent DB row only
+        expect(fx.sendCritical).not.toHaveBeenCalledWith('kol_live_close_no_db', expect.any(String));
+        expect(fx.sendCritical).not.toHaveBeenCalled();
+        expect(__testGetActive()).toHaveLength(0);
+      } finally {
+        mockedConfig.kolHunterTailRetainEnabled = false;
+        mockedConfig.kolHunterTailRetainLiveEnabled = false;
+        mockedConfig.kolHunterTailMaxHoldSec = 3600;
+      }
     });
 
     it('5. canary slot full → enterLivePosition 의 acquireCanarySlot 거부 → executeBuy 미호출', async () => {

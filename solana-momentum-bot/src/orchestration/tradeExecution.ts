@@ -2,7 +2,7 @@ import { GateEvaluationResult } from '../gate';
 import { config } from '../utils/config';
 import { FAKE_FILL_SLIPPAGE_BPS_THRESHOLD } from '../utils/constants';
 import { createModuleLogger } from '../utils/logger';
-import { Candle, CloseReason, Order, PartialFillDataReason, Signal, Trade, isSandboxStrategy } from '../utils/types';
+import { Candle, CloseReason, Order, PartialFillDataReason, Signal, Trade, isSandboxStrategy, isSelfManagedPositionStrategy } from '../utils/types';
 import { bpsToDecimal, decimalToBps } from '../utils/units';
 import { calcATR, calcAdaptiveTrailingStop, checkExhaustion } from '../strategy';
 import { PositionStore } from '../state';
@@ -573,7 +573,7 @@ export async function checkOpenPositions(ctx: BotContext): Promise<void> {
     ? ctx.paperBalance
     : await ctx.executor.getBalance();
   const portfolio = await ctx.riskManager.getPortfolioState(balanceSol);
-  const openTrades = portfolio.openTrades.filter((trade) => !isSandboxStrategy(trade.strategy));
+  const openTrades = portfolio.openTrades.filter((trade) => !isSelfManagedPositionStrategy(trade.strategy));
   ctx.healthMonitor.updatePositions(openTrades.length);
   ctx.healthMonitor.updateDailyPnl(portfolio.dailyPnl);
 

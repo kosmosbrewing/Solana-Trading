@@ -48,3 +48,47 @@ describe('TradeStore.getRecentExecutedEntries', () => {
     });
   });
 });
+
+describe('TradeStore.closeTrade', () => {
+  it('updates only OPEN rows and returns true when a row is closed', async () => {
+    const pool = {
+      query: jest.fn().mockResolvedValue({ rowCount: 1, rows: [] }),
+    };
+    const store = new TradeStore(pool as any);
+
+    const updated = await store.closeTrade({
+      id: 'trade-open',
+      exitPrice: 1.2,
+      pnl: 0.1,
+      slippage: 0.01,
+      exitReason: 'TAKE_PROFIT_2',
+    });
+
+    expect(updated).toBe(true);
+    expect(pool.query).toHaveBeenCalledWith(
+      expect.stringContaining("WHERE id = $1 AND status = 'OPEN'"),
+      expect.any(Array)
+    );
+  });
+
+  it('returns false when the row is already closed so callers cannot overwrite PnL', async () => {
+    const pool = {
+      query: jest.fn().mockResolvedValue({ rowCount: 0, rows: [] }),
+    };
+    const store = new TradeStore(pool as any);
+
+    const updated = await store.closeTrade({
+      id: 'trade-closed',
+      exitPrice: 0.8,
+      pnl: -0.2,
+      slippage: 0.02,
+      exitReason: 'ORPHAN_NO_BALANCE',
+    });
+
+    expect(updated).toBe(false);
+    expect(pool.query).toHaveBeenCalledWith(
+      expect.stringContaining("WHERE id = $1 AND status = 'OPEN'"),
+      expect.any(Array)
+    );
+  });
+});

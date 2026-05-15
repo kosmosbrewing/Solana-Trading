@@ -6223,7 +6223,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       entrySignal.label === 'rotation-underfill' ||
       entrySignal.label === 'rotation-chase-topup';
     const liveGate = evaluateKolLiveCanaryGate(score, entryFlags, {
-      minIndependentKol: isRotationSingleKolLiveCandidate
+      liveMinIndependentKol: isRotationSingleKolLiveCandidate
         ? config.kolHunterRotationV1MinIndependentKol
         : undefined,
       independentKolCountOverride: entrySignal.label === 'smart-v3'
@@ -6672,13 +6672,18 @@ async function resolveStalk(tokenMint: string): Promise<void> {
 function evaluateKolLiveCanaryGate(
   score: KolDiscoveryScore,
   survivalFlags: string[],
-  options: { minIndependentKol?: number; independentKolCountOverride?: number } = {}
+  options: {
+    independentKolCountOverride?: number;
+    liveMinIndependentKol?: number;
+    minIndependentKol?: number;
+    yellowZoneMinIndependentKol?: number;
+  } = {}
 ): { allowLive: boolean; reason?: string; flags: string[] } {
   const balance = getWalletStopGuardState().lastBalanceSol;
   const balanceKnown = Number.isFinite(balance) && balance !== Number.POSITIVE_INFINITY;
   const liveKolCount = options.independentKolCountOverride ?? score.independentKolCount;
-  const liveMinKol = options.minIndependentKol ?? config.kolHunterLiveMinIndependentKol;
-  const yellowZoneMinKol = options.minIndependentKol ?? config.kolHunterYellowZoneMinIndependentKol;
+  const liveMinKol = options.liveMinIndependentKol ?? options.minIndependentKol ?? config.kolHunterLiveMinIndependentKol;
+  const yellowZoneMinKol = options.yellowZoneMinIndependentKol ?? config.kolHunterYellowZoneMinIndependentKol;
 
   if (config.kolHunterDevWalletLiveGateEnabled) {
     if (survivalFlags.includes('DEV_WALLET_BLACKLIST')) {

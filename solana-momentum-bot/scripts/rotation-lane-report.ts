@@ -31,6 +31,9 @@ const EVIDENCE_PRIMARY_HORIZONS_SEC = [15, 30];
 const EVIDENCE_DECAY_HORIZON_SEC = 60;
 const EVIDENCE_REQUIRED_COVERAGE_HORIZONS_SEC = EVIDENCE_PRIMARY_HORIZONS_SEC;
 const ROTATION_CONTROL_ARM = 'kol_hunter_rotation_v1';
+const ROTATION_LIVE_READINESS_ARM = 'rotation_underfill_cost_aware_exit_v2';
+const ROTATION_LIVE_READINESS_MIN_CLOSES = 50;
+const ROTATION_LIVE_READINESS_MIN_POST_COST_POSITIVE_RATE = 0.5;
 
 interface Args {
   realtimeDir: string;
@@ -138,6 +141,35 @@ interface UnderfillEntryQualityStats {
   unfavorableRows: number;
 }
 
+interface UnderfillRouteCohortStats {
+  cohort: string;
+  rows: number;
+  routeKnownRows: number;
+  routeUnknownRows: number;
+  independentKol2Rows: number;
+  costAwareRows: number;
+  wins: number;
+  losses: number;
+  netSol: number;
+  netSolTokenOnly: number;
+  refundAdjustedNetSol: number;
+  refundAdjustedWinRows: number;
+  edgePassRows: number;
+  edgeFailRows: number;
+  t1Rows: number;
+  medianMfePct: number | null;
+  medianHoldSec: number | null;
+}
+
+interface RotationReadinessHorizonCoverage {
+  horizonSec: number;
+  expectedRows: number;
+  observedRows: number;
+  okRows: number;
+  okCoverage: number | null;
+  medianPostCostDeltaPct: number | null;
+}
+
 type EvidenceVerdictStatus =
   | 'COLLECT'
   | 'DATA_GAP'
@@ -145,6 +177,13 @@ type EvidenceVerdictStatus =
   | 'POST_COST_REJECT'
   | 'WATCH'
   | 'PROMOTION_CANDIDATE';
+
+type RotationLiveReadinessVerdict =
+  | 'BLOCKED'
+  | 'COLLECT'
+  | 'DATA_GAP'
+  | 'COST_REJECT'
+  | 'READY_FOR_MICRO_LIVE';
 
 interface EvidenceVerdict {
   armName: string;
@@ -169,6 +208,24 @@ interface EvidenceVerdict {
   rentAdjustedNetSol: number | null;
   edgeCoverage: number | null;
   edgePassRate: number | null;
+}
+
+interface RotationLiveReadiness {
+  armName: string;
+  verdict: RotationLiveReadinessVerdict;
+  reasons: string[];
+  cohort: string;
+  closes: number;
+  minRequiredCloses: number;
+  refundAdjustedNetSol: number | null;
+  postCostPositiveRate: number | null;
+  edgePassRate: number | null;
+  t1Rate: number | null;
+  medianMfePct: number | null;
+  minOkCoverage: number | null;
+  requiredHorizonCoverage: RotationReadinessHorizonCoverage[];
+  primaryHorizonPostCost: Array<{ horizonSec: number; medianPostCostDeltaPct: number | null }>;
+  evidenceVerdict: EvidenceVerdictStatus | null;
 }
 
 interface RotationReport {
@@ -203,6 +260,8 @@ interface RotationReport {
     byArm: PaperArmStats[];
   };
   underfillEntryQuality: UnderfillEntryQualityStats[];
+  underfillRouteCohorts: UnderfillRouteCohortStats[];
+  rotationLiveReadiness: RotationLiveReadiness;
   evidenceVerdicts: EvidenceVerdict[];
   noTrade: {
     totalRows: number;
@@ -627,6 +686,82 @@ function rowSurvivalFlags(row: JsonRow): string[] {
   return raw.flatMap((flag) => typeof flag === 'string' ? [flag] : []);
 }
 
+function rowStringWithExtras(row: JsonRow, keys: string[]): string {
+  const extras = obj(row.extras);
+  for (const key of keys) {
+    const direct = str(row[key]);
+    if (direct) return direct;
+    const extra = str(extras[key]);
+    if (extra) return extra;
+  }
+  return '';
+}
+
+function rowIndependentKolCount(row: JsonRow): number | null {
+  const direct = rowNumWithExtras(row, [
+    'entryIndependentKolCount',
+    'freshIndependentKolCount',
+    'independentKolCount',
+    'rotationIndependentKolCount',
+  ]);
+  if (direct != null && direct >= 0) return direct;
+  const flag = rowSurvivalFlags(row).find((item) => /^ROTATION_UNDERFILL_KOLS_\d+$/.test(item));
+  if (flag) return Number(flag.slice('ROTATION_UNDERFILL_KOLS_'.length));
+  const anchorKols = obj(row.extras).rotationAnchorKols;
+  if (Array.isArray(anchorKols)) return new Set(anchorKols.map((value) => String(value))).size;
+  return null;
+}
+
+function isUnderfillRouteUnknown(row: JsonRow): boolean {
+  if (rowSurvivalFlags(row).some((flag) =>
+    flag === 'EXIT_LIQUIDITY_UNKNOWN' ||
+    flag === 'ROTATION_UNDERFILL_LIVE_EXIT_ROUTE_UNKNOWN' ||
+    flag === 'NO_SELL_ROUTE' ||
+    flag === 'SELL_NO_ROUTE' ||
+    flag === 'NO_ROUTE' ||
+    flag.includes('NO_SELL_ROUTE')
+  )) {
+    return true;
+  }
+  return !hasUnderfillRoutePositiveEvidence(row);
+}
+
+function hasUnderfillRoutePositiveEvidence(row: JsonRow): boolean {
+  const extras = obj(row.extras);
+  if (row.routeFound === true || extras.routeFound === true) return true;
+  if (row.sellRouteKnown === true || extras.sellRouteKnown === true) return true;
+  if (row.exitLiquidityKnown === true || extras.exitLiquidityKnown === true) return true;
+  if (num(row.exitLiquidityUsd) != null && (num(row.exitLiquidityUsd) ?? 0) > 0) return true;
+  if (num(extras.exitLiquidityUsd) != null && (num(extras.exitLiquidityUsd) ?? 0) > 0) return true;
+  if (Object.keys(obj(row.exitLiquidityData)).length > 0) return true;
+  if (Object.keys(obj(extras.exitLiquidityData)).length > 0) return true;
+  return rowSurvivalFlags(row).some((flag) =>
+    flag === 'SELL_ROUTE_OK' ||
+    flag === 'EXIT_LIQUIDITY_KNOWN' ||
+    flag === 'ROTATION_UNDERFILL_LIVE_EXIT_ROUTE_KNOWN'
+  );
+}
+
+function isRotationUnderfillRow(row: JsonRow): boolean {
+  const arm = rowArmName(row);
+  const entryArm = rowStringWithExtras(row, ['entryArm']);
+  const profileArm = rowStringWithExtras(row, ['profileArm']);
+  return arm.startsWith('rotation_underfill') ||
+    entryArm.startsWith('rotation_underfill') ||
+    profileArm.startsWith('rotation_underfill') ||
+    rowSurvivalFlags(row).some((flag) => flag.startsWith('ROTATION_UNDERFILL'));
+}
+
+function isCostAwareUnderfillRow(row: JsonRow): boolean {
+  const arm = rowArmName(row);
+  const profileArm = rowStringWithExtras(row, ['profileArm']);
+  const parameterVersion = rowStringWithExtras(row, ['parameterVersion']);
+  return arm === 'rotation_underfill_cost_aware_exit_v2' ||
+    profileArm === 'rotation_underfill_cost_aware_exit_v2' ||
+    parameterVersion.includes('cost-aware') ||
+    rowSurvivalFlags(row).some((flag) => flag === 'ROTATION_COST_AWARE_EXIT_V2');
+}
+
 function rowUnderfillReferencePrice(row: JsonRow): number | null {
   const direct = num(row.underfillReferencePrice);
   if (direct != null && direct > 0) return direct;
@@ -672,6 +807,191 @@ function buildUnderfillEntryQualityStats(
     p75EntryVsKolFillPct: percentile(diffs, 0.75),
     favorableRows: diffs.filter((value) => value < 0).length,
     unfavorableRows: diffs.filter((value) => value >= 0).length,
+  };
+}
+
+function summarizeUnderfillRouteCohort(
+  cohort: string,
+  rows: JsonRow[],
+  assumedNetworkFeeSol: number
+): UnderfillRouteCohortStats {
+  const netSolValues = rows.map((row) => numberOrZero(row.netSol));
+  const tokenOnlyValues = rows.map((row) => num(row.netSolTokenOnly) ?? numberOrZero(row.netSol));
+  const refundAdjustedValues = tokenOnlyValues.map((value) => value - assumedNetworkFeeSol);
+  const edgeRows = rows.map(rotationEdge).filter((edge) => Object.keys(edge).length > 0);
+  const mfeValues = rows.map(rowMfePct).filter((value): value is number => value != null);
+  const holdSecValues = rows.map((row) => num(row.holdSec)).filter((value): value is number => value != null);
+  return {
+    cohort,
+    rows: rows.length,
+    routeKnownRows: rows.filter((row) => !isUnderfillRouteUnknown(row)).length,
+    routeUnknownRows: rows.filter(isUnderfillRouteUnknown).length,
+    independentKol2Rows: rows.filter((row) => (rowIndependentKolCount(row) ?? 0) >= 2).length,
+    costAwareRows: rows.filter(isCostAwareUnderfillRow).length,
+    wins: netSolValues.filter((value) => value > 0).length,
+    losses: netSolValues.filter((value) => value <= 0).length,
+    netSol: netSolValues.reduce((sum, value) => sum + value, 0),
+    netSolTokenOnly: tokenOnlyValues.reduce((sum, value) => sum + value, 0),
+    refundAdjustedNetSol: refundAdjustedValues.reduce((sum, value) => sum + value, 0),
+    refundAdjustedWinRows: refundAdjustedValues.filter((value) => value > 0).length,
+    edgePassRows: edgeRows.filter((edge) => edgePassValue(edge) === true).length,
+    edgeFailRows: edgeRows.filter((edge) => edgePassValue(edge) === false).length,
+    t1Rows: rows.filter(rowHasT1).length,
+    medianMfePct: percentile(mfeValues, 0.5),
+    medianHoldSec: percentile(holdSecValues, 0.5),
+  };
+}
+
+function buildUnderfillRouteCohorts(
+  rows: JsonRow[],
+  assumedNetworkFeeSol: number
+): UnderfillRouteCohortStats[] {
+  const underfillRows = rows.filter(isRotationUnderfillRow);
+  const routeKnownRows = underfillRows.filter((row) => !isUnderfillRouteUnknown(row));
+  const routeUnknownRows = underfillRows.filter(isUnderfillRouteUnknown);
+  const routeKnown2KolRows = routeKnownRows.filter((row) => (rowIndependentKolCount(row) ?? 0) >= 2);
+  const routeKnownCostAwareRows = routeKnownRows.filter(isCostAwareUnderfillRow);
+  const routeKnown2KolCostAwareRows = routeKnown2KolRows.filter(isCostAwareUnderfillRow);
+  return [
+    summarizeUnderfillRouteCohort('underfill_all', underfillRows, assumedNetworkFeeSol),
+    summarizeUnderfillRouteCohort('route_unknown', routeUnknownRows, assumedNetworkFeeSol),
+    summarizeUnderfillRouteCohort('route_known', routeKnownRows, assumedNetworkFeeSol),
+    summarizeUnderfillRouteCohort('route_known_2kol', routeKnown2KolRows, assumedNetworkFeeSol),
+    summarizeUnderfillRouteCohort('route_known_cost_aware', routeKnownCostAwareRows, assumedNetworkFeeSol),
+    summarizeUnderfillRouteCohort('route_known_2kol_cost_aware', routeKnown2KolCostAwareRows, assumedNetworkFeeSol),
+  ];
+}
+
+function ratio(numerator: number, denominator: number): number | null {
+  return denominator > 0 ? numerator / denominator : null;
+}
+
+function selectRouteKnown2KolCostAwareUnderfillRows(rows: JsonRow[]): JsonRow[] {
+  return rows.filter((row) =>
+    isRotationUnderfillRow(row) &&
+    !isUnderfillRouteUnknown(row) &&
+    (rowIndependentKolCount(row) ?? 0) >= 2 &&
+    isCostAwareUnderfillRow(row)
+  );
+}
+
+function buildRotationReadinessHorizonCoverage(
+  rows: JsonRow[],
+  markoutRows: JsonRow[],
+  horizonsSec: number[],
+  roundTripCostPct: number
+): RotationReadinessHorizonCoverage[] {
+  const positionIds = new Set(rows.map(rowPositionId).filter(Boolean));
+  const expectedRows = positionIds.size > 0 ? positionIds.size : rows.length;
+  const scopedMarkouts = markoutRows.filter((row) => {
+    const positionId = rowPositionId(row);
+    return positionId !== '' && positionIds.has(positionId) && str(row.anchorType) === 'buy';
+  });
+  return EVIDENCE_REQUIRED_COVERAGE_HORIZONS_SEC
+    .filter((horizonSec) => horizonsSec.includes(horizonSec))
+    .map((horizonSec) => {
+      const selected = scopedMarkouts.filter((row) => rowHorizon(row) === horizonSec);
+      const ok = selected.filter(isOk);
+      const observedPositionIds = new Set(selected.map(rowPositionId).filter(Boolean));
+      const okPositionIds = new Set(ok.map(rowPositionId).filter(Boolean));
+      const postCostDeltas = ok
+        .map(rowDelta)
+        .filter((value): value is number => value != null)
+        .map((value) => value - roundTripCostPct);
+      return {
+        horizonSec,
+        expectedRows,
+        observedRows: observedPositionIds.size,
+        okRows: okPositionIds.size,
+        okCoverage: expectedRows > 0 ? okPositionIds.size / expectedRows : null,
+        medianPostCostDeltaPct: percentile(postCostDeltas, 0.5),
+      };
+    });
+}
+
+function buildRotationLiveReadiness(
+  cohorts: UnderfillRouteCohortStats[],
+  rows: JsonRow[],
+  markoutRows: JsonRow[],
+  horizonsSec: number[],
+  roundTripCostPct: number,
+  evidenceVerdicts: EvidenceVerdict[]
+): RotationLiveReadiness {
+  const cohortName = 'route_known_2kol_cost_aware';
+  const cohort = cohorts.find((row) => row.cohort === cohortName) ??
+    summarizeUnderfillRouteCohort(cohortName, [], 0);
+  const readinessRows = selectRouteKnown2KolCostAwareUnderfillRows(rows);
+  const coverageRows = buildRotationReadinessHorizonCoverage(readinessRows, markoutRows, horizonsSec, roundTripCostPct);
+  const minOkCoverage = minRequiredOkCoverage(coverageRows);
+  const primaryPostCostRows = EVIDENCE_PRIMARY_HORIZONS_SEC
+    .filter((horizonSec) => horizonsSec.includes(horizonSec))
+    .map((horizonSec) => ({
+      horizonSec,
+      medianPostCostDeltaPct: coverageRows.find((row) => row.horizonSec === horizonSec)?.medianPostCostDeltaPct ?? null,
+    }));
+  const evidence = evidenceVerdicts.find((row) => row.armName === ROTATION_LIVE_READINESS_ARM) ?? null;
+  const edgeRows = cohort.edgePassRows + cohort.edgeFailRows;
+  const postCostPositiveRate = ratio(cohort.refundAdjustedWinRows, cohort.rows);
+  const edgePassRate = ratio(cohort.edgePassRows, edgeRows);
+  const t1Rate = ratio(cohort.t1Rows, cohort.rows);
+  const reasons: string[] = [];
+  let verdict: RotationLiveReadinessVerdict = 'READY_FOR_MICRO_LIVE';
+
+  if (cohort.rows === 0) {
+    verdict = 'BLOCKED';
+    reasons.push('route-known 2+KOL cost-aware underfill sample missing');
+  } else if (cohort.rows < ROTATION_LIVE_READINESS_MIN_CLOSES) {
+    verdict = 'COLLECT';
+    reasons.push(`sample ${cohort.rows}/${ROTATION_LIVE_READINESS_MIN_CLOSES}`);
+  } else if (minOkCoverage == null || minOkCoverage < EVIDENCE_MIN_OK_COVERAGE) {
+    verdict = 'DATA_GAP';
+    reasons.push(`cohort markout coverage ${formatPct(minOkCoverage)} < ${formatPct(EVIDENCE_MIN_OK_COVERAGE)}`);
+  } else if (primaryPostCostRows.some((row) => row.medianPostCostDeltaPct == null)) {
+    verdict = 'DATA_GAP';
+    reasons.push('cohort primary post-cost markout missing');
+  } else if (primaryPostCostRows.some((row) => (row.medianPostCostDeltaPct ?? 0) <= 0)) {
+    verdict = 'COST_REJECT';
+    reasons.push('cohort primary post-cost continuation is non-positive');
+  }
+
+  if (cohort.rows > 0 && cohort.refundAdjustedNetSol <= 0) {
+    verdict = 'COST_REJECT';
+    reasons.push(`refund-adjusted net ${formatSol(cohort.refundAdjustedNetSol)} <= 0`);
+  }
+  if (
+    postCostPositiveRate != null &&
+    postCostPositiveRate < ROTATION_LIVE_READINESS_MIN_POST_COST_POSITIVE_RATE
+  ) {
+    verdict = 'COST_REJECT';
+    reasons.push(
+      `post-cost positive ${formatPct(postCostPositiveRate)} < ` +
+      `${formatPct(ROTATION_LIVE_READINESS_MIN_POST_COST_POSITIVE_RATE)}`
+    );
+  }
+  if (edgePassRate != null && edgePassRate < EVIDENCE_MIN_EDGE_PASS_RATE) {
+    verdict = 'COST_REJECT';
+    reasons.push(`edge pass ${formatPct(edgePassRate)} < ${formatPct(EVIDENCE_MIN_EDGE_PASS_RATE)}`);
+  }
+  if (verdict === 'READY_FOR_MICRO_LIVE') {
+    reasons.push('route-known 2+KOL cost-aware sample meets report-only micro-live gate');
+  }
+
+  return {
+    armName: ROTATION_LIVE_READINESS_ARM,
+    verdict,
+    reasons,
+    cohort: cohortName,
+    closes: cohort.rows,
+    minRequiredCloses: ROTATION_LIVE_READINESS_MIN_CLOSES,
+    refundAdjustedNetSol: cohort.rows > 0 ? cohort.refundAdjustedNetSol : null,
+    postCostPositiveRate,
+    edgePassRate,
+    t1Rate,
+    medianMfePct: cohort.medianMfePct,
+    minOkCoverage,
+    requiredHorizonCoverage: coverageRows,
+    primaryHorizonPostCost: primaryPostCostRows,
+    evidenceVerdict: evidence?.verdict ?? null,
   };
 }
 
@@ -1315,6 +1635,34 @@ function renderUnderfillEntryQualityTable(rows: UnderfillEntryQualityStats[]): s
   return lines.join('\n');
 }
 
+function renderUnderfillRouteCohorts(rows: UnderfillRouteCohortStats[]): string {
+  if (rows.length === 0) return '_No underfill route cohort rows._';
+  return [
+    '| cohort | closes | route known/unknown | 2+ KOL | cost-aware | W/L | token-only SOL | refund-adjusted SOL | postCost>0 | edge pass/fail | T1 hit | med MFE | median hold |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
+    ...rows.map((row) =>
+      `| ${row.cohort} | ${row.rows} | ${row.routeKnownRows}/${row.routeUnknownRows} | ` +
+      `${row.independentKol2Rows} | ${row.costAwareRows} | ${row.wins}/${row.losses} | ` +
+      `${formatSol(row.netSolTokenOnly)} | ${formatSol(row.refundAdjustedNetSol)} | ` +
+      `${row.refundAdjustedWinRows}/${row.rows} | ${row.edgePassRows}/${row.edgeFailRows} | ${row.t1Rows}/${row.rows} | ` +
+      `${formatPct(row.medianMfePct)} | ${row.medianHoldSec == null ? 'n/a' : `${row.medianHoldSec.toFixed(0)}s`} |`
+    ),
+  ].join('\n');
+}
+
+function renderRotationLiveReadiness(row: RotationLiveReadiness): string {
+  return [
+    '| arm | verdict | cohort | closes | min markout coverage | primary postCost | refund-adjusted | postCost>0 | edge pass | T1 rate | med MFE | evidence | reasons |',
+    '|---|---|---|---:|---:|---|---:|---:|---:|---:|---:|---|---|',
+    `| ${row.armName} | ${row.verdict} | ${row.cohort} | ${row.closes}/${row.minRequiredCloses} | ` +
+      `${formatPct(row.minOkCoverage)} | ` +
+      `${row.primaryHorizonPostCost.map((item) => `T+${item.horizonSec}s ${formatPct(item.medianPostCostDeltaPct)}`).join(', ') || 'n/a'} | ` +
+      `${formatSol(row.refundAdjustedNetSol)} | ${formatPct(row.postCostPositiveRate)} | ` +
+      `${formatPct(row.edgePassRate)} | ${formatPct(row.t1Rate)} | ${formatPct(row.medianMfePct)} | ` +
+      `${row.evidenceVerdict ?? 'n/a'} | ${row.reasons.join('; ') || 'n/a'} |`,
+  ].join('\n');
+}
+
 function renderEvidenceVerdicts(rows: EvidenceVerdict[]): string {
   if (rows.length === 0) return '_No rotation paper arm evidence yet._';
   return [
@@ -1468,6 +1816,14 @@ function renderReport(report: RotationReport): string {
     '> Entry/KOL-fill diff is the canary equivalence check. Negative values mean our entry was below the S/A KOL weighted fill.',
     renderUnderfillEntryQualityTable(report.underfillEntryQuality),
     '',
+    '## Underfill Route Cohorts',
+    '> Report-only. Route-known requires explicit positive route/exit-liquidity evidence; missing evidence is treated as route-unknown.',
+    renderUnderfillRouteCohorts(report.underfillRouteCohorts),
+    '',
+    '## Rotation Live Readiness',
+    '> Report-only. This does not enable live; it states whether cost-aware underfill has enough route-known evidence to request micro-live.',
+    renderRotationLiveReadiness(report.rotationLiveReadiness),
+    '',
     '## Live Trades By Arm',
     renderPaperArmTable(report.liveTrades.byArm),
     '',
@@ -1556,6 +1912,16 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
   const paperArmStats = buildPaperArmStats(rotationPaperRows, assumedAtaRentSol, assumedNetworkFeeSol);
   const winnerEntryPairings = buildWinnerEntryPairingStats(rotationPaperRows, assumedAtaRentSol, assumedNetworkFeeSol);
   const winnerEntryDiagnostics = buildWinnerEntryDiagnosticStats(rotationPaperRows);
+  const evidenceVerdicts = buildEvidenceVerdicts(paperArmStats, armMarkouts);
+  const underfillRouteCohorts = buildUnderfillRouteCohorts(rotationPaperRows, assumedNetworkFeeSol);
+  const rotationLiveReadiness = buildRotationLiveReadiness(
+    underfillRouteCohorts,
+    rotationPaperRows,
+    rotationRows,
+    args.horizonsSec,
+    args.roundTripCostPct,
+    evidenceVerdicts
+  );
   const coverageLoad: {
     status: KolPosteriorCoverageLoadStatus;
     targets: KolPosteriorCoverageTarget[];
@@ -1606,7 +1972,9 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
       buildUnderfillEntryQualityStats('paper', rotationPaperRows),
       buildUnderfillEntryQualityStats('live', rotationLiveRows),
     ],
-    evidenceVerdicts: buildEvidenceVerdicts(paperArmStats, armMarkouts),
+    underfillRouteCohorts,
+    rotationLiveReadiness,
+    evidenceVerdicts,
     noTrade: {
       totalRows: recentNoTradeRows.length,
       probeRows: noTradeProbeRows.length,

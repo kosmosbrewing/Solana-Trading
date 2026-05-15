@@ -106,6 +106,13 @@ type EvidenceVerdictStatus =
   | 'WATCH'
   | 'PROMOTION_CANDIDATE';
 
+type SmartV3BleedReviewVerdict =
+  | 'NO_LIVE_SAMPLE'
+  | 'COLLECT'
+  | 'PAUSE_REVIEW'
+  | 'TAIL_LANE_ONLY'
+  | 'WATCH';
+
 interface SmartV3EvidenceVerdict {
   cohort: string;
   verdict: EvidenceVerdictStatus;
@@ -128,6 +135,19 @@ interface SmartV3EvidenceVerdict {
   netSolTokenOnly: number;
   rentAdjustedNetSol: number;
   fiveXRows: number;
+}
+
+interface SmartV3BleedReview {
+  verdict: SmartV3BleedReviewVerdict;
+  reasons: string[];
+  liveRows: number;
+  liveNetSol: number;
+  liveCopyableNetSol: number;
+  liveFiveXRows: number;
+  liveT1Rows: number;
+  liveMaeFastFailRows: number;
+  liveStagedMaePressureRows: number;
+  liveMedianHoldSec: number | null;
 }
 
 interface SmartV3EvidenceReport {
@@ -159,6 +179,7 @@ interface SmartV3EvidenceReport {
     }>;
   };
   evidenceVerdicts: SmartV3EvidenceVerdict[];
+  bleedReview: SmartV3BleedReview;
   kolTransferPosterior: {
     input: string;
     rows: number;
@@ -780,6 +801,53 @@ function buildVerdict(
   };
 }
 
+function buildSmartV3BleedReview(cohorts: SmartV3CohortStats[]): SmartV3BleedReview {
+  const live = cohorts.find((cohort) => cohort.cohort === 'live:all');
+  if (!live) {
+    return {
+      verdict: 'NO_LIVE_SAMPLE',
+      reasons: ['no smart-v3 live closes in window'],
+      liveRows: 0,
+      liveNetSol: 0,
+      liveCopyableNetSol: 0,
+      liveFiveXRows: 0,
+      liveT1Rows: 0,
+      liveMaeFastFailRows: 0,
+      liveStagedMaePressureRows: 0,
+      liveMedianHoldSec: null,
+    };
+  }
+
+  const stagedPressureRows = live.stagedMae5Rows + live.stagedMae15Rows + live.stagedMaeAnyRows;
+  const reasons: string[] = [];
+  let verdict: SmartV3BleedReviewVerdict = 'WATCH';
+  if (live.fiveXRows > 0 || live.t2Rows > 0 || live.t3Rows > 0) {
+    verdict = 'TAIL_LANE_ONLY';
+    reasons.push('tail evidence exists; keep as tail lane, not daily-compound lane');
+  } else if (live.netSol < 0 || live.rentAdjustedNetSol < 0) {
+    verdict = 'PAUSE_REVIEW';
+    reasons.push('live wallet/copyable PnL is negative without 5x evidence');
+  } else if (live.rows < 30) {
+    verdict = 'COLLECT';
+    reasons.push(`need 30+ live closes for bleed review, have ${live.rows}`);
+  } else {
+    reasons.push('live bleed review did not trip pause criteria');
+  }
+
+  return {
+    verdict,
+    reasons,
+    liveRows: live.rows,
+    liveNetSol: live.netSol,
+    liveCopyableNetSol: live.rentAdjustedNetSol,
+    liveFiveXRows: live.fiveXRows,
+    liveT1Rows: live.t1Rows,
+    liveMaeFastFailRows: live.maeFastFailRows,
+    liveStagedMaePressureRows: stagedPressureRows,
+    liveMedianHoldSec: live.medianHoldSec,
+  };
+}
+
 function groupByEntryReason(mode: 'paper' | 'live', rows: JsonRow[]): Array<{ reason: string; rows: JsonRow[] }> {
   const groups = new Map<string, JsonRow[]>();
   groups.set('all', rows);
@@ -931,6 +999,7 @@ export async function buildSmartV3EvidenceReport(args: Args): Promise<SmartV3Evi
     const cohortMarkouts = byCohort.find((entry) => entry.cohort === cohort.cohort);
     return buildVerdict(cohort, cohortMarkouts?.afterBuy ?? [], cohortMarkouts?.afterSell ?? []);
   });
+  const bleedReview = buildSmartV3BleedReview(cohorts);
   const kolTransferPosterior = buildKolTransferPosteriorReport(kolTransferRows as unknown as KolTransferRow[], {
     input: kolTransferInput,
     sinceSec: Math.floor(args.sinceMs / 1000),
@@ -961,6 +1030,7 @@ export async function buildSmartV3EvidenceReport(args: Args): Promise<SmartV3Evi
       byCohort,
     },
     evidenceVerdicts,
+    bleedReview,
     kolTransferPosterior: {
       input: kolTransferInput,
       rows: kolTransferPosterior.rows,
@@ -1069,6 +1139,24 @@ export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceRepor
     ].join(' | ') + ' |');
   }
   if (report.evidenceVerdicts.length === 0) lines.push('| n/a | COLLECT | 0 | n/a | +0.0000 | +0.0000 | +0.0000 | 0 | n/a | n/a | no smart-v3 closes |');
+  lines.push('');
+
+  lines.push('## Smart-v3 Bleed Review');
+  lines.push('> Report-only live safety read. PAUSE_REVIEW means smart-v3 should stay tail-only until fresh evidence improves.');
+  lines.push('| verdict | live closes | netSOL | copyable | 5x | T1 | maeFastFail | stagedPressure | medHold | reasons |');
+  lines.push('|---|---:|---:|---:|---:|---:|---:|---:|---:|---|');
+  lines.push([
+    `| ${report.bleedReview.verdict}`,
+    report.bleedReview.liveRows,
+    sol(report.bleedReview.liveNetSol),
+    sol(report.bleedReview.liveCopyableNetSol),
+    report.bleedReview.liveFiveXRows,
+    report.bleedReview.liveT1Rows,
+    report.bleedReview.liveMaeFastFailRows,
+    report.bleedReview.liveStagedMaePressureRows,
+    report.bleedReview.liveMedianHoldSec == null ? 'n/a' : `${report.bleedReview.liveMedianHoldSec.toFixed(0)}s`,
+    report.bleedReview.reasons.join('; ') || 'n/a',
+  ].join(' | ') + ' |');
   lines.push('');
 
   lines.push('## Closed Trades');

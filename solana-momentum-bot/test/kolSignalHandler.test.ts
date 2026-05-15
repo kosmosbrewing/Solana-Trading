@@ -3982,7 +3982,7 @@ describe('kolSignalHandler — state machine', () => {
       }));
     });
 
-    it('rotation-underfill live canary: yellow-zone 에서도 arm별 1-KOL 기준을 따른다', async () => {
+    it('rotation-underfill live canary: yellow-zone 에서는 arm별 1-KOL 예외를 적용하지 않는다', async () => {
       const { ctx, executeBuy, insertTrade } = buildLiveCtx();
       const { setWalletStopGuardStateForTests } = require('../src/risk/walletStopGuard');
       setWalletStopGuardStateForTests(false, 'yellow-zone-test', 0.80);
@@ -4002,17 +4002,25 @@ describe('kolSignalHandler — state machine', () => {
       stubFeed.emitTick(MINT_ROTATION, 0.00096);
       await flushAsync();
 
-      expect(executeBuy).toHaveBeenCalledTimes(1);
-      expect(insertTrade).toHaveBeenCalledTimes(1);
-      const live = __testGetActive().find((p) => p.isLive === true);
-      expect(live?.armName).toBe('rotation_underfill_v1');
-      expect(live?.profileArm).toBe('rotation_underfill_exit_flow_v1');
-      expect(live?.entryArm).toBe('rotation_underfill_v1');
-      expect(live?.exitArm).toBe('rotation_exit_kol_flow_v1');
-      expect(live?.rotationFlowExitEnabled).toBe(true);
-      expect(live?.survivalFlags).toContain('ROTATION_UNDERFILL_LIVE_CANARY_ENABLED');
-      expect(live?.survivalFlags).not.toContain('YELLOW_ZONE_MIN_KOL');
-      expect(live?.survivalFlags).not.toContain('YELLOW_ZONE_PAPER_FALLBACK');
+      expect(executeBuy).not.toHaveBeenCalled();
+      expect(insertTrade).not.toHaveBeenCalled();
+      const paper = __testGetActive().find((p) => p.isLive !== true);
+      expect(paper?.armName).toBe('rotation_underfill_v1');
+      expect(paper?.profileArm).toBe('rotation_underfill_exit_flow_v1');
+      expect(paper?.entryArm).toBe('rotation_underfill_v1');
+      expect(paper?.exitArm).toBe('rotation_exit_kol_flow_v1');
+      expect(paper?.rotationFlowExitEnabled).toBe(true);
+      expect(paper?.survivalFlags).toContain('ROTATION_UNDERFILL_LIVE_CANARY_ENABLED');
+      expect(paper?.survivalFlags).toContain('YELLOW_ZONE_MIN_KOL');
+      expect(paper?.survivalFlags).not.toContain('YELLOW_ZONE_PAPER_FALLBACK');
+      const equivalenceRows = mockAppendFile.mock.calls
+        .filter((call) => typeof call[0] === 'string' && call[0].includes('kol-live-equivalence.jsonl'))
+        .map((call) => JSON.parse(String(call[1]).trim()));
+      expect(equivalenceRows.at(-1)).toEqual(expect.objectContaining({
+        decisionStage: 'yellow_zone',
+        liveWouldEnter: false,
+      }));
+      expect(equivalenceRows.at(-1)?.liveBlockFlags).toContain('YELLOW_ZONE_MIN_KOL');
     });
 
     it('rotation-underfill live canary: exit liquidity unknown 은 live 체결 전 paper fallback 으로 남긴다', async () => {

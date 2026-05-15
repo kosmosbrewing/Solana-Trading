@@ -400,6 +400,160 @@ describe('rotation-lane-report', () => {
     expect(markdown).toContain('## Markouts By Arm');
   });
 
+  it('splits underfill paper trades into route-known and cost-aware cohorts', async () => {
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([
+      {
+        strategy: 'kol_hunter',
+        lane: 'kol_hunter',
+        armName: 'rotation_underfill_v1',
+        profileArm: 'rotation_underfill_exit_flow_v1',
+        entryArm: 'rotation_underfill_v1',
+        kolEntryReason: 'rotation_v1',
+        positionId: 'underfill-route-unknown',
+        closedAt: '2026-05-02T00:01:00.000Z',
+        exitReason: 'probe_reject_timeout',
+        holdSec: 22,
+        netSol: -0.001,
+        netSolTokenOnly: 0.00005,
+        mfePctPeak: 0.05,
+        survivalFlags: ['EXIT_LIQUIDITY_UNKNOWN', 'ROTATION_UNDERFILL_KOLS_1'],
+      },
+      {
+        strategy: 'kol_hunter',
+        lane: 'kol_hunter',
+        armName: 'rotation_underfill_v1',
+        profileArm: 'rotation_underfill_exit_flow_v1',
+        entryArm: 'rotation_underfill_v1',
+        kolEntryReason: 'rotation_v1',
+        positionId: 'underfill-route-known-single',
+        closedAt: '2026-05-02T00:02:00.000Z',
+        exitReason: 'winner_trailing_t1',
+        holdSec: 26,
+        netSol: 0.001,
+        netSolTokenOnly: 0.0012,
+        mfePctPeak: 0.14,
+        survivalFlags: ['ROTATION_UNDERFILL_KOLS_1'],
+      },
+      {
+        strategy: 'kol_hunter',
+        lane: 'kol_hunter',
+        armName: 'rotation_underfill_v1',
+        profileArm: 'rotation_underfill_cost_aware_exit_v2',
+        entryArm: 'rotation_underfill_v1',
+        kolEntryReason: 'rotation_v1',
+        positionId: 'underfill-route-known-cost-aware',
+        closedAt: '2026-05-02T00:03:00.000Z',
+        exitReason: 'winner_trailing_t1',
+        holdSec: 30,
+        netSol: 0.002,
+        netSolTokenOnly: 0.0024,
+        mfePctPeak: 0.18,
+        routeFound: true,
+        rotationMonetizableEdge: { pass: true, costRatio: 0.04 },
+        survivalFlags: ['ROTATION_UNDERFILL_KOLS_2'],
+      },
+    ]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [15],
+      roundTripCostPct: 0.005,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.underfillRouteCohorts.find((row) => row.cohort === 'underfill_all')).toMatchObject({
+      rows: 3,
+      routeKnownRows: 1,
+      routeUnknownRows: 2,
+      independentKol2Rows: 1,
+      costAwareRows: 1,
+    });
+    const readyCohort = report.underfillRouteCohorts.find((row) =>
+      row.cohort === 'route_known_2kol_cost_aware'
+    );
+    expect(readyCohort).toMatchObject({ rows: 1, edgePassRows: 1, t1Rows: 1 });
+    expect(readyCohort?.refundAdjustedNetSol).toBeCloseTo(0.0023);
+    expect(report.rotationLiveReadiness).toMatchObject({
+      verdict: 'COLLECT',
+      cohort: 'route_known_2kol_cost_aware',
+      closes: 1,
+    });
+
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('## Underfill Route Cohorts');
+    expect(markdown).toContain('## Rotation Live Readiness');
+    expect(markdown).toContain('route_known_2kol_cost_aware');
+    expect(markdown).toContain('Report-only');
+  });
+
+  it('marks cost-aware underfill as micro-live ready only after route-known post-cost evidence', async () => {
+    const armName = 'rotation_underfill_cost_aware_exit_v2';
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl(
+      Array.from({ length: 50 }, (_, index) => ({
+        strategy: 'kol_hunter',
+        lane: 'kol_hunter',
+        armName: 'rotation_underfill_v1',
+        profileArm: armName,
+        entryArm: 'rotation_underfill_v1',
+        kolEntryReason: 'rotation_v1',
+        positionId: `underfill-ready-${index}`,
+        closedAt: `2026-05-02T00:${String(index % 60).padStart(2, '0')}:00.000Z`,
+        exitReason: 'winner_trailing_t1',
+        holdSec: 30,
+        netSol: 0.001,
+        netSolTokenOnly: 0.001,
+        mfePctPeak: 0.18,
+        routeFound: true,
+        rotationMonetizableEdge: { pass: true, costRatio: 0.04 },
+        survivalFlags: ['ROTATION_UNDERFILL_KOLS_2'],
+      }))
+    ));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl(
+      Array.from({ length: 50 }, (_, index) => [15, 30, 60].map((horizonSec) => ({
+        anchorType: 'buy',
+        positionId: `underfill-ready-${index}`,
+        tokenMint: `MintUnderfillReady${index}`,
+        horizonSec,
+        quoteStatus: 'ok',
+        deltaPct: horizonSec === 15 ? 0.03 : 0.02,
+        recordedAt: `2026-05-02T00:${String(index % 60).padStart(2, '0')}:30.000Z`,
+        extras: { armName, entryReason: 'rotation_v1' },
+      }))).flat()
+    ));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [15, 30, 60],
+      roundTripCostPct: 0.005,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.rotationLiveReadiness).toMatchObject({
+      armName,
+      verdict: 'READY_FOR_MICRO_LIVE',
+      closes: 50,
+      evidenceVerdict: 'WATCH',
+    });
+    expect(report.rotationLiveReadiness.postCostPositiveRate).toBe(1);
+    expect(report.rotationLiveReadiness.edgePassRate).toBe(1);
+    expect(report.rotationLiveReadiness.minOkCoverage).toBe(1);
+    expect(report.rotationLiveReadiness.primaryHorizonPostCost).toEqual([
+      { horizonSec: 15, medianPostCostDeltaPct: 0.024999999999999998 },
+      { horizonSec: 30, medianPostCostDeltaPct: 0.015 },
+    ]);
+
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('READY_FOR_MICRO_LIVE');
+    expect(markdown).toContain('route-known 2+KOL cost-aware sample meets report-only micro-live gate');
+  });
+
   it('classifies sufficiently sampled arms with poor monetizable-edge evidence as cost rejects', async () => {
     const armName = 'rotation_cost_guard_v1';
     await writeFile(path.join(dir, 'kol-paper-trades.jsonl'), jsonl(

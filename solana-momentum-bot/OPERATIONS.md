@@ -1,6 +1,6 @@
 # Operations Guide
 
-> Last updated: 2026-05-06
+> Last updated: 2026-05-14
 > Scope: VPS 배포 + paper 운영 점검 + risk tier demotion + live 운영 판단
 
 ---
@@ -8,6 +8,18 @@
 ## Current Operations Note
 
 Current lane/report 기준은 `SESSION_START.md`, `STRATEGY.md`, `docs/design-docs/lane-operating-refactor-2026-05-03.md`, `docs/exec-plans/active/20260503_BACKLOG.md`를 우선한다. 아래 2026-04-18 DEX_TRADE/pure_ws_breakout 섹션은 legacy runbook 이며, 현재 pure_ws live 승격 정책으로 사용하지 않는다.
+
+### KOL live close alert semantics (2026-05-14)
+
+KOL live canary close 는 executor sell retry, token balance 확인, DB close persistence 를 분리해서 본다. 아래 알림은 서로 다른 조치가 필요하다.
+
+| Alert | 의미 | 운영 조치 |
+|------|------|----------|
+| `kol_live_close_failed` | sell retry 를 모두 소진했지만 token balance 가 남아 있어 포지션을 OPEN 으로 유지한다. | `ops:reconcile:wallet` 와 live trade ledger 를 확인하고, route/quote 회복 시 재매도 여부를 본다. |
+| `kol_live_orphan` | 2회 이상 zero-balance 확인 뒤 토큰 잔고가 없어 terminal close 처리했다. | 보통 재매도 대상이 아니다. wallet/ledger drift 가 있으면 reconcile 로 확인한다. |
+| `kol_live_close_no_db` | close 는 관측됐지만 DB row 가 없어 ledger/manual reconcile 이 필요하다. | DB/JSONL 불일치, retained child row 여부, 최근 restart 시점을 함께 본다. |
+
+Retained tail 의 ledger-only close 는 정상 경로이며 `NO_DB_RECORD` incident 로 분류하지 않는다. Health heartbeat 의 `Monitored positions` 는 generic monitor 대상 수만 의미하고, self-managed KOL positions 전체 노출을 뜻하지 않는다.
 
 ### DEX_TRADE Phase 3 — Quick Reject + Hold Sentinel + Ruin Sim (2026-04-18)
 

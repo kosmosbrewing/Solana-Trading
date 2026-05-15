@@ -318,7 +318,7 @@ export const kolHunter = {
   // 기본값은 운영 무영향. live 는 별도 flag 를 요구하고 기존 canary gate 를 그대로 통과해야 한다.
   kolHunterRotationV1Enabled: boolOptional('KOL_HUNTER_ROTATION_V1_ENABLED', false),
   kolHunterRotationV1LiveEnabled: boolOptional('KOL_HUNTER_ROTATION_V1_LIVE_ENABLED', false),
-  // Rotation is allowed to be a true single-KOL lane; smart-v3 keeps the global live min-KOL gate.
+  // Rotation can test single-KOL live only outside yellow-zone; floor defense keeps the global yellow-zone min-KOL.
   kolHunterRotationV1MinIndependentKol: numEnv('KOL_HUNTER_ROTATION_V1_MIN_INDEPENDENT_KOL', '1'),
   // Seed ids are a score boost, not a hard allowlist. Active KOL DB metadata drives eligibility.
   kolHunterRotationV1KolIds: optional('KOL_HUNTER_ROTATION_V1_KOL_IDS', 'dv,decu'),

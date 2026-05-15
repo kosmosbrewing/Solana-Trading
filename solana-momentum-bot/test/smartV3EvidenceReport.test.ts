@@ -544,5 +544,12 @@ describe('smart-v3-evidence-report', () => {
     const verdict = report.evidenceVerdicts.find((entry) => entry.cohort === 'live:velocity');
     expect(verdict?.verdict).toBe('COST_REJECT');
     expect(verdict?.fiveXRows).toBe(0);
+    expect(report.bleedReview.verdict).toBe('PAUSE_REVIEW');
+    expect(report.bleedReview.liveRows).toBe(50);
+    expect(report.bleedReview.liveFiveXRows).toBe(0);
+
+    const markdown = renderSmartV3EvidenceReportMarkdown(report);
+    expect(markdown).toContain('## Smart-v3 Bleed Review');
+    expect(markdown).toContain('PAUSE_REVIEW');
   });
 });

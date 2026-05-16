@@ -23,6 +23,7 @@
     "kol:rotation-report": "ts-node scripts/rotation-lane-report.ts",
     "kol:capitulation-report": "ts-node scripts/capitulation-rebound-report.ts",
     "kol:smart-v3-evidence-report": "ts-node scripts/smart-v3-evidence-report.ts",
+    "kol:historical-loss-report": "ts-node scripts/historical-loss-miner.ts",
     "kol:transfer-backfill": "ts-node scripts/kol-transfer-backfill.ts",
     "kol:transfer-refresh": "bash scripts/kol-transfer-refresh.sh",
     "kol:transfer-report": "ts-node scripts/kol-transfer-posterior-report.ts",

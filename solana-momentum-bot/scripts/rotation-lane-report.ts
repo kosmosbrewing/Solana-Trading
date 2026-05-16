@@ -459,6 +459,18 @@ interface RotationSecondKolOpportunityFunnelStats {
   routeKnownCostAwareSecondWithin30Rows: number;
   potentialReviewRows: number;
   trueSingleRows: number;
+  freshCutoffSource: RouteProofFreshnessStats['cutoffSource'];
+  freshSince: string | null;
+  freshUnderfillRows: number;
+  freshSingleKolRows: number;
+  freshRowsWithToken: number;
+  freshRowsWithEntryTime: number;
+  freshRowsWithTxCoverage: number;
+  freshRouteKnownCostAwareSingleRows: number;
+  freshSecondKolSeenRows: number;
+  freshSecondKolWithin30Rows: number;
+  freshRouteKnownCostAwareSecondWithin30Rows: number;
+  freshNextSprint: string;
   topSecondKols: Array<{ kol: string; count: number }>;
   topTokens: RotationSecondKolOpportunityTokenStats[];
 }
@@ -3203,9 +3215,19 @@ function summarizeSecondKolOpportunityToken(input: {
 function buildRotationSecondKolOpportunityFunnelStats(input: {
   rotationPaperRows: JsonRow[];
   kolTxRows: JsonRow[];
+  routeProofFreshSinceMs?: number;
+  currentSessionStartedAtMs?: number;
 }): RotationSecondKolOpportunityFunnelStats {
   const underfillRows = input.rotationPaperRows.filter(isRotationUnderfillRow);
   const singleKolRows = underfillRows.filter(isSingleKolRow);
+  const freshCutoff = routeProofFreshCutoff(underfillRows, input.routeProofFreshSinceMs, input.currentSessionStartedAtMs);
+  const freshUnderfillRows = freshCutoff.cutoffMs == null
+    ? underfillRows
+    : underfillRows.filter((row) => {
+      const closeMs = rowCloseTimeMs(row);
+      return Number.isFinite(closeMs) && closeMs >= (freshCutoff.cutoffMs ?? 0);
+    });
+  const freshSingleKolRows = freshUnderfillRows.filter(isSingleKolRow);
   const buysByToken = new Map<string, JsonRow[]>();
   for (const row of input.kolTxRows) {
     if (rowKolTxActionNormalized(row) !== 'buy') continue;
@@ -3219,8 +3241,18 @@ function buildRotationSecondKolOpportunityFunnelStats(input: {
     anchorMs: rowRotationAnchorTimeMs(row),
     candidates: secondKolCandidatesForRow(row, buysByToken),
   }));
+  const freshCandidatesByRow = freshSingleKolRows.map((row) => ({
+    row,
+    tokenMint: rowTokenMintDeep(row),
+    anchorMs: rowRotationAnchorTimeMs(row),
+    candidates: secondKolCandidatesForRow(row, buysByToken),
+  }));
   const routeKnownCostAwareSingleRows = singleKolRows.filter(isRouteKnownCostAwareUnderfillRow);
+  const freshRouteKnownCostAwareSingleRows = freshSingleKolRows.filter(isRouteKnownCostAwareUnderfillRow);
   const routeKnownCostAwareSecondWithin30Rows = routeKnownCostAwareSingleRows.filter((row) =>
+    secondKolCandidatesForRow(row, buysByToken).some((item) => item.delaySec <= 30)
+  ).length;
+  const freshRouteKnownCostAwareSecondWithin30Rows = freshRouteKnownCostAwareSingleRows.filter((row) =>
     secondKolCandidatesForRow(row, buysByToken).some((item) => item.delaySec <= 30)
   ).length;
   const secondKolSeenRows = candidatesByRow.filter((item) => item.candidates.length > 0).length;
@@ -3235,6 +3267,15 @@ function buildRotationSecondKolOpportunityFunnelStats(input: {
     Number.isFinite(item.anchorMs) &&
     (buysByToken.get(item.tokenMint) ?? []).length > 0 &&
     item.candidates.length === 0
+  ).length;
+  const freshRowsWithToken = freshCandidatesByRow.filter((item) => item.tokenMint).length;
+  const freshRowsWithEntryTime = freshCandidatesByRow.filter((item) => Number.isFinite(item.anchorMs)).length;
+  const freshRowsWithTxCoverage = freshCandidatesByRow.filter((item) =>
+    item.tokenMint && (buysByToken.get(item.tokenMint) ?? []).length > 0
+  ).length;
+  const freshSecondKolSeenRows = freshCandidatesByRow.filter((item) => item.candidates.length > 0).length;
+  const freshSecondKolWithin30Rows = freshCandidatesByRow.filter((item) =>
+    item.candidates.some((candidate) => candidate.delaySec <= 30)
   ).length;
   const byToken = new Map<string, JsonRow[]>();
   for (const row of singleKolRows) {
@@ -3290,9 +3331,49 @@ function buildRotationSecondKolOpportunityFunnelStats(input: {
     routeKnownCostAwareSecondWithin30Rows,
     potentialReviewRows: routeKnownCostAwareSecondWithin30Rows,
     trueSingleRows,
+    freshCutoffSource: freshCutoff.cutoffSource,
+    freshSince: freshCutoff.cutoffMs == null ? null : new Date(freshCutoff.cutoffMs).toISOString(),
+    freshUnderfillRows: freshUnderfillRows.length,
+    freshSingleKolRows: freshSingleKolRows.length,
+    freshRowsWithToken,
+    freshRowsWithEntryTime,
+    freshRowsWithTxCoverage,
+    freshRouteKnownCostAwareSingleRows: freshRouteKnownCostAwareSingleRows.length,
+    freshSecondKolSeenRows,
+    freshSecondKolWithin30Rows,
+    freshRouteKnownCostAwareSecondWithin30Rows,
+    freshNextSprint: rotationSecondKolOpportunityFreshNextSprint({
+      freshUnderfillRows: freshUnderfillRows.length,
+      freshSingleKolRows: freshSingleKolRows.length,
+      freshRowsWithToken,
+      freshRowsWithEntryTime,
+      freshRowsWithTxCoverage,
+      freshSecondKolWithin30Rows,
+      freshRouteKnownCostAwareSecondWithin30Rows,
+    }),
     topSecondKols: countByLabel(candidatesByRow.flatMap((item) => item.candidates.map((candidate) => candidate.kol)), 'kol').slice(0, 8) as Array<{ kol: string; count: number }>,
     topTokens,
   };
+}
+
+function rotationSecondKolOpportunityFreshNextSprint(input: {
+  freshUnderfillRows: number;
+  freshSingleKolRows: number;
+  freshRowsWithToken: number;
+  freshRowsWithEntryTime: number;
+  freshRowsWithTxCoverage: number;
+  freshSecondKolWithin30Rows: number;
+  freshRouteKnownCostAwareSecondWithin30Rows: number;
+}): string {
+  if (input.freshUnderfillRows === 0) return 'collect_fresh_underfill_closes';
+  if (input.freshSingleKolRows === 0) return 'collect_fresh_single_kol_underfill';
+  if (input.freshRowsWithToken < input.freshSingleKolRows || input.freshRowsWithEntryTime < input.freshSingleKolRows) {
+    return 'repair_fresh_single_kol_metadata';
+  }
+  if (input.freshRowsWithTxCoverage === 0) return 'repair_fresh_kol_tx_coverage';
+  if (input.freshSecondKolWithin30Rows === 0) return 'collect_fresh_2nd_kol_30_rows';
+  if (input.freshRouteKnownCostAwareSecondWithin30Rows === 0) return 'record_fresh_2nd_kol_route_and_cost_aware_evidence';
+  return 'review_fresh_2nd_kol_candidates';
 }
 
 function secondKolWithin30Rows(input: {
@@ -7876,13 +7957,17 @@ function renderRotationSecondKolOpportunityFunnel(row: RotationSecondKolOpportun
         ),
       ].join('\n');
   return [
-    '| verdict | underfill | single KOL | token | entry time | tx coverage | route-known cost-aware single | second seen | <=15s | <=30s | <=60s | late<=180s | route-known cost-aware <=30s | potential review | true single | top second KOLs | reasons |',
-    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|',
+    '| verdict | underfill | single KOL | token | entry time | tx coverage | route-known cost-aware single | second seen | <=15s | <=30s | <=60s | late<=180s | route-known cost-aware <=30s | potential review | true single | fresh cutoff | fresh underfill | fresh single | fresh tx coverage | fresh second <=30s | fresh route-known cost-aware <=30s | fresh next | top second KOLs | reasons |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|---|---|---|',
     `| ${row.verdict} | ${row.underfillRows} | ${row.singleKolRows} | ${row.rowsWithToken} | ` +
       `${row.rowsWithEntryTime} | ${row.rowsWithTxCoverage} | ${row.routeKnownCostAwareSingleRows} | ` +
       `${row.secondKolSeenRows} | ${row.secondKolWithin15Rows} | ${row.secondKolWithin30Rows} | ` +
       `${row.secondKolWithin60Rows} | ${row.secondKolLate180Rows} | ${row.routeKnownCostAwareSecondWithin30Rows} | ` +
       `${row.potentialReviewRows} | ${row.trueSingleRows} | ` +
+      `${row.freshSince ?? 'n/a'} (${row.freshCutoffSource}) | ${row.freshUnderfillRows} | ` +
+      `${row.freshSingleKolRows} | ${row.freshRowsWithTxCoverage}/${row.freshSingleKolRows} | ` +
+      `${row.freshSecondKolWithin30Rows} | ${row.freshRouteKnownCostAwareSecondWithin30Rows} | ` +
+      `${row.freshNextSprint} | ` +
       `${row.topSecondKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'} | ` +
       `${row.reasons.join('; ') || 'n/a'} |`,
     '',
@@ -8595,6 +8680,8 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
   const rotationSecondKolOpportunityFunnel = buildRotationSecondKolOpportunityFunnelStats({
     rotationPaperRows,
     kolTxRows,
+    routeProofFreshSinceMs: args.routeProofFreshSinceMs,
+    currentSessionStartedAtMs: Number.isFinite(currentSessionStartedAtMs) ? currentSessionStartedAtMs : undefined,
   });
   const rotationSecondKolPromotionGap = buildRotationSecondKolPromotionGapStats({
     rotationPaperRows,

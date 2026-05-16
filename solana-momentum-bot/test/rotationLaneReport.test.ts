@@ -827,6 +827,13 @@ describe('rotation-lane-report', () => {
       routeKnownCostAwareSecondWithin30Rows: 1,
       potentialReviewRows: 1,
       trueSingleRows: 0,
+      freshCutoffSource: 'none',
+      freshUnderfillRows: 1,
+      freshSingleKolRows: 1,
+      freshRowsWithTxCoverage: 1,
+      freshSecondKolWithin30Rows: 1,
+      freshRouteKnownCostAwareSecondWithin30Rows: 1,
+      freshNextSprint: 'review_fresh_2nd_kol_candidates',
     });
     expect(report.rotationSecondKolOpportunityFunnel.topSecondKols).toEqual([
       { kol: 'kol-b', count: 1 },
@@ -1073,10 +1080,26 @@ describe('rotation-lane-report', () => {
       nextSprint: 'record_exit_quote_evidence',
       freshNextSprint: 'collect_fresh_2nd_kol_30_rows',
     });
+    expect(report.rotationSecondKolOpportunityFunnel).toMatchObject({
+      verdict: 'COLLECT',
+      underfillRows: 1,
+      singleKolRows: 1,
+      secondKolWithin30Rows: 1,
+      freshCutoffSource: 'current_session',
+      freshSince: '2026-05-03T00:00:00.000Z',
+      freshUnderfillRows: 0,
+      freshSingleKolRows: 0,
+      freshRowsWithTxCoverage: 0,
+      freshSecondKolWithin30Rows: 0,
+      freshRouteKnownCostAwareSecondWithin30Rows: 0,
+      freshNextSprint: 'collect_fresh_underfill_closes',
+    });
 
     const markdown = renderRotationLaneReportMarkdown(report);
     expect(markdown).toContain('historical next');
+    expect(markdown).toContain('fresh underfill');
     expect(markdown).toContain('collect_fresh_2nd_kol_30_rows');
+    expect(markdown).toContain('collect_fresh_underfill_closes');
   });
 
   it('reports posthoc second-KOL underfill rows without treating them as live-equivalent 2+ KOL', async () => {

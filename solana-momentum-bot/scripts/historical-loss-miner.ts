@@ -1,0 +1,919 @@
+import { mkdir, readFile, writeFile } from 'fs/promises';
+import path from 'path';
+
+type JsonRow = Record<string, any>;
+
+interface Args {
+  realtimeDir: string;
+  sinceMs?: number;
+  nowMs?: number;
+  freshWindowSpecs: string[];
+  minRows: number;
+  maxP90Mfe: number;
+  mdOut?: string;
+  jsonOut?: string;
+}
+
+interface LedgerSpec {
+  name: string;
+  fileName: string;
+  mode: 'paper' | 'live';
+  lane: 'rotation' | 'smart_v3' | 'kol';
+}
+
+interface BucketStats {
+  bucketType: string;
+  label: string;
+  rows: number;
+  tokenWins: number;
+  walletWins: number;
+  walletNetSol: number;
+  tokenNetSol: number;
+  avgWalletNetSol: number;
+  zeroMfeRows: number;
+  p50MfePct: number | null;
+  p90MfePct: number | null;
+  actual5xRows: number;
+  killedWalletWinners: number;
+  avoidableWalletLossSol: number;
+  recommendedAction: string;
+}
+
+interface HistoricalLossReport {
+  generatedAt: string;
+  since: string | null;
+  criteria: {
+    minRows: number;
+    maxP90MfePct: number;
+  };
+  ledgers: BucketStats[];
+  counterfactuals: BucketStats[];
+  paperShadowGateQueue: PaperShadowGateQueueItem[];
+  paperShadowBlockCounters: PaperShadowBlockCounter[];
+  conjunctiveProxySplits: ConjunctiveProxySplit[];
+  freshSplitReadiness: FreshSplitReadiness[];
+  freshSplitValidations: FreshSplitValidation[];
+  preEntryProxyCandidates: BucketStats[];
+  postCloseDiagnosticCandidates: BucketStats[];
+  cutCandidates: BucketStats[];
+  exitBuckets: BucketStats[];
+  armExitBuckets: BucketStats[];
+  flagBuckets: BucketStats[];
+}
+
+interface PaperShadowGateQueueItem {
+  rank: number;
+  label: string;
+  lane: string;
+  historicalRows: number;
+  historicalWalletNetSol: number;
+  historicalAvoidableLossSol: number;
+  historicalWalletWins: number;
+  historicalActual5xRows: number;
+  historicalP90MfePct: number | null;
+  shadowGate: string;
+  freshValidationGate: string;
+  verdict: 'READY_FOR_FRESH_SHADOW' | 'REVIEW_FALSE_POSITIVES';
+  nextAction: string;
+}
+
+interface PaperShadowBlockCounter {
+  rank: number;
+  label: string;
+  lane: string;
+  shadowBlockedRows: number;
+  blockedWalletNetSol: number;
+  savedLossSol: number;
+  missedWinnerRows: number;
+  missedWinnerSol: number;
+  missedActual5xRows: number;
+  shadowNetImpactSol: number;
+  verdict: 'WAIT_FRESH_ROWS' | 'PASS_FRESH_SHADOW_REVIEW' | 'REJECT_FALSE_POSITIVES' | 'REJECT_NO_SAVED_LOSS';
+  nextAction: string;
+}
+
+interface ConjunctiveProxySplit {
+  parentLabel: string;
+  conjunctiveLabel: string;
+  label: string;
+  lane: string;
+  rows: number;
+  walletNetSol: number;
+  savedLossSol: number;
+  missedWinnerRows: number;
+  missedWinnerSol: number;
+  missedActual5xRows: number;
+  p90MfePct: number | null;
+  verdict: 'READY_FOR_FRESH_SHADOW' | 'WAIT_SPLIT_SAMPLE';
+  nextAction: string;
+}
+
+interface FreshSplitValidation {
+  window: string;
+  since: string;
+  label: string;
+  lane: string;
+  rows: number;
+  walletNetSol: number;
+  savedLossSol: number;
+  missedWinnerRows: number;
+  missedWinnerSol: number;
+  missedActual5xRows: number;
+  p90MfePct: number | null;
+  verdict: 'READY' | 'WAIT_FRESH_ROWS' | 'REJECT_FALSE_POSITIVES' | 'REJECT_NO_SAVED_LOSS';
+  nextAction: string;
+}
+
+interface FreshSplitReadiness {
+  label: string;
+  lane: string;
+  requiredRows: number;
+  bestWindow: string | null;
+  bestWindowRows: number;
+  rowsRemaining: number;
+  walletNetSol: number;
+  savedLossSol: number;
+  missedWinnerRows: number;
+  missedActual5xRows: number;
+  verdict: 'READY' | 'WAIT_FRESH_ROWS' | 'STALE_NO_24H_ROWS' | 'REJECT_FALSE_POSITIVES' | 'REJECT_NO_SAVED_LOSS';
+  nextAction: string;
+}
+
+const LEDGERS: LedgerSpec[] = [
+  { name: 'rotation_paper', fileName: 'rotation-v1-paper-trades.jsonl', mode: 'paper', lane: 'rotation' },
+  { name: 'rotation_live', fileName: 'rotation-v1-live-trades.jsonl', mode: 'live', lane: 'rotation' },
+  { name: 'smart_v3_paper', fileName: 'smart-v3-paper-trades.jsonl', mode: 'paper', lane: 'smart_v3' },
+  { name: 'smart_v3_live', fileName: 'smart-v3-live-trades.jsonl', mode: 'live', lane: 'smart_v3' },
+  { name: 'kol_live', fileName: 'kol-live-trades.jsonl', mode: 'live', lane: 'kol' },
+];
+
+function parseArgs(argv: string[]): Args {
+  const args: Args = {
+    realtimeDir: path.resolve(process.cwd(), 'data/realtime'),
+    freshWindowSpecs: ['24h', '3d', '7d'],
+    minRows: 20,
+    maxP90Mfe: 0.03,
+  };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === '--realtime-dir') args.realtimeDir = path.resolve(argv[++i]);
+    else if (arg === '--since') args.sinceMs = parseSince(argv[++i]);
+    else if (arg === '--now') args.nowMs = parseSince(argv[++i]);
+    else if (arg === '--fresh-windows') args.freshWindowSpecs = argv[++i].split(',').map((item) => item.trim()).filter(Boolean);
+    else if (arg === '--min-rows') args.minRows = parseNumber(argv[++i], arg);
+    else if (arg === '--max-p90-mfe') args.maxP90Mfe = parseNumber(argv[++i], arg);
+    else if (arg === '--md') args.mdOut = path.resolve(argv[++i]);
+    else if (arg === '--json') args.jsonOut = path.resolve(argv[++i]);
+  }
+  return args;
+}
+
+function parseSince(raw: string): number {
+  const relative = raw.match(/^(\d+)(h|d)$/);
+  if (relative) {
+    const count = Number(relative[1]);
+    return Date.now() - count * (relative[2] === 'h' ? 3600_000 : 24 * 3600_000);
+  }
+  const parsed = Date.parse(raw);
+  if (!Number.isFinite(parsed)) throw new Error(`invalid --since: ${raw}`);
+  return parsed;
+}
+
+function freshWindowStart(raw: string, nowMs: number): number {
+  const relative = raw.match(/^(\d+)(h|d)$/);
+  if (!relative) {
+    const parsed = Date.parse(raw);
+    if (!Number.isFinite(parsed)) throw new Error(`invalid fresh window: ${raw}`);
+    return parsed;
+  }
+  const count = Number(relative[1]);
+  return nowMs - count * (relative[2] === 'h' ? 3600_000 : 24 * 3600_000);
+}
+
+function parseNumber(raw: string, label: string): number {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) throw new Error(`invalid ${label}: ${raw}`);
+  return parsed;
+}
+
+async function readJsonl(filePath: string): Promise<JsonRow[]> {
+  try {
+    const raw = await readFile(filePath, 'utf8');
+    return raw.split('\n').filter(Boolean).flatMap((line) => {
+      try {
+        return [JSON.parse(line) as JsonRow];
+      } catch {
+        return [];
+      }
+    });
+  } catch {
+    return [];
+  }
+}
+
+function num(...values: unknown[]): number | null {
+  for (const value of values) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function str(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return 'unknown';
+}
+
+function timeMs(row: JsonRow): number {
+  return Date.parse(str(row.closedAt, row.exitTimeIso, row.openedAt)) ||
+    (num(row.exitTimeSec) ?? num(row.entryTimeSec) ?? 0) * 1000;
+}
+
+function walletNetSol(row: JsonRow): number {
+  return num(row.netSol, row.walletNetSol, row.netSolWallet) ?? 0;
+}
+
+function tokenNetSol(row: JsonRow): number {
+  return num(row.netSolTokenOnly, row.tokenOnlyNetSol, row.netSol) ?? 0;
+}
+
+function mfePct(row: JsonRow): number {
+  return num(row.mfePctPeak, row.mfePct, row.maxMfePct) ?? 0;
+}
+
+function percentile(values: number[], p: number): number | null {
+  const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+  if (sorted.length === 0) return null;
+  return sorted[Math.floor((sorted.length - 1) * p)];
+}
+
+function flags(row: JsonRow): string[] {
+  const extras = row.extras && typeof row.extras === 'object' ? row.extras : {};
+  return [...new Set([
+    ...(Array.isArray(row.survivalFlags) ? row.survivalFlags : []),
+    ...(Array.isArray(row.riskFlags) ? row.riskFlags : []),
+    ...(Array.isArray(row.smartV3LiveBlockFlags) ? row.smartV3LiveBlockFlags : []),
+    ...(Array.isArray(extras.survivalFlags) ? extras.survivalFlags : []),
+  ].map(String))];
+}
+
+function isActionableFlag(flag: string): boolean {
+  return flag !== 'DECIMALS_SECURITY_CLIENT' &&
+    !flag.startsWith('LIVE_DECIMALS_') &&
+    !flag.startsWith('SELL_DECIMALS_');
+}
+
+function isPreEntryProxyFlag(flag: string): boolean {
+  if (!isActionableFlag(flag)) return false;
+  if (flag.includes('LIVE_CANARY')) return false;
+  if (flag.startsWith('LIVE_GATE_')) return false;
+  if (flag.includes('_ENABLED') || flag.includes('_DISABLED')) return false;
+  if (flag.startsWith('ROTATION_FLOW_REASON_')) return false;
+  if (flag.startsWith('ROTATION_FLOW_CLOSE_')) return false;
+  if (flag.startsWith('ROTATION_FLOW_LIVE_CLOSE_')) return false;
+  if (flag.startsWith('ROTATION_FLOW_REDUCE_')) return false;
+  return true;
+}
+
+function isConjunctiveSplitFlag(flag: string): boolean {
+  if (!isPreEntryProxyFlag(flag)) return false;
+  if (flag.includes('PAPER')) return false;
+  if (flag.includes('SHADOW')) return false;
+  if (flag.includes('LIVE_DISABLED')) return false;
+  if (flag.includes('_GROSS_BUY_SOL_')) return false;
+  if (flag.includes('_RESPONSE_PCT_')) return false;
+  if (flag.startsWith('EXIT_')) return false;
+  if (flag.startsWith('EXT_')) return false;
+  if (flag.startsWith('UNCLEAN_TOKEN:top10_')) return false;
+  return true;
+}
+
+function summarize(bucketType: string, label: string, rows: JsonRow[]): BucketStats {
+  const wallet = rows.reduce((sum, row) => sum + walletNetSol(row), 0);
+  const token = rows.reduce((sum, row) => sum + tokenNetSol(row), 0);
+  const mfes = rows.map(mfePct);
+  const walletLoss = rows.filter((row) => walletNetSol(row) < 0);
+  return {
+    bucketType,
+    label,
+    rows: rows.length,
+    tokenWins: rows.filter((row) => tokenNetSol(row) > 0).length,
+    walletWins: rows.filter((row) => walletNetSol(row) > 0).length,
+    walletNetSol: round(wallet),
+    tokenNetSol: round(token),
+    avgWalletNetSol: round(wallet / Math.max(1, rows.length)),
+    zeroMfeRows: rows.filter((row) => mfePct(row) === 0).length,
+    p50MfePct: percentile(mfes, 0.5),
+    p90MfePct: percentile(mfes, 0.9),
+    actual5xRows: rows.filter((row) => mfePct(row) >= 4).length,
+    killedWalletWinners: rows.filter((row) => walletNetSol(row) > 0).length,
+    avoidableWalletLossSol: round(walletLoss.reduce((sum, row) => sum - walletNetSol(row), 0)),
+    recommendedAction: 'review',
+  };
+}
+
+function round(value: number): number {
+  return Number(value.toFixed(6));
+}
+
+function groups(rows: JsonRow[], bucketType: string, labelsFor: (row: JsonRow) => string[]): BucketStats[] {
+  const buckets = new Map<string, JsonRow[]>();
+  for (const row of rows) {
+    for (const label of labelsFor(row)) {
+      buckets.set(label, [...(buckets.get(label) ?? []), row]);
+    }
+  }
+  return [...buckets.entries()]
+    .map(([label, scoped]) => summarize(bucketType, label, scoped))
+    .sort((a, b) => a.walletNetSol - b.walletNetSol || b.rows - a.rows);
+}
+
+function candidateAction(bucket: BucketStats): string {
+  if (bucket.bucketType === 'flag') return 'paper_shadow_pre_entry_proxy_gate';
+  if (bucket.label.includes('rotation_dead_on_arrival')) return 'rotation_pre_entry_doa_block_or_paper_fallback';
+  if (bucket.label.includes('entry_advantage_emergency_exit')) return 'rotation_entry_advantage_pretrade_block';
+  if (bucket.label.includes('probe_hard_cut')) return 'tighten_pre_entry_or_hardcut_admission';
+  if (bucket.label.includes('mae_fast_fail')) return 'convert_repeated_mae_fast_fail_to_no_trade';
+  return 'counterfactual_before_live_policy';
+}
+
+function withAction(bucket: BucketStats): BucketStats {
+  return { ...bucket, recommendedAction: candidateAction(bucket) };
+}
+
+function cutCandidates(buckets: BucketStats[], args: Args): BucketStats[] {
+  return buckets
+    .filter((bucket) =>
+      bucket.rows >= args.minRows &&
+      bucket.walletNetSol < 0 &&
+      (bucket.p90MfePct ?? 0) <= args.maxP90Mfe &&
+      bucket.actual5xRows === 0
+    )
+    .map(withAction)
+    .sort((a, b) =>
+      b.avoidableWalletLossSol - a.avoidableWalletLossSol ||
+      a.killedWalletWinners - b.killedWalletWinners ||
+      a.label.localeCompare(b.label)
+    );
+}
+
+function isLane(row: JsonRow, lane: string): boolean {
+  return row.__lane === lane || str(row.armName, row.profileArm, row.entryReason).includes(lane);
+}
+
+function laneFromFlag(label: string): string {
+  if (label.startsWith('SMART_V3_')) return 'smart_v3';
+  if (label.startsWith('ROTATION_')) return 'rotation';
+  return 'mixed';
+}
+
+function buildPaperShadowGateQueue(
+  buckets: BucketStats[],
+  args: Args
+): PaperShadowGateQueueItem[] {
+  const requiredFreshRows = Math.max(30, args.minRows);
+  return buckets.map((bucket, index) => {
+    const verdict = bucket.walletWins > 0
+      ? 'REVIEW_FALSE_POSITIVES'
+      : 'READY_FOR_FRESH_SHADOW';
+    return {
+      rank: index + 1,
+      label: bucket.label,
+      lane: laneFromFlag(bucket.label),
+      historicalRows: bucket.rows,
+      historicalWalletNetSol: bucket.walletNetSol,
+      historicalAvoidableLossSol: bucket.avoidableWalletLossSol,
+      historicalWalletWins: bucket.walletWins,
+      historicalActual5xRows: bucket.actual5xRows,
+      historicalP90MfePct: bucket.p90MfePct,
+      shadowGate: `if pre-entry flags contain ${bucket.label}, mark paperShadowBlocked=true`,
+      freshValidationGate:
+        `require >=${requiredFreshRows} fresh rows, walletNet<0, actual5x=0, walletWins=0 before live review`,
+      verdict,
+      nextAction: verdict === 'READY_FOR_FRESH_SHADOW'
+        ? 'add report-only paper shadow block counter and compare saved loss vs missed winner'
+        : 'split with an extra conjunctive filter before any paper shadow block',
+    };
+  });
+}
+
+function buildPaperShadowBlockCounters(
+  queue: PaperShadowGateQueueItem[],
+  rows: JsonRow[],
+  args: Args
+): PaperShadowBlockCounter[] {
+  const requiredFreshRows = Math.max(30, args.minRows);
+  return queue.map((item) => {
+    const blockedRows = rows.filter((row) => flags(row).includes(item.label));
+    const blockedWalletNetSol = round(blockedRows.reduce((sum, row) => sum + walletNetSol(row), 0));
+    const savedLossSol = round(blockedRows
+      .filter((row) => walletNetSol(row) < 0)
+      .reduce((sum, row) => sum - walletNetSol(row), 0));
+    const missedWinnerRows = blockedRows.filter((row) => walletNetSol(row) > 0).length;
+    const missedWinnerSol = round(blockedRows
+      .filter((row) => walletNetSol(row) > 0)
+      .reduce((sum, row) => sum + walletNetSol(row), 0));
+    const missedActual5xRows = blockedRows.filter((row) => mfePct(row) >= 4).length;
+    const shadowNetImpactSol = round(-blockedWalletNetSol);
+    const verdict = shadowBlockVerdict({
+      rows: blockedRows.length,
+      requiredFreshRows,
+      missedWinnerRows,
+      missedActual5xRows,
+      shadowNetImpactSol,
+    });
+    return {
+      rank: item.rank,
+      label: item.label,
+      lane: item.lane,
+      shadowBlockedRows: blockedRows.length,
+      blockedWalletNetSol,
+      savedLossSol,
+      missedWinnerRows,
+      missedWinnerSol,
+      missedActual5xRows,
+      shadowNetImpactSol,
+      verdict,
+      nextAction: shadowBlockNextAction(verdict),
+    };
+  });
+}
+
+function shadowBlockVerdict(input: {
+  rows: number;
+  requiredFreshRows: number;
+  missedWinnerRows: number;
+  missedActual5xRows: number;
+  shadowNetImpactSol: number;
+}): PaperShadowBlockCounter['verdict'] {
+  if (input.missedWinnerRows > 0 || input.missedActual5xRows > 0) return 'REJECT_FALSE_POSITIVES';
+  if (input.rows < input.requiredFreshRows) return 'WAIT_FRESH_ROWS';
+  if (input.shadowNetImpactSol <= 0) return 'REJECT_NO_SAVED_LOSS';
+  return 'PASS_FRESH_SHADOW_REVIEW';
+}
+
+function shadowBlockNextAction(verdict: PaperShadowBlockCounter['verdict']): string {
+  if (verdict === 'PASS_FRESH_SHADOW_REVIEW') return 'promote to paper-only admission block review';
+  if (verdict === 'WAIT_FRESH_ROWS') return 'keep collecting fresh paper shadow rows';
+  if (verdict === 'REJECT_FALSE_POSITIVES') return 'split or discard before any block';
+  return 'discard unless a narrower conjunctive proxy is found';
+}
+
+function buildConjunctiveProxySplits(
+  counters: PaperShadowBlockCounter[],
+  rows: JsonRow[],
+  args: Args
+): ConjunctiveProxySplit[] {
+  const splitMinRows = Math.max(2, Math.ceil(args.minRows / 2));
+  const splits: ConjunctiveProxySplit[] = [];
+  for (const counter of counters.filter((item) => item.verdict === 'REJECT_FALSE_POSITIVES')) {
+    const parentRows = rows.filter((row) => flags(row).includes(counter.label));
+    const coFlags = [...new Set(parentRows.flatMap((row) => flags(row)))]
+      .filter((flag) => flag !== counter.label && isConjunctiveSplitFlag(flag));
+    for (const coFlag of coFlags) {
+      const splitRows = parentRows.filter((row) => flags(row).includes(coFlag));
+      const item = buildConjunctiveProxySplit(counter, coFlag, splitRows, splitMinRows);
+      if (
+        item.verdict === 'READY_FOR_FRESH_SHADOW' &&
+        item.walletNetSol < 0 &&
+        item.missedWinnerRows === 0 &&
+        item.missedActual5xRows === 0 &&
+        (item.p90MfePct ?? 0) <= args.maxP90Mfe
+      ) {
+        splits.push(item);
+      }
+    }
+  }
+  return splits
+    .sort((a, b) => b.savedLossSol - a.savedLossSol || b.rows - a.rows || a.label.localeCompare(b.label))
+    .slice(0, 25);
+}
+
+function buildConjunctiveProxySplit(
+  parent: PaperShadowBlockCounter,
+  conjunctiveLabel: string,
+  rows: JsonRow[],
+  splitMinRows: number
+): ConjunctiveProxySplit {
+  const walletNetSolValue = round(rows.reduce((sum, row) => sum + walletNetSol(row), 0));
+  const savedLossSol = round(rows
+    .filter((row) => walletNetSol(row) < 0)
+    .reduce((sum, row) => sum - walletNetSol(row), 0));
+  const missedWinnerRows = rows.filter((row) => walletNetSol(row) > 0).length;
+  const missedWinnerSol = round(rows
+    .filter((row) => walletNetSol(row) > 0)
+    .reduce((sum, row) => sum + walletNetSol(row), 0));
+  const missedActual5xRows = rows.filter((row) => mfePct(row) >= 4).length;
+  const verdict = rows.length >= splitMinRows
+    ? 'READY_FOR_FRESH_SHADOW'
+    : 'WAIT_SPLIT_SAMPLE';
+  return {
+    parentLabel: parent.label,
+    conjunctiveLabel,
+    label: `${parent.label} + ${conjunctiveLabel}`,
+    lane: parent.lane,
+    rows: rows.length,
+    walletNetSol: walletNetSolValue,
+    savedLossSol,
+    missedWinnerRows,
+    missedWinnerSol,
+    missedActual5xRows,
+    p90MfePct: percentile(rows.map(mfePct), 0.9),
+    verdict,
+    nextAction: verdict === 'READY_FOR_FRESH_SHADOW'
+      ? 'track conjunctive paper shadow block counter'
+      : 'keep collecting split sample before review',
+  };
+}
+
+function buildFreshSplitValidations(
+  splits: ConjunctiveProxySplit[],
+  rows: JsonRow[],
+  args: Args
+): FreshSplitValidation[] {
+  const requiredFreshRows = Math.max(30, args.minRows);
+  const nowMs = args.nowMs ?? Date.now();
+  return args.freshWindowSpecs.flatMap((window) => {
+    const sinceMs = freshWindowStart(window, nowMs);
+    const freshRows = rows.filter((row) => timeMs(row) >= sinceMs);
+    return splits.map((split) => {
+      const splitRows = freshRows.filter((row) => {
+        const rowFlags = flags(row);
+        return rowFlags.includes(split.parentLabel) && rowFlags.includes(split.conjunctiveLabel);
+      });
+      return buildFreshSplitValidation(window, sinceMs, split, splitRows, requiredFreshRows);
+    });
+  });
+}
+
+function buildFreshSplitValidation(
+  window: string,
+  sinceMs: number,
+  split: ConjunctiveProxySplit,
+  rows: JsonRow[],
+  requiredFreshRows: number
+): FreshSplitValidation {
+  const walletNetSolValue = round(rows.reduce((sum, row) => sum + walletNetSol(row), 0));
+  const savedLossSol = round(rows
+    .filter((row) => walletNetSol(row) < 0)
+    .reduce((sum, row) => sum - walletNetSol(row), 0));
+  const missedWinnerRows = rows.filter((row) => walletNetSol(row) > 0).length;
+  const missedWinnerSol = round(rows
+    .filter((row) => walletNetSol(row) > 0)
+    .reduce((sum, row) => sum + walletNetSol(row), 0));
+  const missedActual5xRows = rows.filter((row) => mfePct(row) >= 4).length;
+  const shadowNetImpactSol = round(-walletNetSolValue);
+  const verdict = freshSplitVerdict({
+    rows: rows.length,
+    requiredFreshRows,
+    missedWinnerRows,
+    missedActual5xRows,
+    shadowNetImpactSol,
+  });
+  return {
+    window,
+    since: new Date(sinceMs).toISOString(),
+    label: split.label,
+    lane: split.lane,
+    rows: rows.length,
+    walletNetSol: walletNetSolValue,
+    savedLossSol,
+    missedWinnerRows,
+    missedWinnerSol,
+    missedActual5xRows,
+    p90MfePct: percentile(rows.map(mfePct), 0.9),
+    verdict,
+    nextAction: freshSplitNextAction(verdict),
+  };
+}
+
+function freshSplitVerdict(input: {
+  rows: number;
+  requiredFreshRows: number;
+  missedWinnerRows: number;
+  missedActual5xRows: number;
+  shadowNetImpactSol: number;
+}): FreshSplitValidation['verdict'] {
+  if (input.missedWinnerRows > 0 || input.missedActual5xRows > 0) return 'REJECT_FALSE_POSITIVES';
+  if (input.rows < input.requiredFreshRows) return 'WAIT_FRESH_ROWS';
+  if (input.shadowNetImpactSol <= 0) return 'REJECT_NO_SAVED_LOSS';
+  return 'READY';
+}
+
+function freshSplitNextAction(verdict: FreshSplitValidation['verdict']): string {
+  if (verdict === 'READY') return 'eligible for paper-only admission block review';
+  if (verdict === 'WAIT_FRESH_ROWS') return 'keep collecting fresh split rows';
+  if (verdict === 'REJECT_FALSE_POSITIVES') return 'reject or split again before any block';
+  return 'discard unless narrower fresh-positive split is found';
+}
+
+function buildFreshSplitReadiness(
+  validations: FreshSplitValidation[],
+  args: Args
+): FreshSplitReadiness[] {
+  const requiredRows = Math.max(30, args.minRows);
+  const byLabel = new Map<string, FreshSplitValidation[]>();
+  for (const validation of validations) {
+    byLabel.set(validation.label, [...(byLabel.get(validation.label) ?? []), validation]);
+  }
+  return [...byLabel.values()]
+    .map((rows) => buildFreshSplitReadinessItem(rows, requiredRows))
+    .sort((a, b) =>
+      readinessRank(a.verdict) - readinessRank(b.verdict) ||
+      b.bestWindowRows - a.bestWindowRows ||
+      a.label.localeCompare(b.label)
+    );
+}
+
+function buildFreshSplitReadinessItem(
+  rows: FreshSplitValidation[],
+  requiredRows: number
+): FreshSplitReadiness {
+  const best = rows.reduce<FreshSplitValidation | null>((current, row) => {
+    if (!current || row.rows > current.rows) return row;
+    return current;
+  }, null);
+  const rejects = rows.find((row) => row.verdict === 'REJECT_FALSE_POSITIVES' || row.verdict === 'REJECT_NO_SAVED_LOSS');
+  const ready = rows.find((row) => row.verdict === 'READY');
+  const window24h = rows.find((row) => row.window === '24h');
+  const verdict = readinessVerdict({ rejects, ready, best, window24h });
+  return {
+    label: best?.label ?? 'unknown',
+    lane: best?.lane ?? 'unknown',
+    requiredRows,
+    bestWindow: best?.window ?? null,
+    bestWindowRows: best?.rows ?? 0,
+    rowsRemaining: Math.max(0, requiredRows - (best?.rows ?? 0)),
+    walletNetSol: best?.walletNetSol ?? 0,
+    savedLossSol: best?.savedLossSol ?? 0,
+    missedWinnerRows: best?.missedWinnerRows ?? 0,
+    missedActual5xRows: best?.missedActual5xRows ?? 0,
+    verdict,
+    nextAction: readinessNextAction(verdict),
+  };
+}
+
+function readinessVerdict(input: {
+  rejects?: FreshSplitValidation;
+  ready?: FreshSplitValidation;
+  best: FreshSplitValidation | null;
+  window24h?: FreshSplitValidation;
+}): FreshSplitReadiness['verdict'] {
+  if (input.rejects?.verdict === 'REJECT_FALSE_POSITIVES') return 'REJECT_FALSE_POSITIVES';
+  if (input.rejects?.verdict === 'REJECT_NO_SAVED_LOSS') return 'REJECT_NO_SAVED_LOSS';
+  if (input.ready) return 'READY';
+  if ((input.window24h?.rows ?? 0) === 0 && (input.best?.rows ?? 0) > 0) return 'STALE_NO_24H_ROWS';
+  return 'WAIT_FRESH_ROWS';
+}
+
+function readinessRank(verdict: FreshSplitReadiness['verdict']): number {
+  if (verdict === 'READY') return 0;
+  if (verdict === 'WAIT_FRESH_ROWS') return 1;
+  if (verdict === 'STALE_NO_24H_ROWS') return 2;
+  return 3;
+}
+
+function readinessNextAction(verdict: FreshSplitReadiness['verdict']): string {
+  if (verdict === 'READY') return 'review paper-only admission block';
+  if (verdict === 'WAIT_FRESH_ROWS') return 'continue collecting fresh rows';
+  if (verdict === 'STALE_NO_24H_ROWS') return 'do not promote; wait for current-session rows';
+  if (verdict === 'REJECT_FALSE_POSITIVES') return 'reject or split again';
+  return 'discard unless fresh saved-loss evidence returns';
+}
+
+function counterfactuals(rows: JsonRow[]): BucketStats[] {
+  const specs: Array<{ label: string; predicate: (row: JsonRow) => boolean }> = [
+    {
+      label: 'counterfactual:zero_mfe_wallet_loss',
+      predicate: (row) => mfePct(row) === 0 && walletNetSol(row) < 0,
+    },
+    {
+      label: 'counterfactual:rotation_dead_on_arrival',
+      predicate: (row) => str(row.exitReason, row.closeReason) === 'rotation_dead_on_arrival',
+    },
+    {
+      label: 'counterfactual:rotation_entry_advantage_emergency_exit',
+      predicate: (row) => str(row.exitReason, row.closeReason) === 'entry_advantage_emergency_exit',
+    },
+    {
+      label: 'counterfactual:rotation_mae_fast_fail',
+      predicate: (row) => str(row.exitReason, row.closeReason) === 'rotation_mae_fast_fail',
+    },
+    {
+      label: 'counterfactual:smart_v3_mae_fast_fail',
+      predicate: (row) => str(row.exitReason, row.closeReason) === 'smart_v3_mae_fast_fail',
+    },
+    {
+      label: 'counterfactual:smart_v3_low_mfe_probe_hard_cut',
+      predicate: (row) =>
+        isLane(row, 'smart_v3') &&
+        str(row.exitReason, row.closeReason) === 'probe_hard_cut' &&
+        mfePct(row) <= 0.03,
+    },
+  ];
+  return specs
+    .map((spec) => withAction(summarize('counterfactual', spec.label, rows.filter(spec.predicate))))
+    .filter((bucket) => bucket.rows > 0)
+    .sort((a, b) => b.avoidableWalletLossSol - a.avoidableWalletLossSol);
+}
+
+export async function buildHistoricalLossReport(args: Args): Promise<HistoricalLossReport> {
+  const rowsByLedger = await Promise.all(LEDGERS.map(async (spec) => {
+    const rows = await readJsonl(path.join(args.realtimeDir, spec.fileName));
+    const recentRows = args.sinceMs == null ? rows : rows.filter((row) => timeMs(row) >= (args.sinceMs ?? 0));
+    return { spec, rows: recentRows.map((row) => ({ ...row, __ledger: spec.name, __mode: spec.mode, __lane: spec.lane })) };
+  }));
+  const allRows = rowsByLedger.flatMap((item) => item.rows);
+  const ledgers = rowsByLedger.map((item) => summarize('ledger', item.spec.name, item.rows));
+  const exitBuckets = groups(allRows, 'exit', (row) => [str(row.exitReason, row.closeReason)]);
+  const armExitBuckets = groups(allRows, 'arm_exit', (row) => [
+    `${str(row.profileArm, row.armName, row.__lane)}::${str(row.exitReason, row.closeReason)}`,
+  ]);
+  const flagBuckets = groups(allRows, 'flag', (row) => flags(row).filter(isActionableFlag));
+  const postCloseDiagnosticCandidates = cutCandidates([...exitBuckets, ...armExitBuckets], args);
+  const preEntryProxyCandidates = cutCandidates(
+    flagBuckets.filter((bucket) => isPreEntryProxyFlag(bucket.label)),
+    args
+  );
+  const paperShadowGateQueue = buildPaperShadowGateQueue(preEntryProxyCandidates, args);
+  const paperShadowBlockCounters = buildPaperShadowBlockCounters(paperShadowGateQueue, allRows, args);
+  const conjunctiveProxySplits = buildConjunctiveProxySplits(paperShadowBlockCounters, allRows, args);
+  const freshSplitValidations = buildFreshSplitValidations(conjunctiveProxySplits, allRows, args);
+  return {
+    generatedAt: new Date().toISOString(),
+    since: args.sinceMs == null ? null : new Date(args.sinceMs).toISOString(),
+    criteria: { minRows: args.minRows, maxP90MfePct: args.maxP90Mfe },
+    ledgers,
+    counterfactuals: counterfactuals(allRows),
+    paperShadowGateQueue,
+    paperShadowBlockCounters,
+    conjunctiveProxySplits,
+    freshSplitReadiness: buildFreshSplitReadiness(freshSplitValidations, args),
+    freshSplitValidations,
+    preEntryProxyCandidates,
+    postCloseDiagnosticCandidates,
+    cutCandidates: cutCandidates([...exitBuckets, ...armExitBuckets, ...flagBuckets], args),
+    exitBuckets: exitBuckets.slice(0, 20),
+    armExitBuckets: armExitBuckets.slice(0, 30),
+    flagBuckets: flagBuckets.slice(0, 30),
+  };
+}
+
+function renderTable(rows: BucketStats[]): string {
+  if (rows.length === 0) return '_No rows._';
+  return [
+    '| bucket | label | rows | W/L wallet | wallet SOL | token SOL | avg wallet | zero MFE | p90 MFE | 5x | killed wallet winners | avoidable loss | action |',
+    '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|',
+    ...rows.map((row) =>
+      `| ${row.bucketType} | ${row.label} | ${row.rows} | ${row.walletWins}/${row.rows - row.walletWins} | ` +
+      `${row.walletNetSol.toFixed(6)} | ${row.tokenNetSol.toFixed(6)} | ${row.avgWalletNetSol.toFixed(6)} | ` +
+      `${row.zeroMfeRows} | ${row.p90MfePct == null ? 'n/a' : (row.p90MfePct * 100).toFixed(2) + '%'} | ` +
+      `${row.actual5xRows} | ${row.killedWalletWinners} | ${row.avoidableWalletLossSol.toFixed(6)} | ${row.recommendedAction} |`
+    ),
+  ].join('\n');
+}
+
+function renderPaperShadowGateQueue(rows: PaperShadowGateQueueItem[]): string {
+  if (rows.length === 0) return '_No paper shadow gate candidates._';
+  return [
+    '| rank | label | lane | historical rows | wallet SOL | avoidable loss | W wins | 5x | p90 MFE | verdict | fresh validation | next action |',
+    '|---:|---|---|---:|---:|---:|---:|---:|---:|---|---|---|',
+    ...rows.map((row) =>
+      `| ${row.rank} | ${row.label} | ${row.lane} | ${row.historicalRows} | ` +
+      `${row.historicalWalletNetSol.toFixed(6)} | ${row.historicalAvoidableLossSol.toFixed(6)} | ` +
+      `${row.historicalWalletWins} | ${row.historicalActual5xRows} | ` +
+      `${row.historicalP90MfePct == null ? 'n/a' : (row.historicalP90MfePct * 100).toFixed(2) + '%'} | ` +
+      `${row.verdict} | ${row.freshValidationGate} | ${row.nextAction} |`
+    ),
+  ].join('\n');
+}
+
+function renderPaperShadowBlockCounters(rows: PaperShadowBlockCounter[]): string {
+  if (rows.length === 0) return '_No paper shadow block counters._';
+  return [
+    '| rank | label | lane | shadow blocked rows | blocked wallet SOL | saved loss | missed winners | missed winner SOL | missed 5x | net impact | verdict | next action |',
+    '|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|',
+    ...rows.map((row) =>
+      `| ${row.rank} | ${row.label} | ${row.lane} | ${row.shadowBlockedRows} | ` +
+      `${row.blockedWalletNetSol.toFixed(6)} | ${row.savedLossSol.toFixed(6)} | ` +
+      `${row.missedWinnerRows} | ${row.missedWinnerSol.toFixed(6)} | ${row.missedActual5xRows} | ` +
+      `${row.shadowNetImpactSol.toFixed(6)} | ${row.verdict} | ${row.nextAction} |`
+    ),
+  ].join('\n');
+}
+
+function renderConjunctiveProxySplits(rows: ConjunctiveProxySplit[]): string {
+  if (rows.length === 0) return '_No conjunctive proxy splits._';
+  return [
+    '| label | lane | rows | wallet SOL | saved loss | missed winners | missed winner SOL | missed 5x | p90 MFE | verdict | next action |',
+    '|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|',
+    ...rows.map((row) =>
+      `| ${row.label} | ${row.lane} | ${row.rows} | ${row.walletNetSol.toFixed(6)} | ` +
+      `${row.savedLossSol.toFixed(6)} | ${row.missedWinnerRows} | ${row.missedWinnerSol.toFixed(6)} | ` +
+      `${row.missedActual5xRows} | ${row.p90MfePct == null ? 'n/a' : (row.p90MfePct * 100).toFixed(2) + '%'} | ` +
+      `${row.verdict} | ${row.nextAction} |`
+    ),
+  ].join('\n');
+}
+
+function renderFreshSplitValidations(rows: FreshSplitValidation[]): string {
+  if (rows.length === 0) return '_No fresh split validations._';
+  return [
+    '| window | since | label | lane | rows | wallet SOL | saved loss | missed winners | missed winner SOL | missed 5x | p90 MFE | verdict | next action |',
+    '|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|',
+    ...rows.map((row) =>
+      `| ${row.window} | ${row.since} | ${row.label} | ${row.lane} | ${row.rows} | ` +
+      `${row.walletNetSol.toFixed(6)} | ${row.savedLossSol.toFixed(6)} | ${row.missedWinnerRows} | ` +
+      `${row.missedWinnerSol.toFixed(6)} | ${row.missedActual5xRows} | ` +
+      `${row.p90MfePct == null ? 'n/a' : (row.p90MfePct * 100).toFixed(2) + '%'} | ` +
+      `${row.verdict} | ${row.nextAction} |`
+    ),
+  ].join('\n');
+}
+
+function renderFreshSplitReadiness(rows: FreshSplitReadiness[]): string {
+  if (rows.length === 0) return '_No fresh split readiness rows._';
+  return [
+    '| label | lane | verdict | best window | rows | required | remaining | wallet SOL | saved loss | missed winners | missed 5x | next action |',
+    '|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|',
+    ...rows.map((row) =>
+      `| ${row.label} | ${row.lane} | ${row.verdict} | ${row.bestWindow ?? 'n/a'} | ` +
+      `${row.bestWindowRows} | ${row.requiredRows} | ${row.rowsRemaining} | ` +
+      `${row.walletNetSol.toFixed(6)} | ${row.savedLossSol.toFixed(6)} | ` +
+      `${row.missedWinnerRows} | ${row.missedActual5xRows} | ${row.nextAction} |`
+    ),
+  ].join('\n');
+}
+
+export function renderHistoricalLossReport(report: HistoricalLossReport): string {
+  return [
+    `# Historical Loss Miner (${report.generatedAt})`,
+    '',
+    `Since: ${report.since ?? 'all data'}`,
+    `Criteria: minRows=${report.criteria.minRows}, p90Mfe<=${(report.criteria.maxP90MfePct * 100).toFixed(2)}%, actual5x=0, walletNet<0`,
+    'Policy note: pre-entry proxy candidates are the leakage-safe paper-shadow targets. Post-close diagnostics explain loss modes, but are not direct live entry gates.',
+    '',
+    '## Paper Shadow Gate Queue',
+    renderPaperShadowGateQueue(report.paperShadowGateQueue),
+    '',
+    '## Paper Shadow Block Counters',
+    renderPaperShadowBlockCounters(report.paperShadowBlockCounters),
+    '',
+    '## Conjunctive Proxy Splits',
+    renderConjunctiveProxySplits(report.conjunctiveProxySplits),
+    '',
+    '## Fresh Split Validation',
+    renderFreshSplitValidations(report.freshSplitValidations),
+    '',
+    '## Fresh Split Readiness',
+    renderFreshSplitReadiness(report.freshSplitReadiness),
+    '',
+    '## Pre-Entry Proxy Candidates',
+    renderTable(report.preEntryProxyCandidates.slice(0, 25)),
+    '',
+    '## Post-Close Diagnostic Candidates',
+    renderTable(report.postCloseDiagnosticCandidates.slice(0, 25)),
+    '',
+    '## Cut Candidates',
+    renderTable(report.cutCandidates.slice(0, 25)),
+    '',
+    '## Counterfactual Sets',
+    renderTable(report.counterfactuals),
+    '',
+    '## Ledger Summary',
+    renderTable(report.ledgers),
+    '',
+    '## Exit Buckets',
+    renderTable(report.exitBuckets),
+    '',
+    '## Arm Exit Buckets',
+    renderTable(report.armExitBuckets),
+    '',
+    '## Actionable Flag Buckets',
+    renderTable(report.flagBuckets),
+  ].join('\n');
+}
+
+async function main(): Promise<void> {
+  const args = parseArgs(process.argv.slice(2));
+  const report = await buildHistoricalLossReport(args);
+  const markdown = renderHistoricalLossReport(report);
+  if (args.mdOut) {
+    await mkdir(path.dirname(args.mdOut), { recursive: true });
+    await writeFile(args.mdOut, markdown, 'utf8');
+  }
+  if (args.jsonOut) {
+    await mkdir(path.dirname(args.jsonOut), { recursive: true });
+    await writeFile(args.jsonOut, JSON.stringify(report, null, 2) + '\n', 'utf8');
+  }
+  if (!args.mdOut && !args.jsonOut) process.stdout.write(markdown);
+}
+
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

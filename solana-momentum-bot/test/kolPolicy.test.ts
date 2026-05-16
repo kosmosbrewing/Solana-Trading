@@ -100,6 +100,32 @@ describe('kol shadow policy', () => {
     expect(decision.reasons).toContain('live_fresh_reference_reject');
   });
 
+  it('preserves policy source context for reject observer attribution', () => {
+    const decision = evaluateKolShadowPolicy({
+      ...BASE,
+      eventKind: 'reject',
+      currentAction: 'block',
+      source: 'reject_observer',
+      armName: 'rotation_underfill_v1',
+      entryReason: 'rotation_v1',
+      rejectReason: 'smart_v3_no_trigger',
+      parameterVersion: 'rotation-underfill-v1.0.0',
+      signalSource: 'rotation_underfill_v1',
+      survivalReason: 'kol_alpha_decay',
+      survivalFlags: ['KOL_ALPHA_DECAY'],
+    });
+
+    expect(decision.context).toEqual(expect.objectContaining({
+      source: 'reject_observer',
+      armName: 'rotation_underfill_v1',
+      entryReason: 'rotation_v1',
+      rejectReason: 'smart_v3_no_trigger',
+      parameterVersion: 'rotation-underfill-v1.0.0',
+      signalSource: 'rotation_underfill_v1',
+      survivalReason: 'kol_alpha_decay',
+    }));
+  });
+
   it('treats sell-route failure as structural exit on close', () => {
     const decision = evaluateKolShadowPolicy({
       ...BASE,

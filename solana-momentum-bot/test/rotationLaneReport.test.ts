@@ -1555,6 +1555,1260 @@ describe('rotation-lane-report', () => {
     expect(markdown).toContain('deploy drift likely');
   });
 
+  it('waits when unmarked closes are older than the current runtime session', async () => {
+    const armName = 'rotation_underfill_cost_aware_exit_v2';
+    await writeFile(path.join(dir, 'current-session.json'), JSON.stringify({
+      version: 1,
+      startedAt: '2026-05-02T00:10:00.000Z',
+      tradingMode: 'live',
+    }));
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([
+      {
+        strategy: 'kol_hunter',
+        lane: 'kol_hunter',
+        armName: 'rotation_underfill_v1',
+        profileArm: armName,
+        entryArm: 'rotation_underfill_v1',
+        kolEntryReason: 'rotation_v1',
+        positionId: 'pre-session-unmarked-close',
+        closedAt: '2026-05-02T00:00:30.000Z',
+        exitReason: 'winner_trailing_t1',
+        holdSec: 30,
+        netSol: 0.001,
+        netSolTokenOnly: 0.0012,
+        rotationMonetizableEdge: { pass: true, costRatio: 0.04 },
+        survivalFlags: ['ROTATION_UNDERFILL_KOLS_2'],
+      },
+    ]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [15, 30],
+      roundTripCostPct: 0.005,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.routeProofFreshness).toMatchObject({
+      verdict: 'WAIT_FRESH_CLOSES',
+      cutoffSource: 'current_session',
+      freshSince: '2026-05-02T00:10:00.000Z',
+      underfillRows: 1,
+      freshRows: 0,
+      freshNoTradeEvents: 0,
+      freshNoTradeRows: 0,
+      freshMissedAlphaEvents: 0,
+      freshMissedAlphaRows: 0,
+      freshPolicyDecisionRows: 0,
+      freshRotationPolicyDecisionRows: 0,
+      latestUnderfillCloseAt: '2026-05-02T00:00:30.000Z',
+    });
+    expect(report.routeProofFreshness.reasons).toContain(
+      'no underfill paper closes since current runtime session start'
+    );
+    expect(report.routeProofFreshness.reasons).toContain(
+      'no rotation no-trade candidates since current runtime session start'
+    );
+    expect(report.routeProofFreshness.reasons).toContain(
+      'runtime activity sparse since current runtime session start'
+    );
+  });
+
+  it('reports runtime rotation no-trade candidates while waiting for fresh closes', async () => {
+    const armName = 'rotation_underfill_cost_aware_exit_v2';
+    await writeFile(path.join(dir, 'current-session.json'), JSON.stringify({
+      version: 1,
+      startedAt: '2026-05-02T00:10:00.000Z',
+      tradingMode: 'live',
+    }));
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([
+      {
+        strategy: 'kol_hunter',
+        lane: 'kol_hunter',
+        armName: 'rotation_underfill_v1',
+        profileArm: armName,
+        entryArm: 'rotation_underfill_v1',
+        kolEntryReason: 'rotation_v1',
+        positionId: 'pre-session-underfill-close',
+        closedAt: '2026-05-02T00:00:30.000Z',
+        exitReason: 'winner_trailing_t1',
+        holdSec: 30,
+        netSol: 0.001,
+        netSolTokenOnly: 0.0012,
+        rotationMonetizableEdge: { pass: true, costRatio: 0.04 },
+        survivalFlags: ['ROTATION_UNDERFILL_KOLS_2'],
+      },
+    ]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([
+      {
+        eventId: 'ma-rotation-underfill-after-session',
+        tokenMint: 'TokenAfterSession111111111111111111111111111',
+        lane: 'kol_hunter',
+        rejectReason: 'rotation_underfill_underfill_stale_last_buy',
+        signalSource: 'rotation_underfill_v1',
+        rejectedAt: '2026-05-02T00:12:00.000Z',
+        extras: {
+          eventType: 'rotation_underfill_no_trade',
+          armName: 'rotation_underfill_v1',
+          entryReason: 'rotation_v1',
+          noTradeReason: 'underfill_stale_last_buy',
+        },
+        probe: {
+          offsetSec: 15,
+          firedAt: '2026-05-02T00:12:15.000Z',
+          quoteStatus: 'ok',
+          deltaPct: 0.01,
+        },
+      },
+    ]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [15, 30],
+      roundTripCostPct: 0.005,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.routeProofFreshness).toMatchObject({
+      verdict: 'WAIT_FRESH_CLOSES',
+      cutoffSource: 'current_session',
+      freshRows: 0,
+      freshNoTradeRows: 1,
+      freshNoTradeEvents: 1,
+      freshMissedAlphaRows: 1,
+      freshMissedAlphaEvents: 1,
+      freshPolicyDecisionRows: 0,
+      freshRotationPolicyDecisionRows: 0,
+      latestNoTradeAt: '2026-05-02T00:12:00.000Z',
+      topNoTradeReasons: [{ reason: 'underfill_stale_last_buy', count: 1 }],
+      topMissedAlphaEntryReasons: [{ reason: 'rotation_v1', count: 1 }],
+      topMissedAlphaRejectReasons: [{ reason: 'rotation_underfill_underfill_stale_last_buy', count: 1 }],
+    });
+    expect(report.routeProofFreshness.reasons).toContain(
+      'rotation no-trade candidates observed since current runtime session start 1'
+    );
+
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('rotation no-trade candidates: 1 events / 1 rows');
+    expect(markdown).toContain('top rotation no-trade reasons: underfill_stale_last_buy:1');
+    expect(markdown).toContain('runtime missed-alpha: 1 events / 1 rows');
+  });
+
+  it('reports non-rotation runtime activity when rotation candidates are absent', async () => {
+    const armName = 'rotation_underfill_cost_aware_exit_v2';
+    await writeFile(path.join(dir, 'current-session.json'), JSON.stringify({
+      version: 1,
+      startedAt: '2026-05-02T00:10:00.000Z',
+      tradingMode: 'live',
+    }));
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([
+      {
+        strategy: 'kol_hunter',
+        lane: 'kol_hunter',
+        armName: 'rotation_underfill_v1',
+        profileArm: armName,
+        entryArm: 'rotation_underfill_v1',
+        kolEntryReason: 'rotation_v1',
+        positionId: 'pre-session-underfill-close',
+        closedAt: '2026-05-02T00:00:30.000Z',
+        exitReason: 'winner_trailing_t1',
+        holdSec: 30,
+        netSol: 0.001,
+        netSolTokenOnly: 0.0012,
+        rotationMonetizableEdge: { pass: true, costRatio: 0.04 },
+        survivalFlags: ['ROTATION_UNDERFILL_KOLS_2'],
+      },
+    ]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([
+      {
+        eventId: 'ma-smart-v3-after-session',
+        tokenMint: 'TokenSmartV3AfterSession11111111111111111111',
+        lane: 'kol_hunter',
+        rejectReason: 'smart_v3_kol_sell_cancel',
+        signalSource: 'kol_hunter_stalk:alice',
+        rejectedAt: '2026-05-02T00:12:00.000Z',
+        extras: {
+          eventType: 'stalk_no_trade',
+          armName: 'smart_v3_fast_fail_live_v1',
+          entryReason: 'smart_v3',
+        },
+      },
+    ]));
+    await writeFile(path.join(dir, 'kol-policy-decisions.jsonl'), jsonl([
+      {
+        schemaVersion: 'kol-policy-shadow/v1',
+        generatedAt: '2026-05-02T00:12:01.000Z',
+        eventKind: 'reject',
+        tokenMint: 'TokenSmartV3AfterSession11111111111111111111',
+        bucket: {
+          eventKind: 'reject',
+          entryReason: 'smart_v3',
+        },
+        context: {
+          armName: 'smart_v3_fast_fail_live_v1',
+          entryReason: 'smart_v3',
+          rejectReason: 'smart_v3_kol_sell_cancel',
+        },
+        reasons: ['reject_policy_observed'],
+      },
+    ]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [15, 30],
+      roundTripCostPct: 0.005,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.routeProofFreshness).toMatchObject({
+      verdict: 'WAIT_FRESH_CLOSES',
+      cutoffSource: 'current_session',
+      freshRows: 0,
+      freshNoTradeEvents: 0,
+      freshNoTradeRows: 0,
+      freshMissedAlphaRows: 1,
+      freshMissedAlphaEvents: 1,
+      freshPolicyDecisionRows: 1,
+      freshRotationPolicyDecisionRows: 0,
+      topMissedAlphaEntryReasons: [{ reason: 'smart_v3', count: 1 }],
+      topMissedAlphaRejectReasons: [{ reason: 'smart_v3_kol_sell_cancel', count: 1 }],
+      topPolicyEntryReasons: [{ reason: 'smart_v3', count: 1 }],
+      topPolicyRejectReasons: [{ reason: 'smart_v3_kol_sell_cancel', count: 1 }],
+    });
+    expect(report.routeProofFreshness.reasons).toContain(
+      'runtime active but no rotation candidates since current runtime session start; missedAlphaEvents=1, policyDecisions=1'
+    );
+
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('runtime policy decisions: 1 rows; rotation policy decisions: 0');
+    expect(markdown).toContain('top missed-alpha entry reasons: smart_v3:1');
+    expect(markdown).toContain('top policy reject reasons: smart_v3_kol_sell_cancel:1');
+  });
+
+  it('classifies active KOL tx input without rotation artifacts as no rotation pattern', async () => {
+    await writeFile(path.join(dir, 'current-session.json'), JSON.stringify({
+      version: 1,
+      startedAt: '2026-05-02T00:10:00.000Z',
+      tradingMode: 'live',
+    }));
+    await writeFile(path.join(dir, 'kol-tx.jsonl'), jsonl([
+      {
+        kolId: 'alice',
+        tokenMint: 'TokenSmartV3AfterSession11111111111111111111',
+        action: 'buy',
+        timestamp: Date.parse('2026-05-02T00:12:00.000Z'),
+        solAmount: 0.2,
+      },
+      {
+        kolId: 'alice',
+        tokenMint: 'TokenSmartV3AfterSession11111111111111111111',
+        action: 'sell',
+        timestamp: Date.parse('2026-05-02T00:12:30.000Z'),
+        solAmount: 0.4,
+      },
+    ]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([
+      {
+        eventId: 'ma-smart-v3-after-session',
+        tokenMint: 'TokenSmartV3AfterSession11111111111111111111',
+        lane: 'kol_hunter',
+        rejectReason: 'smart_v3_kol_sell_cancel',
+        signalSource: 'kol_hunter_stalk:alice',
+        rejectedAt: '2026-05-02T00:12:00.000Z',
+        extras: { entryReason: 'smart_v3' },
+      },
+    ]));
+    await writeFile(path.join(dir, 'kol-policy-decisions.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [15, 30],
+      roundTripCostPct: 0.005,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.rotationCandidateFunnel).toMatchObject({
+      verdict: 'KOL_FLOW_ACTIVE_NO_ROTATION_PATTERN',
+      cutoffSource: 'current_session',
+      kolTxRows: 2,
+      kolBuyRows: 1,
+      kolSellRows: 1,
+      distinctKols: 1,
+      distinctTokens: 1,
+      callFunnelRows: 0,
+      rotationCallFunnelRows: 0,
+      rotationNoTradeEvents: 0,
+      rotationPolicyDecisionRows: 0,
+      rotationPaperCloseRows: 0,
+      topKolTxActions: [
+        { action: 'buy', count: 1 },
+        { action: 'sell', count: 1 },
+      ],
+      topKolTxKols: [{ kol: 'alice', count: 2 }],
+    });
+
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('## Rotation Candidate Funnel Since Session');
+    expect(markdown).toContain('KOL_FLOW_ACTIVE_NO_ROTATION_PATTERN');
+    expect(markdown).toContain('top KOL tx KOLs: alice:2');
+  });
+
+  it('replays current-session rotation detector blockers from KOL tx flow', async () => {
+    await writeFile(path.join(dir, 'current-session.json'), JSON.stringify({
+      version: 1,
+      startedAt: '2026-05-02T00:10:00.000Z',
+      tradingMode: 'live',
+    }));
+    await writeFile(path.join(dir, 'kol-tx.jsonl'), jsonl([
+      {
+        kolId: 'alice',
+        tier: 'A',
+        tokenMint: 'TokenRotationSellPressure111111111111111111',
+        action: 'buy',
+        timestamp: Date.parse('2026-05-02T00:12:00.000Z'),
+        solAmount: 0.2,
+      },
+      {
+        kolId: 'alice',
+        tier: 'A',
+        tokenMint: 'TokenRotationSellPressure111111111111111111',
+        action: 'sell',
+        timestamp: Date.parse('2026-05-02T00:12:20.000Z'),
+        solAmount: 0.3,
+      },
+      {
+        kolId: 'bob',
+        tier: 'S',
+        tokenMint: 'TokenRotationSellPressure222222222222222222',
+        action: 'buy',
+        timestamp: Date.parse('2026-05-02T00:12:40.000Z'),
+        solAmount: 0.05,
+      },
+      {
+        kolId: 'bob',
+        tier: 'S',
+        tokenMint: 'TokenRotationSellPressure222222222222222222',
+        action: 'sell',
+        timestamp: Date.parse('2026-05-02T00:12:44.000Z'),
+        solAmount: 0.08,
+      },
+    ]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'kol-call-funnel.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'kol-policy-decisions.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [15, 30],
+      roundTripCostPct: 0.005,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.rotationDetectorReplay).toMatchObject({
+      verdict: 'BLOCKED_BY_RECENT_SELL',
+      cutoffSource: 'current_session',
+      tokenRows: 2,
+      kolTxRows: 4,
+      kolBuyRows: 2,
+      kolSellRows: 2,
+    });
+    expect(report.rotationDetectorReplay.topVanillaBlockers).toEqual(expect.arrayContaining([
+      { blocker: 'recent_same_mint_sell', count: 2 },
+      { blocker: 'insufficient_buy_count', count: 2 },
+    ]));
+    expect(report.rotationDetectorReplay.topUnderfillBlockers).toEqual(expect.arrayContaining([
+      { blocker: 'underfill_recent_same_mint_sell', count: 2 },
+    ]));
+    expect(report.rotationDetectorReplay.tokens.every((row) => row.recentSellRows > 0)).toBe(true);
+
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('## Rotation Detector Replay Since Session');
+    expect(markdown).toContain('BLOCKED_BY_RECENT_SELL');
+    expect(markdown).toContain('underfill_recent_same_mint_sell:2');
+  });
+
+  it('keeps report-window detector replay when current-session replay has no KOL flow', async () => {
+    const mint = 'TokenRotationReportWindow111111111111111111';
+    await writeFile(path.join(dir, 'current-session.json'), JSON.stringify({
+      version: 1,
+      startedAt: '2026-05-02T00:20:00.000Z',
+      tradingMode: 'live',
+    }));
+    await writeFile(path.join(dir, 'kol-tx.jsonl'), jsonl([
+      {
+        kolId: 'alice',
+        tier: 'A',
+        tokenMint: mint,
+        action: 'buy',
+        timestamp: Date.parse('2026-05-02T00:12:00.000Z'),
+        solAmount: 0.3,
+      },
+      {
+        kolId: 'alice',
+        tier: 'A',
+        tokenMint: mint,
+        action: 'sell',
+        timestamp: Date.parse('2026-05-02T00:12:30.000Z'),
+        solAmount: 0.2,
+      },
+    ]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'kol-call-funnel.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'kol-policy-decisions.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([
+      {
+        anchorType: 'buy',
+        tokenMint: mint,
+        horizonSec: 15,
+        quoteStatus: 'ok',
+        deltaPct: -0.03,
+        recordedAt: '2026-05-02T00:12:15.000Z',
+      },
+      {
+        anchorType: 'buy',
+        tokenMint: mint,
+        horizonSec: 30,
+        quoteStatus: 'ok',
+        deltaPct: -0.02,
+        recordedAt: '2026-05-02T00:12:30.000Z',
+      },
+    ]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-02T00:00:00.000Z'),
+      horizonsSec: [15, 30],
+      roundTripCostPct: 0.005,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.rotationDetectorReplay).toMatchObject({
+      verdict: 'NO_KOL_TX',
+      cutoffSource: 'current_session',
+      kolTxRows: 0,
+    });
+    expect(report.rotationDetectorReplayWindow).toMatchObject({
+      verdict: 'BLOCKED_BY_RECENT_SELL',
+      cutoffSource: 'report_since',
+      tokenRows: 1,
+      kolTxRows: 2,
+      kolBuyRows: 1,
+      kolSellRows: 1,
+      topUnderfillBlockers: [{ blocker: 'underfill_recent_same_mint_sell', count: 1 }],
+    });
+    const recentSellBucket = report.rotationDetectorBlockerMarkouts.topBuckets.find((row) =>
+      row.scope === 'underfill' && row.blocker === 'underfill_recent_same_mint_sell'
+    );
+    expect(recentSellBucket).toMatchObject({
+      verdict: 'BLOCKER_PROTECTS',
+      tokenRows: 1,
+      markoutTokenRows: 1,
+      buyMarkoutRows: 2,
+      primaryMedianPostCostDeltaPct: -0.025,
+    });
+
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('## Rotation Detector Replay Report Window');
+    expect(markdown).toContain('## Rotation Detector Blocker Markouts');
+    expect(markdown).toContain('report-window KOL flow includes same-mint sell pressure');
+    expect(markdown).toContain('underfill_recent_same_mint_sell');
+    expect(markdown).toContain('BLOCKER_PROTECTS');
+  });
+
+  it('narrows stale-last-buy blocker by age and KOL depth before paper review', async () => {
+    const mints = Array.from({ length: 10 }, (_, index) =>
+      `TokenRotationStaleReview${index.toString().padStart(2, '0')}111111111111`
+    );
+    await writeFile(path.join(dir, 'current-session.json'), JSON.stringify({
+      version: 1,
+      startedAt: '2026-05-02T00:20:00.000Z',
+      tradingMode: 'live',
+    }));
+    await writeFile(path.join(dir, 'kol-tx.jsonl'), jsonl(mints.flatMap((tokenMint, index) => [
+      {
+        kolId: 'alice',
+        tier: 'A',
+        tokenMint,
+        action: 'buy',
+        timestamp: Date.parse(`2026-05-02T00:12:${String(index).padStart(2, '0')}.000Z`),
+        solAmount: 0.6,
+      },
+      {
+        kolId: 'bob',
+        tier: 'A',
+        tokenMint,
+        action: 'buy',
+        timestamp: Date.parse(`2026-05-02T00:12:${String(index + 5).padStart(2, '0')}.000Z`),
+        solAmount: 0.6,
+      },
+      {
+        kolId: 'alice',
+        tier: 'A',
+        tokenMint,
+        action: 'sell',
+        timestamp: Date.parse(`2026-05-02T00:13:${String(index + 45).padStart(2, '0')}.000Z`),
+        solAmount: 0.2,
+      },
+    ])));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'kol-call-funnel.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'kol-policy-decisions.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl(mints.map((tokenMint) => ({
+      anchorType: 'buy',
+      tokenMint,
+      horizonSec: 30,
+      quoteStatus: 'ok',
+      deltaPct: 0.04,
+      recordedAt: '2026-05-02T00:13:00.000Z',
+    }))));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-02T00:00:00.000Z'),
+      horizonsSec: [30],
+      roundTripCostPct: 0.005,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    const staleBucket = report.rotationStaleBuyReview.buckets.find((row) =>
+      row.bucket === 'age_60_120s:2plus_kol_gross_ok'
+    );
+    expect(staleBucket).toMatchObject({
+      verdict: 'PAPER_STALE_REVIEW_CANDIDATE',
+      tokenRows: 10,
+      markoutTokenRows: 10,
+      buyMarkoutRows: 10,
+      primaryMedianPostCostDeltaPct: 0.035,
+      primaryPostCostPositiveRate: 1,
+    });
+
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('## Rotation Stale-Buy Review');
+    expect(markdown).toContain('age_60_120s:2plus_kol_gross_ok');
+    expect(markdown).toContain('PAPER_STALE_REVIEW_CANDIDATE');
+  });
+
+  it('reports stale-last-buy coverage gaps by missing token and KOL', async () => {
+    const mints = Array.from({ length: 10 }, (_, index) =>
+      `TokenRotationStaleCoverage${index.toString().padStart(2, '0')}11111111111`
+    );
+    await writeFile(path.join(dir, 'current-session.json'), JSON.stringify({
+      version: 1,
+      startedAt: '2026-05-02T00:20:00.000Z',
+      tradingMode: 'live',
+    }));
+    await writeFile(path.join(dir, 'kol-tx.jsonl'), jsonl(mints.flatMap((tokenMint, index) => [
+      {
+        kolId: 'alice',
+        tier: 'A',
+        tokenMint,
+        action: 'buy',
+        timestamp: Date.parse(`2026-05-02T00:12:${String(index).padStart(2, '0')}.000Z`),
+        solAmount: 0.7,
+      },
+      {
+        kolId: 'bob',
+        tier: 'A',
+        tokenMint,
+        action: 'buy',
+        timestamp: Date.parse(`2026-05-02T00:12:${String(index + 5).padStart(2, '0')}.000Z`),
+        solAmount: 0.7,
+      },
+      {
+        kolId: 'alice',
+        tier: 'A',
+        tokenMint,
+        action: 'sell',
+        timestamp: Date.parse('2026-05-02T00:14:00.000Z'),
+        solAmount: 0.2,
+      },
+    ])));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([
+      {
+        tokenMint: mints[1],
+        lane: 'kol_hunter',
+        signalSource: 'rotation_underfill_v1',
+        rejectReason: 'rotation_underfill_underfill_stale_last_buy',
+        rejectedAt: '2026-05-02T00:12:20.000Z',
+        extras: {
+          eventType: 'rotation_underfill_no_trade',
+          noTradeReason: 'underfill_stale_last_buy',
+        },
+        probe: {
+          offsetSec: 30,
+          firedAt: '2026-05-02T00:12:50.000Z',
+          quoteStatus: 'ok',
+          deltaPct: 0.06,
+        },
+      },
+      {
+        tokenMint: mints[2],
+        lane: 'kol_hunter',
+        signalSource: 'smart_v3',
+        rejectReason: 'stalk_expired_no_consensus',
+        rejectedAt: '2026-05-02T00:12:25.000Z',
+        extras: {
+          entryReason: 'smart_v3',
+        },
+        probe: {
+          offsetSec: 30,
+          firedAt: '2026-05-02T00:12:55.000Z',
+          quoteStatus: 'ok',
+          deltaPct: -0.02,
+        },
+      },
+    ]));
+    await writeFile(path.join(dir, 'kol-call-funnel.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'kol-policy-decisions.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([
+      {
+        anchorType: 'buy',
+        tokenMint: mints[0],
+        horizonSec: 30,
+        quoteStatus: 'ok',
+        deltaPct: 0.04,
+        recordedAt: '2026-05-02T00:13:00.000Z',
+      },
+    ]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-02T00:00:00.000Z'),
+      horizonsSec: [30],
+      roundTripCostPct: 0.005,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    const staleBucket = report.rotationStaleBuyReview.buckets.find((row) =>
+      row.bucket === 'age_60_120s:2plus_kol_gross_ok'
+    );
+    expect(staleBucket).toMatchObject({
+      verdict: 'COLLECT',
+      tokenRows: 10,
+      markoutTokenRows: 1,
+      missingMarkoutTokenRows: 9,
+      paperProbeTokenRows: 1,
+      paperProbeRows: 1,
+      paperProbeOkRows: 1,
+      paperProbePrimaryMedianPostCostDeltaPct: 0.055,
+      paperProbePrimaryPostCostPositiveRate: 1,
+      unmeasuredTokenRows: 8,
+      otherPaperProbeTokenRows: 1,
+      otherPaperProbeRows: 1,
+      darkTokenRows: 7,
+      topMissingKols: expect.arrayContaining([
+        { kol: 'alice', count: 9 },
+        { kol: 'bob', count: 9 },
+      ]),
+      topUnmeasuredKols: expect.arrayContaining([
+        { kol: 'alice', count: 8 },
+        { kol: 'bob', count: 8 },
+      ]),
+      topDarkKols: expect.arrayContaining([
+        { kol: 'alice', count: 7 },
+        { kol: 'bob', count: 7 },
+      ]),
+      topOtherPaperProbeReasons: [{ reason: 'stalk_expired_no_consensus', count: 1 }],
+    });
+    expect(staleBucket?.topMissingTokens).toHaveLength(8);
+    expect(staleBucket?.topUnmeasuredTokens).toHaveLength(8);
+    expect(staleBucket?.topDarkTokens).toHaveLength(7);
+
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('top missing KOLs');
+    expect(markdown).toContain('paper probe tokens');
+    expect(markdown).toContain('other probe tokens');
+    expect(markdown).toContain('#### Missing Markout Tokens');
+    expect(markdown).toContain('#### Unmeasured Tokens');
+    expect(markdown).toContain('#### Dark Tokens');
+    expect(markdown).toContain('alice:9');
+    expect(markdown).toContain('alice:8');
+    expect(markdown).toContain('alice:7');
+    expect(markdown).toContain('stalk_expired_no_consensus:1');
+  });
+
+  it('joins price-context replay candidates to report-window buy markouts without enabling live', async () => {
+    const mint = 'TokenRotationPriceContext11111111111111111111';
+    await writeFile(path.join(dir, 'current-session.json'), JSON.stringify({
+      version: 1,
+      startedAt: '2026-05-02T00:10:00.000Z',
+      tradingMode: 'live',
+    }));
+    await writeFile(path.join(dir, 'kol-tx.jsonl'), jsonl([
+      {
+        kolId: 'alice',
+        tier: 'A',
+        tokenMint: mint,
+        action: 'buy',
+        timestamp: Date.parse('2026-05-02T00:12:00.000Z'),
+        solAmount: 0.2,
+      },
+    ]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'kol-call-funnel.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'kol-policy-decisions.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([
+      {
+        anchorType: 'buy',
+        tokenMint: mint,
+        horizonSec: 15,
+        quoteStatus: 'ok',
+        deltaPct: 0.01,
+        recordedAt: '2026-05-02T00:12:15.000Z',
+      },
+      {
+        anchorType: 'buy',
+        tokenMint: mint,
+        horizonSec: 30,
+        quoteStatus: 'ok',
+        deltaPct: 0.04,
+        recordedAt: '2026-05-02T00:12:30.000Z',
+      },
+    ]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-02T00:00:00.000Z'),
+      horizonsSec: [15, 30],
+      roundTripCostPct: 0.005,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.rotationPriceContextMarkouts).toMatchObject({
+      verdict: 'PAPER_OBSERVE_CANDIDATE',
+      candidateTokenRows: 1,
+      candidateKolTxRows: 1,
+      markoutTokenRows: 1,
+      markoutTokenCoverage: 1,
+      buyMarkoutRows: 2,
+      minOkCoverage: 1,
+    });
+    expect(report.rotationPriceContextMarkouts.horizons.find((row) =>
+      row.horizonSec === 30
+    )).toMatchObject({
+      medianPostCostDeltaPct: 0.035,
+      positivePostCostRows: 1,
+    });
+
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('## Rotation Price-Context Candidate Markouts');
+    expect(markdown).toContain('PAPER_OBSERVE_CANDIDATE');
+    expect(markdown).toContain('This is not a simulated fill and never enables live routing.');
+  });
+
+  it('reports why price-context replay candidates are missing buy markout coverage', async () => {
+    const coveredMint = 'TokenRotationPriceContextCovered11111111111111';
+    const noProbeMint = 'TokenRotationPriceContextNoProbe1111111111111';
+    const runtimeMint = 'TokenRotationPriceContextRuntime1111111111111';
+    await writeFile(path.join(dir, 'current-session.json'), JSON.stringify({
+      version: 1,
+      startedAt: '2026-05-02T00:10:00.000Z',
+      tradingMode: 'live',
+    }));
+    await writeFile(path.join(dir, 'kol-tx.jsonl'), jsonl([
+      {
+        kolId: 'alice',
+        tier: 'A',
+        tokenMint: coveredMint,
+        action: 'buy',
+        timestamp: Date.parse('2026-05-02T00:12:00.000Z'),
+        solAmount: 0.2,
+      },
+      {
+        kolId: 'bob',
+        tier: 'A',
+        tokenMint: noProbeMint,
+        action: 'buy',
+        timestamp: Date.parse('2026-05-02T00:12:10.000Z'),
+        solAmount: 0.3,
+      },
+      {
+        kolId: 'carol',
+        tier: 'S',
+        tokenMint: runtimeMint,
+        action: 'buy',
+        timestamp: Date.parse('2026-05-02T00:12:20.000Z'),
+        solAmount: 0.4,
+      },
+    ]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([
+      {
+        lane: 'kol_hunter',
+        signalSource: 'kol_hunter_rotation_v1',
+        rejectReason: 'rotation_v1_no_trade',
+        tokenMint: runtimeMint,
+        rejectedAt: '2026-05-02T00:12:21.000Z',
+      },
+    ]));
+    await writeFile(path.join(dir, 'kol-call-funnel.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'kol-policy-decisions.jsonl'), jsonl([
+      {
+        eventKind: 'reject',
+        generatedAt: '2026-05-02T00:12:22.000Z',
+        context: {
+          tokenMint: runtimeMint,
+          entryReason: 'rotation_v1',
+          rejectReason: 'price_context_markout_not_scheduled',
+        },
+      },
+    ]));
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([
+      {
+        anchorType: 'buy',
+        tokenMint: coveredMint,
+        horizonSec: 30,
+        quoteStatus: 'ok',
+        deltaPct: 0.03,
+        recordedAt: '2026-05-02T00:12:30.000Z',
+      },
+    ]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-02T00:00:00.000Z'),
+      horizonsSec: [15, 30],
+      roundTripCostPct: 0.005,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.rotationPriceContextMarkouts.coverageGap).toMatchObject({
+      missingBuyMarkoutTokenRows: 2,
+      missingBuyMarkoutKolTxRows: 2,
+      rotationSpecificMissingTokenRows: 1,
+      rotationSpecificMissingKolTxRows: 1,
+      rotationPolicyAttributionDriftTokenRows: 0,
+      rotationPolicyAttributionDriftRows: 0,
+      topMissingReasons: expect.arrayContaining([
+        { reason: 'kol_tx_only_no_probe', count: 1 },
+        { reason: 'runtime_candidate_without_buy_markout', count: 1 },
+      ]),
+      topMissingNoTradeReasons: [
+        { reason: 'rotation_v1_no_trade', count: 1 },
+      ],
+      topMissingPolicyEntryReasons: [
+        { reason: 'rotation_v1', count: 1 },
+      ],
+      topMissingPolicyRejectReasons: [
+        { reason: 'price_context_markout_not_scheduled', count: 1 },
+      ],
+      topMissingRotationPolicyEntryReasons: [
+        { reason: 'rotation_v1', count: 1 },
+      ],
+      topMissingRotationPolicyRejectReasons: [
+        { reason: 'price_context_markout_not_scheduled', count: 1 },
+      ],
+      topMissingRotationPolicyAttributionDriftReasons: [],
+      topMissingRotationPolicyAttributionSources: [],
+      topMissingRotationPolicyAttributionSurvivalReasons: [],
+    });
+    expect(report.rotationPriceContextMarkouts.coverageGap.topMissingTokens.map((row) =>
+      row.gapReason
+    )).toEqual(expect.arrayContaining([
+      'kol_tx_only_no_probe',
+      'runtime_candidate_without_buy_markout',
+    ]));
+
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('### Price-Context Coverage Gap');
+    expect(markdown).toContain('runtime_candidate_without_buy_markout');
+    expect(markdown).toContain('kol_tx_only_no_probe');
+    expect(markdown).toContain('top missing no-trade reasons: rotation_v1_no_trade:1');
+    expect(markdown).toContain('top missing policy reject reasons: price_context_markout_not_scheduled:1');
+    expect(markdown).toContain('rotation-specific missing tokens: 1/2');
+    expect(markdown).toContain('top missing rotation policy reject reasons: price_context_markout_not_scheduled:1');
+    expect(markdown).toContain('rotation policy attribution drift rows: 0');
+    expect(markdown).toContain('top missing rotation policy attribution drift reasons: n/a');
+    expect(markdown).toContain('top missing rotation policy attribution sources: n/a');
+    expect(markdown).toContain('top missing rotation policy attribution survival reasons: n/a');
+  });
+
+  it('reports non-rotation rejects on rotation policy decisions as attribution drift', async () => {
+    const driftMint = 'TokenRotationPolicyAttributionDrift1111111111';
+    await writeFile(path.join(dir, 'current-session.json'), JSON.stringify({
+      version: 1,
+      startedAt: '2026-05-02T00:10:00.000Z',
+      tradingMode: 'live',
+    }));
+    await writeFile(path.join(dir, 'kol-tx.jsonl'), jsonl([
+      {
+        kolId: 'alice',
+        tier: 'S',
+        tokenMint: driftMint,
+        action: 'buy',
+        timestamp: Date.parse('2026-05-02T00:12:00.000Z'),
+        solAmount: 0.2,
+      },
+    ]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([
+      {
+        tokenMint: driftMint,
+        lane: 'kol_hunter',
+        rejectReason: 'rotation_underfill_kol_alpha_decay',
+        signalSource: 'rotation_underfill_v1',
+        rejectedAt: '2026-05-02T00:12:01.000Z',
+        extras: {
+          survivalFlags: ['KOL_ALPHA_DECAY'],
+        },
+        probe: {
+          offsetSec: 15,
+          firedAt: '2026-05-02T00:12:16.000Z',
+          quoteStatus: 'ok',
+          deltaPct: 0.04,
+        },
+      },
+      {
+        tokenMint: driftMint,
+        lane: 'kol_hunter',
+        rejectReason: 'rotation_underfill_kol_alpha_decay',
+        signalSource: 'rotation_underfill_v1',
+        rejectedAt: '2026-05-02T00:12:01.000Z',
+        extras: {
+          survivalFlags: ['KOL_ALPHA_DECAY'],
+        },
+        probe: {
+          offsetSec: 30,
+          firedAt: '2026-05-02T00:12:31.000Z',
+          quoteStatus: 'ok',
+          deltaPct: 0.03,
+        },
+      },
+    ]));
+    await writeFile(path.join(dir, 'kol-call-funnel.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'kol-policy-decisions.jsonl'), jsonl([
+      {
+        eventKind: 'reject',
+        currentAction: 'block',
+        reasons: ['reject_policy_observed'],
+        riskFlags: ['KOL_ALPHA_DECAY'],
+        generatedAt: '2026-05-02T00:12:01.000Z',
+        context: {
+          tokenMint: driftMint,
+          entryReason: 'rotation_v1',
+          rejectReason: 'smart_v3_no_trigger',
+        },
+      },
+    ]));
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-02T00:00:00.000Z'),
+      horizonsSec: [15, 30],
+      roundTripCostPct: 0.005,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.rotationPriceContextMarkouts.coverageGap).toMatchObject({
+      missingBuyMarkoutTokenRows: 1,
+      rotationSpecificMissingTokenRows: 1,
+      rotationPolicyAttributionDriftTokenRows: 1,
+      rotationPolicyAttributionDriftRows: 1,
+      topMissingRotationPolicyAttributionDriftReasons: [
+        { reason: 'smart_v3_no_trigger', count: 1 },
+      ],
+      topMissingRotationPolicyAttributionSources: [
+        { source: 'legacy_reject_observer', count: 1 },
+      ],
+      topMissingRotationPolicyAttributionSurvivalReasons: [
+        { reason: 'KOL_ALPHA_DECAY', count: 1 },
+      ],
+    });
+    expect(report.rotationPriceContextMarkouts.coverageGap.topMissingTokens[0]).toMatchObject({
+      rotationPolicyAttributionDriftRows: 1,
+      topRotationPolicyAttributionDriftReasons: [
+        { reason: 'smart_v3_no_trigger', count: 1 },
+      ],
+      topRotationPolicyAttributionSources: [
+        { source: 'legacy_reject_observer', count: 1 },
+      ],
+      topRotationPolicyAttributionSurvivalReasons: [
+        { reason: 'KOL_ALPHA_DECAY', count: 1 },
+      ],
+    });
+
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('rotation policy attribution drift tokens: 1/1');
+    expect(markdown).toContain('rotation policy attribution drift rows: 1');
+    expect(markdown).toContain('top missing rotation policy attribution drift reasons: smart_v3_no_trigger:1');
+    expect(markdown).toContain('top missing rotation policy attribution sources: legacy_reject_observer:1');
+    expect(markdown).toContain('top missing rotation policy attribution survival reasons: KOL_ALPHA_DECAY:1');
+    expect(report.rotationDecayBlockMarkouts).toMatchObject({
+      verdict: 'DECAY_KILLED_WINNERS',
+      policyRows: 1,
+      tokenRows: 1,
+      immediateWinnerTokenRows: 1,
+      delayedRecoveryTokenRows: 0,
+      savedLossTokenRows: 0,
+      insufficientCoverageTokenRows: 0,
+      probeRows: 2,
+      probeTokenRows: 1,
+      topRejectReasons: [
+        { reason: 'smart_v3_no_trigger', count: 1 },
+      ],
+      topSources: [
+        { source: 'legacy_reject_observer', count: 1 },
+      ],
+      topSurvivalReasons: [
+        { reason: 'KOL_ALPHA_DECAY', count: 1 },
+      ],
+    });
+    expect(report.rotationDecayBlockMarkouts.horizons).toEqual(expect.arrayContaining([
+      expect.objectContaining({ horizonSec: 15, positivePostCostRows: 1 }),
+      expect.objectContaining({ horizonSec: 30, positivePostCostRows: 1 }),
+    ]));
+    expect(report.rotationDecayBlockMarkouts.topTokens[0]).toMatchObject({
+      recoveryClass: 'immediate_winner',
+      primaryHorizonSec: 30,
+    });
+    expect(markdown).toContain('## Rotation KOL-Decay Block Markouts');
+    expect(markdown).toContain('DECAY_KILLED_WINNERS');
+    expect(markdown).toContain('recovery classes: immediate_winner=1, delayed_recovery=0');
+  });
+
+  it('classifies rotation decay blocks that recover only by T+60', async () => {
+    const recoveryMint = 'TokenRotationDecayDelayedRecovery111111111';
+    await writeFile(path.join(dir, 'current-session.json'), JSON.stringify({
+      version: 1,
+      startedAt: '2026-05-02T00:10:00.000Z',
+      tradingMode: 'live',
+    }));
+    await writeFile(path.join(dir, 'kol-tx.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([
+      {
+        tokenMint: recoveryMint,
+        lane: 'kol_hunter',
+        rejectReason: 'rotation_underfill_kol_alpha_decay',
+        signalSource: 'rotation_underfill_v1',
+        rejectedAt: '2026-05-02T00:12:01.000Z',
+        extras: {
+          survivalFlags: ['KOL_ALPHA_DECAY'],
+        },
+        probe: {
+          offsetSec: 30,
+          firedAt: '2026-05-02T00:12:31.000Z',
+          quoteStatus: 'ok',
+          deltaPct: -0.02,
+        },
+      },
+      {
+        tokenMint: recoveryMint,
+        lane: 'kol_hunter',
+        rejectReason: 'rotation_underfill_kol_alpha_decay',
+        signalSource: 'rotation_underfill_v1',
+        rejectedAt: '2026-05-02T00:12:01.000Z',
+        extras: {
+          survivalFlags: ['KOL_ALPHA_DECAY'],
+        },
+        probe: {
+          offsetSec: 60,
+          firedAt: '2026-05-02T00:13:01.000Z',
+          quoteStatus: 'ok',
+          deltaPct: 0.05,
+        },
+      },
+    ]));
+    await writeFile(path.join(dir, 'kol-call-funnel.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'kol-policy-decisions.jsonl'), jsonl([
+      {
+        eventKind: 'reject',
+        currentAction: 'block',
+        reasons: ['reject_policy_observed'],
+        riskFlags: ['KOL_ALPHA_DECAY'],
+        generatedAt: '2026-05-02T00:12:01.000Z',
+        bucket: {
+          style: 'scalper',
+          independentKolBucket: 'multi_2_3',
+          liquidityBucket: 'route_ok_or_unknown',
+          securityBucket: 'clean_or_unknown',
+        },
+        metrics: {
+          kolScore: 72,
+        },
+        context: {
+          tokenMint: recoveryMint,
+          entryReason: 'rotation_v1',
+          rejectReason: 'smart_v3_no_trigger',
+          source: 'reject_observer',
+          parameterVersion: 'rotation-underfill-v1.0.0',
+          signalSource: 'rotation_underfill_v1',
+          survivalReason: 'KOL_ALPHA_DECAY',
+          participatingKols: [
+            {
+              id: 'alice',
+              tier: 'A',
+              style: 'scalper',
+              timestamp: Date.parse('2026-05-02T00:12:00.000Z'),
+            },
+          ],
+        },
+      },
+    ]));
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-02T00:00:00.000Z'),
+      horizonsSec: [30, 60],
+      roundTripCostPct: 0.005,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.rotationDecayBlockMarkouts).toMatchObject({
+      verdict: 'DECAY_SAVED_LOSS',
+      immediateWinnerTokenRows: 0,
+      delayedRecoveryTokenRows: 1,
+      savedLossTokenRows: 0,
+      insufficientCoverageTokenRows: 0,
+    });
+    const delayed = report.rotationDecayBlockMarkouts.topDelayedRecoveryTokens[0];
+    expect(delayed).toMatchObject({
+      recoveryClass: 'delayed_recovery',
+      primaryHorizonSec: 30,
+      decayHorizonSec: 60,
+      topParameterVersions: [
+        { version: 'rotation-underfill-v1.0.0', count: 1 },
+      ],
+      topSignalSources: [
+        { source: 'rotation_underfill_v1', count: 1 },
+      ],
+      topStyleBuckets: [
+        { style: 'scalper', count: 1 },
+      ],
+      topIndependentBuckets: [
+        { bucket: 'multi_2_3', count: 1 },
+      ],
+      topKolTiers: [
+        { tier: 'A', count: 1 },
+      ],
+      topKols: [
+        { kol: 'alice', count: 1 },
+      ],
+      medianPolicyKolScore: 72,
+    });
+    expect(delayed.primaryMedianPostCostDeltaPct).toBeCloseTo(-0.025);
+    expect(delayed.decayMedianPostCostDeltaPct).toBeCloseTo(0.045);
+    expect(delayed.recoveryDeltaPct).toBeCloseTo(0.07);
+    expect(report.rotationDecayBlockMarkouts.recoveryProfiles.find((row) =>
+      row.recoveryClass === 'delayed_recovery'
+    )).toMatchObject({
+      tokenRows: 1,
+      policyRows: 1,
+      medianPolicyKolScore: 72,
+      topStyleBuckets: [
+        { style: 'scalper', count: 1 },
+      ],
+      topIndependentBuckets: [
+        { bucket: 'multi_2_3', count: 1 },
+      ],
+      topKolTiers: [
+        { tier: 'A', count: 1 },
+      ],
+      topKols: [
+        { kol: 'alice', count: 1 },
+      ],
+    });
+    expect(report.rotationDecayBlockMarkouts.graceWatchlist).toMatchObject({
+      profile: 'scalper_a_single_or_2_3kol_clean_route',
+      verdict: 'COLLECT',
+      tokenRows: 1,
+      policyRows: 1,
+      delayedRecoveryTokenRows: 1,
+      savedLossTokenRows: 0,
+    });
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('### Rotation Decay Recovery Profiles');
+    expect(markdown).toContain('### Rotation Decay Paper-Grace Watchlist');
+    expect(markdown).toContain('watchlist tokens 1 < 10');
+    expect(markdown).toContain('### Rotation Delayed-Recovery Tokens');
+    expect(markdown).toContain('scalper:1');
+    expect(markdown).toContain('alice:1');
+  });
+
+  it('flags rotation funnel rows without downstream ledgers as a ledger gap', async () => {
+    await writeFile(path.join(dir, 'current-session.json'), JSON.stringify({
+      version: 1,
+      startedAt: '2026-05-02T00:10:00.000Z',
+      tradingMode: 'live',
+    }));
+    await writeFile(path.join(dir, 'kol-tx.jsonl'), jsonl([
+      {
+        kolId: 'rotator',
+        tokenMint: 'TokenRotationAfterSession1111111111111111111',
+        action: 'buy',
+        timestamp: Date.parse('2026-05-02T00:12:00.000Z'),
+        solAmount: 0.2,
+      },
+    ]));
+    await writeFile(path.join(dir, 'kol-call-funnel.jsonl'), jsonl([
+      {
+        schemaVersion: 'kol-call-funnel/v1',
+        eventType: 'rotation_candidate',
+        emitTsMs: Date.parse('2026-05-02T00:12:01.000Z'),
+        tokenMint: 'TokenRotationAfterSession1111111111111111111',
+        armName: 'rotation_underfill_v1',
+        signalSource: 'rotation_underfill_v1',
+      },
+    ]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'kol-policy-decisions.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [15, 30],
+      roundTripCostPct: 0.005,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.rotationCandidateFunnel).toMatchObject({
+      verdict: 'ROTATION_LEDGER_GAP',
+      kolTxRows: 1,
+      callFunnelRows: 1,
+      rotationCallFunnelRows: 1,
+      rotationNoTradeEvents: 0,
+      rotationPolicyDecisionRows: 0,
+      rotationPaperCloseRows: 0,
+      topRotationCallFunnelEventTypes: [{ eventType: 'rotation_candidate', count: 1 }],
+    });
+    expect(report.rotationCandidateFunnel.reasons).toContain(
+      'rotation funnel rows exist without no-trade/policy/paper close artifacts; rotationFunnel=1'
+    );
+  });
+
   it('separates deployed writer schema from missing exit-route markers', async () => {
     const armName = 'rotation_underfill_cost_aware_exit_v2';
     await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([

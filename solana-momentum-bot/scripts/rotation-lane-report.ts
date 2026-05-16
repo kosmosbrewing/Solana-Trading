@@ -22,6 +22,9 @@ const ROTATION_PAPER_TRADES_FILE = 'rotation-v1-paper-trades.jsonl';
 const ROTATION_LIVE_TRADES_FILE = 'rotation-v1-live-trades.jsonl';
 const KOL_PAPER_TRADES_FILE = 'kol-paper-trades.jsonl';
 const KOL_LIVE_EQUIVALENCE_FILE = 'kol-live-equivalence.jsonl';
+const KOL_POLICY_DECISIONS_FILE = 'kol-policy-decisions.jsonl';
+const KOL_TX_FILE = 'kol-tx.jsonl';
+const KOL_CALL_FUNNEL_FILE = 'kol-call-funnel.jsonl';
 const KOL_TRANSFER_INPUT_FILE = 'kol-transfers.jsonl';
 const EVIDENCE_MIN_CLOSES = 50;
 const EVIDENCE_PROMOTION_MIN_CLOSES = 100;
@@ -32,6 +35,7 @@ const EVIDENCE_MIN_ROUTE_PROOF_COVERAGE = 1;
 const EVIDENCE_PRIMARY_HORIZONS_SEC = [15, 30];
 const EVIDENCE_DECAY_HORIZON_SEC = 60;
 const EVIDENCE_REQUIRED_COVERAGE_HORIZONS_SEC = EVIDENCE_PRIMARY_HORIZONS_SEC;
+const ROTATION_DECAY_GRACE_MIN_TOKENS = 10;
 const ROTATION_CONTROL_ARM = 'kol_hunter_rotation_v1';
 const ROTATION_LIVE_READINESS_ARM = 'rotation_underfill_cost_aware_exit_v2';
 const ROTATION_LIVE_READINESS_MIN_CLOSES = 50;
@@ -51,6 +55,13 @@ const POSTHOC_SECOND_KOL_SYNTHETIC_ARM = 'posthoc_2nd_kol_wait_next_horizon_v1';
 const MICRO_LIVE_REVIEW_TICKET_SOL = 0.02;
 const MICRO_LIVE_REVIEW_MAX_DAILY_ATTEMPTS = 3;
 const MICRO_LIVE_REVIEW_DAILY_LOSS_CAP_SOL = 0.03;
+const ROTATION_REPLAY_RECENT_SELL_SEC = 60;
+const ROTATION_REPLAY_MIN_BUY_COUNT = 3;
+const ROTATION_REPLAY_MIN_SMALL_BUY_COUNT = 2;
+const ROTATION_REPLAY_SMALL_BUY_MAX_SOL = 0.12;
+const ROTATION_REPLAY_MIN_GROSS_BUY_SOL = 1.0;
+const ROTATION_REPLAY_MAX_LAST_BUY_AGE_SEC = 15;
+const ROTATION_UNDERFILL_REPLAY_MAX_LAST_BUY_AGE_SEC = 45;
 
 interface Args {
   realtimeDir: string;
@@ -616,14 +627,21 @@ interface RouteProofFreshnessArmStats {
 interface RouteProofFreshnessStats {
   verdict: RouteProofFreshnessVerdict;
   reasons: string[];
-  cutoffSource: 'arg' | 'first_exit_route_marker' | 'none';
+  cutoffSource: 'arg' | 'current_session' | 'first_exit_route_marker' | 'none';
   freshSince: string | null;
   underfillRows: number;
   freshRows: number;
+  freshNoTradeRows: number;
+  freshNoTradeEvents: number;
+  freshMissedAlphaRows: number;
+  freshMissedAlphaEvents: number;
+  freshPolicyDecisionRows: number;
+  freshRotationPolicyDecisionRows: number;
   minRequiredFreshRows: number;
   latestUnderfillCloseAt: string | null;
   latestCostAwareCloseAt: string | null;
   latestExitQuoteEvidenceAt: string | null;
+  latestNoTradeAt: string | null;
   paperCloseWriterSchemaRows: number;
   rotationExitRouteProofSchemaRows: number;
   exitRouteInstrumentedRows: number;
@@ -642,9 +660,390 @@ interface RouteProofFreshnessStats {
   routeProofedTwoPlusCostAwareRows: number;
   routeProofedTwoPlusCostAwareTimestampedRows: number;
   freshByArm: RouteProofFreshnessArmStats[];
+  topNoTradeReasons: Array<{ reason: string; count: number }>;
+  topMissedAlphaEntryReasons: Array<{ reason: string; count: number }>;
+  topMissedAlphaRejectReasons: Array<{ reason: string; count: number }>;
+  topPolicyEntryReasons: Array<{ reason: string; count: number }>;
+  topPolicyRejectReasons: Array<{ reason: string; count: number }>;
   topRouteUnknownReasons: Array<{ reason: string; count: number }>;
   topExitRouteProofSkipReasons: Array<{ reason: string; count: number }>;
   topPaperCloseWriterSchemas: Array<{ schema: string; count: number }>;
+}
+
+type RotationCandidateFunnelVerdict =
+  | 'INPUT_IDLE'
+  | 'KOL_FLOW_ACTIVE_NO_ROTATION_PATTERN'
+  | 'ROTATION_PATTERN_BLOCKED'
+  | 'ROTATION_LEDGER_GAP'
+  | 'COLLECT';
+
+interface RotationCandidateFunnelStats {
+  verdict: RotationCandidateFunnelVerdict;
+  reasons: string[];
+  cutoffSource: 'current_session' | 'report_since';
+  since: string;
+  kolTxRows: number;
+  kolBuyRows: number;
+  kolSellRows: number;
+  kolShadowRows: number;
+  distinctKols: number;
+  distinctTokens: number;
+  latestKolTxAt: string | null;
+  callFunnelRows: number;
+  rotationCallFunnelRows: number;
+  latestCallFunnelAt: string | null;
+  rotationNoTradeEvents: number;
+  rotationNoTradeRows: number;
+  rotationPolicyDecisionRows: number;
+  rotationPaperCloseRows: number;
+  topKolTxActions: Array<{ action: string; count: number }>;
+  topKolTxKols: Array<{ kol: string; count: number }>;
+  topBuyKols: Array<{ kol: string; count: number }>;
+  topCallFunnelEventTypes: Array<{ eventType: string; count: number }>;
+  topRotationCallFunnelEventTypes: Array<{ eventType: string; count: number }>;
+  topNoTradeReasons: Array<{ reason: string; count: number }>;
+  topPolicyEntryReasons: Array<{ reason: string; count: number }>;
+}
+
+type RotationDetectorReplayVerdict =
+  | 'NO_KOL_TX'
+  | 'BLOCKED_BY_RECENT_SELL'
+  | 'INSUFFICIENT_BUY_DEPTH'
+  | 'NEEDS_PRICE_CONTEXT'
+  | 'COLLECT';
+
+interface RotationDetectorReplayTokenStats {
+  tokenMint: string;
+  shortMint: string;
+  txRows: number;
+  buyRows: number;
+  sellRows: number;
+  grossBuySol: number;
+  smallBuyRows: number;
+  eligibleUnderfillBuyRows: number;
+  distinctKols: number;
+  firstBuyAt: string | null;
+  lastBuyAt: string | null;
+  latestSellAt: string | null;
+  lastBuyAgeSec: number | null;
+  recentSellRows: number;
+  vanillaBlockers: string[];
+  underfillBlockers: string[];
+  topKols: Array<{ kol: string; count: number }>;
+}
+
+interface RotationDetectorReplayStats {
+  verdict: RotationDetectorReplayVerdict;
+  reasons: string[];
+  cutoffSource: 'current_session' | 'report_since';
+  since: string;
+  tokenRows: number;
+  kolTxRows: number;
+  kolBuyRows: number;
+  kolSellRows: number;
+  topVanillaBlockers: Array<{ blocker: string; count: number }>;
+  topUnderfillBlockers: Array<{ blocker: string; count: number }>;
+  tokens: RotationDetectorReplayTokenStats[];
+}
+
+type RotationDetectorBlockerMarkoutVerdict =
+  | 'NO_MARKOUT_COVERAGE'
+  | 'COLLECT'
+  | 'BLOCKER_PROTECTS'
+  | 'BLOCKER_REVIEW_CANDIDATE';
+
+interface RotationDetectorBlockerTokenMarkoutStats {
+  tokenMint: string;
+  shortMint: string;
+  txRows: number;
+  buyRows: number;
+  sellRows: number;
+  markoutRows: number;
+  primaryMedianPostCostDeltaPct: number | null;
+  bestHorizonSec: number | null;
+  bestMedianPostCostDeltaPct: number | null;
+  topKols: Array<{ kol: string; count: number }>;
+}
+
+interface RotationDetectorBlockerMarkoutBucketStats {
+  scope: 'underfill' | 'vanilla';
+  blocker: string;
+  verdict: RotationDetectorBlockerMarkoutVerdict;
+  reasons: string[];
+  tokenRows: number;
+  markoutTokenRows: number;
+  tokenCoverage: number | null;
+  buyMarkoutRows: number;
+  minOkCoverage: number | null;
+  primaryHorizonSec: number | null;
+  primaryMedianPostCostDeltaPct: number | null;
+  primaryPostCostPositiveRate: number | null;
+  horizons: HorizonStats[];
+  topKols: Array<{ kol: string; count: number }>;
+  topTokens: RotationDetectorBlockerTokenMarkoutStats[];
+}
+
+interface RotationDetectorBlockerMarkoutStats {
+  since: string;
+  cutoffSource: 'report_since';
+  tokenRows: number;
+  buyMarkoutRows: number;
+  topBuckets: RotationDetectorBlockerMarkoutBucketStats[];
+}
+
+type RotationStaleBuyReviewVerdict =
+  | 'NO_STALE_ROWS'
+  | 'COLLECT'
+  | 'STALE_BUY_REJECT'
+  | 'PAPER_STALE_REVIEW_CANDIDATE';
+
+interface RotationStaleBuyBucketStats {
+  bucket: string;
+  verdict: RotationStaleBuyReviewVerdict;
+  reasons: string[];
+  tokenRows: number;
+  markoutTokenRows: number;
+  missingMarkoutTokenRows: number;
+  paperProbeTokenRows: number;
+  paperProbeRows: number;
+  paperProbeOkRows: number;
+  paperProbeMinOkCoverage: number | null;
+  paperProbePrimaryMedianPostCostDeltaPct: number | null;
+  paperProbePrimaryPostCostPositiveRate: number | null;
+  otherPaperProbeTokenRows: number;
+  otherPaperProbeRows: number;
+  darkTokenRows: number;
+  unmeasuredTokenRows: number;
+  tokenCoverage: number | null;
+  buyMarkoutRows: number;
+  minOkCoverage: number | null;
+  primaryHorizonSec: number | null;
+  primaryMedianPostCostDeltaPct: number | null;
+  primaryPostCostPositiveRate: number | null;
+  medianLastBuyAgeSec: number | null;
+  medianGrossBuySol: number | null;
+  topKols: Array<{ kol: string; count: number }>;
+  topMissingKols: Array<{ kol: string; count: number }>;
+  topUnmeasuredKols: Array<{ kol: string; count: number }>;
+  topDarkKols: Array<{ kol: string; count: number }>;
+  topOtherPaperProbeReasons: Array<{ reason: string; count: number }>;
+  topTokens: RotationDetectorBlockerTokenMarkoutStats[];
+  topMissingTokens: RotationStaleBuyMissingTokenStats[];
+  topUnmeasuredTokens: RotationStaleBuyMissingTokenStats[];
+  topDarkTokens: RotationStaleBuyMissingTokenStats[];
+}
+
+interface RotationStaleBuyMissingTokenStats {
+  tokenMint: string;
+  shortMint: string;
+  txRows: number;
+  buyRows: number;
+  sellRows: number;
+  lastBuyAgeSec: number | null;
+  grossBuySol: number;
+  distinctKols: number;
+  topKols: Array<{ kol: string; count: number }>;
+}
+
+interface RotationStaleBuyReviewStats {
+  since: string;
+  tokenRows: number;
+  candidateTokenRows: number;
+  excludedRecentSellTokenRows: number;
+  buyMarkoutRows: number;
+  paperProbeRows: number;
+  buckets: RotationStaleBuyBucketStats[];
+}
+
+type RotationPriceContextMarkoutVerdict =
+  | 'NO_PRICE_CONTEXT_CANDIDATES'
+  | 'NO_MARKOUT_COVERAGE'
+  | 'COLLECT'
+  | 'NEGATIVE_AFTER_COST'
+  | 'PAPER_OBSERVE_CANDIDATE';
+
+interface RotationPriceContextTokenMarkoutStats {
+  tokenMint: string;
+  shortMint: string;
+  txRows: number;
+  buyRows: number;
+  grossBuySol: number;
+  distinctKols: number;
+  markoutRows: number;
+  okRows: number;
+  bestHorizonSec: number | null;
+  bestMedianPostCostDeltaPct: number | null;
+  topKols: Array<{ kol: string; count: number }>;
+}
+
+interface RotationPriceContextCoverageGapTokenStats {
+  tokenMint: string;
+  shortMint: string;
+  gapReason: string;
+  txRows: number;
+  buyRows: number;
+  grossBuySol: number;
+  distinctKols: number;
+  latestBuyAt: string | null;
+  anyMarkoutRows: number;
+  missedAlphaRows: number;
+  rotationNoTradeRows: number;
+  callFunnelRows: number;
+  rotationCallFunnelRows: number;
+  policyDecisionRows: number;
+  rotationPolicyDecisionRows: number;
+  rotationPolicyAttributionDriftRows: number;
+  topNoTradeReasons: Array<{ reason: string; count: number }>;
+  topPolicyEntryReasons: Array<{ reason: string; count: number }>;
+  topPolicyRejectReasons: Array<{ reason: string; count: number }>;
+  topRotationPolicyEntryReasons: Array<{ reason: string; count: number }>;
+  topRotationPolicyRejectReasons: Array<{ reason: string; count: number }>;
+  topRotationPolicyAttributionDriftReasons: Array<{ reason: string; count: number }>;
+  topRotationPolicyAttributionSources: Array<{ source: string; count: number }>;
+  topRotationPolicyAttributionSurvivalReasons: Array<{ reason: string; count: number }>;
+  topKols: Array<{ kol: string; count: number }>;
+}
+
+interface RotationPriceContextCoverageGapStats {
+  missingBuyMarkoutTokenRows: number;
+  missingBuyMarkoutKolTxRows: number;
+  rotationSpecificMissingTokenRows: number;
+  rotationSpecificMissingKolTxRows: number;
+  rotationPolicyAttributionDriftTokenRows: number;
+  rotationPolicyAttributionDriftRows: number;
+  topMissingReasons: Array<{ reason: string; count: number }>;
+  topMissingKols: Array<{ kol: string; count: number }>;
+  topMissingNoTradeReasons: Array<{ reason: string; count: number }>;
+  topMissingPolicyEntryReasons: Array<{ reason: string; count: number }>;
+  topMissingPolicyRejectReasons: Array<{ reason: string; count: number }>;
+  topMissingRotationPolicyEntryReasons: Array<{ reason: string; count: number }>;
+  topMissingRotationPolicyRejectReasons: Array<{ reason: string; count: number }>;
+  topMissingRotationPolicyAttributionDriftReasons: Array<{ reason: string; count: number }>;
+  topMissingRotationPolicyAttributionSources: Array<{ source: string; count: number }>;
+  topMissingRotationPolicyAttributionSurvivalReasons: Array<{ reason: string; count: number }>;
+  topMissingTokens: RotationPriceContextCoverageGapTokenStats[];
+}
+
+interface RotationPriceContextMarkoutStats {
+  verdict: RotationPriceContextMarkoutVerdict;
+  reasons: string[];
+  cutoffSource: 'report_since';
+  since: string;
+  candidateTokenRows: number;
+  candidateKolTxRows: number;
+  markoutTokenRows: number;
+  markoutTokenCoverage: number | null;
+  buyMarkoutRows: number;
+  minOkCoverage: number | null;
+  horizons: HorizonStats[];
+  topTokens: RotationPriceContextTokenMarkoutStats[];
+  coverageGap: RotationPriceContextCoverageGapStats;
+}
+
+type RotationDecayBlockMarkoutVerdict =
+  | 'NO_DECAY_BLOCKS'
+  | 'NO_PROBE_COVERAGE'
+  | 'COLLECT'
+  | 'DECAY_SAVED_LOSS'
+  | 'DECAY_KILLED_WINNERS';
+
+type RotationDecayRecoveryClass =
+  | 'immediate_winner'
+  | 'delayed_recovery'
+  | 'saved_loss'
+  | 'insufficient_coverage';
+
+interface RotationPolicyParticipantSummary {
+  id: string;
+  tier: string;
+  style: string;
+  timestampMs: number | null;
+}
+
+interface RotationDecayBlockTokenStats {
+  tokenMint: string;
+  shortMint: string;
+  policyRows: number;
+  probeRows: number;
+  okRows: number;
+  recoveryClass: RotationDecayRecoveryClass;
+  primaryHorizonSec: number | null;
+  primaryMedianPostCostDeltaPct: number | null;
+  decayHorizonSec: number | null;
+  decayMedianPostCostDeltaPct: number | null;
+  recoveryDeltaPct: number | null;
+  bestHorizonSec: number | null;
+  bestMedianPostCostDeltaPct: number | null;
+  topRejectReasons: Array<{ reason: string; count: number }>;
+  topSources: Array<{ source: string; count: number }>;
+  topSurvivalReasons: Array<{ reason: string; count: number }>;
+  topParameterVersions: Array<{ version: string; count: number }>;
+  topSignalSources: Array<{ source: string; count: number }>;
+  topStyleBuckets: Array<{ style: string; count: number }>;
+  topIndependentBuckets: Array<{ bucket: string; count: number }>;
+  topKolTiers: Array<{ tier: string; count: number }>;
+  topKols: Array<{ kol: string; count: number }>;
+  medianPolicyKolScore: number | null;
+}
+
+interface RotationDecayRecoveryProfile {
+  recoveryClass: RotationDecayRecoveryClass;
+  tokenRows: number;
+  policyRows: number;
+  medianPolicyKolScore: number | null;
+  topParameterVersions: Array<{ version: string; count: number }>;
+  topSignalSources: Array<{ source: string; count: number }>;
+  topStyleBuckets: Array<{ style: string; count: number }>;
+  topIndependentBuckets: Array<{ bucket: string; count: number }>;
+  topLiquidityBuckets: Array<{ bucket: string; count: number }>;
+  topSecurityBuckets: Array<{ bucket: string; count: number }>;
+  topKolTiers: Array<{ tier: string; count: number }>;
+  topKols: Array<{ kol: string; count: number }>;
+}
+
+type RotationDecayGraceWatchlistVerdict =
+  | 'NO_WATCHLIST_ROWS'
+  | 'COLLECT'
+  | 'PAPER_GRACE_REJECT'
+  | 'PAPER_GRACE_CANDIDATE';
+
+interface RotationDecayGraceWatchlistStats {
+  profile: string;
+  verdict: RotationDecayGraceWatchlistVerdict;
+  reasons: string[];
+  tokenRows: number;
+  policyRows: number;
+  probeRows: number;
+  minOkCoverage: number | null;
+  immediateWinnerTokenRows: number;
+  delayedRecoveryTokenRows: number;
+  savedLossTokenRows: number;
+  insufficientCoverageTokenRows: number;
+  horizons: HorizonStats[];
+  topTokens: RotationDecayBlockTokenStats[];
+}
+
+interface RotationDecayBlockMarkoutStats {
+  verdict: RotationDecayBlockMarkoutVerdict;
+  reasons: string[];
+  since: string;
+  policyRows: number;
+  tokenRows: number;
+  probeRows: number;
+  probeTokenRows: number;
+  immediateWinnerTokenRows: number;
+  delayedRecoveryTokenRows: number;
+  savedLossTokenRows: number;
+  insufficientCoverageTokenRows: number;
+  minOkCoverage: number | null;
+  horizons: HorizonStats[];
+  topRejectReasons: Array<{ reason: string; count: number }>;
+  topSources: Array<{ source: string; count: number }>;
+  topSurvivalReasons: Array<{ reason: string; count: number }>;
+  recoveryProfiles: RotationDecayRecoveryProfile[];
+  graceWatchlist: RotationDecayGraceWatchlistStats;
+  topTokens: RotationDecayBlockTokenStats[];
+  topDelayedRecoveryTokens: RotationDecayBlockTokenStats[];
 }
 
 interface EvidenceVerdict {
@@ -746,6 +1145,13 @@ interface RotationReport {
   routeUnknownReasons: RouteUnknownReasonStats[];
   routeTruthAudit: RouteTruthAuditStats[];
   routeProofFreshness: RouteProofFreshnessStats;
+  rotationCandidateFunnel: RotationCandidateFunnelStats;
+  rotationDetectorReplay: RotationDetectorReplayStats;
+  rotationDetectorReplayWindow: RotationDetectorReplayStats;
+  rotationDetectorBlockerMarkouts: RotationDetectorBlockerMarkoutStats;
+  rotationStaleBuyReview: RotationStaleBuyReviewStats;
+  rotationPriceContextMarkouts: RotationPriceContextMarkoutStats;
+  rotationDecayBlockMarkouts: RotationDecayBlockMarkoutStats;
   rotationNarrowCohorts: RotationNarrowCohortStats[];
   underfillKolCohorts: UnderfillRouteCohortStats[];
   underfillKolTiming: KolTimingStats[];
@@ -887,6 +1293,14 @@ async function readJsonl(file: string): Promise<JsonRow[]> {
   }
 }
 
+async function readJsonFile(file: string): Promise<JsonRow> {
+  try {
+    return JSON.parse(await readFile(file, 'utf8')) as JsonRow;
+  } catch {
+    return {};
+  }
+}
+
 function obj(value: unknown): JsonRow {
   return typeof value === 'object' && value != null ? value as JsonRow : {};
 }
@@ -930,6 +1344,15 @@ function rowParentPositionId(row: JsonRow): string {
 
 function rowTokenMint(row: JsonRow): string {
   return str(row.tokenMint) || str(obj(row.extras).tokenMint);
+}
+
+function rowTokenMintDeep(row: JsonRow): string {
+  const context = obj(row.context);
+  const bucket = obj(row.bucket);
+  return rowTokenMint(row) ||
+    str(context.tokenMint) ||
+    str(bucket.tokenMint) ||
+    str(obj(context.extras).tokenMint);
 }
 
 function rowArmName(row: JsonRow): string {
@@ -1029,6 +1452,49 @@ function isRotationNoTrade(row: JsonRow): boolean {
       str(extras.eventType) === 'rotation_no_trade' ||
       str(extras.eventType) === 'rotation_arm_skip' ||
       str(row.rejectReason).startsWith('rotation_v1_'));
+}
+
+function rowKolTxTimeMs(row: JsonRow): number {
+  const candidates = [
+    timeMs(row.timestamp),
+    timeMs(row.recordedAt),
+    timeMs(row.blockTime),
+  ];
+  return candidates.find((value) => Number.isFinite(value)) ?? NaN;
+}
+
+function rowKolTxAction(row: JsonRow): string {
+  return str(row.action) || '(unknown)';
+}
+
+function rowKolId(row: JsonRow): string {
+  return str(row.kolId) || str(row.walletAddress) || '(unknown)';
+}
+
+function rowCallFunnelTimeMs(row: JsonRow): number {
+  const candidates = [
+    timeMs(row.emitTsMs),
+    timeMs(row.recordedAt),
+    timeMs(row.createdAt),
+  ];
+  return candidates.find((value) => Number.isFinite(value)) ?? NaN;
+}
+
+function rowCallFunnelEventType(row: JsonRow): string {
+  return str(row.eventType) || '(unknown)';
+}
+
+function isRotationCallFunnelRow(row: JsonRow): boolean {
+  const extras = obj(row.extras);
+  return isRotationArmValue(str(row.armName)) ||
+    isRotationArmValue(str(row.parameterVersion)) ||
+    isRotationArmValue(str(row.signalSource)) ||
+    isRotationArmValue(str(extras.armName)) ||
+    isRotationArmValue(str(extras.parameterVersion)) ||
+    str(row.eventType).includes('rotation') ||
+    str(row.rejectReason).startsWith('rotation_') ||
+    str(row.signalSource) === 'kol_hunter_rotation_v1' ||
+    str(extras.entryReason) === 'rotation_v1';
 }
 
 function markoutEventType(row: JsonRow): string {
@@ -3071,6 +3537,235 @@ function latestIso(rows: JsonRow[]): string | null {
   return Number.isFinite(latest) ? new Date(latest).toISOString() : null;
 }
 
+function latestIsoBy(rows: JsonRow[], getTimeMs: (row: JsonRow) => number): string | null {
+  const latest = Math.max(
+    ...rows
+      .map(getTimeMs)
+      .filter((value) => Number.isFinite(value))
+  );
+  return Number.isFinite(latest) ? new Date(latest).toISOString() : null;
+}
+
+function rowRuntimeEventTimeMs(row: JsonRow): number {
+  const candidates = [
+    timeMs(row.rejectedAt),
+    timeMs(row.recordedAt),
+    timeMs(row.generatedAt),
+    timeMs(row.createdAt),
+    timeMs(probe(row).firedAt),
+  ];
+  return candidates.find((value) => Number.isFinite(value)) ?? NaN;
+}
+
+function rowRuntimeEventKey(row: JsonRow, reason: string): string {
+  return rowStringWithExtras(row, ['eventId', 'positionId', 'id']) ||
+    [
+      rowTokenMint(row),
+      reason,
+      latestIsoBy([row], rowRuntimeEventTimeMs) ?? '',
+    ].join(':');
+}
+
+function rowNoTradeEventTimeMs(row: JsonRow): number {
+  return rowRuntimeEventTimeMs(row);
+}
+
+function rowNoTradeEventKey(row: JsonRow): string {
+  return rowRuntimeEventKey(row, rowNoTradeReason(row));
+}
+
+function rowNoTradeReason(row: JsonRow): string {
+  const extras = obj(row.extras);
+  return str(extras.noTradeReason) ||
+    str(row.rejectReason) ||
+    str(extras.eventType) ||
+    '(unknown)';
+}
+
+function rowMissedAlphaEntryReason(row: JsonRow): string {
+  const extras = obj(row.extras);
+  return str(extras.entryReason) ||
+    str(extras.eventType) ||
+    str(row.signalSource) ||
+    '(unknown)';
+}
+
+function rowMissedAlphaRejectReason(row: JsonRow): string {
+  return str(row.rejectReason) ||
+    str(obj(row.extras).noTradeReason) ||
+    '(unknown)';
+}
+
+function rowPolicyEntryReason(row: JsonRow): string {
+  const bucket = obj(row.bucket);
+  const context = obj(row.context);
+  return str(bucket.entryReason) ||
+    str(context.entryReason) ||
+    str(context.armName) ||
+    str(row.eventKind) ||
+    '(unknown)';
+}
+
+function rowPolicyRejectReason(row: JsonRow): string {
+  const context = obj(row.context);
+  const reasons = Array.isArray(row.reasons) ? row.reasons : [];
+  return str(context.rejectReason) ||
+    str(reasons[0]) ||
+    str(row.eventKind) ||
+    '(unknown)';
+}
+
+function isRotationPolicyDecision(row: JsonRow): boolean {
+  const context = obj(row.context);
+  return isRotationArmValue(rowPolicyEntryReason(row)) ||
+    isRotationArmValue(str(context.armName)) ||
+    str(context.entryReason) === 'rotation_v1';
+}
+
+function isNonRotationLaneRejectReason(reason: string): boolean {
+  return reason.startsWith('smart_v3') ||
+    reason.startsWith('pure_ws') ||
+    reason.startsWith('capitulation') ||
+    reason.startsWith('stalk_') ||
+    reason.startsWith('dev_quality');
+}
+
+function isRotationPolicyAttributionDrift(row: JsonRow): boolean {
+  return isRotationPolicyDecision(row) && isNonRotationLaneRejectReason(rowPolicyRejectReason(row));
+}
+
+function rowStringList(row: JsonRow, key: string): string[] {
+  const value = row[key];
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string' && item.length > 0);
+}
+
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string' && item.length > 0);
+}
+
+function rowPolicyAttributionSource(row: JsonRow): string {
+  const context = obj(row.context);
+  const source = str(context.source);
+  if (source) return source;
+  const reasons = rowStringList(row, 'reasons');
+  if (
+    str(row.eventKind) === 'reject' &&
+    str(row.currentAction) === 'block' &&
+    reasons.includes('reject_policy_observed') &&
+    rowPolicyRejectReason(row).startsWith('smart_v3')
+  ) {
+    return 'legacy_reject_observer';
+  }
+  return '(unknown)';
+}
+
+function rowPolicyAttributionSurvivalReason(row: JsonRow): string {
+  const context = obj(row.context);
+  const survivalReason = str(context.survivalReason);
+  if (survivalReason) return survivalReason;
+  const flags = rowStringList(row, 'riskFlags');
+  return flags[0] ?? '(unknown)';
+}
+
+function rowPolicyParameterVersion(row: JsonRow): string {
+  const context = obj(row.context);
+  const extras = obj(row.extras);
+  return str(context.parameterVersion) ||
+    str(row.parameterVersion) ||
+    str(extras.parameterVersion) ||
+    '(unknown)';
+}
+
+function rowPolicySignalSource(row: JsonRow): string {
+  const context = obj(row.context);
+  const extras = obj(row.extras);
+  return str(context.signalSource) ||
+    str(row.signalSource) ||
+    str(extras.signalSource) ||
+    str(context.armName) ||
+    '(unknown)';
+}
+
+function rowPolicyBucketValue(row: JsonRow, key: string): string {
+  const bucket = obj(row.bucket);
+  return str(bucket[key]) || '(unknown)';
+}
+
+function rowPolicyMetric(row: JsonRow, key: string): number | null {
+  return num(obj(row.metrics)[key]) ?? num(row[key]) ?? num(obj(row.extras)[key]);
+}
+
+function rowPolicyParticipants(row: JsonRow): RotationPolicyParticipantSummary[] {
+  const context = obj(row.context);
+  const extras = obj(row.extras);
+  const raw =
+    Array.isArray(context.participatingKols) ? context.participatingKols :
+    Array.isArray(row.participatingKols) ? row.participatingKols :
+    Array.isArray(extras.participatingKols) ? extras.participatingKols :
+    Array.isArray(row.kols) ? row.kols :
+    Array.isArray(extras.kols) ? extras.kols :
+    [];
+  return raw.flatMap((item) => {
+    if (typeof item === 'string') {
+      return [{ id: item, tier: '(unknown)', style: '(unknown)', timestampMs: null }];
+    }
+    const record = obj(item);
+    const id = str(record.id) || str(record.kolId) || str(record.wallet) || str(record.address);
+    if (!id) return [];
+    const timestampMs = timeMs(record.timestamp) || timeMs(record.timestampMs) || timeMs(record.firstSeenAt) || timeMs(record.firstBuyAt);
+    return [{
+      id,
+      tier: (str(record.tier) || str(record.kolTier) || '(unknown)').toUpperCase(),
+      style: str(record.style) || str(record.tradingStyle) || '(unknown)',
+      timestampMs: Number.isFinite(timestampMs) ? timestampMs : null,
+    }];
+  });
+}
+
+function isKolAlphaDecayLabel(value: string): boolean {
+  return value.toLowerCase() === 'kol_alpha_decay';
+}
+
+function rowHasKolAlphaDecay(row: JsonRow): boolean {
+  const extras = obj(row.extras);
+  return isKolAlphaDecayLabel(rowPolicyAttributionSurvivalReason(row)) ||
+    isKolAlphaDecayLabel(str(extras.survivalReason)) ||
+    rowStringList(row, 'riskFlags').some(isKolAlphaDecayLabel) ||
+    stringList(extras.survivalFlags).some(isKolAlphaDecayLabel) ||
+    rowNoTradeReason(row).toLowerCase().includes('kol_alpha_decay') ||
+    rowMissedAlphaRejectReason(row).toLowerCase().includes('kol_alpha_decay');
+}
+
+function isRotationDecayAttributionPolicy(row: JsonRow): boolean {
+  return isRotationPolicyAttributionDrift(row) && rowHasKolAlphaDecay(row);
+}
+
+function isRotationDecayMissedAlphaRow(row: JsonRow): boolean {
+  return rowHasKolAlphaDecay(row) && (
+    isRotationNoTrade(row) ||
+    isRotationArmValue(str(row.signalSource)) ||
+    isRotationArmValue(rowArmName(row))
+  );
+}
+
+function uniqueRuntimeEvents(rows: JsonRow[], reasonForRow: (row: JsonRow) => string): JsonRow[] {
+  const seen = new Set<string>();
+  const uniqueRows: JsonRow[] = [];
+  for (const row of rows) {
+    const key = rowRuntimeEventKey(row, reasonForRow(row));
+    if (seen.has(key)) continue;
+    seen.add(key);
+    uniqueRows.push(row);
+  }
+  return uniqueRows;
+}
+
+function uniqueNoTradeEvents(rows: JsonRow[]): JsonRow[] {
+  return uniqueRuntimeEvents(rows, rowNoTradeReason);
+}
+
 function exitSellQuoteEvidenceForRow(row: JsonRow): JsonRow {
   const direct = obj(row.exitSellQuoteEvidence);
   if (Object.keys(direct).length > 0) return direct;
@@ -3129,9 +3824,13 @@ function paperCloseWriterSchemaCounts(rows: JsonRow[]): Array<{ schema: string; 
 
 function routeProofFreshCutoff(
   rows: JsonRow[],
-  explicitFreshSinceMs?: number
+  explicitFreshSinceMs?: number,
+  currentSessionStartedAtMs?: number
 ): { cutoffMs: number | null; cutoffSource: RouteProofFreshnessStats['cutoffSource'] } {
   if (explicitFreshSinceMs != null) return { cutoffMs: explicitFreshSinceMs, cutoffSource: 'arg' };
+  if (currentSessionStartedAtMs != null && Number.isFinite(currentSessionStartedAtMs)) {
+    return { cutoffMs: currentSessionStartedAtMs, cutoffSource: 'current_session' };
+  }
   const markerTimes = rows
     .filter(hasExitRouteInstrumentation)
     .map(rowCloseTimeMs)
@@ -3178,16 +3877,41 @@ function buildRouteProofFreshnessArmStats(rows: JsonRow[]): RouteProofFreshnessA
 
 function buildRouteProofFreshnessStats(
   rows: JsonRow[],
-  explicitFreshSinceMs?: number
+  explicitFreshSinceMs?: number,
+  currentSessionStartedAtMs?: number,
+  noTradeRows: JsonRow[] = [],
+  missedAlphaRows: JsonRow[] = [],
+  policyDecisionRows: JsonRow[] = []
 ): RouteProofFreshnessStats {
   const underfillRows = rows.filter(isRotationUnderfillRow);
-  const cutoff = routeProofFreshCutoff(underfillRows, explicitFreshSinceMs);
+  const cutoff = routeProofFreshCutoff(underfillRows, explicitFreshSinceMs, currentSessionStartedAtMs);
   const freshRows = cutoff.cutoffMs == null
     ? underfillRows
     : underfillRows.filter((row) => {
       const closeMs = rowCloseTimeMs(row);
       return Number.isFinite(closeMs) && closeMs >= (cutoff.cutoffMs ?? 0);
     });
+  const freshNoTradeRows = cutoff.cutoffMs == null
+    ? noTradeRows
+    : noTradeRows.filter((row) => {
+      const eventMs = rowNoTradeEventTimeMs(row);
+      return Number.isFinite(eventMs) && eventMs >= (cutoff.cutoffMs ?? 0);
+    });
+  const freshNoTradeEvents = uniqueNoTradeEvents(freshNoTradeRows);
+  const freshMissedAlphaRows = cutoff.cutoffMs == null
+    ? missedAlphaRows
+    : missedAlphaRows.filter((row) => {
+      const eventMs = rowRuntimeEventTimeMs(row);
+      return Number.isFinite(eventMs) && eventMs >= (cutoff.cutoffMs ?? 0);
+    });
+  const freshMissedAlphaEvents = uniqueRuntimeEvents(freshMissedAlphaRows, rowMissedAlphaRejectReason);
+  const freshPolicyDecisionRows = cutoff.cutoffMs == null
+    ? policyDecisionRows
+    : policyDecisionRows.filter((row) => {
+      const eventMs = rowRuntimeEventTimeMs(row);
+      return Number.isFinite(eventMs) && eventMs >= (cutoff.cutoffMs ?? 0);
+    });
+  const freshRotationPolicyDecisionRows = freshPolicyDecisionRows.filter(isRotationPolicyDecision);
   const exitRouteInstrumentedRows = freshRows.filter(hasExitRouteInstrumentation).length;
   const paperCloseWriterSchemaRows = freshRows.filter((row) => rowPaperCloseWriterSchemaVersion(row)).length;
   const rotationExitRouteProofSchemaRows = freshRows.filter((row) => rowRotationExitRouteProofSchemaVersion(row)).length;
@@ -3215,6 +3939,26 @@ function buildRouteProofFreshnessStats(
     .slice(0, 5);
   const topExitRouteProofSkipReasons = exitRouteProofSkipReasonCounts(freshRows).slice(0, 5);
   const topPaperCloseWriterSchemas = paperCloseWriterSchemaCounts(freshRows).slice(0, 5);
+  const topNoTradeReasons = countByLabel(
+    freshNoTradeEvents.map(rowNoTradeReason),
+    'reason'
+  ).slice(0, 5) as Array<{ reason: string; count: number }>;
+  const topMissedAlphaEntryReasons = countByLabel(
+    freshMissedAlphaEvents.map(rowMissedAlphaEntryReason),
+    'reason'
+  ).slice(0, 5) as Array<{ reason: string; count: number }>;
+  const topMissedAlphaRejectReasons = countByLabel(
+    freshMissedAlphaEvents.map(rowMissedAlphaRejectReason),
+    'reason'
+  ).slice(0, 5) as Array<{ reason: string; count: number }>;
+  const topPolicyEntryReasons = countByLabel(
+    freshPolicyDecisionRows.map(rowPolicyEntryReason),
+    'reason'
+  ).slice(0, 5) as Array<{ reason: string; count: number }>;
+  const topPolicyRejectReasons = countByLabel(
+    freshPolicyDecisionRows.map(rowPolicyRejectReason),
+    'reason'
+  ).slice(0, 5) as Array<{ reason: string; count: number }>;
   const minRequiredFreshRows = ROTATION_COMPOUND_REVIEW_MIN_CLOSES;
   const instrumentationMissingRows = freshRows.length - exitRouteInstrumentedRows;
   const reasons: string[] = [];
@@ -3225,8 +3969,24 @@ function buildRouteProofFreshnessStats(
     reasons.push(
       cutoff.cutoffSource === 'none'
         ? 'no underfill paper closes in the report window'
-        : 'no underfill paper closes in the fresh route-proof window yet'
+        : cutoff.cutoffSource === 'current_session'
+          ? 'no underfill paper closes since current runtime session start'
+          : 'no underfill paper closes in the fresh route-proof window yet'
     );
+    if (cutoff.cutoffSource === 'current_session') {
+      reasons.push(
+        freshNoTradeEvents.length === 0
+          ? 'no rotation no-trade candidates since current runtime session start'
+          : `rotation no-trade candidates observed since current runtime session start ${freshNoTradeEvents.length}`
+      );
+      if (freshNoTradeEvents.length === 0) {
+        reasons.push(
+          freshMissedAlphaEvents.length > 0 || freshPolicyDecisionRows.length > 0
+            ? `runtime active but no rotation candidates since current runtime session start; missedAlphaEvents=${freshMissedAlphaEvents.length}, policyDecisions=${freshPolicyDecisionRows.length}`
+            : 'runtime activity sparse since current runtime session start'
+        );
+      }
+    }
   } else if (cutoff.cutoffSource === 'none') {
     verdict = 'INSTRUMENTATION_GAP';
     if (rotationExitRouteProofSchemaRows === 0) {
@@ -3274,10 +4034,17 @@ function buildRouteProofFreshnessStats(
     freshSince: cutoff.cutoffMs == null ? null : new Date(cutoff.cutoffMs).toISOString(),
     underfillRows: underfillRows.length,
     freshRows: freshRows.length,
+    freshNoTradeRows: freshNoTradeRows.length,
+    freshNoTradeEvents: freshNoTradeEvents.length,
+    freshMissedAlphaRows: freshMissedAlphaRows.length,
+    freshMissedAlphaEvents: freshMissedAlphaEvents.length,
+    freshPolicyDecisionRows: freshPolicyDecisionRows.length,
+    freshRotationPolicyDecisionRows: freshRotationPolicyDecisionRows.length,
     minRequiredFreshRows,
     latestUnderfillCloseAt: latestIso(underfillRows),
     latestCostAwareCloseAt: latestIso(underfillRows.filter(isCostAwareUnderfillRow)),
     latestExitQuoteEvidenceAt: latestIso(underfillRows.filter(hasExitSellQuoteEvidence)),
+    latestNoTradeAt: latestIsoBy(freshNoTradeRows, rowNoTradeEventTimeMs),
     paperCloseWriterSchemaRows,
     rotationExitRouteProofSchemaRows,
     exitRouteInstrumentedRows,
@@ -3298,9 +4065,1318 @@ function buildRouteProofFreshnessStats(
       .filter((row) => secondKolDelaySec(row) != null)
       .length,
     freshByArm: buildRouteProofFreshnessArmStats(freshRows),
+    topNoTradeReasons,
+    topMissedAlphaEntryReasons,
+    topMissedAlphaRejectReasons,
+    topPolicyEntryReasons,
+    topPolicyRejectReasons,
     topRouteUnknownReasons,
     topExitRouteProofSkipReasons,
     topPaperCloseWriterSchemas,
+  };
+}
+
+function buildRotationCandidateFunnelStats(input: {
+  sinceMs: number;
+  currentSessionStartedAtMs?: number;
+  kolTxRows: JsonRow[];
+  callFunnelRows: JsonRow[];
+  noTradeRows: JsonRow[];
+  policyDecisionRows: JsonRow[];
+  rotationPaperRows: JsonRow[];
+}): RotationCandidateFunnelStats {
+  const cutoffMs = input.currentSessionStartedAtMs != null && Number.isFinite(input.currentSessionStartedAtMs)
+    ? input.currentSessionStartedAtMs
+    : input.sinceMs;
+  const cutoffSource = input.currentSessionStartedAtMs != null && Number.isFinite(input.currentSessionStartedAtMs)
+    ? 'current_session'
+    : 'report_since';
+  const kolTxRows = input.kolTxRows.filter((row) => {
+    const t = rowKolTxTimeMs(row);
+    return Number.isFinite(t) && t >= cutoffMs;
+  });
+  const kolBuyRows = kolTxRows.filter((row) => rowKolTxAction(row) === 'buy');
+  const kolSellRows = kolTxRows.filter((row) => rowKolTxAction(row) === 'sell');
+  const callFunnelRows = input.callFunnelRows.filter((row) => {
+    const t = rowCallFunnelTimeMs(row);
+    return Number.isFinite(t) && t >= cutoffMs;
+  });
+  const rotationCallFunnelRows = callFunnelRows.filter(isRotationCallFunnelRow);
+  const rotationNoTradeRows = input.noTradeRows.filter((row) => {
+    const t = rowNoTradeEventTimeMs(row);
+    return Number.isFinite(t) && t >= cutoffMs;
+  });
+  const rotationNoTradeEvents = uniqueNoTradeEvents(rotationNoTradeRows);
+  const policyDecisionRows = input.policyDecisionRows.filter((row) => {
+    const t = rowRuntimeEventTimeMs(row);
+    return Number.isFinite(t) && t >= cutoffMs;
+  });
+  const rotationPolicyDecisionRows = policyDecisionRows.filter(isRotationPolicyDecision);
+  const rotationPaperCloseRows = input.rotationPaperRows.filter((row) => {
+    const t = rowCloseTimeMs(row);
+    return Number.isFinite(t) && t >= cutoffMs;
+  });
+  const distinctKols = new Set(kolTxRows.map(rowKolId).filter((value) => value !== '(unknown)')).size;
+  const distinctTokens = new Set(kolTxRows.map(rowTokenMint).filter(Boolean)).size;
+  const reasons: string[] = [];
+  let verdict: RotationCandidateFunnelVerdict = 'COLLECT';
+
+  if (kolTxRows.length === 0) {
+    verdict = 'INPUT_IDLE';
+    reasons.push('no KOL tx input since funnel cutoff');
+  } else if (
+    rotationCallFunnelRows.length === 0 &&
+    rotationNoTradeEvents.length === 0 &&
+    rotationPolicyDecisionRows.length === 0 &&
+    rotationPaperCloseRows.length === 0
+  ) {
+    verdict = 'KOL_FLOW_ACTIVE_NO_ROTATION_PATTERN';
+    reasons.push(`KOL tx active but no rotation candidate artifacts; kolTx=${kolTxRows.length}, buys=${kolBuyRows.length}, sells=${kolSellRows.length}`);
+  } else if (rotationNoTradeEvents.length > 0 || rotationPolicyDecisionRows.length > 0) {
+    verdict = 'ROTATION_PATTERN_BLOCKED';
+    reasons.push(`rotation candidates reached block/policy path; noTradeEvents=${rotationNoTradeEvents.length}, rotationPolicy=${rotationPolicyDecisionRows.length}`);
+  } else if (rotationCallFunnelRows.length > 0 && rotationNoTradeEvents.length === 0 && rotationPolicyDecisionRows.length === 0 && rotationPaperCloseRows.length === 0) {
+    verdict = 'ROTATION_LEDGER_GAP';
+    reasons.push(`rotation funnel rows exist without no-trade/policy/paper close artifacts; rotationFunnel=${rotationCallFunnelRows.length}`);
+  } else {
+    reasons.push(`rotation candidate artifacts collecting; paperCloses=${rotationPaperCloseRows.length}, noTradeEvents=${rotationNoTradeEvents.length}, rotationPolicy=${rotationPolicyDecisionRows.length}`);
+  }
+
+  return {
+    verdict,
+    reasons,
+    cutoffSource,
+    since: new Date(cutoffMs).toISOString(),
+    kolTxRows: kolTxRows.length,
+    kolBuyRows: kolBuyRows.length,
+    kolSellRows: kolSellRows.length,
+    kolShadowRows: kolTxRows.filter((row) => boolValue(row.isShadow) === true || boolValue(row.shadow) === true).length,
+    distinctKols,
+    distinctTokens,
+    latestKolTxAt: latestIsoBy(kolTxRows, rowKolTxTimeMs),
+    callFunnelRows: callFunnelRows.length,
+    rotationCallFunnelRows: rotationCallFunnelRows.length,
+    latestCallFunnelAt: latestIsoBy(callFunnelRows, rowCallFunnelTimeMs),
+    rotationNoTradeEvents: rotationNoTradeEvents.length,
+    rotationNoTradeRows: rotationNoTradeRows.length,
+    rotationPolicyDecisionRows: rotationPolicyDecisionRows.length,
+    rotationPaperCloseRows: rotationPaperCloseRows.length,
+    topKolTxActions: countByLabel(kolTxRows.map(rowKolTxAction), 'action').slice(0, 5) as Array<{ action: string; count: number }>,
+    topKolTxKols: countByLabel(kolTxRows.map(rowKolId), 'kol').slice(0, 5) as Array<{ kol: string; count: number }>,
+    topBuyKols: countByLabel(kolBuyRows.map(rowKolId), 'kol').slice(0, 5) as Array<{ kol: string; count: number }>,
+    topCallFunnelEventTypes: countByLabel(callFunnelRows.map(rowCallFunnelEventType), 'eventType').slice(0, 5) as Array<{ eventType: string; count: number }>,
+    topRotationCallFunnelEventTypes: countByLabel(rotationCallFunnelRows.map(rowCallFunnelEventType), 'eventType').slice(0, 5) as Array<{ eventType: string; count: number }>,
+    topNoTradeReasons: countByLabel(rotationNoTradeEvents.map(rowNoTradeReason), 'reason').slice(0, 5) as Array<{ reason: string; count: number }>,
+    topPolicyEntryReasons: countByLabel(rotationPolicyDecisionRows.map(rowPolicyEntryReason), 'reason').slice(0, 5) as Array<{ reason: string; count: number }>,
+  };
+}
+
+function rowKolTxSol(row: JsonRow): number {
+  return num(row.solAmount) ?? num(row.amountSol) ?? num(row.sol) ?? 0;
+}
+
+function rowKolTxTier(row: JsonRow): string {
+  return (str(row.tier) || str(row.kolTier) || str(obj(row.extras).tier)).toUpperCase();
+}
+
+function rowKolTxActionNormalized(row: JsonRow): string {
+  return rowKolTxAction(row).toLowerCase();
+}
+
+function isUnderfillEligibleKolTx(row: JsonRow): boolean {
+  const tier = rowKolTxTier(row);
+  return tier === 'S' || tier === 'A';
+}
+
+function shortTokenMint(value: string): string {
+  if (value.length <= 12) return value || '(unknown)';
+  return `${value.slice(0, 6)}...${value.slice(-4)}`;
+}
+
+function rotationReplayCutoff(input: {
+  sinceMs: number;
+  currentSessionStartedAtMs?: number;
+}): { cutoffMs: number; cutoffSource: 'current_session' | 'report_since' } {
+  const hasCurrentSession = input.currentSessionStartedAtMs != null &&
+    Number.isFinite(input.currentSessionStartedAtMs);
+  return {
+    cutoffMs: hasCurrentSession ? input.currentSessionStartedAtMs as number : input.sinceMs,
+    cutoffSource: hasCurrentSession ? 'current_session' : 'report_since',
+  };
+}
+
+function buildRotationDetectorReplayTokenStats(
+  tokenMint: string,
+  rows: JsonRow[],
+  nowMs: number
+): RotationDetectorReplayTokenStats {
+  const sorted = rows
+    .filter((row) => Number.isFinite(rowKolTxTimeMs(row)))
+    .sort((a, b) => rowKolTxTimeMs(a) - rowKolTxTimeMs(b));
+  const buyRows = sorted.filter((row) => rowKolTxActionNormalized(row) === 'buy');
+  const sellRows = sorted.filter((row) => rowKolTxActionNormalized(row) === 'sell');
+  const firstBuyMs = buyRows.length > 0 ? rowKolTxTimeMs(buyRows[0]) : NaN;
+  const lastBuyMs = buyRows.length > 0 ? rowKolTxTimeMs(buyRows[buyRows.length - 1]) : NaN;
+  const latestSellMs = sellRows.length > 0 ? Math.max(...sellRows.map(rowKolTxTimeMs)) : NaN;
+  const recentSellRows = Number.isFinite(lastBuyMs)
+    ? sellRows.filter((row) => {
+        const t = rowKolTxTimeMs(row);
+        return Number.isFinite(t) &&
+          t >= lastBuyMs - ROTATION_REPLAY_RECENT_SELL_SEC * 1000 &&
+          t <= lastBuyMs + ROTATION_REPLAY_RECENT_SELL_SEC * 1000;
+      })
+    : sellRows;
+  const grossBuySol = buyRows.reduce((sum, row) => sum + Math.max(0, rowKolTxSol(row)), 0);
+  const smallBuyRows = buyRows.filter((row) => rowKolTxSol(row) <= ROTATION_REPLAY_SMALL_BUY_MAX_SOL).length;
+  const eligibleUnderfillBuyRows = buyRows.filter(isUnderfillEligibleKolTx).length;
+  const lastBuyAgeSec = Number.isFinite(lastBuyMs) && Number.isFinite(nowMs)
+    ? Math.max(0, (nowMs - lastBuyMs) / 1000)
+    : null;
+  const vanillaBlockers: string[] = [];
+  if (buyRows.length === 0) {
+    vanillaBlockers.push('no_buy_rows');
+  } else {
+    if (buyRows.length < ROTATION_REPLAY_MIN_BUY_COUNT) vanillaBlockers.push('insufficient_buy_count');
+    if (smallBuyRows < ROTATION_REPLAY_MIN_SMALL_BUY_COUNT) vanillaBlockers.push('insufficient_small_buys');
+    if (grossBuySol < ROTATION_REPLAY_MIN_GROSS_BUY_SOL) vanillaBlockers.push('insufficient_gross_buy_sol');
+    if (lastBuyAgeSec != null && lastBuyAgeSec > ROTATION_REPLAY_MAX_LAST_BUY_AGE_SEC) {
+      vanillaBlockers.push('stale_last_buy');
+    }
+    if (recentSellRows.length > 0) vanillaBlockers.push('recent_same_mint_sell');
+  }
+  if (vanillaBlockers.length === 0) vanillaBlockers.push('needs_price_response');
+
+  const underfillBlockers: string[] = [];
+  if (buyRows.length === 0) {
+    underfillBlockers.push('underfill_no_buy_rows');
+  } else {
+    if (eligibleUnderfillBuyRows === 0) underfillBlockers.push('underfill_no_s_or_a_buy');
+    if (recentSellRows.length > 0) underfillBlockers.push('underfill_recent_same_mint_sell');
+    if (lastBuyAgeSec != null && lastBuyAgeSec > ROTATION_UNDERFILL_REPLAY_MAX_LAST_BUY_AGE_SEC) {
+      underfillBlockers.push('underfill_stale_last_buy');
+    }
+  }
+  if (underfillBlockers.length === 0) underfillBlockers.push('underfill_needs_price_context');
+
+  return {
+    tokenMint,
+    shortMint: shortTokenMint(tokenMint),
+    txRows: sorted.length,
+    buyRows: buyRows.length,
+    sellRows: sellRows.length,
+    grossBuySol,
+    smallBuyRows,
+    eligibleUnderfillBuyRows,
+    distinctKols: new Set(sorted.map(rowKolId).filter((value) => value !== '(unknown)')).size,
+    firstBuyAt: Number.isFinite(firstBuyMs) ? new Date(firstBuyMs).toISOString() : null,
+    lastBuyAt: Number.isFinite(lastBuyMs) ? new Date(lastBuyMs).toISOString() : null,
+    latestSellAt: Number.isFinite(latestSellMs) ? new Date(latestSellMs).toISOString() : null,
+    lastBuyAgeSec,
+    recentSellRows: recentSellRows.length,
+    vanillaBlockers,
+    underfillBlockers,
+    topKols: countByLabel(sorted.map(rowKolId), 'kol').slice(0, 3) as Array<{ kol: string; count: number }>,
+  };
+}
+
+interface RotationDetectorReplayBuild {
+  cutoffMs: number;
+  cutoffSource: 'current_session' | 'report_since';
+  since: string;
+  kolTxRows: JsonRow[];
+  kolBuyRows: JsonRow[];
+  kolSellRows: JsonRow[];
+  allTokens: RotationDetectorReplayTokenStats[];
+  topVanillaBlockers: Array<{ blocker: string; count: number }>;
+  topUnderfillBlockers: Array<{ blocker: string; count: number }>;
+}
+
+function buildRotationDetectorReplay(input: {
+  sinceMs: number;
+  currentSessionStartedAtMs?: number;
+  kolTxRows: JsonRow[];
+}): RotationDetectorReplayBuild {
+  const cutoff = rotationReplayCutoff(input);
+  const kolTxRows = input.kolTxRows.filter((row) => {
+    const t = rowKolTxTimeMs(row);
+    return Number.isFinite(t) && t >= cutoff.cutoffMs;
+  });
+  const kolBuyRows = kolTxRows.filter((row) => rowKolTxActionNormalized(row) === 'buy');
+  const kolSellRows = kolTxRows.filter((row) => rowKolTxActionNormalized(row) === 'sell');
+  const byToken = new Map<string, JsonRow[]>();
+  for (const row of kolTxRows) {
+    const tokenMint = rowTokenMint(row);
+    if (!tokenMint) continue;
+    byToken.set(tokenMint, [...(byToken.get(tokenMint) ?? []), row]);
+  }
+  const allTokens = [...byToken.entries()]
+    .map(([tokenMint, rows]) => {
+      const rowTimes = rows.map(rowKolTxTimeMs).filter(Number.isFinite);
+      const tokenNowMs = rowTimes.length > 0 ? Math.max(...rowTimes) : cutoff.cutoffMs;
+      return buildRotationDetectorReplayTokenStats(tokenMint, rows, tokenNowMs);
+    })
+    .sort((a, b) => b.txRows - a.txRows || b.buyRows - a.buyRows || a.tokenMint.localeCompare(b.tokenMint));
+  const vanillaBlockers = allTokens.flatMap((row) => row.vanillaBlockers);
+  const underfillBlockers = allTokens.flatMap((row) => row.underfillBlockers);
+  const topVanillaBlockers = countByLabel(vanillaBlockers, 'blocker').slice(0, 6) as Array<{ blocker: string; count: number }>;
+  const topUnderfillBlockers = countByLabel(underfillBlockers, 'blocker').slice(0, 6) as Array<{ blocker: string; count: number }>;
+  return {
+    cutoffMs: cutoff.cutoffMs,
+    cutoffSource: cutoff.cutoffSource,
+    since: new Date(cutoff.cutoffMs).toISOString(),
+    kolTxRows,
+    kolBuyRows,
+    kolSellRows,
+    allTokens,
+    topVanillaBlockers,
+    topUnderfillBlockers,
+  };
+}
+
+function buildRotationDetectorReplayStats(input: {
+  sinceMs: number;
+  currentSessionStartedAtMs?: number;
+  kolTxRows: JsonRow[];
+}): RotationDetectorReplayStats {
+  const replay = buildRotationDetectorReplay(input);
+  const scopeLabel = replay.cutoffSource === 'current_session' ? 'current-session' : 'report-window';
+  const tokens = replay.allTokens.slice(0, 12);
+  const vanillaBlockers = replay.allTokens.flatMap((row) => row.vanillaBlockers);
+  const underfillBlockers = replay.allTokens.flatMap((row) => row.underfillBlockers);
+  const reasons: string[] = [];
+  let verdict: RotationDetectorReplayVerdict = 'COLLECT';
+  if (replay.kolTxRows.length === 0) {
+    verdict = 'NO_KOL_TX';
+    reasons.push(`no ${scopeLabel} KOL tx rows to replay against rotation detector defaults`);
+  } else if (
+    vanillaBlockers.includes('recent_same_mint_sell') ||
+    underfillBlockers.includes('underfill_recent_same_mint_sell')
+  ) {
+    verdict = 'BLOCKED_BY_RECENT_SELL';
+    reasons.push(`${scopeLabel} KOL flow includes same-mint sell pressure inside the rotation replay window`);
+  } else if (
+    vanillaBlockers.includes('insufficient_buy_count') ||
+    vanillaBlockers.includes('insufficient_small_buys') ||
+    vanillaBlockers.includes('insufficient_gross_buy_sol') ||
+    underfillBlockers.includes('underfill_no_buy_rows') ||
+    underfillBlockers.includes('underfill_no_s_or_a_buy')
+  ) {
+    verdict = 'INSUFFICIENT_BUY_DEPTH';
+    reasons.push(`${scopeLabel} buy depth does not satisfy rotation replay defaults`);
+  } else if (
+    vanillaBlockers.includes('needs_price_response') ||
+    underfillBlockers.includes('underfill_needs_price_context')
+  ) {
+    verdict = 'NEEDS_PRICE_CONTEXT';
+    reasons.push('detector shape reached the price-response or underfill discount check; report replay has no live price context');
+  } else {
+    reasons.push('rotation detector replay is collecting more current-session evidence');
+  }
+
+  return {
+    verdict,
+    reasons,
+    cutoffSource: replay.cutoffSource,
+    since: replay.since,
+    tokenRows: replay.allTokens.length,
+    kolTxRows: replay.kolTxRows.length,
+    kolBuyRows: replay.kolBuyRows.length,
+    kolSellRows: replay.kolSellRows.length,
+    topVanillaBlockers: replay.topVanillaBlockers,
+    topUnderfillBlockers: replay.topUnderfillBlockers,
+    tokens,
+  };
+}
+
+function isUnderfillPriceContextReplayToken(row: RotationDetectorReplayTokenStats): boolean {
+  return row.underfillBlockers.length === 1 &&
+    row.underfillBlockers[0] === 'underfill_needs_price_context';
+}
+
+function summarizeDetectorBlockerTokenMarkout(
+  token: RotationDetectorReplayTokenStats,
+  rows: JsonRow[],
+  horizonsSec: number[],
+  roundTripCostPct: number
+): RotationDetectorBlockerTokenMarkoutStats {
+  const horizonStats = summarize(rows, horizonsSec, roundTripCostPct);
+  const primary = horizonStats.find((row) => row.horizonSec === 30) ?? horizonStats[0];
+  const best = horizonStats
+    .filter((row) => row.medianPostCostDeltaPct != null)
+    .sort((a, b) => (b.medianPostCostDeltaPct ?? -Infinity) - (a.medianPostCostDeltaPct ?? -Infinity))[0];
+  return {
+    tokenMint: token.tokenMint,
+    shortMint: token.shortMint,
+    txRows: token.txRows,
+    buyRows: token.buyRows,
+    sellRows: token.sellRows,
+    markoutRows: rows.length,
+    primaryMedianPostCostDeltaPct: primary?.medianPostCostDeltaPct ?? null,
+    bestHorizonSec: best?.horizonSec ?? null,
+    bestMedianPostCostDeltaPct: best?.medianPostCostDeltaPct ?? null,
+    topKols: token.topKols,
+  };
+}
+
+function summarizeRotationDetectorBlockerBucket(input: {
+  scope: 'underfill' | 'vanilla';
+  blocker: string;
+  tokens: RotationDetectorReplayTokenStats[];
+  markoutsByMint: Map<string, JsonRow[]>;
+  horizonsSec: number[];
+  roundTripCostPct: number;
+}): RotationDetectorBlockerMarkoutBucketStats {
+  const markoutRows = input.tokens.flatMap((token) => input.markoutsByMint.get(token.tokenMint) ?? []);
+  const markoutTokenRows = input.tokens.filter((token) => (input.markoutsByMint.get(token.tokenMint) ?? []).length > 0).length;
+  const horizons = summarize(markoutRows, input.horizonsSec, input.roundTripCostPct);
+  const okCoverages = horizons
+    .filter((row) => row.rows > 0)
+    .map((row) => row.okRows / row.rows);
+  const minOkCoverage = okCoverages.length > 0 ? Math.min(...okCoverages) : null;
+  const primary = horizons.find((row) => row.horizonSec === 30) ?? horizons[0];
+  const primaryPostCostPositiveRate = primary && primary.okRows > 0
+    ? primary.positivePostCostRows / primary.okRows
+    : null;
+  const tokenCoverage = ratio(markoutTokenRows, input.tokens.length);
+  const reasons: string[] = [];
+  let verdict: RotationDetectorBlockerMarkoutVerdict = 'COLLECT';
+
+  if (markoutRows.length === 0) {
+    verdict = 'NO_MARKOUT_COVERAGE';
+    reasons.push('blocker has no report-window buy markout rows');
+  } else if ((tokenCoverage ?? 0) < 0.2) {
+    verdict = 'COLLECT';
+    reasons.push(`token markout coverage ${formatPct(tokenCoverage)} < 20.00%`);
+  } else if ((minOkCoverage ?? 0) < EVIDENCE_MIN_OK_COVERAGE) {
+    verdict = 'COLLECT';
+    reasons.push(`markout ok coverage ${formatPct(minOkCoverage)} < ${formatPct(EVIDENCE_MIN_OK_COVERAGE)}`);
+  } else if ((primary?.medianPostCostDeltaPct ?? 0) <= 0 || (primaryPostCostPositiveRate ?? 0) < 0.5) {
+    verdict = 'BLOCKER_PROTECTS';
+    reasons.push(`T+${primary?.horizonSec ?? 'n/a'} post-cost median ${formatPct(primary?.medianPostCostDeltaPct ?? null)}, positive ${formatPct(primaryPostCostPositiveRate)}`);
+  } else {
+    verdict = 'BLOCKER_REVIEW_CANDIDATE';
+    reasons.push(`covered blocker tokens show positive T+${primary.horizonSec}s post-cost markout; detector relaxation still requires paper-only route proof`);
+  }
+
+  const topTokens = input.tokens
+    .map((token) => summarizeDetectorBlockerTokenMarkout(
+      token,
+      input.markoutsByMint.get(token.tokenMint) ?? [],
+      input.horizonsSec,
+      input.roundTripCostPct
+    ))
+    .sort((a, b) =>
+      b.markoutRows - a.markoutRows ||
+      (b.bestMedianPostCostDeltaPct ?? -Infinity) - (a.bestMedianPostCostDeltaPct ?? -Infinity) ||
+      b.txRows - a.txRows ||
+      a.tokenMint.localeCompare(b.tokenMint)
+    )
+    .slice(0, 8);
+
+  return {
+    scope: input.scope,
+    blocker: input.blocker,
+    verdict,
+    reasons,
+    tokenRows: input.tokens.length,
+    markoutTokenRows,
+    tokenCoverage,
+    buyMarkoutRows: markoutRows.length,
+    minOkCoverage,
+    primaryHorizonSec: primary?.horizonSec ?? null,
+    primaryMedianPostCostDeltaPct: primary?.medianPostCostDeltaPct ?? null,
+    primaryPostCostPositiveRate,
+    horizons,
+    topKols: countByLabel(input.tokens.flatMap((token) =>
+      token.topKols.map((item) => item.kol)
+    ), 'kol').slice(0, 6) as Array<{ kol: string; count: number }>,
+    topTokens,
+  };
+}
+
+function buildRotationDetectorBlockerMarkouts(input: {
+  sinceMs: number;
+  kolTxRows: JsonRow[];
+  tradeMarkoutRows: JsonRow[];
+  horizonsSec: number[];
+  roundTripCostPct: number;
+}): RotationDetectorBlockerMarkoutStats {
+  const replay = buildRotationDetectorReplay({
+    sinceMs: input.sinceMs,
+    kolTxRows: input.kolTxRows,
+  });
+  const buyMarkoutRows = input.tradeMarkoutRows.filter((row) => str(row.anchorType) === 'buy');
+  const markoutsByMint = new Map<string, JsonRow[]>();
+  for (const row of buyMarkoutRows) {
+    const mint = rowTokenMintDeep(row);
+    if (mint) markoutsByMint.set(mint, [...(markoutsByMint.get(mint) ?? []), row]);
+  }
+  const buckets = new Map<string, {
+    scope: 'underfill' | 'vanilla';
+    blocker: string;
+    tokens: RotationDetectorReplayTokenStats[];
+  }>();
+  for (const token of replay.allTokens) {
+    for (const blocker of token.underfillBlockers) {
+      const key = `underfill:${blocker}`;
+      const bucket = buckets.get(key) ?? { scope: 'underfill' as const, blocker, tokens: [] };
+      bucket.tokens.push(token);
+      buckets.set(key, bucket);
+    }
+    for (const blocker of token.vanillaBlockers) {
+      const key = `vanilla:${blocker}`;
+      const bucket = buckets.get(key) ?? { scope: 'vanilla' as const, blocker, tokens: [] };
+      bucket.tokens.push(token);
+      buckets.set(key, bucket);
+    }
+  }
+  const topBuckets = [...buckets.values()]
+    .map((bucket) => summarizeRotationDetectorBlockerBucket({
+      scope: bucket.scope,
+      blocker: bucket.blocker,
+      tokens: bucket.tokens,
+      markoutsByMint,
+      horizonsSec: input.horizonsSec,
+      roundTripCostPct: input.roundTripCostPct,
+    }))
+    .sort((a, b) =>
+      (a.scope === 'underfill' ? 0 : 1) - (b.scope === 'underfill' ? 0 : 1) ||
+      b.tokenRows - a.tokenRows ||
+      b.buyMarkoutRows - a.buyMarkoutRows ||
+      a.blocker.localeCompare(b.blocker)
+    )
+    .slice(0, 12);
+
+  return {
+    since: replay.since,
+    cutoffSource: 'report_since',
+    tokenRows: replay.allTokens.length,
+    buyMarkoutRows: buyMarkoutRows.length,
+    topBuckets,
+  };
+}
+
+function staleBuyAgeBucket(token: RotationDetectorReplayTokenStats): string {
+  const age = token.lastBuyAgeSec;
+  if (age == null) return 'age_unknown';
+  if (age <= 60) return 'age_45_60s';
+  if (age <= 120) return 'age_60_120s';
+  if (age <= 300) return 'age_120_300s';
+  return 'age_300s_plus';
+}
+
+function staleBuyDepthBucket(token: RotationDetectorReplayTokenStats): string {
+  const kolBucket = token.distinctKols >= 2 ? '2plus_kol' : '1kol';
+  const grossBucket = token.grossBuySol >= ROTATION_REPLAY_MIN_GROSS_BUY_SOL ? 'gross_ok' : 'gross_low';
+  return `${kolBucket}_${grossBucket}`;
+}
+
+function staleBuyReviewBucket(token: RotationDetectorReplayTokenStats): string {
+  return `${staleBuyAgeBucket(token)}:${staleBuyDepthBucket(token)}`;
+}
+
+function isRotationStaleBuyPaperProbe(row: JsonRow): boolean {
+  const extras = obj(row.extras);
+  return str(row.lane) === 'kol_hunter' &&
+    (str(extras.eventType) === 'rotation_underfill_no_trade' ||
+      str(row.signalSource) === 'rotation_underfill_v1') &&
+    (str(extras.noTradeReason) === 'underfill_stale_last_buy' ||
+      str(row.rejectReason) === 'rotation_underfill_underfill_stale_last_buy');
+}
+
+function isKolPaperProbe(row: JsonRow): boolean {
+  return str(row.lane) === 'kol_hunter' && (rowHorizon(row) ?? 0) > 0;
+}
+
+function summarizeStaleBuyMissingToken(token: RotationDetectorReplayTokenStats): RotationStaleBuyMissingTokenStats {
+  return {
+    tokenMint: token.tokenMint,
+    shortMint: token.shortMint,
+    txRows: token.txRows,
+    buyRows: token.buyRows,
+    sellRows: token.sellRows,
+    lastBuyAgeSec: token.lastBuyAgeSec,
+    grossBuySol: token.grossBuySol,
+    distinctKols: token.distinctKols,
+    topKols: token.topKols,
+  };
+}
+
+function summarizeRotationStaleBuyBucket(input: {
+  bucket: string;
+  tokens: RotationDetectorReplayTokenStats[];
+  markoutsByMint: Map<string, JsonRow[]>;
+  paperProbesByMint: Map<string, JsonRow[]>;
+  allPaperProbesByMint: Map<string, JsonRow[]>;
+  horizonsSec: number[];
+  roundTripCostPct: number;
+}): RotationStaleBuyBucketStats {
+  const markoutRows = input.tokens.flatMap((token) => input.markoutsByMint.get(token.tokenMint) ?? []);
+  const markoutTokenRows = input.tokens.filter((token) => (input.markoutsByMint.get(token.tokenMint) ?? []).length > 0).length;
+  const missingTokens = input.tokens.filter((token) => (input.markoutsByMint.get(token.tokenMint) ?? []).length === 0);
+  const paperProbeRows = input.tokens.flatMap((token) => input.paperProbesByMint.get(token.tokenMint) ?? []);
+  const paperProbeTokenRows = input.tokens.filter((token) => (input.paperProbesByMint.get(token.tokenMint) ?? []).length > 0).length;
+  const unmeasuredTokens = input.tokens.filter((token) =>
+    (input.markoutsByMint.get(token.tokenMint) ?? []).length === 0 &&
+    (input.paperProbesByMint.get(token.tokenMint) ?? []).length === 0
+  );
+  const otherPaperProbeTokens = unmeasuredTokens.filter((token) =>
+    (input.allPaperProbesByMint.get(token.tokenMint) ?? []).length > 0
+  );
+  const otherPaperProbeRows = otherPaperProbeTokens.flatMap((token) =>
+    input.allPaperProbesByMint.get(token.tokenMint) ?? []
+  );
+  const darkTokens = unmeasuredTokens.filter((token) =>
+    (input.allPaperProbesByMint.get(token.tokenMint) ?? []).length === 0
+  );
+  const horizons = summarize(markoutRows, input.horizonsSec, input.roundTripCostPct);
+  const paperProbeHorizons = summarize(paperProbeRows, input.horizonsSec, input.roundTripCostPct);
+  const okCoverages = horizons
+    .filter((row) => row.rows > 0)
+    .map((row) => row.okRows / row.rows);
+  const minOkCoverage = okCoverages.length > 0 ? Math.min(...okCoverages) : null;
+  const paperProbeOkCoverages = paperProbeHorizons
+    .filter((row) => row.rows > 0)
+    .map((row) => row.okRows / row.rows);
+  const paperProbeMinOkCoverage = paperProbeOkCoverages.length > 0 ? Math.min(...paperProbeOkCoverages) : null;
+  const primary = horizons.find((row) => row.horizonSec === 30) ?? horizons[0];
+  const paperProbePrimary = paperProbeHorizons.find((row) => row.horizonSec === 30) ?? paperProbeHorizons[0];
+  const primaryPostCostPositiveRate = primary && primary.okRows > 0
+    ? primary.positivePostCostRows / primary.okRows
+    : null;
+  const paperProbePrimaryPostCostPositiveRate = paperProbePrimary && paperProbePrimary.okRows > 0
+    ? paperProbePrimary.positivePostCostRows / paperProbePrimary.okRows
+    : null;
+  const tokenCoverage = ratio(markoutTokenRows, input.tokens.length);
+  const reasons: string[] = [];
+  let verdict: RotationStaleBuyReviewVerdict = 'COLLECT';
+
+  if (markoutRows.length === 0) {
+    verdict = 'COLLECT';
+    reasons.push('stale-buy bucket has no buy markout coverage');
+  } else if (input.tokens.length < 10) {
+    verdict = 'COLLECT';
+    reasons.push(`bucket tokens ${input.tokens.length} < 10`);
+  } else if ((tokenCoverage ?? 0) < 0.2) {
+    verdict = 'COLLECT';
+    reasons.push(`token markout coverage ${formatPct(tokenCoverage)} < 20.00%`);
+  } else if ((minOkCoverage ?? 0) < EVIDENCE_MIN_OK_COVERAGE) {
+    verdict = 'COLLECT';
+    reasons.push(`markout ok coverage ${formatPct(minOkCoverage)} < ${formatPct(EVIDENCE_MIN_OK_COVERAGE)}`);
+  } else if ((primary?.medianPostCostDeltaPct ?? 0) <= 0 || (primaryPostCostPositiveRate ?? 0) < 0.55) {
+    verdict = 'STALE_BUY_REJECT';
+    reasons.push(`T+${primary?.horizonSec ?? 'n/a'} post-cost median ${formatPct(primary?.medianPostCostDeltaPct ?? null)}, positive ${formatPct(primaryPostCostPositiveRate)}`);
+  } else {
+    verdict = 'PAPER_STALE_REVIEW_CANDIDATE';
+    reasons.push(`stale-buy bucket has positive T+${primary.horizonSec}s post-cost markout; paper-only route-proof review required`);
+  }
+
+  const topTokens = input.tokens
+    .map((token) => summarizeDetectorBlockerTokenMarkout(
+      token,
+      input.markoutsByMint.get(token.tokenMint) ?? [],
+      input.horizonsSec,
+      input.roundTripCostPct
+    ))
+    .sort((a, b) =>
+      b.markoutRows - a.markoutRows ||
+      (b.bestMedianPostCostDeltaPct ?? -Infinity) - (a.bestMedianPostCostDeltaPct ?? -Infinity) ||
+      b.txRows - a.txRows ||
+      a.tokenMint.localeCompare(b.tokenMint)
+    )
+    .slice(0, 8);
+
+  return {
+    bucket: input.bucket,
+    verdict,
+    reasons,
+    tokenRows: input.tokens.length,
+    markoutTokenRows,
+    missingMarkoutTokenRows: missingTokens.length,
+    paperProbeTokenRows,
+    paperProbeRows: paperProbeRows.length,
+    paperProbeOkRows: paperProbeRows.filter(isOk).length,
+    paperProbeMinOkCoverage,
+    paperProbePrimaryMedianPostCostDeltaPct: paperProbePrimary?.medianPostCostDeltaPct ?? null,
+    paperProbePrimaryPostCostPositiveRate,
+    otherPaperProbeTokenRows: otherPaperProbeTokens.length,
+    otherPaperProbeRows: otherPaperProbeRows.length,
+    darkTokenRows: darkTokens.length,
+    unmeasuredTokenRows: unmeasuredTokens.length,
+    tokenCoverage,
+    buyMarkoutRows: markoutRows.length,
+    minOkCoverage,
+    primaryHorizonSec: primary?.horizonSec ?? null,
+    primaryMedianPostCostDeltaPct: primary?.medianPostCostDeltaPct ?? null,
+    primaryPostCostPositiveRate,
+    medianLastBuyAgeSec: percentile(input.tokens
+      .map((token) => token.lastBuyAgeSec)
+      .filter((value): value is number => value != null), 0.5),
+    medianGrossBuySol: percentile(input.tokens.map((token) => token.grossBuySol), 0.5),
+    topKols: countByLabel(input.tokens.flatMap((token) =>
+      token.topKols.map((item) => item.kol)
+    ), 'kol').slice(0, 6) as Array<{ kol: string; count: number }>,
+    topMissingKols: countByLabel(missingTokens.flatMap((token) =>
+      token.topKols.map((item) => item.kol)
+    ), 'kol').slice(0, 6) as Array<{ kol: string; count: number }>,
+    topUnmeasuredKols: countByLabel(unmeasuredTokens.flatMap((token) =>
+      token.topKols.map((item) => item.kol)
+    ), 'kol').slice(0, 6) as Array<{ kol: string; count: number }>,
+    topDarkKols: countByLabel(darkTokens.flatMap((token) =>
+      token.topKols.map((item) => item.kol)
+    ), 'kol').slice(0, 6) as Array<{ kol: string; count: number }>,
+    topOtherPaperProbeReasons: countByLabel(otherPaperProbeRows.map(rowMissedAlphaRejectReason), 'reason').slice(0, 6) as Array<{ reason: string; count: number }>,
+    topTokens,
+    topMissingTokens: missingTokens
+      .map(summarizeStaleBuyMissingToken)
+      .sort((a, b) =>
+        b.txRows - a.txRows ||
+        b.buyRows - a.buyRows ||
+        b.grossBuySol - a.grossBuySol ||
+        a.tokenMint.localeCompare(b.tokenMint)
+      )
+      .slice(0, 8),
+    topUnmeasuredTokens: unmeasuredTokens
+      .map(summarizeStaleBuyMissingToken)
+      .sort((a, b) =>
+        b.txRows - a.txRows ||
+        b.buyRows - a.buyRows ||
+        b.grossBuySol - a.grossBuySol ||
+        a.tokenMint.localeCompare(b.tokenMint)
+      )
+      .slice(0, 8),
+    topDarkTokens: darkTokens
+      .map(summarizeStaleBuyMissingToken)
+      .sort((a, b) =>
+        b.txRows - a.txRows ||
+        b.buyRows - a.buyRows ||
+        b.grossBuySol - a.grossBuySol ||
+        a.tokenMint.localeCompare(b.tokenMint)
+      )
+      .slice(0, 8),
+  };
+}
+
+function buildRotationStaleBuyReview(input: {
+  sinceMs: number;
+  kolTxRows: JsonRow[];
+  tradeMarkoutRows: JsonRow[];
+  missedAlphaRows: JsonRow[];
+  horizonsSec: number[];
+  roundTripCostPct: number;
+}): RotationStaleBuyReviewStats {
+  const replay = buildRotationDetectorReplay({
+    sinceMs: input.sinceMs,
+    kolTxRows: input.kolTxRows,
+  });
+  const staleTokens = replay.allTokens.filter((token) =>
+    token.underfillBlockers.includes('underfill_stale_last_buy')
+  );
+  const candidateTokens = staleTokens.filter((token) =>
+    !token.underfillBlockers.includes('underfill_recent_same_mint_sell')
+  );
+  const buyMarkoutRows = input.tradeMarkoutRows.filter((row) => str(row.anchorType) === 'buy');
+  const markoutsByMint = new Map<string, JsonRow[]>();
+  for (const row of buyMarkoutRows) {
+    const mint = rowTokenMintDeep(row);
+    if (mint) markoutsByMint.set(mint, [...(markoutsByMint.get(mint) ?? []), row]);
+  }
+  const paperProbeRows = input.missedAlphaRows.filter(isRotationStaleBuyPaperProbe);
+  const paperProbesByMint = new Map<string, JsonRow[]>();
+  for (const row of paperProbeRows) {
+    const mint = rowTokenMintDeep(row);
+    if (mint) paperProbesByMint.set(mint, [...(paperProbesByMint.get(mint) ?? []), row]);
+  }
+  const allPaperProbeRows = input.missedAlphaRows.filter(isKolPaperProbe);
+  const allPaperProbesByMint = new Map<string, JsonRow[]>();
+  for (const row of allPaperProbeRows) {
+    const mint = rowTokenMintDeep(row);
+    if (mint) allPaperProbesByMint.set(mint, [...(allPaperProbesByMint.get(mint) ?? []), row]);
+  }
+  const byBucket = new Map<string, RotationDetectorReplayTokenStats[]>();
+  for (const token of candidateTokens) {
+    const bucket = staleBuyReviewBucket(token);
+    byBucket.set(bucket, [...(byBucket.get(bucket) ?? []), token]);
+  }
+  const buckets = [...byBucket.entries()]
+    .map(([bucket, tokens]) => summarizeRotationStaleBuyBucket({
+      bucket,
+      tokens,
+      markoutsByMint,
+      paperProbesByMint,
+      allPaperProbesByMint,
+      horizonsSec: input.horizonsSec,
+      roundTripCostPct: input.roundTripCostPct,
+    }))
+    .sort((a, b) =>
+      b.tokenRows - a.tokenRows ||
+      b.buyMarkoutRows - a.buyMarkoutRows ||
+      (b.primaryMedianPostCostDeltaPct ?? -Infinity) - (a.primaryMedianPostCostDeltaPct ?? -Infinity) ||
+      a.bucket.localeCompare(b.bucket)
+    );
+
+  return {
+    since: replay.since,
+    tokenRows: staleTokens.length,
+    candidateTokenRows: candidateTokens.length,
+    excludedRecentSellTokenRows: staleTokens.length - candidateTokens.length,
+    buyMarkoutRows: buyMarkoutRows.length,
+    paperProbeRows: paperProbeRows.length,
+    buckets,
+  };
+}
+
+function summarizePriceContextTokenMarkouts(
+  token: RotationDetectorReplayTokenStats,
+  rows: JsonRow[],
+  horizonsSec: number[],
+  roundTripCostPct: number
+): RotationPriceContextTokenMarkoutStats {
+  const horizonStats = summarize(rows, horizonsSec, roundTripCostPct);
+  const best = horizonStats
+    .filter((row) => row.medianPostCostDeltaPct != null)
+    .sort((a, b) => (b.medianPostCostDeltaPct ?? -Infinity) - (a.medianPostCostDeltaPct ?? -Infinity))[0];
+  return {
+    tokenMint: token.tokenMint,
+    shortMint: token.shortMint,
+    txRows: token.txRows,
+    buyRows: token.buyRows,
+    grossBuySol: token.grossBuySol,
+    distinctKols: token.distinctKols,
+    markoutRows: rows.length,
+    okRows: rows.filter(isOk).length,
+    bestHorizonSec: best?.horizonSec ?? null,
+    bestMedianPostCostDeltaPct: best?.medianPostCostDeltaPct ?? null,
+    topKols: token.topKols,
+  };
+}
+
+function latestBuyAtForReplayToken(token: RotationDetectorReplayTokenStats): string | null {
+  return token.lastBuyAt ?? token.firstBuyAt;
+}
+
+function gapReasonForPriceContextToken(input: {
+  anyMarkoutRows: number;
+  missedAlphaRows: number;
+  rotationNoTradeRows: number;
+  callFunnelRows: number;
+  rotationCallFunnelRows: number;
+  policyDecisionRows: number;
+}): string {
+  if (input.anyMarkoutRows > 0) return 'non_buy_markout_only';
+  if (
+    input.rotationNoTradeRows > 0 ||
+    input.rotationCallFunnelRows > 0 ||
+    input.policyDecisionRows > 0
+  ) {
+    return 'runtime_candidate_without_buy_markout';
+  }
+  if (input.missedAlphaRows > 0 || input.callFunnelRows > 0) {
+    return 'non_rotation_runtime_seen_without_buy_markout';
+  }
+  return 'kol_tx_only_no_probe';
+}
+
+function summarizePriceContextCoverageGapToken(input: {
+  token: RotationDetectorReplayTokenStats;
+  tradeMarkoutRows: JsonRow[];
+  missedAlphaRows: JsonRow[];
+  callFunnelRows: JsonRow[];
+  policyDecisionRows: JsonRow[];
+}): RotationPriceContextCoverageGapTokenStats {
+  const anyMarkoutRows = input.tradeMarkoutRows.length;
+  const missedAlphaRows = input.missedAlphaRows.length;
+  const rotationNoTrade = input.missedAlphaRows.filter(isRotationNoTrade);
+  const rotationNoTradeRows = input.missedAlphaRows.filter(isRotationNoTrade).length;
+  const callFunnelRows = input.callFunnelRows.length;
+  const rotationCallFunnelRows = input.callFunnelRows.filter(isRotationCallFunnelRow).length;
+  const policyDecisionRows = input.policyDecisionRows.length;
+  const rotationPolicyDecisionRows = input.policyDecisionRows.filter(isRotationPolicyDecision);
+  const rotationPolicyAttributionDriftRows = rotationPolicyDecisionRows.filter(isRotationPolicyAttributionDrift);
+  const gapReason = gapReasonForPriceContextToken({
+    anyMarkoutRows,
+    missedAlphaRows,
+    rotationNoTradeRows,
+    callFunnelRows,
+    rotationCallFunnelRows,
+    policyDecisionRows: rotationPolicyDecisionRows.length,
+  });
+  return {
+    tokenMint: input.token.tokenMint,
+    shortMint: input.token.shortMint,
+    gapReason,
+    txRows: input.token.txRows,
+    buyRows: input.token.buyRows,
+    grossBuySol: input.token.grossBuySol,
+    distinctKols: input.token.distinctKols,
+    latestBuyAt: latestBuyAtForReplayToken(input.token),
+    anyMarkoutRows,
+    missedAlphaRows,
+    rotationNoTradeRows,
+    callFunnelRows,
+    rotationCallFunnelRows,
+    policyDecisionRows,
+    rotationPolicyDecisionRows: rotationPolicyDecisionRows.length,
+    rotationPolicyAttributionDriftRows: rotationPolicyAttributionDriftRows.length,
+    topNoTradeReasons: countByLabel(rotationNoTrade.map(rowNoTradeReason), 'reason').slice(0, 3) as Array<{ reason: string; count: number }>,
+    topPolicyEntryReasons: countByLabel(input.policyDecisionRows.map(rowPolicyEntryReason), 'reason').slice(0, 3) as Array<{ reason: string; count: number }>,
+    topPolicyRejectReasons: countByLabel(input.policyDecisionRows.map(rowPolicyRejectReason), 'reason').slice(0, 3) as Array<{ reason: string; count: number }>,
+    topRotationPolicyEntryReasons: countByLabel(rotationPolicyDecisionRows.map(rowPolicyEntryReason), 'reason').slice(0, 3) as Array<{ reason: string; count: number }>,
+    topRotationPolicyRejectReasons: countByLabel(rotationPolicyDecisionRows.map(rowPolicyRejectReason), 'reason').slice(0, 3) as Array<{ reason: string; count: number }>,
+    topRotationPolicyAttributionDriftReasons: countByLabel(rotationPolicyAttributionDriftRows.map(rowPolicyRejectReason), 'reason').slice(0, 3) as Array<{ reason: string; count: number }>,
+    topRotationPolicyAttributionSources: countByLabel(rotationPolicyAttributionDriftRows.map(rowPolicyAttributionSource), 'source').slice(0, 3) as Array<{ source: string; count: number }>,
+    topRotationPolicyAttributionSurvivalReasons: countByLabel(rotationPolicyAttributionDriftRows.map(rowPolicyAttributionSurvivalReason), 'reason').slice(0, 3) as Array<{ reason: string; count: number }>,
+    topKols: input.token.topKols,
+  };
+}
+
+function hasRotationSpecificGapEvidence(row: RotationPriceContextCoverageGapTokenStats): boolean {
+  return row.rotationNoTradeRows > 0 ||
+    row.rotationCallFunnelRows > 0 ||
+    row.rotationPolicyDecisionRows > 0;
+}
+
+function buildRotationPriceContextCoverageGap(input: {
+  candidates: RotationDetectorReplayTokenStats[];
+  buyMarkoutRows: JsonRow[];
+  tradeMarkoutRows: JsonRow[];
+  missedAlphaRows: JsonRow[];
+  callFunnelRows: JsonRow[];
+  policyDecisionRows: JsonRow[];
+}): RotationPriceContextCoverageGapStats {
+  const coveredMints = new Set(input.buyMarkoutRows.map(rowTokenMintDeep).filter(Boolean));
+  const missing = input.candidates.filter((row) => !coveredMints.has(row.tokenMint));
+  const missingMints = new Set(missing.map((row) => row.tokenMint));
+  const byMarkoutMint = new Map<string, JsonRow[]>();
+  const byMissedAlphaMint = new Map<string, JsonRow[]>();
+  const byCallFunnelMint = new Map<string, JsonRow[]>();
+  const byPolicyMint = new Map<string, JsonRow[]>();
+  for (const row of input.tradeMarkoutRows) {
+    const mint = rowTokenMintDeep(row);
+    if (mint) byMarkoutMint.set(mint, [...(byMarkoutMint.get(mint) ?? []), row]);
+  }
+  for (const row of input.missedAlphaRows) {
+    const mint = rowTokenMintDeep(row);
+    if (mint) byMissedAlphaMint.set(mint, [...(byMissedAlphaMint.get(mint) ?? []), row]);
+  }
+  for (const row of input.callFunnelRows) {
+    const mint = rowTokenMintDeep(row);
+    if (mint) byCallFunnelMint.set(mint, [...(byCallFunnelMint.get(mint) ?? []), row]);
+  }
+  for (const row of input.policyDecisionRows) {
+    const mint = rowTokenMintDeep(row);
+    if (mint) byPolicyMint.set(mint, [...(byPolicyMint.get(mint) ?? []), row]);
+  }
+  const topMissingTokens = missing
+    .map((token) => summarizePriceContextCoverageGapToken({
+      token,
+      tradeMarkoutRows: byMarkoutMint.get(token.tokenMint) ?? [],
+      missedAlphaRows: byMissedAlphaMint.get(token.tokenMint) ?? [],
+      callFunnelRows: byCallFunnelMint.get(token.tokenMint) ?? [],
+      policyDecisionRows: byPolicyMint.get(token.tokenMint) ?? [],
+    }))
+    .sort((a, b) =>
+      b.anyMarkoutRows - a.anyMarkoutRows ||
+      b.rotationNoTradeRows - a.rotationNoTradeRows ||
+      b.txRows - a.txRows ||
+      b.grossBuySol - a.grossBuySol ||
+      a.tokenMint.localeCompare(b.tokenMint)
+    );
+  const rotationSpecificMissingTokens = topMissingTokens.filter(hasRotationSpecificGapEvidence);
+  const missingRotationPolicyDecisionRows = input.policyDecisionRows
+    .filter((row) => missingMints.has(rowTokenMintDeep(row)) && isRotationPolicyDecision(row));
+  const missingRotationPolicyAttributionDriftRows = missingRotationPolicyDecisionRows
+    .filter(isRotationPolicyAttributionDrift);
+  const rotationPolicyAttributionDriftTokens = topMissingTokens
+    .filter((row) => row.rotationPolicyAttributionDriftRows > 0);
+  return {
+    missingBuyMarkoutTokenRows: missing.length,
+    missingBuyMarkoutKolTxRows: missing.reduce((sum, row) => sum + row.txRows, 0),
+    rotationSpecificMissingTokenRows: rotationSpecificMissingTokens.length,
+    rotationSpecificMissingKolTxRows: rotationSpecificMissingTokens.reduce((sum, row) => sum + row.txRows, 0),
+    rotationPolicyAttributionDriftTokenRows: rotationPolicyAttributionDriftTokens.length,
+    rotationPolicyAttributionDriftRows: missingRotationPolicyAttributionDriftRows.length,
+    topMissingReasons: countByLabel(topMissingTokens.map((row) => row.gapReason), 'reason').slice(0, 6) as Array<{ reason: string; count: number }>,
+    topMissingKols: countByLabel(missing.flatMap((row) => row.topKols.map((item) => item.kol)), 'kol').slice(0, 8) as Array<{ kol: string; count: number }>,
+    topMissingNoTradeReasons: countByLabel(input.missedAlphaRows
+      .filter((row) => missingMints.has(rowTokenMintDeep(row)) && isRotationNoTrade(row))
+      .map(rowNoTradeReason), 'reason').slice(0, 8) as Array<{ reason: string; count: number }>,
+    topMissingPolicyEntryReasons: countByLabel(input.policyDecisionRows
+      .filter((row) => missingMints.has(rowTokenMintDeep(row)))
+      .map(rowPolicyEntryReason), 'reason').slice(0, 8) as Array<{ reason: string; count: number }>,
+    topMissingPolicyRejectReasons: countByLabel(input.policyDecisionRows
+      .filter((row) => missingMints.has(rowTokenMintDeep(row)))
+      .map(rowPolicyRejectReason), 'reason').slice(0, 8) as Array<{ reason: string; count: number }>,
+    topMissingRotationPolicyEntryReasons: countByLabel(missingRotationPolicyDecisionRows
+      .map(rowPolicyEntryReason), 'reason').slice(0, 8) as Array<{ reason: string; count: number }>,
+    topMissingRotationPolicyRejectReasons: countByLabel(missingRotationPolicyDecisionRows
+      .map(rowPolicyRejectReason), 'reason').slice(0, 8) as Array<{ reason: string; count: number }>,
+    topMissingRotationPolicyAttributionDriftReasons: countByLabel(missingRotationPolicyAttributionDriftRows
+      .map(rowPolicyRejectReason), 'reason').slice(0, 8) as Array<{ reason: string; count: number }>,
+    topMissingRotationPolicyAttributionSources: countByLabel(missingRotationPolicyAttributionDriftRows
+      .map(rowPolicyAttributionSource), 'source').slice(0, 8) as Array<{ source: string; count: number }>,
+    topMissingRotationPolicyAttributionSurvivalReasons: countByLabel(missingRotationPolicyAttributionDriftRows
+      .map(rowPolicyAttributionSurvivalReason), 'reason').slice(0, 8) as Array<{ reason: string; count: number }>,
+    topMissingTokens: topMissingTokens.slice(0, 12),
+  };
+}
+
+function buildRotationPriceContextMarkouts(input: {
+  sinceMs: number;
+  kolTxRows: JsonRow[];
+  tradeMarkoutRows: JsonRow[];
+  missedAlphaRows: JsonRow[];
+  callFunnelRows: JsonRow[];
+  policyDecisionRows: JsonRow[];
+  horizonsSec: number[];
+  roundTripCostPct: number;
+}): RotationPriceContextMarkoutStats {
+  const replay = buildRotationDetectorReplay({
+    sinceMs: input.sinceMs,
+    kolTxRows: input.kolTxRows,
+  });
+  const candidates = replay.allTokens.filter(isUnderfillPriceContextReplayToken);
+  const candidateMints = new Set(candidates.map((row) => row.tokenMint));
+  const candidateByMint = new Map(candidates.map((row) => [row.tokenMint, row]));
+  const candidateKolTxRows = candidates.reduce((sum, row) => sum + row.txRows, 0);
+  const buyMarkoutRows = input.tradeMarkoutRows.filter((row) =>
+    str(row.anchorType) === 'buy' && candidateMints.has(rowTokenMint(row))
+  );
+  const markoutTokenRows = new Set(buyMarkoutRows.map(rowTokenMint).filter(Boolean)).size;
+  const horizons = summarize(buyMarkoutRows, input.horizonsSec, input.roundTripCostPct);
+  const okCoverages = horizons
+    .filter((row) => row.rows > 0)
+    .map((row) => row.okRows / row.rows);
+  const minOkCoverage = okCoverages.length > 0 ? Math.min(...okCoverages) : null;
+  const markoutTokenCoverage = ratio(markoutTokenRows, candidates.length);
+  const primary = horizons.find((row) => row.horizonSec === 30) ?? horizons[0];
+  const primaryPostCostPositiveRate = primary ? ratio(primary.positivePostCostRows, primary.okRows) : null;
+  const reasons: string[] = [];
+  let verdict: RotationPriceContextMarkoutVerdict = 'COLLECT';
+
+  if (candidates.length === 0) {
+    verdict = 'NO_PRICE_CONTEXT_CANDIDATES';
+    reasons.push('no report-window underfill replay token reached the price-context check');
+  } else if (buyMarkoutRows.length === 0) {
+    verdict = 'NO_MARKOUT_COVERAGE';
+    reasons.push(`price-context replay candidates exist but have no buy markout rows; tokens=${candidates.length}`);
+  } else if ((markoutTokenCoverage ?? 0) < 0.5) {
+    verdict = 'COLLECT';
+    reasons.push(`token markout coverage ${formatPct(markoutTokenCoverage)} < 50.00%; covered=${markoutTokenRows}/${candidates.length}`);
+  } else if ((minOkCoverage ?? 0) < EVIDENCE_MIN_OK_COVERAGE) {
+    verdict = 'COLLECT';
+    reasons.push(`markout ok coverage ${formatPct(minOkCoverage)} < ${formatPct(EVIDENCE_MIN_OK_COVERAGE)}`);
+  } else if ((primary?.medianPostCostDeltaPct ?? 0) <= 0 || (primaryPostCostPositiveRate ?? 0) < 0.5) {
+    verdict = 'NEGATIVE_AFTER_COST';
+    reasons.push(`primary T+${primary?.horizonSec ?? 'n/a'} post-cost median ${formatPct(primary?.medianPostCostDeltaPct ?? null)}, positive ${formatPct(primaryPostCostPositiveRate)}`);
+  } else {
+    verdict = 'PAPER_OBSERVE_CANDIDATE';
+    reasons.push(`covered price-context candidates show positive T+${primary.horizonSec}s post-cost markout; paper-only review required`);
+  }
+
+  const byToken = new Map<string, JsonRow[]>();
+  for (const row of buyMarkoutRows) {
+    const mint = rowTokenMint(row);
+    if (!mint) continue;
+    byToken.set(mint, [...(byToken.get(mint) ?? []), row]);
+  }
+  const topTokens = [...byToken.entries()]
+    .map(([mint, rows]) => {
+      const token = candidateByMint.get(mint);
+      return token ? summarizePriceContextTokenMarkouts(token, rows, input.horizonsSec, input.roundTripCostPct) : null;
+    })
+    .filter((row): row is RotationPriceContextTokenMarkoutStats => row != null)
+    .sort((a, b) =>
+      b.markoutRows - a.markoutRows ||
+      (b.bestMedianPostCostDeltaPct ?? -Infinity) - (a.bestMedianPostCostDeltaPct ?? -Infinity) ||
+      a.tokenMint.localeCompare(b.tokenMint)
+    )
+    .slice(0, 10);
+  const coverageGap = buildRotationPriceContextCoverageGap({
+    candidates,
+    buyMarkoutRows,
+    tradeMarkoutRows: input.tradeMarkoutRows,
+    missedAlphaRows: input.missedAlphaRows,
+    callFunnelRows: input.callFunnelRows,
+    policyDecisionRows: input.policyDecisionRows,
+  });
+
+  return {
+    verdict,
+    reasons,
+    cutoffSource: 'report_since',
+    since: replay.since,
+    candidateTokenRows: candidates.length,
+    candidateKolTxRows,
+    markoutTokenRows,
+    markoutTokenCoverage,
+    buyMarkoutRows: buyMarkoutRows.length,
+    minOkCoverage,
+    horizons,
+    topTokens,
+    coverageGap,
+  };
+}
+
+function summarizeRotationDecayBlockToken(input: {
+  tokenMint: string;
+  policyRows: JsonRow[];
+  probeRows: JsonRow[];
+  horizonsSec: number[];
+  roundTripCostPct: number;
+}): RotationDecayBlockTokenStats {
+  const horizonStats = summarize(input.probeRows, input.horizonsSec, input.roundTripCostPct);
+  const primary = horizonStats.find((row) => row.horizonSec === 30) ?? horizonStats[0];
+  const decay = horizonStats.find((row) => row.horizonSec === EVIDENCE_DECAY_HORIZON_SEC) ?? null;
+  const best = horizonStats
+    .filter((row) => row.medianPostCostDeltaPct != null)
+    .sort((a, b) => (b.medianPostCostDeltaPct ?? -Infinity) - (a.medianPostCostDeltaPct ?? -Infinity))[0];
+  const primaryMedian = primary?.medianPostCostDeltaPct ?? null;
+  const decayMedian = decay?.medianPostCostDeltaPct ?? null;
+  const recoveryClass: RotationDecayRecoveryClass =
+    primaryMedian == null
+      ? 'insufficient_coverage'
+      : primaryMedian > 0
+        ? 'immediate_winner'
+        : decayMedian != null && decayMedian > 0
+          ? 'delayed_recovery'
+          : decayMedian == null
+            ? 'insufficient_coverage'
+            : 'saved_loss';
+  return {
+    tokenMint: input.tokenMint,
+    shortMint: shortTokenMint(input.tokenMint),
+    policyRows: input.policyRows.length,
+    probeRows: input.probeRows.length,
+    okRows: input.probeRows.filter(isOk).length,
+    recoveryClass,
+    primaryHorizonSec: primary?.horizonSec ?? null,
+    primaryMedianPostCostDeltaPct: primaryMedian,
+    decayHorizonSec: decay?.horizonSec ?? null,
+    decayMedianPostCostDeltaPct: decayMedian,
+    recoveryDeltaPct: primaryMedian != null && decayMedian != null ? decayMedian - primaryMedian : null,
+    bestHorizonSec: best?.horizonSec ?? null,
+    bestMedianPostCostDeltaPct: best?.medianPostCostDeltaPct ?? null,
+    topRejectReasons: countByLabel(input.policyRows.map(rowPolicyRejectReason), 'reason').slice(0, 3) as Array<{ reason: string; count: number }>,
+    topSources: countByLabel(input.policyRows.map(rowPolicyAttributionSource), 'source').slice(0, 3) as Array<{ source: string; count: number }>,
+    topSurvivalReasons: countByLabel(input.policyRows.map(rowPolicyAttributionSurvivalReason), 'reason').slice(0, 3) as Array<{ reason: string; count: number }>,
+    topParameterVersions: countByLabel(input.policyRows.map(rowPolicyParameterVersion), 'version').slice(0, 3) as Array<{ version: string; count: number }>,
+    topSignalSources: countByLabel(input.policyRows.map(rowPolicySignalSource), 'source').slice(0, 3) as Array<{ source: string; count: number }>,
+    topStyleBuckets: countByLabel(input.policyRows.map((row) => rowPolicyBucketValue(row, 'style')), 'style').slice(0, 3) as Array<{ style: string; count: number }>,
+    topIndependentBuckets: countByLabel(input.policyRows.map((row) => rowPolicyBucketValue(row, 'independentKolBucket')), 'bucket').slice(0, 3) as Array<{ bucket: string; count: number }>,
+    topKolTiers: countByLabel(input.policyRows.flatMap((row) => rowPolicyParticipants(row).map((kol) => kol.tier)), 'tier').slice(0, 3) as Array<{ tier: string; count: number }>,
+    topKols: countByLabel(input.policyRows.flatMap((row) => rowPolicyParticipants(row).map((kol) => kol.id)), 'kol').slice(0, 5) as Array<{ kol: string; count: number }>,
+    medianPolicyKolScore: percentile(input.policyRows
+      .map((row) => rowPolicyMetric(row, 'kolScore'))
+      .filter((value): value is number => value != null), 0.5),
+  };
+}
+
+function summarizeRotationDecayRecoveryProfile(
+  recoveryClass: RotationDecayRecoveryClass,
+  tokenStats: RotationDecayBlockTokenStats[],
+  byPolicyMint: Map<string, JsonRow[]>
+): RotationDecayRecoveryProfile {
+  const scopedTokens = tokenStats.filter((row) => row.recoveryClass === recoveryClass);
+  const policyRows = scopedTokens.flatMap((row) => byPolicyMint.get(row.tokenMint) ?? []);
+  return {
+    recoveryClass,
+    tokenRows: scopedTokens.length,
+    policyRows: policyRows.length,
+    medianPolicyKolScore: percentile(policyRows
+      .map((row) => rowPolicyMetric(row, 'kolScore'))
+      .filter((value): value is number => value != null), 0.5),
+    topParameterVersions: countByLabel(policyRows.map(rowPolicyParameterVersion), 'version').slice(0, 5) as Array<{ version: string; count: number }>,
+    topSignalSources: countByLabel(policyRows.map(rowPolicySignalSource), 'source').slice(0, 5) as Array<{ source: string; count: number }>,
+    topStyleBuckets: countByLabel(policyRows.map((row) => rowPolicyBucketValue(row, 'style')), 'style').slice(0, 5) as Array<{ style: string; count: number }>,
+    topIndependentBuckets: countByLabel(policyRows.map((row) => rowPolicyBucketValue(row, 'independentKolBucket')), 'bucket').slice(0, 5) as Array<{ bucket: string; count: number }>,
+    topLiquidityBuckets: countByLabel(policyRows.map((row) => rowPolicyBucketValue(row, 'liquidityBucket')), 'bucket').slice(0, 5) as Array<{ bucket: string; count: number }>,
+    topSecurityBuckets: countByLabel(policyRows.map((row) => rowPolicyBucketValue(row, 'securityBucket')), 'bucket').slice(0, 5) as Array<{ bucket: string; count: number }>,
+    topKolTiers: countByLabel(policyRows.flatMap((row) => rowPolicyParticipants(row).map((kol) => kol.tier)), 'tier').slice(0, 5) as Array<{ tier: string; count: number }>,
+    topKols: countByLabel(policyRows.flatMap((row) => rowPolicyParticipants(row).map((kol) => kol.id)), 'kol').slice(0, 8) as Array<{ kol: string; count: number }>,
+  };
+}
+
+function isRotationDecayGraceWatchlistPolicy(row: JsonRow): boolean {
+  const participants = rowPolicyParticipants(row);
+  return rowPolicyBucketValue(row, 'style') === 'scalper' &&
+    (rowPolicyBucketValue(row, 'independentKolBucket') === 'single' ||
+      rowPolicyBucketValue(row, 'independentKolBucket') === 'multi_2_3') &&
+    rowPolicyBucketValue(row, 'liquidityBucket') === 'route_ok_or_unknown' &&
+    rowPolicyBucketValue(row, 'securityBucket') === 'clean_or_unknown' &&
+    participants.length > 0 &&
+    participants.every((kol) => kol.tier === 'A');
+}
+
+function buildRotationDecayGraceWatchlist(input: {
+  tokenStats: RotationDecayBlockTokenStats[];
+  byPolicyMint: Map<string, JsonRow[]>;
+  byProbeMint: Map<string, JsonRow[]>;
+  horizonsSec: number[];
+  roundTripCostPct: number;
+}): RotationDecayGraceWatchlistStats {
+  const topTokens = input.tokenStats.filter((token) => {
+    const policyRows = input.byPolicyMint.get(token.tokenMint) ?? [];
+    return policyRows.length > 0 && policyRows.every(isRotationDecayGraceWatchlistPolicy);
+  });
+  const probeRows = topTokens.flatMap((token) => input.byProbeMint.get(token.tokenMint) ?? []);
+  const horizons = summarize(probeRows, input.horizonsSec, input.roundTripCostPct);
+  const okCoverages = horizons
+    .filter((row) => row.rows > 0)
+    .map((row) => row.okRows / row.rows);
+  const minOkCoverage = okCoverages.length > 0 ? Math.min(...okCoverages) : null;
+  const decay = horizons.find((row) => row.horizonSec === EVIDENCE_DECAY_HORIZON_SEC) ?? null;
+  const delayedRecoveryTokenRows = topTokens.filter((row) => row.recoveryClass === 'delayed_recovery').length;
+  const savedLossTokenRows = topTokens.filter((row) => row.recoveryClass === 'saved_loss').length;
+  const reasons: string[] = [];
+  let verdict: RotationDecayGraceWatchlistVerdict = 'COLLECT';
+
+  if (topTokens.length === 0) {
+    verdict = 'NO_WATCHLIST_ROWS';
+    reasons.push('no decay-block tokens match scalper A-tier single/2-3 KOL clean-route profile');
+  } else if (topTokens.length < ROTATION_DECAY_GRACE_MIN_TOKENS) {
+    verdict = 'COLLECT';
+    reasons.push(`watchlist tokens ${topTokens.length} < ${ROTATION_DECAY_GRACE_MIN_TOKENS}`);
+  } else if ((minOkCoverage ?? 0) < EVIDENCE_MIN_OK_COVERAGE) {
+    verdict = 'COLLECT';
+    reasons.push(`watchlist markout ok coverage ${formatPct(minOkCoverage)} < ${formatPct(EVIDENCE_MIN_OK_COVERAGE)}`);
+  } else if (savedLossTokenRows >= delayedRecoveryTokenRows) {
+    verdict = 'PAPER_GRACE_REJECT';
+    reasons.push(`saved_loss tokens ${savedLossTokenRows} >= delayed_recovery tokens ${delayedRecoveryTokenRows}`);
+  } else if ((decay?.medianPostCostDeltaPct ?? 0) <= 0) {
+    verdict = 'PAPER_GRACE_REJECT';
+    reasons.push(`T+${decay?.horizonSec ?? EVIDENCE_DECAY_HORIZON_SEC}s post-cost median ${formatPct(decay?.medianPostCostDeltaPct ?? null)} <= 0`);
+  } else {
+    verdict = 'PAPER_GRACE_CANDIDATE';
+    reasons.push('watchlist delayed recovery beats saved loss with positive T+60 post-cost median; paper-only review required');
+  }
+
+  return {
+    profile: 'scalper_a_single_or_2_3kol_clean_route',
+    verdict,
+    reasons,
+    tokenRows: topTokens.length,
+    policyRows: topTokens.reduce((sum, row) => sum + row.policyRows, 0),
+    probeRows: probeRows.length,
+    minOkCoverage,
+    immediateWinnerTokenRows: topTokens.filter((row) => row.recoveryClass === 'immediate_winner').length,
+    delayedRecoveryTokenRows,
+    savedLossTokenRows,
+    insufficientCoverageTokenRows: topTokens.filter((row) => row.recoveryClass === 'insufficient_coverage').length,
+    horizons,
+    topTokens: topTokens.slice(0, 12),
+  };
+}
+
+function buildRotationDecayBlockMarkouts(input: {
+  sinceMs: number;
+  missedAlphaRows: JsonRow[];
+  policyDecisionRows: JsonRow[];
+  horizonsSec: number[];
+  roundTripCostPct: number;
+}): RotationDecayBlockMarkoutStats {
+  const policyRows = input.policyDecisionRows.filter(isRotationDecayAttributionPolicy);
+  const tokenMints = new Set(policyRows.map(rowTokenMintDeep).filter(Boolean));
+  const probeRows = input.missedAlphaRows
+    .filter((row) => tokenMints.has(rowTokenMintDeep(row)) && isRotationDecayMissedAlphaRow(row))
+    .filter((row) => (rowHorizon(row) ?? 0) > 0);
+  const probeTokenRows = new Set(probeRows.map(rowTokenMintDeep).filter(Boolean)).size;
+  const horizons = summarize(probeRows, input.horizonsSec, input.roundTripCostPct);
+  const okCoverages = horizons
+    .filter((row) => row.rows > 0)
+    .map((row) => row.okRows / row.rows);
+  const minOkCoverage = okCoverages.length > 0 ? Math.min(...okCoverages) : null;
+  const primary = horizons.find((row) => row.horizonSec === 30) ?? horizons[0];
+  const primaryPositiveRate = primary && primary.okRows > 0
+    ? primary.positivePostCostRows / primary.okRows
+    : null;
+  const byPolicyMint = new Map<string, JsonRow[]>();
+  const byProbeMint = new Map<string, JsonRow[]>();
+  for (const row of policyRows) {
+    const mint = rowTokenMintDeep(row);
+    if (mint) byPolicyMint.set(mint, [...(byPolicyMint.get(mint) ?? []), row]);
+  }
+  for (const row of probeRows) {
+    const mint = rowTokenMintDeep(row);
+    if (mint) byProbeMint.set(mint, [...(byProbeMint.get(mint) ?? []), row]);
+  }
+  const tokenStats = [...tokenMints]
+    .map((tokenMint) => summarizeRotationDecayBlockToken({
+      tokenMint,
+      policyRows: byPolicyMint.get(tokenMint) ?? [],
+      probeRows: byProbeMint.get(tokenMint) ?? [],
+      horizonsSec: input.horizonsSec,
+      roundTripCostPct: input.roundTripCostPct,
+    }))
+    .sort((a, b) =>
+      b.probeRows - a.probeRows ||
+      b.policyRows - a.policyRows ||
+      (b.bestMedianPostCostDeltaPct ?? -Infinity) - (a.bestMedianPostCostDeltaPct ?? -Infinity) ||
+      a.tokenMint.localeCompare(b.tokenMint)
+    );
+  const topDelayedRecoveryTokens = tokenStats
+    .filter((row) => row.recoveryClass === 'delayed_recovery')
+    .sort((a, b) =>
+      (b.recoveryDeltaPct ?? -Infinity) - (a.recoveryDeltaPct ?? -Infinity) ||
+      (b.decayMedianPostCostDeltaPct ?? -Infinity) - (a.decayMedianPostCostDeltaPct ?? -Infinity) ||
+      b.policyRows - a.policyRows ||
+      a.tokenMint.localeCompare(b.tokenMint)
+    );
+  const recoveryProfiles: RotationDecayRecoveryProfile[] = [
+    'immediate_winner',
+    'delayed_recovery',
+    'saved_loss',
+    'insufficient_coverage',
+  ].map((recoveryClass) =>
+    summarizeRotationDecayRecoveryProfile(recoveryClass as RotationDecayRecoveryClass, tokenStats, byPolicyMint)
+  );
+  const graceWatchlist = buildRotationDecayGraceWatchlist({
+    tokenStats,
+    byPolicyMint,
+    byProbeMint,
+    horizonsSec: input.horizonsSec,
+    roundTripCostPct: input.roundTripCostPct,
+  });
+
+  const reasons: string[] = [];
+  let verdict: RotationDecayBlockMarkoutVerdict = 'COLLECT';
+  if (policyRows.length === 0) {
+    verdict = 'NO_DECAY_BLOCKS';
+    reasons.push('no rotation attribution-drift KOL alpha decay policy rows in report window');
+  } else if (probeRows.length === 0) {
+    verdict = 'NO_PROBE_COVERAGE';
+    reasons.push('rotation decay blocks found but no rotation missed-alpha probe coverage');
+  } else if ((primary?.medianPostCostDeltaPct ?? 0) > 0 && (primaryPositiveRate ?? 0) >= 0.5) {
+    verdict = 'DECAY_KILLED_WINNERS';
+    reasons.push(`T+${primary?.horizonSec ?? 'n/a'} post-cost median ${formatPct(primary?.medianPostCostDeltaPct ?? null)}, positive ${formatPct(primaryPositiveRate)}`);
+  } else if ((primary?.medianPostCostDeltaPct ?? 0) <= 0 && primary?.okRows) {
+    verdict = 'DECAY_SAVED_LOSS';
+    reasons.push(`T+${primary.horizonSec}s post-cost median ${formatPct(primary.medianPostCostDeltaPct)}, positive ${formatPct(primaryPositiveRate)}`);
+  } else {
+    reasons.push('collect more decay block markout coverage before changing decay policy');
+  }
+
+  return {
+    verdict,
+    reasons,
+    since: new Date(input.sinceMs).toISOString(),
+    policyRows: policyRows.length,
+    tokenRows: tokenMints.size,
+    probeRows: probeRows.length,
+    probeTokenRows,
+    immediateWinnerTokenRows: tokenStats.filter((row) => row.recoveryClass === 'immediate_winner').length,
+    delayedRecoveryTokenRows: tokenStats.filter((row) => row.recoveryClass === 'delayed_recovery').length,
+    savedLossTokenRows: tokenStats.filter((row) => row.recoveryClass === 'saved_loss').length,
+    insufficientCoverageTokenRows: tokenStats.filter((row) => row.recoveryClass === 'insufficient_coverage').length,
+    minOkCoverage,
+    horizons,
+    topRejectReasons: countByLabel(policyRows.map(rowPolicyRejectReason), 'reason').slice(0, 8) as Array<{ reason: string; count: number }>,
+    topSources: countByLabel(policyRows.map(rowPolicyAttributionSource), 'source').slice(0, 8) as Array<{ source: string; count: number }>,
+    topSurvivalReasons: countByLabel(policyRows.map(rowPolicyAttributionSurvivalReason), 'reason').slice(0, 8) as Array<{ reason: string; count: number }>,
+    recoveryProfiles,
+    graceWatchlist,
+    topTokens: tokenStats.slice(0, 12),
+    topDelayedRecoveryTokens: topDelayedRecoveryTokens.slice(0, 12),
   };
 }
 
@@ -4341,12 +6417,13 @@ function renderRouteProofFreshness(row: RouteProofFreshnessStats): string {
         ),
       ].join('\n');
   return [
-    '| verdict | fresh since | cutoff | latest underfill | latest cost-aware | latest evidence | underfill | fresh | writer schema | route-proof schema | exit evidence | skipped | routeFound true/false/null | missing instrumentation | route proof | route unknown | candidateId | 2+ KOL | cost-aware | narrow ready | reasons |',
-    '|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|',
+    '| verdict | fresh since | cutoff | latest underfill | latest cost-aware | latest evidence | latest no-trade | underfill | fresh | no-trade events | writer schema | route-proof schema | exit evidence | skipped | routeFound true/false/null | missing instrumentation | route proof | route unknown | candidateId | 2+ KOL | cost-aware | narrow ready | reasons |',
+    '|---|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|',
     `| ${row.verdict} | ${row.freshSince ?? 'n/a'} | ${row.cutoffSource} | ` +
       `${row.latestUnderfillCloseAt ?? 'n/a'} | ${row.latestCostAwareCloseAt ?? 'n/a'} | ` +
-      `${row.latestExitQuoteEvidenceAt ?? 'n/a'} | ` +
+      `${row.latestExitQuoteEvidenceAt ?? 'n/a'} | ${row.latestNoTradeAt ?? 'n/a'} | ` +
       `${row.underfillRows} | ${row.freshRows}/${row.minRequiredFreshRows} | ` +
+      `${row.freshNoTradeEvents} (${row.freshNoTradeRows} rows) | ` +
       `${row.paperCloseWriterSchemaRows}/${row.freshRows} | ${row.rotationExitRouteProofSchemaRows}/${row.freshRows} | ` +
       `${row.exitQuoteEvidenceRows}/${row.exitRouteInstrumentedRows} | ${row.exitRouteProofSkippedRows} | ` +
       `${row.exitQuoteRouteFoundRows}/${row.exitQuoteNoRouteRows}/${row.exitQuoteUnknownRows} | ` +
@@ -4358,12 +6435,400 @@ function renderRouteProofFreshness(row: RouteProofFreshnessStats): string {
     '',
     `- explicit no-route: ${row.explicitNoRouteRows}/${row.freshRows}`,
     `- exit route proof skipped/inconclusive: ${row.exitRouteProofSkippedRows}/${row.freshRows}`,
+    `- rotation no-trade candidates: ${row.freshNoTradeEvents} events / ${row.freshNoTradeRows} rows`,
+    `- top rotation no-trade reasons: ${row.topNoTradeReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'}`,
+    `- runtime missed-alpha: ${row.freshMissedAlphaEvents} events / ${row.freshMissedAlphaRows} rows`,
+    `- runtime policy decisions: ${row.freshPolicyDecisionRows} rows; rotation policy decisions: ${row.freshRotationPolicyDecisionRows}`,
+    `- top missed-alpha entry reasons: ${row.topMissedAlphaEntryReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'}`,
+    `- top missed-alpha reject reasons: ${row.topMissedAlphaRejectReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'}`,
+    `- top policy entry reasons: ${row.topPolicyEntryReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'}`,
+    `- top policy reject reasons: ${row.topPolicyRejectReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'}`,
     `- paper close writer schemas: ${row.topPaperCloseWriterSchemas.map((item) => `${item.schema}:${item.count}`).join(', ') || 'n/a'}`,
     `- top exit-route proof skip reasons: ${row.topExitRouteProofSkipReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'}`,
     `- top route-unknown reasons: ${row.topRouteUnknownReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'}`,
     '',
     '### Route Proof Freshness By Arm',
     byArm,
+  ].join('\n');
+}
+
+function renderRotationCandidateFunnel(row: RotationCandidateFunnelStats): string {
+  return [
+    '| verdict | since | cutoff | KOL tx | buy/sell | distinct KOL/token | latest KOL tx | call funnel | rotation funnel | rotation no-trade | rotation policy | rotation closes | reasons |',
+    '|---|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---|',
+    `| ${row.verdict} | ${row.since} | ${row.cutoffSource} | ${row.kolTxRows} | ` +
+      `${row.kolBuyRows}/${row.kolSellRows} | ${row.distinctKols}/${row.distinctTokens} | ` +
+      `${row.latestKolTxAt ?? 'n/a'} | ${row.callFunnelRows} | ${row.rotationCallFunnelRows} | ` +
+      `${row.rotationNoTradeEvents} (${row.rotationNoTradeRows} rows) | ${row.rotationPolicyDecisionRows} | ` +
+      `${row.rotationPaperCloseRows} | ${row.reasons.join('; ') || 'n/a'} |`,
+    '',
+    `- shadow KOL tx rows: ${row.kolShadowRows}/${row.kolTxRows}`,
+    `- top KOL tx actions: ${row.topKolTxActions.map((item) => `${item.action}:${item.count}`).join(', ') || 'n/a'}`,
+    `- top KOL tx KOLs: ${row.topKolTxKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'}`,
+    `- top buy KOLs: ${row.topBuyKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'}`,
+    `- top call-funnel event types: ${row.topCallFunnelEventTypes.map((item) => `${item.eventType}:${item.count}`).join(', ') || 'n/a'}`,
+    `- top rotation call-funnel event types: ${row.topRotationCallFunnelEventTypes.map((item) => `${item.eventType}:${item.count}`).join(', ') || 'n/a'}`,
+    `- top rotation no-trade reasons: ${row.topNoTradeReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'}`,
+    `- top rotation policy entry reasons: ${row.topPolicyEntryReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'}`,
+  ].join('\n');
+}
+
+function renderRotationDetectorReplay(row: RotationDetectorReplayStats): string {
+  const tokenRows = row.tokens.length === 0
+    ? '_No current-session token rows._'
+    : [
+        '| token | tx | buy/sell | gross buy SOL | small buys | S/A buys | KOLs | first/last buy | latest sell | replay age | recent sells | vanilla blockers | underfill blockers | top KOLs |',
+        '|---|---:|---:|---:|---:|---:|---:|---|---|---:|---:|---|---|---|',
+        ...row.tokens.map((token) =>
+          `| ${token.shortMint} | ${token.txRows} | ${token.buyRows}/${token.sellRows} | ` +
+          `${token.grossBuySol.toFixed(4)} | ${token.smallBuyRows} | ${token.eligibleUnderfillBuyRows} | ` +
+          `${token.distinctKols} | ${(token.firstBuyAt ?? 'n/a')} / ${(token.lastBuyAt ?? 'n/a')} | ` +
+          `${token.latestSellAt ?? 'n/a'} | ` +
+          `${token.lastBuyAgeSec == null ? 'n/a' : token.lastBuyAgeSec.toFixed(1)}s | ` +
+          `${token.recentSellRows} | ${token.vanillaBlockers.join(', ') || 'n/a'} | ` +
+          `${token.underfillBlockers.join(', ') || 'n/a'} | ` +
+          `${token.topKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'} |`
+        ),
+      ].join('\n');
+  return [
+    '| verdict | since | cutoff | tokens | KOL tx | buy/sell | top vanilla blockers | top underfill blockers | reasons |',
+    '|---|---|---|---:|---:|---:|---|---|---|',
+    `| ${row.verdict} | ${row.since} | ${row.cutoffSource} | ${row.tokenRows} | ${row.kolTxRows} | ` +
+      `${row.kolBuyRows}/${row.kolSellRows} | ` +
+      `${row.topVanillaBlockers.map((item) => `${item.blocker}:${item.count}`).join(', ') || 'n/a'} | ` +
+      `${row.topUnderfillBlockers.map((item) => `${item.blocker}:${item.count}`).join(', ') || 'n/a'} | ` +
+      `${row.reasons.join('; ') || 'n/a'} |`,
+    '',
+    `- replay defaults: buyCount>=${ROTATION_REPLAY_MIN_BUY_COUNT}, ` +
+      `smallBuys>=${ROTATION_REPLAY_MIN_SMALL_BUY_COUNT} <=${ROTATION_REPLAY_SMALL_BUY_MAX_SOL} SOL, ` +
+      `grossBuy>=${ROTATION_REPLAY_MIN_GROSS_BUY_SOL} SOL, recentSellWindow=${ROTATION_REPLAY_RECENT_SELL_SEC}s`,
+    `- underfill replay uses S/A KOL buys and stops at price-context checks; this section does not simulate live price discount.`,
+    '',
+    tokenRows,
+  ].join('\n');
+}
+
+function renderRotationDetectorBlockerMarkouts(row: RotationDetectorBlockerMarkoutStats): string {
+  const bucketRows = row.topBuckets.length === 0
+    ? '_No detector blocker markout buckets._'
+    : [
+        '| scope | blocker | verdict | tokens | markout tokens | token coverage | buy markouts | min ok coverage | primary postCost | primary positive | top KOLs | reasons |',
+        '|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|',
+        ...row.topBuckets.map((bucket) =>
+          `| ${bucket.scope} | ${bucket.blocker} | ${bucket.verdict} | ${bucket.tokenRows} | ` +
+          `${bucket.markoutTokenRows} | ${formatPct(bucket.tokenCoverage)} | ${bucket.buyMarkoutRows} | ` +
+          `${formatPct(bucket.minOkCoverage)} | ${formatPct(bucket.primaryMedianPostCostDeltaPct)} | ` +
+          `${formatPct(bucket.primaryPostCostPositiveRate)} | ` +
+          `${bucket.topKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${bucket.reasons.join('; ') || 'n/a'} |`
+        ),
+      ].join('\n');
+  const tokenRows = row.topBuckets.length === 0
+    ? '_No detector blocker token rows._'
+    : row.topBuckets.map((bucket) => {
+        const rows = bucket.topTokens.length === 0
+          ? '_No tokens._'
+          : [
+              '| token | tx | buy/sell | markouts | primary postCost | best horizon | best postCost | top KOLs |',
+              '|---|---:|---:|---:|---:|---:|---:|---|',
+              ...bucket.topTokens.map((token) =>
+                `| ${token.shortMint} | ${token.txRows} | ${token.buyRows}/${token.sellRows} | ${token.markoutRows} | ` +
+                `${formatPct(token.primaryMedianPostCostDeltaPct)} | ` +
+                `${token.bestHorizonSec == null ? 'n/a' : `${token.bestHorizonSec}s`} | ` +
+                `${formatPct(token.bestMedianPostCostDeltaPct)} | ` +
+                `${token.topKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'} |`
+              ),
+            ].join('\n');
+        return [
+          `### ${bucket.scope}:${bucket.blocker}`,
+          rows,
+        ].join('\n');
+      }).join('\n\n');
+  return [
+    '| since | cutoff | replay tokens | buy markouts | buckets |',
+    '|---|---|---:|---:|---:|',
+    `| ${row.since} | ${row.cutoffSource} | ${row.tokenRows} | ${row.buyMarkoutRows} | ${row.topBuckets.length} |`,
+    '',
+    bucketRows,
+    '',
+    tokenRows,
+  ].join('\n');
+}
+
+function renderRotationStaleBuyReview(row: RotationStaleBuyReviewStats): string {
+  const bucketRows = row.buckets.length === 0
+    ? '_No stale-buy review buckets._'
+    : [
+        '| bucket | verdict | tokens | markout tokens | missing tokens | paper probe tokens | unmeasured tokens | other probe tokens | dark tokens | token coverage | buy markouts | probe rows | other probe rows | min ok coverage | primary postCost | primary positive | paper postCost | paper positive | med age | med gross SOL | top KOLs | top missing KOLs | top unmeasured KOLs | top dark KOLs | other probe reasons | reasons |',
+        '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|---|---|---|',
+        ...row.buckets.map((bucket) =>
+          `| ${bucket.bucket} | ${bucket.verdict} | ${bucket.tokenRows} | ${bucket.markoutTokenRows} | ` +
+          `${bucket.missingMarkoutTokenRows} | ${bucket.paperProbeTokenRows} | ${bucket.unmeasuredTokenRows} | ` +
+          `${bucket.otherPaperProbeTokenRows} | ${bucket.darkTokenRows} | ` +
+          `${formatPct(bucket.tokenCoverage)} | ${bucket.buyMarkoutRows} | ${bucket.paperProbeRows} | ${bucket.otherPaperProbeRows} | ${formatPct(bucket.minOkCoverage)} | ` +
+          `${formatPct(bucket.primaryMedianPostCostDeltaPct)} | ${formatPct(bucket.primaryPostCostPositiveRate)} | ` +
+          `${formatPct(bucket.paperProbePrimaryMedianPostCostDeltaPct)} | ${formatPct(bucket.paperProbePrimaryPostCostPositiveRate)} | ` +
+          `${bucket.medianLastBuyAgeSec == null ? 'n/a' : `${bucket.medianLastBuyAgeSec.toFixed(0)}s`} | ` +
+          `${bucket.medianGrossBuySol == null ? 'n/a' : bucket.medianGrossBuySol.toFixed(4)} | ` +
+          `${bucket.topKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${bucket.topMissingKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${bucket.topUnmeasuredKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${bucket.topDarkKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${bucket.topOtherPaperProbeReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${bucket.reasons.join('; ') || 'n/a'} |`
+        ),
+      ].join('\n');
+  const tokenRows = row.buckets.length === 0
+    ? '_No stale-buy token rows._'
+    : row.buckets.map((bucket) => {
+        const rows = bucket.topTokens.length === 0
+          ? '_No tokens._'
+          : [
+              '| token | tx | buy/sell | markouts | primary postCost | best horizon | best postCost | top KOLs |',
+              '|---|---:|---:|---:|---:|---:|---:|---|',
+              ...bucket.topTokens.map((token) =>
+                `| ${token.shortMint} | ${token.txRows} | ${token.buyRows}/${token.sellRows} | ${token.markoutRows} | ` +
+                `${formatPct(token.primaryMedianPostCostDeltaPct)} | ` +
+                `${token.bestHorizonSec == null ? 'n/a' : `${token.bestHorizonSec}s`} | ` +
+                `${formatPct(token.bestMedianPostCostDeltaPct)} | ` +
+                `${token.topKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'} |`
+              ),
+            ].join('\n');
+        return [
+          `### ${bucket.bucket}`,
+          rows,
+          '',
+          '#### Missing Markout Tokens',
+          bucket.topMissingTokens.length === 0
+            ? '_No missing markout tokens._'
+            : [
+                '| token | tx | buy/sell | age | gross SOL | KOLs | top KOLs |',
+                '|---|---:|---:|---:|---:|---:|---|',
+                ...bucket.topMissingTokens.map((token) =>
+                  `| ${token.shortMint} | ${token.txRows} | ${token.buyRows}/${token.sellRows} | ` +
+                  `${token.lastBuyAgeSec == null ? 'n/a' : `${token.lastBuyAgeSec.toFixed(0)}s`} | ` +
+                  `${token.grossBuySol.toFixed(4)} | ${token.distinctKols} | ` +
+                  `${token.topKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'} |`
+                ),
+              ].join('\n'),
+          '',
+          '#### Unmeasured Tokens',
+          bucket.topUnmeasuredTokens.length === 0
+            ? '_No unmeasured tokens._'
+            : [
+                '| token | tx | buy/sell | age | gross SOL | KOLs | top KOLs |',
+                '|---|---:|---:|---:|---:|---:|---|',
+                ...bucket.topUnmeasuredTokens.map((token) =>
+                  `| ${token.shortMint} | ${token.txRows} | ${token.buyRows}/${token.sellRows} | ` +
+                  `${token.lastBuyAgeSec == null ? 'n/a' : `${token.lastBuyAgeSec.toFixed(0)}s`} | ` +
+                  `${token.grossBuySol.toFixed(4)} | ${token.distinctKols} | ` +
+                  `${token.topKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'} |`
+                ),
+              ].join('\n'),
+          '',
+          '#### Dark Tokens',
+          bucket.topDarkTokens.length === 0
+            ? '_No dark tokens._'
+            : [
+                '| token | tx | buy/sell | age | gross SOL | KOLs | top KOLs |',
+                '|---|---:|---:|---:|---:|---:|---|',
+                ...bucket.topDarkTokens.map((token) =>
+                  `| ${token.shortMint} | ${token.txRows} | ${token.buyRows}/${token.sellRows} | ` +
+                  `${token.lastBuyAgeSec == null ? 'n/a' : `${token.lastBuyAgeSec.toFixed(0)}s`} | ` +
+                  `${token.grossBuySol.toFixed(4)} | ${token.distinctKols} | ` +
+                  `${token.topKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'} |`
+                ),
+              ].join('\n'),
+        ].join('\n');
+      }).join('\n\n');
+  return [
+    '| since | stale tokens | review candidates | excluded recent-sell | buy markouts | paper probes | buckets |',
+    '|---|---:|---:|---:|---:|---:|---:|',
+    `| ${row.since} | ${row.tokenRows} | ${row.candidateTokenRows} | ${row.excludedRecentSellTokenRows} | ${row.buyMarkoutRows} | ${row.paperProbeRows} | ${row.buckets.length} |`,
+    '',
+    bucketRows,
+    '',
+    tokenRows,
+  ].join('\n');
+}
+
+function renderRotationPriceContextMarkouts(row: RotationPriceContextMarkoutStats): string {
+  const tokenRows = row.topTokens.length === 0
+    ? '_No covered price-context token markouts._'
+    : [
+        '| token | replay tx | buys | gross buy SOL | KOLs | markouts | ok | best horizon | best median postCost | top KOLs |',
+        '|---|---:|---:|---:|---:|---:|---:|---:|---:|---|',
+        ...row.topTokens.map((token) =>
+          `| ${token.shortMint} | ${token.txRows} | ${token.buyRows} | ${token.grossBuySol.toFixed(4)} | ` +
+          `${token.distinctKols} | ${token.markoutRows} | ${token.okRows} | ` +
+          `${token.bestHorizonSec == null ? 'n/a' : `${token.bestHorizonSec}s`} | ` +
+          `${formatPct(token.bestMedianPostCostDeltaPct)} | ` +
+          `${token.topKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'} |`
+        ),
+      ].join('\n');
+  const missingRows = row.coverageGap.topMissingTokens.length === 0
+    ? '_No missing price-context candidate tokens._'
+    : [
+        '| token | gap reason | replay tx | buys | gross buy SOL | KOLs | latest buy | any markout | missed-alpha | rotation no-trade | policy | rotation policy | attr drift | top no-trade reasons | top rotation policy rejects | top attr drift rejects | top attr sources | top attr survival | top KOLs |',
+        '|---|---|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---|---|---|---|---|---|',
+        ...row.coverageGap.topMissingTokens.map((token) =>
+          `| ${token.shortMint} | ${token.gapReason} | ${token.txRows} | ${token.buyRows} | ` +
+          `${token.grossBuySol.toFixed(4)} | ${token.distinctKols} | ${token.latestBuyAt ?? 'n/a'} | ` +
+          `${token.anyMarkoutRows} | ${token.missedAlphaRows} | ${token.rotationNoTradeRows} | ` +
+          `${token.policyDecisionRows} | ${token.rotationPolicyDecisionRows} | ${token.rotationPolicyAttributionDriftRows} | ` +
+          `${token.topNoTradeReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${token.topRotationPolicyRejectReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${token.topRotationPolicyAttributionDriftReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${token.topRotationPolicyAttributionSources.map((item) => `${item.source}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${token.topRotationPolicyAttributionSurvivalReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${token.topKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'} |`
+        ),
+      ].join('\n');
+  return [
+    '| verdict | since | candidates | candidate KOL tx | markout tokens | token coverage | buy markouts | min ok coverage | reasons |',
+    '|---|---|---:|---:|---:|---:|---:|---:|---|',
+    `| ${row.verdict} | ${row.since} | ${row.candidateTokenRows} | ${row.candidateKolTxRows} | ` +
+      `${row.markoutTokenRows} | ${formatPct(row.markoutTokenCoverage)} | ${row.buyMarkoutRows} | ` +
+      `${formatPct(row.minOkCoverage)} | ${row.reasons.join('; ') || 'n/a'} |`,
+    '',
+    '### Price-Context Markout Horizons',
+    renderStatsTable(row.horizons),
+    '',
+    '### Covered Price-Context Tokens',
+    tokenRows,
+    '',
+    '### Price-Context Coverage Gap',
+    `- missing buy-markout tokens: ${row.coverageGap.missingBuyMarkoutTokenRows}/${row.candidateTokenRows}`,
+    `- missing KOL tx rows: ${row.coverageGap.missingBuyMarkoutKolTxRows}/${row.candidateKolTxRows}`,
+    `- rotation-specific missing tokens: ${row.coverageGap.rotationSpecificMissingTokenRows}/${row.coverageGap.missingBuyMarkoutTokenRows}`,
+    `- rotation-specific missing KOL tx rows: ${row.coverageGap.rotationSpecificMissingKolTxRows}/${row.coverageGap.missingBuyMarkoutKolTxRows}`,
+    `- rotation policy attribution drift tokens: ${row.coverageGap.rotationPolicyAttributionDriftTokenRows}/${row.coverageGap.rotationSpecificMissingTokenRows}`,
+    `- rotation policy attribution drift rows: ${row.coverageGap.rotationPolicyAttributionDriftRows}`,
+    `- top missing reasons: ${row.coverageGap.topMissingReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'}`,
+    `- top missing KOLs: ${row.coverageGap.topMissingKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'}`,
+    `- top missing no-trade reasons: ${row.coverageGap.topMissingNoTradeReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'}`,
+    `- top missing policy entry reasons: ${row.coverageGap.topMissingPolicyEntryReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'}`,
+    `- top missing policy reject reasons: ${row.coverageGap.topMissingPolicyRejectReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'}`,
+    `- top missing rotation policy entry reasons: ${row.coverageGap.topMissingRotationPolicyEntryReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'}`,
+    `- top missing rotation policy reject reasons: ${row.coverageGap.topMissingRotationPolicyRejectReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'}`,
+    `- top missing rotation policy attribution drift reasons: ${row.coverageGap.topMissingRotationPolicyAttributionDriftReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'}`,
+    `- top missing rotation policy attribution sources: ${row.coverageGap.topMissingRotationPolicyAttributionSources.map((item) => `${item.source}:${item.count}`).join(', ') || 'n/a'}`,
+    `- top missing rotation policy attribution survival reasons: ${row.coverageGap.topMissingRotationPolicyAttributionSurvivalReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'}`,
+    '',
+    missingRows,
+  ].join('\n');
+}
+
+function renderRotationDecayBlockMarkouts(row: RotationDecayBlockMarkoutStats): string {
+  const tokenRows = row.topTokens.length === 0
+    ? '_No rotation decay block token rows._'
+    : [
+        '| token | class | policy rows | probe rows | ok | primary postCost | T+60 postCost | recovery | best horizon | best median postCost | policy score | styles | independent | tiers | top KOLs | top rejects | top sources | top survival |',
+        '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|---|---|---|---|',
+        ...row.topTokens.map((token) =>
+          `| ${token.shortMint} | ${token.recoveryClass} | ${token.policyRows} | ${token.probeRows} | ${token.okRows} | ` +
+          `${formatPct(token.primaryMedianPostCostDeltaPct)} | ${formatPct(token.decayMedianPostCostDeltaPct)} | ` +
+          `${formatPct(token.recoveryDeltaPct)} | ` +
+          `${token.bestHorizonSec == null ? 'n/a' : `${token.bestHorizonSec}s`} | ` +
+          `${formatPct(token.bestMedianPostCostDeltaPct)} | ` +
+          `${token.medianPolicyKolScore == null ? 'n/a' : token.medianPolicyKolScore.toFixed(2)} | ` +
+          `${token.topStyleBuckets.map((item) => `${item.style}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${token.topIndependentBuckets.map((item) => `${item.bucket}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${token.topKolTiers.map((item) => `${item.tier}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${token.topKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${token.topRejectReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${token.topSources.map((item) => `${item.source}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${token.topSurvivalReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'} |`
+        ),
+      ].join('\n');
+  const watchlist = row.graceWatchlist;
+  const watchlistRows = watchlist.topTokens.length === 0
+    ? '_No rotation decay grace watchlist tokens._'
+    : [
+        '| token | class | policy rows | probe rows | primary postCost | T+60 postCost | recovery | policy score | styles | independent | tiers | top KOLs |',
+        '|---|---|---:|---:|---:|---:|---:|---:|---|---|---|---|',
+        ...watchlist.topTokens.map((token) =>
+          `| ${token.shortMint} | ${token.recoveryClass} | ${token.policyRows} | ${token.probeRows} | ` +
+          `${formatPct(token.primaryMedianPostCostDeltaPct)} | ${formatPct(token.decayMedianPostCostDeltaPct)} | ` +
+          `${formatPct(token.recoveryDeltaPct)} | ${token.medianPolicyKolScore == null ? 'n/a' : token.medianPolicyKolScore.toFixed(2)} | ` +
+          `${token.topStyleBuckets.map((item) => `${item.style}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${token.topIndependentBuckets.map((item) => `${item.bucket}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${token.topKolTiers.map((item) => `${item.tier}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${token.topKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'} |`
+        ),
+      ].join('\n');
+  const delayedRows = row.topDelayedRecoveryTokens.length === 0
+    ? '_No delayed recovery tokens._'
+    : [
+        '| token | policy rows | probe rows | primary postCost | T+60 postCost | recovery | policy score | styles | independent | tiers | top KOLs | versions | top sources |',
+        '|---|---:|---:|---:|---:|---:|---:|---|---|---|---|---|---|',
+        ...row.topDelayedRecoveryTokens.map((token) =>
+          `| ${token.shortMint} | ${token.policyRows} | ${token.probeRows} | ` +
+          `${formatPct(token.primaryMedianPostCostDeltaPct)} | ${formatPct(token.decayMedianPostCostDeltaPct)} | ` +
+          `${formatPct(token.recoveryDeltaPct)} | ` +
+          `${token.medianPolicyKolScore == null ? 'n/a' : token.medianPolicyKolScore.toFixed(2)} | ` +
+          `${token.topStyleBuckets.map((item) => `${item.style}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${token.topIndependentBuckets.map((item) => `${item.bucket}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${token.topKolTiers.map((item) => `${item.tier}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${token.topKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${token.topParameterVersions.map((item) => `${item.version}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${token.topSources.map((item) => `${item.source}:${item.count}`).join(', ') || 'n/a'} |`
+        ),
+      ].join('\n');
+  const profileRows = row.recoveryProfiles.length === 0
+    ? '_No rotation decay recovery profiles._'
+    : [
+        '| class | tokens | policy rows | med policy score | versions | signal sources | styles | independent | liquidity | security | tiers | top KOLs |',
+        '|---|---:|---:|---:|---|---|---|---|---|---|---|---|',
+        ...row.recoveryProfiles.map((profile) =>
+          `| ${profile.recoveryClass} | ${profile.tokenRows} | ${profile.policyRows} | ` +
+          `${profile.medianPolicyKolScore == null ? 'n/a' : profile.medianPolicyKolScore.toFixed(2)} | ` +
+          `${profile.topParameterVersions.map((item) => `${item.version}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${profile.topSignalSources.map((item) => `${item.source}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${profile.topStyleBuckets.map((item) => `${item.style}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${profile.topIndependentBuckets.map((item) => `${item.bucket}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${profile.topLiquidityBuckets.map((item) => `${item.bucket}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${profile.topSecurityBuckets.map((item) => `${item.bucket}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${profile.topKolTiers.map((item) => `${item.tier}:${item.count}`).join(', ') || 'n/a'} | ` +
+          `${profile.topKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'} |`
+        ),
+      ].join('\n');
+  return [
+    '| verdict | since | policy rows | tokens | immediate winner | delayed recovery | saved loss | insufficient | probe tokens | probe rows | min ok coverage | reasons |',
+    '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|',
+    `| ${row.verdict} | ${row.since} | ${row.policyRows} | ${row.tokenRows} | ` +
+      `${row.immediateWinnerTokenRows} | ${row.delayedRecoveryTokenRows} | ${row.savedLossTokenRows} | ` +
+      `${row.insufficientCoverageTokenRows} | ${row.probeTokenRows} | ${row.probeRows} | ${formatPct(row.minOkCoverage)} | ` +
+      `${row.reasons.join('; ') || 'n/a'} |`,
+    '',
+    `- top reject reasons: ${row.topRejectReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'}`,
+    `- top sources: ${row.topSources.map((item) => `${item.source}:${item.count}`).join(', ') || 'n/a'}`,
+    `- top survival reasons: ${row.topSurvivalReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'}`,
+    `- recovery classes: immediate_winner=${row.immediateWinnerTokenRows}, delayed_recovery=${row.delayedRecoveryTokenRows}, saved_loss=${row.savedLossTokenRows}, insufficient_coverage=${row.insufficientCoverageTokenRows}`,
+    '',
+    '### Rotation Decay Block Horizons',
+    renderStatsTable(row.horizons),
+    '',
+    '### Rotation Decay Recovery Profiles',
+    profileRows,
+    '',
+    '### Rotation Decay Paper-Grace Watchlist',
+    '| profile | verdict | tokens | policy rows | immediate | delayed | saved | insufficient | probe rows | min ok coverage | reasons |',
+    '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|',
+    `| ${watchlist.profile} | ${watchlist.verdict} | ${watchlist.tokenRows} | ${watchlist.policyRows} | ` +
+      `${watchlist.immediateWinnerTokenRows} | ${watchlist.delayedRecoveryTokenRows} | ${watchlist.savedLossTokenRows} | ` +
+      `${watchlist.insufficientCoverageTokenRows} | ${watchlist.probeRows} | ${formatPct(watchlist.minOkCoverage)} | ` +
+      `${watchlist.reasons.join('; ') || 'n/a'} |`,
+    '',
+    renderStatsTable(watchlist.horizons),
+    '',
+    watchlistRows,
+    '',
+    '### Rotation Delayed-Recovery Tokens',
+    delayedRows,
+    '',
+    '### Rotation Decay Block Tokens',
+    tokenRows,
   ].join('\n');
 }
 
@@ -4943,6 +7408,34 @@ function renderReport(report: RotationReport): string {
     '> Report-only. Separates old paper edge from post-R1.41 exit-route instrumentation. WAIT_FRESH_CLOSES means collect fresh paper before interpreting route-proofed cohorts.',
     renderRouteProofFreshness(report.routeProofFreshness),
     '',
+    '## Rotation Candidate Funnel Since Session',
+    '> Report-only. Splits current-session KOL input, rotation candidate formation, no-trade/policy ledgers, and paper closes. Live routing is unchanged.',
+    renderRotationCandidateFunnel(report.rotationCandidateFunnel),
+    '',
+    '## Rotation Detector Replay Since Session',
+    '> Report-only. Replays current-session KOL tx against rotation detector defaults to explain detector-side starvation before any live or paper policy change.',
+    renderRotationDetectorReplay(report.rotationDetectorReplay),
+    '',
+    '## Rotation Detector Replay Report Window',
+    '> Report-only. Uses the full report `--since` window, not just the current runtime session, to show whether detector blockers are persistent or one-off.',
+    renderRotationDetectorReplay(report.rotationDetectorReplayWindow),
+    '',
+    '## Rotation Detector Blocker Markouts',
+    '> Report-only. Joins report-window detector blockers to buy markouts so blocker relaxation is not considered without post-cost evidence.',
+    renderRotationDetectorBlockerMarkouts(report.rotationDetectorBlockerMarkouts),
+    '',
+    '## Rotation Stale-Buy Review',
+    '> Report-only. Narrows `underfill_stale_last_buy` by age and KOL-depth before any paper-only detector relaxation.',
+    renderRotationStaleBuyReview(report.rotationStaleBuyReview),
+    '',
+    '## Rotation Price-Context Candidate Markouts',
+    '> Report-only. Token-level join from underfill replay candidates that reached price-context checks to available buy markouts. This is not a simulated fill and never enables live routing.',
+    renderRotationPriceContextMarkouts(report.rotationPriceContextMarkouts),
+    '',
+    '## Rotation KOL-Decay Block Markouts',
+    '> Report-only. Joins rotation attribution-drift KOL alpha decay blocks to missed-alpha probes to test whether decay saved losses or killed winners. This never changes live routing.',
+    renderRotationDecayBlockMarkouts(report.rotationDecayBlockMarkouts),
+    '',
     '## Rotation Narrow Cohort Board',
     '> Report-only. Narrows paper evidence to sellable, cost-aware, 2+ KOL slices before any live sync review. Live canary routing is unchanged.',
     renderRotationNarrowCohorts(report.rotationNarrowCohorts),
@@ -5040,15 +7533,20 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
   const assumedAtaRentSol = args.assumedAtaRentSol ?? 0.00207408;
   const assumedNetworkFeeSol = args.assumedNetworkFeeSol ?? 0.000105;
   const kolTransferInput = args.kolTransferInput ?? path.resolve(process.cwd(), 'data/research', KOL_TRANSFER_INPUT_FILE);
-  const [tradeMarkouts, missedAlpha, tokenQuality, projectedPaperTrades, projectedLiveTrades, liveEquivalenceRows, kolTransferRows] = await Promise.all([
+  const [tradeMarkouts, missedAlpha, tokenQuality, projectedPaperTrades, projectedLiveTrades, liveEquivalenceRows, kolPolicyRows, kolTxRows, kolCallFunnelRows, kolTransferRows, currentSession] = await Promise.all([
     readJsonl(path.join(args.realtimeDir, 'trade-markouts.jsonl')),
     readJsonl(path.join(args.realtimeDir, 'missed-alpha.jsonl')),
     readJsonl(path.join(args.realtimeDir, 'token-quality-observations.jsonl')),
     readJsonl(path.join(args.realtimeDir, paperTradesFileName)),
     readJsonl(path.join(args.realtimeDir, ROTATION_LIVE_TRADES_FILE)),
     readJsonl(path.join(args.realtimeDir, KOL_LIVE_EQUIVALENCE_FILE)),
+    readJsonl(path.join(args.realtimeDir, KOL_POLICY_DECISIONS_FILE)),
+    readJsonl(path.join(args.realtimeDir, KOL_TX_FILE)),
+    readJsonl(path.join(args.realtimeDir, KOL_CALL_FUNNEL_FILE)),
     readJsonl(kolTransferInput),
+    readJsonFile(path.join(args.realtimeDir, 'current-session.json')),
   ]);
+  const currentSessionStartedAtMs = timeMs(currentSession.startedAt);
   const paperTrades = projectedPaperTrades.length > 0 || paperTradesFileName !== ROTATION_PAPER_TRADES_FILE
     ? projectedPaperTrades
     : await readJsonl(path.join(args.realtimeDir, KOL_PAPER_TRADES_FILE));
@@ -5072,9 +7570,14 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
     return Number.isFinite(t) && t >= args.sinceMs;
   });
   const rotationLiveRows = recentLiveRows.filter(isRotationPaperTrade);
-  const recentNoTradeRows = missedAlpha.filter((row) => {
+  const recentMissedAlphaRows = missedAlpha.filter((row) => {
     const t = timeMs(probe(row).firedAt) || timeMs(row.rejectedAt);
-    return Number.isFinite(t) && t >= args.sinceMs && isRotationNoTrade(row);
+    return Number.isFinite(t) && t >= args.sinceMs;
+  });
+  const recentNoTradeRows = recentMissedAlphaRows.filter(isRotationNoTrade);
+  const recentPolicyDecisionRows = kolPolicyRows.filter((row) => {
+    const t = timeMs(row.generatedAt) || timeMs(row.recordedAt) || timeMs(row.createdAt);
+    return Number.isFinite(t) && t >= args.sinceMs;
   });
   const recentLiveEquivalenceRows = liveEquivalenceRows.filter((row) => {
     const t = timeMs(row.generatedAt) || timeMs(row.recordedAt) || timeMs(row.createdAt);
@@ -5092,8 +7595,62 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
   const routeTruthAudit = buildRouteTruthAuditStats(rotationPaperRows, assumedNetworkFeeSol);
   const routeProofFreshness = buildRouteProofFreshnessStats(
     rotationPaperRows,
-    args.routeProofFreshSinceMs
+    args.routeProofFreshSinceMs,
+    Number.isFinite(currentSessionStartedAtMs) ? currentSessionStartedAtMs : undefined,
+    recentNoTradeRows,
+    recentMissedAlphaRows,
+    recentPolicyDecisionRows
   );
+  const rotationCandidateFunnel = buildRotationCandidateFunnelStats({
+    sinceMs: args.sinceMs,
+    currentSessionStartedAtMs: Number.isFinite(currentSessionStartedAtMs) ? currentSessionStartedAtMs : undefined,
+    kolTxRows,
+    callFunnelRows: kolCallFunnelRows,
+    noTradeRows: recentNoTradeRows,
+    policyDecisionRows: recentPolicyDecisionRows,
+    rotationPaperRows,
+  });
+  const rotationDetectorReplay = buildRotationDetectorReplayStats({
+    sinceMs: args.sinceMs,
+    currentSessionStartedAtMs: Number.isFinite(currentSessionStartedAtMs) ? currentSessionStartedAtMs : undefined,
+    kolTxRows,
+  });
+  const rotationDetectorReplayWindow = buildRotationDetectorReplayStats({
+    sinceMs: args.sinceMs,
+    kolTxRows,
+  });
+  const rotationDetectorBlockerMarkouts = buildRotationDetectorBlockerMarkouts({
+    sinceMs: args.sinceMs,
+    kolTxRows,
+    tradeMarkoutRows: recentTradeRows,
+    horizonsSec: args.horizonsSec,
+    roundTripCostPct: args.roundTripCostPct,
+  });
+  const rotationStaleBuyReview = buildRotationStaleBuyReview({
+    sinceMs: args.sinceMs,
+    kolTxRows,
+    tradeMarkoutRows: recentTradeRows,
+    missedAlphaRows: recentMissedAlphaRows,
+    horizonsSec: args.horizonsSec,
+    roundTripCostPct: args.roundTripCostPct,
+  });
+  const rotationPriceContextMarkouts = buildRotationPriceContextMarkouts({
+    sinceMs: args.sinceMs,
+    kolTxRows,
+    tradeMarkoutRows: recentTradeRows,
+    missedAlphaRows: recentMissedAlphaRows,
+    callFunnelRows: kolCallFunnelRows,
+    policyDecisionRows: recentPolicyDecisionRows,
+    horizonsSec: args.horizonsSec,
+    roundTripCostPct: args.roundTripCostPct,
+  });
+  const rotationDecayBlockMarkouts = buildRotationDecayBlockMarkouts({
+    sinceMs: args.sinceMs,
+    missedAlphaRows: recentMissedAlphaRows,
+    policyDecisionRows: recentPolicyDecisionRows,
+    horizonsSec: args.horizonsSec,
+    roundTripCostPct: args.roundTripCostPct,
+  });
   const rotationNarrowCohorts = buildRotationNarrowCohortStats(
     rotationPaperRows,
     rotationRows,
@@ -5242,6 +7799,13 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
     routeUnknownReasons,
     routeTruthAudit,
     routeProofFreshness,
+    rotationCandidateFunnel,
+    rotationDetectorReplay,
+    rotationDetectorReplayWindow,
+    rotationDetectorBlockerMarkouts,
+    rotationStaleBuyReview,
+    rotationPriceContextMarkouts,
+    rotationDecayBlockMarkouts,
     rotationNarrowCohorts,
     underfillKolCohorts,
     underfillKolTiming,

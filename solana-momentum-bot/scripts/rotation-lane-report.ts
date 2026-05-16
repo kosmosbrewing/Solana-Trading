@@ -21,6 +21,7 @@ import {
 const ROTATION_PAPER_TRADES_FILE = 'rotation-v1-paper-trades.jsonl';
 const ROTATION_LIVE_TRADES_FILE = 'rotation-v1-live-trades.jsonl';
 const KOL_PAPER_TRADES_FILE = 'kol-paper-trades.jsonl';
+const KOL_LIVE_EQUIVALENCE_FILE = 'kol-live-equivalence.jsonl';
 const KOL_TRANSFER_INPUT_FILE = 'kol-transfers.jsonl';
 const EVIDENCE_MIN_CLOSES = 50;
 const EVIDENCE_PROMOTION_MIN_CLOSES = 100;
@@ -34,6 +35,16 @@ const ROTATION_CONTROL_ARM = 'kol_hunter_rotation_v1';
 const ROTATION_LIVE_READINESS_ARM = 'rotation_underfill_cost_aware_exit_v2';
 const ROTATION_LIVE_READINESS_MIN_CLOSES = 50;
 const ROTATION_LIVE_READINESS_MIN_POST_COST_POSITIVE_RATE = 0.5;
+const ROTATION_PAPER_COMPOUND_MIN_CLOSES = 50;
+const ROTATION_PAPER_COMPOUND_MIN_POST_COST_POSITIVE_RATE = 0.55;
+const ROTATION_COMPOUND_REVIEW_MIN_CLOSES = 30;
+const ROTATION_COMPOUND_DECISION_MIN_CLOSES = 50;
+const ROTATION_COMPOUND_EARLY_REJECT_MIN_CLOSES = 10;
+const ROTATION_COMPOUND_EARLY_MIN_POST_COST_POSITIVE_RATE = 0.45;
+const ROTATION_COMPOUND_MAX_LOSING_STREAK = 5;
+const MICRO_LIVE_REVIEW_TICKET_SOL = 0.02;
+const MICRO_LIVE_REVIEW_MAX_DAILY_ATTEMPTS = 3;
+const MICRO_LIVE_REVIEW_DAILY_LOSS_CAP_SOL = 0.03;
 
 interface Args {
   realtimeDir: string;
@@ -147,6 +158,7 @@ interface UnderfillRouteCohortStats {
   routeKnownRows: number;
   routeUnknownRows: number;
   independentKol2Rows: number;
+  unknownKolRows: number;
   costAwareRows: number;
   wins: number;
   losses: number;
@@ -159,6 +171,240 @@ interface UnderfillRouteCohortStats {
   t1Rows: number;
   medianMfePct: number | null;
   medianHoldSec: number | null;
+}
+
+interface LiveEquivalenceBucketStats {
+  bucket: string;
+  rows: number;
+  liveWouldEnterRows: number;
+  liveAttemptedRows: number;
+  blockedRows: number;
+  singleKolRows: number;
+  twoPlusKolRows: number;
+  unknownKolRows: number;
+}
+
+interface LiveEquivalenceSummary {
+  totalRows: number;
+  rotationRows: number;
+  liveWouldEnterRows: number;
+  liveAttemptedRows: number;
+  blockedRows: number;
+  yellowZoneRows: number;
+  yellowZoneSingleKolRows: number;
+  yellowZoneTwoPlusKolRows: number;
+  yellowZoneUnknownKolRows: number;
+  routeUnknownFallbackRows: number;
+  byStage: LiveEquivalenceBucketStats[];
+  byBlockReason: LiveEquivalenceBucketStats[];
+}
+
+interface RouteUnknownReasonStats {
+  reason: string;
+  rows: number;
+  wins: number;
+  losses: number;
+  refundAdjustedNetSol: number;
+  t1Rows: number;
+  medianMfePct: number | null;
+  medianHoldSec: number | null;
+}
+
+interface RotationCompoundProfile {
+  cohort: string;
+  rows: number;
+  refundAdjustedNetSol: number;
+  walletDragStressSol: number;
+  postCostPositiveRate: number | null;
+  t1Rate: number | null;
+  maxLosingStreak: number;
+  winnerRows: number;
+  winnerRefundAdjustedNetSol: number;
+  nonWinnerRows: number;
+  nonWinnerRefundAdjustedNetSol: number;
+  medianHoldSec: number | null;
+  medianMfePct: number | null;
+}
+
+interface RouteTruthAuditStats {
+  bucket: string;
+  rows: number;
+  routeKnownRows: number;
+  routeUnknownRows: number;
+  recoverability: 'ready' | 'structural_block' | 'data_gap' | 'infra_retry' | 'unknown';
+  wins: number;
+  losses: number;
+  refundAdjustedNetSol: number;
+  medianMfePct: number | null;
+  topReasons: Array<{ reason: string; count: number }>;
+}
+
+interface KolTimingStats {
+  bucket: string;
+  rows: number;
+  routeKnownRows: number;
+  costAwareRows: number;
+  refundAdjustedNetSol: number;
+  t1Rows: number;
+  medianSecondKolDelaySec: number | null;
+}
+
+interface LiveEquivalenceDrilldownStats {
+  bucket: string;
+  rows: number;
+  candidateIdRows: number;
+  missingCandidateIdRows: number;
+  unlinkedRows: number;
+  reviewCohortLinkedRows: number;
+  liveWouldEnterRows: number;
+  blockedRows: number;
+  paperCloses: number;
+  paperWins: number;
+  paperRefundAdjustedNetSol: number;
+  blockedPaperWinnerRows: number;
+  medianPaperMfePct: number | null;
+}
+
+interface PaperCohortValidityStats {
+  cohort: string;
+  rows: number;
+  candidateIdRows: number;
+  candidateIdCoverage: number | null;
+  independentKolRows: number;
+  participantRows: number;
+  participantTimestampRows: number;
+  routeProofRows: number;
+  costAwareRows: number;
+  unknownTimingRows: number;
+}
+
+interface ReviewCohortGenerationAuditStats {
+  cohort: string;
+  underfillRows: number;
+  routeKnownRows: number;
+  costAwareRows: number;
+  twoPlusKolRows: number;
+  routeKnownTwoPlusRows: number;
+  routeKnownCostAwareRows: number;
+  reviewRows: number;
+  missingRouteProofRows: number;
+  missingCandidateIdRows: number;
+  missingParticipantTimestampRows: number;
+  primaryRouteKnownTwoPlusRows: number;
+  primaryRouteKnownTwoPlusWithoutCostAwareCloneRows: number;
+  blockerReasons: Array<{ reason: string; count: number }>;
+}
+
+interface ReviewCohortEvidenceStats {
+  cohort: string;
+  closes: number;
+  candidateIdRows: number;
+  liveEquivalenceRows: number;
+  linkedLiveEquivalenceRows: number;
+  missingCandidateIdLiveRows: number;
+  unlinkedLiveEquivalenceRows: number;
+  routeProofRows: number;
+  timestampedSecondKolRows: number;
+  refundAdjustedNetSol: number | null;
+  postCostPositiveRate: number | null;
+  t1Rate: number | null;
+  minOkCoverage: number | null;
+  primaryHorizonPostCost: Array<{ horizonSec: number; medianPostCostDeltaPct: number | null }>;
+  routeProofSources: Array<{ source: string; count: number }>;
+  kolTimingBuckets: Array<{ bucket: string; count: number }>;
+  liveBlockReasons: Array<{ reason: string; count: number }>;
+}
+
+interface PaperExitProxyStats {
+  cohort: string;
+  exitProfile: string;
+  rows: number;
+  observedRows: number;
+  proxyHorizonSec: number | null;
+  targetPct: number | null;
+  targetHitRows: number | null;
+  positiveRows: number;
+  postCostPositiveRate: number | null;
+  medianPostCostDeltaPct: number | null;
+  p25PostCostDeltaPct: number | null;
+  refundAdjustedNetSol: number | null;
+  maxLosingStreak: number | null;
+  medianHoldSec: number | null;
+}
+
+type CompoundFitnessVerdict =
+  | 'COLLECT'
+  | 'REJECT'
+  | 'WATCH'
+  | 'PASS';
+
+type ReviewCohortDecisionVerdict =
+  | 'COLLECT'
+  | 'EARLY_REJECT'
+  | 'WATCH'
+  | 'REJECT'
+  | 'PASS';
+
+interface RotationCompoundFitnessGate {
+  cohort: string;
+  verdict: CompoundFitnessVerdict;
+  score: number;
+  reasons: string[];
+  closes: number;
+  minReviewCloses: number;
+  minDecisionCloses: number;
+  refundAdjustedNetSol: number | null;
+  postCostPositiveRate: number | null;
+  t1Rate: number | null;
+  maxLosingStreak: number | null;
+  winnerCoversBleed: boolean | null;
+}
+
+interface ReviewCohortDecision {
+  cohort: string;
+  verdict: ReviewCohortDecisionVerdict;
+  closes: number;
+  minEarlyRejectCloses: number;
+  minReviewCloses: number;
+  minDecisionCloses: number;
+  refundAdjustedNetSol: number | null;
+  postCostPositiveRate: number | null;
+  maxLosingStreak: number | null;
+  primaryHorizonPostCost: Array<{ horizonSec: number; medianPostCostDeltaPct: number | null }>;
+  earlyRejectSignals: string[];
+  reasons: string[];
+}
+
+type MicroLiveReviewVerdict =
+  | 'CONTINUE_COLLECT'
+  | 'REJECT'
+  | 'WAIT_REVIEW_COHORT_METADATA'
+  | 'WAIT_LIVE_EQUIVALENCE_DATA'
+  | 'WAIT_LIVE_EQUIVALENCE_CLEAR'
+  | 'READY_FOR_MICRO_LIVE_REVIEW';
+
+interface MicroLivePlan {
+  ticketSol: number;
+  maxDailyAttempts: number;
+  dailyLossCapSol: number;
+  rollbackConditions: string[];
+}
+
+interface MicroLiveReviewPacket {
+  verdict: MicroLiveReviewVerdict;
+  reasons: string[];
+  reviewCohort: string;
+  paperVerdict: RotationPaperCompoundReadinessVerdict;
+  liveVerdict: RotationLiveReadinessVerdict;
+  compoundVerdict: CompoundFitnessVerdict;
+  liveEquivalenceRows: number;
+  liveEquivalenceBlockers: number;
+  linkedLiveEquivalenceRows: number;
+  candidateIdRows: number;
+  routeProofRows: number;
+  timestampedSecondKolRows: number;
+  closes: number;
+  plan: MicroLivePlan;
 }
 
 interface RotationReadinessHorizonCoverage {
@@ -184,6 +430,13 @@ type RotationLiveReadinessVerdict =
   | 'DATA_GAP'
   | 'COST_REJECT'
   | 'READY_FOR_MICRO_LIVE';
+
+type RotationPaperCompoundReadinessVerdict =
+  | 'BLOCKED'
+  | 'COLLECT'
+  | 'DATA_GAP'
+  | 'COST_REJECT'
+  | 'PAPER_READY';
 
 interface EvidenceVerdict {
   armName: string;
@@ -228,6 +481,23 @@ interface RotationLiveReadiness {
   evidenceVerdict: EvidenceVerdictStatus | null;
 }
 
+interface RotationPaperCompoundReadiness {
+  armName: string;
+  verdict: RotationPaperCompoundReadinessVerdict;
+  reasons: string[];
+  cohort: string;
+  closes: number;
+  minRequiredCloses: number;
+  refundAdjustedNetSol: number | null;
+  postCostPositiveRate: number | null;
+  edgePassRate: number | null;
+  t1Rate: number | null;
+  medianMfePct: number | null;
+  minOkCoverage: number | null;
+  requiredHorizonCoverage: RotationReadinessHorizonCoverage[];
+  primaryHorizonPostCost: Array<{ horizonSec: number; medianPostCostDeltaPct: number | null }>;
+}
+
 interface RotationReport {
   generatedAt: string;
   realtimeDir: string;
@@ -261,6 +531,21 @@ interface RotationReport {
   };
   underfillEntryQuality: UnderfillEntryQualityStats[];
   underfillRouteCohorts: UnderfillRouteCohortStats[];
+  liveEquivalence: LiveEquivalenceSummary;
+  routeUnknownReasons: RouteUnknownReasonStats[];
+  routeTruthAudit: RouteTruthAuditStats[];
+  underfillKolCohorts: UnderfillRouteCohortStats[];
+  underfillKolTiming: KolTimingStats[];
+  paperCohortValidity: PaperCohortValidityStats[];
+  reviewCohortGenerationAudit: ReviewCohortGenerationAuditStats;
+  liveEquivalenceDrilldown: LiveEquivalenceDrilldownStats[];
+  reviewCohortEvidence: ReviewCohortEvidenceStats;
+  paperExitProxies: PaperExitProxyStats[];
+  compoundProfiles: RotationCompoundProfile[];
+  rotationCompoundFitness: RotationCompoundFitnessGate;
+  reviewCohortDecision: ReviewCohortDecision;
+  microLiveReviewPacket: MicroLiveReviewPacket;
+  rotationPaperCompoundReadiness: RotationPaperCompoundReadiness;
   rotationLiveReadiness: RotationLiveReadiness;
   evidenceVerdicts: EvidenceVerdict[];
   noTrade: {
@@ -416,6 +701,10 @@ function rowDelta(row: JsonRow): number | null {
 
 function rowPositionId(row: JsonRow): string {
   return str(row.positionId) || str(obj(row.extras).positionId);
+}
+
+function rowParentPositionId(row: JsonRow): string {
+  return rowStringWithExtras(row, ['parentPositionId']);
 }
 
 function rowTokenMint(row: JsonRow): string {
@@ -712,6 +1001,122 @@ function rowIndependentKolCount(row: JsonRow): number | null {
   return null;
 }
 
+function isSingleKolRow(row: JsonRow): boolean {
+  return rowIndependentKolCount(row) === 1;
+}
+
+function isTwoPlusKolRow(row: JsonRow): boolean {
+  const count = rowIndependentKolCount(row);
+  return count != null && count >= 2;
+}
+
+function isUnknownKolCountRow(row: JsonRow): boolean {
+  return rowIndependentKolCount(row) == null;
+}
+
+function rowCandidateId(row: JsonRow): string {
+  return rowStringWithExtras(row, ['liveEquivalenceCandidateId', 'candidateId']);
+}
+
+function rowPaperDedupeKey(row: JsonRow): string {
+  return rowStringWithExtras(row, ['positionId', 'tradeId', 'id', 'signature']) ||
+    [
+      rowCandidateId(row),
+      rowStringWithExtras(row, ['closedAt', 'exitReason']),
+      `${num(row.netSolTokenOnly) ?? num(row.netSol) ?? ''}`,
+    ].join(':');
+}
+
+function rowParticipants(row: JsonRow): Array<{ id: string; timestampMs: number | null }> {
+  const extras = obj(row.extras);
+  const raw =
+    Array.isArray(row.entryParticipatingKols) ? row.entryParticipatingKols :
+    Array.isArray(extras.entryParticipatingKols) ? extras.entryParticipatingKols :
+    Array.isArray(row.participatingKols) ? row.participatingKols :
+    Array.isArray(extras.participatingKols) ? extras.participatingKols :
+    Array.isArray(row.kols) ? row.kols :
+    Array.isArray(extras.kols) ? extras.kols :
+    Array.isArray(extras.rotationAnchorKols) ? extras.rotationAnchorKols :
+    [];
+  return raw.flatMap((item) => {
+    if (typeof item === 'string') return [{ id: item, timestampMs: null }];
+    const record = obj(item);
+    const id = str(record.id) || str(record.kolId) || str(record.wallet) || str(record.address);
+    if (!id) return [];
+    const ts = timeMs(record.timestamp) || timeMs(record.timestampMs) || timeMs(record.firstSeenAt) || timeMs(record.firstBuyAt);
+    return [{ id, timestampMs: Number.isFinite(ts) ? ts : null }];
+  });
+}
+
+function secondKolDelaySec(row: JsonRow): number | null {
+  const participants = rowParticipants(row)
+    .filter((item) => item.timestampMs != null)
+    .sort((a, b) => (a.timestampMs ?? 0) - (b.timestampMs ?? 0));
+  const unique: Array<{ id: string; timestampMs: number }> = [];
+  const seen = new Set<string>();
+  for (const participant of participants) {
+    if (seen.has(participant.id) || participant.timestampMs == null) continue;
+    seen.add(participant.id);
+    unique.push({ id: participant.id, timestampMs: participant.timestampMs });
+  }
+  if (unique.length < 2) return null;
+  return Math.max(0, (unique[1].timestampMs - unique[0].timestampMs) / 1000);
+}
+
+function kolTimingBucket(row: JsonRow): string {
+  if (isUnknownKolCountRow(row)) return 'unknown_kol_count';
+  if (isSingleKolRow(row)) return '1kol';
+  const delay = secondKolDelaySec(row);
+  if (delay == null) return '2plus_unknown_timing';
+  if (delay <= 5) return '2plus_second_within_5s';
+  if (delay <= 15) return '2plus_second_within_15s';
+  if (delay <= 30) return '2plus_second_within_30s';
+  return '2plus_second_late';
+}
+
+function rowLiveWouldEnter(row: JsonRow): boolean {
+  return row.liveWouldEnter === true || obj(row.extras).liveWouldEnter === true;
+}
+
+function rowLiveAttempted(row: JsonRow): boolean {
+  return row.liveAttempted === true || obj(row.extras).liveAttempted === true;
+}
+
+function rowDecisionStage(row: JsonRow): string {
+  return rowStringWithExtras(row, ['decisionStage', 'stage']) || '(unknown)';
+}
+
+function rowLiveBlockReason(row: JsonRow): string {
+  return rowStringWithExtras(row, ['liveBlockReason']) || '(none)';
+}
+
+function isRotationLiveEquivalenceRow(row: JsonRow): boolean {
+  const label = rowStringWithExtras(row, ['entrySignalLabel']);
+  if (label.startsWith('rotation-')) return true;
+  return isRotationArmValue(rowArmName(row)) ||
+    rowStringWithExtras(row, ['entryReason']) === 'rotation_v1' ||
+    rowSurvivalFlags(row).some((flag) => flag.startsWith('ROTATION_'));
+}
+
+function isYellowZoneEquivalenceRow(row: JsonRow): boolean {
+  return rowDecisionStage(row) === 'yellow_zone' ||
+    rowLiveBlockReason(row).includes('yellow zone') ||
+    rowSurvivalFlags(row).some((flag) => flag.startsWith('YELLOW_ZONE'));
+}
+
+function isRouteUnknownFallbackRow(row: JsonRow): boolean {
+  return rowLiveBlockReason(row) === 'rotation_underfill_live_exit_route_unknown' ||
+    rowSurvivalFlags(row).some((flag) => flag === 'ROTATION_UNDERFILL_LIVE_EXIT_ROUTE_UNKNOWN');
+}
+
+function isMicroLiveReviewEquivalenceRow(row: JsonRow, reviewCandidateIds: Set<string>): boolean {
+  if (!isRotationLiveEquivalenceRow(row)) return false;
+  if (reviewCandidateIds.size === 0) return false;
+  const candidateId = rowCandidateId(row);
+  if (candidateId && reviewCandidateIds.has(candidateId)) return true;
+  return rowArmName(row) === ROTATION_LIVE_READINESS_ARM;
+}
+
 function isUnderfillRouteUnknown(row: JsonRow): boolean {
   if (rowSurvivalFlags(row).some((flag) =>
     flag === 'EXIT_LIQUIDITY_UNKNOWN' ||
@@ -724,6 +1129,67 @@ function isUnderfillRouteUnknown(row: JsonRow): boolean {
     return true;
   }
   return !hasUnderfillRoutePositiveEvidence(row);
+}
+
+function routeUnknownReasonsForRow(row: JsonRow): string[] {
+  if (!isUnderfillRouteUnknown(row)) return [];
+  const flags = rowSurvivalFlags(row);
+  const reasons = new Set<string>();
+  for (const flag of flags) {
+    if (flag === 'EXIT_LIQUIDITY_UNKNOWN') reasons.add('EXIT_LIQUIDITY_UNKNOWN');
+    else if (flag === 'NO_SELL_ROUTE' || flag === 'SELL_NO_ROUTE' || flag === 'NO_ROUTE' || flag.includes('NO_SELL_ROUTE')) {
+      reasons.add('NO_SELL_ROUTE');
+    } else if (flag === 'DECIMALS_SECURITY_CLIENT') reasons.add('DECIMALS_SECURITY_CLIENT');
+    else if (flag === 'TOKEN_QUALITY_UNKNOWN') reasons.add('TOKEN_QUALITY_UNKNOWN');
+    else if (flag === 'NO_SECURITY_DATA' || flag === 'NO_SECURITY_CLIENT') reasons.add(flag);
+    else if (flag.includes('JUPITER_429')) reasons.add('JUPITER_429');
+    else if (flag.includes('SECURITY_CLIENT')) reasons.add('SECURITY_CLIENT');
+    else if (flag === 'ROTATION_UNDERFILL_LIVE_EXIT_ROUTE_UNKNOWN') reasons.add('ROTATION_UNDERFILL_LIVE_EXIT_ROUTE_UNKNOWN');
+  }
+  if (reasons.size === 0) reasons.add('MISSING_POSITIVE_ROUTE_EVIDENCE');
+  return [...reasons].sort();
+}
+
+function routeTruthEvidenceSources(row: JsonRow): string[] {
+  const extras = obj(row.extras);
+  const sources = new Set<string>();
+  if (row.routeFound === true || extras.routeFound === true) sources.add('routeFound');
+  if (row.sellRouteKnown === true || extras.sellRouteKnown === true) sources.add('sellRouteKnown');
+  if (row.exitLiquidityKnown === true || extras.exitLiquidityKnown === true) sources.add('exitLiquidityKnown');
+  if ((num(row.exitLiquidityUsd) ?? 0) > 0 || (num(extras.exitLiquidityUsd) ?? 0) > 0) sources.add('exitLiquidityUsd');
+  if (Object.keys(obj(row.exitLiquidityData)).length > 0 || Object.keys(obj(extras.exitLiquidityData)).length > 0) {
+    sources.add('exitLiquidityData');
+  }
+  for (const flag of rowSurvivalFlags(row)) {
+    if (flag === 'SELL_ROUTE_OK' || flag === 'EXIT_LIQUIDITY_KNOWN' || flag === 'ROTATION_UNDERFILL_LIVE_EXIT_ROUTE_KNOWN') {
+      sources.add(flag);
+    }
+  }
+  return [...sources].sort();
+}
+
+function routeTruthBucket(row: JsonRow): { bucket: string; recoverability: RouteTruthAuditStats['recoverability'] } {
+  const sources = routeTruthEvidenceSources(row);
+  if (sources.length > 0 && !isUnderfillRouteUnknown(row)) {
+    return { bucket: `route_known:${sources[0]}`, recoverability: 'ready' };
+  }
+  const reasons = routeUnknownReasonsForRow(row);
+  if (reasons.some((reason) => reason === 'JUPITER_429')) {
+    return { bucket: 'route_unknown:infra_retry', recoverability: 'infra_retry' };
+  }
+  if (reasons.some((reason) => reason === 'NO_SELL_ROUTE' || reason === 'EXIT_LIQUIDITY_UNKNOWN' || reason === 'ROTATION_UNDERFILL_LIVE_EXIT_ROUTE_UNKNOWN')) {
+    return { bucket: 'route_unknown:structural_exit_route', recoverability: 'structural_block' };
+  }
+  if (reasons.some((reason) =>
+    reason === 'DECIMALS_SECURITY_CLIENT' ||
+    reason === 'TOKEN_QUALITY_UNKNOWN' ||
+    reason === 'NO_SECURITY_DATA' ||
+    reason === 'NO_SECURITY_CLIENT' ||
+    reason === 'SECURITY_CLIENT'
+  )) {
+    return { bucket: 'route_unknown:data_gap', recoverability: 'data_gap' };
+  }
+  return { bucket: 'route_unknown:missing_positive_evidence', recoverability: 'unknown' };
 }
 
 function hasUnderfillRoutePositiveEvidence(row: JsonRow): boolean {
@@ -760,6 +1226,10 @@ function isCostAwareUnderfillRow(row: JsonRow): boolean {
     profileArm === 'rotation_underfill_cost_aware_exit_v2' ||
     parameterVersion.includes('cost-aware') ||
     rowSurvivalFlags(row).some((flag) => flag === 'ROTATION_COST_AWARE_EXIT_V2');
+}
+
+function isRouteKnownCostAwareUnderfillRow(row: JsonRow): boolean {
+  return isRotationUnderfillRow(row) && !isUnderfillRouteUnknown(row) && isCostAwareUnderfillRow(row);
 }
 
 function rowUnderfillReferencePrice(row: JsonRow): number | null {
@@ -826,7 +1296,8 @@ function summarizeUnderfillRouteCohort(
     rows: rows.length,
     routeKnownRows: rows.filter((row) => !isUnderfillRouteUnknown(row)).length,
     routeUnknownRows: rows.filter(isUnderfillRouteUnknown).length,
-    independentKol2Rows: rows.filter((row) => (rowIndependentKolCount(row) ?? 0) >= 2).length,
+    independentKol2Rows: rows.filter(isTwoPlusKolRow).length,
+    unknownKolRows: rows.filter(isUnknownKolCountRow).length,
     costAwareRows: rows.filter(isCostAwareUnderfillRow).length,
     wins: netSolValues.filter((value) => value > 0).length,
     losses: netSolValues.filter((value) => value <= 0).length,
@@ -849,7 +1320,7 @@ function buildUnderfillRouteCohorts(
   const underfillRows = rows.filter(isRotationUnderfillRow);
   const routeKnownRows = underfillRows.filter((row) => !isUnderfillRouteUnknown(row));
   const routeUnknownRows = underfillRows.filter(isUnderfillRouteUnknown);
-  const routeKnown2KolRows = routeKnownRows.filter((row) => (rowIndependentKolCount(row) ?? 0) >= 2);
+  const routeKnown2KolRows = routeKnownRows.filter(isTwoPlusKolRow);
   const routeKnownCostAwareRows = routeKnownRows.filter(isCostAwareUnderfillRow);
   const routeKnown2KolCostAwareRows = routeKnown2KolRows.filter(isCostAwareUnderfillRow);
   return [
@@ -862,6 +1333,876 @@ function buildUnderfillRouteCohorts(
   ];
 }
 
+function buildUnderfillKolCohorts(
+  rows: JsonRow[],
+  assumedNetworkFeeSol: number
+): UnderfillRouteCohortStats[] {
+  const underfillRows = rows.filter(isRotationUnderfillRow);
+  const singleKolRows = underfillRows.filter(isSingleKolRow);
+  const twoPlusKolRows = underfillRows.filter(isTwoPlusKolRow);
+  const unknownKolRows = underfillRows.filter(isUnknownKolCountRow);
+  const costAwareRows = underfillRows.filter(isCostAwareUnderfillRow);
+  return [
+    summarizeUnderfillRouteCohort('underfill_1kol', singleKolRows, assumedNetworkFeeSol),
+    summarizeUnderfillRouteCohort('underfill_2plus_kol', twoPlusKolRows, assumedNetworkFeeSol),
+    summarizeUnderfillRouteCohort('underfill_unknown_kol', unknownKolRows, assumedNetworkFeeSol),
+    summarizeUnderfillRouteCohort('underfill_1kol_cost_aware', singleKolRows.filter(isCostAwareUnderfillRow), assumedNetworkFeeSol),
+    summarizeUnderfillRouteCohort('underfill_2plus_kol_cost_aware', twoPlusKolRows.filter(isCostAwareUnderfillRow), assumedNetworkFeeSol),
+    summarizeUnderfillRouteCohort('underfill_unknown_kol_cost_aware', unknownKolRows.filter(isCostAwareUnderfillRow), assumedNetworkFeeSol),
+    summarizeUnderfillRouteCohort('underfill_cost_aware_all', costAwareRows, assumedNetworkFeeSol),
+  ];
+}
+
+function buildLiveEquivalenceBucketStats(
+  rows: JsonRow[],
+  bucketFor: (row: JsonRow) => string
+): LiveEquivalenceBucketStats[] {
+  const buckets = new Map<string, JsonRow[]>();
+  for (const row of rows) {
+    const key = bucketFor(row) || '(unknown)';
+    buckets.set(key, [...(buckets.get(key) ?? []), row]);
+  }
+  return [...buckets.entries()]
+    .map(([bucket, scoped]) => ({
+      bucket,
+      rows: scoped.length,
+      liveWouldEnterRows: scoped.filter(rowLiveWouldEnter).length,
+      liveAttemptedRows: scoped.filter(rowLiveAttempted).length,
+      blockedRows: scoped.filter((row) => !rowLiveWouldEnter(row)).length,
+      singleKolRows: scoped.filter(isSingleKolRow).length,
+      twoPlusKolRows: scoped.filter(isTwoPlusKolRow).length,
+      unknownKolRows: scoped.filter(isUnknownKolCountRow).length,
+    }))
+    .sort((a, b) => b.rows - a.rows || a.bucket.localeCompare(b.bucket));
+}
+
+function buildLiveEquivalenceSummary(rows: JsonRow[]): LiveEquivalenceSummary {
+  const rotationRows = rows.filter(isRotationLiveEquivalenceRow);
+  return {
+    totalRows: rows.length,
+    rotationRows: rotationRows.length,
+    liveWouldEnterRows: rotationRows.filter(rowLiveWouldEnter).length,
+    liveAttemptedRows: rotationRows.filter(rowLiveAttempted).length,
+    blockedRows: rotationRows.filter((row) => !rowLiveWouldEnter(row)).length,
+    yellowZoneRows: rotationRows.filter(isYellowZoneEquivalenceRow).length,
+    yellowZoneSingleKolRows: rotationRows.filter((row) =>
+      isYellowZoneEquivalenceRow(row) && isSingleKolRow(row)
+    ).length,
+    yellowZoneTwoPlusKolRows: rotationRows.filter((row) =>
+      isYellowZoneEquivalenceRow(row) && isTwoPlusKolRow(row)
+    ).length,
+    yellowZoneUnknownKolRows: rotationRows.filter((row) =>
+      isYellowZoneEquivalenceRow(row) && isUnknownKolCountRow(row)
+    ).length,
+    routeUnknownFallbackRows: rotationRows.filter(isRouteUnknownFallbackRow).length,
+    byStage: buildLiveEquivalenceBucketStats(rotationRows, rowDecisionStage),
+    byBlockReason: buildLiveEquivalenceBucketStats(rotationRows, rowLiveBlockReason),
+  };
+}
+
+function buildRouteUnknownReasonStats(
+  rows: JsonRow[],
+  assumedNetworkFeeSol: number
+): RouteUnknownReasonStats[] {
+  const buckets = new Map<string, JsonRow[]>();
+  for (const row of rows.filter(isRotationUnderfillRow)) {
+    for (const reason of routeUnknownReasonsForRow(row)) {
+      buckets.set(reason, [...(buckets.get(reason) ?? []), row]);
+    }
+  }
+  return [...buckets.entries()]
+    .map(([reason, scoped]) => {
+      const refundAdjustedValues = scoped.map((row) =>
+        (num(row.netSolTokenOnly) ?? numberOrZero(row.netSol)) - assumedNetworkFeeSol
+      );
+      const mfeValues = scoped.map(rowMfePct).filter((value): value is number => value != null);
+      const holdSecValues = scoped.map((row) => num(row.holdSec)).filter((value): value is number => value != null);
+      return {
+        reason,
+        rows: scoped.length,
+        wins: refundAdjustedValues.filter((value) => value > 0).length,
+        losses: refundAdjustedValues.filter((value) => value <= 0).length,
+        refundAdjustedNetSol: refundAdjustedValues.reduce((sum, value) => sum + value, 0),
+        t1Rows: scoped.filter(rowHasT1).length,
+        medianMfePct: percentile(mfeValues, 0.5),
+        medianHoldSec: percentile(holdSecValues, 0.5),
+      };
+    })
+    .sort((a, b) => b.rows - a.rows || b.refundAdjustedNetSol - a.refundAdjustedNetSol || a.reason.localeCompare(b.reason));
+}
+
+function buildRouteTruthAuditStats(
+  rows: JsonRow[],
+  assumedNetworkFeeSol: number
+): RouteTruthAuditStats[] {
+  const buckets = new Map<string, { recoverability: RouteTruthAuditStats['recoverability']; rows: JsonRow[] }>();
+  for (const row of rows.filter(isRotationUnderfillRow)) {
+    const truth = routeTruthBucket(row);
+    const current = buckets.get(truth.bucket) ?? { recoverability: truth.recoverability, rows: [] };
+    current.rows.push(row);
+    buckets.set(truth.bucket, current);
+  }
+  return [...buckets.entries()]
+    .map(([bucket, value]) => {
+      const scoped = value.rows;
+      const refundAdjustedValues = scoped.map((row) =>
+        (num(row.netSolTokenOnly) ?? numberOrZero(row.netSol)) - assumedNetworkFeeSol
+      );
+      const reasonCounts = new Map<string, number>();
+      for (const row of scoped) {
+        const reasons = routeUnknownReasonsForRow(row);
+        for (const reason of reasons.length > 0 ? reasons : routeTruthEvidenceSources(row)) {
+          reasonCounts.set(reason, (reasonCounts.get(reason) ?? 0) + 1);
+        }
+      }
+      return {
+        bucket,
+        rows: scoped.length,
+        routeKnownRows: scoped.filter((row) => !isUnderfillRouteUnknown(row)).length,
+        routeUnknownRows: scoped.filter(isUnderfillRouteUnknown).length,
+        recoverability: value.recoverability,
+        wins: refundAdjustedValues.filter((item) => item > 0).length,
+        losses: refundAdjustedValues.filter((item) => item <= 0).length,
+        refundAdjustedNetSol: refundAdjustedValues.reduce((sum, item) => sum + item, 0),
+        medianMfePct: percentile(scoped.map(rowMfePct).filter((item): item is number => item != null), 0.5),
+        topReasons: [...reasonCounts.entries()]
+          .map(([reason, count]) => ({ reason, count }))
+          .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason))
+          .slice(0, 4),
+      };
+    })
+    .sort((a, b) => b.rows - a.rows || a.bucket.localeCompare(b.bucket));
+}
+
+function buildKolTimingStats(
+  rows: JsonRow[],
+  assumedNetworkFeeSol: number
+): KolTimingStats[] {
+  const buckets = new Map<string, JsonRow[]>();
+  for (const row of rows.filter(isRotationUnderfillRow)) {
+    const bucket = kolTimingBucket(row);
+    buckets.set(bucket, [...(buckets.get(bucket) ?? []), row]);
+  }
+  return [...buckets.entries()]
+    .map(([bucket, scoped]) => {
+      const refundAdjustedValues = scoped.map((row) =>
+        (num(row.netSolTokenOnly) ?? numberOrZero(row.netSol)) - assumedNetworkFeeSol
+      );
+      const delays = bucket.startsWith('2plus')
+        ? scoped.map(secondKolDelaySec).filter((item): item is number => item != null)
+        : [];
+      return {
+        bucket,
+        rows: scoped.length,
+        routeKnownRows: scoped.filter((row) => !isUnderfillRouteUnknown(row)).length,
+        costAwareRows: scoped.filter(isCostAwareUnderfillRow).length,
+        refundAdjustedNetSol: refundAdjustedValues.reduce((sum, item) => sum + item, 0),
+        t1Rows: scoped.filter(rowHasT1).length,
+        medianSecondKolDelaySec: percentile(delays, 0.5),
+      };
+    })
+    .sort((a, b) => b.rows - a.rows || a.bucket.localeCompare(b.bucket));
+}
+
+function countByLabel<T extends string>(
+  values: T[],
+  labelKey: string
+): Array<{ [key: string]: string | number; count: number }> {
+  const counts = new Map<string, number>();
+  for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
+  return [...counts.entries()]
+    .map(([value, count]) => ({ [labelKey]: value, count }))
+    .sort((a, b) => b.count - a.count || String(a[labelKey]).localeCompare(String(b[labelKey])));
+}
+
+function summarizePaperCohortValidity(cohort: string, rows: JsonRow[]): PaperCohortValidityStats {
+  const candidateIdRows = rows.filter((row) => rowCandidateId(row)).length;
+  return {
+    cohort,
+    rows: rows.length,
+    candidateIdRows,
+    candidateIdCoverage: ratio(candidateIdRows, rows.length),
+    independentKolRows: rows.filter((row) => rowIndependentKolCount(row) != null).length,
+    participantRows: rows.filter((row) => rowParticipants(row).length > 0).length,
+    participantTimestampRows: rows.filter((row) => rowParticipants(row).some((item) => item.timestampMs != null)).length,
+    routeProofRows: rows.filter((row) => routeTruthEvidenceSources(row).length > 0).length,
+    costAwareRows: rows.filter(isCostAwareUnderfillRow).length,
+    unknownTimingRows: rows.filter((row) => isTwoPlusKolRow(row) && secondKolDelaySec(row) == null).length,
+  };
+}
+
+function buildPaperCohortValidityStats(rows: JsonRow[]): PaperCohortValidityStats[] {
+  const underfillRows = rows.filter(isRotationUnderfillRow);
+  const routeKnownCostAwareRows = underfillRows.filter(isRouteKnownCostAwareUnderfillRow);
+  const routeKnown2KolCostAwareRows = routeKnownCostAwareRows.filter(isTwoPlusKolRow);
+  return [
+    summarizePaperCohortValidity('underfill_all', underfillRows),
+    summarizePaperCohortValidity('route_known_cost_aware', routeKnownCostAwareRows),
+    summarizePaperCohortValidity('1kol_route_known_cost_aware', routeKnownCostAwareRows.filter(isSingleKolRow)),
+    summarizePaperCohortValidity('2kol_route_known_cost_aware', routeKnown2KolCostAwareRows),
+    summarizePaperCohortValidity(
+      '2kol_route_known_cost_aware_secondKOL<=15s',
+      routeKnown2KolCostAwareRows.filter((row) => {
+        const delay = secondKolDelaySec(row);
+        return delay != null && delay <= 15;
+      })
+    ),
+    summarizePaperCohortValidity(
+      '2kol_route_known_cost_aware_secondKOL<=30s',
+      routeKnown2KolCostAwareRows.filter((row) => {
+        const delay = secondKolDelaySec(row);
+        return delay != null && delay <= 30;
+      })
+    ),
+    summarizePaperCohortValidity(
+      '2kol_route_known_cost_aware_secondKOL_late',
+      routeKnown2KolCostAwareRows.filter((row) => {
+        const delay = secondKolDelaySec(row);
+        return delay != null && delay > 30;
+      })
+    ),
+  ];
+}
+
+function isPrimaryUnderfillCandidateRow(row: JsonRow): boolean {
+  return isRotationUnderfillRow(row) && !isCostAwareUnderfillRow(row);
+}
+
+function reviewCohortBlockersForRow(row: JsonRow): string[] {
+  const blockers: string[] = [];
+  if (isUnderfillRouteUnknown(row)) blockers.push('route_unknown_or_missing_proof');
+  if (!isCostAwareUnderfillRow(row)) blockers.push('missing_cost_aware_shadow');
+  if (!isTwoPlusKolRow(row)) blockers.push(isSingleKolRow(row) ? 'single_kol' : 'unknown_kol_count');
+  if (!rowCandidateId(row)) blockers.push('missing_candidate_id');
+  if (!rowParticipants(row).some((item) => item.timestampMs != null)) {
+    blockers.push('missing_participant_timestamp');
+  }
+  return blockers.length > 0 ? blockers : ['review_ready'];
+}
+
+function buildReviewCohortGenerationAuditStats(rows: JsonRow[]): ReviewCohortGenerationAuditStats {
+  const cohort = 'route_known_2kol_cost_aware';
+  const underfillRows = rows.filter(isRotationUnderfillRow);
+  const routeKnownRows = underfillRows.filter((row) => !isUnderfillRouteUnknown(row));
+  const costAwareRows = underfillRows.filter(isCostAwareUnderfillRow);
+  const twoPlusKolRows = underfillRows.filter(isTwoPlusKolRow);
+  const routeKnownTwoPlusRows = routeKnownRows.filter(isTwoPlusKolRow);
+  const routeKnownCostAwareRows = routeKnownRows.filter(isCostAwareUnderfillRow);
+  const reviewRows = selectRouteKnown2KolCostAwareUnderfillRows(rows);
+  const primaryRouteKnownTwoPlusRows = routeKnownTwoPlusRows.filter(isPrimaryUnderfillCandidateRow);
+  const costAwareParentIds = new Set(
+    costAwareRows
+      .map(rowParentPositionId)
+      .filter(Boolean)
+  );
+  const primaryRouteKnownTwoPlusWithoutCostAwareCloneRows = primaryRouteKnownTwoPlusRows.filter((row) => {
+    const positionId = rowPositionId(row);
+    return positionId && !costAwareParentIds.has(positionId);
+  });
+  const blockerReasons = countByLabel(
+    underfillRows.flatMap((row) => {
+      const reasons = reviewCohortBlockersForRow(row);
+      const positionId = rowPositionId(row);
+      if (
+        positionId &&
+        isPrimaryUnderfillCandidateRow(row) &&
+        !isUnderfillRouteUnknown(row) &&
+        isTwoPlusKolRow(row) &&
+        !costAwareParentIds.has(positionId)
+      ) {
+        reasons.push('cost_aware_clone_not_recorded');
+      }
+      return reasons;
+    }),
+    'reason'
+  ) as Array<{ reason: string; count: number }>;
+  return {
+    cohort,
+    underfillRows: underfillRows.length,
+    routeKnownRows: routeKnownRows.length,
+    costAwareRows: costAwareRows.length,
+    twoPlusKolRows: twoPlusKolRows.length,
+    routeKnownTwoPlusRows: routeKnownTwoPlusRows.length,
+    routeKnownCostAwareRows: routeKnownCostAwareRows.length,
+    reviewRows: reviewRows.length,
+    missingRouteProofRows: underfillRows.length - routeKnownRows.length,
+    missingCandidateIdRows: underfillRows.filter((row) => !rowCandidateId(row)).length,
+    missingParticipantTimestampRows: underfillRows.filter((row) =>
+      !rowParticipants(row).some((item) => item.timestampMs != null)
+    ).length,
+    primaryRouteKnownTwoPlusRows: primaryRouteKnownTwoPlusRows.length,
+    primaryRouteKnownTwoPlusWithoutCostAwareCloneRows: primaryRouteKnownTwoPlusWithoutCostAwareCloneRows.length,
+    blockerReasons,
+  };
+}
+
+function maxLosingStreak(values: number[]): number {
+  let current = 0;
+  let max = 0;
+  for (const value of values) {
+    if (value <= 0) {
+      current += 1;
+      max = Math.max(max, current);
+    } else {
+      current = 0;
+    }
+  }
+  return max;
+}
+
+function buildCompoundProfile(
+  cohort: string,
+  rows: JsonRow[],
+  assumedAtaRentSol: number,
+  assumedNetworkFeeSol: number
+): RotationCompoundProfile {
+  const walletDragSol = assumedAtaRentSol + assumedNetworkFeeSol;
+  const ordered = [...rows].sort((a, b) =>
+    (timeMs(a.closedAt) || timeMs(a.exitTimeSec) || 0) -
+    (timeMs(b.closedAt) || timeMs(b.exitTimeSec) || 0)
+  );
+  const refundAdjustedValues = ordered.map((row) =>
+    (num(row.netSolTokenOnly) ?? numberOrZero(row.netSol)) - assumedNetworkFeeSol
+  );
+  const walletDragValues = ordered.map((row) =>
+    (num(row.netSolTokenOnly) ?? numberOrZero(row.netSol)) - walletDragSol
+  );
+  const winnerRows = ordered.filter((row) => str(row.exitReason) === 'winner_trailing_t1');
+  const nonWinnerRows = ordered.filter((row) => str(row.exitReason) !== 'winner_trailing_t1');
+  const refundAdjustedFor = (scoped: JsonRow[]) => scoped
+    .map((row) => (num(row.netSolTokenOnly) ?? numberOrZero(row.netSol)) - assumedNetworkFeeSol)
+    .reduce((sum, value) => sum + value, 0);
+  const mfeValues = ordered.map(rowMfePct).filter((value): value is number => value != null);
+  const holdSecValues = ordered.map((row) => num(row.holdSec)).filter((value): value is number => value != null);
+  return {
+    cohort,
+    rows: ordered.length,
+    refundAdjustedNetSol: refundAdjustedValues.reduce((sum, value) => sum + value, 0),
+    walletDragStressSol: walletDragValues.reduce((sum, value) => sum + value, 0),
+    postCostPositiveRate: ratio(refundAdjustedValues.filter((value) => value > 0).length, ordered.length),
+    t1Rate: ratio(ordered.filter(rowHasT1).length, ordered.length),
+    maxLosingStreak: maxLosingStreak(refundAdjustedValues),
+    winnerRows: winnerRows.length,
+    winnerRefundAdjustedNetSol: refundAdjustedFor(winnerRows),
+    nonWinnerRows: nonWinnerRows.length,
+    nonWinnerRefundAdjustedNetSol: refundAdjustedFor(nonWinnerRows),
+    medianHoldSec: percentile(holdSecValues, 0.5),
+    medianMfePct: percentile(mfeValues, 0.5),
+  };
+}
+
+function buildCompoundProfiles(
+  rows: JsonRow[],
+  assumedAtaRentSol: number,
+  assumedNetworkFeeSol: number
+): RotationCompoundProfile[] {
+  const underfillRows = rows.filter(isRotationUnderfillRow);
+  const routeKnown2KolCostAwareRows = selectRouteKnown2KolCostAwareUnderfillRows(rows);
+  return [
+    buildCompoundProfile('underfill_all', underfillRows, assumedAtaRentSol, assumedNetworkFeeSol),
+    buildCompoundProfile('underfill_cost_aware_all', underfillRows.filter(isCostAwareUnderfillRow), assumedAtaRentSol, assumedNetworkFeeSol),
+    buildCompoundProfile('underfill_2plus_kol', underfillRows.filter(isTwoPlusKolRow), assumedAtaRentSol, assumedNetworkFeeSol),
+    buildCompoundProfile('route_known_2kol_cost_aware', routeKnown2KolCostAwareRows, assumedAtaRentSol, assumedNetworkFeeSol),
+  ];
+}
+
+function buildLiveEquivalenceDrilldownStats(
+  liveEquivalenceRows: JsonRow[],
+  paperRows: JsonRow[],
+  assumedNetworkFeeSol: number,
+  reviewCandidateIds: Set<string> = new Set()
+): LiveEquivalenceDrilldownStats[] {
+  const paperByCandidate = new Map<string, JsonRow[]>();
+  for (const row of paperRows) {
+    const candidateId = rowCandidateId(row);
+    if (!candidateId) continue;
+    paperByCandidate.set(candidateId, [...(paperByCandidate.get(candidateId) ?? []), row]);
+  }
+  const buckets = new Map<string, JsonRow[]>();
+  for (const row of liveEquivalenceRows.filter(isRotationLiveEquivalenceRow)) {
+    const reason = rowLiveWouldEnter(row) ? 'live_allowed' : rowLiveBlockReason(row);
+    const bucket = `${rowDecisionStage(row)}:${reason || '(none)'}`;
+    buckets.set(bucket, [...(buckets.get(bucket) ?? []), row]);
+  }
+  return [...buckets.entries()]
+    .map(([bucket, scoped]) => {
+      const uniqueRows = (rows: JsonRow[]) => {
+        const seen = new Set<string>();
+        return rows.filter((row) => {
+          const key = rowPaperDedupeKey(row);
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      };
+      const linkedPaper = uniqueRows(scoped.flatMap((row) => paperByCandidate.get(rowCandidateId(row)) ?? []));
+      const refundAdjustedValues = linkedPaper.map((row) =>
+        (num(row.netSolTokenOnly) ?? numberOrZero(row.netSol)) - assumedNetworkFeeSol
+      );
+      const blockedPaper = uniqueRows(scoped.filter((row) => !rowLiveWouldEnter(row)).flatMap((row) =>
+        paperByCandidate.get(rowCandidateId(row)) ?? []
+      ));
+      const candidateRows = scoped.filter((row) => rowCandidateId(row));
+      const unlinkedRows = candidateRows.filter((row) =>
+        (paperByCandidate.get(rowCandidateId(row)) ?? []).length === 0
+      );
+      return {
+        bucket,
+        rows: scoped.length,
+        candidateIdRows: candidateRows.length,
+        missingCandidateIdRows: scoped.length - candidateRows.length,
+        unlinkedRows: unlinkedRows.length,
+        reviewCohortLinkedRows: candidateRows.filter((row) => reviewCandidateIds.has(rowCandidateId(row))).length,
+        liveWouldEnterRows: scoped.filter(rowLiveWouldEnter).length,
+        blockedRows: scoped.filter((row) => !rowLiveWouldEnter(row)).length,
+        paperCloses: linkedPaper.length,
+        paperWins: refundAdjustedValues.filter((value) => value > 0).length,
+        paperRefundAdjustedNetSol: refundAdjustedValues.reduce((sum, value) => sum + value, 0),
+        blockedPaperWinnerRows: blockedPaper.filter((row) =>
+          (num(row.netSolTokenOnly) ?? numberOrZero(row.netSol)) - assumedNetworkFeeSol > 0
+        ).length,
+        medianPaperMfePct: percentile(linkedPaper.map(rowMfePct).filter((item): item is number => item != null), 0.5),
+      };
+    })
+    .sort((a, b) => b.rows - a.rows || b.blockedPaperWinnerRows - a.blockedPaperWinnerRows || a.bucket.localeCompare(b.bucket));
+}
+
+function buildReviewCohortEvidenceStats(
+  reviewRows: JsonRow[],
+  liveEquivalenceRows: JsonRow[],
+  markoutRows: JsonRow[],
+  horizonsSec: number[],
+  roundTripCostPct: number,
+  assumedNetworkFeeSol: number
+): ReviewCohortEvidenceStats {
+  const cohort = 'route_known_2kol_cost_aware';
+  const reviewCandidateIds = new Set(reviewRows.map(rowCandidateId).filter(Boolean));
+  const reviewLiveEquivalenceRows = liveEquivalenceRows.filter((row) =>
+    isMicroLiveReviewEquivalenceRow(row, reviewCandidateIds)
+  );
+  const linkedLiveRows = reviewLiveEquivalenceRows.filter((row) => {
+    const candidateId = rowCandidateId(row);
+    return candidateId && reviewCandidateIds.has(candidateId);
+  });
+  const candidateIdLiveRows = reviewLiveEquivalenceRows.filter((row) => rowCandidateId(row));
+  const refundAdjustedValues = reviewRows.map((row) =>
+    (num(row.netSolTokenOnly) ?? numberOrZero(row.netSol)) - assumedNetworkFeeSol
+  );
+  const coverageRows = buildRotationReadinessHorizonCoverage(reviewRows, markoutRows, horizonsSec, roundTripCostPct);
+  const primaryPostCostRows = EVIDENCE_PRIMARY_HORIZONS_SEC
+    .filter((horizonSec) => horizonsSec.includes(horizonSec))
+    .map((horizonSec) => ({
+      horizonSec,
+      medianPostCostDeltaPct: coverageRows.find((row) => row.horizonSec === horizonSec)?.medianPostCostDeltaPct ?? null,
+    }));
+  return {
+    cohort,
+    closes: reviewRows.length,
+    candidateIdRows: reviewRows.filter((row) => rowCandidateId(row)).length,
+    liveEquivalenceRows: reviewLiveEquivalenceRows.length,
+    linkedLiveEquivalenceRows: linkedLiveRows.length,
+    missingCandidateIdLiveRows: reviewLiveEquivalenceRows.length - candidateIdLiveRows.length,
+    unlinkedLiveEquivalenceRows: candidateIdLiveRows.length - linkedLiveRows.length,
+    routeProofRows: reviewRows.filter((row) => routeTruthEvidenceSources(row).length > 0).length,
+    timestampedSecondKolRows: reviewRows.filter((row) => secondKolDelaySec(row) != null).length,
+    refundAdjustedNetSol: reviewRows.length > 0 ? refundAdjustedValues.reduce((sum, value) => sum + value, 0) : null,
+    postCostPositiveRate: ratio(refundAdjustedValues.filter((value) => value > 0).length, reviewRows.length),
+    t1Rate: ratio(reviewRows.filter(rowHasT1).length, reviewRows.length),
+    minOkCoverage: minRequiredOkCoverage(coverageRows),
+    primaryHorizonPostCost: primaryPostCostRows,
+    routeProofSources: countByLabel(reviewRows.flatMap(routeTruthEvidenceSources), 'source') as Array<{ source: string; count: number }>,
+    kolTimingBuckets: countByLabel(reviewRows.map(kolTimingBucket), 'bucket') as Array<{ bucket: string; count: number }>,
+    liveBlockReasons: countByLabel(
+      reviewLiveEquivalenceRows.map((row) => rowLiveWouldEnter(row) ? 'live_allowed' : rowLiveBlockReason(row)),
+      'reason'
+    ) as Array<{ reason: string; count: number }>,
+  };
+}
+
+function selectPaperExitProxyCohorts(rows: JsonRow[]): Array<{ cohort: string; rows: JsonRow[] }> {
+  const routeKnownCostAwareRows = rows
+    .filter(isRotationUnderfillRow)
+    .filter(isRouteKnownCostAwareUnderfillRow);
+  const twoKolRows = routeKnownCostAwareRows.filter(isTwoPlusKolRow);
+  return [
+    { cohort: '1kol_route_known_cost_aware', rows: routeKnownCostAwareRows.filter(isSingleKolRow) },
+    { cohort: '2kol_route_known_cost_aware', rows: twoKolRows },
+    {
+      cohort: '2kol_route_known_cost_aware_secondKOL<=15s',
+      rows: twoKolRows.filter((row) => {
+        const delay = secondKolDelaySec(row);
+        return delay != null && delay <= 15;
+      }),
+    },
+    {
+      cohort: '2kol_route_known_cost_aware_secondKOL<=30s',
+      rows: twoKolRows.filter((row) => {
+        const delay = secondKolDelaySec(row);
+        return delay != null && delay <= 30;
+      }),
+    },
+    {
+      cohort: '2kol_route_known_cost_aware_secondKOL_late',
+      rows: twoKolRows.filter((row) => {
+        const delay = secondKolDelaySec(row);
+        return delay != null && delay > 30;
+      }),
+    },
+  ];
+}
+
+function buyMarkoutsByPosition(rows: JsonRow[]): Map<string, JsonRow[]> {
+  const buckets = new Map<string, JsonRow[]>();
+  for (const row of rows.filter((item) => str(item.anchorType) === 'buy')) {
+    const positionId = rowPositionId(row);
+    if (!positionId) continue;
+    buckets.set(positionId, [...(buckets.get(positionId) ?? []), row]);
+  }
+  return buckets;
+}
+
+function nearestAvailableHorizon(horizonsSec: number[], targetSec: number): number | null {
+  const lower = horizonsSec.filter((item) => item <= targetSec).sort((a, b) => b - a)[0];
+  if (lower != null) return lower;
+  return horizonsSec.filter((item) => item > targetSec).sort((a, b) => a - b)[0] ?? null;
+}
+
+function postCostDeltaAt(row: JsonRow, horizonSec: number, markoutsByPosition: Map<string, JsonRow[]>, roundTripCostPct: number): number | null {
+  const markout = (markoutsByPosition.get(rowPositionId(row)) ?? [])
+    .find((item) => rowHorizon(item) === horizonSec && isOk(item));
+  const delta = markout ? rowDelta(markout) : null;
+  return delta == null ? null : delta - roundTripCostPct;
+}
+
+function buildCurrentCloseExitProxy(
+  cohort: string,
+  rows: JsonRow[],
+  assumedNetworkFeeSol: number
+): PaperExitProxyStats {
+  const refundAdjustedValues = rows.map((row) =>
+    (num(row.netSolTokenOnly) ?? numberOrZero(row.netSol)) - assumedNetworkFeeSol
+  );
+  const holdSecValues = rows.map((row) => num(row.holdSec)).filter((item): item is number => item != null);
+  return {
+    cohort,
+    exitProfile: 'current_close',
+    rows: rows.length,
+    observedRows: rows.length,
+    proxyHorizonSec: null,
+    targetPct: null,
+    targetHitRows: null,
+    positiveRows: refundAdjustedValues.filter((value) => value > 0).length,
+    postCostPositiveRate: ratio(refundAdjustedValues.filter((value) => value > 0).length, rows.length),
+    medianPostCostDeltaPct: null,
+    p25PostCostDeltaPct: null,
+    refundAdjustedNetSol: refundAdjustedValues.reduce((sum, value) => sum + value, 0),
+    maxLosingStreak: maxLosingStreak(refundAdjustedValues),
+    medianHoldSec: percentile(holdSecValues, 0.5),
+  };
+}
+
+function buildMarkoutExitProxy(
+  cohort: string,
+  rows: JsonRow[],
+  exitProfile: string,
+  proxyHorizonSec: number | null,
+  targetPct: number | null,
+  markoutsByPosition: Map<string, JsonRow[]>,
+  roundTripCostPct: number
+): PaperExitProxyStats {
+  const deltas = rows
+    .map((row) => {
+      if (exitProfile === 'cost_aware_t1_primary_proxy') {
+        const primary = EVIDENCE_PRIMARY_HORIZONS_SEC
+          .map((horizonSec) => postCostDeltaAt(row, horizonSec, markoutsByPosition, roundTripCostPct))
+          .filter((item): item is number => item != null);
+        return primary.length > 0 ? Math.max(...primary) : null;
+      }
+      return proxyHorizonSec == null
+        ? null
+        : postCostDeltaAt(row, proxyHorizonSec, markoutsByPosition, roundTripCostPct);
+    })
+    .filter((item): item is number => item != null);
+  return {
+    cohort,
+    exitProfile,
+    rows: rows.length,
+    observedRows: deltas.length,
+    proxyHorizonSec,
+    targetPct,
+    targetHitRows: targetPct == null ? null : deltas.filter((value) => value >= targetPct).length,
+    positiveRows: deltas.filter((value) => value > 0).length,
+    postCostPositiveRate: ratio(deltas.filter((value) => value > 0).length, deltas.length),
+    medianPostCostDeltaPct: percentile(deltas, 0.5),
+    p25PostCostDeltaPct: percentile(deltas, 0.25),
+    refundAdjustedNetSol: null,
+    maxLosingStreak: null,
+    medianHoldSec: null,
+  };
+}
+
+function buildPaperExitProxyStats(
+  rows: JsonRow[],
+  markoutRows: JsonRow[],
+  horizonsSec: number[],
+  roundTripCostPct: number,
+  assumedNetworkFeeSol: number
+): PaperExitProxyStats[] {
+  const markoutsByPosition = buyMarkoutsByPosition(markoutRows);
+  const cap45Horizon = nearestAvailableHorizon(horizonsSec, 45);
+  return selectPaperExitProxyCohorts(rows).flatMap(({ cohort, rows: cohortRows }) => [
+    buildCurrentCloseExitProxy(cohort, cohortRows, assumedNetworkFeeSol),
+    buildMarkoutExitProxy(cohort, cohortRows, 'cost_aware_t1_primary_proxy', null, 0.12, markoutsByPosition, roundTripCostPct),
+    buildMarkoutExitProxy(cohort, cohortRows, 'no_tail_quick_close_t15_proxy', 15, 0, markoutsByPosition, roundTripCostPct),
+    buildMarkoutExitProxy(cohort, cohortRows, 'cap_45s_nearest_proxy', cap45Horizon, 0, markoutsByPosition, roundTripCostPct),
+  ]);
+}
+
+function buildRotationCompoundFitnessGate(profiles: RotationCompoundProfile[]): RotationCompoundFitnessGate {
+  const cohort = 'route_known_2kol_cost_aware';
+  const profile = profiles.find((row) => row.cohort === cohort) ?? null;
+  const reasons: string[] = [];
+  if (!profile || profile.rows === 0) {
+    return {
+      cohort,
+      verdict: 'COLLECT',
+      score: 0,
+      reasons: ['route-known 2+KOL cost-aware compound cohort missing'],
+      closes: 0,
+      minReviewCloses: ROTATION_COMPOUND_REVIEW_MIN_CLOSES,
+      minDecisionCloses: ROTATION_COMPOUND_DECISION_MIN_CLOSES,
+      refundAdjustedNetSol: null,
+      postCostPositiveRate: null,
+      t1Rate: null,
+      maxLosingStreak: null,
+      winnerCoversBleed: null,
+    };
+  }
+
+  const winnerCoversBleed = profile.winnerRefundAdjustedNetSol + profile.nonWinnerRefundAdjustedNetSol > 0 &&
+    profile.winnerRefundAdjustedNetSol > Math.abs(Math.min(0, profile.nonWinnerRefundAdjustedNetSol));
+  let score = 0;
+  if (profile.rows >= ROTATION_COMPOUND_REVIEW_MIN_CLOSES) score += 20;
+  if (profile.rows >= ROTATION_COMPOUND_DECISION_MIN_CLOSES) score += 20;
+  if (profile.refundAdjustedNetSol > 0) score += 20;
+  if ((profile.postCostPositiveRate ?? 0) >= ROTATION_PAPER_COMPOUND_MIN_POST_COST_POSITIVE_RATE) score += 15;
+  if (profile.maxLosingStreak <= ROTATION_COMPOUND_MAX_LOSING_STREAK) score += 10;
+  if (winnerCoversBleed) score += 15;
+
+  let verdict: CompoundFitnessVerdict = 'PASS';
+  if (profile.rows < ROTATION_COMPOUND_REVIEW_MIN_CLOSES) {
+    verdict = 'COLLECT';
+    reasons.push(`sample ${profile.rows}/${ROTATION_COMPOUND_REVIEW_MIN_CLOSES}`);
+  } else if (profile.rows < ROTATION_COMPOUND_DECISION_MIN_CLOSES) {
+    verdict = 'WATCH';
+    reasons.push(`review sample ${profile.rows}/${ROTATION_COMPOUND_DECISION_MIN_CLOSES}`);
+  }
+  if (profile.rows >= ROTATION_COMPOUND_DECISION_MIN_CLOSES) {
+    if (profile.refundAdjustedNetSol <= 0) {
+      verdict = 'REJECT';
+      reasons.push(`refund-adjusted net ${formatSol(profile.refundAdjustedNetSol)} <= 0`);
+    }
+    if ((profile.postCostPositiveRate ?? 0) < ROTATION_PAPER_COMPOUND_MIN_POST_COST_POSITIVE_RATE) {
+      verdict = 'REJECT';
+      reasons.push(`post-cost positive ${formatPct(profile.postCostPositiveRate)} < ${formatPct(ROTATION_PAPER_COMPOUND_MIN_POST_COST_POSITIVE_RATE)}`);
+    }
+    if (profile.maxLosingStreak > ROTATION_COMPOUND_MAX_LOSING_STREAK) {
+      verdict = 'REJECT';
+      reasons.push(`max losing streak ${profile.maxLosingStreak} > ${ROTATION_COMPOUND_MAX_LOSING_STREAK}`);
+    }
+    if (!winnerCoversBleed) {
+      verdict = 'REJECT';
+      reasons.push('winner net does not cover non-winner bleed');
+    }
+  }
+  if (verdict === 'PASS') reasons.push('compound fitness gate passed for manual review');
+
+  return {
+    cohort,
+    verdict,
+    score,
+    reasons,
+    closes: profile.rows,
+    minReviewCloses: ROTATION_COMPOUND_REVIEW_MIN_CLOSES,
+    minDecisionCloses: ROTATION_COMPOUND_DECISION_MIN_CLOSES,
+    refundAdjustedNetSol: profile.refundAdjustedNetSol,
+    postCostPositiveRate: profile.postCostPositiveRate,
+    t1Rate: profile.t1Rate,
+    maxLosingStreak: profile.maxLosingStreak,
+    winnerCoversBleed,
+  };
+}
+
+function buildReviewCohortDecision(
+  rows: JsonRow[],
+  markoutRows: JsonRow[],
+  horizonsSec: number[],
+  roundTripCostPct: number,
+  assumedNetworkFeeSol: number
+): ReviewCohortDecision {
+  const cohort = 'route_known_2kol_cost_aware';
+  const reviewRows = selectRouteKnown2KolCostAwareUnderfillRows(rows);
+  const profile = buildCompoundProfile(cohort, reviewRows, 0, assumedNetworkFeeSol);
+  const coverageRows = buildRotationReadinessHorizonCoverage(reviewRows, markoutRows, horizonsSec, roundTripCostPct);
+  const primaryHorizonPostCost = EVIDENCE_PRIMARY_HORIZONS_SEC
+    .filter((horizonSec) => horizonsSec.includes(horizonSec))
+    .map((horizonSec) => ({
+      horizonSec,
+      medianPostCostDeltaPct: coverageRows.find((row) => row.horizonSec === horizonSec)?.medianPostCostDeltaPct ?? null,
+    }));
+  const primaryPresent = primaryHorizonPostCost.length === EVIDENCE_PRIMARY_HORIZONS_SEC.length &&
+    primaryHorizonPostCost.every((row) => row.medianPostCostDeltaPct != null);
+  const primaryBothNonPositive = primaryPresent &&
+    primaryHorizonPostCost.every((row) => (row.medianPostCostDeltaPct ?? 0) <= 0);
+  const earlyRejectSignals: string[] = [];
+  if (profile.rows > 0 && profile.refundAdjustedNetSol < 0) {
+    earlyRejectSignals.push(`refund-adjusted net ${formatSol(profile.refundAdjustedNetSol)} < 0`);
+  }
+  if (
+    profile.postCostPositiveRate != null &&
+    profile.postCostPositiveRate < ROTATION_COMPOUND_EARLY_MIN_POST_COST_POSITIVE_RATE
+  ) {
+    earlyRejectSignals.push(
+      `post-cost positive ${formatPct(profile.postCostPositiveRate)} < ` +
+      `${formatPct(ROTATION_COMPOUND_EARLY_MIN_POST_COST_POSITIVE_RATE)}`
+    );
+  }
+  if (profile.maxLosingStreak > ROTATION_COMPOUND_MAX_LOSING_STREAK) {
+    earlyRejectSignals.push(`max losing streak ${profile.maxLosingStreak} > ${ROTATION_COMPOUND_MAX_LOSING_STREAK}`);
+  }
+  if (primaryBothNonPositive) {
+    earlyRejectSignals.push('T+15/T+30 primary post-cost medians are both non-positive');
+  }
+
+  const reasons: string[] = [];
+  let verdict: ReviewCohortDecisionVerdict = 'COLLECT';
+  if (profile.rows === 0) {
+    reasons.push('review cohort missing');
+  } else if (
+    profile.rows >= ROTATION_COMPOUND_DECISION_MIN_CLOSES &&
+    (
+      profile.refundAdjustedNetSol <= 0 ||
+      (profile.postCostPositiveRate ?? 0) < ROTATION_PAPER_COMPOUND_MIN_POST_COST_POSITIVE_RATE ||
+      profile.maxLosingStreak > ROTATION_COMPOUND_MAX_LOSING_STREAK ||
+      primaryBothNonPositive
+    )
+  ) {
+    verdict = 'REJECT';
+    reasons.push(...earlyRejectSignals);
+    if ((profile.postCostPositiveRate ?? 0) < ROTATION_PAPER_COMPOUND_MIN_POST_COST_POSITIVE_RATE) {
+      reasons.push(`decision post-cost positive ${formatPct(profile.postCostPositiveRate)} < ${formatPct(ROTATION_PAPER_COMPOUND_MIN_POST_COST_POSITIVE_RATE)}`);
+    }
+  } else if (profile.rows >= ROTATION_COMPOUND_DECISION_MIN_CLOSES) {
+    verdict = 'PASS';
+    reasons.push('50-close decision sample passed report-only review gate');
+  } else if (
+    profile.rows >= ROTATION_COMPOUND_EARLY_REJECT_MIN_CLOSES &&
+    earlyRejectSignals.length >= 2
+  ) {
+    verdict = 'EARLY_REJECT';
+    reasons.push(...earlyRejectSignals);
+  } else if (profile.rows >= ROTATION_COMPOUND_REVIEW_MIN_CLOSES) {
+    verdict = 'WATCH';
+    reasons.push(`review sample ${profile.rows}/${ROTATION_COMPOUND_DECISION_MIN_CLOSES}`);
+    if (earlyRejectSignals.length > 0) reasons.push(...earlyRejectSignals);
+  } else {
+    reasons.push(`collect sample ${profile.rows}/${ROTATION_COMPOUND_REVIEW_MIN_CLOSES}`);
+    if (earlyRejectSignals.length > 0) reasons.push(...earlyRejectSignals);
+  }
+
+  return {
+    cohort,
+    verdict,
+    closes: profile.rows,
+    minEarlyRejectCloses: ROTATION_COMPOUND_EARLY_REJECT_MIN_CLOSES,
+    minReviewCloses: ROTATION_COMPOUND_REVIEW_MIN_CLOSES,
+    minDecisionCloses: ROTATION_COMPOUND_DECISION_MIN_CLOSES,
+    refundAdjustedNetSol: profile.rows > 0 ? profile.refundAdjustedNetSol : null,
+    postCostPositiveRate: profile.postCostPositiveRate,
+    maxLosingStreak: profile.rows > 0 ? profile.maxLosingStreak : null,
+    primaryHorizonPostCost,
+    earlyRejectSignals,
+    reasons,
+  };
+}
+
+function liveEquivalenceBlockerRows(row: LiveEquivalenceSummary): number {
+  return row.yellowZoneSingleKolRows + row.yellowZoneUnknownKolRows + row.routeUnknownFallbackRows;
+}
+
+function buildMicroLiveReviewPacket(
+  paper: RotationPaperCompoundReadiness,
+  live: RotationLiveReadiness,
+  compound: RotationCompoundFitnessGate,
+  reviewLiveEquivalence: LiveEquivalenceSummary,
+  reviewEvidence: ReviewCohortEvidenceStats
+): MicroLiveReviewPacket {
+  const blockers = liveEquivalenceBlockerRows(reviewLiveEquivalence);
+  const reasons: string[] = [];
+  let verdict: MicroLiveReviewVerdict = 'READY_FOR_MICRO_LIVE_REVIEW';
+  if (paper.verdict === 'COST_REJECT' || live.verdict === 'COST_REJECT' || compound.verdict === 'REJECT') {
+    verdict = 'REJECT';
+    reasons.push('one or more report-only gates rejected the cohort');
+  } else if (paper.verdict !== 'PAPER_READY') {
+    verdict = 'CONTINUE_COLLECT';
+    reasons.push(`paper gate ${paper.verdict}`);
+  } else if (live.verdict !== 'READY_FOR_MICRO_LIVE') {
+    verdict = 'CONTINUE_COLLECT';
+    reasons.push(`micro-live evidence ${live.verdict}`);
+  } else if (compound.verdict !== 'PASS') {
+    verdict = 'CONTINUE_COLLECT';
+    reasons.push(`compound fitness ${compound.verdict}`);
+  } else if (
+    reviewEvidence.candidateIdRows < reviewEvidence.closes ||
+    reviewEvidence.routeProofRows < reviewEvidence.closes ||
+    reviewEvidence.timestampedSecondKolRows < reviewEvidence.closes
+  ) {
+    verdict = 'WAIT_REVIEW_COHORT_METADATA';
+    reasons.push(
+      `metadata incomplete candidateId=${reviewEvidence.candidateIdRows}/${reviewEvidence.closes}, ` +
+      `routeProof=${reviewEvidence.routeProofRows}/${reviewEvidence.closes}, ` +
+      `secondKolTimestamp=${reviewEvidence.timestampedSecondKolRows}/${reviewEvidence.closes}`
+    );
+  } else if (reviewLiveEquivalence.rotationRows === 0) {
+    verdict = 'WAIT_LIVE_EQUIVALENCE_DATA';
+    reasons.push('review-cohort live-equivalence rows missing for review window');
+  } else if (blockers > 0) {
+    verdict = 'WAIT_LIVE_EQUIVALENCE_CLEAR';
+    reasons.push(`live-equivalence blockers ${blockers}`);
+  } else if (reviewEvidence.linkedLiveEquivalenceRows === 0) {
+    verdict = 'WAIT_LIVE_EQUIVALENCE_DATA';
+    reasons.push('review-cohort linked live-equivalence rows missing');
+  } else {
+    reasons.push('manual micro-live review packet ready; report never enables live');
+  }
+  return {
+    verdict,
+    reasons,
+    reviewCohort: paper.cohort,
+    paperVerdict: paper.verdict,
+    liveVerdict: live.verdict,
+    compoundVerdict: compound.verdict,
+    liveEquivalenceRows: reviewLiveEquivalence.rotationRows,
+    liveEquivalenceBlockers: blockers,
+    linkedLiveEquivalenceRows: reviewEvidence.linkedLiveEquivalenceRows,
+    candidateIdRows: reviewEvidence.candidateIdRows,
+    routeProofRows: reviewEvidence.routeProofRows,
+    timestampedSecondKolRows: reviewEvidence.timestampedSecondKolRows,
+    closes: paper.closes,
+    plan: {
+      ticketSol: MICRO_LIVE_REVIEW_TICKET_SOL,
+      maxDailyAttempts: MICRO_LIVE_REVIEW_MAX_DAILY_ATTEMPTS,
+      dailyLossCapSol: MICRO_LIVE_REVIEW_DAILY_LOSS_CAP_SOL,
+      rollbackConditions: [
+        'stop if wallet floor guard blocks or drift halt fires',
+        'stop if any review trade records route-unknown fallback',
+        'stop if daily refund-adjusted live net <= -0.03 SOL',
+        'stop if first 3 linked live closes are refund-adjusted net negative',
+      ],
+    },
+  };
+}
+
 function ratio(numerator: number, denominator: number): number | null {
   return denominator > 0 ? numerator / denominator : null;
 }
@@ -870,7 +2211,7 @@ function selectRouteKnown2KolCostAwareUnderfillRows(rows: JsonRow[]): JsonRow[] 
   return rows.filter((row) =>
     isRotationUnderfillRow(row) &&
     !isUnderfillRouteUnknown(row) &&
-    (rowIndependentKolCount(row) ?? 0) >= 2 &&
+    isTwoPlusKolRow(row) &&
     isCostAwareUnderfillRow(row)
   );
 }
@@ -992,6 +2333,89 @@ function buildRotationLiveReadiness(
     requiredHorizonCoverage: coverageRows,
     primaryHorizonPostCost: primaryPostCostRows,
     evidenceVerdict: evidence?.verdict ?? null,
+  };
+}
+
+function buildRotationPaperCompoundReadiness(
+  cohorts: UnderfillRouteCohortStats[],
+  rows: JsonRow[],
+  markoutRows: JsonRow[],
+  horizonsSec: number[],
+  roundTripCostPct: number
+): RotationPaperCompoundReadiness {
+  const cohortName = 'route_known_2kol_cost_aware';
+  const cohort = cohorts.find((row) => row.cohort === cohortName) ??
+    summarizeUnderfillRouteCohort(cohortName, [], 0);
+  const readinessRows = selectRouteKnown2KolCostAwareUnderfillRows(rows);
+  const coverageRows = buildRotationReadinessHorizonCoverage(readinessRows, markoutRows, horizonsSec, roundTripCostPct);
+  const minOkCoverage = minRequiredOkCoverage(coverageRows);
+  const primaryPostCostRows = EVIDENCE_PRIMARY_HORIZONS_SEC
+    .filter((horizonSec) => horizonsSec.includes(horizonSec))
+    .map((horizonSec) => ({
+      horizonSec,
+      medianPostCostDeltaPct: coverageRows.find((row) => row.horizonSec === horizonSec)?.medianPostCostDeltaPct ?? null,
+    }));
+  const edgeRows = cohort.edgePassRows + cohort.edgeFailRows;
+  const postCostPositiveRate = ratio(cohort.refundAdjustedWinRows, cohort.rows);
+  const edgePassRate = ratio(cohort.edgePassRows, edgeRows);
+  const t1Rate = ratio(cohort.t1Rows, cohort.rows);
+  const reasons: string[] = [];
+  let verdict: RotationPaperCompoundReadinessVerdict = 'PAPER_READY';
+
+  if (cohort.rows === 0) {
+    verdict = 'BLOCKED';
+    reasons.push('live-equivalent route-known 2+KOL cost-aware paper sample missing');
+  } else if (cohort.rows < ROTATION_PAPER_COMPOUND_MIN_CLOSES) {
+    verdict = 'COLLECT';
+    reasons.push(`sample ${cohort.rows}/${ROTATION_PAPER_COMPOUND_MIN_CLOSES}`);
+  } else if (minOkCoverage == null || minOkCoverage < EVIDENCE_MIN_OK_COVERAGE) {
+    verdict = 'DATA_GAP';
+    reasons.push(`cohort markout coverage ${formatPct(minOkCoverage)} < ${formatPct(EVIDENCE_MIN_OK_COVERAGE)}`);
+  } else if (primaryPostCostRows.some((row) => row.medianPostCostDeltaPct == null)) {
+    verdict = 'DATA_GAP';
+    reasons.push('cohort primary post-cost markout missing');
+  } else if (primaryPostCostRows.some((row) => (row.medianPostCostDeltaPct ?? 0) <= 0)) {
+    verdict = 'COST_REJECT';
+    reasons.push('cohort primary post-cost continuation is non-positive');
+  }
+
+  if (cohort.rows > 0 && cohort.refundAdjustedNetSol <= 0) {
+    verdict = 'COST_REJECT';
+    reasons.push(`refund-adjusted net ${formatSol(cohort.refundAdjustedNetSol)} <= 0`);
+  }
+  if (
+    postCostPositiveRate != null &&
+    postCostPositiveRate < ROTATION_PAPER_COMPOUND_MIN_POST_COST_POSITIVE_RATE
+  ) {
+    verdict = 'COST_REJECT';
+    reasons.push(
+      `post-cost positive ${formatPct(postCostPositiveRate)} < ` +
+      `${formatPct(ROTATION_PAPER_COMPOUND_MIN_POST_COST_POSITIVE_RATE)}`
+    );
+  }
+  if (edgePassRate != null && edgePassRate < EVIDENCE_MIN_EDGE_PASS_RATE) {
+    verdict = 'COST_REJECT';
+    reasons.push(`edge pass ${formatPct(edgePassRate)} < ${formatPct(EVIDENCE_MIN_EDGE_PASS_RATE)}`);
+  }
+  if (verdict === 'PAPER_READY') {
+    reasons.push('live-equivalent paper compound gate passed; keep live unchanged until separate review');
+  }
+
+  return {
+    armName: ROTATION_LIVE_READINESS_ARM,
+    verdict,
+    reasons,
+    cohort: cohortName,
+    closes: cohort.rows,
+    minRequiredCloses: ROTATION_PAPER_COMPOUND_MIN_CLOSES,
+    refundAdjustedNetSol: cohort.rows > 0 ? cohort.refundAdjustedNetSol : null,
+    postCostPositiveRate,
+    edgePassRate,
+    t1Rate,
+    medianMfePct: cohort.medianMfePct,
+    minOkCoverage,
+    requiredHorizonCoverage: coverageRows,
+    primaryHorizonPostCost: primaryPostCostRows,
   };
 }
 
@@ -1638,15 +3062,213 @@ function renderUnderfillEntryQualityTable(rows: UnderfillEntryQualityStats[]): s
 function renderUnderfillRouteCohorts(rows: UnderfillRouteCohortStats[]): string {
   if (rows.length === 0) return '_No underfill route cohort rows._';
   return [
-    '| cohort | closes | route known/unknown | 2+ KOL | cost-aware | W/L | token-only SOL | refund-adjusted SOL | postCost>0 | edge pass/fail | T1 hit | med MFE | median hold |',
-    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
+    '| cohort | closes | route known/unknown | 2+ KOL | unknown KOL | cost-aware | W/L | token-only SOL | refund-adjusted SOL | postCost>0 | edge pass/fail | T1 hit | med MFE | median hold |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
     ...rows.map((row) =>
       `| ${row.cohort} | ${row.rows} | ${row.routeKnownRows}/${row.routeUnknownRows} | ` +
-      `${row.independentKol2Rows} | ${row.costAwareRows} | ${row.wins}/${row.losses} | ` +
+      `${row.independentKol2Rows} | ${row.unknownKolRows} | ${row.costAwareRows} | ${row.wins}/${row.losses} | ` +
       `${formatSol(row.netSolTokenOnly)} | ${formatSol(row.refundAdjustedNetSol)} | ` +
       `${row.refundAdjustedWinRows}/${row.rows} | ${row.edgePassRows}/${row.edgeFailRows} | ${row.t1Rows}/${row.rows} | ` +
       `${formatPct(row.medianMfePct)} | ${row.medianHoldSec == null ? 'n/a' : `${row.medianHoldSec.toFixed(0)}s`} |`
     ),
+  ].join('\n');
+}
+
+function renderLiveEquivalenceBucketTable(rows: LiveEquivalenceBucketStats[]): string {
+  if (rows.length === 0) return '_No live-equivalence rows._';
+  return [
+    '| bucket | rows | liveWould | attempted | blocked | 1-KOL | 2+ KOL | unknown KOL |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|',
+    ...rows.map((row) =>
+      `| ${row.bucket} | ${row.rows} | ${row.liveWouldEnterRows} | ${row.liveAttemptedRows} | ` +
+      `${row.blockedRows} | ${row.singleKolRows} | ${row.twoPlusKolRows} | ${row.unknownKolRows} |`
+    ),
+  ].join('\n');
+}
+
+function renderLiveEquivalenceSummary(row: LiveEquivalenceSummary): string {
+  return [
+    `- total rows: ${row.rotationRows}/${row.totalRows}`,
+    `- live would/attempted/blocked: ${row.liveWouldEnterRows}/${row.liveAttemptedRows}/${row.blockedRows}`,
+    `- yellow-zone rows: ${row.yellowZoneRows} · 1-KOL=${row.yellowZoneSingleKolRows} · 2+KOL=${row.yellowZoneTwoPlusKolRows} · unknownKOL=${row.yellowZoneUnknownKolRows}`,
+    `- route-unknown fallback rows: ${row.routeUnknownFallbackRows}`,
+    '',
+    '### By Decision Stage',
+    renderLiveEquivalenceBucketTable(row.byStage),
+    '',
+    '### By Live Block Reason',
+    renderLiveEquivalenceBucketTable(row.byBlockReason),
+  ].join('\n');
+}
+
+function renderRouteUnknownReasons(rows: RouteUnknownReasonStats[]): string {
+  if (rows.length === 0) return '_No route-unknown reason rows._';
+  return [
+    '| reason | rows | W/L | refund-adjusted SOL | T1 hit | med MFE | median hold |',
+    '|---|---:|---:|---:|---:|---:|---:|',
+    ...rows.map((row) =>
+      `| ${row.reason} | ${row.rows} | ${row.wins}/${row.losses} | ` +
+      `${formatSol(row.refundAdjustedNetSol)} | ${row.t1Rows}/${row.rows} | ` +
+      `${formatPct(row.medianMfePct)} | ${row.medianHoldSec == null ? 'n/a' : `${row.medianHoldSec.toFixed(0)}s`} |`
+    ),
+  ].join('\n');
+}
+
+function renderRouteTruthAudit(rows: RouteTruthAuditStats[]): string {
+  if (rows.length === 0) return '_No route-truth audit rows._';
+  return [
+    '| bucket | rows | known/unknown | recovery | W/L | refund-adjusted SOL | med MFE | top reasons/evidence |',
+    '|---|---:|---:|---|---:|---:|---:|---|',
+    ...rows.map((row) =>
+      `| ${row.bucket} | ${row.rows} | ${row.routeKnownRows}/${row.routeUnknownRows} | ${row.recoverability} | ` +
+      `${row.wins}/${row.losses} | ${formatSol(row.refundAdjustedNetSol)} | ${formatPct(row.medianMfePct)} | ` +
+      `${row.topReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'} |`
+    ),
+  ].join('\n');
+}
+
+function renderKolTimingStats(rows: KolTimingStats[]): string {
+  if (rows.length === 0) return '_No KOL timing rows._';
+  return [
+    '| bucket | rows | route known | cost-aware | refund-adjusted SOL | T1 hit | median second KOL delay |',
+    '|---|---:|---:|---:|---:|---:|---:|',
+    ...rows.map((row) =>
+      `| ${row.bucket} | ${row.rows} | ${row.routeKnownRows} | ${row.costAwareRows} | ` +
+      `${formatSol(row.refundAdjustedNetSol)} | ${row.t1Rows}/${row.rows} | ` +
+      `${row.medianSecondKolDelaySec == null ? 'n/a' : `${row.medianSecondKolDelaySec.toFixed(1)}s`} |`
+    ),
+  ].join('\n');
+}
+
+function renderPaperCohortValidity(rows: PaperCohortValidityStats[]): string {
+  if (rows.length === 0) return '_No paper cohort validity rows._';
+  return [
+    '| cohort | rows | candidateId | independent KOL | participants | timestamped participants | route proof | cost-aware | unknown 2+KOL timing |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|---:|',
+    ...rows.map((row) =>
+      `| ${row.cohort} | ${row.rows} | ${row.candidateIdRows}/${row.rows} (${formatPct(row.candidateIdCoverage)}) | ` +
+      `${row.independentKolRows}/${row.rows} | ${row.participantRows}/${row.rows} | ` +
+      `${row.participantTimestampRows}/${row.rows} | ${row.routeProofRows}/${row.rows} | ` +
+      `${row.costAwareRows}/${row.rows} | ${row.unknownTimingRows} |`
+    ),
+  ].join('\n');
+}
+
+function renderReviewCohortGenerationAudit(row: ReviewCohortGenerationAuditStats): string {
+  return [
+    '| cohort | underfill | route-known | cost-aware | 2+ KOL | route-known 2+ | route-known cost-aware | review closes | missing route proof | missing candidateId | missing timestamps | primary 2+ without cost-aware clone |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
+    `| ${row.cohort} | ${row.underfillRows} | ${row.routeKnownRows} | ${row.costAwareRows} | ` +
+      `${row.twoPlusKolRows} | ${row.routeKnownTwoPlusRows} | ${row.routeKnownCostAwareRows} | ` +
+      `${row.reviewRows} | ${row.missingRouteProofRows} | ${row.missingCandidateIdRows} | ` +
+      `${row.missingParticipantTimestampRows} | ` +
+      `${row.primaryRouteKnownTwoPlusWithoutCostAwareCloneRows}/${row.primaryRouteKnownTwoPlusRows} |`,
+    '',
+    `- blockers: ${row.blockerReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'}`,
+  ].join('\n');
+}
+
+function renderLiveEquivalenceDrilldown(rows: LiveEquivalenceDrilldownStats[]): string {
+  if (rows.length === 0) return '_No live-equivalence drilldown rows._';
+  return [
+    '| stage/reason | rows | candidateId/missing | unlinked | review linked | liveWould | blocked | linked paper closes | paper W/L | paper refund-adjusted | blocked paper winners | med paper MFE |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
+    ...rows.map((row) =>
+      `| ${row.bucket} | ${row.rows} | ${row.candidateIdRows}/${row.missingCandidateIdRows} | ` +
+      `${row.unlinkedRows} | ${row.reviewCohortLinkedRows} | ${row.liveWouldEnterRows} | ${row.blockedRows} | ` +
+      `${row.paperCloses} | ${row.paperWins}/${Math.max(0, row.paperCloses - row.paperWins)} | ` +
+      `${formatSol(row.paperRefundAdjustedNetSol)} | ${row.blockedPaperWinnerRows} | ${formatPct(row.medianPaperMfePct)} |`
+    ),
+  ].join('\n');
+}
+
+function renderReviewCohortEvidence(row: ReviewCohortEvidenceStats): string {
+  return [
+    '| cohort | closes | candidateId | live-eq linked/rows | live-eq missing/unlinked | route proof | timestamped 2nd KOL | refund-adjusted | postCost>0 | T1 rate | min coverage | primary postCost |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|',
+    `| ${row.cohort} | ${row.closes} | ${row.candidateIdRows}/${row.closes} | ` +
+      `${row.linkedLiveEquivalenceRows}/${row.liveEquivalenceRows} | ` +
+      `${row.missingCandidateIdLiveRows}/${row.unlinkedLiveEquivalenceRows} | ` +
+      `${row.routeProofRows}/${row.closes} | ${row.timestampedSecondKolRows}/${row.closes} | ` +
+      `${formatSol(row.refundAdjustedNetSol)} | ${formatPct(row.postCostPositiveRate)} | ` +
+      `${formatPct(row.t1Rate)} | ${formatPct(row.minOkCoverage)} | ` +
+      `${row.primaryHorizonPostCost.map((item) => `T+${item.horizonSec}s ${formatPct(item.medianPostCostDeltaPct)}`).join(', ') || 'n/a'} |`,
+    '',
+    `- route proof: ${row.routeProofSources.map((item) => `${item.source}:${item.count}`).join(', ') || 'n/a'}`,
+    `- KOL timing: ${row.kolTimingBuckets.map((item) => `${item.bucket}:${item.count}`).join(', ') || 'n/a'}`,
+    `- live block reasons: ${row.liveBlockReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'}`,
+  ].join('\n');
+}
+
+function renderPaperExitProxies(rows: PaperExitProxyStats[]): string {
+  if (rows.length === 0) return '_No paper exit proxy rows._';
+  return [
+    '| cohort | exit profile | rows | observed | target hit | postCost>0 | med postCost | p25 postCost | refund-adjusted SOL | max loss streak | median hold |',
+    '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
+    ...rows.map((row) =>
+      `| ${row.cohort} | ${row.exitProfile}${row.proxyHorizonSec == null ? '' : ` T+${row.proxyHorizonSec}s`} | ` +
+      `${row.rows} | ${row.observedRows} | ` +
+      `${row.targetHitRows == null ? 'n/a' : `${row.targetHitRows}/${row.observedRows} @ ${formatPct(row.targetPct)}`} | ` +
+      `${row.positiveRows}/${row.observedRows} (${formatPct(row.postCostPositiveRate)}) | ` +
+      `${formatPct(row.medianPostCostDeltaPct)} | ${formatPct(row.p25PostCostDeltaPct)} | ` +
+      `${formatSol(row.refundAdjustedNetSol)} | ${row.maxLosingStreak ?? 'n/a'} | ` +
+      `${row.medianHoldSec == null ? 'n/a' : `${row.medianHoldSec.toFixed(0)}s`} |`
+    ),
+  ].join('\n');
+}
+
+function renderCompoundProfiles(rows: RotationCompoundProfile[]): string {
+  if (rows.length === 0) return '_No compound profile rows._';
+  return [
+    '| cohort | closes | refund-adjusted SOL | wallet-drag stress SOL | postCost>0 | T1 rate | max loss streak | winner net | non-winner net | med MFE | median hold |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
+    ...rows.map((row) =>
+      `| ${row.cohort} | ${row.rows} | ${formatSol(row.refundAdjustedNetSol)} | ` +
+      `${formatSol(row.walletDragStressSol)} | ${formatPct(row.postCostPositiveRate)} | ${formatPct(row.t1Rate)} | ` +
+      `${row.maxLosingStreak} | ${row.winnerRows}:${formatSol(row.winnerRefundAdjustedNetSol)} | ` +
+      `${row.nonWinnerRows}:${formatSol(row.nonWinnerRefundAdjustedNetSol)} | ${formatPct(row.medianMfePct)} | ` +
+      `${row.medianHoldSec == null ? 'n/a' : `${row.medianHoldSec.toFixed(0)}s`} |`
+    ),
+  ].join('\n');
+}
+
+function renderCompoundFitnessGate(row: RotationCompoundFitnessGate): string {
+  return [
+    '| cohort | verdict | score | closes | refund-adjusted | postCost>0 | T1 rate | max loss streak | winner covers bleed | reasons |',
+    '|---|---|---:|---:|---:|---:|---:|---:|---|---|',
+    `| ${row.cohort} | ${row.verdict} | ${row.score} | ${row.closes}/${row.minDecisionCloses} | ` +
+      `${formatSol(row.refundAdjustedNetSol)} | ${formatPct(row.postCostPositiveRate)} | ${formatPct(row.t1Rate)} | ` +
+      `${row.maxLosingStreak ?? 'n/a'} | ${row.winnerCoversBleed == null ? 'n/a' : row.winnerCoversBleed ? 'yes' : 'no'} | ` +
+      `${row.reasons.join('; ') || 'n/a'} |`,
+  ].join('\n');
+}
+
+function renderReviewCohortDecision(row: ReviewCohortDecision): string {
+  return [
+    '| verdict | cohort | closes | refund-adjusted | postCost>0 | max loss streak | primary postCost | signals | reasons |',
+    '|---|---|---:|---:|---:|---:|---|---|---|',
+    `| ${row.verdict} | ${row.cohort} | ${row.closes}/${row.minDecisionCloses} | ` +
+      `${formatSol(row.refundAdjustedNetSol)} | ${formatPct(row.postCostPositiveRate)} | ` +
+      `${row.maxLosingStreak ?? 'n/a'} | ` +
+      `${row.primaryHorizonPostCost.map((item) => `T+${item.horizonSec}s ${formatPct(item.medianPostCostDeltaPct)}`).join(', ') || 'n/a'} | ` +
+      `${row.earlyRejectSignals.join('; ') || 'none'} | ${row.reasons.join('; ') || 'n/a'} |`,
+    '',
+    `- thresholds: earlyReject>=${row.minEarlyRejectCloses} closes, WATCH>=${row.minReviewCloses}, PASS/REJECT>=${row.minDecisionCloses}`,
+  ].join('\n');
+}
+
+function renderMicroLiveReviewPacket(row: MicroLiveReviewPacket): string {
+  return [
+    '| verdict | cohort | closes | paper | micro-live | compound | metadata | live-eq linked/rows | live-eq blockers | reasons |',
+    '|---|---|---:|---|---|---|---|---:|---:|---|',
+    `| ${row.verdict} | ${row.reviewCohort} | ${row.closes} | ${row.paperVerdict} | ${row.liveVerdict} | ` +
+      `${row.compoundVerdict} | candidateId=${row.candidateIdRows}/${row.closes}, route=${row.routeProofRows}/${row.closes}, ` +
+      `2ndKOLts=${row.timestampedSecondKolRows}/${row.closes} | ` +
+      `${row.linkedLiveEquivalenceRows}/${row.liveEquivalenceRows} | ${row.liveEquivalenceBlockers} | ` +
+      `${row.reasons.join('; ') || 'n/a'} |`,
+    '',
+    `- micro-live plan: ticket=${row.plan.ticketSol.toFixed(3)} SOL, maxDailyAttempts=${row.plan.maxDailyAttempts}, dailyLossCap=${formatSol(-row.plan.dailyLossCapSol)}`,
+    `- rollback: ${row.plan.rollbackConditions.join('; ')}`,
   ].join('\n');
 }
 
@@ -1660,6 +3282,45 @@ function renderRotationLiveReadiness(row: RotationLiveReadiness): string {
       `${formatSol(row.refundAdjustedNetSol)} | ${formatPct(row.postCostPositiveRate)} | ` +
       `${formatPct(row.edgePassRate)} | ${formatPct(row.t1Rate)} | ${formatPct(row.medianMfePct)} | ` +
       `${row.evidenceVerdict ?? 'n/a'} | ${row.reasons.join('; ') || 'n/a'} |`,
+  ].join('\n');
+}
+
+function renderRotationPaperCompoundReadiness(row: RotationPaperCompoundReadiness): string {
+  return [
+    '| arm | verdict | cohort | closes | min markout coverage | primary postCost | refund-adjusted | postCost>0 | edge pass | T1 rate | med MFE | reasons |',
+    '|---|---|---|---:|---:|---|---:|---:|---:|---:|---:|---|',
+    `| ${row.armName} | ${row.verdict} | ${row.cohort} | ${row.closes}/${row.minRequiredCloses} | ` +
+      `${formatPct(row.minOkCoverage)} | ` +
+      `${row.primaryHorizonPostCost.map((item) => `T+${item.horizonSec}s ${formatPct(item.medianPostCostDeltaPct)}`).join(', ') || 'n/a'} | ` +
+      `${formatSol(row.refundAdjustedNetSol)} | ${formatPct(row.postCostPositiveRate)} | ` +
+      `${formatPct(row.edgePassRate)} | ${formatPct(row.t1Rate)} | ${formatPct(row.medianMfePct)} | ` +
+      `${row.reasons.join('; ') || 'n/a'} |`,
+  ].join('\n');
+}
+
+function renderRotationLiveSyncChecklist(report: RotationReport): string {
+  const paperReady = report.rotationPaperCompoundReadiness.verdict === 'PAPER_READY';
+  const liveReady = report.rotationLiveReadiness.verdict === 'READY_FOR_MICRO_LIVE';
+  const packetReady = report.microLiveReviewPacket.verdict === 'READY_FOR_MICRO_LIVE_REVIEW';
+  const nextAction = paperReady && liveReady && packetReady
+    ? 'MANUAL_REVIEW_ONLY'
+    : paperReady && liveReady
+      ? report.microLiveReviewPacket.verdict
+      : paperReady
+      ? 'WAIT_MICRO_LIVE_EVIDENCE'
+      : report.rotationPaperCompoundReadiness.closes === 0
+      ? 'WAIT_ROUTE_KNOWN_2KOL_COST_AWARE'
+      : 'WAIT_PAPER_EVIDENCE';
+  return [
+    '| gate | current | required before live sync |',
+    '|---|---|---|',
+    `| paper compound | ${report.rotationPaperCompoundReadiness.verdict} | PAPER_READY |`,
+    `| micro-live evidence | ${report.rotationLiveReadiness.verdict} | READY_FOR_MICRO_LIVE |`,
+    `| review metadata | candidateId=${report.microLiveReviewPacket.candidateIdRows}/${report.microLiveReviewPacket.closes}, route=${report.microLiveReviewPacket.routeProofRows}/${report.microLiveReviewPacket.closes}, 2ndKOLts=${report.microLiveReviewPacket.timestampedSecondKolRows}/${report.microLiveReviewPacket.closes} | all complete |`,
+    `| review live-equivalence | linked=${report.microLiveReviewPacket.linkedLiveEquivalenceRows}/${report.microLiveReviewPacket.liveEquivalenceRows}, blockers=${report.microLiveReviewPacket.liveEquivalenceBlockers} | linked rows >0 and blockers 0 |`,
+    '| guardrail | live unchanged | ticket/floor/caps/concurrency unchanged |',
+    '| first live sample | not started by report | 30 closes divergence check before any scale-up |',
+    `| next action | ${nextAction} | manual review only; report never enables live |`,
   ].join('\n');
 }
 
@@ -1820,9 +3481,74 @@ function renderReport(report: RotationReport): string {
     '> Report-only. Route-known requires explicit positive route/exit-liquidity evidence; missing evidence is treated as route-unknown.',
     renderUnderfillRouteCohorts(report.underfillRouteCohorts),
     '',
+    '## Underfill KOL Cohorts',
+    '> Report-only. Separates 1-KOL paper edge from 2+ KOL evidence before any live sync review.',
+    renderUnderfillRouteCohorts(report.underfillKolCohorts),
+    '',
+    '## Underfill KOL Timing',
+    '> Report-only. Splits 2+ KOL evidence by second-KOL arrival timing. Unknown timing cannot justify live sync.',
+    renderKolTimingStats(report.underfillKolTiming),
+    '',
+    '## Paper Cohort Validity',
+    '> Report-only. Shows whether paper rows have the IDs, KOL counts, participant timestamps, and route proof needed for live-equivalence review.',
+    renderPaperCohortValidity(report.paperCohortValidity),
+    '',
+    '## Review Cohort Generation Audit',
+    '> Report-only. Separates no opportunity from missing recording/proof before route_known_2kol_cost_aware can be trusted.',
+    renderReviewCohortGenerationAudit(report.reviewCohortGenerationAudit),
+    '',
+    '## Route Unknown Reasons',
+    '> Report-only. Splits route-unknown paper winners from missing/unsafe exit-route evidence. Reasons are non-exclusive; one close can appear in multiple reason rows.',
+    renderRouteUnknownReasons(report.routeUnknownReasons),
+    '',
+    '## Route Truth Audit',
+    '> Report-only. Separates route-known proof from structural no-route, data gaps, and transient infra retry candidates.',
+    renderRouteTruthAudit(report.routeTruthAudit),
+    '',
+    '## Live-Equivalence Gate Review',
+    '> Report-only. Shows why paper candidates were not live-routed; this must stay strict while wallet is near floor.',
+    renderLiveEquivalenceSummary(report.liveEquivalence),
+    '',
+    '## Live-Equivalence Candidate Drilldown',
+    '> Report-only. Joins live-equivalence candidate IDs back to paper closes so blocked paper winners are visible by reason.',
+    renderLiveEquivalenceDrilldown(report.liveEquivalenceDrilldown),
+    '',
+    '## Review Cohort Evidence',
+    '> Report-only. Daily packet for route_known_2kol_cost_aware before any manual micro-live review.',
+    renderReviewCohortEvidence(report.reviewCohortEvidence),
+    '',
+    '## Paper Exit Proxy Comparison',
+    '> Report-only. Compares current close against markout-based exit proxies; proxy rows are not simulated fills.',
+    renderPaperExitProxies(report.paperExitProxies),
+    '',
+    '## Rotation Compound Profile',
+    '> Report-only. Wallet-first read for slow compounding: winner net must pay for non-winner bleed and wallet-drag stress.',
+    renderCompoundProfiles(report.compoundProfiles),
+    '',
+    '## Rotation Compound Fitness Gate',
+    '> Report-only. Slow-compound gate for the route-known 2+KOL cost-aware cohort; this never enables live automatically.',
+    renderCompoundFitnessGate(report.rotationCompoundFitness),
+    '',
+    '## Review Cohort Decision',
+    '> Report-only. Compresses collect/watch/reject/pass for the route-known 2+KOL cost-aware paper cohort; live routing remains unchanged.',
+    renderReviewCohortDecision(report.reviewCohortDecision),
+    '',
+    '## Rotation Paper Compound Readiness',
+    '> Report-only. This is the paper-first gate for slow compounding; live routing remains unchanged.',
+    '> Criteria: sample >=50, route-known, 2+ KOL, cost-aware, refund-adjusted net >0, postCost>0 >=55%, T+15/T+30 post-cost >0, markout coverage >=80%, edge pass >=50%.',
+    renderRotationPaperCompoundReadiness(report.rotationPaperCompoundReadiness),
+    '',
     '## Rotation Live Readiness',
     '> Report-only. This does not enable live; it states whether cost-aware underfill has enough route-known evidence to request micro-live.',
     renderRotationLiveReadiness(report.rotationLiveReadiness),
+    '',
+    '## Rotation Live Sync Checklist',
+    '> Report-only. Live canary logic is unchanged; this checklist only states whether a later manual sync review is justified.',
+    renderRotationLiveSyncChecklist(report),
+    '',
+    '## Micro Live Review Packet',
+    '> Report-only. A READY verdict only means manual review is justified; no live setting is changed by this report.',
+    renderMicroLiveReviewPacket(report.microLiveReviewPacket),
     '',
     '## Live Trades By Arm',
     renderPaperArmTable(report.liveTrades.byArm),
@@ -1872,12 +3598,13 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
   const assumedAtaRentSol = args.assumedAtaRentSol ?? 0.00207408;
   const assumedNetworkFeeSol = args.assumedNetworkFeeSol ?? 0.000105;
   const kolTransferInput = args.kolTransferInput ?? path.resolve(process.cwd(), 'data/research', KOL_TRANSFER_INPUT_FILE);
-  const [tradeMarkouts, missedAlpha, tokenQuality, projectedPaperTrades, projectedLiveTrades, kolTransferRows] = await Promise.all([
+  const [tradeMarkouts, missedAlpha, tokenQuality, projectedPaperTrades, projectedLiveTrades, liveEquivalenceRows, kolTransferRows] = await Promise.all([
     readJsonl(path.join(args.realtimeDir, 'trade-markouts.jsonl')),
     readJsonl(path.join(args.realtimeDir, 'missed-alpha.jsonl')),
     readJsonl(path.join(args.realtimeDir, 'token-quality-observations.jsonl')),
     readJsonl(path.join(args.realtimeDir, paperTradesFileName)),
     readJsonl(path.join(args.realtimeDir, ROTATION_LIVE_TRADES_FILE)),
+    readJsonl(path.join(args.realtimeDir, KOL_LIVE_EQUIVALENCE_FILE)),
     readJsonl(kolTransferInput),
   ]);
   const paperTrades = projectedPaperTrades.length > 0 || paperTradesFileName !== ROTATION_PAPER_TRADES_FILE
@@ -1907,6 +3634,10 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
     const t = timeMs(probe(row).firedAt) || timeMs(row.rejectedAt);
     return Number.isFinite(t) && t >= args.sinceMs && isRotationNoTrade(row);
   });
+  const recentLiveEquivalenceRows = liveEquivalenceRows.filter((row) => {
+    const t = timeMs(row.generatedAt) || timeMs(row.recordedAt) || timeMs(row.createdAt);
+    return Number.isFinite(t) && t >= args.sinceMs;
+  });
   const noTradeProbeRows = recentNoTradeRows.filter((row) => (rowHorizon(row) ?? 0) > 0);
   const armMarkouts = buildArmHorizonStats(rotationRows, args.horizonsSec, args.roundTripCostPct);
   const paperArmStats = buildPaperArmStats(rotationPaperRows, assumedAtaRentSol, assumedNetworkFeeSol);
@@ -1914,6 +3645,56 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
   const winnerEntryDiagnostics = buildWinnerEntryDiagnosticStats(rotationPaperRows);
   const evidenceVerdicts = buildEvidenceVerdicts(paperArmStats, armMarkouts);
   const underfillRouteCohorts = buildUnderfillRouteCohorts(rotationPaperRows, assumedNetworkFeeSol);
+  const liveEquivalence = buildLiveEquivalenceSummary(recentLiveEquivalenceRows);
+  const routeUnknownReasons = buildRouteUnknownReasonStats(rotationPaperRows, assumedNetworkFeeSol);
+  const routeTruthAudit = buildRouteTruthAuditStats(rotationPaperRows, assumedNetworkFeeSol);
+  const underfillKolCohorts = buildUnderfillKolCohorts(rotationPaperRows, assumedNetworkFeeSol);
+  const underfillKolTiming = buildKolTimingStats(rotationPaperRows, assumedNetworkFeeSol);
+  const paperCohortValidity = buildPaperCohortValidityStats(rotationPaperRows);
+  const reviewCohortGenerationAudit = buildReviewCohortGenerationAuditStats(rotationPaperRows);
+  const reviewRows = selectRouteKnown2KolCostAwareUnderfillRows(rotationPaperRows);
+  const reviewCandidateIds = new Set(
+    reviewRows
+      .map(rowCandidateId)
+      .filter(Boolean)
+  );
+  const liveEquivalenceDrilldown = buildLiveEquivalenceDrilldownStats(
+    recentLiveEquivalenceRows,
+    rotationPaperRows,
+    assumedNetworkFeeSol,
+    reviewCandidateIds
+  );
+  const reviewCohortEvidence = buildReviewCohortEvidenceStats(
+    reviewRows,
+    recentLiveEquivalenceRows,
+    rotationRows,
+    args.horizonsSec,
+    args.roundTripCostPct,
+    assumedNetworkFeeSol
+  );
+  const paperExitProxies = buildPaperExitProxyStats(
+    rotationPaperRows,
+    rotationRows,
+    args.horizonsSec,
+    args.roundTripCostPct,
+    assumedNetworkFeeSol
+  );
+  const compoundProfiles = buildCompoundProfiles(rotationPaperRows, assumedAtaRentSol, assumedNetworkFeeSol);
+  const rotationCompoundFitness = buildRotationCompoundFitnessGate(compoundProfiles);
+  const reviewCohortDecision = buildReviewCohortDecision(
+    rotationPaperRows,
+    rotationRows,
+    args.horizonsSec,
+    args.roundTripCostPct,
+    assumedNetworkFeeSol
+  );
+  const rotationPaperCompoundReadiness = buildRotationPaperCompoundReadiness(
+    underfillRouteCohorts,
+    rotationPaperRows,
+    rotationRows,
+    args.horizonsSec,
+    args.roundTripCostPct
+  );
   const rotationLiveReadiness = buildRotationLiveReadiness(
     underfillRouteCohorts,
     rotationPaperRows,
@@ -1921,6 +3702,16 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
     args.horizonsSec,
     args.roundTripCostPct,
     evidenceVerdicts
+  );
+  const reviewLiveEquivalence = buildLiveEquivalenceSummary(
+    recentLiveEquivalenceRows.filter((row) => isMicroLiveReviewEquivalenceRow(row, reviewCandidateIds))
+  );
+  const microLiveReviewPacket = buildMicroLiveReviewPacket(
+    rotationPaperCompoundReadiness,
+    rotationLiveReadiness,
+    rotationCompoundFitness,
+    reviewLiveEquivalence,
+    reviewCohortEvidence
   );
   const coverageLoad: {
     status: KolPosteriorCoverageLoadStatus;
@@ -1973,6 +3764,21 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
       buildUnderfillEntryQualityStats('live', rotationLiveRows),
     ],
     underfillRouteCohorts,
+    liveEquivalence,
+    routeUnknownReasons,
+    routeTruthAudit,
+    underfillKolCohorts,
+    underfillKolTiming,
+    paperCohortValidity,
+    reviewCohortGenerationAudit,
+    liveEquivalenceDrilldown,
+    reviewCohortEvidence,
+    paperExitProxies,
+    compoundProfiles,
+    rotationCompoundFitness,
+    reviewCohortDecision,
+    microLiveReviewPacket,
+    rotationPaperCompoundReadiness,
     rotationLiveReadiness,
     evidenceVerdicts,
     noTrade: {

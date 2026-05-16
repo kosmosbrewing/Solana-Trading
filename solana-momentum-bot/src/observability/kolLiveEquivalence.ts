@@ -20,6 +20,15 @@ export type KolLiveEquivalenceDecisionStage =
   | 'live_gate_not_entered'
   | 'default_paper';
 
+export type KolDecisionAction = 'enter' | 'block' | 'observe';
+
+export type KolPaperRole =
+  | 'mirror'
+  | 'fallback_execution_safety'
+  | 'research_arm'
+  | 'shadow'
+  | 'no_trade_counterfactual';
+
 export interface KolLiveEquivalenceParticipant {
   id: string;
   tier: string;
@@ -42,6 +51,9 @@ export interface KolLiveEquivalenceRow {
   paperWouldEnter: boolean;
   liveWouldEnter: boolean;
   liveAttempted: boolean;
+  decisionId?: string;
+  decisionAction?: KolDecisionAction;
+  paperRole?: KolPaperRole | null;
   decisionStage: KolLiveEquivalenceDecisionStage;
   liveBlockReason: string | null;
   liveBlockFlags: string[];

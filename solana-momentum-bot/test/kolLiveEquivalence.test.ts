@@ -23,6 +23,9 @@ describe('kol live equivalence observability', () => {
       paperWouldEnter: true,
       liveWouldEnter: false,
       liveAttempted: false,
+      decisionId: 'mint:rotation-underfill:arm:1:yellow_zone:block:single_kol_live_not_enough',
+      decisionAction: 'block',
+      paperRole: 'fallback_execution_safety',
       decisionStage: 'yellow_zone',
       liveBlockReason: 'single_kol_live_not_enough',
       liveBlockFlags: ['SINGLE_KOL_LIVE_NOT_ENOUGH'],
@@ -43,6 +46,8 @@ describe('kol live equivalence observability', () => {
     expect(lines).toHaveLength(1);
     expect(JSON.parse(lines[0])).toEqual(expect.objectContaining({
       candidateId: 'mint:rotation-underfill:arm:1',
+      decisionAction: 'block',
+      paperRole: 'fallback_execution_safety',
       liveBlockReason: 'single_kol_live_not_enough',
     }));
   });
@@ -62,6 +67,9 @@ describe('kol live equivalence observability', () => {
       paperWouldEnter: true,
       liveWouldEnter: false,
       liveAttempted: false,
+      decisionId: 'candidate-1:yellow_zone:block:single_kol_live_not_enough',
+      decisionAction: 'block',
+      paperRole: 'fallback_execution_safety',
       decisionStage: 'yellow_zone',
       liveBlockReason: 'single_kol_live_not_enough',
       liveBlockFlags: ['SINGLE_KOL_LIVE_NOT_ENOUGH'],
@@ -76,15 +84,51 @@ describe('kol live equivalence observability', () => {
       survivalFlags: ['SINGLE_KOL_LIVE_NOT_ENOUGH'],
       source: 'runtime',
     }) + '\n', 'utf8');
-    await writeFile(path.join(dir, 'kol-paper-trades.jsonl'), JSON.stringify({
-      positionId: 'pos-1',
-      liveEquivalenceCandidateId: 'candidate-1',
-      closedAt: new Date().toISOString(),
-      armName: 'rotation_underfill_v1',
-      netSol: 0.01,
-      netSolTokenOnly: 0.012,
-      mfePctPeakTokenOnly: 0.25,
-    }) + '\n', 'utf8');
+    const decisionId = 'candidate-1:yellow_zone:block:single_kol_live_not_enough';
+    const executionPlanSnapshot = {
+      schemaVersion: 'kol-execution-plan/v1',
+      planId: `${decisionId}:paper:pos-1:plan`,
+      mode: 'paper',
+      candidateId: 'candidate-1',
+      decisionId,
+      referencePrice: 0.001,
+      ticketSol: 0.01,
+      expectedQuantity: 10,
+      tokenDecimals: 6,
+      routeFound: true,
+      sellQuoteReason: null,
+    };
+    await writeFile(path.join(dir, 'kol-paper-trades.jsonl'), [
+      JSON.stringify({
+        positionId: 'pos-1',
+        liveEquivalenceCandidateId: 'candidate-1',
+        liveEquivalenceDecisionId: decisionId,
+        liveEquivalenceDecisionAction: 'block',
+        paperRole: 'fallback_execution_safety',
+        executionPlanSnapshot,
+        closedAt: new Date().toISOString(),
+        armName: 'rotation_underfill_v1',
+        netSol: 0.01,
+        netSolTokenOnly: 0.012,
+        mfePctPeakTokenOnly: 0.25,
+      }),
+      JSON.stringify({
+        positionId: 'pos-research-1',
+        liveEquivalenceCandidateId: 'candidate-1',
+        liveEquivalenceDecisionId: decisionId,
+        liveEquivalenceDecisionAction: 'block',
+        paperRole: 'research_arm',
+        executionPlanSnapshot: {
+          ...executionPlanSnapshot,
+          planId: `${decisionId}:paper:pos-research-1:plan`,
+        },
+        closedAt: new Date().toISOString(),
+        armName: 'rotation_underfill_v1',
+        netSol: 0.05,
+        netSolTokenOnly: 0.055,
+        mfePctPeakTokenOnly: 0.60,
+      }),
+    ].join('\n') + '\n', 'utf8');
 
     const report = await buildReport({
       realtimeDir: dir,
@@ -92,6 +136,35 @@ describe('kol live equivalence observability', () => {
     });
 
     expect(report.json.verdict).toBe('OK');
+    expect(report.json.equivalenceRowsWithDecisionId).toBe(1);
+    expect(report.json.paperRowsWithDecisionId).toBe(2);
+    expect(report.json.equivalenceDecisionIdCoverage).toBe(1);
+    expect(report.json.paperDecisionIdCoverage).toBe(1);
+    expect(report.json.paperRoleCoverage).toBe(1);
+    expect(report.json.paperExecutionPlanCoverage).toBe(1);
+    expect(report.json.decisionAttributionWarnings).toEqual([]);
+    expect(report.json.paperRoles).toEqual(expect.objectContaining({
+      fallback_execution_safety: 1,
+      research_arm: 1,
+    }));
+    expect(report.json.paperRoleOutcomes).toEqual(expect.objectContaining({
+      fallback_execution_safety: expect.objectContaining({
+        closes: 1,
+        wins: 1,
+        netSol: 0.01,
+        netSolTokenOnly: 0.012,
+        avgMfePct: 0.25,
+      }),
+      research_arm: expect.objectContaining({
+        closes: 1,
+        wins: 1,
+        netSol: 0.05,
+        netSolTokenOnly: 0.055,
+        avgMfePct: 0.60,
+      }),
+    }));
+    expect(report.md).toContain('| fallback_execution_safety | 1 | 1/0 | +0.0100 | +0.0120 | 25.0% |');
+    expect(report.md).toContain('- attribution warnings: n/a');
     expect(report.md).toContain('| rotation_underfill_v1 | 1 | 0 | 0 | 1 | 1/0 | +0.0100 | +0.0120 | 25.0% | 0 | +0.0000 |');
   });
 

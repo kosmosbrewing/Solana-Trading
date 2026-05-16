@@ -62,8 +62,10 @@ import { trackKolClose } from './kolMissedAlpha';
 import {
   appendKolLiveEquivalence,
   KOL_LIVE_EQUIVALENCE_SCHEMA_VERSION,
+  type KolDecisionAction,
   type KolLiveEquivalenceDecisionStage,
   type KolLiveEquivalenceRow,
+  type KolPaperRole,
 } from '../observability/kolLiveEquivalence';
 import {
   appendTokenQualityObservation,
@@ -148,6 +150,7 @@ const ROTATION_UNDERFILL_EXIT_FLOW_PROFILE_ARM = 'rotation_underfill_exit_flow_v
 const ROTATION_UNDERFILL_COST_AWARE_PROFILE_ARM = 'rotation_underfill_cost_aware_exit_v2';
 const PAPER_CLOSE_WRITER_SCHEMA_VERSION = 'kol-paper-close/v2';
 const ROTATION_EXIT_ROUTE_PROOF_SCHEMA_VERSION = 'rotation-exit-route-proof/v1';
+const KOL_EXECUTION_PLAN_SCHEMA_VERSION = 'kol-execution-plan/v1';
 
 // ─── State Types ─────────────────────────────────────────
 
@@ -264,6 +267,7 @@ export interface PaperPosition {
   tokenDecimalsSource?: 'security_client' | 'jupiter_quote';
   entrySecurityEvidence?: KolEntrySecurityEvidence;
   entrySellQuoteEvidence?: KolEntrySellQuoteEvidence;
+  executionPlanSnapshot?: KolExecutionPlanSnapshot;
   lastPrice: number;
   // 2026-04-25 MISSION_CONTROL §Control 5 telemetry — paper trade ledger 가 live 와 비교 가능하려면
   // arm identity / discovery cluster / parameter version 이 trade 단위로 기록되어야 한다.
@@ -392,6 +396,9 @@ export interface PaperPosition {
   smartV3LiveEligibilityEvaluatedAtMs?: number;
   /** Paper/live gate equivalence trace id for explaining why paper entered but live did not. */
   liveEquivalenceCandidateId?: string;
+  liveEquivalenceDecisionId?: string;
+  liveEquivalenceDecisionAction?: KolDecisionAction;
+  paperRole?: KolPaperRole | null;
   liveEquivalenceDecisionStage?: KolLiveEquivalenceDecisionStage;
   liveEquivalenceLiveWouldEnter?: boolean;
   liveEquivalenceLiveBlockReason?: string | null;
@@ -467,6 +474,20 @@ interface KolEntrySellQuoteEvidence {
   cacheStatus: string | null;
 }
 
+interface KolExecutionPlanSnapshot {
+  schemaVersion: typeof KOL_EXECUTION_PLAN_SCHEMA_VERSION;
+  planId: string;
+  mode: 'paper' | 'live';
+  candidateId: string | null;
+  decisionId: string | null;
+  referencePrice: number;
+  ticketSol: number;
+  expectedQuantity: number;
+  tokenDecimals: number | null;
+  routeFound: boolean | null;
+  sellQuoteReason: string | null;
+}
+
 type KolExitRouteProofSkipReason =
   | 'sell_quote_probe_disabled'
   | 'invalid_quantity'
@@ -528,6 +549,9 @@ interface PaperEntryOptions {
   smartV3LiveBlockFlags?: string[];
   smartV3LiveEligibilityEvaluatedAtMs?: number;
   liveEquivalenceCandidateId?: string;
+  liveEquivalenceDecisionId?: string;
+  liveEquivalenceDecisionAction?: KolDecisionAction;
+  paperRole?: KolPaperRole | null;
   liveEquivalenceDecisionStage?: KolLiveEquivalenceDecisionStage;
   liveEquivalenceLiveWouldEnter?: boolean;
   liveEquivalenceLiveBlockReason?: string | null;
@@ -2029,6 +2053,97 @@ function buildLiveEquivalenceCandidateId(
   return `${tokenMint}:${entrySignal.label}:${arm}:${nowMs}`;
 }
 
+function buildLiveEquivalenceDecisionId(
+  candidateId: string,
+  stage: KolLiveEquivalenceDecisionStage,
+  action: KolDecisionAction,
+  reason?: string | null
+): string {
+  const normalizedReason = (reason ?? 'none')
+    .toLowerCase()
+    .replace(/[^a-z0-9_=-]+/g, '_')
+    .slice(0, 80);
+  return `${candidateId}:${stage}:${action}:${normalizedReason}`;
+}
+
+function liveEquivalenceActionFor(liveWouldEnter: boolean): KolDecisionAction {
+  return liveWouldEnter ? 'enter' : 'block';
+}
+
+function paperRoleForLiveEquivalence(
+  stage: KolLiveEquivalenceDecisionStage,
+  liveWouldEnter: boolean
+): KolPaperRole {
+  if (liveWouldEnter) return 'mirror';
+  if (stage === 'default_paper' || stage === 'paper_only') return 'research_arm';
+  return 'fallback_execution_safety';
+}
+
+function decisionActionForOptions(options: PaperEntryOptions): KolDecisionAction | undefined {
+  if (options.liveEquivalenceDecisionAction) return options.liveEquivalenceDecisionAction;
+  if (typeof options.liveEquivalenceLiveWouldEnter === 'boolean') {
+    return liveEquivalenceActionFor(options.liveEquivalenceLiveWouldEnter);
+  }
+  return undefined;
+}
+
+function decisionIdForOptions(options: PaperEntryOptions): string | undefined {
+  if (options.liveEquivalenceDecisionId) return options.liveEquivalenceDecisionId;
+  const action = decisionActionForOptions(options);
+  if (!options.liveEquivalenceCandidateId || !options.liveEquivalenceDecisionStage || !action) {
+    return undefined;
+  }
+  return buildLiveEquivalenceDecisionId(
+    options.liveEquivalenceCandidateId,
+    options.liveEquivalenceDecisionStage,
+    action,
+    options.liveEquivalenceLiveBlockReason
+  );
+}
+
+function paperRoleForOptions(options: PaperEntryOptions, isShadowArm: boolean): KolPaperRole {
+  if (isShadowArm) return 'shadow';
+  if (options.paperRole) return options.paperRole;
+  if (
+    options.liveEquivalenceDecisionStage &&
+    typeof options.liveEquivalenceLiveWouldEnter === 'boolean'
+  ) {
+    return paperRoleForLiveEquivalence(
+      options.liveEquivalenceDecisionStage,
+      options.liveEquivalenceLiveWouldEnter
+    );
+  }
+  return 'research_arm';
+}
+
+function buildExecutionPlanSnapshot(input: {
+  mode: 'paper' | 'live';
+  positionId: string;
+  options: PaperEntryOptions;
+  referencePrice: number;
+  ticketSol: number;
+  expectedQuantity: number;
+  tokenDecimals?: number;
+  sellQuoteEvidence?: KolEntrySellQuoteEvidence | null;
+}): KolExecutionPlanSnapshot {
+  const decisionId = decisionIdForOptions(input.options) ?? null;
+  return {
+    schemaVersion: KOL_EXECUTION_PLAN_SCHEMA_VERSION,
+    planId: decisionId
+      ? `${decisionId}:${input.mode}:${input.positionId}:plan`
+      : `${input.mode}:${input.positionId}:plan`,
+    mode: input.mode,
+    candidateId: input.options.liveEquivalenceCandidateId ?? null,
+    decisionId,
+    referencePrice: input.referencePrice,
+    ticketSol: input.ticketSol,
+    expectedQuantity: input.expectedQuantity,
+    tokenDecimals: input.tokenDecimals ?? null,
+    routeFound: input.sellQuoteEvidence?.routeFound ?? null,
+    sellQuoteReason: input.sellQuoteEvidence?.reason ?? null,
+  };
+}
+
 function buildLiveEquivalenceOptionPatch(input: {
   candidateId: string;
   stage: KolLiveEquivalenceDecisionStage;
@@ -2038,13 +2153,25 @@ function buildLiveEquivalenceOptionPatch(input: {
 }): Pick<
   PaperEntryOptions,
   | 'liveEquivalenceCandidateId'
+  | 'liveEquivalenceDecisionId'
+  | 'liveEquivalenceDecisionAction'
+  | 'paperRole'
   | 'liveEquivalenceDecisionStage'
   | 'liveEquivalenceLiveWouldEnter'
   | 'liveEquivalenceLiveBlockReason'
   | 'liveEquivalenceLiveBlockFlags'
 > {
+  const decisionAction = liveEquivalenceActionFor(input.liveWouldEnter);
   return {
     liveEquivalenceCandidateId: input.candidateId,
+    liveEquivalenceDecisionId: buildLiveEquivalenceDecisionId(
+      input.candidateId,
+      input.stage,
+      decisionAction,
+      input.reason
+    ),
+    liveEquivalenceDecisionAction: decisionAction,
+    paperRole: paperRoleForLiveEquivalence(input.stage, input.liveWouldEnter),
     liveEquivalenceDecisionStage: input.stage,
     liveEquivalenceLiveWouldEnter: input.liveWouldEnter,
     liveEquivalenceLiveBlockReason: input.reason ?? null,
@@ -2082,6 +2209,15 @@ function emitKolLiveEquivalence(input: {
     input.entryOptions.parameterVersion ?? input.entrySignal.parameterVersion;
   const effectiveArmName = armNameForVersion(effectiveParameterVersion);
   const effectiveProfileArm = input.entryOptions.profileArm ?? effectiveArmName;
+  const decisionAction = input.entryOptions.liveEquivalenceDecisionAction ??
+    liveEquivalenceActionFor(input.liveWouldEnter);
+  const decisionId = input.entryOptions.liveEquivalenceDecisionId ??
+    buildLiveEquivalenceDecisionId(
+      input.candidateId,
+      input.stage,
+      decisionAction,
+      input.liveBlockReason ?? input.paperOnlyReason ?? null
+    );
   const record: KolLiveEquivalenceRow = {
     schemaVersion: KOL_LIVE_EQUIVALENCE_SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
@@ -2098,6 +2234,10 @@ function emitKolLiveEquivalence(input: {
     paperWouldEnter: input.paperWouldEnter ?? true,
     liveWouldEnter: input.liveWouldEnter,
     liveAttempted: input.liveAttempted ?? false,
+    decisionId,
+    decisionAction,
+    paperRole: input.entryOptions.paperRole ??
+      (input.liveAttempted === true ? null : paperRoleForLiveEquivalence(input.stage, input.liveWouldEnter)),
     decisionStage: input.stage,
     liveBlockReason: input.liveBlockReason ?? null,
     liveBlockFlags: Array.from(new Set(input.liveBlockFlags ?? [])),
@@ -7494,6 +7634,9 @@ async function enterPaperPosition(
       smartV3LiveBlockFlags: options.smartV3LiveBlockFlags,
       smartV3LiveEligibilityEvaluatedAtMs: options.smartV3LiveEligibilityEvaluatedAtMs,
       liveEquivalenceCandidateId: options.liveEquivalenceCandidateId,
+      liveEquivalenceDecisionId: decisionIdForOptions(options),
+      liveEquivalenceDecisionAction: decisionActionForOptions(options),
+      paperRole: paperRoleForOptions(options, isShadowArm),
       liveEquivalenceDecisionStage: options.liveEquivalenceDecisionStage,
       liveEquivalenceLiveWouldEnter: options.liveEquivalenceLiveWouldEnter,
       liveEquivalenceLiveBlockReason: options.liveEquivalenceLiveBlockReason,
@@ -7513,6 +7656,16 @@ async function enterPaperPosition(
       tokenDecimalsSource: entryTokenDecimals.source,
       entrySecurityEvidence: options.entrySecurityEvidence,
       entrySellQuoteEvidence: sellSized.evidence,
+      executionPlanSnapshot: buildExecutionPlanSnapshot({
+        mode: 'paper',
+        positionId: id,
+        options,
+        referencePrice: entryPrice,
+        ticketSol,
+        expectedQuantity: quantity,
+        tokenDecimals: entryTokenDecimals.value,
+        sellQuoteEvidence: sellSized.evidence,
+      }),
     };
     if (isRotationFamilyMarkoutPosition(pos)) {
       pos.rotationMonetizableEdge = buildRotationMonetizableEdgeForPosition(pos);
@@ -9689,6 +9842,7 @@ function buildKolBaseLedgerRecord(
     tokenDecimalsSource: pos.tokenDecimalsSource ?? null,
     entrySecurityEvidence: pos.entrySecurityEvidence ?? null,
     entrySellQuoteEvidence: pos.entrySellQuoteEvidence ?? null,
+    executionPlanSnapshot: pos.executionPlanSnapshot ?? null,
     tokenSecurityKnown: pos.entrySecurityEvidence?.tokenSecurityKnown ?? null,
     tokenSecurityData: pos.entrySecurityEvidence?.tokenSecurityData ?? null,
     securityClientPresent: pos.entrySecurityEvidence?.securityClientPresent ?? null,
@@ -9716,6 +9870,9 @@ function buildKolBaseLedgerRecord(
     smartV3LiveBlockFlags: pos.smartV3LiveBlockFlags ?? null,
     smartV3LiveEligibilityEvaluatedAtMs: pos.smartV3LiveEligibilityEvaluatedAtMs ?? null,
     liveEquivalenceCandidateId: pos.liveEquivalenceCandidateId ?? null,
+    liveEquivalenceDecisionId: pos.liveEquivalenceDecisionId ?? null,
+    liveEquivalenceDecisionAction: pos.liveEquivalenceDecisionAction ?? null,
+    paperRole: pos.paperRole ?? null,
     liveEquivalenceDecisionStage: pos.liveEquivalenceDecisionStage ?? null,
     liveEquivalenceLiveWouldEnter: pos.liveEquivalenceLiveWouldEnter ?? null,
     liveEquivalenceLiveBlockReason: pos.liveEquivalenceLiveBlockReason ?? null,
@@ -9801,6 +9958,7 @@ function buildKolLedgerExtras(
     survivalFlags: pos.survivalFlags,
     entrySecurityEvidence: pos.entrySecurityEvidence ?? null,
     entrySellQuoteEvidence: pos.entrySellQuoteEvidence ?? null,
+    executionPlanSnapshot: pos.executionPlanSnapshot ?? null,
     tokenSecurityKnown: pos.entrySecurityEvidence?.tokenSecurityKnown ?? null,
     securityClientPresent: pos.entrySecurityEvidence?.securityClientPresent ?? null,
     sellRouteKnown: pos.entrySellQuoteEvidence?.routeFound === true ? true : null,
@@ -9822,6 +9980,9 @@ function buildKolLedgerExtras(
     smartV3LiveBlockFlags: pos.smartV3LiveBlockFlags ?? null,
     smartV3LiveEligibilityEvaluatedAtMs: pos.smartV3LiveEligibilityEvaluatedAtMs ?? null,
     liveEquivalenceCandidateId: pos.liveEquivalenceCandidateId ?? null,
+    liveEquivalenceDecisionId: pos.liveEquivalenceDecisionId ?? null,
+    liveEquivalenceDecisionAction: pos.liveEquivalenceDecisionAction ?? null,
+    paperRole: pos.paperRole ?? null,
     liveEquivalenceDecisionStage: pos.liveEquivalenceDecisionStage ?? null,
     liveEquivalenceLiveWouldEnter: pos.liveEquivalenceLiveWouldEnter ?? null,
     liveEquivalenceLiveBlockReason: pos.liveEquivalenceLiveBlockReason ?? null,
@@ -10662,6 +10823,10 @@ async function enterLivePosition(
       entryArm: options.entryArm ?? null,
       exitArm: options.exitArm ?? null,
       canaryLane,
+      liveEquivalenceCandidateId: options.liveEquivalenceCandidateId ?? null,
+      liveEquivalenceDecisionId: decisionIdForOptions(options) ?? null,
+      liveEquivalenceDecisionAction: decisionActionForOptions(options) ?? null,
+      paperRole: null,
       rotationAnchorKols: options.rotationAnchorKols ?? null,
       rotationAnchorPrice: options.rotationAnchorPrice ?? null,
       rotationFirstBuyAtMs: options.rotationFirstBuyAtMs ?? null,
@@ -10757,6 +10922,9 @@ async function enterLivePosition(
     smartV3LiveBlockFlags: options.smartV3LiveBlockFlags,
     smartV3LiveEligibilityEvaluatedAtMs: options.smartV3LiveEligibilityEvaluatedAtMs,
     liveEquivalenceCandidateId: options.liveEquivalenceCandidateId,
+    liveEquivalenceDecisionId: decisionIdForOptions(options),
+    liveEquivalenceDecisionAction: decisionActionForOptions(options),
+    paperRole: null,
     liveEquivalenceDecisionStage: options.liveEquivalenceDecisionStage,
     liveEquivalenceLiveWouldEnter: options.liveEquivalenceLiveWouldEnter,
     liveEquivalenceLiveBlockReason: options.liveEquivalenceLiveBlockReason,
@@ -10778,6 +10946,16 @@ async function enterLivePosition(
     tokenDecimalsSource: liveDecimalsSource,
     entrySecurityEvidence: options.entrySecurityEvidence,
     entrySellQuoteEvidence: liveSellSized.evidence,
+    executionPlanSnapshot: buildExecutionPlanSnapshot({
+      mode: 'live',
+      positionId,
+      options,
+      referencePrice,
+      ticketSol,
+      expectedQuantity: plannedQty,
+      tokenDecimals: liveDecimals,
+      sellQuoteEvidence: liveSellSized.evidence,
+    }),
     isLive: true,
     dbTradeId: persistResult.dbTradeId ?? undefined,
     entryTxSignature,
@@ -10909,6 +11087,7 @@ async function enterLivePosition(
       parameterVersion: config.kolHunterSwingV2ParameterVersion,
       isShadowArm: true,
       parentPositionId: positionId,
+      paperRole: 'shadow',
       kolEntryReason: defaultEntryReasonForVersion(config.kolHunterSwingV2ParameterVersion),
       kolConvictionLevel: defaultConvictionForVersion(config.kolHunterSwingV2ParameterVersion),
       smartV3LiveHardCutReentry: options.smartV3LiveHardCutReentry,
@@ -10927,6 +11106,15 @@ async function enterLivePosition(
       ],
       tokenDecimals: liveDecimals,
       tokenDecimalsSource: liveDecimalsSource,
+      executionPlanSnapshot: buildExecutionPlanSnapshot({
+        mode: 'paper',
+        positionId: swingShadowId,
+        options,
+        referencePrice: actualEntryPrice,
+        ticketSol,
+        expectedQuantity: actualQuantity,
+        tokenDecimals: liveDecimals,
+      }),
       isLive: false,  // ← shadow 는 paper. main arm 만 live.
     };
     setActivePosition(swingPos);
@@ -10956,9 +11144,17 @@ async function enterLivePosition(
         parameterVersion: spec.parameterVersion,
         isShadowArm: true,
         parentPositionId: positionId,
+        paperRole: 'shadow',
         isLive: false,
         dbTradeId: undefined,
         entryTxSignature: undefined,
+        executionPlanSnapshot: position.executionPlanSnapshot
+          ? {
+              ...position.executionPlanSnapshot,
+              planId: `paper:${positionId}-${spec.suffix}:plan`,
+              mode: 'paper',
+            }
+          : undefined,
         survivalFlags: [
           ...position.survivalFlags,
           'LIVE_PAIRED_PAPER_SHADOW',

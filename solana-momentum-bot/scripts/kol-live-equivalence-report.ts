@@ -3,6 +3,7 @@ import path from 'path';
 
 const LIVE_CANDIDATE_LINK_MIN_COVERAGE = 0.9;
 const LIVE_FALLBACK_ATTRIBUTION_WINDOW_MS = 5 * 60 * 1000;
+const DECISION_ATTRIBUTION_MIN_COVERAGE = 0.9;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -36,6 +37,14 @@ interface SummaryBucket {
   paperAvgMfePct: number | null;
   liveCloses: number;
   liveNetSol: number;
+}
+
+interface PaperRoleBucket {
+  closes: number;
+  wins: number;
+  netSol: number;
+  netSolTokenOnly: number;
+  avgMfePct: number | null;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -347,6 +356,16 @@ function emptyBucket(): SummaryBucket {
   };
 }
 
+function emptyPaperRoleBucket(): PaperRoleBucket {
+  return {
+    closes: 0,
+    wins: 0,
+    netSol: 0,
+    netSolTokenOnly: 0,
+    avgMfePct: null,
+  };
+}
+
 function pct(value: number | null): string {
   if (value == null || !Number.isFinite(value)) return 'n/a';
   return `${(value * 100).toFixed(1)}%`;
@@ -354,6 +373,11 @@ function pct(value: number | null): string {
 
 function sol(value: number): string {
   return `${value >= 0 ? '+' : ''}${value.toFixed(4)}`;
+}
+
+function comparablePaperRow(row: JsonRecord): boolean {
+  const role = str(row, 'paperRole');
+  return role == null || role === 'mirror' || role === 'fallback_execution_safety';
 }
 
 async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }> {
@@ -381,24 +405,64 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
       .flat()
       .filter((row) => rowTimeMs(row) >= args.sinceMs)
   );
+  const byPaperRole = new Map<string, PaperRoleBucket>();
+  const mfeByPaperRole = new Map<string, number[]>();
+  for (const row of paperRows) {
+    const role = str(row, 'paperRole') ?? 'unknown';
+    const bucket = byPaperRole.get(role) ?? emptyPaperRoleBucket();
+    const netSol = num(row, 'netSol') ?? 0;
+    const netSolTokenOnly = num(row, 'netSolTokenOnly') ?? netSol;
+    bucket.closes += 1;
+    if (netSol > 0) bucket.wins += 1;
+    bucket.netSol += netSol;
+    bucket.netSolTokenOnly += netSolTokenOnly;
+    const mfe = num(row, 'mfePctPeakTokenOnly') ?? num(row, 'mfePct') ?? null;
+    if (mfe != null) {
+      const values = mfeByPaperRole.get(role) ?? [];
+      values.push(mfe);
+      mfeByPaperRole.set(role, values);
+    }
+    byPaperRole.set(role, bucket);
+  }
+  for (const [role, values] of mfeByPaperRole.entries()) {
+    const bucket = byPaperRole.get(role);
+    if (!bucket || values.length === 0) continue;
+    bucket.avgMfePct = values.reduce((sum, v) => sum + v, 0) / values.length;
+  }
   const liveAttributionCandidates = equivalence.filter((row) => bool(row, 'liveAttempted'));
   const liveAttributions = liveRows.map((row) => attributeLiveRow(row, liveAttributionCandidates));
 
   const paperByCandidate = new Map<string, JsonRecord[]>();
+  const paperByDecision = new Map<string, JsonRecord[]>();
   for (const row of paperRows) {
     const candidateId = str(row, 'liveEquivalenceCandidateId');
-    if (!candidateId) continue;
-    const rows = paperByCandidate.get(candidateId) ?? [];
-    rows.push(row);
-    paperByCandidate.set(candidateId, rows);
+    if (candidateId) {
+      const rows = paperByCandidate.get(candidateId) ?? [];
+      rows.push(row);
+      paperByCandidate.set(candidateId, rows);
+    }
+    const decisionId = str(row, 'liveEquivalenceDecisionId');
+    if (decisionId) {
+      const rows = paperByDecision.get(decisionId) ?? [];
+      rows.push(row);
+      paperByDecision.set(decisionId, rows);
+    }
   }
   const liveByCandidate = new Map<string, JsonRecord[]>();
+  const liveByDecision = new Map<string, JsonRecord[]>();
   for (const attribution of liveAttributions) {
     const candidateId = attribution.candidateId;
-    if (!candidateId) continue;
-    const rows = liveByCandidate.get(candidateId) ?? [];
-    rows.push(attribution.row);
-    liveByCandidate.set(candidateId, rows);
+    if (candidateId) {
+      const rows = liveByCandidate.get(candidateId) ?? [];
+      rows.push(attribution.row);
+      liveByCandidate.set(candidateId, rows);
+    }
+    const decisionId = str(attribution.row, 'liveEquivalenceDecisionId');
+    if (decisionId) {
+      const rows = liveByDecision.get(decisionId) ?? [];
+      rows.push(attribution.row);
+      liveByDecision.set(decisionId, rows);
+    }
   }
 
   const byArm = new Map<string, SummaryBucket>();
@@ -411,8 +475,20 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
     if (bool(row, 'liveAttempted')) bucket.liveAttempted += 1;
     if (!bool(row, 'liveWouldEnter')) bucket.blocked += 1;
     const candidateId = str(row, 'candidateId');
-    if (candidateId) {
-      for (const paper of paperByCandidate.get(candidateId) ?? []) {
+    const decisionId = str(row, 'decisionId');
+    const paperMatches = decisionId
+      ? paperByDecision.get(decisionId) ?? []
+      : candidateId
+        ? paperByCandidate.get(candidateId) ?? []
+        : [];
+    const liveMatchesByDecision = decisionId ? liveByDecision.get(decisionId) ?? [] : [];
+    const liveMatches = liveMatchesByDecision.length > 0
+      ? liveMatchesByDecision
+      : candidateId
+        ? liveByCandidate.get(candidateId) ?? []
+        : [];
+    if (candidateId || decisionId) {
+      for (const paper of paperMatches.filter(comparablePaperRow)) {
         addOutcome(bucket, paper, 'paper');
         const mfe = num(paper, 'mfePctPeakTokenOnly') ?? num(paper, 'mfePct') ?? null;
         if (mfe != null) {
@@ -421,7 +497,7 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
           mfeByArm.set(arm, arr);
         }
       }
-      for (const live of liveByCandidate.get(candidateId) ?? []) {
+      for (const live of liveMatches) {
         addOutcome(bucket, live, 'live');
       }
     }
@@ -435,14 +511,36 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
 
   const liveAttemptedRows = equivalence.filter((row) => bool(row, 'liveAttempted')).length;
   const paperRowsWithCandidateId = paperRows.filter((row) => str(row, 'liveEquivalenceCandidateId')).length;
+  const equivalenceRowsWithDecisionId = equivalence.filter((row) => str(row, 'decisionId')).length;
+  const paperRowsWithDecisionId = paperRows.filter((row) => str(row, 'liveEquivalenceDecisionId')).length;
+  const paperRowsWithPaperRole = paperRows.filter((row) => str(row, 'paperRole')).length;
+  const paperRowsWithExecutionPlan = paperRows.filter((row) => row.executionPlanSnapshot != null).length;
   const liveRowsWithCandidateId = liveAttributions.filter((row) => row.status === 'exact').length;
+  const liveRowsWithDecisionId = liveRows.filter((row) => str(row, 'liveEquivalenceDecisionId')).length;
+  const liveRowsWithExecutionPlan = liveRows.filter((row) => row.executionPlanSnapshot != null).length;
   const liveRowsLinkedByFallback = liveAttributions.filter((row) => row.status === 'fallback').length;
   const liveRowsAmbiguous = liveAttributions.filter((row) => row.status === 'ambiguous').length;
   const liveRowsNoCandidateFound = liveAttributions.filter((row) => row.status === 'no_candidate').length;
   const liveRowsMissingAttributionFields = liveAttributions.filter((row) => row.status === 'missing_fields').length;
   const liveRowsLinkedTotal = liveRowsWithCandidateId + liveRowsLinkedByFallback;
+  const liveLinkedRowsWithDecisionId = liveAttributions.filter((row) =>
+    (row.status === 'exact' || row.status === 'fallback') &&
+    str(row.row, 'liveEquivalenceDecisionId')
+  ).length;
   const unlinkedLiveRows = liveRows.length - liveRowsLinkedTotal;
   const liveCandidateLinkCoverage = liveRows.length > 0 ? liveRowsLinkedTotal / liveRows.length : null;
+  const equivalenceDecisionIdCoverage =
+    equivalence.length > 0 ? equivalenceRowsWithDecisionId / equivalence.length : null;
+  const paperDecisionIdCoverage =
+    paperRowsWithCandidateId > 0 ? paperRowsWithDecisionId / paperRowsWithCandidateId : null;
+  const paperRoleCoverage =
+    paperRows.length > 0 ? paperRowsWithPaperRole / paperRows.length : null;
+  const paperExecutionPlanCoverage =
+    paperRows.length > 0 ? paperRowsWithExecutionPlan / paperRows.length : null;
+  const liveDecisionIdCoverage =
+    liveRowsLinkedTotal > 0 ? liveLinkedRowsWithDecisionId / liveRowsLinkedTotal : null;
+  const liveExecutionPlanCoverage =
+    liveRows.length > 0 ? liveRowsWithExecutionPlan / liveRows.length : null;
   const liveAttributionBreakdown = {
     exact: liveRowsWithCandidateId,
     fallback: liveRowsLinkedByFallback,
@@ -450,6 +548,26 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
     noCandidateFound: liveRowsNoCandidateFound,
     missingFields: liveRowsMissingAttributionFields,
   };
+  const decisionAttributionWarnings = [
+    ...(equivalence.length > 0 && (equivalenceDecisionIdCoverage ?? 0) < DECISION_ATTRIBUTION_MIN_COVERAGE
+      ? [`equivalence decisionId coverage ${pct(equivalenceDecisionIdCoverage)} < ${pct(DECISION_ATTRIBUTION_MIN_COVERAGE)}`]
+      : []),
+    ...(paperRowsWithCandidateId > 0 && (paperDecisionIdCoverage ?? 0) < DECISION_ATTRIBUTION_MIN_COVERAGE
+      ? [`paper candidate-linked decisionId coverage ${pct(paperDecisionIdCoverage)} < ${pct(DECISION_ATTRIBUTION_MIN_COVERAGE)}`]
+      : []),
+    ...(paperRows.length > 0 && (paperRoleCoverage ?? 0) < DECISION_ATTRIBUTION_MIN_COVERAGE
+      ? [`paperRole coverage ${pct(paperRoleCoverage)} < ${pct(DECISION_ATTRIBUTION_MIN_COVERAGE)}`]
+      : []),
+    ...(liveRowsLinkedTotal > 0 && (liveDecisionIdCoverage ?? 0) < DECISION_ATTRIBUTION_MIN_COVERAGE
+      ? [`live linked decisionId coverage ${pct(liveDecisionIdCoverage)} < ${pct(DECISION_ATTRIBUTION_MIN_COVERAGE)}`]
+      : []),
+    ...(paperRows.length > 0 && (paperExecutionPlanCoverage ?? 0) < DECISION_ATTRIBUTION_MIN_COVERAGE
+      ? [`paper executionPlan coverage ${pct(paperExecutionPlanCoverage)} < ${pct(DECISION_ATTRIBUTION_MIN_COVERAGE)}`]
+      : []),
+    ...(liveRows.length > 0 && (liveExecutionPlanCoverage ?? 0) < DECISION_ATTRIBUTION_MIN_COVERAGE
+      ? [`live executionPlan coverage ${pct(liveExecutionPlanCoverage)} < ${pct(DECISION_ATTRIBUTION_MIN_COVERAGE)}`]
+      : []),
+  ];
   const liveCandidateLinkGap =
     liveAttemptedRows > 0 &&
     liveRows.length > 0 &&
@@ -474,6 +592,8 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
 
   const armRows = [...byArm.entries()]
     .sort((a, b) => b[1].rows - a[1].rows || a[0].localeCompare(b[0]));
+  const paperRoleRows = [...byPaperRole.entries()]
+    .sort((a, b) => b[1].closes - a[1].closes || a[0].localeCompare(b[0]));
   const lines = [
     `# KOL Live Equivalence Report`,
     '',
@@ -482,20 +602,49 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
     `- since: ${new Date(args.sinceMs).toISOString()}`,
     `- equivalence rows: ${equivalence.length}`,
     `- paper closes with candidateId: ${paperRowsWithCandidateId}`,
+    `- equivalence rows with decisionId: ${equivalenceRowsWithDecisionId}`,
+    `- paper closes with decisionId: ${paperRowsWithDecisionId}`,
+    `- paper closes with paperRole: ${paperRowsWithPaperRole}`,
+    `- paper closes with executionPlan: ${paperRowsWithExecutionPlan}`,
     `- live closes: ${liveRows.length}`,
     `- live closes with candidateId: ${liveRowsWithCandidateId}`,
+    `- live closes with decisionId: ${liveRowsWithDecisionId}`,
+    `- live linked closes with decisionId: ${liveLinkedRowsWithDecisionId}`,
+    `- live closes with executionPlan: ${liveRowsWithExecutionPlan}`,
     `- live fallback-linked closes: ${liveRowsLinkedByFallback}`,
     `- live linked closes total: ${liveRowsLinkedTotal}`,
     `- unlinked live closes: ${unlinkedLiveRows}`,
     `- live candidateId link coverage: ${pct(liveCandidateLinkCoverage)}`,
+    `- equivalence decisionId coverage: ${pct(equivalenceDecisionIdCoverage)}`,
+    `- paper candidate-linked decisionId coverage: ${pct(paperDecisionIdCoverage)}`,
+    `- paperRole coverage: ${pct(paperRoleCoverage)}`,
+    `- paper executionPlan coverage: ${pct(paperExecutionPlanCoverage)}`,
+    `- live linked decisionId coverage: ${pct(liveDecisionIdCoverage)}`,
+    `- live executionPlan coverage: ${pct(liveExecutionPlanCoverage)}`,
     `- live attempted equivalence rows: ${liveAttemptedRows}`,
     `- reasons: ${verdictReasons.join('; ') || 'n/a'}`,
+    `- attribution warnings: ${decisionAttributionWarnings.join('; ') || 'n/a'}`,
     '',
     '## Decision Stages',
     '',
     '| stage | count |',
     '|---|---:|',
     ...countBy(equivalence, 'decisionStage').slice(0, 20).map(([key, count]) => `| ${key} | ${count} |`),
+    '',
+    '## Paper Role Counts',
+    '',
+    '| role | paper closes |',
+    '|---|---:|',
+    ...countBy(paperRows, 'paperRole').slice(0, 20).map(([key, count]) => `| ${key} | ${count} |`),
+    '',
+    '## Paper Role Outcomes',
+    '',
+    '| role | closes | W/L | net | token-only net | avg MFE |',
+    '|---|---:|---:|---:|---:|---:|',
+    ...paperRoleRows.map(([role, bucket]) => {
+      const losses = bucket.closes - bucket.wins;
+      return `| ${role} | ${bucket.closes} | ${bucket.wins}/${losses} | ${sol(bucket.netSol)} | ${sol(bucket.netSolTokenOnly)} | ${pct(bucket.avgMfePct)} |`;
+    }),
     '',
     '## Live Block Reasons',
     '',
@@ -524,16 +673,32 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
       since: new Date(args.sinceMs).toISOString(),
       equivalenceRows: equivalence.length,
       paperRowsWithCandidateId,
+      equivalenceRowsWithDecisionId,
+      paperRowsWithDecisionId,
+      paperRowsWithPaperRole,
+      paperRowsWithExecutionPlan,
       liveRows: liveRows.length,
       liveRowsWithCandidateId,
+      liveRowsWithDecisionId,
+      liveLinkedRowsWithDecisionId,
+      liveRowsWithExecutionPlan,
       liveRowsLinkedByFallback,
       liveRowsLinkedTotal,
       unlinkedLiveRows,
       liveCandidateLinkCoverage,
+      equivalenceDecisionIdCoverage,
+      paperDecisionIdCoverage,
+      paperRoleCoverage,
+      paperExecutionPlanCoverage,
+      liveDecisionIdCoverage,
+      liveExecutionPlanCoverage,
       liveAttributionBreakdown,
+      decisionAttributionWarnings,
       liveAttemptedRows,
       verdictReasons,
       decisionStages: Object.fromEntries(countBy(equivalence, 'decisionStage')),
+      paperRoles: Object.fromEntries(countBy(paperRows, 'paperRole')),
+      paperRoleOutcomes: Object.fromEntries(paperRoleRows),
       liveBlockReasons: Object.fromEntries(countBy(equivalence.filter((row) => !bool(row, 'liveWouldEnter')), 'liveBlockReason')),
       arms: Object.fromEntries(armRows),
     },

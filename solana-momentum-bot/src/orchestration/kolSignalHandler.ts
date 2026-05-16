@@ -3029,6 +3029,11 @@ export async function handleKolSwap(tx: KolTx): Promise<void> {
       `[KOL_HUNTER_SKIP] max concurrent (activeMints=${activePrimaryMints.size} pendingOnly=${pendingOnlyCount} ` +
       `>= cap=${config.kolHunterMaxConcurrent}) — ${tokenMint(tx)} ${tx.kolId}`
     );
+    trackKolHunterAdmissionSkipMarkout(tx, 'max_concurrent', {
+      activeMints: activePrimaryMints.size,
+      pendingOnly: pendingOnlyCount,
+      cap: config.kolHunterMaxConcurrent,
+    });
     return;
   }
 
@@ -4888,6 +4893,41 @@ function buildRotationNoTradeObserverConfig() {
     offsetsSec: rotationV1MarkoutOffsetsSec(),
     writeScheduleMarker: true,
   };
+}
+
+function trackKolHunterAdmissionSkipMarkout(
+  tx: KolTx,
+  reason: string,
+  extras: Record<string, unknown>
+): void {
+  const signalPrice = kolBuyFillPriceSolPerToken(tx);
+  if (signalPrice == null || signalPrice <= 0) return;
+  const nowMs = Date.now();
+  trackRejectForMissedAlpha(
+    {
+      rejectCategory: 'viability',
+      rejectReason: `kol_hunter_${reason}_skip`,
+      tokenMint: tx.tokenMint,
+      lane: LANE_STRATEGY,
+      signalPrice,
+      probeSolAmount: config.kolHunterTicketSol,
+      signalSource: 'kol_hunter_admission_skip',
+      extras: {
+        positionId: `kol-admission-skip-${tx.tokenMint.slice(0, 8)}-${reason}-${nowMs}`,
+        eventType: 'kol_hunter_admission_skip',
+        noTradeReason: reason,
+        paperOnlyMeasurement: true,
+        measurementTarget: 'kol_buy_admission_skip',
+        kolId: tx.kolId,
+        tier: tx.tier,
+        action: tx.action,
+        solAmount: tx.solAmount ?? null,
+        tokenAmount: tx.tokenAmount ?? null,
+        ...extras,
+      },
+    },
+    buildRotationNoTradeObserverConfig()
+  );
 }
 
 function trackRotationNoTradeMarkout(
@@ -11635,6 +11675,16 @@ function fireRejectObserver(
   const tokenDecimals = typeof extras.tokenDecimals === 'number' && Number.isFinite(extras.tokenDecimals)
     ? extras.tokenDecimals
     : undefined;
+  const parameterVersion = typeof extras.parameterVersion === 'string' ? extras.parameterVersion : undefined;
+  const observerArmName = typeof extras.armName === 'string'
+    ? extras.armName
+    : parameterVersion
+      ? armNameForVersion(parameterVersion)
+      : undefined;
+  const observerSignalSource = typeof extras.signalSource === 'string'
+    ? extras.signalSource
+    : observerArmName;
+  const survivalReason = typeof extras.survivalReason === 'string' ? extras.survivalReason : undefined;
   if (!skipPolicyEntry) {
     emitKolShadowPolicy({
       eventKind: 'reject',
@@ -11642,8 +11692,13 @@ function fireRejectObserver(
       currentAction: 'block',
       isLive: false,
       isShadowArm: false,
+      source: 'reject_observer',
+      armName: observerArmName,
       entryReason: typeof extras.entryReason === 'string' ? extras.entryReason : undefined,
       rejectReason: reason,
+      parameterVersion,
+      signalSource: observerSignalSource,
+      survivalReason,
       independentKolCount: score.independentKolCount,
       effectiveIndependentCount: score.effectiveIndependentCount,
       kolScore: score.finalScore,

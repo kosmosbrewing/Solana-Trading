@@ -36,6 +36,10 @@ export interface KolPolicyInput {
   entryReason?: string;
   closeReason?: string;
   rejectReason?: string;
+  source?: string;
+  parameterVersion?: string;
+  signalSource?: string;
+  survivalReason?: string;
   independentKolCount?: number;
   effectiveIndependentCount?: number;
   kolScore?: number;
@@ -91,6 +95,10 @@ export interface KolPolicyDecision {
     entryReason: string | null;
     closeReason: string | null;
     rejectReason: string | null;
+    source?: string | null;
+    parameterVersion?: string | null;
+    signalSource?: string | null;
+    survivalReason?: string | null;
     participatingKols: KolPolicyParticipant[];
     survivalFlags: string[];
   };

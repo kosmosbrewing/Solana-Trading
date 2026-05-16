@@ -853,6 +853,52 @@ describe('kolSignalHandler — state machine', () => {
     expect(mints).not.toContain(MINT_EXTRA);
   });
 
+  it('max concurrent skip: live 진입 없이 paper-only missed-alpha 측정을 예약한다', async () => {
+    const mockedConfig = (require('../src/utils/config') as any).config;
+    mockedConfig.missedAlphaObserverEnabled = true;
+    mockedConfig.kolHunterRotationV1MarkoutOffsetsSec = [15, 30, 60];
+    stubFeed.setInitialPrice(MINT_WINNER, 0.001);
+    stubFeed.setInitialPrice(MINT_HARDCUT, 0.001);
+    stubFeed.setInitialPrice(MINT_FLAT, 0.001);
+    const MINT_EXTRA = 'Mint555555555555555555555555555555555555555';
+
+    await handleKolSwap(buyTxWithFill('k1', 'S', MINT_WINNER, 0.001, 0.10));
+    await handleKolSwap(buyTxWithFill('k2', 'S', MINT_HARDCUT, 0.001, 0.10));
+    await handleKolSwap(buyTxWithFill('k3', 'S', MINT_FLAT, 0.001, 0.10));
+    mockAppendFile.mockClear();
+
+    await handleKolSwap(buyTxWithFill('k4', 'S', MINT_EXTRA, 0.001, 0.10));
+    await flushAsync();
+
+    expect(__testGetActive()).toHaveLength(0);
+    expect(getMissedAlphaObserverStats().scheduled).toBe(3);
+    const markers = mockAppendFile.mock.calls
+      .filter((call) => typeof call[0] === 'string' && call[0].includes('missed-alpha.jsonl'))
+      .map((call) => JSON.parse(String(call[1]).trim()));
+    expect(markers).toHaveLength(1);
+    expect(markers[0]).toMatchObject({
+      tokenMint: MINT_EXTRA,
+      lane: 'kol_hunter',
+      rejectCategory: 'viability',
+      rejectReason: 'kol_hunter_max_concurrent_skip',
+      signalPrice: 0.001,
+      signalSource: 'kol_hunter_admission_skip',
+      extras: {
+        eventType: 'kol_hunter_admission_skip',
+        noTradeReason: 'max_concurrent',
+        paperOnlyMeasurement: true,
+        measurementTarget: 'kol_buy_admission_skip',
+        activeMints: 0,
+        pendingOnly: 3,
+        cap: 3,
+      },
+      probe: {
+        offsetSec: 0,
+        quoteStatus: 'scheduled',
+      },
+    });
+  });
+
   it('PROBE → MAE ≤ -10% → probe_hard_cut', async () => {
     stubFeed.setInitialPrice(MINT_HARDCUT, 0.001);
     await handleKolSwap(buyTx('pain', 'S', MINT_HARDCUT));
@@ -4560,6 +4606,10 @@ describe('kolSignalHandler — state machine', () => {
       const policies = policyRecordsWithFlag('POST_DISTRIBUTION_ENTRY_BLOCK');
       expect(policies.length).toBeGreaterThan(0);
       expect(policies[0].currentAction).toBe('block');
+      expect(policies[0].context).toEqual(expect.objectContaining({
+        source: 'reject_observer',
+      }));
+      expect(typeof policies[0].context.survivalReason).toBe('string');
       expect(policies[0].riskFlags).toEqual(expect.arrayContaining([
         'POST_DISTRIBUTION_SELL_WAVE',
         'POST_DISTRIBUTION_ENTRY_BLOCK',

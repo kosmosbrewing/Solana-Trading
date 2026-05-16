@@ -108,7 +108,7 @@ describe('historical-loss-miner', () => {
         exitReason: 'probe_hard_cut',
         netSol: -0.006,
         netSolTokenOnly: -0.004,
-        survivalFlags: ['SMART_V3_FRESH_KOLS_2'],
+        survivalFlags: ['SMART_V3_FRESH_KOLS_2', 'SMART_V3_LAST_BUY_AGE_3S'],
       }),
       closeRow({
         positionId: 'hard-cut-2',
@@ -116,7 +116,7 @@ describe('historical-loss-miner', () => {
         exitReason: 'probe_hard_cut',
         netSol: -0.005,
         netSolTokenOnly: -0.003,
-        survivalFlags: ['SMART_V3_FRESH_KOLS_2'],
+        survivalFlags: ['SMART_V3_FRESH_KOLS_2', 'SMART_V3_LAST_BUY_AGE_3S'],
       }),
     ]));
 
@@ -142,6 +142,23 @@ describe('historical-loss-miner', () => {
       rows: 3,
       walletNetSol: -0.009,
     });
+    expect(report.diagnosticProxyCandidates.find((row) =>
+      row.diagnosticLabel === 'rotation_dead_on_arrival' &&
+      row.proxyLabel === 'ROTATION_V1_SMALL_BUYS_4'
+    )).toMatchObject({
+      diagnosticBucketType: 'exit',
+      lane: 'rotation',
+      diagnosticRows: 3,
+      proxyRows: 3,
+      targetProxyRows: 3,
+      diagnosticCoveragePct: 1,
+      walletNetSol: -0.009,
+      savedLossSol: 0.009,
+      missedWinnerRows: 0,
+      missedActual5xRows: 0,
+      verdict: 'READY_FOR_FRESH_SHADOW',
+      nextAction: 'track as paper-shadow diagnostic proxy; require fresh rows before live review',
+    });
     expect(report.preEntryProxyCandidates.find((row) =>
       row.label === 'ROTATION_V1_SMALL_BUYS_4'
     )).toMatchObject({
@@ -158,7 +175,6 @@ describe('historical-loss-miner', () => {
     expect(report.paperShadowGateQueue.find((row) =>
       row.label === 'ROTATION_V1_SMALL_BUYS_4'
     )).toMatchObject({
-      rank: 1,
       lane: 'rotation',
       historicalRows: 3,
       historicalWalletNetSol: -0.009,
@@ -170,7 +186,6 @@ describe('historical-loss-miner', () => {
     expect(report.paperShadowBlockCounters.find((row) =>
       row.label === 'ROTATION_V1_SMALL_BUYS_4'
     )).toMatchObject({
-      rank: 1,
       lane: 'rotation',
       shadowBlockedRows: 3,
       blockedWalletNetSol: -0.009,
@@ -218,6 +233,128 @@ describe('historical-loss-miner', () => {
       rows: 2,
       walletNetSol: -0.011,
       actual5xRows: 0,
+    });
+    expect(report.smartV3AdmissionCandidates.find((row) =>
+      row.proxyLabel === 'SMART_V3_LAST_BUY_AGE_3S'
+    )).toMatchObject({
+      targetRows: 2,
+      proxyRows: 2,
+      targetProxyRows: 2,
+      targetCoveragePct: 1,
+      walletNetSol: -0.011,
+      savedLossSol: 0.011,
+      missedWinnerRows: 0,
+      missedT2Rows: 0,
+      missedActual5xRows: 0,
+      verdict: 'READY_FOR_FRESH_SHADOW',
+      nextAction: 'track as smart-v3 paper-only no-trade shadow; require fresh rows before live review',
+    });
+    expect(report.smartV3AdmissionCandidates.find((row) =>
+      row.proxyLabel === 'SMART_V3_FRESH_KOLS_2'
+    )).toMatchObject({
+      missedActual5xRows: 1,
+      verdict: 'REJECT_TAIL_KILL',
+    });
+    expect(report.paperShadowDecisionLedger.find((row) =>
+      row.kind === 'smart_v3_admission' && row.label === 'SMART_V3_LAST_BUY_AGE_3S'
+    )).toMatchObject({
+      lane: 'smart_v3',
+      state: 'PAPER_SHADOW_ONLY',
+      rows: 2,
+      savedLossSol: 0.011,
+      missedWinnerRows: 0,
+      missedT2Rows: 0,
+      missedActual5xRows: 0,
+      netImpactSol: 0.011,
+      sourceVerdict: 'READY_FOR_FRESH_SHADOW',
+    });
+    expect(report.paperShadowDecisionLedger.find((row) =>
+      row.kind === 'conjunctive_split' && row.label === 'ROTATION_V1_SMALL_BUYS_3 + ROTATION_V1_KOLS_1'
+    )).toMatchObject({
+      state: 'WAIT_FRESH',
+      rows: 2,
+      savedLossSol: 0.005,
+      missedActual5xRows: 0,
+    });
+    expect(report.promotionPackets.find((row) =>
+      row.kind === 'smart_v3_admission' && row.label === 'SMART_V3_LAST_BUY_AGE_3S'
+    )).toMatchObject({
+      verdict: 'PAPER_SHADOW_ONLY',
+      rows: 2,
+      netImpactSol: 0.011,
+      blockers: ['fresh validation required'],
+      nextAction: 'keep report-only paper shadow and collect fresh validation rows',
+    });
+    expect(report.promotionPackets.find((row) =>
+      row.kind === 'conjunctive_split' && row.label === 'ROTATION_V1_SMALL_BUYS_3 + ROTATION_V1_KOLS_1'
+    )).toMatchObject({
+      verdict: 'WAIT_FRESH_ROWS',
+      blockers: ['fresh rows required'],
+      nextAction: 'do not promote; wait for fresh/current-session rows',
+    });
+    expect(report.promotionWatchlist).toMatchObject({
+      readyForLiveReview: 0,
+      primaryAction: 'keep paper-shadow only; collect fresh validation rows',
+    });
+    expect(report.promotionWatchlist.rows.find((row) =>
+      row.queue === 'paper_shadow'
+    )).toMatchObject({
+      queue: 'paper_shadow',
+      verdict: 'PAPER_SHADOW_ONLY',
+    });
+    expect(report.promotionWatchlist.rows.find((row) =>
+      row.label === 'ROTATION_V1_SMALL_BUYS_3 + ROTATION_V1_KOLS_1'
+    )).toMatchObject({
+      queue: 'wait_fresh',
+      verdict: 'WAIT_FRESH_ROWS',
+    });
+    expect(report.paperShadowFreshCounters.find((row) =>
+      row.window === '24h' &&
+      row.kind === 'smart_v3_admission' &&
+      row.label === 'SMART_V3_LAST_BUY_AGE_3S'
+    )).toMatchObject({
+      rows: 2,
+      requiredRows: 30,
+      rowsRemaining: 28,
+      netImpactSol: 0.011,
+      savedLossSol: 0.011,
+      missedWinnerRows: 0,
+      missedT2Rows: 0,
+      missedActual5xRows: 0,
+      verdict: 'WAIT_FRESH_ROWS',
+      nextAction: 'keep paper-shadow only; collect fresh rows',
+    });
+    expect(report.paperShadowFreshReadiness.find((row) =>
+      row.kind === 'smart_v3_admission' && row.label === 'SMART_V3_LAST_BUY_AGE_3S'
+    )).toMatchObject({
+      bestWindow: '24h',
+      rows: 2,
+      requiredRows: 30,
+      rowsRemaining: 28,
+      netImpactSol: 0.011,
+      missedWinnerRows: 0,
+      missedT2Rows: 0,
+      missedActual5xRows: 0,
+      verdict: 'WAIT_FRESH_ROWS',
+      nextAction: 'keep paper-shadow only; collect fresh rows',
+    });
+    expect(report.paperShadowFreshCounters.find((row) =>
+      row.window === '24h' &&
+      row.kind === 'conjunctive_split' &&
+      row.label === 'ROTATION_V1_SMALL_BUYS_3 + ROTATION_V1_KOLS_1'
+    )).toMatchObject({
+      rows: 1,
+      netImpactSol: 0.003,
+      verdict: 'WAIT_FRESH_ROWS',
+    });
+    expect(report.paperShadowFreshReadiness.find((row) =>
+      row.kind === 'conjunctive_split' && row.label === 'ROTATION_V1_SMALL_BUYS_3 + ROTATION_V1_KOLS_1'
+    )).toMatchObject({
+      bestWindow: '7d',
+      rows: 2,
+      rowsRemaining: 28,
+      netImpactSol: 0.005,
+      verdict: 'WAIT_FRESH_ROWS',
     });
     expect(report.counterfactuals.find((row) =>
       row.label === 'counterfactual:zero_mfe_wallet_loss'
@@ -275,6 +412,14 @@ describe('historical-loss-miner', () => {
     expect(markdown).toContain('Conjunctive Proxy Splits');
     expect(markdown).toContain('Fresh Split Validation');
     expect(markdown).toContain('Fresh Split Readiness');
+    expect(markdown).toContain('Diagnostic To Pre-Entry Proxy Candidates');
+    expect(markdown).toContain('Smart V3 Loser Admission Candidates');
+    expect(markdown).toContain('Paper Shadow Decision Ledger');
+    expect(markdown).toContain('Promotion Watchlist');
+    expect(markdown).toContain('Primary action: keep paper-shadow only; collect fresh validation rows');
+    expect(markdown).toContain('Paper Shadow Fresh Readiness');
+    expect(markdown).toContain('Paper Shadow Fresh Counters');
+    expect(markdown).toContain('Promotion Packets');
     expect(markdown).toContain('remaining');
     expect(markdown).toContain('track conjunctive paper shadow block counter');
     expect(markdown).toContain('saved loss');

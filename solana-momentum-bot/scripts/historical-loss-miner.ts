@@ -55,6 +55,13 @@ interface HistoricalLossReport {
   freshSplitValidations: FreshSplitValidation[];
   preEntryProxyCandidates: BucketStats[];
   postCloseDiagnosticCandidates: BucketStats[];
+  diagnosticProxyCandidates: DiagnosticProxyCandidate[];
+  smartV3AdmissionCandidates: SmartV3AdmissionCandidate[];
+  paperShadowDecisionLedger: PaperShadowDecisionLedgerItem[];
+  promotionWatchlist: PromotionWatchlist;
+  promotionPackets: PromotionPacketItem[];
+  paperShadowFreshReadiness: PaperShadowFreshReadiness[];
+  paperShadowFreshCounters: PaperShadowFreshCounter[];
   cutCandidates: BucketStats[];
   exitBuckets: BucketStats[];
   armExitBuckets: BucketStats[];
@@ -136,6 +143,162 @@ interface FreshSplitReadiness {
   missedWinnerRows: number;
   missedActual5xRows: number;
   verdict: 'READY' | 'WAIT_FRESH_ROWS' | 'STALE_NO_24H_ROWS' | 'REJECT_FALSE_POSITIVES' | 'REJECT_NO_SAVED_LOSS';
+  nextAction: string;
+}
+
+interface DiagnosticProxyCandidate {
+  rank: number;
+  diagnosticLabel: string;
+  diagnosticBucketType: string;
+  lane: string;
+  proxyLabel: string;
+  diagnosticRows: number;
+  proxyRows: number;
+  targetProxyRows: number;
+  diagnosticCoveragePct: number;
+  walletNetSol: number;
+  savedLossSol: number;
+  missedWinnerRows: number;
+  missedWinnerSol: number;
+  missedActual5xRows: number;
+  p90MfePct: number | null;
+  verdict:
+    | 'READY_FOR_FRESH_SHADOW'
+    | 'WAIT_PROXY_SAMPLE'
+    | 'REJECT_FALSE_POSITIVES'
+    | 'REJECT_TAIL_KILL'
+    | 'REJECT_HIGH_MFE'
+    | 'REJECT_NO_SAVED_LOSS';
+  nextAction: string;
+}
+
+interface SmartV3AdmissionCandidate {
+  rank: number;
+  proxyLabel: string;
+  targetRows: number;
+  proxyRows: number;
+  targetProxyRows: number;
+  targetCoveragePct: number;
+  walletNetSol: number;
+  savedLossSol: number;
+  missedWinnerRows: number;
+  missedWinnerSol: number;
+  missedT2Rows: number;
+  missedActual5xRows: number;
+  p90MfePct: number | null;
+  verdict:
+    | 'READY_FOR_FRESH_SHADOW'
+    | 'WAIT_PROXY_SAMPLE'
+    | 'REJECT_FALSE_POSITIVES'
+    | 'REJECT_TAIL_KILL'
+    | 'REJECT_HIGH_MFE'
+    | 'REJECT_NO_SAVED_LOSS';
+  nextAction: string;
+}
+
+interface PaperShadowDecisionLedgerItem {
+  rank: number;
+  kind: 'pre_entry_proxy' | 'conjunctive_split' | 'diagnostic_proxy' | 'smart_v3_admission';
+  label: string;
+  lane: string;
+  rows: number;
+  walletNetSol: number;
+  savedLossSol: number;
+  missedWinnerRows: number;
+  missedWinnerSol: number;
+  missedT2Rows: number;
+  missedActual5xRows: number;
+  netImpactSol: number;
+  state: 'READY_FOR_REVIEW' | 'PAPER_SHADOW_ONLY' | 'WAIT_FRESH' | 'REJECT';
+  sourceVerdict: string;
+  nextAction: string;
+}
+
+interface PromotionPacketItem {
+  rank: number;
+  kind: PaperShadowDecisionLedgerItem['kind'];
+  label: string;
+  lane: string;
+  verdict: 'READY_FOR_LIVE_REVIEW' | 'PAPER_SHADOW_ONLY' | 'WAIT_FRESH_ROWS' | 'REJECTED';
+  rows: number;
+  netImpactSol: number;
+  savedLossSol: number;
+  missedWinnerRows: number;
+  missedT2Rows: number;
+  missedActual5xRows: number;
+  blockers: string[];
+  liveReviewGate: string;
+  nextAction: string;
+}
+
+interface PromotionWatchlist {
+  readyForLiveReview: number;
+  paperShadowOnly: number;
+  waitFreshRows: number;
+  rejected: number;
+  primaryAction: string;
+  rows: PromotionWatchlistItem[];
+}
+
+interface PromotionWatchlistItem {
+  rank: number;
+  queue: 'live_review' | 'paper_shadow' | 'wait_fresh' | 'rejected';
+  kind: PromotionPacketItem['kind'];
+  label: string;
+  lane: string;
+  verdict: PromotionPacketItem['verdict'];
+  rows: number;
+  netImpactSol: number;
+  savedLossSol: number;
+  blockers: string[];
+  nextAction: string;
+}
+
+interface PaperShadowFreshCounter {
+  window: string;
+  since: string;
+  kind: PromotionPacketItem['kind'];
+  label: string;
+  lane: string;
+  rows: number;
+  requiredRows: number;
+  rowsRemaining: number;
+  walletNetSol: number;
+  savedLossSol: number;
+  missedWinnerRows: number;
+  missedWinnerSol: number;
+  missedT2Rows: number;
+  missedActual5xRows: number;
+  netImpactSol: number;
+  verdict:
+    | 'READY_FRESH_REVIEW'
+    | 'WAIT_FRESH_ROWS'
+    | 'REJECT_FALSE_POSITIVES'
+    | 'REJECT_TAIL_KILL'
+    | 'REJECT_NO_SAVED_LOSS';
+  nextAction: string;
+}
+
+interface PaperShadowFreshReadiness {
+  kind: PromotionPacketItem['kind'];
+  label: string;
+  lane: string;
+  bestWindow: string | null;
+  rows: number;
+  requiredRows: number;
+  rowsRemaining: number;
+  netImpactSol: number;
+  savedLossSol: number;
+  missedWinnerRows: number;
+  missedT2Rows: number;
+  missedActual5xRows: number;
+  verdict:
+    | 'READY_FRESH_REVIEW'
+    | 'WAIT_FRESH_ROWS'
+    | 'STALE_NO_24H_ROWS'
+    | 'REJECT_FALSE_POSITIVES'
+    | 'REJECT_TAIL_KILL'
+    | 'REJECT_NO_SAVED_LOSS';
   nextAction: string;
 }
 
@@ -288,6 +451,16 @@ function isConjunctiveSplitFlag(flag: string): boolean {
   if (flag.startsWith('EXT_')) return false;
   if (flag.startsWith('UNCLEAN_TOKEN:top10_')) return false;
   return true;
+}
+
+function isDiagnosticProxyFlag(flag: string): boolean {
+  if (!isConjunctiveSplitFlag(flag)) return false;
+  return ![
+    'ROTATION_UNDERFILL_KOLS_1',
+    'ROTATION_UNDERFILL_REF_KOL_WEIGHTED_FILL',
+    'ROTATION_UNDERFILL_SA_ONLY',
+    'ROTATION_UNDERFILL_V1',
+  ].includes(flag);
 }
 
 function summarize(bucketType: string, label: string, rows: JsonRow[]): BucketStats {
@@ -528,6 +701,763 @@ function buildConjunctiveProxySplit(
   };
 }
 
+function buildDiagnosticProxyCandidates(
+  diagnostics: BucketStats[],
+  rows: JsonRow[],
+  args: Args
+): DiagnosticProxyCandidate[] {
+  const proxyMinRows = Math.max(2, Math.ceil(args.minRows / 2));
+  const candidates = diagnostics
+    .slice(0, 25)
+    .flatMap((diagnostic) =>
+      buildDiagnosticProxyCandidatesForTarget(diagnostic, rows, proxyMinRows, args.maxP90Mfe)
+        .sort(compareDiagnosticProxyCandidates)
+        .slice(0, 5)
+    )
+    .sort(compareDiagnosticProxyCandidates)
+    .slice(0, 50);
+  return candidates.map((candidate, index) => ({ ...candidate, rank: index + 1 }));
+}
+
+function buildDiagnosticProxyCandidatesForTarget(
+  diagnostic: BucketStats,
+  rows: JsonRow[],
+  proxyMinRows: number,
+  maxP90Mfe: number
+): DiagnosticProxyCandidate[] {
+  const targetRows = rows.filter((row) => matchesDiagnosticBucket(row, diagnostic));
+  if (targetRows.length === 0) return [];
+  const targetLabels = new Set(diagnosticProxyLabels(targetRows));
+  const buckets = new Map<string, { proxyRows: JsonRow[]; targetProxyRows: JsonRow[] }>();
+  for (const row of rows) {
+    const isTargetRow = matchesDiagnosticBucket(row, diagnostic);
+    for (const label of diagnosticProxyLabelsForFlags(flags(row).filter(isDiagnosticProxyFlag).sort())) {
+      if (!targetLabels.has(label)) continue;
+      const bucket = buckets.get(label) ?? { proxyRows: [], targetProxyRows: [] };
+      bucket.proxyRows.push(row);
+      if (isTargetRow) bucket.targetProxyRows.push(row);
+      buckets.set(label, bucket);
+    }
+  }
+  return [...buckets.entries()].flatMap(([proxyLabel, bucket]) => {
+    const { proxyRows, targetProxyRows } = bucket;
+    if (targetProxyRows.length < proxyMinRows) return [];
+    return [buildDiagnosticProxyCandidate({
+      diagnostic,
+      proxyLabel,
+      targetRows,
+      proxyRows,
+      targetProxyRows,
+      proxyMinRows,
+      maxP90Mfe,
+    })];
+  });
+}
+
+function diagnosticProxyLabels(rows: JsonRow[]): string[] {
+  const labels = new Set<string>();
+  for (const row of rows) {
+    for (const label of diagnosticProxyLabelsForFlags(flags(row).filter(isDiagnosticProxyFlag).sort())) labels.add(label);
+  }
+  return [...labels];
+}
+
+function diagnosticProxyLabelsForFlags(rowFlags: string[]): string[] {
+  const labels: string[] = [];
+  for (const flag of rowFlags) labels.push(flag);
+  for (let i = 0; i < rowFlags.length; i += 1) {
+    for (let j = i + 1; j < rowFlags.length; j += 1) {
+      labels.push(`${rowFlags[i]} + ${rowFlags[j]}`);
+    }
+  }
+  return labels;
+}
+
+function buildDiagnosticProxyCandidate(input: {
+  diagnostic: BucketStats;
+  proxyLabel: string;
+  targetRows: JsonRow[];
+  proxyRows: JsonRow[];
+  targetProxyRows: JsonRow[];
+  proxyMinRows: number;
+  maxP90Mfe: number;
+}): DiagnosticProxyCandidate {
+  const walletNetSolValue = round(input.proxyRows.reduce((sum, row) => sum + walletNetSol(row), 0));
+  const savedLossSol = round(input.proxyRows
+    .filter((row) => walletNetSol(row) < 0)
+    .reduce((sum, row) => sum - walletNetSol(row), 0));
+  const missedWinnerRows = input.proxyRows.filter((row) => walletNetSol(row) > 0).length;
+  const missedWinnerSol = round(input.proxyRows
+    .filter((row) => walletNetSol(row) > 0)
+    .reduce((sum, row) => sum + walletNetSol(row), 0));
+  const missedActual5xRows = input.proxyRows.filter((row) => mfePct(row) >= 4).length;
+  const p90MfePct = percentile(input.proxyRows.map(mfePct), 0.9);
+  const verdict = diagnosticProxyVerdict({
+    proxyRows: input.proxyRows.length,
+    proxyMinRows: input.proxyMinRows,
+    walletNetSol: walletNetSolValue,
+    savedLossSol,
+    missedWinnerRows,
+    missedActual5xRows,
+    p90MfePct,
+    maxP90Mfe: input.maxP90Mfe,
+  });
+  return {
+    rank: 0,
+    diagnosticLabel: input.diagnostic.label,
+    diagnosticBucketType: input.diagnostic.bucketType,
+    lane: majorityLane(input.targetRows),
+    proxyLabel: input.proxyLabel,
+    diagnosticRows: input.targetRows.length,
+    proxyRows: input.proxyRows.length,
+    targetProxyRows: input.targetProxyRows.length,
+    diagnosticCoveragePct: round(input.targetProxyRows.length / Math.max(1, input.targetRows.length)),
+    walletNetSol: walletNetSolValue,
+    savedLossSol,
+    missedWinnerRows,
+    missedWinnerSol,
+    missedActual5xRows,
+    p90MfePct,
+    verdict,
+    nextAction: diagnosticProxyNextAction(verdict),
+  };
+}
+
+function matchesDiagnosticBucket(row: JsonRow, bucket: BucketStats): boolean {
+  if (bucket.bucketType === 'exit') return str(row.exitReason, row.closeReason) === bucket.label;
+  if (bucket.bucketType === 'arm_exit') {
+    return `${str(row.profileArm, row.armName, row.__lane)}::${str(row.exitReason, row.closeReason)}` === bucket.label;
+  }
+  return false;
+}
+
+function majorityLane(rows: JsonRow[]): string {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const lane = strategyLane(row);
+    counts.set(lane, (counts.get(lane) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] ?? 'unknown';
+}
+
+function strategyLane(row: JsonRow): string {
+  const raw = str(row.profileArm, row.armName, row.entryReason, row.__lane);
+  if (raw.includes('smart_v3')) return 'smart_v3';
+  if (raw.includes('rotation')) return 'rotation';
+  return str(row.__lane, raw);
+}
+
+function diagnosticProxyVerdict(input: {
+  proxyRows: number;
+  proxyMinRows: number;
+  walletNetSol: number;
+  savedLossSol: number;
+  missedWinnerRows: number;
+  missedActual5xRows: number;
+  p90MfePct: number | null;
+  maxP90Mfe: number;
+}): DiagnosticProxyCandidate['verdict'] {
+  if (input.missedActual5xRows > 0) return 'REJECT_TAIL_KILL';
+  if (input.missedWinnerRows > 0) return 'REJECT_FALSE_POSITIVES';
+  if (input.proxyRows < input.proxyMinRows) return 'WAIT_PROXY_SAMPLE';
+  if (input.walletNetSol >= 0 || input.savedLossSol <= 0) return 'REJECT_NO_SAVED_LOSS';
+  if ((input.p90MfePct ?? 0) > input.maxP90Mfe) return 'REJECT_HIGH_MFE';
+  return 'READY_FOR_FRESH_SHADOW';
+}
+
+function diagnosticProxyNextAction(verdict: DiagnosticProxyCandidate['verdict']): string {
+  if (verdict === 'READY_FOR_FRESH_SHADOW') return 'track as paper-shadow diagnostic proxy; require fresh rows before live review';
+  if (verdict === 'WAIT_PROXY_SAMPLE') return 'keep collecting proxy sample';
+  if (verdict === 'REJECT_TAIL_KILL') return 'discard; proxy blocks actual 5x rows';
+  if (verdict === 'REJECT_FALSE_POSITIVES') return 'split again; proxy blocks wallet winners';
+  if (verdict === 'REJECT_HIGH_MFE') return 'do not block; proxy still has meaningful MFE';
+  return 'discard unless saved-loss evidence returns';
+}
+
+function compareDiagnosticProxyCandidates(a: DiagnosticProxyCandidate, b: DiagnosticProxyCandidate): number {
+  return diagnosticProxyRank(a.verdict) - diagnosticProxyRank(b.verdict) ||
+    b.savedLossSol - a.savedLossSol ||
+    b.targetProxyRows - a.targetProxyRows ||
+    a.diagnosticLabel.localeCompare(b.diagnosticLabel) ||
+    a.proxyLabel.localeCompare(b.proxyLabel);
+}
+
+function diagnosticProxyRank(verdict: DiagnosticProxyCandidate['verdict']): number {
+  if (verdict === 'READY_FOR_FRESH_SHADOW') return 0;
+  if (verdict === 'WAIT_PROXY_SAMPLE') return 1;
+  if (verdict === 'REJECT_HIGH_MFE') return 2;
+  if (verdict === 'REJECT_FALSE_POSITIVES') return 3;
+  if (verdict === 'REJECT_TAIL_KILL') return 4;
+  return 5;
+}
+
+function buildSmartV3AdmissionCandidates(rows: JsonRow[], args: Args): SmartV3AdmissionCandidate[] {
+  const targetRows = rows.filter((row) => isSmartV3LoserAdmissionTarget(row, args.maxP90Mfe));
+  const proxyMinRows = Math.max(2, Math.ceil(args.minRows / 2));
+  if (targetRows.length === 0) return [];
+  const targetLabels = new Set(diagnosticProxyLabels(targetRows));
+  const buckets = new Map<string, { proxyRows: JsonRow[]; targetProxyRows: JsonRow[] }>();
+  for (const row of rows.filter((item) => isLane(item, 'smart_v3'))) {
+    const isTargetRow = isSmartV3LoserAdmissionTarget(row, args.maxP90Mfe);
+    for (const label of diagnosticProxyLabelsForFlags(flags(row).filter(isDiagnosticProxyFlag).sort())) {
+      if (!targetLabels.has(label)) continue;
+      const bucket = buckets.get(label) ?? { proxyRows: [], targetProxyRows: [] };
+      bucket.proxyRows.push(row);
+      if (isTargetRow) bucket.targetProxyRows.push(row);
+      buckets.set(label, bucket);
+    }
+  }
+  return [...buckets.entries()]
+    .flatMap(([proxyLabel, bucket]) => {
+      if (bucket.targetProxyRows.length < proxyMinRows) return [];
+      return [buildSmartV3AdmissionCandidate(proxyLabel, targetRows, bucket.proxyRows, bucket.targetProxyRows, proxyMinRows, args.maxP90Mfe)];
+    })
+    .sort(compareSmartV3AdmissionCandidates)
+    .slice(0, 25)
+    .map((candidate, index) => ({ ...candidate, rank: index + 1 }));
+}
+
+function isSmartV3LoserAdmissionTarget(row: JsonRow, lowMfeThreshold: number): boolean {
+  const exitReason = str(row.exitReason, row.closeReason);
+  if (!isLane(row, 'smart_v3') || walletNetSol(row) >= 0) return false;
+  if (exitReason === 'smart_v3_mae_fast_fail') return true;
+  return exitReason === 'probe_hard_cut' && mfePct(row) <= lowMfeThreshold;
+}
+
+function buildSmartV3AdmissionCandidate(
+  proxyLabel: string,
+  targetRows: JsonRow[],
+  proxyRows: JsonRow[],
+  targetProxyRows: JsonRow[],
+  proxyMinRows: number,
+  maxP90Mfe: number
+): SmartV3AdmissionCandidate {
+  const walletNetSolValue = round(proxyRows.reduce((sum, row) => sum + walletNetSol(row), 0));
+  const savedLossSol = round(proxyRows
+    .filter((row) => walletNetSol(row) < 0)
+    .reduce((sum, row) => sum - walletNetSol(row), 0));
+  const missedWinnerRows = proxyRows.filter((row) => walletNetSol(row) > 0).length;
+  const missedWinnerSol = round(proxyRows
+    .filter((row) => walletNetSol(row) > 0)
+    .reduce((sum, row) => sum + walletNetSol(row), 0));
+  const missedT2Rows = proxyRows.filter((row) => mfePct(row) >= 1).length;
+  const missedActual5xRows = proxyRows.filter((row) => mfePct(row) >= 4).length;
+  const p90MfePct = percentile(proxyRows.map(mfePct), 0.9);
+  const verdict = smartV3AdmissionVerdict({
+    proxyRows: proxyRows.length,
+    proxyMinRows,
+    walletNetSol: walletNetSolValue,
+    savedLossSol,
+    missedWinnerRows,
+    missedT2Rows,
+    missedActual5xRows,
+    p90MfePct,
+    maxP90Mfe,
+  });
+  return {
+    rank: 0,
+    proxyLabel,
+    targetRows: targetRows.length,
+    proxyRows: proxyRows.length,
+    targetProxyRows: targetProxyRows.length,
+    targetCoveragePct: round(targetProxyRows.length / Math.max(1, targetRows.length)),
+    walletNetSol: walletNetSolValue,
+    savedLossSol,
+    missedWinnerRows,
+    missedWinnerSol,
+    missedT2Rows,
+    missedActual5xRows,
+    p90MfePct,
+    verdict,
+    nextAction: smartV3AdmissionNextAction(verdict),
+  };
+}
+
+function smartV3AdmissionVerdict(input: {
+  proxyRows: number;
+  proxyMinRows: number;
+  walletNetSol: number;
+  savedLossSol: number;
+  missedWinnerRows: number;
+  missedT2Rows: number;
+  missedActual5xRows: number;
+  p90MfePct: number | null;
+  maxP90Mfe: number;
+}): SmartV3AdmissionCandidate['verdict'] {
+  if (input.missedActual5xRows > 0 || input.missedT2Rows > 0) return 'REJECT_TAIL_KILL';
+  if (input.missedWinnerRows > 0) return 'REJECT_FALSE_POSITIVES';
+  if (input.proxyRows < input.proxyMinRows) return 'WAIT_PROXY_SAMPLE';
+  if (input.walletNetSol >= 0 || input.savedLossSol <= 0) return 'REJECT_NO_SAVED_LOSS';
+  if ((input.p90MfePct ?? 0) > input.maxP90Mfe) return 'REJECT_HIGH_MFE';
+  return 'READY_FOR_FRESH_SHADOW';
+}
+
+function smartV3AdmissionNextAction(verdict: SmartV3AdmissionCandidate['verdict']): string {
+  if (verdict === 'READY_FOR_FRESH_SHADOW') return 'track as smart-v3 paper-only no-trade shadow; require fresh rows before live review';
+  if (verdict === 'WAIT_PROXY_SAMPLE') return 'keep collecting smart-v3 loser proxy sample';
+  if (verdict === 'REJECT_TAIL_KILL') return 'discard; proxy blocks T2 or actual 5x rows';
+  if (verdict === 'REJECT_FALSE_POSITIVES') return 'split again; proxy blocks wallet winners';
+  if (verdict === 'REJECT_HIGH_MFE') return 'do not block; smart-v3 proxy still has meaningful MFE';
+  return 'discard unless saved-loss evidence returns';
+}
+
+function compareSmartV3AdmissionCandidates(a: SmartV3AdmissionCandidate, b: SmartV3AdmissionCandidate): number {
+  return smartV3AdmissionRank(a.verdict) - smartV3AdmissionRank(b.verdict) ||
+    b.savedLossSol - a.savedLossSol ||
+    b.targetProxyRows - a.targetProxyRows ||
+    a.proxyLabel.localeCompare(b.proxyLabel);
+}
+
+function smartV3AdmissionRank(verdict: SmartV3AdmissionCandidate['verdict']): number {
+  if (verdict === 'READY_FOR_FRESH_SHADOW') return 0;
+  if (verdict === 'WAIT_PROXY_SAMPLE') return 1;
+  if (verdict === 'REJECT_HIGH_MFE') return 2;
+  if (verdict === 'REJECT_FALSE_POSITIVES') return 3;
+  if (verdict === 'REJECT_TAIL_KILL') return 4;
+  return 5;
+}
+
+function buildPaperShadowDecisionLedger(input: {
+  blockCounters: PaperShadowBlockCounter[];
+  splitReadiness: FreshSplitReadiness[];
+  diagnosticProxies: DiagnosticProxyCandidate[];
+  smartV3Candidates: SmartV3AdmissionCandidate[];
+}): PaperShadowDecisionLedgerItem[] {
+  const rows: PaperShadowDecisionLedgerItem[] = [
+    ...input.blockCounters.map((item) => paperShadowLedgerFromBlockCounter(item)),
+    ...input.splitReadiness.map((item) => paperShadowLedgerFromSplitReadiness(item)),
+    ...input.diagnosticProxies.map((item) => paperShadowLedgerFromDiagnosticProxy(item)),
+    ...input.smartV3Candidates.map((item) => paperShadowLedgerFromSmartV3Admission(item)),
+  ];
+  return rows
+    .sort((a, b) =>
+      paperShadowStateRank(a.state) - paperShadowStateRank(b.state) ||
+      b.netImpactSol - a.netImpactSol ||
+      b.savedLossSol - a.savedLossSol ||
+      a.label.localeCompare(b.label)
+    )
+    .slice(0, 75)
+    .map((item, index) => ({ ...item, rank: index + 1 }));
+}
+
+function paperShadowLedgerFromBlockCounter(item: PaperShadowBlockCounter): PaperShadowDecisionLedgerItem {
+  return {
+    rank: 0,
+    kind: 'pre_entry_proxy',
+    label: item.label,
+    lane: item.lane,
+    rows: item.shadowBlockedRows,
+    walletNetSol: item.blockedWalletNetSol,
+    savedLossSol: item.savedLossSol,
+    missedWinnerRows: item.missedWinnerRows,
+    missedWinnerSol: item.missedWinnerSol,
+    missedT2Rows: 0,
+    missedActual5xRows: item.missedActual5xRows,
+    netImpactSol: round(item.savedLossSol - item.missedWinnerSol),
+    state: paperShadowStateFromBlockVerdict(item.verdict),
+    sourceVerdict: item.verdict,
+    nextAction: item.nextAction,
+  };
+}
+
+function paperShadowLedgerFromSplitReadiness(item: FreshSplitReadiness): PaperShadowDecisionLedgerItem {
+  return {
+    rank: 0,
+    kind: 'conjunctive_split',
+    label: item.label,
+    lane: item.lane,
+    rows: item.bestWindowRows,
+    walletNetSol: item.walletNetSol,
+    savedLossSol: item.savedLossSol,
+    missedWinnerRows: item.missedWinnerRows,
+    missedWinnerSol: 0,
+    missedT2Rows: 0,
+    missedActual5xRows: item.missedActual5xRows,
+    netImpactSol: item.savedLossSol,
+    state: paperShadowStateFromFreshVerdict(item.verdict),
+    sourceVerdict: item.verdict,
+    nextAction: item.nextAction,
+  };
+}
+
+function paperShadowLedgerFromDiagnosticProxy(item: DiagnosticProxyCandidate): PaperShadowDecisionLedgerItem {
+  return {
+    rank: 0,
+    kind: 'diagnostic_proxy',
+    label: `${item.diagnosticBucketType}:${item.diagnosticLabel} -> ${item.proxyLabel}`,
+    lane: item.lane,
+    rows: item.proxyRows,
+    walletNetSol: item.walletNetSol,
+    savedLossSol: item.savedLossSol,
+    missedWinnerRows: item.missedWinnerRows,
+    missedWinnerSol: item.missedWinnerSol,
+    missedT2Rows: 0,
+    missedActual5xRows: item.missedActual5xRows,
+    netImpactSol: round(item.savedLossSol - item.missedWinnerSol),
+    state: paperShadowStateFromProxyVerdict(item.verdict),
+    sourceVerdict: item.verdict,
+    nextAction: item.nextAction,
+  };
+}
+
+function paperShadowLedgerFromSmartV3Admission(item: SmartV3AdmissionCandidate): PaperShadowDecisionLedgerItem {
+  return {
+    rank: 0,
+    kind: 'smart_v3_admission',
+    label: item.proxyLabel,
+    lane: 'smart_v3',
+    rows: item.proxyRows,
+    walletNetSol: item.walletNetSol,
+    savedLossSol: item.savedLossSol,
+    missedWinnerRows: item.missedWinnerRows,
+    missedWinnerSol: item.missedWinnerSol,
+    missedT2Rows: item.missedT2Rows,
+    missedActual5xRows: item.missedActual5xRows,
+    netImpactSol: round(item.savedLossSol - item.missedWinnerSol),
+    state: paperShadowStateFromProxyVerdict(item.verdict),
+    sourceVerdict: item.verdict,
+    nextAction: item.nextAction,
+  };
+}
+
+function paperShadowStateFromBlockVerdict(verdict: PaperShadowBlockCounter['verdict']): PaperShadowDecisionLedgerItem['state'] {
+  if (verdict === 'PASS_FRESH_SHADOW_REVIEW') return 'READY_FOR_REVIEW';
+  if (verdict === 'WAIT_FRESH_ROWS') return 'WAIT_FRESH';
+  return 'REJECT';
+}
+
+function paperShadowStateFromFreshVerdict(verdict: FreshSplitReadiness['verdict']): PaperShadowDecisionLedgerItem['state'] {
+  if (verdict === 'READY') return 'READY_FOR_REVIEW';
+  if (verdict === 'WAIT_FRESH_ROWS' || verdict === 'STALE_NO_24H_ROWS') return 'WAIT_FRESH';
+  return 'REJECT';
+}
+
+function paperShadowStateFromProxyVerdict(
+  verdict: DiagnosticProxyCandidate['verdict'] | SmartV3AdmissionCandidate['verdict']
+): PaperShadowDecisionLedgerItem['state'] {
+  if (verdict === 'READY_FOR_FRESH_SHADOW') return 'PAPER_SHADOW_ONLY';
+  if (verdict === 'WAIT_PROXY_SAMPLE') return 'WAIT_FRESH';
+  return 'REJECT';
+}
+
+function paperShadowStateRank(state: PaperShadowDecisionLedgerItem['state']): number {
+  if (state === 'READY_FOR_REVIEW') return 0;
+  if (state === 'PAPER_SHADOW_ONLY') return 1;
+  if (state === 'WAIT_FRESH') return 2;
+  return 3;
+}
+
+function buildPromotionPackets(ledger: PaperShadowDecisionLedgerItem[]): PromotionPacketItem[] {
+  return ledger
+    .map((item) => buildPromotionPacket(item))
+    .sort((a, b) =>
+      promotionVerdictRank(a.verdict) - promotionVerdictRank(b.verdict) ||
+      b.netImpactSol - a.netImpactSol ||
+      a.label.localeCompare(b.label)
+    )
+    .slice(0, 25)
+    .map((item, index) => ({ ...item, rank: index + 1 }));
+}
+
+function buildPromotionPacket(item: PaperShadowDecisionLedgerItem): PromotionPacketItem {
+  const blockers = promotionBlockers(item);
+  return {
+    rank: 0,
+    kind: item.kind,
+    label: item.label,
+    lane: item.lane,
+    verdict: promotionVerdict(item, blockers),
+    rows: item.rows,
+    netImpactSol: item.netImpactSol,
+    savedLossSol: item.savedLossSol,
+    missedWinnerRows: item.missedWinnerRows,
+    missedT2Rows: item.missedT2Rows,
+    missedActual5xRows: item.missedActual5xRows,
+    blockers,
+    liveReviewGate: 'fresh>=30; walletNet<0; netImpact>0; missedWinner=0; missedT2=0; missed5x=0',
+    nextAction: promotionNextAction(item, blockers),
+  };
+}
+
+function promotionBlockers(item: PaperShadowDecisionLedgerItem): string[] {
+  const blockers: string[] = [];
+  if (item.state === 'PAPER_SHADOW_ONLY') blockers.push('fresh validation required');
+  if (item.state === 'WAIT_FRESH') blockers.push('fresh rows required');
+  if (item.state === 'REJECT') blockers.push(`source rejected: ${item.sourceVerdict}`);
+  if (item.netImpactSol <= 0) blockers.push('net impact <= 0');
+  if (item.missedWinnerRows > 0) blockers.push('missed wallet winners');
+  if (item.missedT2Rows > 0) blockers.push('missed T2 rows');
+  if (item.missedActual5xRows > 0) blockers.push('missed actual 5x rows');
+  return blockers;
+}
+
+function promotionVerdict(
+  item: PaperShadowDecisionLedgerItem,
+  blockers: string[]
+): PromotionPacketItem['verdict'] {
+  if (item.state === 'READY_FOR_REVIEW' && blockers.length === 0) return 'READY_FOR_LIVE_REVIEW';
+  if (item.state === 'PAPER_SHADOW_ONLY') return 'PAPER_SHADOW_ONLY';
+  if (item.state === 'WAIT_FRESH') return 'WAIT_FRESH_ROWS';
+  return 'REJECTED';
+}
+
+function promotionNextAction(item: PaperShadowDecisionLedgerItem, blockers: string[]): string {
+  const verdict = promotionVerdict(item, blockers);
+  if (verdict === 'READY_FOR_LIVE_REVIEW') return 'manual live review packet is ready';
+  if (verdict === 'PAPER_SHADOW_ONLY') return 'keep report-only paper shadow and collect fresh validation rows';
+  if (verdict === 'WAIT_FRESH_ROWS') return 'do not promote; wait for fresh/current-session rows';
+  return 'do not promote';
+}
+
+function promotionVerdictRank(verdict: PromotionPacketItem['verdict']): number {
+  if (verdict === 'READY_FOR_LIVE_REVIEW') return 0;
+  if (verdict === 'PAPER_SHADOW_ONLY') return 1;
+  if (verdict === 'WAIT_FRESH_ROWS') return 2;
+  return 3;
+}
+
+function buildPromotionWatchlist(packets: PromotionPacketItem[]): PromotionWatchlist {
+  const ready = packets.filter((item) => item.verdict === 'READY_FOR_LIVE_REVIEW');
+  const paperShadow = packets.filter((item) => item.verdict === 'PAPER_SHADOW_ONLY');
+  const waitFresh = packets.filter((item) => item.verdict === 'WAIT_FRESH_ROWS');
+  const rejected = packets.filter((item) => item.verdict === 'REJECTED');
+  return {
+    readyForLiveReview: ready.length,
+    paperShadowOnly: paperShadow.length,
+    waitFreshRows: waitFresh.length,
+    rejected: rejected.length,
+    primaryAction: promotionWatchlistPrimaryAction({ ready, paperShadow, waitFresh }),
+    rows: [
+      ...ready.slice(0, 5),
+      ...paperShadow.slice(0, 5),
+      ...waitFresh.slice(0, 5),
+      ...rejected.slice(0, 5),
+    ].map((item, index) => ({
+      rank: index + 1,
+      queue: promotionWatchlistQueue(item.verdict),
+      kind: item.kind,
+      label: item.label,
+      lane: item.lane,
+      verdict: item.verdict,
+      rows: item.rows,
+      netImpactSol: item.netImpactSol,
+      savedLossSol: item.savedLossSol,
+      blockers: item.blockers,
+      nextAction: item.nextAction,
+    })),
+  };
+}
+
+function promotionWatchlistPrimaryAction(input: {
+  ready: PromotionPacketItem[];
+  paperShadow: PromotionPacketItem[];
+  waitFresh: PromotionPacketItem[];
+}): string {
+  if (input.ready.length > 0) return 'manual review required before any live change';
+  if (input.paperShadow.length > 0) return 'keep paper-shadow only; collect fresh validation rows';
+  if (input.waitFresh.length > 0) return 'no live change; wait for fresh/current-session rows';
+  return 'no promotable watchlist candidates';
+}
+
+function promotionWatchlistQueue(verdict: PromotionPacketItem['verdict']): PromotionWatchlistItem['queue'] {
+  if (verdict === 'READY_FOR_LIVE_REVIEW') return 'live_review';
+  if (verdict === 'PAPER_SHADOW_ONLY') return 'paper_shadow';
+  if (verdict === 'WAIT_FRESH_ROWS') return 'wait_fresh';
+  return 'rejected';
+}
+
+function buildPaperShadowFreshCounters(
+  packets: PromotionPacketItem[],
+  rows: JsonRow[],
+  args: Args
+): PaperShadowFreshCounter[] {
+  const requiredRows = Math.max(30, args.minRows);
+  const nowMs = args.nowMs ?? Date.now();
+  const activePackets = packets.filter((packet) => packet.verdict !== 'REJECTED');
+  return args.freshWindowSpecs.flatMap((window) => {
+    const sinceMs = freshWindowStart(window, nowMs);
+    const freshRows = rows.filter((row) => timeMs(row) >= sinceMs);
+    return activePackets.map((packet) => {
+      const matchedRows = freshRows.filter((row) => matchesPromotionPacket(row, packet));
+      return buildPaperShadowFreshCounter(window, sinceMs, packet, matchedRows, requiredRows);
+    });
+  }).sort((a, b) =>
+    paperShadowFreshVerdictRank(a.verdict) - paperShadowFreshVerdictRank(b.verdict) ||
+    b.rows - a.rows ||
+    a.label.localeCompare(b.label)
+  );
+}
+
+function matchesPromotionPacket(row: JsonRow, packet: PromotionPacketItem): boolean {
+  if (packet.lane !== 'mixed' && strategyLane(row) !== packet.lane) return false;
+  const requiredFlags = promotionPacketRequiredFlags(packet);
+  if (requiredFlags.length === 0) return false;
+  const rowFlags = flags(row);
+  return requiredFlags.every((flag) => rowFlags.includes(flag));
+}
+
+function promotionPacketRequiredFlags(packet: PromotionPacketItem): string[] {
+  const proxyLabel = packet.kind === 'diagnostic_proxy'
+    ? packet.label.split(' -> ').at(-1) ?? packet.label
+    : packet.label;
+  return proxyLabel.split(' + ').map((item) => item.trim()).filter(Boolean);
+}
+
+function buildPaperShadowFreshCounter(
+  window: string,
+  sinceMs: number,
+  packet: PromotionPacketItem,
+  rows: JsonRow[],
+  requiredRows: number
+): PaperShadowFreshCounter {
+  const walletNetSolValue = round(rows.reduce((sum, row) => sum + walletNetSol(row), 0));
+  const savedLossSol = round(rows
+    .filter((row) => walletNetSol(row) < 0)
+    .reduce((sum, row) => sum - walletNetSol(row), 0));
+  const missedWinnerRows = rows.filter((row) => walletNetSol(row) > 0).length;
+  const missedWinnerSol = round(rows
+    .filter((row) => walletNetSol(row) > 0)
+    .reduce((sum, row) => sum + walletNetSol(row), 0));
+  const missedT2Rows = rows.filter((row) => mfePct(row) >= 1).length;
+  const missedActual5xRows = rows.filter((row) => mfePct(row) >= 4).length;
+  const netImpactSol = round(savedLossSol - missedWinnerSol);
+  const verdict = paperShadowFreshVerdict({
+    rows: rows.length,
+    requiredRows,
+    netImpactSol,
+    missedWinnerRows,
+    missedT2Rows,
+    missedActual5xRows,
+  });
+  return {
+    window,
+    since: new Date(sinceMs).toISOString(),
+    kind: packet.kind,
+    label: packet.label,
+    lane: packet.lane,
+    rows: rows.length,
+    requiredRows,
+    rowsRemaining: Math.max(0, requiredRows - rows.length),
+    walletNetSol: walletNetSolValue,
+    savedLossSol,
+    missedWinnerRows,
+    missedWinnerSol,
+    missedT2Rows,
+    missedActual5xRows,
+    netImpactSol,
+    verdict,
+    nextAction: paperShadowFreshNextAction(verdict),
+  };
+}
+
+function paperShadowFreshVerdict(input: {
+  rows: number;
+  requiredRows: number;
+  netImpactSol: number;
+  missedWinnerRows: number;
+  missedT2Rows: number;
+  missedActual5xRows: number;
+}): PaperShadowFreshCounter['verdict'] {
+  if (input.missedActual5xRows > 0 || input.missedT2Rows > 0) return 'REJECT_TAIL_KILL';
+  if (input.missedWinnerRows > 0) return 'REJECT_FALSE_POSITIVES';
+  if (input.rows < input.requiredRows) return 'WAIT_FRESH_ROWS';
+  if (input.netImpactSol <= 0) return 'REJECT_NO_SAVED_LOSS';
+  return 'READY_FRESH_REVIEW';
+}
+
+function paperShadowFreshNextAction(verdict: PaperShadowFreshCounter['verdict']): string {
+  if (verdict === 'READY_FRESH_REVIEW') return 'eligible for manual live-review packet';
+  if (verdict === 'WAIT_FRESH_ROWS') return 'keep paper-shadow only; collect fresh rows';
+  if (verdict === 'REJECT_FALSE_POSITIVES') return 'discard or split; fresh rows block wallet winners';
+  if (verdict === 'REJECT_TAIL_KILL') return 'discard; fresh rows block T2 or actual 5x';
+  return 'discard unless fresh saved-loss evidence returns';
+}
+
+function paperShadowFreshVerdictRank(verdict: PaperShadowFreshCounter['verdict']): number {
+  if (verdict === 'READY_FRESH_REVIEW') return 0;
+  if (verdict === 'WAIT_FRESH_ROWS') return 1;
+  return 2;
+}
+
+function buildPaperShadowFreshReadiness(counters: PaperShadowFreshCounter[]): PaperShadowFreshReadiness[] {
+  const byCandidate = new Map<string, PaperShadowFreshCounter[]>();
+  for (const counter of counters) {
+    const key = `${counter.kind}|${counter.lane}|${counter.label}`;
+    byCandidate.set(key, [...(byCandidate.get(key) ?? []), counter]);
+  }
+  return [...byCandidate.values()]
+    .map(buildPaperShadowFreshReadinessItem)
+    .sort((a, b) =>
+      paperShadowFreshReadinessRank(a.verdict) - paperShadowFreshReadinessRank(b.verdict) ||
+      b.rows - a.rows ||
+      b.netImpactSol - a.netImpactSol ||
+      a.label.localeCompare(b.label)
+    );
+}
+
+function buildPaperShadowFreshReadinessItem(counters: PaperShadowFreshCounter[]): PaperShadowFreshReadiness {
+  const best = counters.reduce<PaperShadowFreshCounter | null>((current, counter) => {
+    if (!current) return counter;
+    if (counter.rows > current.rows) return counter;
+    if (counter.rows === current.rows && freshWindowRank(counter.window) < freshWindowRank(current.window)) return counter;
+    return current;
+  }, null);
+  const window24h = counters.find((counter) => counter.window === '24h');
+  const verdict = paperShadowFreshReadinessVerdict(counters, best, window24h);
+  return {
+    kind: best?.kind ?? 'pre_entry_proxy',
+    label: best?.label ?? 'unknown',
+    lane: best?.lane ?? 'unknown',
+    bestWindow: best?.window ?? null,
+    rows: best?.rows ?? 0,
+    requiredRows: best?.requiredRows ?? 0,
+    rowsRemaining: best?.rowsRemaining ?? 0,
+    netImpactSol: best?.netImpactSol ?? 0,
+    savedLossSol: best?.savedLossSol ?? 0,
+    missedWinnerRows: best?.missedWinnerRows ?? 0,
+    missedT2Rows: best?.missedT2Rows ?? 0,
+    missedActual5xRows: best?.missedActual5xRows ?? 0,
+    verdict,
+    nextAction: paperShadowFreshReadinessNextAction(verdict),
+  };
+}
+
+function freshWindowRank(window: string): number {
+  if (window === '24h') return 0;
+  if (window === '3d') return 1;
+  if (window === '7d') return 2;
+  return 3;
+}
+
+function paperShadowFreshReadinessVerdict(
+  counters: PaperShadowFreshCounter[],
+  best: PaperShadowFreshCounter | null,
+  window24h?: PaperShadowFreshCounter
+): PaperShadowFreshReadiness['verdict'] {
+  if (counters.some((counter) => counter.verdict === 'REJECT_TAIL_KILL')) return 'REJECT_TAIL_KILL';
+  if (counters.some((counter) => counter.verdict === 'REJECT_FALSE_POSITIVES')) return 'REJECT_FALSE_POSITIVES';
+  if (counters.some((counter) => counter.verdict === 'REJECT_NO_SAVED_LOSS')) return 'REJECT_NO_SAVED_LOSS';
+  if (counters.some((counter) => counter.verdict === 'READY_FRESH_REVIEW')) return 'READY_FRESH_REVIEW';
+  if ((window24h?.rows ?? 0) === 0 && (best?.rows ?? 0) > 0) return 'STALE_NO_24H_ROWS';
+  return 'WAIT_FRESH_ROWS';
+}
+
+function paperShadowFreshReadinessNextAction(verdict: PaperShadowFreshReadiness['verdict']): string {
+  if (verdict === 'READY_FRESH_REVIEW') return 'prepare manual live-review packet';
+  if (verdict === 'STALE_NO_24H_ROWS') return 'do not promote; wait for current-session rows';
+  if (verdict === 'WAIT_FRESH_ROWS') return 'keep paper-shadow only; collect fresh rows';
+  if (verdict === 'REJECT_FALSE_POSITIVES') return 'discard or split; fresh rows block wallet winners';
+  if (verdict === 'REJECT_TAIL_KILL') return 'discard; fresh rows block T2 or actual 5x';
+  return 'discard unless fresh saved-loss evidence returns';
+}
+
+function paperShadowFreshReadinessRank(verdict: PaperShadowFreshReadiness['verdict']): number {
+  if (verdict === 'READY_FRESH_REVIEW') return 0;
+  if (verdict === 'WAIT_FRESH_ROWS') return 1;
+  if (verdict === 'STALE_NO_24H_ROWS') return 2;
+  return 3;
+}
+
 function buildFreshSplitValidations(
   splits: ConjunctiveProxySplit[],
   rows: JsonRow[],
@@ -737,10 +1667,21 @@ export async function buildHistoricalLossReport(args: Args): Promise<HistoricalL
     flagBuckets.filter((bucket) => isPreEntryProxyFlag(bucket.label)),
     args
   );
+  const diagnosticProxyCandidates = buildDiagnosticProxyCandidates(postCloseDiagnosticCandidates, allRows, args);
   const paperShadowGateQueue = buildPaperShadowGateQueue(preEntryProxyCandidates, args);
   const paperShadowBlockCounters = buildPaperShadowBlockCounters(paperShadowGateQueue, allRows, args);
   const conjunctiveProxySplits = buildConjunctiveProxySplits(paperShadowBlockCounters, allRows, args);
   const freshSplitValidations = buildFreshSplitValidations(conjunctiveProxySplits, allRows, args);
+  const freshSplitReadiness = buildFreshSplitReadiness(freshSplitValidations, args);
+  const smartV3AdmissionCandidates = buildSmartV3AdmissionCandidates(allRows, args);
+  const paperShadowDecisionLedger = buildPaperShadowDecisionLedger({
+    blockCounters: paperShadowBlockCounters,
+    splitReadiness: freshSplitReadiness,
+    diagnosticProxies: diagnosticProxyCandidates,
+    smartV3Candidates: smartV3AdmissionCandidates,
+  });
+  const promotionPackets = buildPromotionPackets(paperShadowDecisionLedger);
+  const paperShadowFreshCounters = buildPaperShadowFreshCounters(promotionPackets, allRows, args);
   return {
     generatedAt: new Date().toISOString(),
     since: args.sinceMs == null ? null : new Date(args.sinceMs).toISOString(),
@@ -750,10 +1691,17 @@ export async function buildHistoricalLossReport(args: Args): Promise<HistoricalL
     paperShadowGateQueue,
     paperShadowBlockCounters,
     conjunctiveProxySplits,
-    freshSplitReadiness: buildFreshSplitReadiness(freshSplitValidations, args),
+    freshSplitReadiness,
     freshSplitValidations,
     preEntryProxyCandidates,
     postCloseDiagnosticCandidates,
+    diagnosticProxyCandidates,
+    smartV3AdmissionCandidates,
+    paperShadowDecisionLedger,
+    promotionWatchlist: buildPromotionWatchlist(promotionPackets),
+    promotionPackets,
+    paperShadowFreshReadiness: buildPaperShadowFreshReadiness(paperShadowFreshCounters),
+    paperShadowFreshCounters,
     cutCandidates: cutCandidates([...exitBuckets, ...armExitBuckets, ...flagBuckets], args),
     exitBuckets: exitBuckets.slice(0, 20),
     armExitBuckets: armExitBuckets.slice(0, 30),
@@ -847,6 +1795,113 @@ function renderFreshSplitReadiness(rows: FreshSplitReadiness[]): string {
   ].join('\n');
 }
 
+function renderDiagnosticProxyCandidates(rows: DiagnosticProxyCandidate[]): string {
+  if (rows.length === 0) return '_No diagnostic-to-pre-entry proxy candidates._';
+  return [
+    '| rank | diagnostic | proxy | lane | diagnostic rows | proxy rows | target rows | coverage | wallet SOL | saved loss | missed winners | missed 5x | p90 MFE | verdict | next action |',
+    '|---:|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|',
+    ...rows.map((row) =>
+      `| ${row.rank} | ${row.diagnosticBucketType}:${row.diagnosticLabel} | ${row.proxyLabel} | ${row.lane} | ` +
+      `${row.diagnosticRows} | ${row.proxyRows} | ${row.targetProxyRows} | ${(row.diagnosticCoveragePct * 100).toFixed(2)}% | ` +
+      `${row.walletNetSol.toFixed(6)} | ${row.savedLossSol.toFixed(6)} | ` +
+      `${row.missedWinnerRows} | ${row.missedActual5xRows} | ` +
+      `${row.p90MfePct == null ? 'n/a' : (row.p90MfePct * 100).toFixed(2) + '%'} | ` +
+      `${row.verdict} | ${row.nextAction} |`
+    ),
+  ].join('\n');
+}
+
+function renderSmartV3AdmissionCandidates(rows: SmartV3AdmissionCandidate[]): string {
+  if (rows.length === 0) return '_No smart-v3 loser admission candidates._';
+  return [
+    '| rank | proxy | target rows | proxy rows | target matched | coverage | wallet SOL | saved loss | missed winners | missed T2 | missed 5x | p90 MFE | verdict | next action |',
+    '|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|',
+    ...rows.map((row) =>
+      `| ${row.rank} | ${row.proxyLabel} | ${row.targetRows} | ${row.proxyRows} | ${row.targetProxyRows} | ` +
+      `${(row.targetCoveragePct * 100).toFixed(2)}% | ${row.walletNetSol.toFixed(6)} | ` +
+      `${row.savedLossSol.toFixed(6)} | ${row.missedWinnerRows} | ${row.missedT2Rows} | ${row.missedActual5xRows} | ` +
+      `${row.p90MfePct == null ? 'n/a' : (row.p90MfePct * 100).toFixed(2) + '%'} | ` +
+      `${row.verdict} | ${row.nextAction} |`
+    ),
+  ].join('\n');
+}
+
+function renderPaperShadowDecisionLedger(rows: PaperShadowDecisionLedgerItem[]): string {
+  if (rows.length === 0) return '_No paper shadow decision ledger rows._';
+  return [
+    '| rank | kind | label | lane | state | rows | wallet SOL | saved loss | missed winners | missed T2 | missed 5x | net impact | source verdict | next action |',
+    '|---:|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|',
+    ...rows.map((row) =>
+      `| ${row.rank} | ${row.kind} | ${row.label} | ${row.lane} | ${row.state} | ${row.rows} | ` +
+      `${row.walletNetSol.toFixed(6)} | ${row.savedLossSol.toFixed(6)} | ${row.missedWinnerRows} | ` +
+      `${row.missedT2Rows} | ${row.missedActual5xRows} | ${row.netImpactSol.toFixed(6)} | ` +
+      `${row.sourceVerdict} | ${row.nextAction} |`
+    ),
+  ].join('\n');
+}
+
+function renderPromotionPackets(rows: PromotionPacketItem[]): string {
+  if (rows.length === 0) return '_No promotion packets._';
+  return [
+    '| rank | kind | label | lane | verdict | rows | net impact | saved loss | missed winners | missed T2 | missed 5x | blockers | next action |',
+    '|---:|---|---|---|---|---:|---:|---:|---:|---:|---:|---|---|',
+    ...rows.map((row) =>
+      `| ${row.rank} | ${row.kind} | ${row.label} | ${row.lane} | ${row.verdict} | ${row.rows} | ` +
+      `${row.netImpactSol.toFixed(6)} | ${row.savedLossSol.toFixed(6)} | ${row.missedWinnerRows} | ` +
+      `${row.missedT2Rows} | ${row.missedActual5xRows} | ${row.blockers.length === 0 ? 'none' : row.blockers.join('; ')} | ` +
+      `${row.nextAction} |`
+    ),
+  ].join('\n');
+}
+
+function renderPromotionWatchlist(watchlist: PromotionWatchlist): string {
+  const summary = [
+    `Primary action: ${watchlist.primaryAction}`,
+    `Counts: liveReview=${watchlist.readyForLiveReview}, paperShadow=${watchlist.paperShadowOnly}, ` +
+      `waitFresh=${watchlist.waitFreshRows}, rejected=${watchlist.rejected}`,
+  ].join('\n\n');
+  if (watchlist.rows.length === 0) return `${summary}\n\n_No promotion watchlist rows._`;
+  return [
+    summary,
+    '',
+    '| rank | queue | kind | label | lane | verdict | rows | net impact | saved loss | blockers | next action |',
+    '|---:|---|---|---|---|---|---:|---:|---:|---|---|',
+    ...watchlist.rows.map((row) =>
+      `| ${row.rank} | ${row.queue} | ${row.kind} | ${row.label} | ${row.lane} | ${row.verdict} | ${row.rows} | ` +
+      `${row.netImpactSol.toFixed(6)} | ${row.savedLossSol.toFixed(6)} | ` +
+      `${row.blockers.length === 0 ? 'none' : row.blockers.join('; ')} | ${row.nextAction} |`
+    ),
+  ].join('\n');
+}
+
+function renderPaperShadowFreshCounters(rows: PaperShadowFreshCounter[]): string {
+  if (rows.length === 0) return '_No paper-shadow fresh counters._';
+  return [
+    '| window | kind | label | lane | rows | required | remaining | net impact | saved loss | missed winners | missed T2 | missed 5x | verdict | next action |',
+    '|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|',
+    ...rows.map((row) =>
+      `| ${row.window} | ${row.kind} | ${row.label} | ${row.lane} | ${row.rows} | ` +
+      `${row.requiredRows} | ${row.rowsRemaining} | ${row.netImpactSol.toFixed(6)} | ` +
+      `${row.savedLossSol.toFixed(6)} | ${row.missedWinnerRows} | ${row.missedT2Rows} | ` +
+      `${row.missedActual5xRows} | ${row.verdict} | ${row.nextAction} |`
+    ),
+  ].join('\n');
+}
+
+function renderPaperShadowFreshReadiness(rows: PaperShadowFreshReadiness[]): string {
+  if (rows.length === 0) return '_No paper-shadow fresh readiness rows._';
+  return [
+    '| kind | label | lane | verdict | best window | rows | required | remaining | net impact | saved loss | missed winners | missed T2 | missed 5x | next action |',
+    '|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|',
+    ...rows.map((row) =>
+      `| ${row.kind} | ${row.label} | ${row.lane} | ${row.verdict} | ${row.bestWindow ?? 'n/a'} | ` +
+      `${row.rows} | ${row.requiredRows} | ${row.rowsRemaining} | ${row.netImpactSol.toFixed(6)} | ` +
+      `${row.savedLossSol.toFixed(6)} | ${row.missedWinnerRows} | ${row.missedT2Rows} | ` +
+      `${row.missedActual5xRows} | ${row.nextAction} |`
+    ),
+  ].join('\n');
+}
+
 export function renderHistoricalLossReport(report: HistoricalLossReport): string {
   return [
     `# Historical Loss Miner (${report.generatedAt})`,
@@ -875,6 +1930,27 @@ export function renderHistoricalLossReport(report: HistoricalLossReport): string
     '',
     '## Post-Close Diagnostic Candidates',
     renderTable(report.postCloseDiagnosticCandidates.slice(0, 25)),
+    '',
+    '## Diagnostic To Pre-Entry Proxy Candidates',
+    renderDiagnosticProxyCandidates(report.diagnosticProxyCandidates.slice(0, 25)),
+    '',
+    '## Smart V3 Loser Admission Candidates',
+    renderSmartV3AdmissionCandidates(report.smartV3AdmissionCandidates.slice(0, 25)),
+    '',
+    '## Paper Shadow Decision Ledger',
+    renderPaperShadowDecisionLedger(report.paperShadowDecisionLedger.slice(0, 25)),
+    '',
+    '## Promotion Watchlist',
+    renderPromotionWatchlist(report.promotionWatchlist),
+    '',
+    '## Paper Shadow Fresh Readiness',
+    renderPaperShadowFreshReadiness(report.paperShadowFreshReadiness.slice(0, 25)),
+    '',
+    '## Paper Shadow Fresh Counters',
+    renderPaperShadowFreshCounters(report.paperShadowFreshCounters.slice(0, 25)),
+    '',
+    '## Promotion Packets',
+    renderPromotionPackets(report.promotionPackets.slice(0, 25)),
     '',
     '## Cut Candidates',
     renderTable(report.cutCandidates.slice(0, 25)),

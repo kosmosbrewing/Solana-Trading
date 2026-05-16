@@ -1,7 +1,7 @@
 # STRATEGY.md (post-pivot)
 
 > Status: current quick reference
-> Updated: 2026-05-09
+> Updated: 2026-05-16
 > Purpose: 현재 runtime 에서 읽어야 할 전략 / gate / risk / 핵심 파라미터를 짧게 정리한다.
 > Pivot decision: [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md)
 > Current lane refactor: [`docs/design-docs/lane-operating-refactor-2026-05-03.md`](./docs/design-docs/lane-operating-refactor-2026-05-03.md)
@@ -16,10 +16,11 @@
 - 전략의 구조적 한계나 다음 방향 메모는 [`STRATEGY_NOTES.md`](./STRATEGY_NOTES.md) 로 분리한다
 - pivot 상세 근거는 [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md)
 
-## Core Principle (post-pivot)
+## Core Principle (current)
 
-> 수단과 방법을 가리지 않고 `1 SOL -> 100 SOL` 달성 확률을 최대화한다.
-> "왜 오르는가"보다 "지금 실제로 폭발하는가"를 본다.
+> 현재 운영 KPI는 `0.6 SOL` floor 를 지키며 200 live trades 를 생존하고, 선택한 KOL universe 에서 5x+ winner 가 실제로 존재하는지 측정하는 것이다.
+> `100 SOL` 은 tail outcome 이지 단기 planning KPI 가 아니다.
+> "왜 오르는가"보다 "지금 실제로 폭발하는가"를 보되, wallet-truth 손실 속도와 evidence 품질을 우선한다.
 
 ## Runtime Lane Set (2026-05-09 갱신)
 

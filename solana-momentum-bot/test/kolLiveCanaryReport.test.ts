@@ -141,7 +141,12 @@ describe('kol-live-canary-report', () => {
       .toBe('2026-04-29T12:00:00.000Z');
     expect(resolveSinceArg(['--since', '2026-04-30T00:00:00.000Z', '--since-hours', '24'], nowMs)?.toISOString())
       .toBe('2026-04-30T00:00:00.000Z');
+    expect(resolveSinceArg(['--since', '14d'], nowMs)?.toISOString())
+      .toBe('2026-04-16T12:00:00.000Z');
+    expect(resolveSinceArg(['--since', '90m'], nowMs)?.toISOString())
+      .toBe('2026-04-30T10:30:00.000Z');
     expect(resolveSinceArg(['--since-hours', '0'], nowMs)).toBeUndefined();
+    expect(() => resolveSinceArg(['--since', 'not-a-window'], nowMs)).toThrow('invalid --since');
   });
 
   it('pairs KOL live buys and sells, excluding paper/other lanes', () => {

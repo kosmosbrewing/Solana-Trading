@@ -28,6 +28,7 @@ const EVIDENCE_PROMOTION_MIN_CLOSES = 100;
 const EVIDENCE_MIN_OK_COVERAGE = 0.8;
 const EVIDENCE_MIN_EDGE_COVERAGE = 0.8;
 const EVIDENCE_MIN_EDGE_PASS_RATE = 0.5;
+const EVIDENCE_MIN_ROUTE_PROOF_COVERAGE = 1;
 const EVIDENCE_PRIMARY_HORIZONS_SEC = [15, 30];
 const EVIDENCE_DECAY_HORIZON_SEC = 60;
 const EVIDENCE_REQUIRED_COVERAGE_HORIZONS_SEC = EVIDENCE_PRIMARY_HORIZONS_SEC;
@@ -42,6 +43,11 @@ const ROTATION_COMPOUND_DECISION_MIN_CLOSES = 50;
 const ROTATION_COMPOUND_EARLY_REJECT_MIN_CLOSES = 10;
 const ROTATION_COMPOUND_EARLY_MIN_POST_COST_POSITIVE_RATE = 0.45;
 const ROTATION_COMPOUND_MAX_LOSING_STREAK = 5;
+const POSTHOC_SECOND_KOL_REVIEW_MIN_OBSERVED = 30;
+const POSTHOC_SECOND_KOL_DECISION_MIN_OBSERVED = 50;
+const POSTHOC_SECOND_KOL_MIN_POSITIVE_RATE = 0.7;
+const POSTHOC_SECOND_KOL_REJECT_POSITIVE_RATE = 0.6;
+const POSTHOC_SECOND_KOL_SYNTHETIC_ARM = 'posthoc_2nd_kol_wait_next_horizon_v1';
 const MICRO_LIVE_REVIEW_TICKET_SOL = 0.02;
 const MICRO_LIVE_REVIEW_MAX_DAILY_ATTEMPTS = 3;
 const MICRO_LIVE_REVIEW_DAILY_LOSS_CAP_SOL = 0.03;
@@ -57,6 +63,7 @@ interface Args {
   candidateFile?: string;
   kolTransferInput?: string;
   kolDbPath?: string;
+  routeProofFreshSinceMs?: number;
   mdOut?: string;
   jsonOut?: string;
 }
@@ -99,6 +106,7 @@ interface PaperArmStats {
   edgeRows: number;
   edgePassRows: number;
   edgeFailRows: number;
+  routeProofRows: number;
   medianEdgeCostRatio: number | null;
   medianEdgeWalletDragRatio: number | null;
   medianRequiredGrossMovePct: number | null;
@@ -247,6 +255,109 @@ interface KolTimingStats {
   refundAdjustedNetSol: number;
   t1Rows: number;
   medianSecondKolDelaySec: number | null;
+}
+
+interface PosthocSecondKolStats {
+  cohort: string;
+  rows: number;
+  routeKnownRows: number;
+  costAwareRows: number;
+  wins: number;
+  losses: number;
+  refundAdjustedNetSol: number;
+  t1Rows: number;
+  medianMfePct: number | null;
+  medianSecondKolDelaySec: number | null;
+}
+
+interface PosthocSecondKolWaitProxyStats {
+  cohort: string;
+  exitProfile: string;
+  rows: number;
+  observedRows: number;
+  currentRefundAdjustedNetSol: number;
+  currentPostCostPositiveRate: number | null;
+  medianWaitEntryDeltaPct: number | null;
+  waitEntryFavorableRows: number;
+  positiveRows: number;
+  postCostPositiveRate: number | null;
+  medianPostCostDeltaPct: number | null;
+  p25PostCostDeltaPct: number | null;
+}
+
+type PosthocSecondKolCandidateVerdict =
+  | 'COLLECT'
+  | 'WATCH'
+  | 'REJECT'
+  | 'PAPER_CANDIDATE';
+
+type PosthocSecondKolRouteProofVerdict =
+  | 'COLLECT'
+  | 'ROUTE_PROOF_MISSING'
+  | 'PARTIAL_ROUTE_PROOF'
+  | 'ROUTE_PROOF_READY';
+
+interface PosthocSecondKolCandidateDecision {
+  cohort: string;
+  exitProfile: string;
+  verdict: PosthocSecondKolCandidateVerdict;
+  observedRows: number;
+  minReviewObserved: number;
+  minDecisionObserved: number;
+  postCostPositiveRate: number | null;
+  medianPostCostDeltaPct: number | null;
+  p25PostCostDeltaPct: number | null;
+  currentRefundAdjustedNetSol: number | null;
+  reasons: string[];
+}
+
+interface PosthocSecondKolSyntheticPaperArm {
+  armName: string;
+  sourceCohort: string;
+  verdict: PosthocSecondKolCandidateVerdict;
+  observedRows: number;
+  minDecisionObserved: number;
+  postCostPositiveRate: number | null;
+  medianPostCostDeltaPct: number | null;
+  p25PostCostDeltaPct: number | null;
+  currentRefundAdjustedNetSol: number | null;
+  proxyOnly: true;
+  liveEquivalent: false;
+  reasons: string[];
+}
+
+interface PosthocSecondKolRouteProofGate {
+  cohort: string;
+  verdict: PosthocSecondKolRouteProofVerdict;
+  rows: number;
+  candidateIdRows: number;
+  routeKnownRows: number;
+  routeProofRows: number;
+  routeUnknownRows: number;
+  costAwareRows: number;
+  structuralBlockRows: number;
+  dataGapRows: number;
+  infraRetryRows: number;
+  unknownRows: number;
+  explicitNoSellRouteRows: number;
+  exitLiquidityUnknownRows: number;
+  securityDataGapRows: number;
+  mixedExitLiquidityAndDataGapRows: number;
+  missingPositiveEvidenceRows: number;
+  recoveryHint: string;
+  refundAdjustedNetSol: number | null;
+  topReasons: Array<{ reason: string; count: number }>;
+  reasons: string[];
+}
+
+interface PosthocSecondKolRecoveryBacklogItem {
+  cohort: string;
+  priority: 'P0' | 'P1' | 'P2';
+  status: 'TODO' | 'WAIT_SAMPLE' | 'BLOCKED' | 'READY_FOR_REVIEW';
+  nextSprint: string;
+  evidenceGap: string;
+  requiredBeforeLive: string;
+  liveStance: string;
 }
 
 interface LiveEquivalenceDrilldownStats {
@@ -438,6 +549,104 @@ type RotationPaperCompoundReadinessVerdict =
   | 'COST_REJECT'
   | 'PAPER_READY';
 
+type RotationNarrowCohortVerdict =
+  | 'DATA_GAP'
+  | 'COLLECT'
+  | 'WATCH'
+  | 'REJECT'
+  | 'PAPER_READY';
+
+interface RotationNarrowCohortHorizonStats {
+  horizonSec: number;
+  okRows: number;
+  okCoverage: number | null;
+  postCostPositiveRate: number | null;
+  medianPostCostDeltaPct: number | null;
+}
+
+interface RotationNarrowCohortStats {
+  cohort: string;
+  verdict: RotationNarrowCohortVerdict;
+  reasons: string[];
+  rows: number;
+  minRequiredRows: number;
+  routeProofRows: number;
+  routeProofCoverage: number | null;
+  candidateIdRows: number;
+  twoPlusKolRows: number;
+  costAwareRows: number;
+  timestampedSecondKolRows: number;
+  refundAdjustedNetSol: number | null;
+  postCostPositiveRate: number | null;
+  edgePassRate: number | null;
+  t1Rate: number | null;
+  medianMfePct: number | null;
+  medianHoldSec: number | null;
+  minOkCoverage: number | null;
+  primaryHorizonPostCost: RotationNarrowCohortHorizonStats[];
+}
+
+type RouteProofFreshnessVerdict =
+  | 'WAIT_FRESH_CLOSES'
+  | 'INSTRUMENTATION_GAP'
+  | 'ROUTE_PROOF_COLLECTING'
+  | 'DATA_GAP'
+  | 'REJECT'
+  | 'READY_FOR_NARROW_REVIEW';
+
+interface RouteProofFreshnessArmStats {
+  armName: string;
+  rows: number;
+  paperCloseWriterSchemaRows: number;
+  rotationExitRouteProofSchemaRows: number;
+  exitRouteInstrumentedRows: number;
+  exitQuoteEvidenceRows: number;
+  exitRouteProofSkippedRows: number;
+  missingEvidenceRows: number;
+  routeFoundTrueRows: number;
+  routeFoundFalseRows: number;
+  routeFoundNullRows: number;
+  routeProofRows: number;
+  latestCloseAt: string | null;
+  latestExitQuoteEvidenceAt: string | null;
+  topExitRouteProofSkipReasons: Array<{ reason: string; count: number }>;
+  topPaperCloseWriterSchemas: Array<{ schema: string; count: number }>;
+}
+
+interface RouteProofFreshnessStats {
+  verdict: RouteProofFreshnessVerdict;
+  reasons: string[];
+  cutoffSource: 'arg' | 'first_exit_route_marker' | 'none';
+  freshSince: string | null;
+  underfillRows: number;
+  freshRows: number;
+  minRequiredFreshRows: number;
+  latestUnderfillCloseAt: string | null;
+  latestCostAwareCloseAt: string | null;
+  latestExitQuoteEvidenceAt: string | null;
+  paperCloseWriterSchemaRows: number;
+  rotationExitRouteProofSchemaRows: number;
+  exitRouteInstrumentedRows: number;
+  exitQuoteEvidenceRows: number;
+  exitQuoteRouteFoundRows: number;
+  exitQuoteNoRouteRows: number;
+  exitQuoteUnknownRows: number;
+  exitRouteProofSkippedRows: number;
+  instrumentationMissingRows: number;
+  routeProofRows: number;
+  explicitNoRouteRows: number;
+  routeUnknownRows: number;
+  candidateIdRows: number;
+  twoPlusKolRows: number;
+  costAwareRows: number;
+  routeProofedTwoPlusCostAwareRows: number;
+  routeProofedTwoPlusCostAwareTimestampedRows: number;
+  freshByArm: RouteProofFreshnessArmStats[];
+  topRouteUnknownReasons: Array<{ reason: string; count: number }>;
+  topExitRouteProofSkipReasons: Array<{ reason: string; count: number }>;
+  topPaperCloseWriterSchemas: Array<{ schema: string; count: number }>;
+}
+
 interface EvidenceVerdict {
   armName: string;
   verdict: EvidenceVerdictStatus;
@@ -461,6 +670,8 @@ interface EvidenceVerdict {
   rentAdjustedNetSol: number | null;
   edgeCoverage: number | null;
   edgePassRate: number | null;
+  routeProofRows: number;
+  routeProofCoverage: number | null;
 }
 
 interface RotationLiveReadiness {
@@ -534,8 +745,16 @@ interface RotationReport {
   liveEquivalence: LiveEquivalenceSummary;
   routeUnknownReasons: RouteUnknownReasonStats[];
   routeTruthAudit: RouteTruthAuditStats[];
+  routeProofFreshness: RouteProofFreshnessStats;
+  rotationNarrowCohorts: RotationNarrowCohortStats[];
   underfillKolCohorts: UnderfillRouteCohortStats[];
   underfillKolTiming: KolTimingStats[];
+  posthocSecondKol: PosthocSecondKolStats[];
+  posthocSecondKolWaitProxies: PosthocSecondKolWaitProxyStats[];
+  posthocSecondKolCandidateDecisions: PosthocSecondKolCandidateDecision[];
+  posthocSecondKolSyntheticPaperArms: PosthocSecondKolSyntheticPaperArm[];
+  posthocSecondKolRouteProofGates: PosthocSecondKolRouteProofGate[];
+  posthocSecondKolRecoveryBacklog: PosthocSecondKolRecoveryBacklogItem[];
   paperCohortValidity: PaperCohortValidityStats[];
   reviewCohortGenerationAudit: ReviewCohortGenerationAuditStats;
   liveEquivalenceDrilldown: LiveEquivalenceDrilldownStats[];
@@ -622,6 +841,8 @@ function parseArgs(argv: string[]): Args {
     else if (arg.startsWith('--kol-transfer-input=')) args.kolTransferInput = path.resolve(arg.split('=')[1]);
     else if (arg === '--kol-db') args.kolDbPath = path.resolve(argv[++i]);
     else if (arg === '--no-kol-coverage') args.kolDbPath = undefined;
+    else if (arg === '--route-proof-fresh-since') args.routeProofFreshSinceMs = parseSince(argv[++i]);
+    else if (arg.startsWith('--route-proof-fresh-since=')) args.routeProofFreshSinceMs = parseSince(arg.split('=')[1]);
     else if (arg === '--md') args.mdOut = path.resolve(argv[++i]);
     else if (arg === '--json') args.jsonOut = path.resolve(argv[++i]);
   }
@@ -1063,6 +1284,13 @@ function secondKolDelaySec(row: JsonRow): number | null {
   return Math.max(0, (unique[1].timestampMs - unique[0].timestampMs) / 1000);
 }
 
+function participantKolCount(row: JsonRow): number {
+  const ids = rowParticipants(row)
+    .map((item) => item.id)
+    .filter(Boolean);
+  return new Set(ids).size;
+}
+
 function kolTimingBucket(row: JsonRow): string {
   if (isUnknownKolCountRow(row)) return 'unknown_kol_count';
   if (isSingleKolRow(row)) return '1kol';
@@ -1118,16 +1346,13 @@ function isMicroLiveReviewEquivalenceRow(row: JsonRow, reviewCandidateIds: Set<s
 }
 
 function isUnderfillRouteUnknown(row: JsonRow): boolean {
-  if (rowSurvivalFlags(row).some((flag) =>
+  const flags = rowSurvivalFlags(row);
+  if (hasExplicitNoSellRouteEvidence(row)) return true;
+  if (hasUnderfillRoutePositiveEvidence(row)) return false;
+  if (flags.some((flag) =>
     flag === 'EXIT_LIQUIDITY_UNKNOWN' ||
-    flag === 'ROTATION_UNDERFILL_LIVE_EXIT_ROUTE_UNKNOWN' ||
-    flag === 'NO_SELL_ROUTE' ||
-    flag === 'SELL_NO_ROUTE' ||
-    flag === 'NO_ROUTE' ||
-    flag.includes('NO_SELL_ROUTE')
-  )) {
-    return true;
-  }
+    flag === 'ROTATION_UNDERFILL_LIVE_EXIT_ROUTE_UNKNOWN'
+  )) return true;
   return !hasUnderfillRoutePositiveEvidence(row);
 }
 
@@ -1135,6 +1360,9 @@ function routeUnknownReasonsForRow(row: JsonRow): string[] {
   if (!isUnderfillRouteUnknown(row)) return [];
   const flags = rowSurvivalFlags(row);
   const reasons = new Set<string>();
+  if (hasExplicitNoSellRouteEvidence(row)) reasons.add('NO_SELL_ROUTE');
+  const exitRouteProofSkipReason = rowExitRouteProofSkipReason(row);
+  if (exitRouteProofSkipReason) reasons.add(`EXIT_ROUTE_PROOF_${exitRouteProofSkipReason.toUpperCase()}`);
   for (const flag of flags) {
     if (flag === 'EXIT_LIQUIDITY_UNKNOWN') reasons.add('EXIT_LIQUIDITY_UNKNOWN');
     else if (flag === 'NO_SELL_ROUTE' || flag === 'SELL_NO_ROUTE' || flag === 'NO_ROUTE' || flag.includes('NO_SELL_ROUTE')) {
@@ -1151,14 +1379,22 @@ function routeUnknownReasonsForRow(row: JsonRow): string[] {
 }
 
 function routeTruthEvidenceSources(row: JsonRow): string[] {
+  if (hasExplicitNoSellRouteEvidence(row)) return [];
   const extras = obj(row.extras);
+  const sellQuoteEvidence = obj(row.entrySellQuoteEvidence);
+  const extraSellQuoteEvidence = obj(extras.entrySellQuoteEvidence);
+  const exitSellQuoteEvidence = obj(row.exitSellQuoteEvidence);
+  const extraExitSellQuoteEvidence = obj(extras.exitSellQuoteEvidence);
   const sources = new Set<string>();
   if (row.routeFound === true || extras.routeFound === true) sources.add('routeFound');
   if (row.sellRouteKnown === true || extras.sellRouteKnown === true) sources.add('sellRouteKnown');
-  if (row.exitLiquidityKnown === true || extras.exitLiquidityKnown === true) sources.add('exitLiquidityKnown');
-  if ((num(row.exitLiquidityUsd) ?? 0) > 0 || (num(extras.exitLiquidityUsd) ?? 0) > 0) sources.add('exitLiquidityUsd');
-  if (Object.keys(obj(row.exitLiquidityData)).length > 0 || Object.keys(obj(extras.exitLiquidityData)).length > 0) {
-    sources.add('exitLiquidityData');
+  if (row.exitRouteFound === true || extras.exitRouteFound === true) sources.add('exitRouteFound');
+  if (row.exitSellRouteKnown === true || extras.exitSellRouteKnown === true) sources.add('exitSellRouteKnown');
+  if (sellQuoteEvidence.routeFound === true || extraSellQuoteEvidence.routeFound === true) {
+    sources.add('entrySellQuote.routeFound');
+  }
+  if (exitSellQuoteEvidence.routeFound === true || extraExitSellQuoteEvidence.routeFound === true) {
+    sources.add('exitSellQuote.routeFound');
   }
   for (const flag of rowSurvivalFlags(row)) {
     if (flag === 'SELL_ROUTE_OK' || flag === 'EXIT_LIQUIDITY_KNOWN' || flag === 'ROTATION_UNDERFILL_LIVE_EXIT_ROUTE_KNOWN') {
@@ -1174,8 +1410,20 @@ function routeTruthBucket(row: JsonRow): { bucket: string; recoverability: Route
     return { bucket: `route_known:${sources[0]}`, recoverability: 'ready' };
   }
   const reasons = routeUnknownReasonsForRow(row);
-  if (reasons.some((reason) => reason === 'JUPITER_429')) {
+  if (reasons.some((reason) =>
+    reason === 'JUPITER_429' ||
+    reason === 'EXIT_ROUTE_PROOF_SELL_QUOTE_ERROR' ||
+    reason === 'EXIT_ROUTE_PROOF_EXIT_ROUTE_PROOF_EXCEPTION'
+  )) {
     return { bucket: 'route_unknown:infra_retry', recoverability: 'infra_retry' };
+  }
+  if (reasons.some((reason) =>
+    reason === 'EXIT_ROUTE_PROOF_SELL_QUOTE_PROBE_DISABLED' ||
+    reason === 'EXIT_ROUTE_PROOF_INVALID_QUANTITY' ||
+    reason === 'EXIT_ROUTE_PROOF_ROUTE_FOUND_UNKNOWN' ||
+    reason === 'EXIT_ROUTE_PROOF_EXIT_ROUTE_PROOF_MISSING_EVIDENCE'
+  )) {
+    return { bucket: 'route_unknown:data_gap', recoverability: 'data_gap' };
   }
   if (reasons.some((reason) => reason === 'NO_SELL_ROUTE' || reason === 'EXIT_LIQUIDITY_UNKNOWN' || reason === 'ROTATION_UNDERFILL_LIVE_EXIT_ROUTE_UNKNOWN')) {
     return { bucket: 'route_unknown:structural_exit_route', recoverability: 'structural_block' };
@@ -1193,18 +1441,42 @@ function routeTruthBucket(row: JsonRow): { bucket: string; recoverability: Route
 }
 
 function hasUnderfillRoutePositiveEvidence(row: JsonRow): boolean {
+  if (hasExplicitNoSellRouteEvidence(row)) return false;
   const extras = obj(row.extras);
+  const sellQuoteEvidence = obj(row.entrySellQuoteEvidence);
+  const extraSellQuoteEvidence = obj(extras.entrySellQuoteEvidence);
+  const exitSellQuoteEvidence = obj(row.exitSellQuoteEvidence);
+  const extraExitSellQuoteEvidence = obj(extras.exitSellQuoteEvidence);
   if (row.routeFound === true || extras.routeFound === true) return true;
   if (row.sellRouteKnown === true || extras.sellRouteKnown === true) return true;
-  if (row.exitLiquidityKnown === true || extras.exitLiquidityKnown === true) return true;
-  if (num(row.exitLiquidityUsd) != null && (num(row.exitLiquidityUsd) ?? 0) > 0) return true;
-  if (num(extras.exitLiquidityUsd) != null && (num(extras.exitLiquidityUsd) ?? 0) > 0) return true;
-  if (Object.keys(obj(row.exitLiquidityData)).length > 0) return true;
-  if (Object.keys(obj(extras.exitLiquidityData)).length > 0) return true;
+  if (row.exitRouteFound === true || extras.exitRouteFound === true) return true;
+  if (row.exitSellRouteKnown === true || extras.exitSellRouteKnown === true) return true;
+  if (sellQuoteEvidence.routeFound === true || extraSellQuoteEvidence.routeFound === true) return true;
+  if (exitSellQuoteEvidence.routeFound === true || extraExitSellQuoteEvidence.routeFound === true) return true;
   return rowSurvivalFlags(row).some((flag) =>
     flag === 'SELL_ROUTE_OK' ||
     flag === 'EXIT_LIQUIDITY_KNOWN' ||
     flag === 'ROTATION_UNDERFILL_LIVE_EXIT_ROUTE_KNOWN'
+  );
+}
+
+function hasExplicitNoSellRouteEvidence(row: JsonRow): boolean {
+  const extras = obj(row.extras);
+  const sellQuoteEvidence = obj(row.entrySellQuoteEvidence);
+  const extraSellQuoteEvidence = obj(extras.entrySellQuoteEvidence);
+  const exitSellQuoteEvidence = obj(row.exitSellQuoteEvidence);
+  const extraExitSellQuoteEvidence = obj(extras.exitSellQuoteEvidence);
+  if (row.routeFound === false || extras.routeFound === false) return true;
+  if (row.sellRouteKnown === false || extras.sellRouteKnown === false) return true;
+  if (row.exitRouteFound === false || extras.exitRouteFound === false) return true;
+  if (row.exitSellRouteKnown === false || extras.exitSellRouteKnown === false) return true;
+  if (sellQuoteEvidence.routeFound === false || extraSellQuoteEvidence.routeFound === false) return true;
+  if (exitSellQuoteEvidence.routeFound === false || extraExitSellQuoteEvidence.routeFound === false) return true;
+  return rowSurvivalFlags(row).some((flag) =>
+    flag === 'NO_SELL_ROUTE' ||
+    flag === 'SELL_NO_ROUTE' ||
+    flag === 'NO_ROUTE' ||
+    flag.includes('NO_SELL_ROUTE')
   );
 }
 
@@ -1502,6 +1774,529 @@ function buildKolTimingStats(
       };
     })
     .sort((a, b) => b.rows - a.rows || a.bucket.localeCompare(b.bucket));
+}
+
+function isPosthocSecondKolRow(row: JsonRow): boolean {
+  return isRotationUnderfillRow(row) &&
+    !isTwoPlusKolRow(row) &&
+    participantKolCount(row) >= 2 &&
+    secondKolDelaySec(row) != null;
+}
+
+function summarizePosthocSecondKol(
+  cohort: string,
+  rows: JsonRow[],
+  assumedNetworkFeeSol: number
+): PosthocSecondKolStats {
+  const refundAdjustedValues = rows.map((row) =>
+    (num(row.netSolTokenOnly) ?? numberOrZero(row.netSol)) - assumedNetworkFeeSol
+  );
+  const delays = rows.map(secondKolDelaySec).filter((item): item is number => item != null);
+  return {
+    cohort,
+    rows: rows.length,
+    routeKnownRows: rows.filter((row) => !isUnderfillRouteUnknown(row)).length,
+    costAwareRows: rows.filter(isCostAwareUnderfillRow).length,
+    wins: refundAdjustedValues.filter((item) => item > 0).length,
+    losses: refundAdjustedValues.filter((item) => item <= 0).length,
+    refundAdjustedNetSol: refundAdjustedValues.reduce((sum, item) => sum + item, 0),
+    t1Rows: rows.filter(rowHasT1).length,
+    medianMfePct: percentile(rows.map(rowMfePct).filter((item): item is number => item != null), 0.5),
+    medianSecondKolDelaySec: percentile(delays, 0.5),
+  };
+}
+
+function buildPosthocSecondKolStats(
+  rows: JsonRow[],
+  assumedNetworkFeeSol: number
+): PosthocSecondKolStats[] {
+  const posthocRows = rows.filter(isPosthocSecondKolRow);
+  return [
+    summarizePosthocSecondKol('posthoc_2nd_kol_all', posthocRows, assumedNetworkFeeSol),
+    summarizePosthocSecondKol('posthoc_2nd_kol_cost_aware', posthocRows.filter(isCostAwareUnderfillRow), assumedNetworkFeeSol),
+    summarizePosthocSecondKol('posthoc_2nd_kol_secondKOL<=15s', posthocRows.filter((row) => {
+      const delay = secondKolDelaySec(row);
+      return delay != null && delay <= 15;
+    }), assumedNetworkFeeSol),
+    summarizePosthocSecondKol('posthoc_2nd_kol_secondKOL<=30s', posthocRows.filter((row) => {
+      const delay = secondKolDelaySec(row);
+      return delay != null && delay <= 30;
+    }), assumedNetworkFeeSol),
+    summarizePosthocSecondKol('posthoc_2nd_kol_late', posthocRows.filter((row) => {
+      const delay = secondKolDelaySec(row);
+      return delay != null && delay > 30;
+    }), assumedNetworkFeeSol),
+  ];
+}
+
+function markoutDeltaAt(row: JsonRow, horizonSec: number, markoutsByPosition: Map<string, JsonRow[]>): number | null {
+  const markout = (markoutsByPosition.get(rowPositionId(row)) ?? [])
+    .find((item) => rowHorizon(item) === horizonSec && isOk(item));
+  return markout ? rowDelta(markout) : null;
+}
+
+function waitEntryHorizonSec(row: JsonRow, horizonsSec: number[]): number | null {
+  const delay = secondKolDelaySec(row);
+  if (delay == null) return null;
+  return horizonsSec.find((horizonSec) => horizonSec >= delay) ?? null;
+}
+
+function nextWaitExitHorizonSec(entryHorizonSec: number, horizonsSec: number[], minAdditionalSec: number): number | null {
+  return horizonsSec.find((horizonSec) => horizonSec >= entryHorizonSec + minAdditionalSec) ?? null;
+}
+
+function rebasedPostCostDelta(
+  row: JsonRow,
+  entryHorizonSec: number,
+  exitHorizonSec: number,
+  markoutsByPosition: Map<string, JsonRow[]>,
+  roundTripCostPct: number
+): number | null {
+  const entryDelta = markoutDeltaAt(row, entryHorizonSec, markoutsByPosition);
+  const exitDelta = markoutDeltaAt(row, exitHorizonSec, markoutsByPosition);
+  if (entryDelta == null || exitDelta == null || 1 + entryDelta <= 0) return null;
+  return ((1 + exitDelta) / (1 + entryDelta) - 1) - roundTripCostPct;
+}
+
+function summarizePosthocSecondKolWaitProxy(
+  cohort: string,
+  rows: JsonRow[],
+  exitProfile: string,
+  minAdditionalSec: number,
+  markoutsByPosition: Map<string, JsonRow[]>,
+  horizonsSec: number[],
+  roundTripCostPct: number,
+  assumedNetworkFeeSol: number
+): PosthocSecondKolWaitProxyStats {
+  const refundAdjustedValues = rows.map((row) =>
+    (num(row.netSolTokenOnly) ?? numberOrZero(row.netSol)) - assumedNetworkFeeSol
+  );
+  const entryDeltas: number[] = [];
+  const postCostDeltas: number[] = [];
+  for (const row of rows) {
+    const entryHorizonSec = waitEntryHorizonSec(row, horizonsSec);
+    if (entryHorizonSec == null) continue;
+    const exitHorizonSec = nextWaitExitHorizonSec(entryHorizonSec, horizonsSec, minAdditionalSec);
+    if (exitHorizonSec == null) continue;
+    const entryDelta = markoutDeltaAt(row, entryHorizonSec, markoutsByPosition);
+    const postCostDelta = rebasedPostCostDelta(
+      row,
+      entryHorizonSec,
+      exitHorizonSec,
+      markoutsByPosition,
+      roundTripCostPct
+    );
+    if (entryDelta == null || postCostDelta == null) continue;
+    entryDeltas.push(entryDelta);
+    postCostDeltas.push(postCostDelta);
+  }
+  return {
+    cohort,
+    exitProfile,
+    rows: rows.length,
+    observedRows: postCostDeltas.length,
+    currentRefundAdjustedNetSol: refundAdjustedValues.reduce((sum, item) => sum + item, 0),
+    currentPostCostPositiveRate: ratio(refundAdjustedValues.filter((item) => item > 0).length, rows.length),
+    medianWaitEntryDeltaPct: percentile(entryDeltas, 0.5),
+    waitEntryFavorableRows: entryDeltas.filter((item) => item <= 0).length,
+    positiveRows: postCostDeltas.filter((item) => item > 0).length,
+    postCostPositiveRate: ratio(postCostDeltas.filter((item) => item > 0).length, postCostDeltas.length),
+    medianPostCostDeltaPct: percentile(postCostDeltas, 0.5),
+    p25PostCostDeltaPct: percentile(postCostDeltas, 0.25),
+  };
+}
+
+function buildPosthocSecondKolWaitProxyStats(
+  rows: JsonRow[],
+  markoutRows: JsonRow[],
+  horizonsSec: number[],
+  roundTripCostPct: number,
+  assumedNetworkFeeSol: number
+): PosthocSecondKolWaitProxyStats[] {
+  const markoutsByPosition = buyMarkoutsByPosition(markoutRows);
+  const posthocRows = rows.filter(isPosthocSecondKolRow);
+  const cohorts = [
+    { cohort: 'posthoc_2nd_kol_all', rows: posthocRows },
+    { cohort: 'posthoc_2nd_kol_cost_aware', rows: posthocRows.filter(isCostAwareUnderfillRow) },
+    {
+      cohort: 'posthoc_2nd_kol_secondKOL<=15s',
+      rows: posthocRows.filter((row) => {
+        const delay = secondKolDelaySec(row);
+        return delay != null && delay <= 15;
+      }),
+    },
+    {
+      cohort: 'posthoc_2nd_kol_secondKOL<=30s',
+      rows: posthocRows.filter((row) => {
+        const delay = secondKolDelaySec(row);
+        return delay != null && delay <= 30;
+      }),
+    },
+  ];
+  return cohorts.flatMap(({ cohort, rows: cohortRows }) => [
+    summarizePosthocSecondKolWaitProxy(
+      cohort,
+      cohortRows,
+      'wait_to_2nd_kol_then_next_horizon',
+      1,
+      markoutsByPosition,
+      horizonsSec,
+      roundTripCostPct,
+      assumedNetworkFeeSol
+    ),
+    summarizePosthocSecondKolWaitProxy(
+      cohort,
+      cohortRows,
+      'wait_to_2nd_kol_then_30s_min',
+      30,
+      markoutsByPosition,
+      horizonsSec,
+      roundTripCostPct,
+      assumedNetworkFeeSol
+    ),
+  ]);
+}
+
+function buildPosthocSecondKolCandidateDecision(
+  cohort: string,
+  waitProxies: PosthocSecondKolWaitProxyStats[]
+): PosthocSecondKolCandidateDecision {
+  const exitProfile = 'wait_to_2nd_kol_then_next_horizon';
+  const proxy = waitProxies.find((row) => row.cohort === cohort && row.exitProfile === exitProfile);
+  const observedRows = proxy?.observedRows ?? 0;
+  const postCostPositiveRate = proxy?.postCostPositiveRate ?? null;
+  const medianPostCostDeltaPct = proxy?.medianPostCostDeltaPct ?? null;
+  const p25PostCostDeltaPct = proxy?.p25PostCostDeltaPct ?? null;
+  const reasons: string[] = [];
+  let verdict: PosthocSecondKolCandidateVerdict = 'COLLECT';
+
+  if (!proxy || observedRows === 0) {
+    reasons.push('wait-proxy observations missing');
+  } else {
+    const hasRejectSample = observedRows >= POSTHOC_SECOND_KOL_REVIEW_MIN_OBSERVED;
+    const weakPositiveRate =
+      postCostPositiveRate != null && postCostPositiveRate < POSTHOC_SECOND_KOL_REJECT_POSITIVE_RATE;
+    const weakDownside = p25PostCostDeltaPct != null && p25PostCostDeltaPct <= 0;
+
+    if (hasRejectSample && (weakPositiveRate || weakDownside)) {
+      verdict = 'REJECT';
+      if (weakPositiveRate) {
+        reasons.push(
+          `post-cost positive ${formatPct(postCostPositiveRate)} < ` +
+          `${formatPct(POSTHOC_SECOND_KOL_REJECT_POSITIVE_RATE)}`
+        );
+      }
+      if (weakDownside) reasons.push(`p25 post-cost ${formatPct(p25PostCostDeltaPct)} <= 0`);
+    } else if (observedRows < POSTHOC_SECOND_KOL_REVIEW_MIN_OBSERVED) {
+      verdict = 'COLLECT';
+      reasons.push(`sample ${observedRows}/${POSTHOC_SECOND_KOL_REVIEW_MIN_OBSERVED}`);
+    } else if (observedRows < POSTHOC_SECOND_KOL_DECISION_MIN_OBSERVED) {
+      verdict = 'WATCH';
+      reasons.push(`review sample ${observedRows}/${POSTHOC_SECOND_KOL_DECISION_MIN_OBSERVED}`);
+      if ((postCostPositiveRate ?? 0) < POSTHOC_SECOND_KOL_MIN_POSITIVE_RATE) {
+        reasons.push(
+          `post-cost positive ${formatPct(postCostPositiveRate)} < ` +
+          `${formatPct(POSTHOC_SECOND_KOL_MIN_POSITIVE_RATE)}`
+        );
+      }
+      if ((medianPostCostDeltaPct ?? 0) <= 0) reasons.push(`median post-cost ${formatPct(medianPostCostDeltaPct)} <= 0`);
+      if ((p25PostCostDeltaPct ?? 0) <= 0) reasons.push(`p25 post-cost ${formatPct(p25PostCostDeltaPct)} <= 0`);
+    } else if (
+      (postCostPositiveRate ?? 0) >= POSTHOC_SECOND_KOL_MIN_POSITIVE_RATE &&
+      (medianPostCostDeltaPct ?? 0) > 0 &&
+      (p25PostCostDeltaPct ?? 0) > 0
+    ) {
+      verdict = 'PAPER_CANDIDATE';
+      reasons.push('paper-only candidate threshold met; live remains unchanged');
+    } else {
+      verdict = 'REJECT';
+      if ((postCostPositiveRate ?? 0) < POSTHOC_SECOND_KOL_MIN_POSITIVE_RATE) {
+        reasons.push(
+          `post-cost positive ${formatPct(postCostPositiveRate)} < ` +
+          `${formatPct(POSTHOC_SECOND_KOL_MIN_POSITIVE_RATE)}`
+        );
+      }
+      if ((medianPostCostDeltaPct ?? 0) <= 0) reasons.push(`median post-cost ${formatPct(medianPostCostDeltaPct)} <= 0`);
+      if ((p25PostCostDeltaPct ?? 0) <= 0) reasons.push(`p25 post-cost ${formatPct(p25PostCostDeltaPct)} <= 0`);
+    }
+  }
+
+  return {
+    cohort,
+    exitProfile,
+    verdict,
+    observedRows,
+    minReviewObserved: POSTHOC_SECOND_KOL_REVIEW_MIN_OBSERVED,
+    minDecisionObserved: POSTHOC_SECOND_KOL_DECISION_MIN_OBSERVED,
+    postCostPositiveRate,
+    medianPostCostDeltaPct,
+    p25PostCostDeltaPct,
+    currentRefundAdjustedNetSol: proxy?.currentRefundAdjustedNetSol ?? null,
+    reasons,
+  };
+}
+
+function buildPosthocSecondKolCandidateDecisions(
+  waitProxies: PosthocSecondKolWaitProxyStats[]
+): PosthocSecondKolCandidateDecision[] {
+  return [
+    buildPosthocSecondKolCandidateDecision('posthoc_2nd_kol_secondKOL<=15s', waitProxies),
+    buildPosthocSecondKolCandidateDecision('posthoc_2nd_kol_secondKOL<=30s', waitProxies),
+  ];
+}
+
+function buildPosthocSecondKolSyntheticPaperArms(
+  decisions: PosthocSecondKolCandidateDecision[]
+): PosthocSecondKolSyntheticPaperArm[] {
+  return decisions.map((decision) => {
+    const suffix = decision.cohort.replace('posthoc_2nd_kol_', '');
+    return {
+      armName: `${POSTHOC_SECOND_KOL_SYNTHETIC_ARM}:${suffix}`,
+      sourceCohort: decision.cohort,
+      verdict: decision.verdict,
+      observedRows: decision.observedRows,
+      minDecisionObserved: decision.minDecisionObserved,
+      postCostPositiveRate: decision.postCostPositiveRate,
+      medianPostCostDeltaPct: decision.medianPostCostDeltaPct,
+      p25PostCostDeltaPct: decision.p25PostCostDeltaPct,
+      currentRefundAdjustedNetSol: decision.currentRefundAdjustedNetSol,
+      proxyOnly: true,
+      liveEquivalent: false,
+      reasons: [
+        ...decision.reasons,
+        'synthetic paper arm only; runtime/live unchanged',
+      ],
+    };
+  });
+}
+
+function buildPosthocSecondKolRouteProofGate(
+  cohort: string,
+  rows: JsonRow[],
+  assumedNetworkFeeSol: number
+): PosthocSecondKolRouteProofGate {
+  const routeKnownRows = rows.filter((row) => !isUnderfillRouteUnknown(row)).length;
+  const routeProofRows = rows.filter((row) => routeTruthEvidenceSources(row).length > 0).length;
+  const reasonCounts = new Map<string, number>();
+  let structuralBlockRows = 0;
+  let dataGapRows = 0;
+  let infraRetryRows = 0;
+  let unknownRows = 0;
+  let explicitNoSellRouteRows = 0;
+  let exitLiquidityUnknownRows = 0;
+  let securityDataGapRows = 0;
+  let mixedExitLiquidityAndDataGapRows = 0;
+  let missingPositiveEvidenceRows = 0;
+
+  for (const row of rows) {
+    const truth = routeTruthBucket(row);
+    if (truth.recoverability === 'structural_block') structuralBlockRows += 1;
+    else if (truth.recoverability === 'data_gap') dataGapRows += 1;
+    else if (truth.recoverability === 'infra_retry') infraRetryRows += 1;
+    else if (truth.recoverability === 'unknown') unknownRows += 1;
+
+    const labels = routeUnknownReasonsForRow(row);
+    const evidence = routeTruthEvidenceSources(row);
+    const hasExplicitNoSellRoute = labels.some((label) =>
+      label === 'NO_SELL_ROUTE' ||
+      label === 'ROTATION_UNDERFILL_LIVE_EXIT_ROUTE_UNKNOWN'
+    );
+    const hasExitLiquidityUnknown = labels.some((label) => label === 'EXIT_LIQUIDITY_UNKNOWN');
+    const hasSecurityDataGap = labels.some((label) =>
+      label === 'DECIMALS_SECURITY_CLIENT' ||
+      label === 'TOKEN_QUALITY_UNKNOWN' ||
+      label === 'NO_SECURITY_DATA' ||
+      label === 'NO_SECURITY_CLIENT' ||
+      label === 'SECURITY_CLIENT'
+    );
+    const hasMissingPositiveEvidence = labels.some((label) => label === 'MISSING_POSITIVE_ROUTE_EVIDENCE');
+
+    if (hasExplicitNoSellRoute) explicitNoSellRouteRows += 1;
+    if (hasExitLiquidityUnknown) exitLiquidityUnknownRows += 1;
+    if (hasSecurityDataGap) securityDataGapRows += 1;
+    if (hasExitLiquidityUnknown && hasSecurityDataGap) mixedExitLiquidityAndDataGapRows += 1;
+    if (hasMissingPositiveEvidence) missingPositiveEvidenceRows += 1;
+
+    for (const label of labels.length > 0 ? labels : evidence) {
+      reasonCounts.set(label, (reasonCounts.get(label) ?? 0) + 1);
+    }
+    if (labels.length === 0 && evidence.length === 0) {
+      reasonCounts.set('MISSING_POSITIVE_ROUTE_EVIDENCE', (reasonCounts.get('MISSING_POSITIVE_ROUTE_EVIDENCE') ?? 0) + 1);
+    }
+  }
+
+  let verdict: PosthocSecondKolRouteProofVerdict = 'COLLECT';
+  const reasons: string[] = [];
+  if (rows.length === 0) {
+    reasons.push('sample missing');
+  } else if (routeKnownRows === 0) {
+    verdict = 'ROUTE_PROOF_MISSING';
+    reasons.push('route-known proof missing; live remains blocked');
+  } else if (routeKnownRows < rows.length) {
+    verdict = 'PARTIAL_ROUTE_PROOF';
+    reasons.push(`route-known ${routeKnownRows}/${rows.length}; keep paper-only`);
+  } else {
+    verdict = 'ROUTE_PROOF_READY';
+    reasons.push('route-known proof complete; still paper-only until sample gate passes');
+  }
+
+  let recoveryHint = 'collect_more_rows';
+  if (rows.length === 0) {
+    recoveryHint = 'collect_sample';
+  } else if (routeKnownRows === rows.length) {
+    recoveryHint = 'route_proof_ready';
+  } else if (explicitNoSellRouteRows > 0) {
+    recoveryHint = 'review_true_no_route_before_live';
+  } else if (mixedExitLiquidityAndDataGapRows > 0) {
+    recoveryHint = 'record_exit_quote_and_security_evidence';
+  } else if (exitLiquidityUnknownRows > 0) {
+    recoveryHint = 'record_exit_quote_evidence';
+  } else if (securityDataGapRows > 0) {
+    recoveryHint = 'record_security_client_evidence';
+  } else if (missingPositiveEvidenceRows > 0) {
+    recoveryHint = 'record_positive_route_probe';
+  }
+
+  const refundAdjustedValues = rows.map((row) =>
+    (num(row.netSolTokenOnly) ?? numberOrZero(row.netSol)) - assumedNetworkFeeSol
+  );
+  return {
+    cohort,
+    verdict,
+    rows: rows.length,
+    candidateIdRows: rows.filter((row) => Boolean(rowCandidateId(row))).length,
+    routeKnownRows,
+    routeProofRows,
+    routeUnknownRows: rows.length - routeKnownRows,
+    costAwareRows: rows.filter(isCostAwareUnderfillRow).length,
+    structuralBlockRows,
+    dataGapRows,
+    infraRetryRows,
+    unknownRows,
+    explicitNoSellRouteRows,
+    exitLiquidityUnknownRows,
+    securityDataGapRows,
+    mixedExitLiquidityAndDataGapRows,
+    missingPositiveEvidenceRows,
+    recoveryHint,
+    refundAdjustedNetSol: rows.length > 0 ? refundAdjustedValues.reduce((sum, item) => sum + item, 0) : null,
+    topReasons: [...reasonCounts.entries()]
+      .map(([reason, count]) => ({ reason, count }))
+      .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason))
+      .slice(0, 4),
+    reasons,
+  };
+}
+
+function buildPosthocSecondKolRouteProofGates(
+  rows: JsonRow[],
+  assumedNetworkFeeSol: number
+): PosthocSecondKolRouteProofGate[] {
+  const posthocRows = rows.filter(isPosthocSecondKolRow);
+  const cohortRows = [
+    {
+      cohort: 'posthoc_2nd_kol_secondKOL<=15s',
+      rows: posthocRows.filter((row) => {
+        const delay = secondKolDelaySec(row);
+        return delay != null && delay <= 15;
+      }),
+    },
+    {
+      cohort: 'posthoc_2nd_kol_secondKOL<=30s',
+      rows: posthocRows.filter((row) => {
+        const delay = secondKolDelaySec(row);
+        return delay != null && delay <= 30;
+      }),
+    },
+  ];
+  return cohortRows.map((item) =>
+    buildPosthocSecondKolRouteProofGate(item.cohort, item.rows, assumedNetworkFeeSol)
+  );
+}
+
+function buildPosthocSecondKolRecoveryBacklog(
+  gates: PosthocSecondKolRouteProofGate[]
+): PosthocSecondKolRecoveryBacklogItem[] {
+  return gates.map((gate) => {
+    const liveStance = 'live blocked; report-only evidence only';
+    if (gate.rows === 0) {
+      return {
+        cohort: gate.cohort,
+        priority: 'P2',
+        status: 'WAIT_SAMPLE',
+        nextSprint: 'collect_posthoc_2nd_kol_rows',
+        evidenceGap: 'sample=0',
+        requiredBeforeLive: 'collect route-proofed paper rows before any review',
+        liveStance,
+      };
+    }
+    if (gate.recoveryHint === 'review_true_no_route_before_live') {
+      return {
+        cohort: gate.cohort,
+        priority: 'P0',
+        status: 'BLOCKED',
+        nextSprint: 'drill_down_true_no_sell_route',
+        evidenceGap: `noRoute=${gate.explicitNoSellRouteRows}/${gate.rows}`,
+        requiredBeforeLive: 'prove exits are structurally available before spending canary budget',
+        liveStance,
+      };
+    }
+    if (gate.recoveryHint === 'record_exit_quote_and_security_evidence') {
+      return {
+        cohort: gate.cohort,
+        priority: 'P0',
+        status: 'TODO',
+        nextSprint: 'record_exit_quote_and_security_evidence',
+        evidenceGap:
+          `exitUnknown=${gate.exitLiquidityUnknownRows}/${gate.rows}, ` +
+          `securityGap=${gate.securityDataGapRows}/${gate.rows}`,
+        requiredBeforeLive: 'new paper rows carry exit quote/liquidity and security evidence snapshots',
+        liveStance,
+      };
+    }
+    if (gate.recoveryHint === 'record_exit_quote_evidence') {
+      return {
+        cohort: gate.cohort,
+        priority: 'P0',
+        status: 'TODO',
+        nextSprint: 'record_exit_quote_evidence',
+        evidenceGap: `exitUnknown=${gate.exitLiquidityUnknownRows}/${gate.rows}`,
+        requiredBeforeLive: 'new paper rows carry sell-route or exit-liquidity evidence',
+        liveStance,
+      };
+    }
+    if (gate.recoveryHint === 'record_security_client_evidence') {
+      return {
+        cohort: gate.cohort,
+        priority: 'P1',
+        status: 'TODO',
+        nextSprint: 'record_security_client_evidence',
+        evidenceGap: `securityGap=${gate.securityDataGapRows}/${gate.rows}`,
+        requiredBeforeLive: 'new paper rows carry token/security quality evidence',
+        liveStance,
+      };
+    }
+    if (gate.recoveryHint === 'record_positive_route_probe') {
+      return {
+        cohort: gate.cohort,
+        priority: 'P1',
+        status: 'TODO',
+        nextSprint: 'record_positive_route_probe',
+        evidenceGap: `missingProof=${gate.missingPositiveEvidenceRows}/${gate.rows}`,
+        requiredBeforeLive: 'new paper rows carry explicit positive route probe evidence',
+        liveStance,
+      };
+    }
+    return {
+      cohort: gate.cohort,
+      priority: gate.verdict === 'ROUTE_PROOF_READY' ? 'P1' : 'P2',
+      status: gate.verdict === 'ROUTE_PROOF_READY' ? 'READY_FOR_REVIEW' : 'WAIT_SAMPLE',
+      nextSprint: gate.verdict === 'ROUTE_PROOF_READY' ? 'check_sample_gate_and_live_equivalence' : 'collect_more_rows',
+      evidenceGap: `routeKnown=${gate.routeKnownRows}/${gate.rows}, routeProof=${gate.routeProofRows}/${gate.rows}`,
+      requiredBeforeLive: 'sample gate, live-equivalence, and route proof must all pass',
+      liveStance,
+    };
+  });
 }
 
 function countByLabel<T extends string>(
@@ -2250,6 +3045,451 @@ function buildRotationReadinessHorizonCoverage(
     });
 }
 
+function isRouteProofedUnderfillRow(row: JsonRow): boolean {
+  return isRotationUnderfillRow(row) &&
+    routeTruthEvidenceSources(row).length > 0 &&
+    !isUnderfillRouteUnknown(row);
+}
+
+function rowCloseTimeMs(row: JsonRow): number {
+  const candidates = [
+    timeMs(row.closedAt),
+    timeMs(row.exitTimeSec),
+    timeMs(row.entryTimeSec),
+    timeMs(row.createdAt),
+    timeMs(row.recordedAt),
+  ];
+  return candidates.find((value) => Number.isFinite(value)) ?? NaN;
+}
+
+function latestIso(rows: JsonRow[]): string | null {
+  const latest = Math.max(
+    ...rows
+      .map(rowCloseTimeMs)
+      .filter((value) => Number.isFinite(value))
+  );
+  return Number.isFinite(latest) ? new Date(latest).toISOString() : null;
+}
+
+function exitSellQuoteEvidenceForRow(row: JsonRow): JsonRow {
+  const direct = obj(row.exitSellQuoteEvidence);
+  if (Object.keys(direct).length > 0) return direct;
+  return obj(obj(row.extras).exitSellQuoteEvidence);
+}
+
+function rowExitRouteProofSkipReason(row: JsonRow): string {
+  return rowStringWithExtras(row, ['exitRouteProofSkipReason']);
+}
+
+function rowPaperCloseWriterSchemaVersion(row: JsonRow): string {
+  return rowStringWithExtras(row, ['paperCloseWriterSchemaVersion']);
+}
+
+function rowRotationExitRouteProofSchemaVersion(row: JsonRow): string {
+  return rowStringWithExtras(row, ['rotationExitRouteProofSchemaVersion']);
+}
+
+function hasExitRouteInstrumentation(row: JsonRow): boolean {
+  const extras = obj(row.extras);
+  if (Object.keys(exitSellQuoteEvidenceForRow(row)).length > 0) return true;
+  if (rowExitRouteProofSkipReason(row)) return true;
+  return boolValue(row.exitRouteFound) != null ||
+    boolValue(extras.exitRouteFound) != null ||
+    boolValue(row.exitSellRouteKnown) != null ||
+    boolValue(extras.exitSellRouteKnown) != null;
+}
+
+function hasExitSellQuoteEvidence(row: JsonRow): boolean {
+  return Object.keys(exitSellQuoteEvidenceForRow(row)).length > 0;
+}
+
+function exitRouteFoundValue(row: JsonRow): boolean | null {
+  const extras = obj(row.extras);
+  const evidence = exitSellQuoteEvidenceForRow(row);
+  return boolValue(row.exitRouteFound) ??
+    boolValue(extras.exitRouteFound) ??
+    boolValue(row.exitSellRouteKnown) ??
+    boolValue(extras.exitSellRouteKnown) ??
+    boolValue(evidence.routeFound);
+}
+
+function exitRouteProofSkipReasonCounts(rows: JsonRow[]): Array<{ reason: string; count: number }> {
+  return countByLabel(
+    rows.map(rowExitRouteProofSkipReason).filter((reason): reason is string => reason.length > 0),
+    'reason'
+  ) as Array<{ reason: string; count: number }>;
+}
+
+function paperCloseWriterSchemaCounts(rows: JsonRow[]): Array<{ schema: string; count: number }> {
+  return countByLabel(
+    rows.map(rowPaperCloseWriterSchemaVersion).filter((schema): schema is string => schema.length > 0),
+    'schema'
+  ) as Array<{ schema: string; count: number }>;
+}
+
+function routeProofFreshCutoff(
+  rows: JsonRow[],
+  explicitFreshSinceMs?: number
+): { cutoffMs: number | null; cutoffSource: RouteProofFreshnessStats['cutoffSource'] } {
+  if (explicitFreshSinceMs != null) return { cutoffMs: explicitFreshSinceMs, cutoffSource: 'arg' };
+  const markerTimes = rows
+    .filter(hasExitRouteInstrumentation)
+    .map(rowCloseTimeMs)
+    .filter((value) => Number.isFinite(value));
+  if (markerTimes.length === 0) return { cutoffMs: null, cutoffSource: 'none' };
+  return { cutoffMs: Math.min(...markerTimes), cutoffSource: 'first_exit_route_marker' };
+}
+
+function buildRouteProofFreshnessArmStats(rows: JsonRow[]): RouteProofFreshnessArmStats[] {
+  const buckets = new Map<string, JsonRow[]>();
+  for (const row of rows) {
+    const armName = rowArmName(row);
+    buckets.set(armName, [...(buckets.get(armName) ?? []), row]);
+  }
+  return [...buckets.entries()]
+    .map(([armName, scoped]) => {
+      const evidenceRows = scoped.filter(hasExitSellQuoteEvidence);
+      const skipReasonRows = scoped.filter((row) => rowExitRouteProofSkipReason(row));
+      return {
+        armName,
+        rows: scoped.length,
+        paperCloseWriterSchemaRows: scoped.filter((row) => rowPaperCloseWriterSchemaVersion(row)).length,
+        rotationExitRouteProofSchemaRows: scoped.filter((row) => rowRotationExitRouteProofSchemaVersion(row)).length,
+        exitRouteInstrumentedRows: scoped.filter(hasExitRouteInstrumentation).length,
+        exitQuoteEvidenceRows: evidenceRows.length,
+        exitRouteProofSkippedRows: skipReasonRows.length,
+        missingEvidenceRows: scoped.filter((row) => !hasExitSellQuoteEvidence(row)).length,
+        routeFoundTrueRows: scoped.filter((row) => exitRouteFoundValue(row) === true).length,
+        routeFoundFalseRows: scoped.filter((row) => exitRouteFoundValue(row) === false).length,
+        routeFoundNullRows: scoped.filter((row) => exitRouteFoundValue(row) == null).length,
+        routeProofRows: scoped.filter(isRouteProofedUnderfillRow).length,
+        latestCloseAt: latestIso(scoped),
+        latestExitQuoteEvidenceAt: latestIso(evidenceRows),
+        topExitRouteProofSkipReasons: exitRouteProofSkipReasonCounts(skipReasonRows).slice(0, 3),
+        topPaperCloseWriterSchemas: paperCloseWriterSchemaCounts(scoped).slice(0, 3),
+      };
+    })
+    .sort((a, b) =>
+      b.rows - a.rows ||
+      b.missingEvidenceRows - a.missingEvidenceRows ||
+      a.armName.localeCompare(b.armName)
+    );
+}
+
+function buildRouteProofFreshnessStats(
+  rows: JsonRow[],
+  explicitFreshSinceMs?: number
+): RouteProofFreshnessStats {
+  const underfillRows = rows.filter(isRotationUnderfillRow);
+  const cutoff = routeProofFreshCutoff(underfillRows, explicitFreshSinceMs);
+  const freshRows = cutoff.cutoffMs == null
+    ? underfillRows
+    : underfillRows.filter((row) => {
+      const closeMs = rowCloseTimeMs(row);
+      return Number.isFinite(closeMs) && closeMs >= (cutoff.cutoffMs ?? 0);
+    });
+  const exitRouteInstrumentedRows = freshRows.filter(hasExitRouteInstrumentation).length;
+  const paperCloseWriterSchemaRows = freshRows.filter((row) => rowPaperCloseWriterSchemaVersion(row)).length;
+  const rotationExitRouteProofSchemaRows = freshRows.filter((row) => rowRotationExitRouteProofSchemaVersion(row)).length;
+  const exitQuoteEvidenceRows = freshRows.filter(hasExitSellQuoteEvidence).length;
+  const exitQuoteRouteFoundRows = freshRows.filter((row) => exitRouteFoundValue(row) === true).length;
+  const exitQuoteNoRouteRows = freshRows.filter((row) => exitRouteFoundValue(row) === false).length;
+  const exitRouteProofSkippedRows = freshRows.filter((row) => rowExitRouteProofSkipReason(row)).length;
+  const exitQuoteUnknownRows = freshRows.filter((row) =>
+    hasExitRouteInstrumentation(row) && !rowExitRouteProofSkipReason(row) && exitRouteFoundValue(row) == null
+  ).length;
+  const routeProofRows = freshRows.filter(isRouteProofedUnderfillRow).length;
+  const routeUnknownRows = freshRows.filter(isUnderfillRouteUnknown).length;
+  const routeProofedTwoPlusCostAwareRows = freshRows.filter((row) =>
+    isRouteProofedUnderfillRow(row) &&
+    isTwoPlusKolRow(row) &&
+    isCostAwareUnderfillRow(row)
+  );
+  const reasonCounts = new Map<string, number>();
+  for (const reason of freshRows.flatMap(routeUnknownReasonsForRow)) {
+    reasonCounts.set(reason, (reasonCounts.get(reason) ?? 0) + 1);
+  }
+  const topRouteUnknownReasons = [...reasonCounts.entries()]
+    .map(([reason, count]) => ({ reason, count }))
+    .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason))
+    .slice(0, 5);
+  const topExitRouteProofSkipReasons = exitRouteProofSkipReasonCounts(freshRows).slice(0, 5);
+  const topPaperCloseWriterSchemas = paperCloseWriterSchemaCounts(freshRows).slice(0, 5);
+  const minRequiredFreshRows = ROTATION_COMPOUND_REVIEW_MIN_CLOSES;
+  const instrumentationMissingRows = freshRows.length - exitRouteInstrumentedRows;
+  const reasons: string[] = [];
+  let verdict: RouteProofFreshnessVerdict = 'READY_FOR_NARROW_REVIEW';
+
+  if (freshRows.length === 0) {
+    verdict = 'WAIT_FRESH_CLOSES';
+    reasons.push(
+      cutoff.cutoffSource === 'none'
+        ? 'no underfill paper closes in the report window'
+        : 'no underfill paper closes in the fresh route-proof window yet'
+    );
+  } else if (cutoff.cutoffSource === 'none') {
+    verdict = 'INSTRUMENTATION_GAP';
+    if (rotationExitRouteProofSchemaRows === 0) {
+      reasons.push(`no exit-route markers or route-proof writer schema across current report-window underfill closes ${freshRows.length}; deploy drift likely`);
+    } else {
+      reasons.push(`route-proof writer schema present but exit-route markers missing ${freshRows.length - exitRouteInstrumentedRows}/${freshRows.length}; write-path drift likely`);
+    }
+  } else if (instrumentationMissingRows > 0 || exitQuoteUnknownRows > 0) {
+    verdict = 'INSTRUMENTATION_GAP';
+    if (instrumentationMissingRows > 0) {
+      reasons.push(`fresh rows missing exit-route instrumentation ${instrumentationMissingRows}/${freshRows.length}`);
+    }
+    if (exitQuoteUnknownRows > 0) {
+      reasons.push(`exit-route evidence without routeFound true/false ${exitQuoteUnknownRows}/${freshRows.length}`);
+    }
+  } else if (routeProofRows === 0 && exitQuoteNoRouteRows > 0 && freshRows.length >= ROTATION_COMPOUND_EARLY_REJECT_MIN_CLOSES) {
+    verdict = 'REJECT';
+    reasons.push(`fresh exit-route probes found no sell route ${exitQuoteNoRouteRows}/${freshRows.length}`);
+  } else if (routeProofRows === 0 && exitRouteProofSkippedRows > 0) {
+    verdict = 'DATA_GAP';
+    reasons.push(`fresh exit-route proof skipped or inconclusive ${exitRouteProofSkippedRows}/${freshRows.length}`);
+  } else if (routeProofRows === 0) {
+    verdict = 'INSTRUMENTATION_GAP';
+    reasons.push('fresh rows exist but positive route proof is still zero');
+  } else if (routeProofRows < freshRows.length) {
+    verdict = 'DATA_GAP';
+    reasons.push(`fresh route proof partial ${routeProofRows}/${freshRows.length}`);
+  } else if (routeProofedTwoPlusCostAwareRows.length === 0) {
+    verdict = 'ROUTE_PROOF_COLLECTING';
+    reasons.push('route-proofed fresh rows exist, but 2+ KOL cost-aware slice is empty');
+  } else if (routeProofedTwoPlusCostAwareRows.length < minRequiredFreshRows) {
+    verdict = 'ROUTE_PROOF_COLLECTING';
+    reasons.push(`route-proofed 2+KOL cost-aware fresh sample ${routeProofedTwoPlusCostAwareRows.length}/${minRequiredFreshRows}`);
+  } else if (routeProofedTwoPlusCostAwareRows.some((row) => !rowCandidateId(row) || secondKolDelaySec(row) == null)) {
+    verdict = 'DATA_GAP';
+    reasons.push('fresh narrow sample still has candidateId or timestamped second-KOL gaps');
+  } else {
+    reasons.push('fresh route-proofed narrow sample is ready for the narrow cohort board');
+  }
+
+  return {
+    verdict,
+    reasons,
+    cutoffSource: cutoff.cutoffSource,
+    freshSince: cutoff.cutoffMs == null ? null : new Date(cutoff.cutoffMs).toISOString(),
+    underfillRows: underfillRows.length,
+    freshRows: freshRows.length,
+    minRequiredFreshRows,
+    latestUnderfillCloseAt: latestIso(underfillRows),
+    latestCostAwareCloseAt: latestIso(underfillRows.filter(isCostAwareUnderfillRow)),
+    latestExitQuoteEvidenceAt: latestIso(underfillRows.filter(hasExitSellQuoteEvidence)),
+    paperCloseWriterSchemaRows,
+    rotationExitRouteProofSchemaRows,
+    exitRouteInstrumentedRows,
+    exitQuoteEvidenceRows,
+    exitQuoteRouteFoundRows,
+    exitQuoteNoRouteRows,
+    exitQuoteUnknownRows,
+    exitRouteProofSkippedRows,
+    instrumentationMissingRows,
+    routeProofRows,
+    explicitNoRouteRows: freshRows.filter(hasExplicitNoSellRouteEvidence).length,
+    routeUnknownRows,
+    candidateIdRows: freshRows.filter((row) => rowCandidateId(row)).length,
+    twoPlusKolRows: freshRows.filter(isTwoPlusKolRow).length,
+    costAwareRows: freshRows.filter(isCostAwareUnderfillRow).length,
+    routeProofedTwoPlusCostAwareRows: routeProofedTwoPlusCostAwareRows.length,
+    routeProofedTwoPlusCostAwareTimestampedRows: routeProofedTwoPlusCostAwareRows
+      .filter((row) => secondKolDelaySec(row) != null)
+      .length,
+    freshByArm: buildRouteProofFreshnessArmStats(freshRows),
+    topRouteUnknownReasons,
+    topExitRouteProofSkipReasons,
+    topPaperCloseWriterSchemas,
+  };
+}
+
+function buildNarrowCohortPrimaryHorizonStats(
+  rows: JsonRow[],
+  markoutsByPosition: Map<string, JsonRow[]>,
+  horizonsSec: number[],
+  roundTripCostPct: number
+): RotationNarrowCohortHorizonStats[] {
+  return EVIDENCE_PRIMARY_HORIZONS_SEC
+    .filter((horizonSec) => horizonsSec.includes(horizonSec))
+    .map((horizonSec) => {
+      const postCostDeltas = rows
+        .map((row) => postCostDeltaAt(row, horizonSec, markoutsByPosition, roundTripCostPct))
+        .filter((value): value is number => value != null);
+      return {
+        horizonSec,
+        okRows: postCostDeltas.length,
+        okCoverage: ratio(postCostDeltas.length, rows.length),
+        postCostPositiveRate: ratio(postCostDeltas.filter((value) => value > 0).length, postCostDeltas.length),
+        medianPostCostDeltaPct: percentile(postCostDeltas, 0.5),
+      };
+    });
+}
+
+function summarizeRotationNarrowCohort(
+  cohort: string,
+  rows: JsonRow[],
+  markoutsByPosition: Map<string, JsonRow[]>,
+  horizonsSec: number[],
+  roundTripCostPct: number,
+  assumedNetworkFeeSol: number
+): RotationNarrowCohortStats {
+  const minRequiredRows = ROTATION_PAPER_COMPOUND_MIN_CLOSES;
+  const routeProofRows = rows.filter(isRouteProofedUnderfillRow).length;
+  const candidateIdRows = rows.filter((row) => rowCandidateId(row)).length;
+  const twoPlusKolRows = rows.filter(isTwoPlusKolRow).length;
+  const costAwareRows = rows.filter(isCostAwareUnderfillRow).length;
+  const timestampedSecondKolRows = rows.filter((row) => secondKolDelaySec(row) != null).length;
+  const refundAdjustedValues = rows.map((row) =>
+    (num(row.netSolTokenOnly) ?? numberOrZero(row.netSol)) - assumedNetworkFeeSol
+  );
+  const edgeRows = rows
+    .map(rotationEdge)
+    .filter((edge) => Object.keys(edge).length > 0);
+  const primaryHorizonPostCost = buildNarrowCohortPrimaryHorizonStats(
+    rows,
+    markoutsByPosition,
+    horizonsSec,
+    roundTripCostPct
+  );
+  const minOkCoverage = minRequiredOkCoverage(primaryHorizonPostCost);
+  const routeProofCoverage = ratio(routeProofRows, rows.length);
+  const edgePassRate = ratio(edgeRows.filter((edge) => edgePassValue(edge) === true).length, edgeRows.length);
+  const postCostPositiveRate = ratio(refundAdjustedValues.filter((value) => value > 0).length, rows.length);
+  const t1Rate = ratio(rows.filter(rowHasT1).length, rows.length);
+  const primaryMedians = primaryHorizonPostCost.map((row) => row.medianPostCostDeltaPct);
+  const primaryPositiveRates = primaryHorizonPostCost.map((row) => row.postCostPositiveRate);
+  const missingPrimaryHorizons = EVIDENCE_PRIMARY_HORIZONS_SEC.filter((horizonSec) =>
+    !horizonsSec.includes(horizonSec)
+  );
+  const reasons: string[] = [];
+  let verdict: RotationNarrowCohortVerdict = 'PAPER_READY';
+  const canPaperReady = rows.length > 0 &&
+    twoPlusKolRows === rows.length &&
+    costAwareRows === rows.length;
+
+  if (rows.length === 0) {
+    verdict = 'DATA_GAP';
+    reasons.push('route-proofed narrow sample missing');
+  } else if (missingPrimaryHorizons.length > 0) {
+    verdict = 'DATA_GAP';
+    reasons.push(`primary horizons disabled: ${missingPrimaryHorizons.map((item) => `T+${item}s`).join(', ')}`);
+  } else if ((routeProofCoverage ?? 0) < EVIDENCE_MIN_ROUTE_PROOF_COVERAGE) {
+    verdict = 'DATA_GAP';
+    reasons.push(`route proof ${formatPct(routeProofCoverage)} < ${formatPct(EVIDENCE_MIN_ROUTE_PROOF_COVERAGE)}`);
+  } else if (minOkCoverage == null || minOkCoverage < EVIDENCE_MIN_OK_COVERAGE) {
+    verdict = 'DATA_GAP';
+    reasons.push(`T+15/T+30 markout coverage ${formatPct(minOkCoverage)} < ${formatPct(EVIDENCE_MIN_OK_COVERAGE)}`);
+  } else if (cohort.includes('cost_aware') && edgePassRate == null) {
+    verdict = 'DATA_GAP';
+    reasons.push('cost-aware edge evidence missing');
+  } else if (rows.length < ROTATION_COMPOUND_REVIEW_MIN_CLOSES) {
+    verdict = 'COLLECT';
+    reasons.push(`collect sample ${rows.length}/${ROTATION_COMPOUND_REVIEW_MIN_CLOSES}`);
+  } else if (refundAdjustedValues.reduce((sum, value) => sum + value, 0) <= 0) {
+    verdict = 'REJECT';
+    reasons.push('refund-adjusted net <= 0');
+  } else if ((postCostPositiveRate ?? 0) < ROTATION_PAPER_COMPOUND_MIN_POST_COST_POSITIVE_RATE) {
+    verdict = rows.length >= minRequiredRows ? 'REJECT' : 'WATCH';
+    reasons.push(
+      `refund-adjusted positive ${formatPct(postCostPositiveRate)} < ` +
+      `${formatPct(ROTATION_PAPER_COMPOUND_MIN_POST_COST_POSITIVE_RATE)}`
+    );
+  } else if (primaryMedians.some((value) => value == null || value <= 0)) {
+    verdict = rows.length >= minRequiredRows ? 'REJECT' : 'WATCH';
+    reasons.push('T+15/T+30 median post-cost continuation is non-positive');
+  } else if (primaryPositiveRates.some((value) =>
+    value == null || value < ROTATION_PAPER_COMPOUND_MIN_POST_COST_POSITIVE_RATE
+  )) {
+    verdict = rows.length >= minRequiredRows ? 'REJECT' : 'WATCH';
+    reasons.push(
+      `T+15/T+30 post-cost positive < ${formatPct(ROTATION_PAPER_COMPOUND_MIN_POST_COST_POSITIVE_RATE)}`
+    );
+  } else if (edgePassRate != null && edgePassRate < EVIDENCE_MIN_EDGE_PASS_RATE) {
+    verdict = 'REJECT';
+    reasons.push(`edge pass ${formatPct(edgePassRate)} < ${formatPct(EVIDENCE_MIN_EDGE_PASS_RATE)}`);
+  } else if (!canPaperReady) {
+    verdict = 'WATCH';
+    reasons.push('diagnostic slice only; paper-ready requires every row to be 2+ KOL and cost-aware');
+  } else if (rows.length < minRequiredRows) {
+    verdict = 'WATCH';
+    reasons.push(`review sample ${rows.length}/${minRequiredRows}`);
+  } else if (candidateIdRows < rows.length) {
+    verdict = 'DATA_GAP';
+    reasons.push(`candidateId incomplete ${candidateIdRows}/${rows.length}`);
+  } else if (timestampedSecondKolRows < rows.length) {
+    verdict = 'DATA_GAP';
+    reasons.push(`timestamped second-KOL incomplete ${timestampedSecondKolRows}/${rows.length}`);
+  } else {
+    reasons.push('route-proofed narrow paper cohort passed; live remains unchanged');
+  }
+
+  return {
+    cohort,
+    verdict,
+    reasons,
+    rows: rows.length,
+    minRequiredRows,
+    routeProofRows,
+    routeProofCoverage,
+    candidateIdRows,
+    twoPlusKolRows,
+    costAwareRows,
+    timestampedSecondKolRows,
+    refundAdjustedNetSol: rows.length > 0
+      ? refundAdjustedValues.reduce((sum, value) => sum + value, 0)
+      : null,
+    postCostPositiveRate,
+    edgePassRate,
+    t1Rate,
+    medianMfePct: percentile(rows.map(rowMfePct).filter((value): value is number => value != null), 0.5),
+    medianHoldSec: percentile(rows.map((row) => num(row.holdSec)).filter((value): value is number => value != null), 0.5),
+    minOkCoverage,
+    primaryHorizonPostCost,
+  };
+}
+
+function buildRotationNarrowCohortStats(
+  rows: JsonRow[],
+  markoutRows: JsonRow[],
+  horizonsSec: number[],
+  roundTripCostPct: number,
+  assumedNetworkFeeSol: number
+): RotationNarrowCohortStats[] {
+  const markoutsByPosition = buyMarkoutsByPosition(markoutRows);
+  const routeProofedRows = rows.filter(isRouteProofedUnderfillRow);
+  const costAwareRows = routeProofedRows.filter(isCostAwareUnderfillRow);
+  const twoPlusRows = routeProofedRows.filter(isTwoPlusKolRow);
+  const twoPlusCostAwareRows = twoPlusRows.filter(isCostAwareUnderfillRow);
+  return [
+    { cohort: 'route_proofed_underfill', rows: routeProofedRows },
+    { cohort: 'route_proofed_cost_aware', rows: costAwareRows },
+    { cohort: 'route_proofed_2plus', rows: twoPlusRows },
+    { cohort: 'route_proofed_2plus_cost_aware', rows: twoPlusCostAwareRows },
+    {
+      cohort: 'route_proofed_2plus_cost_aware_secondKOL<=15s',
+      rows: twoPlusCostAwareRows.filter((row) => {
+        const delay = secondKolDelaySec(row);
+        return delay != null && delay <= 15;
+      }),
+    },
+    {
+      cohort: 'route_proofed_2plus_cost_aware_secondKOL<=30s',
+      rows: twoPlusCostAwareRows.filter((row) => {
+        const delay = secondKolDelaySec(row);
+        return delay != null && delay <= 30;
+      }),
+    },
+  ].map((item) => summarizeRotationNarrowCohort(
+    item.cohort,
+    item.rows,
+    markoutsByPosition,
+    horizonsSec,
+    roundTripCostPct,
+    assumedNetworkFeeSol
+  ));
+}
+
 function buildRotationLiveReadiness(
   cohorts: UnderfillRouteCohortStats[],
   rows: JsonRow[],
@@ -2503,6 +3743,7 @@ function buildPaperArmStats(
         edgeRows: edgeRows.length,
         edgePassRows: edgeRows.filter((edge) => edgePassValue(edge) === true).length,
         edgeFailRows: edgeRows.filter((edge) => edgePassValue(edge) === false).length,
+        routeProofRows: scoped.filter((row) => routeTruthEvidenceSources(row).length > 0).length,
         medianEdgeCostRatio: percentile(edgeCostRatios, 0.5),
         medianEdgeWalletDragRatio: percentile(edgeWalletDragRatios, 0.5),
         medianRequiredGrossMovePct: percentile(edgeRequiredMoves, 0.5),
@@ -2720,6 +3961,7 @@ function buildEvidenceVerdicts(
       : null;
     const edgeCoverage = arm.rows > 0 ? arm.edgeRows / arm.rows : null;
     const edgePassRate = arm.edgeRows > 0 ? arm.edgePassRows / arm.edgeRows : null;
+    const routeProofCoverage = arm.rows > 0 ? arm.routeProofRows / arm.rows : null;
     const reasons: string[] = [];
     let verdict: EvidenceVerdictStatus = 'PROMOTION_CANDIDATE';
     if (decay?.medianPostCostDeltaPct != null && decay.medianPostCostDeltaPct <= 0) {
@@ -2767,6 +4009,12 @@ function buildEvidenceVerdicts(
     } else if (arm.rows < EVIDENCE_PROMOTION_MIN_CLOSES) {
       verdict = 'WATCH';
       reasons.push(`sample ${arm.rows}/${EVIDENCE_PROMOTION_MIN_CLOSES}`);
+    } else if (routeProofCoverage == null || routeProofCoverage < EVIDENCE_MIN_ROUTE_PROOF_COVERAGE) {
+      verdict = 'DATA_GAP';
+      reasons.push(
+        `route proof ${arm.routeProofRows}/${arm.rows} ` +
+        `${formatPct(routeProofCoverage)} < ${formatPct(EVIDENCE_MIN_ROUTE_PROOF_COVERAGE)}`
+      );
     } else {
       reasons.push('promotion evidence threshold met');
     }
@@ -2794,6 +4042,8 @@ function buildEvidenceVerdicts(
       rentAdjustedNetSol: arm.rentAdjustedNetSol,
       edgeCoverage,
       edgePassRate,
+      routeProofRows: arm.routeProofRows,
+      routeProofCoverage,
     };
   });
 }
@@ -3074,6 +4324,71 @@ function renderUnderfillRouteCohorts(rows: UnderfillRouteCohortStats[]): string 
   ].join('\n');
 }
 
+function renderRouteProofFreshness(row: RouteProofFreshnessStats): string {
+  const byArm = row.freshByArm.length === 0
+    ? '_No fresh arm rows._'
+    : [
+        '| arm | fresh closes | writer schema | route-proof schema | exit evidence | skipped | missing evidence | routeFound true/false/null | route proof | latest close | latest evidence | top writer schemas | top skip reasons |',
+        '|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|---|',
+        ...row.freshByArm.map((item) =>
+          `| ${item.armName} | ${item.rows} | ${item.paperCloseWriterSchemaRows}/${item.rows} | ` +
+          `${item.rotationExitRouteProofSchemaRows}/${item.rows} | ${item.exitQuoteEvidenceRows}/${item.exitRouteInstrumentedRows} | ` +
+          `${item.exitRouteProofSkippedRows} | ${item.missingEvidenceRows} | ` +
+          `${item.routeFoundTrueRows}/${item.routeFoundFalseRows}/${item.routeFoundNullRows} | ` +
+          `${item.routeProofRows}/${item.rows} | ${item.latestCloseAt ?? 'n/a'} | ${item.latestExitQuoteEvidenceAt ?? 'n/a'} | ` +
+          `${item.topPaperCloseWriterSchemas.map((schema) => `${schema.schema}:${schema.count}`).join(', ') || 'n/a'} | ` +
+          `${item.topExitRouteProofSkipReasons.map((reason) => `${reason.reason}:${reason.count}`).join(', ') || 'n/a'} |`
+        ),
+      ].join('\n');
+  return [
+    '| verdict | fresh since | cutoff | latest underfill | latest cost-aware | latest evidence | underfill | fresh | writer schema | route-proof schema | exit evidence | skipped | routeFound true/false/null | missing instrumentation | route proof | route unknown | candidateId | 2+ KOL | cost-aware | narrow ready | reasons |',
+    '|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|',
+    `| ${row.verdict} | ${row.freshSince ?? 'n/a'} | ${row.cutoffSource} | ` +
+      `${row.latestUnderfillCloseAt ?? 'n/a'} | ${row.latestCostAwareCloseAt ?? 'n/a'} | ` +
+      `${row.latestExitQuoteEvidenceAt ?? 'n/a'} | ` +
+      `${row.underfillRows} | ${row.freshRows}/${row.minRequiredFreshRows} | ` +
+      `${row.paperCloseWriterSchemaRows}/${row.freshRows} | ${row.rotationExitRouteProofSchemaRows}/${row.freshRows} | ` +
+      `${row.exitQuoteEvidenceRows}/${row.exitRouteInstrumentedRows} | ${row.exitRouteProofSkippedRows} | ` +
+      `${row.exitQuoteRouteFoundRows}/${row.exitQuoteNoRouteRows}/${row.exitQuoteUnknownRows} | ` +
+      `${row.instrumentationMissingRows} | ${row.routeProofRows}/${row.freshRows} | ` +
+      `${row.routeUnknownRows}/${row.freshRows} | ${row.candidateIdRows}/${row.freshRows} | ` +
+      `${row.twoPlusKolRows}/${row.freshRows} | ${row.costAwareRows}/${row.freshRows} | ` +
+      `${row.routeProofedTwoPlusCostAwareTimestampedRows}/${row.routeProofedTwoPlusCostAwareRows} | ` +
+      `${row.reasons.join('; ') || 'n/a'} |`,
+    '',
+    `- explicit no-route: ${row.explicitNoRouteRows}/${row.freshRows}`,
+    `- exit route proof skipped/inconclusive: ${row.exitRouteProofSkippedRows}/${row.freshRows}`,
+    `- paper close writer schemas: ${row.topPaperCloseWriterSchemas.map((item) => `${item.schema}:${item.count}`).join(', ') || 'n/a'}`,
+    `- top exit-route proof skip reasons: ${row.topExitRouteProofSkipReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'}`,
+    `- top route-unknown reasons: ${row.topRouteUnknownReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'}`,
+    '',
+    '### Route Proof Freshness By Arm',
+    byArm,
+  ].join('\n');
+}
+
+function renderRotationNarrowCohorts(rows: RotationNarrowCohortStats[]): string {
+  if (rows.length === 0) return '_No rotation narrow cohort rows._';
+  return [
+    '| cohort | verdict | closes | route proof | candidateId | 2+ KOL | cost-aware | timestamped 2nd KOL | refund-adjusted | close postCost>0 | edge pass | T1 | min T+ coverage | primary postCost | med MFE | median hold | reasons |',
+    '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---|',
+    ...rows.map((row) =>
+      `| ${row.cohort} | ${row.verdict} | ${row.rows}/${row.minRequiredRows} | ` +
+      `${row.routeProofRows}/${row.rows} (${formatPct(row.routeProofCoverage)}) | ` +
+      `${row.candidateIdRows}/${row.rows} | ${row.twoPlusKolRows}/${row.rows} | ` +
+      `${row.costAwareRows}/${row.rows} | ${row.timestampedSecondKolRows}/${row.rows} | ` +
+      `${formatSol(row.refundAdjustedNetSol)} | ${formatPct(row.postCostPositiveRate)} | ` +
+      `${formatPct(row.edgePassRate)} | ${formatPct(row.t1Rate)} | ${formatPct(row.minOkCoverage)} | ` +
+      `${row.primaryHorizonPostCost.map((item) =>
+        `T+${item.horizonSec}s ${formatPct(item.medianPostCostDeltaPct)} ` +
+        `pos=${formatPct(item.postCostPositiveRate)} cov=${formatPct(item.okCoverage)}`
+      ).join(', ') || 'n/a'} | ` +
+      `${formatPct(row.medianMfePct)} | ${row.medianHoldSec == null ? 'n/a' : `${row.medianHoldSec.toFixed(0)}s`} | ` +
+      `${row.reasons.join('; ') || 'n/a'} |`
+    ),
+  ].join('\n');
+}
+
 function renderLiveEquivalenceBucketTable(rows: LiveEquivalenceBucketStats[]): string {
   if (rows.length === 0) return '_No live-equivalence rows._';
   return [
@@ -3136,6 +4451,100 @@ function renderKolTimingStats(rows: KolTimingStats[]): string {
       `| ${row.bucket} | ${row.rows} | ${row.routeKnownRows} | ${row.costAwareRows} | ` +
       `${formatSol(row.refundAdjustedNetSol)} | ${row.t1Rows}/${row.rows} | ` +
       `${row.medianSecondKolDelaySec == null ? 'n/a' : `${row.medianSecondKolDelaySec.toFixed(1)}s`} |`
+    ),
+  ].join('\n');
+}
+
+function renderPosthocSecondKolStats(rows: PosthocSecondKolStats[]): string {
+  if (rows.length === 0) return '_No posthoc second-KOL rows._';
+  return [
+    '| cohort | rows | route known | cost-aware | W/L | refund-adjusted SOL | T1 hit | med MFE | median second KOL delay |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|---:|',
+    ...rows.map((row) =>
+      `| ${row.cohort} | ${row.rows} | ${row.routeKnownRows} | ${row.costAwareRows} | ` +
+      `${row.wins}/${row.losses} | ${formatSol(row.refundAdjustedNetSol)} | ${row.t1Rows}/${row.rows} | ` +
+      `${formatPct(row.medianMfePct)} | ` +
+      `${row.medianSecondKolDelaySec == null ? 'n/a' : `${row.medianSecondKolDelaySec.toFixed(1)}s`} |`
+    ),
+  ].join('\n');
+}
+
+function renderPosthocSecondKolWaitProxies(rows: PosthocSecondKolWaitProxyStats[]): string {
+  if (rows.length === 0) return '_No posthoc second-KOL wait proxy rows._';
+  return [
+    '| cohort | wait profile | rows | observed | current refund-adjusted | current postCost>0 | wait entry favorable | med wait entry move | wait postCost>0 | med wait postCost | p25 wait postCost |',
+    '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
+    ...rows.map((row) =>
+      `| ${row.cohort} | ${row.exitProfile} | ${row.rows} | ${row.observedRows} | ` +
+      `${formatSol(row.currentRefundAdjustedNetSol)} | ${formatPct(row.currentPostCostPositiveRate)} | ` +
+      `${row.waitEntryFavorableRows}/${row.observedRows} | ${formatPct(row.medianWaitEntryDeltaPct)} | ` +
+      `${row.positiveRows}/${row.observedRows} (${formatPct(row.postCostPositiveRate)}) | ` +
+      `${formatPct(row.medianPostCostDeltaPct)} | ${formatPct(row.p25PostCostDeltaPct)} |`
+    ),
+  ].join('\n');
+}
+
+function renderPosthocSecondKolCandidateDecisions(rows: PosthocSecondKolCandidateDecision[]): string {
+  if (rows.length === 0) return '_No posthoc second-KOL candidate decision rows._';
+  return [
+    '| cohort | verdict | observed | postCost>0 | med postCost | p25 postCost | current refund-adjusted | reasons |',
+    '|---|---|---:|---:|---:|---:|---:|---|',
+    ...rows.map((row) =>
+      `| ${row.cohort} | ${row.verdict} | ${row.observedRows}/${row.minDecisionObserved} | ` +
+      `${formatPct(row.postCostPositiveRate)} | ${formatPct(row.medianPostCostDeltaPct)} | ` +
+      `${formatPct(row.p25PostCostDeltaPct)} | ${formatSol(row.currentRefundAdjustedNetSol)} | ` +
+      `${row.reasons.join('; ') || 'n/a'} |`
+    ),
+    '',
+    `- thresholds: COLLECT<${POSTHOC_SECOND_KOL_REVIEW_MIN_OBSERVED}, ` +
+      `WATCH ${POSTHOC_SECOND_KOL_REVIEW_MIN_OBSERVED}-${POSTHOC_SECOND_KOL_DECISION_MIN_OBSERVED - 1}, ` +
+      `PAPER_CANDIDATE>=${POSTHOC_SECOND_KOL_DECISION_MIN_OBSERVED} with postCost>0>=` +
+      `${formatPct(POSTHOC_SECOND_KOL_MIN_POSITIVE_RATE)}, median>0, p25>0`,
+  ].join('\n');
+}
+
+function renderPosthocSecondKolSyntheticPaperArms(rows: PosthocSecondKolSyntheticPaperArm[]): string {
+  if (rows.length === 0) return '_No posthoc second-KOL synthetic paper arm rows._';
+  return [
+    '| synthetic arm | source cohort | verdict | observed | postCost>0 | med/p25 postCost | current refund-adjusted | scope | reasons |',
+    '|---|---|---|---:|---:|---:|---:|---|---|',
+    ...rows.map((row) =>
+      `| ${row.armName} | ${row.sourceCohort} | ${row.verdict} | ` +
+      `${row.observedRows}/${row.minDecisionObserved} | ${formatPct(row.postCostPositiveRate)} | ` +
+      `${formatPct(row.medianPostCostDeltaPct)} / ${formatPct(row.p25PostCostDeltaPct)} | ` +
+      `${formatSol(row.currentRefundAdjustedNetSol)} | ` +
+      `${row.proxyOnly ? 'proxy-only' : 'ledger'} / ${row.liveEquivalent ? 'live-equivalent' : 'not-live-equivalent'} | ` +
+      `${row.reasons.join('; ') || 'n/a'} |`
+    ),
+  ].join('\n');
+}
+
+function renderPosthocSecondKolRouteProofGates(rows: PosthocSecondKolRouteProofGate[]): string {
+  if (rows.length === 0) return '_No posthoc second-KOL route proof gate rows._';
+  return [
+    '| cohort | verdict | rows | candidateId | route known/proof | route unknown | blocker diagnosis | recovery hint | cost-aware | refund-adjusted | top blockers/evidence | reasons |',
+    '|---|---|---:|---:|---:|---:|---:|---|---:|---:|---|---|',
+    ...rows.map((row) =>
+      `| ${row.cohort} | ${row.verdict} | ${row.rows} | ${row.candidateIdRows}/${row.rows} | ` +
+      `${row.routeKnownRows}/${row.routeProofRows} | ${row.routeUnknownRows} | ` +
+      `noRoute=${row.explicitNoSellRouteRows}, exitUnknown=${row.exitLiquidityUnknownRows}, ` +
+      `securityGap=${row.securityDataGapRows}, mixed=${row.mixedExitLiquidityAndDataGapRows}, ` +
+      `missingProof=${row.missingPositiveEvidenceRows} | ${row.recoveryHint} | ${row.costAwareRows}/${row.rows} | ` +
+      `${formatSol(row.refundAdjustedNetSol)} | ` +
+      `${row.topReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'} | ` +
+      `${row.reasons.join('; ') || 'n/a'} |`
+    ),
+  ].join('\n');
+}
+
+function renderPosthocSecondKolRecoveryBacklog(rows: PosthocSecondKolRecoveryBacklogItem[]): string {
+  if (rows.length === 0) return '_No posthoc second-KOL recovery backlog items._';
+  return [
+    '| cohort | priority | status | next sprint | evidence gap | required before live | live stance |',
+    '|---|---|---|---|---|---|---|',
+    ...rows.map((row) =>
+      `| ${row.cohort} | ${row.priority} | ${row.status} | ${row.nextSprint} | ` +
+      `${row.evidenceGap} | ${row.requiredBeforeLive} | ${row.liveStance} |`
     ),
   ].join('\n');
 }
@@ -3327,10 +4736,11 @@ function renderRotationLiveSyncChecklist(report: RotationReport): string {
 function renderEvidenceVerdicts(rows: EvidenceVerdict[]): string {
   if (rows.length === 0) return '_No rotation paper arm evidence yet._';
   return [
-    '| arm | verdict | closes | min ok coverage | edge coverage | edge pass | refund-adjusted | wallet-drag stress | primary postCost | best primary | vs control | T+60 decay | reasons |',
-    '|---|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---|',
+    '| arm | verdict | closes | route proof | min ok coverage | edge coverage | edge pass | refund-adjusted | wallet-drag stress | primary postCost | best primary | vs control | T+60 decay | reasons |',
+    '|---|---|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---|',
     ...rows.map((row) =>
       `| ${row.armName} | ${row.verdict} | ${row.closes}/${row.promotionRequiredCloses} | ` +
+      `${row.routeProofRows}/${row.closes} (${formatPct(row.routeProofCoverage)}) | ` +
       `${formatPct(row.minOkCoverage)} | ${formatPct(row.edgeCoverage)} | ${formatPct(row.edgePassRate)} | ` +
       `${formatSol(row.refundAdjustedNetSol)} | ${formatSol(row.rentAdjustedNetSol)} | ` +
       `${row.primaryHorizonPostCost.map((item) => `T+${item.horizonSec}s ${formatPct(item.medianPostCostDeltaPct)}`).join(', ') || 'n/a'} | ` +
@@ -3489,6 +4899,30 @@ function renderReport(report: RotationReport): string {
     '> Report-only. Splits 2+ KOL evidence by second-KOL arrival timing. Unknown timing cannot justify live sync.',
     renderKolTimingStats(report.underfillKolTiming),
     '',
+    '## Posthoc Second-KOL Audit',
+    '> Report-only. Finds 1-KOL underfill entries that later received a second KOL in the ledger. This is paper evidence only, not live-equivalent 2+ KOL proof.',
+    renderPosthocSecondKolStats(report.posthocSecondKol),
+    '',
+    '## Posthoc Second-KOL Wait Proxy',
+    '> Report-only. Re-bases markouts from the first available horizon after the second KOL to test whether waiting still leaves post-cost continuation. Proxy rows are not simulated fills.',
+    renderPosthocSecondKolWaitProxies(report.posthocSecondKolWaitProxies),
+    '',
+    '## Posthoc Second-KOL Candidate Decision',
+    '> Report-only. Separates paper-only candidates from live-equivalent 2+ KOL. A candidate verdict never enables live routing.',
+    renderPosthocSecondKolCandidateDecisions(report.posthocSecondKolCandidateDecisions),
+    '',
+    '## Posthoc Second-KOL Synthetic Paper Arm',
+    '> Report-only. Arm-like isolation for paper-first review; this is not a runtime ledger arm and never changes live routing.',
+    renderPosthocSecondKolSyntheticPaperArms(report.posthocSecondKolSyntheticPaperArms),
+    '',
+    '## Posthoc Second-KOL Route Proof Gate',
+    '> Report-only. Splits the synthetic paper candidate by route-known proof before any live sync review. Good proxy PnL without route proof is still blocked.',
+    renderPosthocSecondKolRouteProofGates(report.posthocSecondKolRouteProofGates),
+    '',
+    '## Posthoc Second-KOL Recovery Backlog',
+    '> Report-only. Converts the route-proof gate into the next implementation backlog. This section never enables live routing.',
+    renderPosthocSecondKolRecoveryBacklog(report.posthocSecondKolRecoveryBacklog),
+    '',
     '## Paper Cohort Validity',
     '> Report-only. Shows whether paper rows have the IDs, KOL counts, participant timestamps, and route proof needed for live-equivalence review.',
     renderPaperCohortValidity(report.paperCohortValidity),
@@ -3504,6 +4938,14 @@ function renderReport(report: RotationReport): string {
     '## Route Truth Audit',
     '> Report-only. Separates route-known proof from structural no-route, data gaps, and transient infra retry candidates.',
     renderRouteTruthAudit(report.routeTruthAudit),
+    '',
+    '## Route Proof Freshness',
+    '> Report-only. Separates old paper edge from post-R1.41 exit-route instrumentation. WAIT_FRESH_CLOSES means collect fresh paper before interpreting route-proofed cohorts.',
+    renderRouteProofFreshness(report.routeProofFreshness),
+    '',
+    '## Rotation Narrow Cohort Board',
+    '> Report-only. Narrows paper evidence to sellable, cost-aware, 2+ KOL slices before any live sync review. Live canary routing is unchanged.',
+    renderRotationNarrowCohorts(report.rotationNarrowCohorts),
     '',
     '## Live-Equivalence Gate Review',
     '> Report-only. Shows why paper candidates were not live-routed; this must stay strict while wallet is near floor.',
@@ -3648,8 +5090,40 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
   const liveEquivalence = buildLiveEquivalenceSummary(recentLiveEquivalenceRows);
   const routeUnknownReasons = buildRouteUnknownReasonStats(rotationPaperRows, assumedNetworkFeeSol);
   const routeTruthAudit = buildRouteTruthAuditStats(rotationPaperRows, assumedNetworkFeeSol);
+  const routeProofFreshness = buildRouteProofFreshnessStats(
+    rotationPaperRows,
+    args.routeProofFreshSinceMs
+  );
+  const rotationNarrowCohorts = buildRotationNarrowCohortStats(
+    rotationPaperRows,
+    rotationRows,
+    args.horizonsSec,
+    args.roundTripCostPct,
+    assumedNetworkFeeSol
+  );
   const underfillKolCohorts = buildUnderfillKolCohorts(rotationPaperRows, assumedNetworkFeeSol);
   const underfillKolTiming = buildKolTimingStats(rotationPaperRows, assumedNetworkFeeSol);
+  const posthocSecondKol = buildPosthocSecondKolStats(rotationPaperRows, assumedNetworkFeeSol);
+  const posthocSecondKolWaitProxies = buildPosthocSecondKolWaitProxyStats(
+    rotationPaperRows,
+    rotationRows,
+    args.horizonsSec,
+    args.roundTripCostPct,
+    assumedNetworkFeeSol
+  );
+  const posthocSecondKolCandidateDecisions = buildPosthocSecondKolCandidateDecisions(
+    posthocSecondKolWaitProxies
+  );
+  const posthocSecondKolSyntheticPaperArms = buildPosthocSecondKolSyntheticPaperArms(
+    posthocSecondKolCandidateDecisions
+  );
+  const posthocSecondKolRouteProofGates = buildPosthocSecondKolRouteProofGates(
+    rotationPaperRows,
+    assumedNetworkFeeSol
+  );
+  const posthocSecondKolRecoveryBacklog = buildPosthocSecondKolRecoveryBacklog(
+    posthocSecondKolRouteProofGates
+  );
   const paperCohortValidity = buildPaperCohortValidityStats(rotationPaperRows);
   const reviewCohortGenerationAudit = buildReviewCohortGenerationAuditStats(rotationPaperRows);
   const reviewRows = selectRouteKnown2KolCostAwareUnderfillRows(rotationPaperRows);
@@ -3767,8 +5241,16 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
     liveEquivalence,
     routeUnknownReasons,
     routeTruthAudit,
+    routeProofFreshness,
+    rotationNarrowCohorts,
     underfillKolCohorts,
     underfillKolTiming,
+    posthocSecondKol,
+    posthocSecondKolWaitProxies,
+    posthocSecondKolCandidateDecisions,
+    posthocSecondKolSyntheticPaperArms,
+    posthocSecondKolRouteProofGates,
+    posthocSecondKolRecoveryBacklog,
     paperCohortValidity,
     reviewCohortGenerationAudit,
     liveEquivalenceDrilldown,

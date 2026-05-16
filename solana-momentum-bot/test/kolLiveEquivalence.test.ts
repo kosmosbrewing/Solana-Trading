@@ -5,7 +5,7 @@ import {
   appendKolLiveEquivalence,
   KOL_LIVE_EQUIVALENCE_SCHEMA_VERSION,
 } from '../src/observability/kolLiveEquivalence';
-import { buildReport } from '../scripts/kol-live-equivalence-report';
+import { buildReport, parseArgs } from '../scripts/kol-live-equivalence-report';
 
 describe('kol live equivalence observability', () => {
   it('appends fail-open sidecar rows as jsonl', async () => {
@@ -147,5 +147,178 @@ describe('kol live equivalence observability', () => {
 
     expect(report.md).toContain('| rotation_underfill_exit_flow_v1 | 1 | 1 | 1 | 0 | 1/0 | +0.0200 | +0.0210 | 30.0% | 0 | +0.0000 |');
     expect(report.md).not.toContain('| rotation_underfill_v1 | 1 |');
+  });
+
+  it('flags a data gap when live attempts have no candidate-linked live closes', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'kol-live-equivalence-live-gap-'));
+    await writeFile(path.join(dir, 'kol-live-equivalence.jsonl'), JSON.stringify({
+      schemaVersion: KOL_LIVE_EQUIVALENCE_SCHEMA_VERSION,
+      generatedAt: new Date().toISOString(),
+      candidateId: 'candidate-live-gap-1',
+      tokenMint: 'mint',
+      entrySignalLabel: 'rotation-underfill',
+      armName: 'rotation_underfill_v1',
+      profileArm: 'rotation_underfill_exit_flow_v1',
+      parameterVersion: 'rotation-underfill-v1.0.0',
+      entryReason: 'rotation_v1',
+      paperWouldEnter: true,
+      liveWouldEnter: true,
+      liveAttempted: true,
+      decisionStage: 'pre_execution_live_allowed',
+      liveBlockReason: null,
+      liveBlockFlags: [],
+      source: 'runtime',
+    }) + '\n', 'utf8');
+    await writeFile(path.join(dir, 'rotation-v1-live-trades.jsonl'), JSON.stringify({
+      positionId: 'live-gap-pos-1',
+      closedAt: new Date().toISOString(),
+      armName: 'rotation_underfill_v1',
+      profileArm: 'rotation_underfill_exit_flow_v1',
+      netSol: -0.01,
+    }) + '\n', 'utf8');
+
+    const report = await buildReport({
+      realtimeDir: dir,
+      sinceMs: Date.now() - 60_000,
+    });
+
+    expect(report.json.verdict).toBe('DATA_GAP');
+    expect(report.json.liveRowsWithCandidateId).toBe(0);
+    expect(report.json.unlinkedLiveRows).toBe(1);
+    expect(report.md).toContain('live candidateId link coverage 0.0% < 90.0%');
+  });
+
+  it('flags a data gap when most live closes are unlinked even if one has candidateId', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'kol-live-equivalence-partial-gap-'));
+    await writeFile(path.join(dir, 'kol-live-equivalence.jsonl'), JSON.stringify({
+      schemaVersion: KOL_LIVE_EQUIVALENCE_SCHEMA_VERSION,
+      generatedAt: new Date().toISOString(),
+      candidateId: 'candidate-linked-1',
+      tokenMint: 'mint',
+      armName: 'rotation_underfill_v1',
+      profileArm: 'rotation_underfill_exit_flow_v1',
+      paperWouldEnter: true,
+      liveWouldEnter: true,
+      liveAttempted: true,
+      decisionStage: 'pre_execution_live_allowed',
+      source: 'runtime',
+    }) + '\n', 'utf8');
+    await writeFile(path.join(dir, 'rotation-v1-live-trades.jsonl'), [
+      JSON.stringify({
+        positionId: 'live-linked-1',
+        liveEquivalenceCandidateId: 'candidate-linked-1',
+        closedAt: new Date().toISOString(),
+        profileArm: 'rotation_underfill_exit_flow_v1',
+        netSol: 0.01,
+      }),
+      JSON.stringify({
+        positionId: 'live-unlinked-1',
+        closedAt: new Date().toISOString(),
+        profileArm: 'rotation_underfill_exit_flow_v1',
+        netSol: -0.01,
+      }),
+    ].join('\n') + '\n', 'utf8');
+
+    const report = await buildReport({
+      realtimeDir: dir,
+      sinceMs: Date.now() - 60_000,
+    });
+
+    expect(report.json.verdict).toBe('DATA_GAP');
+    expect(report.json.liveRowsWithCandidateId).toBe(1);
+    expect(report.json.unlinkedLiveRows).toBe(1);
+    expect(report.json.liveCandidateLinkCoverage).toBe(0.5);
+  });
+
+  it('fallback-links live closes by token, arm, and entry time when exact candidateId is missing', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'kol-live-equivalence-fallback-link-'));
+    const generatedAt = new Date().toISOString();
+    const entryTimeSec = Math.floor(Date.now() / 1000);
+    await writeFile(path.join(dir, 'kol-live-equivalence.jsonl'), JSON.stringify({
+      schemaVersion: KOL_LIVE_EQUIVALENCE_SCHEMA_VERSION,
+      generatedAt,
+      candidateId: `mint:rotation-underfill:rotation_underfill_exit_flow_v1:${Date.parse(generatedAt)}`,
+      tokenMint: 'mint',
+      armName: 'rotation_underfill_v1',
+      profileArm: 'rotation_underfill_exit_flow_v1',
+      paperWouldEnter: true,
+      liveWouldEnter: true,
+      liveAttempted: true,
+      decisionStage: 'pre_execution_live_allowed',
+      source: 'runtime',
+    }) + '\n', 'utf8');
+    await writeFile(path.join(dir, 'rotation-v1-live-trades.jsonl'), JSON.stringify({
+      positionId: 'live-fallback-1',
+      tokenMint: 'mint',
+      entryTimeSec,
+      closedAt: new Date((entryTimeSec + 20) * 1000).toISOString(),
+      armName: 'rotation_underfill_v1',
+      profileArm: 'rotation_underfill_exit_flow_v1',
+      netSol: 0.01,
+    }) + '\n', 'utf8');
+
+    const report = await buildReport({
+      realtimeDir: dir,
+      sinceMs: Date.now() - 60_000,
+    });
+
+    expect(report.json.verdict).toBe('OK');
+    expect(report.json.liveRowsWithCandidateId).toBe(0);
+    expect(report.json.liveRowsLinkedByFallback).toBe(1);
+    expect(report.json.liveRowsLinkedTotal).toBe(1);
+    expect(report.json.liveCandidateLinkCoverage).toBe(1);
+    expect(report.json.liveAttributionBreakdown).toEqual(expect.objectContaining({
+      exact: 0,
+      fallback: 1,
+      ambiguous: 0,
+      noCandidateFound: 0,
+      missingFields: 0,
+    }));
+    expect(report.md).toContain('| rotation_underfill_exit_flow_v1 | 1 | 1 | 1 | 0 | 0/0 | +0.0000 | +0.0000 | n/a | 1 | +0.0100 |');
+  });
+
+  it('keeps fallback attribution unlinked when multiple candidates match the same live close', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'kol-live-equivalence-ambiguous-link-'));
+    const generatedAt = Date.now();
+    const rows = [0, 1].map((offset) => JSON.stringify({
+      schemaVersion: KOL_LIVE_EQUIVALENCE_SCHEMA_VERSION,
+      generatedAt: new Date(generatedAt + offset * 1_000).toISOString(),
+      candidateId: `mint:rotation-underfill:rotation_underfill_exit_flow_v1:${generatedAt + offset * 1_000}`,
+      tokenMint: 'mint',
+      armName: 'rotation_underfill_v1',
+      profileArm: 'rotation_underfill_exit_flow_v1',
+      paperWouldEnter: true,
+      liveWouldEnter: true,
+      liveAttempted: true,
+      decisionStage: 'pre_execution_live_allowed',
+      source: 'runtime',
+    }));
+    await writeFile(path.join(dir, 'kol-live-equivalence.jsonl'), rows.join('\n') + '\n', 'utf8');
+    await writeFile(path.join(dir, 'rotation-v1-live-trades.jsonl'), JSON.stringify({
+      positionId: 'live-ambiguous-1',
+      tokenMint: 'mint',
+      entryOpenedAtMs: generatedAt + 500,
+      closedAt: new Date(generatedAt + 20_000).toISOString(),
+      armName: 'rotation_underfill_v1',
+      profileArm: 'rotation_underfill_exit_flow_v1',
+      netSol: -0.01,
+    }) + '\n', 'utf8');
+
+    const report = await buildReport({
+      realtimeDir: dir,
+      sinceMs: Date.now() - 60_000,
+    });
+
+    expect(report.json.verdict).toBe('DATA_GAP');
+    expect(report.json.liveRowsLinkedByFallback).toBe(0);
+    expect(report.json.unlinkedLiveRows).toBe(1);
+    expect(report.json.liveAttributionBreakdown).toEqual(expect.objectContaining({
+      ambiguous: 1,
+    }));
+    expect(report.md).toContain('ambiguous=1');
+  });
+
+  it('rejects invalid --since instead of silently falling back to 24h', () => {
+    expect(() => parseArgs(['--since', 'not-a-window'])).toThrow('invalid --since');
   });
 });

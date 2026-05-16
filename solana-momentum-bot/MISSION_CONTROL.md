@@ -69,7 +69,7 @@ All tokens are not one universe. Arms must be separated by tail structure.
 |---|---|---|
 | Lane C: `cupsey_flip_10s` | benchmark | **frozen** (env disabled) |
 | Lane T main: `kol_hunter_smart_v3` | fresh active KOL velocity 기반 5x lane | live canary active + paper fallback, fresh active KOL ≥ 2, MAE fast-fail / bounded recovery-hold |
-| Lane R auxiliary: `kol_hunter_rotation_v1` | KOL-driven fast-compound / short continuation | paper measurement, canonical live disabled; promoted `rotation_chase_topup_v1` canary only |
+| Lane R auxiliary: `kol_hunter_rotation_v1` | KOL-driven fast-compound / short continuation | paper measurement; canonical rotation live disabled; explicit `rotation_underfill_exit_flow_v1` canary only when allowlisted; chase-topup live superseded/demoted |
 | Lane S rebuild: `pure_ws botflow` | new-pair / botflow microstructure observation | paper/observe-only; live disabled |
 | Lane S legacy: `pure_ws_breakout` / `pure_ws_swing_v2` | legacy WS scalping / swing A/B reference | benchmark or paper-only unless explicit canary ADR |
 | Lane T A/B: `kol_hunter` swing-v2 | multi-KOL S/A ≥2 + score ≥5.0 자격 시 long-hold shadow | paper shadow |

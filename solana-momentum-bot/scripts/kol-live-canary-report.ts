@@ -481,7 +481,7 @@ function parseArgs(): CliArgs {
     md: get('--md') ?? path.resolve(process.cwd(), `reports/kol-live-canary-${today}.md`),
     json: get('--json') ?? path.resolve(process.cwd(), `reports/kol-live-canary-${today}.json`),
     walletSol: parseOptionalNumber(get('--wallet-sol')),
-    walletFloorSol: parseOptionalNumber(get('--wallet-floor-sol')) ?? 0.7,
+    walletFloorSol: parseOptionalNumber(get('--wallet-floor-sol')) ?? 0.6,
     kolCanaryCapSol: parseOptionalNumber(get('--kol-canary-cap-sol')) ?? 0.35,
     kolTicketSol: parseOptionalNumber(get('--kol-ticket-sol')) ?? 0.02,
   };
@@ -499,12 +499,26 @@ function resolveSinceArg(argv: string[], nowMs = Date.now()): Date | undefined {
     return i >= 0 ? argv[i + 1] : undefined;
   };
   const since = get('--since');
-  if (since) return new Date(since);
+  if (since) return parseSinceDate(since, nowMs, '--since');
   const sinceHours = get('--since-hours');
   if (!sinceHours) return undefined;
   const hours = Number(sinceHours);
   if (!Number.isFinite(hours) || hours <= 0) return undefined;
   return new Date(nowMs - hours * 60 * 60 * 1000);
+}
+
+function parseSinceDate(raw: string, nowMs: number, label: string): Date {
+  const value = raw.trim();
+  const relative = value.match(/^(\d+(?:\.\d+)?)(m|h|d)$/i);
+  if (relative) {
+    const amount = Number(relative[1]);
+    const unit = relative[2].toLowerCase();
+    const unitMs = unit === 'm' ? 60_000 : unit === 'h' ? 3_600_000 : 86_400_000;
+    if (Number.isFinite(amount) && amount >= 0) return new Date(nowMs - amount * unitMs);
+  }
+  const parsed = Date.parse(value);
+  if (Number.isFinite(parsed)) return new Date(parsed);
+  throw new Error(`invalid ${label}: ${raw}`);
 }
 
 function within(since: Date | undefined, recordedAt?: string): boolean {

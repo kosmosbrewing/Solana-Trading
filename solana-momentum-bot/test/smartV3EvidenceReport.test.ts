@@ -545,11 +545,52 @@ describe('smart-v3-evidence-report', () => {
     expect(verdict?.verdict).toBe('COST_REJECT');
     expect(verdict?.fiveXRows).toBe(0);
     expect(report.bleedReview.verdict).toBe('PAUSE_REVIEW');
+    expect(report.bleedReview.allowedRole).toBe('pause_review');
+    expect(report.bleedReview.dailyCompoundEligible).toBe(false);
     expect(report.bleedReview.liveRows).toBe(50);
     expect(report.bleedReview.liveFiveXRows).toBe(0);
 
     const markdown = renderSmartV3EvidenceReportMarkdown(report);
     expect(markdown).toContain('## Smart-v3 Bleed Review');
     expect(markdown).toContain('PAUSE_REVIEW');
+    expect(markdown).toContain('daily compound');
+  });
+
+  it('keeps smart-v3 as tail-only when live sample contains 5x evidence', async () => {
+    await writeFile(path.join(dir, 'smart-v3-paper-trades.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'smart-v3-live-trades.jsonl'), jsonl([
+      ...smartV3TradeRows(29, {
+        mode: 'live',
+        netSol: -0.001,
+        netSolTokenOnly: -0.0005,
+        mfePctPeak: 0.10,
+        exitReason: 'probe_hard_cut',
+      }),
+      ...smartV3TradeRows(1, {
+        mode: 'live',
+        positionId: 'live-smart-v3-tail',
+        netSol: 0.02,
+        netSolTokenOnly: 0.021,
+        mfePctPeak: 4.2,
+        t2VisitAtSec: 1_778_870_500,
+        exitReason: 'winner_trailing_t2',
+      }),
+    ]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+
+    const report = await buildSmartV3EvidenceReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [30, 60, 300, 1800],
+      roundTripCostPct: 0.005,
+      assumedAtaRentSol: 0.002,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.bleedReview.verdict).toBe('TAIL_LANE_ONLY');
+    expect(report.bleedReview.allowedRole).toBe('tail_lane_only');
+    expect(report.bleedReview.dailyCompoundEligible).toBe(false);
+    expect(report.bleedReview.liveFiveXRows).toBe(1);
+    expect(renderSmartV3EvidenceReportMarkdown(report)).toContain('tail_lane_only');
   });
 });

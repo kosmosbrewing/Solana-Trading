@@ -1,7 +1,21 @@
 import { mkdir, readFile, writeFile } from 'fs/promises';
 import path from 'path';
 
+const LIVE_CANDIDATE_LINK_MIN_COVERAGE = 0.9;
+const LIVE_FALLBACK_ATTRIBUTION_WINDOW_MS = 5 * 60 * 1000;
+
 type JsonRecord = Record<string, unknown>;
+
+type LiveAttributionStatus = 'exact' | 'fallback' | 'ambiguous' | 'no_candidate' | 'missing_fields';
+
+interface LiveAttribution {
+  row: JsonRecord;
+  status: LiveAttributionStatus;
+  candidateId: string | null;
+  reason: string;
+  matchCount: number;
+  missingFields: string[];
+}
 
 interface Args {
   realtimeDir: string;
@@ -48,21 +62,27 @@ function parseArgs(argv: string[]): Args {
   }
   return {
     realtimeDir,
-    sinceMs: Date.now() - parseDurationMs(since),
+    sinceMs: parseSinceMs(since),
     md,
     json,
   };
 }
 
-function parseDurationMs(value: string): number {
+function parseSinceMs(value: string, nowMs = Date.now()): number {
   const match = value.trim().match(/^(\d+(?:\.\d+)?)([mhd])$/i);
-  if (!match) return 24 * 60 * 60 * 1000;
-  const amount = Number(match[1]);
-  const unit = match[2].toLowerCase();
-  if (!Number.isFinite(amount) || amount <= 0) return 24 * 60 * 60 * 1000;
-  if (unit === 'm') return amount * 60 * 1000;
-  if (unit === 'h') return amount * 60 * 60 * 1000;
-  return amount * 24 * 60 * 60 * 1000;
+  if (match) {
+    const amount = Number(match[1]);
+    const unit = match[2].toLowerCase();
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error(`invalid --since: ${value}`);
+    const durationMs =
+      unit === 'm' ? amount * 60 * 1000 :
+      unit === 'h' ? amount * 60 * 60 * 1000 :
+      amount * 24 * 60 * 60 * 1000;
+    return nowMs - durationMs;
+  }
+  const parsed = Date.parse(value);
+  if (Number.isFinite(parsed)) return parsed;
+  throw new Error(`invalid --since: ${value}`);
 }
 
 async function readJsonl(file: string): Promise<JsonRecord[]> {
@@ -121,6 +141,160 @@ function bool(row: JsonRecord, key: string): boolean {
 
 function armKey(row: JsonRecord): string {
   return str(row, 'profileArm') ?? str(row, 'armName') ?? 'unknown';
+}
+
+function tokenMint(row: JsonRecord): string | null {
+  return str(row, 'tokenMint') ?? str(row, 'pairAddress');
+}
+
+function rowArmSet(row: JsonRecord): Set<string> {
+  return new Set([
+    str(row, 'profileArm'),
+    str(row, 'entryArm'),
+    str(row, 'armName'),
+  ]
+    .filter((value): value is string => value != null)
+    .map((value) => value.toLowerCase()));
+}
+
+function rowHasArm(row: JsonRecord): boolean {
+  return rowArmSet(row).size > 0;
+}
+
+function armsCompatible(a: JsonRecord, b: JsonRecord): boolean {
+  const aArms = rowArmSet(a);
+  const bArms = rowArmSet(b);
+  if (aArms.size === 0 || bArms.size === 0) return false;
+  for (const arm of aArms) {
+    if (bArms.has(arm)) return true;
+  }
+  return false;
+}
+
+function liveEntryTimeMs(row: JsonRecord): number | null {
+  const numericCandidates = [
+    num(row, 'entryOpenedAtMs'),
+    num(row, 'buyCompletedAtMs'),
+    num(row, 'entryAtMs'),
+  ];
+  for (const value of numericCandidates) {
+    if (value != null && value > 0) return value;
+  }
+  const stringCandidates = [
+    str(row, 'openedAt'),
+    str(row, 'entryAt'),
+    str(row, 'createdAt'),
+  ];
+  for (const value of stringCandidates) {
+    if (!value) continue;
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  const entryTimeSec = num(row, 'entryTimeSec');
+  if (entryTimeSec != null && entryTimeSec > 0) return entryTimeSec * 1000;
+  const closedMs = rowTimeMs(row);
+  const holdSec = num(row, 'holdSecReal') ?? num(row, 'holdSec');
+  if (closedMs > 0 && holdSec != null && holdSec >= 0) {
+    return closedMs - holdSec * 1000;
+  }
+  return null;
+}
+
+function candidateTimeMs(row: JsonRecord): number | null {
+  const candidateId = str(row, 'candidateId');
+  if (candidateId) {
+    const suffix = candidateId.split(':').at(-1);
+    const parsedSuffix = suffix ? Number(suffix) : NaN;
+    if (Number.isFinite(parsedSuffix) && parsedSuffix > 0) return parsedSuffix;
+  }
+  const generatedAt = str(row, 'generatedAt');
+  if (generatedAt) {
+    const parsed = Date.parse(generatedAt);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function attributeLiveRow(row: JsonRecord, candidates: JsonRecord[]): LiveAttribution {
+  const exact = str(row, 'liveEquivalenceCandidateId');
+  if (exact) {
+    return {
+      row,
+      status: 'exact',
+      candidateId: exact,
+      reason: 'exact_candidate_id',
+      matchCount: 1,
+      missingFields: [],
+    };
+  }
+
+  const missingFields: string[] = [];
+  const mint = tokenMint(row);
+  const entryMs = liveEntryTimeMs(row);
+  if (!mint) missingFields.push('tokenMint');
+  if (!rowHasArm(row)) missingFields.push('arm');
+  if (entryMs == null) missingFields.push('entryTime');
+  if (missingFields.length > 0) {
+    return {
+      row,
+      status: 'missing_fields',
+      candidateId: null,
+      reason: `missing_${missingFields.join('_')}`,
+      matchCount: 0,
+      missingFields,
+    };
+  }
+  const resolvedMint = mint;
+  const resolvedEntryMs = entryMs;
+  if (!resolvedMint || resolvedEntryMs == null) {
+    return {
+      row,
+      status: 'missing_fields',
+      candidateId: null,
+      reason: 'missing_required_attribution_fields',
+      matchCount: 0,
+      missingFields: ['required'],
+    };
+  }
+
+  const matches = candidates.filter((candidate) => {
+    const candidateId = str(candidate, 'candidateId');
+    const candidateMint = tokenMint(candidate);
+    const candidateMs = candidateTimeMs(candidate);
+    if (!candidateId || !candidateMint || candidateMs == null) return false;
+    return candidateMint === resolvedMint &&
+      armsCompatible(row, candidate) &&
+      Math.abs(resolvedEntryMs - candidateMs) <= LIVE_FALLBACK_ATTRIBUTION_WINDOW_MS;
+  });
+
+  if (matches.length === 1) {
+    return {
+      row,
+      status: 'fallback',
+      candidateId: str(matches[0], 'candidateId'),
+      reason: 'token_arm_entry_time_fallback',
+      matchCount: 1,
+      missingFields: [],
+    };
+  }
+  if (matches.length > 1) {
+    return {
+      row,
+      status: 'ambiguous',
+      candidateId: null,
+      reason: 'ambiguous_token_arm_entry_time',
+      matchCount: matches.length,
+      missingFields: [],
+    };
+  }
+  return {
+    row,
+    status: 'no_candidate',
+    candidateId: null,
+    reason: 'no_candidate_in_entry_window',
+    matchCount: 0,
+    missingFields: [],
+  };
 }
 
 function countBy(rows: JsonRecord[], key: string): Array<[string, number]> {
@@ -207,6 +381,8 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
       .flat()
       .filter((row) => rowTimeMs(row) >= args.sinceMs)
   );
+  const liveAttributionCandidates = equivalence.filter((row) => bool(row, 'liveAttempted'));
+  const liveAttributions = liveRows.map((row) => attributeLiveRow(row, liveAttributionCandidates));
 
   const paperByCandidate = new Map<string, JsonRecord[]>();
   for (const row of paperRows) {
@@ -217,11 +393,11 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
     paperByCandidate.set(candidateId, rows);
   }
   const liveByCandidate = new Map<string, JsonRecord[]>();
-  for (const row of liveRows) {
-    const candidateId = str(row, 'liveEquivalenceCandidateId');
+  for (const attribution of liveAttributions) {
+    const candidateId = attribution.candidateId;
     if (!candidateId) continue;
     const rows = liveByCandidate.get(candidateId) ?? [];
-    rows.push(row);
+    rows.push(attribution.row);
     liveByCandidate.set(candidateId, rows);
   }
 
@@ -257,12 +433,44 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
     bucket.paperAvgMfePct = values.reduce((sum, v) => sum + v, 0) / values.length;
   }
 
+  const liveAttemptedRows = equivalence.filter((row) => bool(row, 'liveAttempted')).length;
+  const paperRowsWithCandidateId = paperRows.filter((row) => str(row, 'liveEquivalenceCandidateId')).length;
+  const liveRowsWithCandidateId = liveAttributions.filter((row) => row.status === 'exact').length;
+  const liveRowsLinkedByFallback = liveAttributions.filter((row) => row.status === 'fallback').length;
+  const liveRowsAmbiguous = liveAttributions.filter((row) => row.status === 'ambiguous').length;
+  const liveRowsNoCandidateFound = liveAttributions.filter((row) => row.status === 'no_candidate').length;
+  const liveRowsMissingAttributionFields = liveAttributions.filter((row) => row.status === 'missing_fields').length;
+  const liveRowsLinkedTotal = liveRowsWithCandidateId + liveRowsLinkedByFallback;
+  const unlinkedLiveRows = liveRows.length - liveRowsLinkedTotal;
+  const liveCandidateLinkCoverage = liveRows.length > 0 ? liveRowsLinkedTotal / liveRows.length : null;
+  const liveAttributionBreakdown = {
+    exact: liveRowsWithCandidateId,
+    fallback: liveRowsLinkedByFallback,
+    ambiguous: liveRowsAmbiguous,
+    noCandidateFound: liveRowsNoCandidateFound,
+    missingFields: liveRowsMissingAttributionFields,
+  };
+  const liveCandidateLinkGap =
+    liveAttemptedRows > 0 &&
+    liveRows.length > 0 &&
+    (liveCandidateLinkCoverage ?? 0) < LIVE_CANDIDATE_LINK_MIN_COVERAGE;
   const verdict =
     equivalence.length === 0 && paperRows.length > 0
       ? 'INVESTIGATE'
       : equivalence.length === 0
         ? 'WATCH'
+        : liveCandidateLinkGap
+          ? 'DATA_GAP'
         : 'OK';
+  const verdictReasons = [
+    ...(liveCandidateLinkGap
+      ? [
+        `live candidateId link coverage ${pct(liveCandidateLinkCoverage)} < ${pct(LIVE_CANDIDATE_LINK_MIN_COVERAGE)} ` +
+        `(${liveRowsLinkedTotal}/${liveRows.length}; exact=${liveRowsWithCandidateId}, fallback=${liveRowsLinkedByFallback}, ` +
+        `ambiguous=${liveRowsAmbiguous}, noCandidate=${liveRowsNoCandidateFound}, missingFields=${liveRowsMissingAttributionFields})`,
+      ]
+      : []),
+  ];
 
   const armRows = [...byArm.entries()]
     .sort((a, b) => b[1].rows - a[1].rows || a[0].localeCompare(b[0]));
@@ -273,8 +481,15 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
     `- generatedAt: ${new Date().toISOString()}`,
     `- since: ${new Date(args.sinceMs).toISOString()}`,
     `- equivalence rows: ${equivalence.length}`,
-    `- paper closes with candidateId: ${paperRows.filter((row) => str(row, 'liveEquivalenceCandidateId')).length}`,
-    `- live closes with candidateId: ${liveRows.filter((row) => str(row, 'liveEquivalenceCandidateId')).length}`,
+    `- paper closes with candidateId: ${paperRowsWithCandidateId}`,
+    `- live closes: ${liveRows.length}`,
+    `- live closes with candidateId: ${liveRowsWithCandidateId}`,
+    `- live fallback-linked closes: ${liveRowsLinkedByFallback}`,
+    `- live linked closes total: ${liveRowsLinkedTotal}`,
+    `- unlinked live closes: ${unlinkedLiveRows}`,
+    `- live candidateId link coverage: ${pct(liveCandidateLinkCoverage)}`,
+    `- live attempted equivalence rows: ${liveAttemptedRows}`,
+    `- reasons: ${verdictReasons.join('; ') || 'n/a'}`,
     '',
     '## Decision Stages',
     '',
@@ -308,8 +523,16 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
       generatedAt: new Date().toISOString(),
       since: new Date(args.sinceMs).toISOString(),
       equivalenceRows: equivalence.length,
-      paperRowsWithCandidateId: paperRows.filter((row) => str(row, 'liveEquivalenceCandidateId')).length,
-      liveRowsWithCandidateId: liveRows.filter((row) => str(row, 'liveEquivalenceCandidateId')).length,
+      paperRowsWithCandidateId,
+      liveRows: liveRows.length,
+      liveRowsWithCandidateId,
+      liveRowsLinkedByFallback,
+      liveRowsLinkedTotal,
+      unlinkedLiveRows,
+      liveCandidateLinkCoverage,
+      liveAttributionBreakdown,
+      liveAttemptedRows,
+      verdictReasons,
       decisionStages: Object.fromEntries(countBy(equivalence, 'decisionStage')),
       liveBlockReasons: Object.fromEntries(countBy(equivalence.filter((row) => !bool(row, 'liveWouldEnter')), 'liveBlockReason')),
       arms: Object.fromEntries(armRows),

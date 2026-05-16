@@ -113,6 +113,13 @@ type SmartV3BleedReviewVerdict =
   | 'TAIL_LANE_ONLY'
   | 'WATCH';
 
+type SmartV3AllowedRole =
+  | 'no_live_sample'
+  | 'collect_live_sample'
+  | 'pause_review'
+  | 'tail_lane_only'
+  | 'observe_only';
+
 interface SmartV3EvidenceVerdict {
   cohort: string;
   verdict: EvidenceVerdictStatus;
@@ -139,6 +146,8 @@ interface SmartV3EvidenceVerdict {
 
 interface SmartV3BleedReview {
   verdict: SmartV3BleedReviewVerdict;
+  allowedRole: SmartV3AllowedRole;
+  dailyCompoundEligible: boolean;
   reasons: string[];
   liveRows: number;
   liveNetSol: number;
@@ -806,6 +815,8 @@ function buildSmartV3BleedReview(cohorts: SmartV3CohortStats[]): SmartV3BleedRev
   if (!live) {
     return {
       verdict: 'NO_LIVE_SAMPLE',
+      allowedRole: 'no_live_sample',
+      dailyCompoundEligible: false,
       reasons: ['no smart-v3 live closes in window'],
       liveRows: 0,
       liveNetSol: 0,
@@ -821,21 +832,28 @@ function buildSmartV3BleedReview(cohorts: SmartV3CohortStats[]): SmartV3BleedRev
   const stagedPressureRows = live.stagedMae5Rows + live.stagedMae15Rows + live.stagedMaeAnyRows;
   const reasons: string[] = [];
   let verdict: SmartV3BleedReviewVerdict = 'WATCH';
+  let allowedRole: SmartV3AllowedRole = 'observe_only';
   if (live.fiveXRows > 0 || live.t2Rows > 0 || live.t3Rows > 0) {
     verdict = 'TAIL_LANE_ONLY';
+    allowedRole = 'tail_lane_only';
     reasons.push('tail evidence exists; keep as tail lane, not daily-compound lane');
   } else if (live.netSol < 0 || live.rentAdjustedNetSol < 0) {
     verdict = 'PAUSE_REVIEW';
+    allowedRole = 'pause_review';
     reasons.push('live wallet/copyable PnL is negative without 5x evidence');
   } else if (live.rows < 30) {
     verdict = 'COLLECT';
+    allowedRole = 'collect_live_sample';
     reasons.push(`need 30+ live closes for bleed review, have ${live.rows}`);
   } else {
     reasons.push('live bleed review did not trip pause criteria');
+    reasons.push('daily-compound eligibility remains disabled until a separate wallet-positive cohort gate is defined');
   }
 
   return {
     verdict,
+    allowedRole,
+    dailyCompoundEligible: false,
     reasons,
     liveRows: live.rows,
     liveNetSol: live.netSol,
@@ -1143,10 +1161,12 @@ export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceRepor
 
   lines.push('## Smart-v3 Bleed Review');
   lines.push('> Report-only live safety read. PAUSE_REVIEW means smart-v3 should stay tail-only until fresh evidence improves.');
-  lines.push('| verdict | live closes | netSOL | copyable | 5x | T1 | maeFastFail | stagedPressure | medHold | reasons |');
-  lines.push('|---|---:|---:|---:|---:|---:|---:|---:|---:|---|');
+  lines.push('| verdict | allowed role | daily compound | live closes | netSOL | copyable | 5x | T1 | maeFastFail | stagedPressure | medHold | reasons |');
+  lines.push('|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|');
   lines.push([
     `| ${report.bleedReview.verdict}`,
+    report.bleedReview.allowedRole,
+    report.bleedReview.dailyCompoundEligible ? 'yes' : 'no',
     report.bleedReview.liveRows,
     sol(report.bleedReview.liveNetSol),
     sol(report.bleedReview.liveCopyableNetSol),
@@ -1230,6 +1250,7 @@ export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceRepor
   lines.push('- `anchorOk` is close-position coverage for cohort verdicts; `rowOk` is only observed-row quote quality.');
   lines.push('- `DATA_GAP` means policy tuning should wait for T+ coverage recovery.');
   lines.push('- `PROMOTION_CANDIDATE` is an investigation queue, not an automatic live promotion.');
+  lines.push('- `daily compound = no` means smart-v3 remains tail/observe-only for compounding decisions.');
   return lines.join('\n');
 }
 

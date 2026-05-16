@@ -3,7 +3,7 @@
 > 이 문서는 모듈 구조, 의존성 방향, 데이터 흐름을 정의한다.
 > 새 파일 생성 전 반드시 이 문서의 의존성 규칙을 확인하라.
 >
-> **2026-05-06 갱신**: 3-layer 모델 (Real Asset Guard / Lane / Observability) 유지. 현재 lane 상태는 `SESSION_START.md`, `STRATEGY.md`, `docs/design-docs/lane-operating-refactor-2026-05-03.md`를 우선한다.
+> **2026-05-16 갱신**: 3-layer 모델 (Real Asset Guard / Lane / Observability) 유지. 현재 lane 상태는 `SESSION_START.md`, `STRATEGY.md`, `docs/design-docs/lane-operating-refactor-2026-05-03.md`를 우선한다.
 > Pre-pivot 의 단일 Context→Trigger 모델은 [`docs/historical/architecture-pre-pivot.md`](./docs/historical/architecture-pre-pivot.md) 로 격리.
 
 ---
@@ -27,7 +27,7 @@
 │   - cupsey_flip_10s    (frozen benchmark, disabled)               │
 │   - pure_ws botflow    (new-pair paper/observer candidate)        │
 │   - rotation-v1        (fast-compound aux; canonical live off,      │
-│                         chase-topup live canary only)              │
+│                         underfill exit-flow canary only)           │
 │   - kol_hunter         (Lane T, tail hunter — Option 5)           │
 │     ├ v1 (legacy single-KOL wait)                                  │
 │     └ smart-v3 (2+ KOL main 5x lane, live canary + paper arms)      │
@@ -44,13 +44,13 @@
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Lane 표 (현 active, 2026-05-06 갱신)
+### Lane 표 (현 active, 2026-05-16 갱신)
 
 | Lane / arm | 상태 | Paradigm | 주 파일 | 손익비 정책 |
 |------|------|---------|--------|------------|
 | `cupsey_flip_10s` | disabled (env) | benchmark frozen | `cupseyLaneHandler.ts` | **개조 금지** |
 | `kol_hunter` smart-v3 | live canary + paper arms | Option 5 main 5x lane | `kolSignalHandler.ts` | 2+ fresh active KOL, dev quality as auxiliary, MAE fast-fail/recovery hold/pre-T1 telemetry |
-| `kol_hunter` rotation-v1 | paper-first / chase-topup live canary only | fast-compound aux lane | `kolSignalHandler.ts` | S/A 1-KOL better-entry + chase/top-up arms, partialized sell-follow, T+ validation |
+| `kol_hunter` rotation-v1 | paper-first / underfill exit-flow live canary only | fast-compound aux lane | `kolSignalHandler.ts` | S/A 1-KOL better-entry + chase/top-up paper arms, underfill flow-exit canary, cost-aware paper shadow, partialized sell-follow, T+ validation |
 | `pure_ws` botflow | paper/observer | new-pair candidate | `pureWs/`, `observability/pureWs*` | new-pair only, botflow/price reaction/T+ observer, live promotion blocked until evidence |
 | `kol_hunter` v1 | legacy fallback | Option 5 legacy | `kolSignalHandler.ts` | 유지 보수 전용 |
 | `bootstrap_10s` | signal-only | legacy | `signalProcessor.ts` | 억제 (executionRrReject=99) |

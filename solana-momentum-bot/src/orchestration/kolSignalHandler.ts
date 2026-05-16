@@ -73,7 +73,11 @@ import {
 import { resolveDevStatus } from '../observability/devWalletRegistry';
 import { evaluateSecurityGate } from '../gate/securityGate';
 import { evaluateSellQuoteProbe } from '../gate/sellQuoteProbe';
-import type { OnchainSecurityClient } from '../ingester/onchainSecurity';
+import type {
+  ExitLiquidityData,
+  OnchainSecurityClient,
+  TokenSecurityData,
+} from '../ingester/onchainSecurity';
 // 2026-05-01 (Helius Stream B PR 2A close-out): holder risk flag wiring 입력
 import { computeHolderRiskFlags } from '../observability/holderDistribution';
 // 2026-05-01 (Helius Stream X3): EXIT_LIQUIDITY_UNKNOWN / POOL_NOT_PREWARMED flag wiring
@@ -142,6 +146,8 @@ const ROTATION_UNDERFILL_ARM = 'rotation_underfill_v1';
 const ROTATION_EXIT_FLOW_ARM = 'rotation_exit_kol_flow_v1';
 const ROTATION_UNDERFILL_EXIT_FLOW_PROFILE_ARM = 'rotation_underfill_exit_flow_v1';
 const ROTATION_UNDERFILL_COST_AWARE_PROFILE_ARM = 'rotation_underfill_cost_aware_exit_v2';
+const PAPER_CLOSE_WRITER_SCHEMA_VERSION = 'kol-paper-close/v2';
+const ROTATION_EXIT_ROUTE_PROOF_SCHEMA_VERSION = 'rotation-exit-route-proof/v1';
 
 // ─── State Types ─────────────────────────────────────────
 
@@ -256,6 +262,8 @@ export interface PaperPosition {
    */
   tokenDecimals?: number;
   tokenDecimalsSource?: 'security_client' | 'jupiter_quote';
+  entrySecurityEvidence?: KolEntrySecurityEvidence;
+  entrySellQuoteEvidence?: KolEntrySellQuoteEvidence;
   lastPrice: number;
   // 2026-04-25 MISSION_CONTROL §Control 5 telemetry — paper trade ledger 가 live 와 비교 가능하려면
   // arm identity / discovery cluster / parameter version 이 trade 단위로 기록되어야 한다.
@@ -428,6 +436,51 @@ interface SmartV3CopyableEdgeEstimate {
   requiredGrossMovePct: number | null;
 }
 
+interface KolEntrySecurityEvidence {
+  schemaVersion: 'kol-entry-security/v1';
+  checkedAtMs: number;
+  securityClientPresent: boolean;
+  tokenSecurityKnown: boolean;
+  exitLiquidityKnown: boolean;
+  reason: string | null;
+  flags: string[];
+  tokenSecurityData: TokenSecurityData | null;
+  exitLiquidityData: ExitLiquidityData | null;
+}
+
+type KolSellQuoteEvidenceSchemaVersion = 'kol-entry-sell-quote/v1' | 'kol-exit-sell-quote/v1';
+
+interface KolEntrySellQuoteEvidence {
+  schemaVersion: KolSellQuoteEvidenceSchemaVersion;
+  checkedAtMs: number;
+  probeEnabled: boolean;
+  approved: boolean;
+  routeFound: boolean | null;
+  reason: string | null;
+  plannedQuantityUi: number | null;
+  ticketSol: number | null;
+  tokenDecimals: number | null;
+  observedOutSol: number | null;
+  observedImpactPct: number | null;
+  roundTripPct: number | null;
+  quoteFailed: boolean | null;
+  cacheStatus: string | null;
+}
+
+type KolExitRouteProofSkipReason =
+  | 'sell_quote_probe_disabled'
+  | 'invalid_quantity'
+  | 'sell_quote_error'
+  | 'route_found_unknown'
+  | 'exit_route_proof_exception'
+  | 'exit_route_proof_missing_evidence';
+
+interface KolExitRouteProofResult {
+  evidence: KolEntrySellQuoteEvidence | null;
+  skipReason: KolExitRouteProofSkipReason | null;
+  skipDetail: string | null;
+}
+
 interface SmartV3PendingState {
   startedAtMs: number;
   observeExpiresAtMs: number;
@@ -435,6 +488,7 @@ interface SmartV3PendingState {
   peakPrice: number;
   currentPrice: number;
   preEntryFlags: string[];
+  preEntrySecurityEvidence?: KolEntrySecurityEvidence;
   tokenDecimals?: number;
   tokenDecimalsSource?: 'security_client' | 'jupiter_quote';
   resolving: boolean;
@@ -451,6 +505,7 @@ interface PaperEntryOptions {
   convictionLevel?: KolConvictionLevel;
   tokenDecimals?: number;
   tokenDecimalsSource?: 'security_client' | 'jupiter_quote';
+  entrySecurityEvidence?: KolEntrySecurityEvidence;
   skipPolicyEntry?: boolean;
   rotationTelemetry?: RotationV1TriggerResult['telemetry'];
   rotationAnchorKols?: string[];
@@ -1142,6 +1197,14 @@ function trackPaperPositionMarkout(
         rotationFlowResidualUntilSec: pos.rotationFlowResidualUntilSec ?? null,
         rotationFlowLastReducePct: pos.rotationFlowLastReducePct ?? null,
         rotationMonetizableEdge: pos.rotationMonetizableEdge ?? null,
+        entrySecurityEvidence: pos.entrySecurityEvidence ?? null,
+        entrySellQuoteEvidence: pos.entrySellQuoteEvidence ?? null,
+        tokenSecurityKnown: pos.entrySecurityEvidence?.tokenSecurityKnown ?? null,
+        securityClientPresent: pos.entrySecurityEvidence?.securityClientPresent ?? null,
+        sellRouteKnown: pos.entrySellQuoteEvidence?.routeFound === true ? true : null,
+        routeFound: pos.entrySellQuoteEvidence?.routeFound ?? null,
+        exitLiquidityKnown: pos.entrySecurityEvidence?.exitLiquidityKnown ?? null,
+        exitLiquidityData: pos.entrySecurityEvidence?.exitLiquidityData ?? null,
         smartV3LiveEligibleShadow: pos.smartV3LiveEligibleShadow ?? null,
         smartV3LiveBlockReason: pos.smartV3LiveBlockReason ?? null,
         smartV3LiveBlockFlags: pos.smartV3LiveBlockFlags ?? null,
@@ -3254,6 +3317,7 @@ async function registerSmartV3Pending(tx: KolTx): Promise<void> {
       ...preEntry.flags,
       `DECIMALS_${entryTokenDecimals.source?.toUpperCase() ?? 'UNKNOWN'}`,
     ],
+    preEntrySecurityEvidence: preEntry.evidence,
     tokenDecimals: entryTokenDecimals.value,
     tokenDecimalsSource: entryTokenDecimals.source,
     resolving: false,
@@ -5712,6 +5776,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     liveEquivalenceCandidateId,
     tokenDecimals: smart.tokenDecimals,
     tokenDecimalsSource: smart.tokenDecimalsSource,
+    entrySecurityEvidence: smart.preEntrySecurityEvidence,
     rotationTelemetry: entrySignal.telemetry,
     rotationAnchorKols: entrySignal.rotationAnchorKols,
     rotationAnchorPrice: entrySignal.telemetry?.anchorPrice,
@@ -6609,7 +6674,9 @@ async function resolveStalk(tokenMint: string): Promise<void> {
     const hardTradingHaltReason = getHardTradingHaltReason(botCtx.tradingHaltedReason);
     if (hardTradingHaltReason) {
       log.warn(`[KOL_HUNTER_TRADING_HALT] ${tokenMint.slice(0, 8)} signal ignored — ${hardTradingHaltReason}. fallback paper.`);
-      await enterPaperPosition(tokenMint, cand, score, preEntry.flags);
+      await enterPaperPosition(tokenMint, cand, score, preEntry.flags, {
+        entrySecurityEvidence: preEntry.evidence,
+      });
       return;
     }
     if (isDrawdownGuardHaltReason(botCtx.tradingHaltedReason)) {
@@ -6646,7 +6713,10 @@ async function resolveStalk(tokenMint: string): Promise<void> {
         `remaining=${Math.round(qualityCooldown.remainingMs / 1000)}s. fallback paper.`
       );
       emitKolLiveFallbackPolicy(tokenMint, score, policyFlags);
-      await enterPaperPosition(tokenMint, cand, score, policyFlags, { skipPolicyEntry: true });
+      await enterPaperPosition(tokenMint, cand, score, policyFlags, {
+        entrySecurityEvidence: preEntry.evidence,
+        skipPolicyEntry: true,
+      });
       return;
     }
     const liveGate = evaluateKolLiveCanaryGate(score, preEntry.flags);
@@ -6657,16 +6727,23 @@ async function resolveStalk(tokenMint: string): Promise<void> {
         `${liveGate.reason}. fallback paper.`
       );
       emitKolLiveFallbackPolicy(tokenMint, score, policyFlags);
-      await enterPaperPosition(tokenMint, cand, score, policyFlags, { skipPolicyEntry: true });
+      await enterPaperPosition(tokenMint, cand, score, policyFlags, {
+        entrySecurityEvidence: preEntry.evidence,
+        skipPolicyEntry: true,
+      });
       return;
     }
-    await enterLivePosition(tokenMint, cand, score, preEntry.flags, botCtx);
+    await enterLivePosition(tokenMint, cand, score, preEntry.flags, botCtx, {
+      entrySecurityEvidence: preEntry.evidence,
+    });
     return;
   }
   if (!config.kolHunterPaperOnly && !config.kolHunterLiveCanaryEnabled) {
     log.warn(`[KOL_HUNTER] PAPER_ONLY=false 인데 LIVE_CANARY_ENABLED=false — paper 로만 동작`);
   }
-  await enterPaperPosition(tokenMint, cand, score, preEntry.flags);
+  await enterPaperPosition(tokenMint, cand, score, preEntry.flags, {
+    entrySecurityEvidence: preEntry.evidence,
+  });
 }
 
 function evaluateKolLiveCanaryGate(
@@ -6793,9 +6870,78 @@ function resolveDevWalletEntryFlags(tokenSecurityData: unknown): string[] {
  *
  * `securityClient` 미주입 시 `kolHunterSurvivalAllowDataMissing` 에 따라 통과/거부.
  */
+type KolSurvivalPreEntryResult = {
+  approved: boolean;
+  reason?: string;
+  flags: string[];
+  evidence: KolEntrySecurityEvidence;
+};
+
+type KolSellQuoteSizedResult = {
+  approved: boolean;
+  reason?: string;
+  flags: string[];
+  evidence: KolEntrySellQuoteEvidence;
+};
+
+function buildEntrySecurityEvidence(input: {
+  securityClientPresent: boolean;
+  tokenSecurityData?: TokenSecurityData | null;
+  exitLiquidityData?: ExitLiquidityData | null;
+  reason?: string | null;
+  flags?: string[];
+}): KolEntrySecurityEvidence {
+  return {
+    schemaVersion: 'kol-entry-security/v1',
+    checkedAtMs: Date.now(),
+    securityClientPresent: input.securityClientPresent,
+    tokenSecurityKnown: input.tokenSecurityData != null,
+    exitLiquidityKnown: input.exitLiquidityData != null,
+    reason: input.reason ?? null,
+    flags: [...(input.flags ?? [])],
+    tokenSecurityData: input.tokenSecurityData ?? null,
+    exitLiquidityData: input.exitLiquidityData ?? null,
+  };
+}
+
+function buildEntrySellQuoteEvidence(input: {
+  schemaVersion?: KolSellQuoteEvidenceSchemaVersion;
+  probeEnabled: boolean;
+  approved: boolean;
+  routeFound?: boolean | null;
+  reason?: string | null;
+  plannedQuantityUi?: number | null;
+  ticketSol?: number | null;
+  tokenDecimals?: number | null;
+  observedOutSol?: number | null;
+  observedImpactPct?: number | null;
+  roundTripPct?: number | null;
+  quoteFailed?: boolean | null;
+  cacheStatus?: string | null;
+}): KolEntrySellQuoteEvidence {
+  const finiteOrNull = (value?: number | null): number | null =>
+    typeof value === 'number' && Number.isFinite(value) ? value : null;
+  return {
+    schemaVersion: input.schemaVersion ?? 'kol-entry-sell-quote/v1',
+    checkedAtMs: Date.now(),
+    probeEnabled: input.probeEnabled,
+    approved: input.approved,
+    routeFound: input.routeFound ?? null,
+    reason: input.reason ?? null,
+    plannedQuantityUi: finiteOrNull(input.plannedQuantityUi),
+    ticketSol: finiteOrNull(input.ticketSol),
+    tokenDecimals: finiteOrNull(input.tokenDecimals),
+    observedOutSol: finiteOrNull(input.observedOutSol),
+    observedImpactPct: finiteOrNull(input.observedImpactPct),
+    roundTripPct: finiteOrNull(input.roundTripPct),
+    quoteFailed: input.quoteFailed ?? null,
+    cacheStatus: input.cacheStatus ?? null,
+  };
+}
+
 async function checkKolSurvivalPreEntry(
   tokenMint: string
-): Promise<{ approved: boolean; reason?: string; flags: string[] }> {
+): Promise<KolSurvivalPreEntryResult> {
   const flags: string[] = [];
 
   if (!securityClient) {
@@ -6803,19 +6949,40 @@ async function checkKolSurvivalPreEntry(
     // securityClient 가 미주입이면 결국 data missing 과 효과 같음 — paper n=372 분석에서
     // 두 flag cohort 모두 mfe<1% rate 65.7% / 5x winner 0건.
     if (config.kolHunterRejectOnNoSecurityData) {
+      const rejectFlags = ['NO_SECURITY_CLIENT'];
       return {
         approved: false,
         reason: 'no_security_client',
-        flags: ['NO_SECURITY_CLIENT'],
+        flags: rejectFlags,
+        evidence: buildEntrySecurityEvidence({
+          securityClientPresent: false,
+          reason: 'no_security_client',
+          flags: rejectFlags,
+        }),
       };
     }
     if (config.kolHunterSurvivalAllowDataMissing) {
-      return { approved: true, flags: ['NO_SECURITY_CLIENT'] };
+      const allowFlags = ['NO_SECURITY_CLIENT'];
+      return {
+        approved: true,
+        flags: allowFlags,
+        evidence: buildEntrySecurityEvidence({
+          securityClientPresent: false,
+          reason: 'no_security_client',
+          flags: allowFlags,
+        }),
+      };
     }
+    const rejectFlags = ['NO_SECURITY_CLIENT'];
     return {
       approved: false,
       reason: 'no_security_client',
-      flags: ['NO_SECURITY_CLIENT'],
+      flags: rejectFlags,
+      evidence: buildEntrySecurityEvidence({
+        securityClientPresent: false,
+        reason: 'no_security_client',
+        flags: rejectFlags,
+      }),
     };
   }
 
@@ -6855,19 +7022,46 @@ async function checkKolSurvivalPreEntry(
     // n=70 / mfe<1% 65.7% (baseline +20.6%) / cum_net -0.0376 SOL / 5x winner 0건.
     // allowDataMissing 보다 우선. RPC stale 후에도 data 없으면 같은 cohort.
     if (config.kolHunterRejectOnNoSecurityData) {
+      const rejectFlags = [...flags, 'NO_SECURITY_DATA'];
       return {
         approved: false,
         reason: 'security_data_unavailable',
-        flags: [...flags, 'NO_SECURITY_DATA'],
+        flags: rejectFlags,
+        evidence: buildEntrySecurityEvidence({
+          securityClientPresent: true,
+          tokenSecurityData,
+          exitLiquidityData,
+          reason: 'security_data_unavailable',
+          flags: rejectFlags,
+        }),
       };
     }
     if (config.kolHunterSurvivalAllowDataMissing) {
-      return { approved: true, flags: [...flags, 'NO_SECURITY_DATA'] };
+      const allowFlags = [...flags, 'NO_SECURITY_DATA'];
+      return {
+        approved: true,
+        flags: allowFlags,
+        evidence: buildEntrySecurityEvidence({
+          securityClientPresent: true,
+          tokenSecurityData,
+          exitLiquidityData,
+          reason: 'security_data_unavailable',
+          flags: allowFlags,
+        }),
+      };
     }
+    const rejectFlags = [...flags, 'NO_SECURITY_DATA'];
     return {
       approved: false,
       reason: 'security_data_unavailable',
-      flags: [...flags, 'NO_SECURITY_DATA'],
+      flags: rejectFlags,
+      evidence: buildEntrySecurityEvidence({
+        securityClientPresent: true,
+        tokenSecurityData,
+        exitLiquidityData,
+        reason: 'security_data_unavailable',
+        flags: rejectFlags,
+      }),
     };
   }
 
@@ -6879,16 +7073,32 @@ async function checkKolSurvivalPreEntry(
   });
 
   if (!gateResult.approved) {
+    const rejectFlags = [...flags, ...devFlags, ...gateResult.flags];
     return {
       approved: false,
       reason: gateResult.reason,
-      flags: [...flags, ...devFlags, ...gateResult.flags],
+      flags: rejectFlags,
+      evidence: buildEntrySecurityEvidence({
+        securityClientPresent: true,
+        tokenSecurityData,
+        exitLiquidityData,
+        reason: gateResult.reason ?? null,
+        flags: rejectFlags,
+      }),
     };
   }
 
+  const allowFlags = [...flags, ...devFlags, ...gateResult.flags];
   return {
     approved: true,
-    flags: [...flags, ...devFlags, ...gateResult.flags],
+    flags: allowFlags,
+    evidence: buildEntrySecurityEvidence({
+      securityClientPresent: true,
+      tokenSecurityData,
+      exitLiquidityData,
+      reason: null,
+      flags: allowFlags,
+    }),
   };
 }
 
@@ -6906,13 +7116,37 @@ async function checkKolSellQuoteSized(
   tokenMint: string,
   plannedQuantityUi: number,
   ticketSol: number,
-  tokenDecimals?: number
-): Promise<{ approved: boolean; reason?: string; flags: string[] }> {
+  tokenDecimals?: number,
+  schemaVersion: KolSellQuoteEvidenceSchemaVersion = 'kol-entry-sell-quote/v1'
+): Promise<KolSellQuoteSizedResult> {
   if (!config.kolHunterRunSellQuoteProbe) {
-    return { approved: true, flags: ['SELL_PROBE_DISABLED'] };
+    return {
+      approved: true,
+      flags: ['SELL_PROBE_DISABLED'],
+      evidence: buildEntrySellQuoteEvidence({
+        schemaVersion,
+        probeEnabled: false,
+        approved: true,
+        plannedQuantityUi,
+        ticketSol,
+        tokenDecimals: tokenDecimals ?? null,
+      }),
+    };
   }
   if (!Number.isFinite(plannedQuantityUi) || plannedQuantityUi <= 0) {
-    return { approved: true, flags: ['SELL_PROBE_INVALID_QTY'] };
+    return {
+      approved: true,
+      flags: ['SELL_PROBE_INVALID_QTY'],
+      evidence: buildEntrySellQuoteEvidence({
+        schemaVersion,
+        probeEnabled: true,
+        approved: true,
+        reason: 'invalid_quantity',
+        plannedQuantityUi,
+        ticketSol,
+        tokenDecimals: tokenDecimals ?? null,
+      }),
+    };
   }
   const decimalsResolved = tokenDecimals ?? 6;
   // Why: probeTokenAmountRaw = floor(plannedQuantityUi × 10^decimals). plannedQuantityUi 가
@@ -6931,6 +7165,21 @@ async function checkKolSellQuoteSized(
         approved: false,
         reason: sellResult.reason ?? 'no_sell_route',
         flags: [...baseFlags, 'NO_SELL_ROUTE'],
+        evidence: buildEntrySellQuoteEvidence({
+          schemaVersion,
+          probeEnabled: true,
+          approved: false,
+          routeFound: false,
+          reason: sellResult.reason ?? 'no_sell_route',
+          plannedQuantityUi,
+          ticketSol,
+          tokenDecimals: decimalsResolved,
+          observedOutSol: sellResult.observedOutSol,
+          observedImpactPct: sellResult.observedImpactPct,
+          roundTripPct: sellResult.roundTripPct,
+          quoteFailed: sellResult.quoteFailed,
+          cacheStatus: sellResult.cacheStatus ?? null,
+        }),
       };
     }
     if (!sellResult.approved) {
@@ -6938,13 +7187,59 @@ async function checkKolSellQuoteSized(
         approved: false,
         reason: sellResult.reason ?? 'sell_quote_rejected',
         flags: [...baseFlags, `SELL_REJECT_${(sellResult.reason ?? 'unknown').toUpperCase()}`],
+        evidence: buildEntrySellQuoteEvidence({
+          schemaVersion,
+          probeEnabled: true,
+          approved: false,
+          routeFound: true,
+          reason: sellResult.reason ?? 'sell_quote_rejected',
+          plannedQuantityUi,
+          ticketSol,
+          tokenDecimals: decimalsResolved,
+          observedOutSol: sellResult.observedOutSol,
+          observedImpactPct: sellResult.observedImpactPct,
+          roundTripPct: sellResult.roundTripPct,
+          quoteFailed: sellResult.quoteFailed,
+          cacheStatus: sellResult.cacheStatus ?? null,
+        }),
       };
     }
-    return { approved: true, flags: [...baseFlags, 'SELL_ROUTE_OK', 'EXIT_LIQUIDITY_KNOWN'] };
+    return {
+      approved: true,
+      flags: [...baseFlags, 'SELL_ROUTE_OK', 'EXIT_LIQUIDITY_KNOWN'],
+      evidence: buildEntrySellQuoteEvidence({
+        schemaVersion,
+        probeEnabled: true,
+        approved: true,
+        routeFound: true,
+        plannedQuantityUi,
+        ticketSol,
+        tokenDecimals: decimalsResolved,
+        observedOutSol: sellResult.observedOutSol,
+        observedImpactPct: sellResult.observedImpactPct,
+        roundTripPct: sellResult.roundTripPct,
+        quoteFailed: sellResult.quoteFailed,
+        cacheStatus: sellResult.cacheStatus ?? null,
+      }),
+    };
   } catch (err) {
     log.debug(`[KOL_HUNTER_SURVIVAL] sellQuoteProbe error ${tokenMint.slice(0, 12)}: ${err}`);
     // false halt 방지 — observability flag 만 남기고 진입 허용
-    return { approved: true, flags: ['SELL_QUOTE_ERROR'] };
+    return {
+      approved: true,
+      flags: ['SELL_QUOTE_ERROR'],
+      evidence: buildEntrySellQuoteEvidence({
+        schemaVersion,
+        probeEnabled: true,
+        approved: true,
+        routeFound: null,
+        reason: 'sell_quote_error',
+        plannedQuantityUi,
+        ticketSol,
+        tokenDecimals: decimalsResolved,
+        quoteFailed: true,
+      }),
+    };
   }
 }
 
@@ -7176,6 +7471,8 @@ async function enterPaperPosition(
       isShadowKol: isShadowKolPosition,  // 2026-04-28: 분포 분리 marker.
       tokenDecimals: entryTokenDecimals.value,
       tokenDecimalsSource: entryTokenDecimals.source,
+      entrySecurityEvidence: options.entrySecurityEvidence,
+      entrySellQuoteEvidence: sellSized.evidence,
     };
     if (isRotationFamilyMarkoutPosition(pos)) {
       pos.rotationMonetizableEdge = buildRotationMonetizableEdgeForPosition(pos);
@@ -9350,6 +9647,15 @@ function buildKolBaseLedgerRecord(
     isShadowKol: pos.isShadowKol ?? false,
     tokenDecimals: pos.tokenDecimals ?? null,
     tokenDecimalsSource: pos.tokenDecimalsSource ?? null,
+    entrySecurityEvidence: pos.entrySecurityEvidence ?? null,
+    entrySellQuoteEvidence: pos.entrySellQuoteEvidence ?? null,
+    tokenSecurityKnown: pos.entrySecurityEvidence?.tokenSecurityKnown ?? null,
+    tokenSecurityData: pos.entrySecurityEvidence?.tokenSecurityData ?? null,
+    securityClientPresent: pos.entrySecurityEvidence?.securityClientPresent ?? null,
+    sellRouteKnown: pos.entrySellQuoteEvidence?.routeFound === true ? true : null,
+    routeFound: pos.entrySellQuoteEvidence?.routeFound ?? null,
+    exitLiquidityKnown: pos.entrySecurityEvidence?.exitLiquidityKnown ?? null,
+    exitLiquidityData: pos.entrySecurityEvidence?.exitLiquidityData ?? null,
     rotationMonetizableEdge: pos.rotationMonetizableEdge ?? null,
     rotationMonetizablePass: pos.rotationMonetizableEdge?.pass ?? null,
     rotationMonetizableCostRatio: pos.rotationMonetizableEdge?.costRatio ?? null,
@@ -9453,6 +9759,14 @@ function buildKolLedgerExtras(
     kolScore: pos.kolScore,
     participatingKols: pos.participatingKols,
     survivalFlags: pos.survivalFlags,
+    entrySecurityEvidence: pos.entrySecurityEvidence ?? null,
+    entrySellQuoteEvidence: pos.entrySellQuoteEvidence ?? null,
+    tokenSecurityKnown: pos.entrySecurityEvidence?.tokenSecurityKnown ?? null,
+    securityClientPresent: pos.entrySecurityEvidence?.securityClientPresent ?? null,
+    sellRouteKnown: pos.entrySellQuoteEvidence?.routeFound === true ? true : null,
+    routeFound: pos.entrySellQuoteEvidence?.routeFound ?? null,
+    exitLiquidityKnown: pos.entrySecurityEvidence?.exitLiquidityKnown ?? null,
+    exitLiquidityData: pos.entrySecurityEvidence?.exitLiquidityData ?? null,
     exitReason: reason,
     holdSec,
     mfePct,
@@ -9690,9 +10004,24 @@ async function appendPaperLedger(
   try {
     const dir = config.realtimeDataDir;
     await mkdir(dir, { recursive: true });
+    const exitRouteProof = await resolveRotationPaperCloseSellQuoteEvidence(pos);
+    const exitSellQuoteEvidence = exitRouteProof.evidence;
     // paper-only 필드 (t1*Override / probeFlatTimeoutSec) 추가.
     const record = {
       ...buildKolBaseLedgerRecord(pos, exitPrice, reason, holdSec, mfePct, maePct, netSol, netPct),
+      paperCloseWriterSchemaVersion: PAPER_CLOSE_WRITER_SCHEMA_VERSION,
+      rotationExitRouteProofSchemaVersion: isRotationFamilyMarkoutPosition(pos)
+        ? ROTATION_EXIT_ROUTE_PROOF_SCHEMA_VERSION
+        : null,
+      exitSellQuoteEvidence,
+      exitRouteFound: exitSellQuoteEvidence?.routeFound ?? null,
+      exitSellRouteKnown: exitSellQuoteEvidence?.routeFound === true
+        ? true
+        : exitSellQuoteEvidence?.routeFound === false
+          ? false
+          : null,
+      exitRouteProofSkipReason: exitRouteProof.skipReason,
+      exitRouteProofSkipDetail: exitRouteProof.skipDetail,
       t1MfeOverride: pos.t1MfeOverride ?? null,
       t1TrailPctOverride: pos.t1TrailPctOverride ?? null,
       t1ProfitFloorMult: pos.t1ProfitFloorMult ?? null,
@@ -9733,6 +10062,46 @@ async function appendPaperLedger(
   } catch (err) {
     log.debug(`[KOL_HUNTER] paper ledger append failed: ${String(err)}`);
   }
+}
+
+async function resolveRotationPaperCloseSellQuoteEvidence(
+  pos: PaperPosition
+): Promise<KolExitRouteProofResult> {
+  if (!isRotationFamilyMarkoutPosition(pos) || pos.isLive === true) {
+    return { evidence: null, skipReason: null, skipDetail: null };
+  }
+  try {
+    const result = await checkKolSellQuoteSized(
+      pos.tokenMint,
+      pos.quantity,
+      pos.ticketSol,
+      pos.tokenDecimals,
+      'kol-exit-sell-quote/v1'
+    );
+    const evidence = result.evidence ?? null;
+    return {
+      evidence,
+      skipReason: exitRouteProofSkipReasonForEvidence(evidence),
+      skipDetail: result.reason ?? evidence?.reason ?? result.flags.join(',') ?? null,
+    };
+  } catch (err) {
+    return {
+      evidence: null,
+      skipReason: 'exit_route_proof_exception',
+      skipDetail: String(err).slice(0, 160),
+    };
+  }
+}
+
+function exitRouteProofSkipReasonForEvidence(
+  evidence: KolEntrySellQuoteEvidence | null
+): KolExitRouteProofSkipReason | null {
+  if (!evidence) return 'exit_route_proof_missing_evidence';
+  if (!evidence.probeEnabled) return 'sell_quote_probe_disabled';
+  if (evidence.reason === 'invalid_quantity') return 'invalid_quantity';
+  if (evidence.reason === 'sell_quote_error' || evidence.quoteFailed === true) return 'sell_quote_error';
+  if (evidence.routeFound == null) return 'route_found_unknown';
+  return null;
 }
 
 /**
@@ -10347,6 +10716,11 @@ async function enterLivePosition(
     smartV3LiveBlockReason: options.smartV3LiveBlockReason,
     smartV3LiveBlockFlags: options.smartV3LiveBlockFlags,
     smartV3LiveEligibilityEvaluatedAtMs: options.smartV3LiveEligibilityEvaluatedAtMs,
+    liveEquivalenceCandidateId: options.liveEquivalenceCandidateId,
+    liveEquivalenceDecisionStage: options.liveEquivalenceDecisionStage,
+    liveEquivalenceLiveWouldEnter: options.liveEquivalenceLiveWouldEnter,
+    liveEquivalenceLiveBlockReason: options.liveEquivalenceLiveBlockReason,
+    liveEquivalenceLiveBlockFlags: options.liveEquivalenceLiveBlockFlags,
     smartV3EntryComboKey: options.smartV3EntryComboKey,
     smartV3HardCutParentPositionId: options.smartV3HardCutParentPositionId,
     smartV3HardCutAtMs: options.smartV3HardCutAtMs,
@@ -10362,6 +10736,8 @@ async function enterLivePosition(
     ],
     tokenDecimals: liveDecimals,
     tokenDecimalsSource: liveDecimalsSource,
+    entrySecurityEvidence: options.entrySecurityEvidence,
+    entrySellQuoteEvidence: liveSellSized.evidence,
     isLive: true,
     dbTradeId: persistResult.dbTradeId ?? undefined,
     entryTxSignature,
@@ -10424,6 +10800,14 @@ async function enterLivePosition(
         rotationFlowExitEnabled: position.rotationFlowExitEnabled ?? false,
         executionGuardReason: position.executionGuardReason ?? null,
         executionGuardAction: position.executionGuardAction ?? null,
+        entrySecurityEvidence: position.entrySecurityEvidence ?? null,
+        entrySellQuoteEvidence: position.entrySellQuoteEvidence ?? null,
+        tokenSecurityKnown: position.entrySecurityEvidence?.tokenSecurityKnown ?? null,
+        securityClientPresent: position.entrySecurityEvidence?.securityClientPresent ?? null,
+        sellRouteKnown: position.entrySellQuoteEvidence?.routeFound === true ? true : null,
+        routeFound: position.entrySellQuoteEvidence?.routeFound ?? null,
+        exitLiquidityKnown: position.entrySecurityEvidence?.exitLiquidityKnown ?? null,
+        exitLiquidityData: position.entrySecurityEvidence?.exitLiquidityData ?? null,
         smartV3LiveHardCutReentry: position.smartV3LiveHardCutReentry ?? false,
         smartV3HardCutParentPositionId: position.smartV3HardCutParentPositionId ?? null,
         smartV3HardCutAtMs: position.smartV3HardCutAtMs ?? null,

@@ -8,6 +8,7 @@ const DECISION_ATTRIBUTION_MIN_COVERAGE = 0.9;
 type JsonRecord = Record<string, unknown>;
 
 type LiveAttributionStatus = 'exact' | 'fallback' | 'ambiguous' | 'no_candidate' | 'missing_fields';
+type PaperRole = 'mirror' | 'fallback_execution_safety' | 'research_arm' | 'shadow' | 'no_trade_counterfactual';
 
 interface LiveAttribution {
   row: JsonRecord;
@@ -45,6 +46,17 @@ interface PaperRoleBucket {
   netSol: number;
   netSolTokenOnly: number;
   avgMfePct: number | null;
+}
+
+interface DecisionGapBucket {
+  decisions: number;
+  comparablePaperCloses: number;
+  researchPaperCloses: number;
+  shadowPaperCloses: number;
+  liveCloses: number;
+  comparablePaperNetSol: number;
+  researchPaperNetSol: number;
+  liveNetSol: number;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -366,6 +378,19 @@ function emptyPaperRoleBucket(): PaperRoleBucket {
   };
 }
 
+function emptyDecisionGapBucket(): DecisionGapBucket {
+  return {
+    decisions: 0,
+    comparablePaperCloses: 0,
+    researchPaperCloses: 0,
+    shadowPaperCloses: 0,
+    liveCloses: 0,
+    comparablePaperNetSol: 0,
+    researchPaperNetSol: 0,
+    liveNetSol: 0,
+  };
+}
+
 function pct(value: number | null): string {
   if (value == null || !Number.isFinite(value)) return 'n/a';
   return `${(value * 100).toFixed(1)}%`;
@@ -375,9 +400,103 @@ function sol(value: number): string {
   return `${value >= 0 ? '+' : ''}${value.toFixed(4)}`;
 }
 
-function comparablePaperRow(row: JsonRecord): boolean {
+function isPaperRole(value: string | null): value is PaperRole {
+  return value === 'mirror' ||
+    value === 'fallback_execution_safety' ||
+    value === 'research_arm' ||
+    value === 'shadow' ||
+    value === 'no_trade_counterfactual';
+}
+
+function explicitPaperRole(row: JsonRecord): PaperRole | null {
   const role = str(row, 'paperRole');
-  return role == null || role === 'mirror' || role === 'fallback_execution_safety';
+  return isPaperRole(role) ? role : null;
+}
+
+function inferPaperRole(row: JsonRecord, equivalenceByCandidate: Map<string, JsonRecord>): PaperRole | null {
+  const explicit = explicitPaperRole(row);
+  if (explicit) return explicit;
+  if (bool(row, 'isShadowArm')) return 'shadow';
+
+  const candidateId = str(row, 'liveEquivalenceCandidateId');
+  if (!candidateId) return null;
+
+  const equivalence = equivalenceByCandidate.get(candidateId);
+  if (!equivalence) return null;
+
+  const stage = str(equivalence, 'decisionStage');
+  if (bool(equivalence, 'liveWouldEnter')) return 'mirror';
+  if (stage === 'paper_only' || stage === 'default_paper') return 'research_arm';
+  return 'fallback_execution_safety';
+}
+
+function comparablePaperRole(role: PaperRole | null): boolean {
+  return role === 'mirror' || role === 'fallback_execution_safety';
+}
+
+function comparablePaperRow(row: JsonRecord, equivalenceByCandidate: Map<string, JsonRecord>): boolean {
+  return comparablePaperRole(inferPaperRole(row, equivalenceByCandidate));
+}
+
+function netSolSum(rows: JsonRecord[]): number {
+  return rows.reduce((sum, row) => sum + (num(row, 'netSol') ?? 0), 0);
+}
+
+function addDecisionGap(
+  buckets: Map<string, DecisionGapBucket>,
+  name: string,
+  input: {
+    comparablePaperRows: JsonRecord[];
+    researchPaperRows: JsonRecord[];
+    shadowPaperRows: JsonRecord[];
+    liveRows: JsonRecord[];
+  }
+): void {
+  const bucket = buckets.get(name) ?? emptyDecisionGapBucket();
+  bucket.decisions += 1;
+  bucket.comparablePaperCloses += input.comparablePaperRows.length;
+  bucket.researchPaperCloses += input.researchPaperRows.length;
+  bucket.shadowPaperCloses += input.shadowPaperRows.length;
+  bucket.liveCloses += input.liveRows.length;
+  bucket.comparablePaperNetSol += netSolSum(input.comparablePaperRows);
+  bucket.researchPaperNetSol += netSolSum(input.researchPaperRows);
+  bucket.liveNetSol += netSolSum(input.liveRows);
+  buckets.set(name, bucket);
+}
+
+function decisionGapName(input: {
+  equivalence: JsonRecord;
+  comparablePaperRows: JsonRecord[];
+  researchPaperRows: JsonRecord[];
+  shadowPaperRows: JsonRecord[];
+  liveRows: JsonRecord[];
+}): string {
+  const liveNet = netSolSum(input.liveRows);
+  const comparablePaperNet = netSolSum(input.comparablePaperRows);
+  const hasResearchOnly =
+    input.comparablePaperRows.length === 0 &&
+    (input.researchPaperRows.length > 0 || input.shadowPaperRows.length > 0);
+
+  if (bool(input.equivalence, 'liveAttempted')) {
+    if (input.liveRows.length === 0) return 'live_attempt_without_close_link';
+    if (liveNet < 0 && hasResearchOnly) return 'live_loss_only_research_or_shadow_paper';
+    if (liveNet < 0 && input.comparablePaperRows.length === 0) return 'live_loss_without_comparable_paper';
+    if (liveNet < 0 && comparablePaperNet > 0) return 'live_loss_comparable_paper_win';
+    if (liveNet < 0) return 'live_loss_comparable_paper_non_positive';
+    return 'live_attempt_linked_non_loss';
+  }
+
+  if (bool(input.equivalence, 'liveWouldEnter')) {
+    return 'live_would_enter_but_not_attempted';
+  }
+
+  if (input.comparablePaperRows.length > 0) {
+    return comparablePaperNet > 0
+      ? 'blocked_with_comparable_paper_win'
+      : 'blocked_with_comparable_paper_non_positive';
+  }
+  if (hasResearchOnly) return 'blocked_research_or_shadow_only';
+  return 'blocked_no_close';
 }
 
 async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }> {
@@ -405,10 +524,17 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
       .flat()
       .filter((row) => rowTimeMs(row) >= args.sinceMs)
   );
+  const equivalenceByCandidate = new Map<string, JsonRecord>();
+  for (const row of equivalence) {
+    const candidateId = str(row, 'candidateId');
+    if (candidateId) equivalenceByCandidate.set(candidateId, row);
+  }
+
   const byPaperRole = new Map<string, PaperRoleBucket>();
   const mfeByPaperRole = new Map<string, number[]>();
   for (const row of paperRows) {
-    const role = str(row, 'paperRole') ?? 'unknown';
+    const role = inferPaperRole(row, equivalenceByCandidate);
+    if (!role) continue;
     const bucket = byPaperRole.get(role) ?? emptyPaperRoleBucket();
     const netSol = num(row, 'netSol') ?? 0;
     const netSolTokenOnly = num(row, 'netSolTokenOnly') ?? netSol;
@@ -467,6 +593,7 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
 
   const byArm = new Map<string, SummaryBucket>();
   const mfeByArm = new Map<string, number[]>();
+  const decisionGapBuckets = new Map<string, DecisionGapBucket>();
   for (const row of equivalence) {
     const arm = armKey(row);
     const bucket = byArm.get(arm) ?? emptyBucket();
@@ -487,8 +614,34 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
       : candidateId
         ? liveByCandidate.get(candidateId) ?? []
         : [];
+    const comparablePaperRows = paperMatches.filter((paper) =>
+      comparablePaperRow(paper, equivalenceByCandidate)
+    );
+    const researchPaperRows = paperMatches.filter((paper) => {
+      const role = inferPaperRole(paper, equivalenceByCandidate);
+      return role === 'research_arm' || role === 'no_trade_counterfactual';
+    });
+    const shadowPaperRows = paperMatches.filter((paper) =>
+      inferPaperRole(paper, equivalenceByCandidate) === 'shadow'
+    );
+    addDecisionGap(
+      decisionGapBuckets,
+      decisionGapName({
+        equivalence: row,
+        comparablePaperRows,
+        researchPaperRows,
+        shadowPaperRows,
+        liveRows: liveMatches,
+      }),
+      {
+        comparablePaperRows,
+        researchPaperRows,
+        shadowPaperRows,
+        liveRows: liveMatches,
+      }
+    );
     if (candidateId || decisionId) {
-      for (const paper of paperMatches.filter(comparablePaperRow)) {
+      for (const paper of comparablePaperRows) {
         addOutcome(bucket, paper, 'paper');
         const mfe = num(paper, 'mfePctPeakTokenOnly') ?? num(paper, 'mfePct') ?? null;
         if (mfe != null) {
@@ -514,7 +667,12 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
   const equivalenceRowsWithDecisionId = equivalence.filter((row) => str(row, 'decisionId')).length;
   const paperRowsWithDecisionId = paperRows.filter((row) => str(row, 'liveEquivalenceDecisionId')).length;
   const paperRowsWithPaperRole = paperRows.filter((row) => str(row, 'paperRole')).length;
+  const paperRowsWithInferredRole = paperRows.filter((row) => inferPaperRole(row, equivalenceByCandidate) != null);
+  const paperRowsWithInferredPaperRole = paperRowsWithInferredRole.length;
+  const paperRowsWithoutInferredPaperRole = paperRows.length - paperRowsWithInferredPaperRole;
   const paperRowsWithExecutionPlan = paperRows.filter((row) => row.executionPlanSnapshot != null).length;
+  const paperAttributedRowsWithExecutionPlan =
+    paperRowsWithInferredRole.filter((row) => row.executionPlanSnapshot != null).length;
   const liveRowsWithCandidateId = liveAttributions.filter((row) => row.status === 'exact').length;
   const liveRowsWithDecisionId = liveRows.filter((row) => str(row, 'liveEquivalenceDecisionId')).length;
   const liveRowsWithExecutionPlan = liveRows.filter((row) => row.executionPlanSnapshot != null).length;
@@ -527,6 +685,10 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
     (row.status === 'exact' || row.status === 'fallback') &&
     str(row.row, 'liveEquivalenceDecisionId')
   ).length;
+  const liveLinkedRowsWithExecutionPlan = liveAttributions.filter((row) =>
+    (row.status === 'exact' || row.status === 'fallback') &&
+    row.row.executionPlanSnapshot != null
+  ).length;
   const unlinkedLiveRows = liveRows.length - liveRowsLinkedTotal;
   const liveCandidateLinkCoverage = liveRows.length > 0 ? liveRowsLinkedTotal / liveRows.length : null;
   const equivalenceDecisionIdCoverage =
@@ -534,13 +696,17 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
   const paperDecisionIdCoverage =
     paperRowsWithCandidateId > 0 ? paperRowsWithDecisionId / paperRowsWithCandidateId : null;
   const paperRoleCoverage =
-    paperRows.length > 0 ? paperRowsWithPaperRole / paperRows.length : null;
+    paperRows.length > 0 ? paperRowsWithInferredPaperRole / paperRows.length : null;
   const paperExecutionPlanCoverage =
     paperRows.length > 0 ? paperRowsWithExecutionPlan / paperRows.length : null;
+  const paperAttributedExecutionPlanCoverage =
+    paperRowsWithInferredPaperRole > 0 ? paperAttributedRowsWithExecutionPlan / paperRowsWithInferredPaperRole : null;
   const liveDecisionIdCoverage =
     liveRowsLinkedTotal > 0 ? liveLinkedRowsWithDecisionId / liveRowsLinkedTotal : null;
   const liveExecutionPlanCoverage =
     liveRows.length > 0 ? liveRowsWithExecutionPlan / liveRows.length : null;
+  const liveLinkedExecutionPlanCoverage =
+    liveRowsLinkedTotal > 0 ? liveLinkedRowsWithExecutionPlan / liveRowsLinkedTotal : null;
   const liveAttributionBreakdown = {
     exact: liveRowsWithCandidateId,
     fallback: liveRowsLinkedByFallback,
@@ -561,11 +727,11 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
     ...(liveRowsLinkedTotal > 0 && (liveDecisionIdCoverage ?? 0) < DECISION_ATTRIBUTION_MIN_COVERAGE
       ? [`live linked decisionId coverage ${pct(liveDecisionIdCoverage)} < ${pct(DECISION_ATTRIBUTION_MIN_COVERAGE)}`]
       : []),
-    ...(paperRows.length > 0 && (paperExecutionPlanCoverage ?? 0) < DECISION_ATTRIBUTION_MIN_COVERAGE
-      ? [`paper executionPlan coverage ${pct(paperExecutionPlanCoverage)} < ${pct(DECISION_ATTRIBUTION_MIN_COVERAGE)}`]
+    ...(paperRowsWithInferredPaperRole > 0 && (paperAttributedExecutionPlanCoverage ?? 0) < DECISION_ATTRIBUTION_MIN_COVERAGE
+      ? [`paper attributed executionPlan coverage ${pct(paperAttributedExecutionPlanCoverage)} < ${pct(DECISION_ATTRIBUTION_MIN_COVERAGE)}`]
       : []),
-    ...(liveRows.length > 0 && (liveExecutionPlanCoverage ?? 0) < DECISION_ATTRIBUTION_MIN_COVERAGE
-      ? [`live executionPlan coverage ${pct(liveExecutionPlanCoverage)} < ${pct(DECISION_ATTRIBUTION_MIN_COVERAGE)}`]
+    ...(liveRowsLinkedTotal > 0 && (liveLinkedExecutionPlanCoverage ?? 0) < DECISION_ATTRIBUTION_MIN_COVERAGE
+      ? [`live linked executionPlan coverage ${pct(liveLinkedExecutionPlanCoverage)} < ${pct(DECISION_ATTRIBUTION_MIN_COVERAGE)}`]
       : []),
   ];
   const liveCandidateLinkGap =
@@ -594,6 +760,8 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
     .sort((a, b) => b[1].rows - a[1].rows || a[0].localeCompare(b[0]));
   const paperRoleRows = [...byPaperRole.entries()]
     .sort((a, b) => b[1].closes - a[1].closes || a[0].localeCompare(b[0]));
+  const decisionGapRows = [...decisionGapBuckets.entries()]
+    .sort((a, b) => b[1].decisions - a[1].decisions || a[0].localeCompare(b[0]));
   const lines = [
     `# KOL Live Equivalence Report`,
     '',
@@ -605,12 +773,16 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
     `- equivalence rows with decisionId: ${equivalenceRowsWithDecisionId}`,
     `- paper closes with decisionId: ${paperRowsWithDecisionId}`,
     `- paper closes with paperRole: ${paperRowsWithPaperRole}`,
+    `- paper closes with inferred paperRole: ${paperRowsWithInferredPaperRole}`,
+    `- paper closes without inferred paperRole: ${paperRowsWithoutInferredPaperRole}`,
     `- paper closes with executionPlan: ${paperRowsWithExecutionPlan}`,
+    `- paper attributed closes with executionPlan: ${paperAttributedRowsWithExecutionPlan}`,
     `- live closes: ${liveRows.length}`,
     `- live closes with candidateId: ${liveRowsWithCandidateId}`,
     `- live closes with decisionId: ${liveRowsWithDecisionId}`,
     `- live linked closes with decisionId: ${liveLinkedRowsWithDecisionId}`,
     `- live closes with executionPlan: ${liveRowsWithExecutionPlan}`,
+    `- live linked closes with executionPlan: ${liveLinkedRowsWithExecutionPlan}`,
     `- live fallback-linked closes: ${liveRowsLinkedByFallback}`,
     `- live linked closes total: ${liveRowsLinkedTotal}`,
     `- unlinked live closes: ${unlinkedLiveRows}`,
@@ -619,8 +791,10 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
     `- paper candidate-linked decisionId coverage: ${pct(paperDecisionIdCoverage)}`,
     `- paperRole coverage: ${pct(paperRoleCoverage)}`,
     `- paper executionPlan coverage: ${pct(paperExecutionPlanCoverage)}`,
+    `- paper attributed executionPlan coverage: ${pct(paperAttributedExecutionPlanCoverage)}`,
     `- live linked decisionId coverage: ${pct(liveDecisionIdCoverage)}`,
     `- live executionPlan coverage: ${pct(liveExecutionPlanCoverage)}`,
+    `- live linked executionPlan coverage: ${pct(liveLinkedExecutionPlanCoverage)}`,
     `- live attempted equivalence rows: ${liveAttemptedRows}`,
     `- reasons: ${verdictReasons.join('; ') || 'n/a'}`,
     `- attribution warnings: ${decisionAttributionWarnings.join('; ') || 'n/a'}`,
@@ -631,11 +805,19 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
     '|---|---:|',
     ...countBy(equivalence, 'decisionStage').slice(0, 20).map(([key, count]) => `| ${key} | ${count} |`),
     '',
+    '## Decision Gap Drilldown',
+    '',
+    '| bucket | decisions | comparable paper closes | research closes | shadow closes | live closes | comparable paper net | research net | live net |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|---:|',
+    ...decisionGapRows.map(([bucketName, bucket]) =>
+      `| ${bucketName} | ${bucket.decisions} | ${bucket.comparablePaperCloses} | ${bucket.researchPaperCloses} | ${bucket.shadowPaperCloses} | ${bucket.liveCloses} | ${sol(bucket.comparablePaperNetSol)} | ${sol(bucket.researchPaperNetSol)} | ${sol(bucket.liveNetSol)} |`
+    ),
+    '',
     '## Paper Role Counts',
     '',
     '| role | paper closes |',
     '|---|---:|',
-    ...countBy(paperRows, 'paperRole').slice(0, 20).map(([key, count]) => `| ${key} | ${count} |`),
+    ...paperRoleRows.map(([role, bucket]) => `| ${role} | ${bucket.closes} |`),
     '',
     '## Paper Role Outcomes',
     '',
@@ -676,12 +858,16 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
       equivalenceRowsWithDecisionId,
       paperRowsWithDecisionId,
       paperRowsWithPaperRole,
+      paperRowsWithInferredPaperRole,
+      paperRowsWithoutInferredPaperRole,
       paperRowsWithExecutionPlan,
+      paperAttributedRowsWithExecutionPlan,
       liveRows: liveRows.length,
       liveRowsWithCandidateId,
       liveRowsWithDecisionId,
       liveLinkedRowsWithDecisionId,
       liveRowsWithExecutionPlan,
+      liveLinkedRowsWithExecutionPlan,
       liveRowsLinkedByFallback,
       liveRowsLinkedTotal,
       unlinkedLiveRows,
@@ -690,14 +876,17 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
       paperDecisionIdCoverage,
       paperRoleCoverage,
       paperExecutionPlanCoverage,
+      paperAttributedExecutionPlanCoverage,
       liveDecisionIdCoverage,
       liveExecutionPlanCoverage,
+      liveLinkedExecutionPlanCoverage,
       liveAttributionBreakdown,
       decisionAttributionWarnings,
       liveAttemptedRows,
       verdictReasons,
       decisionStages: Object.fromEntries(countBy(equivalence, 'decisionStage')),
-      paperRoles: Object.fromEntries(countBy(paperRows, 'paperRole')),
+      decisionGapDrilldown: Object.fromEntries(decisionGapRows),
+      paperRoles: Object.fromEntries(paperRoleRows.map(([role, bucket]) => [role, bucket.closes])),
       paperRoleOutcomes: Object.fromEntries(paperRoleRows),
       liveBlockReasons: Object.fromEntries(countBy(equivalence.filter((row) => !bool(row, 'liveWouldEnter')), 'liveBlockReason')),
       arms: Object.fromEntries(armRows),

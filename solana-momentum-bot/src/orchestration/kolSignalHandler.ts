@@ -1168,6 +1168,20 @@ function buildTradeMarkoutObserverConfig(
   });
 }
 
+function buildKolAttributionRecord(pos: PaperPosition): Record<string, unknown> {
+  return {
+    executionPlanSnapshot: pos.executionPlanSnapshot ?? null,
+    liveEquivalenceCandidateId: pos.liveEquivalenceCandidateId ?? null,
+    liveEquivalenceDecisionId: pos.liveEquivalenceDecisionId ?? null,
+    liveEquivalenceDecisionAction: pos.liveEquivalenceDecisionAction ?? null,
+    paperRole: pos.paperRole ?? null,
+    liveEquivalenceDecisionStage: pos.liveEquivalenceDecisionStage ?? null,
+    liveEquivalenceLiveWouldEnter: pos.liveEquivalenceLiveWouldEnter ?? null,
+    liveEquivalenceLiveBlockReason: pos.liveEquivalenceLiveBlockReason ?? null,
+    liveEquivalenceLiveBlockFlags: pos.liveEquivalenceLiveBlockFlags ?? null,
+  };
+}
+
 function trackPaperPositionMarkout(
   pos: PaperPosition,
   anchorType: 'buy' | 'sell',
@@ -1229,6 +1243,7 @@ function trackPaperPositionMarkout(
         routeFound: pos.entrySellQuoteEvidence?.routeFound ?? null,
         exitLiquidityKnown: pos.entrySecurityEvidence?.exitLiquidityKnown ?? null,
         exitLiquidityData: pos.entrySecurityEvidence?.exitLiquidityData ?? null,
+        ...buildKolAttributionRecord(pos),
         smartV3LiveEligibleShadow: pos.smartV3LiveEligibleShadow ?? null,
         smartV3LiveBlockReason: pos.smartV3LiveBlockReason ?? null,
         smartV3LiveBlockFlags: pos.smartV3LiveBlockFlags ?? null,
@@ -9110,6 +9125,7 @@ function closePosition(
           rotationFlowLastReducePct: pos.rotationFlowLastReducePct ?? null,
           rotationMonetizableEdge: pos.rotationMonetizableEdge ?? null,
           tokenDecimalsSource: pos.tokenDecimalsSource ?? null,
+          ...buildKolAttributionRecord(pos),
         },
       },
       buildObserverConfig()
@@ -9850,6 +9866,7 @@ function buildKolBaseLedgerRecord(
     routeFound: pos.entrySellQuoteEvidence?.routeFound ?? null,
     exitLiquidityKnown: pos.entrySecurityEvidence?.exitLiquidityKnown ?? null,
     exitLiquidityData: pos.entrySecurityEvidence?.exitLiquidityData ?? null,
+    ...buildKolAttributionRecord(pos),
     rotationMonetizableEdge: pos.rotationMonetizableEdge ?? null,
     rotationMonetizablePass: pos.rotationMonetizableEdge?.pass ?? null,
     rotationMonetizableCostRatio: pos.rotationMonetizableEdge?.costRatio ?? null,
@@ -9869,14 +9886,6 @@ function buildKolBaseLedgerRecord(
     smartV3LiveBlockReason: pos.smartV3LiveBlockReason ?? null,
     smartV3LiveBlockFlags: pos.smartV3LiveBlockFlags ?? null,
     smartV3LiveEligibilityEvaluatedAtMs: pos.smartV3LiveEligibilityEvaluatedAtMs ?? null,
-    liveEquivalenceCandidateId: pos.liveEquivalenceCandidateId ?? null,
-    liveEquivalenceDecisionId: pos.liveEquivalenceDecisionId ?? null,
-    liveEquivalenceDecisionAction: pos.liveEquivalenceDecisionAction ?? null,
-    paperRole: pos.paperRole ?? null,
-    liveEquivalenceDecisionStage: pos.liveEquivalenceDecisionStage ?? null,
-    liveEquivalenceLiveWouldEnter: pos.liveEquivalenceLiveWouldEnter ?? null,
-    liveEquivalenceLiveBlockReason: pos.liveEquivalenceLiveBlockReason ?? null,
-    liveEquivalenceLiveBlockFlags: pos.liveEquivalenceLiveBlockFlags ?? null,
     smartV3EntryComboKey: pos.smartV3EntryComboKey ?? null,
     smartV3LiveHardCutReentry: pos.smartV3LiveHardCutReentry ?? false,
     smartV3HardCutParentPositionId: pos.smartV3HardCutParentPositionId ?? null,
@@ -9965,6 +9974,7 @@ function buildKolLedgerExtras(
     routeFound: pos.entrySellQuoteEvidence?.routeFound ?? null,
     exitLiquidityKnown: pos.entrySecurityEvidence?.exitLiquidityKnown ?? null,
     exitLiquidityData: pos.entrySecurityEvidence?.exitLiquidityData ?? null,
+    ...buildKolAttributionRecord(pos),
     exitReason: reason,
     holdSec,
     mfePct,
@@ -9979,14 +9989,6 @@ function buildKolLedgerExtras(
     smartV3LiveBlockReason: pos.smartV3LiveBlockReason ?? null,
     smartV3LiveBlockFlags: pos.smartV3LiveBlockFlags ?? null,
     smartV3LiveEligibilityEvaluatedAtMs: pos.smartV3LiveEligibilityEvaluatedAtMs ?? null,
-    liveEquivalenceCandidateId: pos.liveEquivalenceCandidateId ?? null,
-    liveEquivalenceDecisionId: pos.liveEquivalenceDecisionId ?? null,
-    liveEquivalenceDecisionAction: pos.liveEquivalenceDecisionAction ?? null,
-    paperRole: pos.paperRole ?? null,
-    liveEquivalenceDecisionStage: pos.liveEquivalenceDecisionStage ?? null,
-    liveEquivalenceLiveWouldEnter: pos.liveEquivalenceLiveWouldEnter ?? null,
-    liveEquivalenceLiveBlockReason: pos.liveEquivalenceLiveBlockReason ?? null,
-    liveEquivalenceLiveBlockFlags: pos.liveEquivalenceLiveBlockFlags ?? null,
     smartV3EntryComboKey: pos.smartV3EntryComboKey ?? null,
     smartV3LiveHardCutReentry: pos.smartV3LiveHardCutReentry ?? false,
     smartV3HardCutParentPositionId: pos.smartV3HardCutParentPositionId ?? null,
@@ -11026,6 +11028,7 @@ async function enterLivePosition(
         routeFound: position.entrySellQuoteEvidence?.routeFound ?? null,
         exitLiquidityKnown: position.entrySecurityEvidence?.exitLiquidityKnown ?? null,
         exitLiquidityData: position.entrySecurityEvidence?.exitLiquidityData ?? null,
+        ...buildKolAttributionRecord(position),
         smartV3LiveHardCutReentry: position.smartV3LiveHardCutReentry ?? false,
         smartV3HardCutParentPositionId: position.smartV3HardCutParentPositionId ?? null,
         smartV3HardCutAtMs: position.smartV3HardCutAtMs ?? null,
@@ -11491,6 +11494,7 @@ async function closeLivePosition(
         rotationScore: pos.rotationScore ?? null,
         rotationMaeFastFail: effectiveReason === 'rotation_mae_fast_fail',
         smartV3MaeFastFail: effectiveReason === 'smart_v3_mae_fast_fail',
+        ...buildKolAttributionRecord(pos),
         ...smartV3PreT1Telemetry,
       });
       trackTradeMarkout(
@@ -11538,6 +11542,7 @@ async function closeLivePosition(
             rotationScore: pos.rotationScore ?? null,
             rotationMaeFastFail: effectiveReason === 'rotation_mae_fast_fail',
             smartV3MaeFastFail: effectiveReason === 'smart_v3_mae_fast_fail',
+            ...buildKolAttributionRecord(pos),
             smartV3LiveHardCutReentry: pos.smartV3LiveHardCutReentry ?? false,
             smartV3HardCutParentPositionId: pos.smartV3HardCutParentPositionId ?? null,
             smartV3HardCutAtMs: pos.smartV3HardCutAtMs ?? null,

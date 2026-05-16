@@ -142,6 +142,8 @@ describe('kol live equivalence observability', () => {
     expect(report.json.paperDecisionIdCoverage).toBe(1);
     expect(report.json.paperRoleCoverage).toBe(1);
     expect(report.json.paperExecutionPlanCoverage).toBe(1);
+    expect(report.json.paperAttributedRowsWithExecutionPlan).toBe(2);
+    expect(report.json.paperAttributedExecutionPlanCoverage).toBe(1);
     expect(report.json.decisionAttributionWarnings).toEqual([]);
     expect(report.json.paperRoles).toEqual(expect.objectContaining({
       fallback_execution_safety: 1,
@@ -166,6 +168,192 @@ describe('kol live equivalence observability', () => {
     expect(report.md).toContain('| fallback_execution_safety | 1 | 1/0 | +0.0100 | +0.0120 | 25.0% |');
     expect(report.md).toContain('- attribution warnings: n/a');
     expect(report.md).toContain('| rotation_underfill_v1 | 1 | 0 | 0 | 1 | 1/0 | +0.0100 | +0.0120 | 25.0% | 0 | +0.0000 |');
+  });
+
+  it('infers legacy paper roles without mutating old close rows', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'kol-live-equivalence-legacy-role-'));
+    const now = new Date().toISOString();
+    await writeFile(path.join(dir, 'kol-live-equivalence.jsonl'), [
+      JSON.stringify({
+        schemaVersion: KOL_LIVE_EQUIVALENCE_SCHEMA_VERSION,
+        generatedAt: now,
+        candidateId: 'candidate-blocked-legacy',
+        tokenMint: 'mint-a',
+        armName: 'rotation_underfill_v1',
+        paperWouldEnter: true,
+        liveWouldEnter: false,
+        liveAttempted: false,
+        decisionStage: 'yellow_zone',
+        liveBlockReason: 'single_kol_live_not_enough',
+        source: 'runtime',
+      }),
+      JSON.stringify({
+        schemaVersion: KOL_LIVE_EQUIVALENCE_SCHEMA_VERSION,
+        generatedAt: now,
+        candidateId: 'candidate-live-legacy',
+        tokenMint: 'mint-b',
+        armName: 'rotation_underfill_v1',
+        paperWouldEnter: true,
+        liveWouldEnter: true,
+        liveAttempted: true,
+        decisionStage: 'pre_execution_live_allowed',
+        liveBlockReason: null,
+        source: 'runtime',
+      }),
+      JSON.stringify({
+        schemaVersion: KOL_LIVE_EQUIVALENCE_SCHEMA_VERSION,
+        generatedAt: now,
+        candidateId: 'candidate-research-legacy',
+        tokenMint: 'mint-c',
+        armName: 'rotation_underfill_v1',
+        paperWouldEnter: true,
+        liveWouldEnter: false,
+        liveAttempted: false,
+        decisionStage: 'default_paper',
+        liveBlockReason: 'default_paper',
+        source: 'runtime',
+      }),
+    ].join('\n') + '\n', 'utf8');
+    await writeFile(path.join(dir, 'kol-paper-trades.jsonl'), [
+      JSON.stringify({
+        positionId: 'legacy-fallback',
+        liveEquivalenceCandidateId: 'candidate-blocked-legacy',
+        closedAt: now,
+        armName: 'rotation_underfill_v1',
+        netSol: 0.01,
+        netSolTokenOnly: 0.01,
+        mfePctPeakTokenOnly: 0.10,
+      }),
+      JSON.stringify({
+        positionId: 'legacy-mirror',
+        liveEquivalenceCandidateId: 'candidate-live-legacy',
+        closedAt: now,
+        armName: 'rotation_underfill_v1',
+        netSol: 0.02,
+        netSolTokenOnly: 0.02,
+        mfePctPeakTokenOnly: 0.20,
+      }),
+      JSON.stringify({
+        positionId: 'legacy-research',
+        liveEquivalenceCandidateId: 'candidate-research-legacy',
+        closedAt: now,
+        armName: 'rotation_underfill_v1',
+        netSol: 0.50,
+        netSolTokenOnly: 0.50,
+        mfePctPeakTokenOnly: 1.00,
+      }),
+      JSON.stringify({
+        positionId: 'legacy-shadow',
+        liveEquivalenceCandidateId: 'candidate-blocked-legacy',
+        isShadowArm: true,
+        closedAt: now,
+        armName: 'rotation_underfill_v1',
+        netSol: 0.30,
+        netSolTokenOnly: 0.30,
+        mfePctPeakTokenOnly: 0.80,
+      }),
+      JSON.stringify({
+        positionId: 'legacy-unattributed',
+        closedAt: now,
+        armName: 'rotation_underfill_v1',
+        netSol: 0.70,
+        netSolTokenOnly: 0.70,
+        mfePctPeakTokenOnly: 1.20,
+      }),
+    ].join('\n') + '\n', 'utf8');
+
+    const report = await buildReport({
+      realtimeDir: dir,
+      sinceMs: Date.now() - 60_000,
+    });
+
+    expect(report.json.paperRowsWithPaperRole).toBe(0);
+    expect(report.json.paperRowsWithInferredPaperRole).toBe(4);
+    expect(report.json.paperRowsWithoutInferredPaperRole).toBe(1);
+    expect(report.json.paperRoleCoverage).toBe(0.8);
+    expect(report.json.paperAttributedRowsWithExecutionPlan).toBe(0);
+    expect(report.json.paperAttributedExecutionPlanCoverage).toBe(0);
+    expect(report.json.paperRoles).toEqual(expect.objectContaining({
+      fallback_execution_safety: 1,
+      mirror: 1,
+      research_arm: 1,
+      shadow: 1,
+    }));
+    expect(report.json.paperRoleOutcomes).toEqual(expect.objectContaining({
+      research_arm: expect.objectContaining({ closes: 1, netSol: 0.50 }),
+      shadow: expect.objectContaining({ closes: 1, netSol: 0.30 }),
+    }));
+    expect(report.json.decisionGapDrilldown).toEqual(expect.objectContaining({
+      blocked_with_comparable_paper_win: expect.objectContaining({
+        decisions: 1,
+        comparablePaperCloses: 1,
+        shadowPaperCloses: 1,
+        comparablePaperNetSol: 0.01,
+      }),
+      live_attempt_without_close_link: expect.objectContaining({
+        decisions: 1,
+        comparablePaperCloses: 1,
+      }),
+      blocked_research_or_shadow_only: expect.objectContaining({
+        decisions: 1,
+        researchPaperCloses: 1,
+        researchPaperNetSol: 0.50,
+      }),
+    }));
+    expect(report.md).toContain('| rotation_underfill_v1 | 3 | 1 | 1 | 2 | 2/0 | +0.0300 | +0.0300 | 15.0% | 0 | +0.0000 |');
+    expect(report.md).not.toContain('+0.8300');
+  });
+
+  it('drills down live losses against comparable paper wins', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'kol-live-equivalence-gap-'));
+    const now = new Date().toISOString();
+    await writeFile(path.join(dir, 'kol-live-equivalence.jsonl'), JSON.stringify({
+      schemaVersion: KOL_LIVE_EQUIVALENCE_SCHEMA_VERSION,
+      generatedAt: now,
+      candidateId: 'candidate-live-loss-paper-win',
+      tokenMint: 'mint-live-loss',
+      armName: 'rotation_underfill_v1',
+      profileArm: 'rotation_underfill_exit_flow_v1',
+      paperWouldEnter: true,
+      liveWouldEnter: true,
+      liveAttempted: true,
+      decisionStage: 'pre_execution_live_allowed',
+      source: 'runtime',
+    }) + '\n', 'utf8');
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), JSON.stringify({
+      positionId: 'paper-win',
+      liveEquivalenceCandidateId: 'candidate-live-loss-paper-win',
+      closedAt: now,
+      armName: 'rotation_underfill_v1',
+      profileArm: 'rotation_underfill_exit_flow_v1',
+      netSol: 0.02,
+      netSolTokenOnly: 0.021,
+      mfePctPeakTokenOnly: 0.25,
+    }) + '\n', 'utf8');
+    await writeFile(path.join(dir, 'rotation-v1-live-trades.jsonl'), JSON.stringify({
+      positionId: 'live-loss',
+      liveEquivalenceCandidateId: 'candidate-live-loss-paper-win',
+      closedAt: now,
+      armName: 'rotation_underfill_v1',
+      profileArm: 'rotation_underfill_exit_flow_v1',
+      netSol: -0.01,
+    }) + '\n', 'utf8');
+
+    const report = await buildReport({
+      realtimeDir: dir,
+      sinceMs: Date.now() - 60_000,
+    });
+
+    expect(report.json.decisionGapDrilldown).toEqual(expect.objectContaining({
+      live_loss_comparable_paper_win: expect.objectContaining({
+        decisions: 1,
+        comparablePaperCloses: 1,
+        liveCloses: 1,
+        comparablePaperNetSol: 0.02,
+        liveNetSol: -0.01,
+      }),
+    }));
+    expect(report.md).toContain('| live_loss_comparable_paper_win | 1 | 1 | 0 | 0 | 1 | +0.0200 | +0.0000 | -0.0100 |');
   });
 
   it('groups promoted underfill + exit-flow rows by profile arm', async () => {

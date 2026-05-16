@@ -1940,6 +1940,13 @@ describe('kolSignalHandler — state machine', () => {
       const positions = __testGetActive();
       expect(positions).toHaveLength(1);
       expect(positions[0].armName).toBe('rotation_underfill_v1');
+      const positionAtEntry = positions[0];
+      expect(positionAtEntry.liveEquivalenceCandidateId).toBeTruthy();
+      expect(positionAtEntry.liveEquivalenceDecisionId).toBeTruthy();
+      expect(positionAtEntry.executionPlanSnapshot).toEqual(expect.objectContaining({
+        candidateId: positionAtEntry.liveEquivalenceCandidateId,
+        decisionId: positionAtEntry.liveEquivalenceDecisionId,
+      }));
 
       mockAppendFile.mockClear();
       stubFeed.emitTick(MINT_ROTATION, 0.00105);
@@ -1968,6 +1975,15 @@ describe('kolSignalHandler — state machine', () => {
       expect(row.rotationMonetizableCostRatio).toBeLessThan(0.06);
       expect(row.wouldLivePassExecutionGuard).toBe(true);
       expect(row.liveCostShadowReason).toBe('rotation_monetizable_edge_pass');
+      expect(row.liveEquivalenceCandidateId).toBe(positionAtEntry.liveEquivalenceCandidateId);
+      expect(row.liveEquivalenceDecisionId).toBe(positionAtEntry.liveEquivalenceDecisionId);
+      expect(row.liveEquivalenceDecisionAction).toBe(positionAtEntry.liveEquivalenceDecisionAction);
+      expect(row.paperRole).toBe(positionAtEntry.paperRole);
+      expect(row.executionPlanSnapshot).toEqual(expect.objectContaining({
+        mode: 'paper',
+        candidateId: positionAtEntry.liveEquivalenceCandidateId,
+        decisionId: positionAtEntry.liveEquivalenceDecisionId,
+      }));
       expect(row.extras.entryReason).toBe('rotation_v1');
       expect(row.extras.armName).toBe('rotation_underfill_v1');
       expect(row.extras.rotationMonetizableEdge.pass).toBe(true);
@@ -1975,6 +1991,14 @@ describe('kolSignalHandler — state machine', () => {
       expect(row.extras.exitPrice).toBeCloseTo(0.00102, 10);
       expect(row.extras.maxPrice).toBeCloseTo(0.00105, 10);
       expect(row.extras.rotationAnchorKols).toEqual(['decu']);
+      expect(row.extras.liveEquivalenceCandidateId).toBe(positionAtEntry.liveEquivalenceCandidateId);
+      expect(row.extras.liveEquivalenceDecisionId).toBe(positionAtEntry.liveEquivalenceDecisionId);
+      expect(row.extras.paperRole).toBe(positionAtEntry.paperRole);
+      expect(row.extras.executionPlanSnapshot).toEqual(expect.objectContaining({
+        mode: 'paper',
+        candidateId: positionAtEntry.liveEquivalenceCandidateId,
+        decisionId: positionAtEntry.liveEquivalenceDecisionId,
+      }));
 
       const projectionRows = mockAppendFile.mock.calls
         .filter((call) => typeof call[0] === 'string' && call[0].includes('rotation-v1-paper-trades.jsonl'))
@@ -1985,6 +2009,13 @@ describe('kolSignalHandler — state machine', () => {
       expect(projectionRows[0].mfePct).toBeCloseTo(row.mfePct, 10);
       expect(projectionRows[0].maxPrice).toBeCloseTo(row.maxPrice, 10);
       expect(projectionRows[0].extras.armName).toBe('rotation_underfill_v1');
+      expect(projectionRows[0].liveEquivalenceCandidateId).toBe(positionAtEntry.liveEquivalenceCandidateId);
+      expect(projectionRows[0].liveEquivalenceDecisionId).toBe(positionAtEntry.liveEquivalenceDecisionId);
+      expect(projectionRows[0].executionPlanSnapshot).toEqual(expect.objectContaining({
+        mode: 'paper',
+        candidateId: positionAtEntry.liveEquivalenceCandidateId,
+        decisionId: positionAtEntry.liveEquivalenceDecisionId,
+      }));
     });
 
     it('rotation-underfill: paper close 에 exit sell quote proof 를 남긴다', async () => {
@@ -4009,6 +4040,14 @@ describe('kolSignalHandler — state machine', () => {
 
       const live = __testGetActive().find((p) => p.isLive === true)!;
       expect(live?.armName).toBe('rotation_chase_topup_v1');
+      const equivalence = liveEquivalenceRecords().find((row) => row.liveAttempted === true);
+      expect(live.liveEquivalenceCandidateId).toBe(equivalence?.candidateId);
+      expect(live.liveEquivalenceDecisionId).toBe(equivalence?.decisionId);
+      expect(live.executionPlanSnapshot).toEqual(expect.objectContaining({
+        mode: 'live',
+        candidateId: equivalence?.candidateId,
+        decisionId: equivalence?.decisionId,
+      }));
       live.entryTimeSec -= 6;
       __testTriggerTick(live.positionId, live.entryPrice * 0.965);
       await flushAsync();
@@ -4024,6 +4063,33 @@ describe('kolSignalHandler — state machine', () => {
         .map((call) => JSON.parse(String(call[1]).trim()));
       expect(sellRows.at(-1)?.exitReason).toBe('rotation_mae_fast_fail');
       expect(sellRows.at(-1)?.rotationMaeFastFail).toBe(true);
+      expect(sellRows.at(-1)?.liveEquivalenceCandidateId).toBe(equivalence?.candidateId);
+      expect(sellRows.at(-1)?.liveEquivalenceDecisionId).toBe(equivalence?.decisionId);
+      expect(sellRows.at(-1)?.paperRole).toBeNull();
+      expect(sellRows.at(-1)?.executionPlanSnapshot).toEqual(expect.objectContaining({
+        mode: 'live',
+        candidateId: equivalence?.candidateId,
+        decisionId: equivalence?.decisionId,
+      }));
+      const liveRows = mockAppendFile.mock.calls
+        .filter((call) => typeof call[0] === 'string' && call[0].includes('kol-live-trades.jsonl'))
+        .map((call) => JSON.parse(String(call[1]).trim()));
+      expect(liveRows).toHaveLength(1);
+      expect(liveRows[0].liveEquivalenceCandidateId).toBe(equivalence?.candidateId);
+      expect(liveRows[0].liveEquivalenceDecisionId).toBe(equivalence?.decisionId);
+      expect(liveRows[0].paperRole).toBeNull();
+      expect(liveRows[0].executionPlanSnapshot).toEqual(expect.objectContaining({
+        mode: 'live',
+        candidateId: equivalence?.candidateId,
+        decisionId: equivalence?.decisionId,
+      }));
+      expect(liveRows[0].extras.liveEquivalenceCandidateId).toBe(equivalence?.candidateId);
+      expect(liveRows[0].extras.liveEquivalenceDecisionId).toBe(equivalence?.decisionId);
+      expect(liveRows[0].extras.executionPlanSnapshot).toEqual(expect.objectContaining({
+        mode: 'live',
+        candidateId: equivalence?.candidateId,
+        decisionId: equivalence?.decisionId,
+      }));
     });
 
     it('rotation-underfill: chase live canary on 이어도 underfill 은 paper-only 로 남긴다', async () => {

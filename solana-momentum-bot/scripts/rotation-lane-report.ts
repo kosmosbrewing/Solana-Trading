@@ -2863,10 +2863,22 @@ function buildPosthocSecondKolRouteProofGates(
 }
 
 function buildPosthocSecondKolRecoveryBacklog(
-  gates: PosthocSecondKolRouteProofGate[]
+  gates: PosthocSecondKolRouteProofGate[],
+  routeProofFreshness?: RouteProofFreshnessStats
 ): PosthocSecondKolRecoveryBacklogItem[] {
   return gates.map((gate) => {
     const liveStance = 'live blocked; report-only evidence only';
+    if (routeProofFreshness?.verdict === 'WAIT_FRESH_CLOSES') {
+      return {
+        cohort: gate.cohort,
+        priority: 'P2',
+        status: 'WAIT_SAMPLE',
+        nextSprint: 'collect_fresh_underfill_closes',
+        evidenceGap: `freshUnderfill=${routeProofFreshness.freshRows}/${routeProofFreshness.minRequiredFreshRows}`,
+        requiredBeforeLive: 'collect fresh post-deploy underfill closes with exit quote/liquidity and security evidence',
+        liveStance,
+      };
+    }
     if (gate.rows === 0) {
       return {
         cohort: gate.cohort,
@@ -8673,7 +8685,8 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
     assumedNetworkFeeSol
   );
   const posthocSecondKolRecoveryBacklog = buildPosthocSecondKolRecoveryBacklog(
-    posthocSecondKolRouteProofGates
+    posthocSecondKolRouteProofGates,
+    routeProofFreshness
   );
   const paperCohortValidity = buildPaperCohortValidityStats(rotationPaperRows);
   const reviewCohortGenerationAudit = buildReviewCohortGenerationAuditStats(rotationPaperRows);

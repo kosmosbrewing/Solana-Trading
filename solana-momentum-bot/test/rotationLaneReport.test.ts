@@ -1263,6 +1263,82 @@ describe('rotation-lane-report', () => {
     expect(markdown).toContain('posthoc_2nd_kol_secondKOL<=30s');
   });
 
+  it('does not turn historical posthoc route gaps into a new code TODO while waiting for fresh closes', async () => {
+    await writeFile(path.join(dir, 'current-session.json'), JSON.stringify({
+      version: 1,
+      startedAt: '2026-05-02T01:00:00.000Z',
+      tradingMode: 'live',
+    }));
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([
+      {
+        strategy: 'kol_hunter',
+        lane: 'kol_hunter',
+        armName: 'rotation_underfill_v1',
+        profileArm: 'rotation_underfill_cost_aware_exit_v2',
+        entryArm: 'rotation_underfill_v1',
+        kolEntryReason: 'rotation_v1',
+        positionId: 'historical-posthoc-route-gap',
+        liveEquivalenceCandidateId: 'historical-posthoc-route-gap-candidate',
+        closedAt: '2026-05-02T00:01:00.000Z',
+        exitReason: 'winner_trailing_t1',
+        holdSec: 24,
+        netSol: 0.001,
+        netSolTokenOnly: 0.0012,
+        mfePctPeak: 0.2,
+        rotationMonetizableEdge: { pass: true, costRatio: 0.04 },
+        kols: [
+          { id: 'kol-a', timestamp: '2026-05-02T00:00:00.000Z' },
+          { id: 'kol-b', timestamp: '2026-05-02T00:00:08.000Z' },
+        ],
+        survivalFlags: [
+          'ROTATION_UNDERFILL_KOLS_1',
+          'EXIT_LIQUIDITY_UNKNOWN',
+          'TOKEN_QUALITY_UNKNOWN',
+        ],
+        independentKolCount: 1,
+      },
+    ]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [15, 30],
+      roundTripCostPct: 0.005,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.routeProofFreshness).toMatchObject({
+      verdict: 'WAIT_FRESH_CLOSES',
+      cutoffSource: 'current_session',
+      freshRows: 0,
+      minRequiredFreshRows: 30,
+    });
+    expect(report.posthocSecondKolRouteProofGates.find((row) =>
+      row.cohort === 'posthoc_2nd_kol_secondKOL<=15s'
+    )).toMatchObject({
+      verdict: 'ROUTE_PROOF_MISSING',
+      rows: 1,
+      recoveryHint: 'record_exit_quote_and_security_evidence',
+    });
+    expect(report.posthocSecondKolRecoveryBacklog.find((row) =>
+      row.cohort === 'posthoc_2nd_kol_secondKOL<=15s'
+    )).toMatchObject({
+      priority: 'P2',
+      status: 'WAIT_SAMPLE',
+      nextSprint: 'collect_fresh_underfill_closes',
+      evidenceGap: 'freshUnderfill=0/30',
+      requiredBeforeLive: 'collect fresh post-deploy underfill closes with exit quote/liquidity and security evidence',
+      liveStance: 'live blocked; report-only evidence only',
+    });
+
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('collect_fresh_underfill_closes');
+    expect(markdown).not.toContain('record_exit_quote_and_security_evidence | exitUnknown=1/1');
+  });
+
   it('marks posthoc second-KOL as paper candidate only after sufficient wait-proxy evidence', async () => {
     const rows = Array.from({ length: 50 }, (_, index) => {
       const timestampPrefix = `2026-05-02T00:${String(index).padStart(2, '0')}`;

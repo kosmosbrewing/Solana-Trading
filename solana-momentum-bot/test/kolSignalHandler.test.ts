@@ -3315,8 +3315,21 @@ describe('kolSignalHandler — state machine', () => {
       expect(live?.kolEntryReason).toBe('velocity');
       const equivalence = liveEquivalenceRecords().find((row) => row.liveAttempted === true);
       expect(live?.liveEquivalenceCandidateId).toBe(equivalence?.candidateId);
+      expect(live?.liveEquivalenceDecisionId).toBe(equivalence?.decisionId);
+      expect(live?.liveEquivalenceDecisionAction).toBe('enter');
+      expect(live?.paperRole).toBeNull();
       expect(live?.liveEquivalenceDecisionStage).toBe('pre_execution_live_allowed');
       expect(live?.liveEquivalenceLiveWouldEnter).toBe(true);
+      expect(live?.executionPlanSnapshot).toEqual(expect.objectContaining({
+        schemaVersion: 'kol-execution-plan/v1',
+        mode: 'live',
+        candidateId: equivalence?.candidateId,
+        decisionId: equivalence?.decisionId,
+      }));
+      expect(equivalence).toEqual(expect.objectContaining({
+        decisionAction: 'enter',
+        paperRole: null,
+      }));
       expect(live?.survivalFlags).toEqual(expect.arrayContaining([
         'SMART_V3_FRESH_KOLS_2',
         'SMART_V3_FRESH_STRONG_KOLS_2',
@@ -4970,8 +4983,21 @@ describe('kolSignalHandler — state machine', () => {
       const equivalence = liveEquivalenceRecords().find((row) =>
         row.liveBlockFlags.includes('YELLOW_ZONE_MIN_KOL')
       );
+      expect(positions[0].liveEquivalenceDecisionId).toBe(equivalence?.decisionId);
+      expect(positions[0].liveEquivalenceDecisionAction).toBe('block');
+      expect(positions[0].paperRole).toBe('fallback_execution_safety');
+      expect(positions[0].executionPlanSnapshot).toEqual(expect.objectContaining({
+        schemaVersion: 'kol-execution-plan/v1',
+        mode: 'paper',
+        candidateId: equivalence?.candidateId,
+        decisionId: equivalence?.decisionId,
+      }));
       expect(equivalence?.paperWouldEnter).toBe(true);
       expect(equivalence?.liveWouldEnter).toBe(false);
+      expect(equivalence).toEqual(expect.objectContaining({
+        decisionAction: 'block',
+        paperRole: 'fallback_execution_safety',
+      }));
       expect(equivalence?.liveBlockFlags).not.toContain('SMART_V3_STRATEGY_NO_PAPER_FALLBACK');
     });
 

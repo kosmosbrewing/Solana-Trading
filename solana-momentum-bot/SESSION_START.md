@@ -65,6 +65,7 @@ npm run check:fast
 ## 4. 5 분 안에 알아야 할 것
 
 ### 최근 무엇을 했나
+- **2026-05-16** — **historical loss / paper-shadow promotion 기준 고정**. 500+ close historical 손실을 live 정책으로 직접 승격하지 않고, `npm run kol:historical-loss-report` 의 report-only pipeline 으로 `Promotion Watchlist` → `Paper Shadow Fresh Readiness` → `Paper Shadow Fresh Counters` 를 확인한다. 운영 분석은 항상 `bash scripts/sync-vps-data.sh` 이후 같은 시점의 `data/realtime` 로 재생성한다. `READY_FOR_LIVE_REVIEW` 또는 `READY_FRESH_REVIEW` 전에는 live 반영 금지. 현재 실제 데이터 기준 liveReview=0, smart-v3 `SMART_V3_LAST_BUY_AGE_3S` 는 paper-shadow-only/fresh rows 0, rotation `ROTATION_V1_SMALL_BUYS_3 + ROTATION_V1_SCORE_0.80` 은 3d/7d rows 3 이지만 24h rows 0 으로 `STALE_NO_24H_ROWS`.
 - **2026-05-14** — **wallet hard floor 0.6 SOL 완화**. 운영자가 기존 0.7 SOL threshold 근접으로 live evidence 수집이 닫힐 위험을 승인하고 `WALLET_STOP_MIN_SOL` default 를 0.6 으로 낮췄다. Yellow-zone paper fallback 하한도 `KOL_HUNTER_YELLOW_ZONE_PAPER_FALLBACK_BELOW_SOL=0.60` 으로 맞춰 0.60~0.85 SOL 구간에서는 promoted arm별 live 기준을 계속 적용한다. Ticket/KOL cap/drift halt/max concurrent/security hard reject 는 변경 없음.
 - **2026-05-14** — **rotation cost-aware exit v2 paper shadow 추가**. `rotation_underfill_cost_aware_exit_v2` 는 `rotation_underfill_v1` entry 를 유지하되 실제 post-cost friction 을 반영해 T1/trail/floor 를 더 보수적으로 잡는 paper-only 비교 arm 이다. 현재 live 승격 금지이며, `rotation_underfill_exit_flow_v1` live canary 의 대체 후보로만 관측한다.
 - **2026-05-14** — **KOL live close/orphan alert 의미 정리**. `kol_live_close_failed` 는 sell retry 후에도 잔고가 남아 OPEN 유지되는 상태, `kol_live_orphan` 은 2회 이상 zero-balance 확인 뒤 terminal close, `kol_live_close_no_db` 는 DB row 가 없어 manual reconcile 이 필요한 경우다. Retained tail ledger-only close 는 더 이상 `NO_DB_RECORD` 로 보지 않는다.
@@ -149,6 +150,7 @@ npm run env:generate            # generated 카탈로그 재생성
 # 운영 / 분석
 npm run ops:canary:eval         # Stage 2/3 trade 결과 평가
 npm run kol:shadow-eval         # Phase 2 KOL Discovery go/no-go
+npm run kol:historical-loss-report -- --realtime-dir data/realtime --min-rows 20 --max-p90-mfe 0.03 --md reports/historical-loss-miner-$(date -u +%F).md --json reports/historical-loss-miner-$(date -u +%F).json
 npm run kol:smart-v3-evidence-report -- --since 24h --realtime-dir data/realtime
 npm run kol:capitulation-report -- --since 24h --realtime-dir data/realtime
 

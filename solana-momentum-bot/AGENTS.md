@@ -30,18 +30,20 @@
 - 운영 분석은 먼저 `bash scripts/sync-vps-data.sh`를 실행해 로컬 `data/`, `logs/`, `reports/`를 같은 시점으로 맞춘다.
 - DB trades dump 는 기본 사용 금지. 필요할 때만 `RUN_TRADES_DUMP=true bash scripts/sync-vps-data.sh`로 opt-in 한다.
 - Helius `getTransfersByAddress` 기반 `data/research/kol-transfers.jsonl` 은 로컬 분석 캐시다. `sync-vps-data.sh`는 이 파일을 기본 rsync 제외하고 API를 호출하지 않는다. stale 경고가 뜨면 `npm run kol:transfer-refresh`를 별도 sidecar로 실행한다.
+- historical paper-shadow / promotion 판단은 sync 후 `npm run kol:historical-loss-report -- --realtime-dir data/realtime --min-rows 20 --max-p90-mfe 0.03 --md reports/historical-loss-miner-$(date -u +%F).md --json reports/historical-loss-miner-$(date -u +%F).json` 를 실행해 같은 시점의 fresh window 로 본다.
 - 분석 기준 산출물은 아래 순서로 본다.
   1. `sync-health` daily report — 파일 freshness / row count / missing artifact 확인. `logs/bot.log`가 30분 이상 stale 이면 결론 보류.
-  2. `kol-live-canary` daily report — live canary wallet-truth, net SOL, actual 5x, Phase 4 gate. `phase4=PAUSE_REVIEW`면 승격 금지.
-  3. `kol-transfer-posterior` daily report — KOL별 rotation/smart-v3 fit posterior. 진단 전용이며 precise swap PnL 이 아니므로 정책 승격 전 gTFA drill-down 이 필요하다.
-  4. `smart-v3-evidence` daily report — smart-v3 projection + shared T+ 기반 cohort verdict. `minCov`는 close-anchor coverage이며, W/L은 copyable/wallet-first다.
-  5. `kol-live-equivalence` daily report — paper candidate 가 live 에서 막힌 게이트/사유와 해당 paper 성과를 후보 ID로 join 한다. live 승격/강등 논의의 1차 근거다.
-  6. `trade-markout` / `pure_ws` / `rotation` / `capitulation-rebound` daily reports — 실제 buy/sell/paper anchor 이후 T+ 관측률과 continuation. `coverage < 80%`이면 T+ 기반 결론은 보류한다. `capitulation-rebound`는 paper-only liquidity-shock 실험이며 live 승격 근거가 아니다.
-  7. `winner-kill` daily report — close 후 5x winner-kill rate. winner-kill 존재 시 exit/tail 정책을 먼저 검토한다.
-  8. `token-quality` daily report — token-quality / dev-candidate cohort. `observations=0`이면 dev-quality 결론 금지.
-  9. `kol-paper-arms` daily report — paper/shadow arm 비교. live 결정보다 낮은 권위.
+  2. `historical-loss-miner` report — `Promotion Watchlist`, `Paper Shadow Fresh Readiness`, `Paper Shadow Fresh Counters` 순서로 live-review/paper-shadow/wait-fresh/reject 를 본다. `READY_FOR_LIVE_REVIEW` 또는 `READY_FRESH_REVIEW`가 아니면 live 승격 금지.
+  3. `kol-live-canary` daily report — live canary wallet-truth, net SOL, actual 5x, Phase 4 gate. `phase4=PAUSE_REVIEW`면 승격 금지.
+  4. `kol-transfer-posterior` daily report — KOL별 rotation/smart-v3 fit posterior. 진단 전용이며 precise swap PnL 이 아니므로 정책 승격 전 gTFA drill-down 이 필요하다.
+  5. `smart-v3-evidence` daily report — smart-v3 projection + shared T+ 기반 cohort verdict. `minCov`는 close-anchor coverage이며, W/L은 copyable/wallet-first다.
+  6. `kol-live-equivalence` daily report — paper candidate 가 live 에서 막힌 게이트/사유와 해당 paper 성과를 후보 ID로 join 한다. live 승격/강등 논의의 1차 근거다.
+  7. `trade-markout` / `pure_ws` / `rotation` / `capitulation-rebound` daily reports — 실제 buy/sell/paper anchor 이후 T+ 관측률과 continuation. `coverage < 80%`이면 T+ 기반 결론은 보류한다. `capitulation-rebound`는 paper-only liquidity-shock 실험이며 live 승격 근거가 아니다.
+  8. `winner-kill` daily report — close 후 5x winner-kill rate. winner-kill 존재 시 exit/tail 정책을 먼저 검토한다.
+  9. `token-quality` daily report — token-quality / dev-candidate cohort. `observations=0`이면 dev-quality 결론 금지.
+  10. `kol-paper-arms` daily report — paper/shadow arm 비교. live 결정보다 낮은 권위.
 - 운영 판정은 wallet truth 를 우선한다. DB PnL 단독 판정 금지.
-- 표준 판정 축: sync freshness, KOL transfer posterior freshness, current session 이후 entry 유무, live closed/open/orphan, net SOL / max drawdown, actual MFE/T1/T2/5x, smart-v3 evidence verdict, live-equivalence block reason, rotation/pure_ws/capitulation paper verdict, buy/sell T+ markout coverage/continuation, winner-kill, token-quality observations, wallet drift, recent ERROR/WARN.
+- 표준 판정 축: sync freshness, historical-loss promotion watchlist/fresh readiness/fresh counters, KOL transfer posterior freshness, current session 이후 entry 유무, live closed/open/orphan, net SOL / max drawdown, actual MFE/T1/T2/5x, smart-v3 evidence verdict, live-equivalence block reason, rotation/pure_ws/capitulation paper verdict, buy/sell T+ markout coverage/continuation, winner-kill, token-quality observations, wallet drift, recent ERROR/WARN.
 - 한 줄 판정은 `OK / WATCH / PAUSE_REVIEW / INVESTIGATE` 중 하나로 끝낸다.
 
 ---

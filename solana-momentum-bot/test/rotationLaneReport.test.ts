@@ -627,17 +627,20 @@ describe('rotation-lane-report', () => {
     });
     expect(report.reviewCohortGenerationAudit).toMatchObject({
       cohort: 'route_known_2kol_cost_aware',
+      diagnosis: 'BLOCKED_BY_CANDIDATE_ID',
       underfillRows: 4,
       routeKnownRows: 3,
       routeKnownTwoPlusRows: 1,
       routeKnownCostAwareRows: 1,
+      singleKolRouteKnownCostAwareRows: 0,
       reviewRows: 1,
       missingRouteProofRows: 1,
       missingCandidateIdRows: 4,
+      reviewMissingCandidateIdRows: 1,
+      reviewMissingParticipantTimestampRows: 1,
     });
     for (const reason of [
       'NO_SELL_ROUTE',
-      'DECIMALS_SECURITY_CLIENT',
       'TOKEN_QUALITY_UNKNOWN',
       'NO_SECURITY_DATA',
       'JUPITER_429',
@@ -647,6 +650,8 @@ describe('rotation-lane-report', () => {
         losses: 1,
       });
     }
+    expect(report.routeUnknownReasons.find((row) => row.reason === 'DECIMALS_SECURITY_CLIENT')).toBeUndefined();
+    expect(report.routeUnknownReasons.find((row) => row.reason === 'SECURITY_CLIENT')).toBeUndefined();
     expect(report.compoundProfiles.find((row) => row.cohort === 'route_known_2kol_cost_aware')).toMatchObject({
       rows: 1,
       postCostPositiveRate: 1,
@@ -678,6 +683,7 @@ describe('rotation-lane-report', () => {
     expect(markdown).toContain('## Posthoc Second-KOL Candidate Decision');
     expect(markdown).toContain('## Paper Cohort Validity');
     expect(markdown).toContain('## Review Cohort Generation Audit');
+    expect(markdown).toContain('diagnosis: BLOCKED_BY_CANDIDATE_ID');
     expect(markdown).toContain('## Review Cohort Evidence');
     expect(markdown).toContain('## Rotation Compound Profile');
     expect(markdown).toContain('## Rotation Paper Compound Readiness');
@@ -688,6 +694,389 @@ describe('rotation-lane-report', () => {
     expect(markdown).toContain('WAIT_PAPER_EVIDENCE');
     expect(markdown).toContain('route_known_2kol_cost_aware');
     expect(markdown).toContain('Report-only');
+  });
+
+  it('diagnoses single-KOL route-known cost-aware underfill as blocked before promotion review', async () => {
+    await writeFile(path.join(dir, 'kol-paper-trades.jsonl'), jsonl(
+      Array.from({ length: 3 }, (_, index) => ({
+        strategy: 'kol_hunter',
+        lane: 'kol_hunter',
+        armName: 'rotation_underfill_cost_aware_exit_v2',
+        profileArm: 'rotation_underfill_cost_aware_exit_v2',
+        entryArm: 'rotation_underfill_v1',
+        kolEntryReason: 'rotation_v1',
+        positionId: `single-route-known-${index}`,
+        liveEquivalenceCandidateId: `single-route-known-candidate-${index}`,
+        closedAt: `2026-05-02T00:0${index}:00.000Z`,
+        exitReason: 'winner_trailing_t1',
+        holdSec: 30,
+        netSol: 0.001,
+        netSolTokenOnly: 0.001,
+        mfePctPeak: 0.1,
+        routeFound: true,
+        rotationMonetizableEdge: { pass: true, costRatio: 0.04 },
+        kols: [
+          { id: 'kol-a', timestamp: `2026-05-02T00:0${index}:00.000Z` },
+        ],
+        survivalFlags: ['ROTATION_UNDERFILL_KOLS_1', 'ROTATION_COST_AWARE_EXIT_V2'],
+      }))
+    ));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [15],
+      roundTripCostPct: 0.005,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.reviewCohortGenerationAudit).toMatchObject({
+      cohort: 'route_known_2kol_cost_aware',
+      diagnosis: 'BLOCKED_BY_2KOL_ABSENCE',
+      underfillRows: 3,
+      routeKnownRows: 3,
+      routeKnownTwoPlusRows: 0,
+      routeKnownCostAwareRows: 3,
+      singleKolRouteKnownCostAwareRows: 3,
+      reviewRows: 0,
+    });
+    expect(report.rotationPaperCompoundReadiness).toMatchObject({
+      verdict: 'BLOCKED',
+      cohort: 'route_known_2kol_cost_aware',
+      closes: 0,
+    });
+
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('diagnosis: BLOCKED_BY_2KOL_ABSENCE');
+    expect(markdown).toContain('do not promote the 1-KOL route-known cost-aware edge');
+  });
+
+  it('joins single-KOL underfill closes to same-token KOL tx flow for second-KOL opportunity review', async () => {
+    const tokenMint = 'SecondKolOpportunity11111111111111111111111';
+    await writeFile(path.join(dir, 'kol-paper-trades.jsonl'), jsonl([
+      {
+        strategy: 'kol_hunter',
+        lane: 'kol_hunter',
+        armName: 'rotation_underfill_cost_aware_exit_v2',
+        profileArm: 'rotation_underfill_cost_aware_exit_v2',
+        entryArm: 'rotation_underfill_v1',
+        kolEntryReason: 'rotation_v1',
+        positionId: 'single-route-known-cost-aware',
+        liveEquivalenceCandidateId: 'single-route-known-cost-aware-candidate',
+        tokenMint,
+        closedAt: '2026-05-02T00:01:00.000Z',
+        exitReason: 'winner_trailing_t1',
+        holdSec: 30,
+        netSol: 0.001,
+        netSolTokenOnly: 0.001,
+        mfePctPeak: 0.12,
+        routeFound: true,
+        rotationMonetizableEdge: { pass: true, costRatio: 0.04 },
+        kols: [
+          { id: 'kol-a', timestamp: '2026-05-02T00:00:00.000Z' },
+        ],
+        independentKolCount: 1,
+        survivalFlags: ['ROTATION_UNDERFILL_KOLS_1', 'ROTATION_COST_AWARE_EXIT_V2'],
+      },
+    ]));
+    await writeFile(path.join(dir, 'kol-tx.jsonl'), jsonl([
+      {
+        kolId: 'kol-a',
+        tier: 'A',
+        tokenMint,
+        action: 'buy',
+        timestamp: '2026-05-02T00:00:00.000Z',
+        solAmount: 0.1,
+      },
+      {
+        kolId: 'kol-b',
+        tier: 'A',
+        tokenMint,
+        action: 'buy',
+        timestamp: '2026-05-02T00:00:12.000Z',
+        solAmount: 0.12,
+      },
+    ]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [15, 30],
+      roundTripCostPct: 0.005,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.rotationSecondKolOpportunityFunnel).toMatchObject({
+      verdict: 'SECOND_KOL_LINKAGE_GAP',
+      underfillRows: 1,
+      singleKolRows: 1,
+      rowsWithToken: 1,
+      rowsWithEntryTime: 1,
+      rowsWithTxCoverage: 1,
+      routeKnownCostAwareSingleRows: 1,
+      secondKolSeenRows: 1,
+      secondKolWithin15Rows: 1,
+      secondKolWithin30Rows: 1,
+      secondKolWithin60Rows: 1,
+      routeKnownCostAwareSecondWithin30Rows: 1,
+      potentialReviewRows: 1,
+      trueSingleRows: 0,
+    });
+    expect(report.rotationSecondKolOpportunityFunnel.topSecondKols).toEqual([
+      { kol: 'kol-b', count: 1 },
+    ]);
+    expect(report.rotationSecondKolPromotionGap).toMatchObject({
+      verdict: 'REVIEW_CANDIDATES_EXIST',
+      rows: 1,
+      routeProofRows: 1,
+      routeUnknownRows: 0,
+      costAwareRows: 1,
+      routeKnownCostAwareRows: 1,
+      routeKnownMissingCostAwareRows: 0,
+      costAwareRouteUnknownRows: 0,
+      candidateIdRows: 1,
+      participantTimestampRows: 1,
+      medianSecondKolDelaySec: 12,
+      medianMfePct: 0.12,
+    });
+
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('## Rotation 2nd-KOL Opportunity Funnel');
+    expect(markdown).toContain('SECOND_KOL_LINKAGE_GAP');
+    expect(markdown).toContain('kol-b:1');
+    expect(markdown).toContain('## Rotation 2nd-KOL Promotion Gap');
+    expect(markdown).toContain('REVIEW_CANDIDATES_EXIST');
+  });
+
+  it('explains second-KOL <=30s rows blocked by missing cost-aware shadow closes', async () => {
+    const tokenMint = 'SecondKolMissingCostAware111111111111111111';
+    await writeFile(path.join(dir, 'kol-paper-trades.jsonl'), jsonl([
+      {
+        strategy: 'kol_hunter',
+        lane: 'kol_hunter',
+        armName: 'rotation_underfill_v1',
+        profileArm: 'rotation_underfill_exit_flow_v1',
+        entryArm: 'rotation_underfill_v1',
+        kolEntryReason: 'rotation_v1',
+        positionId: 'single-route-known-no-cost-aware',
+        liveEquivalenceCandidateId: 'single-route-known-no-cost-aware-candidate',
+        tokenMint,
+        closedAt: '2026-05-02T00:01:00.000Z',
+        exitReason: 'winner_trailing_t1',
+        holdSec: 30,
+        netSol: 0.001,
+        netSolTokenOnly: 0.001,
+        mfePctPeak: 0.12,
+        routeFound: true,
+        kols: [
+          { id: 'kol-a', timestamp: '2026-05-02T00:00:00.000Z' },
+        ],
+        independentKolCount: 1,
+        survivalFlags: ['ROTATION_UNDERFILL_KOLS_1'],
+      },
+    ]));
+    await writeFile(path.join(dir, 'kol-tx.jsonl'), jsonl([
+      {
+        kolId: 'kol-b',
+        tier: 'A',
+        tokenMint,
+        action: 'buy',
+        timestamp: '2026-05-02T00:00:12.000Z',
+        solAmount: 0.12,
+      },
+    ]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [15, 30],
+      roundTripCostPct: 0.005,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.rotationSecondKolPromotionGap).toMatchObject({
+      verdict: 'BLOCKED_BY_COST_AWARE',
+      rows: 1,
+      routeProofRows: 1,
+      routeUnknownRows: 0,
+      costAwareRows: 0,
+      routeKnownCostAwareRows: 0,
+      routeKnownMissingCostAwareRows: 1,
+      costAwareRouteUnknownRows: 0,
+    });
+    expect(report.rotationSecondKolPromotionGap.topMissingCostAwareArms).toEqual([
+      { arm: 'rotation_underfill_exit_flow_v1', count: 1 },
+    ]);
+
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('BLOCKED_BY_COST_AWARE');
+    expect(markdown).toContain('rotation_underfill_exit_flow_v1:1');
+  });
+
+  it('classifies second-KOL <=30s route-proof gaps by recovery hint', async () => {
+    const tokenMint = 'SecondKolRouteProofGap11111111111111111111';
+    await writeFile(path.join(dir, 'kol-paper-trades.jsonl'), jsonl([
+      {
+        strategy: 'kol_hunter',
+        lane: 'kol_hunter',
+        armName: 'rotation_underfill_v1',
+        profileArm: 'rotation_underfill_cost_aware_exit_v2',
+        entryArm: 'rotation_underfill_v1',
+        kolEntryReason: 'rotation_v1',
+        positionId: 'single-route-unknown-cost-aware',
+        liveEquivalenceCandidateId: 'single-route-unknown-cost-aware-candidate',
+        tokenMint,
+        closedAt: '2026-05-02T00:01:00.000Z',
+        exitReason: 'winner_trailing_t1',
+        holdSec: 30,
+        netSol: 0.001,
+        netSolTokenOnly: 0.001,
+        mfePctPeak: 0.12,
+        kols: [
+          { id: 'kol-a', timestamp: '2026-05-02T00:00:00.000Z' },
+        ],
+        independentKolCount: 1,
+        survivalFlags: [
+          'ROTATION_UNDERFILL_KOLS_1',
+          'ROTATION_COST_AWARE_EXIT_V2',
+          'EXIT_LIQUIDITY_UNKNOWN',
+          'DECIMALS_SECURITY_CLIENT',
+          'TOKEN_QUALITY_UNKNOWN',
+          'ROTATION_UNDERFILL_LIVE_EXIT_ROUTE_UNKNOWN',
+        ],
+      },
+    ]));
+    await writeFile(path.join(dir, 'kol-tx.jsonl'), jsonl([
+      {
+        kolId: 'kol-b',
+        tier: 'A',
+        tokenMint,
+        action: 'buy',
+        timestamp: '2026-05-02T00:00:10.000Z',
+        solAmount: 0.12,
+      },
+    ]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [15, 30],
+      roundTripCostPct: 0.005,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.rotationSecondKolPromotionGap).toMatchObject({
+      verdict: 'BLOCKED_BY_ROUTE_PROOF',
+      rows: 1,
+      routeProofRows: 0,
+      routeUnknownRows: 1,
+      costAwareRows: 1,
+      routeKnownCostAwareRows: 0,
+      costAwareRouteUnknownRows: 1,
+      structuralBlockRows: 1,
+      dataGapRows: 0,
+      infraRetryRows: 0,
+      unknownRows: 0,
+      explicitNoSellRouteRows: 1,
+      exitLiquidityUnknownRows: 1,
+      securityDataGapRows: 1,
+      mixedExitLiquidityAndDataGapRows: 1,
+      missingPositiveEvidenceRows: 0,
+      recoveryHint: 'record_exit_quote_and_security_evidence',
+      nextSprint: 'record_exit_quote_and_security_evidence',
+    });
+
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('record_exit_quote_and_security_evidence');
+    expect(markdown).toContain('mixed=1');
+  });
+
+  it('separates stale 2nd-KOL promotion gaps from fresh route-proof work', async () => {
+    const tokenMint = 'MintSecondKolStaleFreshSplit111111111111111';
+    await writeFile(path.join(dir, 'current-session.json'), JSON.stringify({
+      startedAt: '2026-05-03T00:00:00.000Z',
+    }));
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([
+      {
+        strategy: 'kol_hunter',
+        lane: 'kol_hunter',
+        armName: 'rotation_underfill_v1',
+        profileArm: 'rotation_underfill_cost_aware_exit_v2',
+        entryArm: 'rotation_underfill_v1',
+        kolEntryReason: 'rotation_v1',
+        positionId: 'stale-second-kol-route-gap',
+        liveEquivalenceCandidateId: 'stale-second-kol-route-gap-candidate',
+        tokenMint,
+        closedAt: '2026-05-02T00:01:00.000Z',
+        exitReason: 'winner_trailing_t1',
+        holdSec: 30,
+        netSol: 0.001,
+        netSolTokenOnly: 0.001,
+        mfePctPeak: 0.12,
+        kols: [
+          { id: 'kol-a', timestamp: '2026-05-02T00:00:00.000Z' },
+        ],
+        independentKolCount: 1,
+        survivalFlags: [
+          'ROTATION_UNDERFILL_KOLS_1',
+          'ROTATION_COST_AWARE_EXIT_V2',
+          'EXIT_LIQUIDITY_UNKNOWN',
+        ],
+      },
+    ]));
+    await writeFile(path.join(dir, 'kol-tx.jsonl'), jsonl([
+      {
+        kolId: 'kol-b',
+        tier: 'A',
+        tokenMint,
+        action: 'buy',
+        timestamp: '2026-05-02T00:00:10.000Z',
+        solAmount: 0.12,
+      },
+    ]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [15, 30],
+      roundTripCostPct: 0.005,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.rotationSecondKolPromotionGap).toMatchObject({
+      verdict: 'BLOCKED_BY_ROUTE_PROOF',
+      rows: 1,
+      freshCutoffSource: 'current_session',
+      freshSince: '2026-05-03T00:00:00.000Z',
+      freshRows: 0,
+      staleRows: 1,
+      freshRouteProofRows: 0,
+      freshRouteUnknownRows: 0,
+      freshCostAwareRows: 0,
+      freshRouteKnownCostAwareRows: 0,
+      freshExitQuoteEvidenceRows: 0,
+      nextSprint: 'record_exit_quote_evidence',
+      freshNextSprint: 'collect_fresh_2nd_kol_30_rows',
+    });
+
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('historical next');
+    expect(markdown).toContain('collect_fresh_2nd_kol_30_rows');
   });
 
   it('reports posthoc second-KOL underfill rows without treating them as live-equivalent 2+ KOL', async () => {
@@ -2248,6 +2637,72 @@ describe('rotation-lane-report', () => {
     expect(markdown).toContain('alice:8');
     expect(markdown).toContain('alice:7');
     expect(markdown).toContain('stalk_expired_no_consensus:1');
+  });
+
+  it('summarizes KOL admission-skip paper markouts without enabling live routing', async () => {
+    const mintA = 'AdmissionSkipTokenA111111111111111111111111';
+    const mintB = 'AdmissionSkipTokenB111111111111111111111111';
+    await writeFile(path.join(dir, 'current-session.json'), JSON.stringify({
+      version: 1,
+      startedAt: '2026-05-02T00:00:00.000Z',
+      tradingMode: 'live',
+    }));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl(Array.from({ length: 10 }, (_, index) => ({
+      tokenMint: index < 5 ? mintA : mintB,
+      lane: 'kol_hunter',
+      signalSource: 'kol_hunter_admission_skip',
+      rejectReason: 'kol_hunter_max_concurrent_skip',
+      rejectedAt: `2026-05-02T00:00:${String(index).padStart(2, '0')}.000Z`,
+      extras: {
+        eventType: 'kol_hunter_admission_skip',
+        noTradeReason: 'max_concurrent',
+        paperOnlyMeasurement: true,
+        kolId: index < 5 ? 'alice' : 'bob',
+      },
+      probe: {
+        offsetSec: 30,
+        firedAt: `2026-05-02T00:00:${String(index + 30).padStart(2, '0')}.000Z`,
+        quoteStatus: 'ok',
+        deltaPct: 0.04,
+      },
+    }))));
+    await writeFile(path.join(dir, 'kol-tx.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'kol-call-funnel.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'kol-policy-decisions.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-02T00:00:00.000Z'),
+      horizonsSec: [30],
+      roundTripCostPct: 0.005,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.kolHunterAdmissionSkipMarkouts).toMatchObject({
+      verdict: 'PAPER_REVIEW_CANDIDATE',
+      rows: 10,
+      probeRows: 10,
+      okRows: 10,
+      tokenRows: 2,
+      maxConcurrentRows: 10,
+      primaryHorizonSec: 30,
+      primaryMedianPostCostDeltaPct: 0.035,
+      primaryPostCostPositiveRate: 1,
+      topReasons: [{ reason: 'kol_hunter_max_concurrent_skip', count: 10 }],
+    });
+    expect(report.kolHunterAdmissionSkipMarkouts.topKols).toEqual([
+      { kol: 'alice', count: 5 },
+      { kol: 'bob', count: 5 },
+    ]);
+
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('## KOL Admission-Skip Markouts');
+    expect(markdown).toContain('PAPER_REVIEW_CANDIDATE');
+    expect(markdown).toContain('kol_hunter_max_concurrent_skip:10');
+    expect(markdown).toContain('never changes live routing');
   });
 
   it('joins price-context replay candidates to report-window buy markouts without enabling live', async () => {

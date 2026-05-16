@@ -402,19 +402,152 @@ interface PaperCohortValidityStats {
 
 interface ReviewCohortGenerationAuditStats {
   cohort: string;
+  diagnosis: string;
+  nextAction: string;
   underfillRows: number;
   routeKnownRows: number;
   costAwareRows: number;
   twoPlusKolRows: number;
   routeKnownTwoPlusRows: number;
   routeKnownCostAwareRows: number;
+  singleKolRouteKnownCostAwareRows: number;
   reviewRows: number;
   missingRouteProofRows: number;
   missingCandidateIdRows: number;
   missingParticipantTimestampRows: number;
+  reviewMissingCandidateIdRows: number;
+  reviewMissingParticipantTimestampRows: number;
   primaryRouteKnownTwoPlusRows: number;
   primaryRouteKnownTwoPlusWithoutCostAwareCloneRows: number;
   blockerReasons: Array<{ reason: string; count: number }>;
+}
+
+type RotationSecondKolOpportunityVerdict =
+  | 'NO_UNDERFILL_ROWS'
+  | 'NO_SINGLE_KOL_ROWS'
+  | 'NO_TX_COVERAGE'
+  | 'TRUE_SINGLE_KOL_DOMINANT'
+  | 'SECOND_KOL_LINKAGE_GAP'
+  | 'COLLECT';
+
+interface RotationSecondKolOpportunityTokenStats {
+  tokenMint: string;
+  shortMint: string;
+  rows: number;
+  secondKolRows: number;
+  secondKolWithin30Rows: number;
+  routeKnownCostAwareRows: number;
+  routeKnownCostAwareSecondWithin30Rows: number;
+  medianSecondKolDelaySec: number | null;
+  topSecondKols: Array<{ kol: string; count: number }>;
+}
+
+interface RotationSecondKolOpportunityFunnelStats {
+  verdict: RotationSecondKolOpportunityVerdict;
+  reasons: string[];
+  underfillRows: number;
+  singleKolRows: number;
+  rowsWithToken: number;
+  rowsWithEntryTime: number;
+  rowsWithTxCoverage: number;
+  routeKnownCostAwareSingleRows: number;
+  secondKolSeenRows: number;
+  secondKolWithin15Rows: number;
+  secondKolWithin30Rows: number;
+  secondKolWithin60Rows: number;
+  secondKolLate180Rows: number;
+  routeKnownCostAwareSecondWithin30Rows: number;
+  potentialReviewRows: number;
+  trueSingleRows: number;
+  topSecondKols: Array<{ kol: string; count: number }>;
+  topTokens: RotationSecondKolOpportunityTokenStats[];
+}
+
+type RotationSecondKolPromotionGapVerdict =
+  | 'NO_SECOND_KOL_30'
+  | 'BLOCKED_BY_ROUTE_PROOF_AND_COST_AWARE'
+  | 'BLOCKED_BY_ROUTE_PROOF'
+  | 'BLOCKED_BY_COST_AWARE'
+  | 'REVIEW_CANDIDATES_EXIST'
+  | 'COLLECT';
+
+interface RotationSecondKolPromotionGapTokenStats {
+  tokenMint: string;
+  shortMint: string;
+  rows: number;
+  routeProofRows: number;
+  costAwareRows: number;
+  routeKnownCostAwareRows: number;
+  medianSecondKolDelaySec: number | null;
+  topRouteUnknownReasons: Array<{ reason: string; count: number }>;
+}
+
+type RouteProofRecoveryHint =
+  | 'collect_sample'
+  | 'route_proof_ready'
+  | 'review_true_no_route_before_live'
+  | 'record_exit_quote_and_security_evidence'
+  | 'record_exit_quote_evidence'
+  | 'record_security_client_evidence'
+  | 'record_positive_route_probe'
+  | 'collect_more_rows';
+
+interface RouteProofRecoverySummary {
+  routeKnownRows: number;
+  routeProofRows: number;
+  structuralBlockRows: number;
+  dataGapRows: number;
+  infraRetryRows: number;
+  unknownRows: number;
+  explicitNoSellRouteRows: number;
+  exitLiquidityUnknownRows: number;
+  securityDataGapRows: number;
+  mixedExitLiquidityAndDataGapRows: number;
+  missingPositiveEvidenceRows: number;
+  recoveryHint: RouteProofRecoveryHint;
+  nextSprint: string;
+}
+
+interface RotationSecondKolPromotionGapStats {
+  verdict: RotationSecondKolPromotionGapVerdict;
+  reasons: string[];
+  rows: number;
+  routeProofRows: number;
+  routeUnknownRows: number;
+  costAwareRows: number;
+  routeKnownCostAwareRows: number;
+  routeKnownMissingCostAwareRows: number;
+  costAwareRouteUnknownRows: number;
+  candidateIdRows: number;
+  participantTimestampRows: number;
+  structuralBlockRows: number;
+  dataGapRows: number;
+  infraRetryRows: number;
+  unknownRows: number;
+  explicitNoSellRouteRows: number;
+  exitLiquidityUnknownRows: number;
+  securityDataGapRows: number;
+  mixedExitLiquidityAndDataGapRows: number;
+  missingPositiveEvidenceRows: number;
+  recoveryHint: RouteProofRecoveryHint;
+  nextSprint: string;
+  freshCutoffSource: RouteProofFreshnessStats['cutoffSource'];
+  freshSince: string | null;
+  freshRows: number;
+  staleRows: number;
+  freshRouteProofRows: number;
+  freshRouteUnknownRows: number;
+  freshCostAwareRows: number;
+  freshRouteKnownCostAwareRows: number;
+  freshExitQuoteEvidenceRows: number;
+  freshNextSprint: string;
+  medianSecondKolDelaySec: number | null;
+  medianMfePct: number | null;
+  refundAdjustedNetSol: number | null;
+  topRouteUnknownReasons: Array<{ reason: string; count: number }>;
+  topMissingCostAwareArms: Array<{ arm: string; count: number }>;
+  topExitReasons: Array<{ reason: string; count: number }>;
+  topTokens: RotationSecondKolPromotionGapTokenStats[];
 }
 
 interface ReviewCohortEvidenceStats {
@@ -855,6 +988,42 @@ interface RotationStaleBuyReviewStats {
   buckets: RotationStaleBuyBucketStats[];
 }
 
+type KolHunterAdmissionSkipMarkoutVerdict =
+  | 'NO_ROWS'
+  | 'COLLECT'
+  | 'NEGATIVE_AFTER_COST'
+  | 'PAPER_REVIEW_CANDIDATE';
+
+interface KolHunterAdmissionSkipTokenStats {
+  tokenMint: string;
+  shortMint: string;
+  rows: number;
+  probeRows: number;
+  okRows: number;
+  bestHorizonSec: number | null;
+  bestMedianPostCostDeltaPct: number | null;
+  topKols: Array<{ kol: string; count: number }>;
+}
+
+interface KolHunterAdmissionSkipMarkoutStats {
+  since: string;
+  verdict: KolHunterAdmissionSkipMarkoutVerdict;
+  reasons: string[];
+  rows: number;
+  probeRows: number;
+  okRows: number;
+  tokenRows: number;
+  maxConcurrentRows: number;
+  minOkCoverage: number | null;
+  primaryHorizonSec: number | null;
+  primaryMedianPostCostDeltaPct: number | null;
+  primaryPostCostPositiveRate: number | null;
+  horizons: HorizonStats[];
+  topKols: Array<{ kol: string; count: number }>;
+  topReasons: Array<{ reason: string; count: number }>;
+  topTokens: KolHunterAdmissionSkipTokenStats[];
+}
+
 type RotationPriceContextMarkoutVerdict =
   | 'NO_PRICE_CONTEXT_CANDIDATES'
   | 'NO_MARKOUT_COVERAGE'
@@ -1146,6 +1315,7 @@ interface RotationReport {
   routeTruthAudit: RouteTruthAuditStats[];
   routeProofFreshness: RouteProofFreshnessStats;
   rotationCandidateFunnel: RotationCandidateFunnelStats;
+  kolHunterAdmissionSkipMarkouts: KolHunterAdmissionSkipMarkoutStats;
   rotationDetectorReplay: RotationDetectorReplayStats;
   rotationDetectorReplayWindow: RotationDetectorReplayStats;
   rotationDetectorBlockerMarkouts: RotationDetectorBlockerMarkoutStats;
@@ -1163,6 +1333,8 @@ interface RotationReport {
   posthocSecondKolRecoveryBacklog: PosthocSecondKolRecoveryBacklogItem[];
   paperCohortValidity: PaperCohortValidityStats[];
   reviewCohortGenerationAudit: ReviewCohortGenerationAuditStats;
+  rotationSecondKolOpportunityFunnel: RotationSecondKolOpportunityFunnelStats;
+  rotationSecondKolPromotionGap: RotationSecondKolPromotionGapStats;
   liveEquivalenceDrilldown: LiveEquivalenceDrilldownStats[];
   reviewCohortEvidence: ReviewCohortEvidenceStats;
   paperExitProxies: PaperExitProxyStats[];
@@ -1833,11 +2005,11 @@ function routeUnknownReasonsForRow(row: JsonRow): string[] {
     if (flag === 'EXIT_LIQUIDITY_UNKNOWN') reasons.add('EXIT_LIQUIDITY_UNKNOWN');
     else if (flag === 'NO_SELL_ROUTE' || flag === 'SELL_NO_ROUTE' || flag === 'NO_ROUTE' || flag.includes('NO_SELL_ROUTE')) {
       reasons.add('NO_SELL_ROUTE');
-    } else if (flag === 'DECIMALS_SECURITY_CLIENT') reasons.add('DECIMALS_SECURITY_CLIENT');
+    }
     else if (flag === 'TOKEN_QUALITY_UNKNOWN') reasons.add('TOKEN_QUALITY_UNKNOWN');
     else if (flag === 'NO_SECURITY_DATA' || flag === 'NO_SECURITY_CLIENT') reasons.add(flag);
     else if (flag.includes('JUPITER_429')) reasons.add('JUPITER_429');
-    else if (flag.includes('SECURITY_CLIENT')) reasons.add('SECURITY_CLIENT');
+    else if (flag === 'SECURITY_CLIENT') reasons.add('SECURITY_CLIENT');
     else if (flag === 'ROTATION_UNDERFILL_LIVE_EXIT_ROUTE_UNKNOWN') reasons.add('ROTATION_UNDERFILL_LIVE_EXIT_ROUTE_UNKNOWN');
   }
   if (reasons.size === 0) reasons.add('MISSING_POSITIVE_ROUTE_EVIDENCE');
@@ -1895,7 +2067,6 @@ function routeTruthBucket(row: JsonRow): { bucket: string; recoverability: Route
     return { bucket: 'route_unknown:structural_exit_route', recoverability: 'structural_block' };
   }
   if (reasons.some((reason) =>
-    reason === 'DECIMALS_SECURITY_CLIENT' ||
     reason === 'TOKEN_QUALITY_UNKNOWN' ||
     reason === 'NO_SECURITY_DATA' ||
     reason === 'NO_SECURITY_CLIENT' ||
@@ -2569,7 +2740,6 @@ function buildPosthocSecondKolRouteProofGate(
     );
     const hasExitLiquidityUnknown = labels.some((label) => label === 'EXIT_LIQUIDITY_UNKNOWN');
     const hasSecurityDataGap = labels.some((label) =>
-      label === 'DECIMALS_SECURITY_CLIENT' ||
       label === 'TOKEN_QUALITY_UNKNOWN' ||
       label === 'NO_SECURITY_DATA' ||
       label === 'NO_SECURITY_CLIENT' ||
@@ -2841,6 +3011,60 @@ function reviewCohortBlockersForRow(row: JsonRow): string[] {
   return blockers.length > 0 ? blockers : ['review_ready'];
 }
 
+function diagnoseReviewCohortGeneration(
+  underfillRows: JsonRow[],
+  routeKnownRows: JsonRow[],
+  routeKnownTwoPlusRows: JsonRow[],
+  routeKnownCostAwareRows: JsonRow[],
+  reviewRows: JsonRow[],
+  reviewMissingCandidateIdRows: number,
+  reviewMissingParticipantTimestampRows: number
+): { diagnosis: string; nextAction: string } {
+  if (underfillRows.length === 0) {
+    return {
+      diagnosis: 'NO_UNDERFILL_ROWS',
+      nextAction: 'collect underfill paper closes; keep live routing unchanged',
+    };
+  }
+  if (routeKnownRows.length === 0) {
+    return {
+      diagnosis: 'BLOCKED_BY_ROUTE_PROOF',
+      nextAction: 'record fresh exit-route proof before interpreting underfill edge',
+    };
+  }
+  if (routeKnownTwoPlusRows.length === 0) {
+    const singleKolContext = routeKnownCostAwareRows.length > 0
+      ? '; do not promote the 1-KOL route-known cost-aware edge'
+      : '';
+    return {
+      diagnosis: 'BLOCKED_BY_2KOL_ABSENCE',
+      nextAction: `collect or posthoc-confirm 2+KOL underfill evidence${singleKolContext}`,
+    };
+  }
+  if (reviewRows.length === 0) {
+    return {
+      diagnosis: 'BLOCKED_BY_COST_AWARE_CLONE',
+      nextAction: 'ensure route-known 2+KOL candidates also write the cost-aware shadow close',
+    };
+  }
+  if (reviewMissingCandidateIdRows > 0) {
+    return {
+      diagnosis: 'BLOCKED_BY_CANDIDATE_ID',
+      nextAction: 'persist candidate IDs before live-equivalence review',
+    };
+  }
+  if (reviewMissingParticipantTimestampRows > 0) {
+    return {
+      diagnosis: 'BLOCKED_BY_KOL_TIMESTAMPS',
+      nextAction: 'persist participant timestamps so second-KOL timing can be audited',
+    };
+  }
+  return {
+    diagnosis: 'READY_FOR_SAMPLE_REVIEW',
+    nextAction: 'evaluate sample, compound, and live-equivalence gates; live remains manual-review only',
+  };
+}
+
 function buildReviewCohortGenerationAuditStats(rows: JsonRow[]): ReviewCohortGenerationAuditStats {
   const cohort = 'route_known_2kol_cost_aware';
   const underfillRows = rows.filter(isRotationUnderfillRow);
@@ -2849,7 +3073,12 @@ function buildReviewCohortGenerationAuditStats(rows: JsonRow[]): ReviewCohortGen
   const twoPlusKolRows = underfillRows.filter(isTwoPlusKolRow);
   const routeKnownTwoPlusRows = routeKnownRows.filter(isTwoPlusKolRow);
   const routeKnownCostAwareRows = routeKnownRows.filter(isCostAwareUnderfillRow);
+  const singleKolRouteKnownCostAwareRows = routeKnownCostAwareRows.filter(isSingleKolRow);
   const reviewRows = selectRouteKnown2KolCostAwareUnderfillRows(rows);
+  const reviewMissingCandidateIdRows = reviewRows.filter((row) => !rowCandidateId(row)).length;
+  const reviewMissingParticipantTimestampRows = reviewRows.filter((row) =>
+    !rowParticipants(row).some((item) => item.timestampMs != null)
+  ).length;
   const primaryRouteKnownTwoPlusRows = routeKnownTwoPlusRows.filter(isPrimaryUnderfillCandidateRow);
   const costAwareParentIds = new Set(
     costAwareRows
@@ -2877,23 +3106,458 @@ function buildReviewCohortGenerationAuditStats(rows: JsonRow[]): ReviewCohortGen
     }),
     'reason'
   ) as Array<{ reason: string; count: number }>;
+  const { diagnosis, nextAction } = diagnoseReviewCohortGeneration(
+    underfillRows,
+    routeKnownRows,
+    routeKnownTwoPlusRows,
+    routeKnownCostAwareRows,
+    reviewRows,
+    reviewMissingCandidateIdRows,
+    reviewMissingParticipantTimestampRows
+  );
   return {
     cohort,
+    diagnosis,
+    nextAction,
     underfillRows: underfillRows.length,
     routeKnownRows: routeKnownRows.length,
     costAwareRows: costAwareRows.length,
     twoPlusKolRows: twoPlusKolRows.length,
     routeKnownTwoPlusRows: routeKnownTwoPlusRows.length,
     routeKnownCostAwareRows: routeKnownCostAwareRows.length,
+    singleKolRouteKnownCostAwareRows: singleKolRouteKnownCostAwareRows.length,
     reviewRows: reviewRows.length,
     missingRouteProofRows: underfillRows.length - routeKnownRows.length,
     missingCandidateIdRows: underfillRows.filter((row) => !rowCandidateId(row)).length,
     missingParticipantTimestampRows: underfillRows.filter((row) =>
       !rowParticipants(row).some((item) => item.timestampMs != null)
     ).length,
+    reviewMissingCandidateIdRows,
+    reviewMissingParticipantTimestampRows,
     primaryRouteKnownTwoPlusRows: primaryRouteKnownTwoPlusRows.length,
     primaryRouteKnownTwoPlusWithoutCostAwareCloneRows: primaryRouteKnownTwoPlusWithoutCostAwareCloneRows.length,
     blockerReasons,
+  };
+}
+
+function rowRotationAnchorTimeMs(row: JsonRow): number {
+  const participants = rowParticipants(row)
+    .map((item) => item.timestampMs)
+    .filter((value): value is number => value != null && Number.isFinite(value));
+  if (participants.length > 0) return Math.min(...participants);
+  const directMs = rowNumWithExtras(row, ['rotationFirstBuyAtMs', 'rotationLastBuyAtMs', 'rotationEntryAtMs']);
+  if (directMs != null) return directMs < 1e12 ? directMs * 1000 : directMs;
+  const candidates = [
+    timeMs(row.openedAt),
+    timeMs(row.entryTimeSec),
+    rowCloseTimeMs(row),
+  ];
+  return candidates.find((value) => Number.isFinite(value)) ?? NaN;
+}
+
+function secondKolCandidatesForRow(row: JsonRow, buysByToken: Map<string, JsonRow[]>): Array<{ kol: string; delaySec: number }> {
+  const tokenMint = rowTokenMintDeep(row);
+  const anchorMs = rowRotationAnchorTimeMs(row);
+  if (!tokenMint || !Number.isFinite(anchorMs)) return [];
+  const anchorKols = new Set(rowParticipants(row).map((item) => item.id).filter(Boolean));
+  const byKol = new Map<string, number>();
+  for (const tx of buysByToken.get(tokenMint) ?? []) {
+    const kol = rowKolId(tx);
+    if (!kol || kol === '(unknown)' || anchorKols.has(kol)) continue;
+    const txMs = rowKolTxTimeMs(tx);
+    if (!Number.isFinite(txMs)) continue;
+    const delaySec = (txMs - anchorMs) / 1000;
+    if (delaySec < 0 || delaySec > 180) continue;
+    byKol.set(kol, Math.min(byKol.get(kol) ?? Infinity, delaySec));
+  }
+  return [...byKol.entries()]
+    .map(([kol, delaySec]) => ({ kol, delaySec }))
+    .sort((a, b) => a.delaySec - b.delaySec || a.kol.localeCompare(b.kol));
+}
+
+function summarizeSecondKolOpportunityToken(input: {
+  tokenMint: string;
+  rows: JsonRow[];
+  buysByToken: Map<string, JsonRow[]>;
+}): RotationSecondKolOpportunityTokenStats {
+  const candidatesByRow = input.rows.map((row) => secondKolCandidatesForRow(row, input.buysByToken));
+  const delays = candidatesByRow.flatMap((items) => items.map((item) => item.delaySec));
+  const secondKolWithin30Rows = candidatesByRow.filter((items) => items.some((item) => item.delaySec <= 30)).length;
+  const routeKnownCostAwareRows = input.rows.filter(isRouteKnownCostAwareUnderfillRow);
+  const routeKnownCostAwareSecondWithin30Rows = routeKnownCostAwareRows.filter((row) =>
+    secondKolCandidatesForRow(row, input.buysByToken).some((item) => item.delaySec <= 30)
+  ).length;
+  return {
+    tokenMint: input.tokenMint,
+    shortMint: shortTokenMint(input.tokenMint),
+    rows: input.rows.length,
+    secondKolRows: candidatesByRow.filter((items) => items.length > 0).length,
+    secondKolWithin30Rows,
+    routeKnownCostAwareRows: routeKnownCostAwareRows.length,
+    routeKnownCostAwareSecondWithin30Rows,
+    medianSecondKolDelaySec: percentile(delays, 0.5),
+    topSecondKols: countByLabel(candidatesByRow.flatMap((items) => items.map((item) => item.kol)), 'kol').slice(0, 5) as Array<{ kol: string; count: number }>,
+  };
+}
+
+function buildRotationSecondKolOpportunityFunnelStats(input: {
+  rotationPaperRows: JsonRow[];
+  kolTxRows: JsonRow[];
+}): RotationSecondKolOpportunityFunnelStats {
+  const underfillRows = input.rotationPaperRows.filter(isRotationUnderfillRow);
+  const singleKolRows = underfillRows.filter(isSingleKolRow);
+  const buysByToken = new Map<string, JsonRow[]>();
+  for (const row of input.kolTxRows) {
+    if (rowKolTxActionNormalized(row) !== 'buy') continue;
+    const tokenMint = rowTokenMint(row);
+    if (!tokenMint) continue;
+    buysByToken.set(tokenMint, [...(buysByToken.get(tokenMint) ?? []), row]);
+  }
+  const candidatesByRow = singleKolRows.map((row) => ({
+    row,
+    tokenMint: rowTokenMintDeep(row),
+    anchorMs: rowRotationAnchorTimeMs(row),
+    candidates: secondKolCandidatesForRow(row, buysByToken),
+  }));
+  const routeKnownCostAwareSingleRows = singleKolRows.filter(isRouteKnownCostAwareUnderfillRow);
+  const routeKnownCostAwareSecondWithin30Rows = routeKnownCostAwareSingleRows.filter((row) =>
+    secondKolCandidatesForRow(row, buysByToken).some((item) => item.delaySec <= 30)
+  ).length;
+  const secondKolSeenRows = candidatesByRow.filter((item) => item.candidates.length > 0).length;
+  const secondKolWithin15Rows = candidatesByRow.filter((item) => item.candidates.some((candidate) => candidate.delaySec <= 15)).length;
+  const secondKolWithin30Rows = candidatesByRow.filter((item) => item.candidates.some((candidate) => candidate.delaySec <= 30)).length;
+  const secondKolWithin60Rows = candidatesByRow.filter((item) => item.candidates.some((candidate) => candidate.delaySec <= 60)).length;
+  const secondKolLate180Rows = candidatesByRow.filter((item) =>
+    item.candidates.some((candidate) => candidate.delaySec > 30 && candidate.delaySec <= 180)
+  ).length;
+  const trueSingleRows = candidatesByRow.filter((item) =>
+    item.tokenMint &&
+    Number.isFinite(item.anchorMs) &&
+    (buysByToken.get(item.tokenMint) ?? []).length > 0 &&
+    item.candidates.length === 0
+  ).length;
+  const byToken = new Map<string, JsonRow[]>();
+  for (const row of singleKolRows) {
+    const tokenMint = rowTokenMintDeep(row);
+    if (!tokenMint) continue;
+    byToken.set(tokenMint, [...(byToken.get(tokenMint) ?? []), row]);
+  }
+  const topTokens = [...byToken.entries()]
+    .map(([tokenMint, rows]) => summarizeSecondKolOpportunityToken({ tokenMint, rows, buysByToken }))
+    .sort((a, b) =>
+      b.routeKnownCostAwareSecondWithin30Rows - a.routeKnownCostAwareSecondWithin30Rows ||
+      b.secondKolWithin30Rows - a.secondKolWithin30Rows ||
+      b.rows - a.rows ||
+      a.tokenMint.localeCompare(b.tokenMint)
+    )
+    .slice(0, 10);
+
+  const reasons: string[] = [];
+  let verdict: RotationSecondKolOpportunityVerdict = 'COLLECT';
+  if (underfillRows.length === 0) {
+    verdict = 'NO_UNDERFILL_ROWS';
+    reasons.push('no underfill paper rows in report window');
+  } else if (singleKolRows.length === 0) {
+    verdict = 'NO_SINGLE_KOL_ROWS';
+    reasons.push('underfill rows are not blocked by single-KOL classification');
+  } else if (candidatesByRow.filter((item) => item.tokenMint && (buysByToken.get(item.tokenMint) ?? []).length > 0).length === 0) {
+    verdict = 'NO_TX_COVERAGE';
+    reasons.push('single-KOL rows have no same-token KOL tx coverage to verify a second KOL');
+  } else if (routeKnownCostAwareSecondWithin30Rows > 0) {
+    verdict = 'SECOND_KOL_LINKAGE_GAP';
+    reasons.push('route-known cost-aware single-KOL rows have a second KOL in KOL tx ledger within 30s');
+  } else if (trueSingleRows / singleKolRows.length >= 0.8) {
+    verdict = 'TRUE_SINGLE_KOL_DOMINANT';
+    reasons.push('same-token KOL tx ledger confirms most single-KOL rows stayed single through 180s');
+  } else {
+    reasons.push('second-KOL opportunity evidence is mixed or still collecting');
+  }
+
+  return {
+    verdict,
+    reasons,
+    underfillRows: underfillRows.length,
+    singleKolRows: singleKolRows.length,
+    rowsWithToken: candidatesByRow.filter((item) => item.tokenMint).length,
+    rowsWithEntryTime: candidatesByRow.filter((item) => Number.isFinite(item.anchorMs)).length,
+    rowsWithTxCoverage: candidatesByRow.filter((item) => item.tokenMint && (buysByToken.get(item.tokenMint) ?? []).length > 0).length,
+    routeKnownCostAwareSingleRows: routeKnownCostAwareSingleRows.length,
+    secondKolSeenRows,
+    secondKolWithin15Rows,
+    secondKolWithin30Rows,
+    secondKolWithin60Rows,
+    secondKolLate180Rows,
+    routeKnownCostAwareSecondWithin30Rows,
+    potentialReviewRows: routeKnownCostAwareSecondWithin30Rows,
+    trueSingleRows,
+    topSecondKols: countByLabel(candidatesByRow.flatMap((item) => item.candidates.map((candidate) => candidate.kol)), 'kol').slice(0, 8) as Array<{ kol: string; count: number }>,
+    topTokens,
+  };
+}
+
+function secondKolWithin30Rows(input: {
+  rotationPaperRows: JsonRow[];
+  kolTxRows: JsonRow[];
+}): Array<{ row: JsonRow; candidates: Array<{ kol: string; delaySec: number }> }> {
+  const buysByToken = new Map<string, JsonRow[]>();
+  for (const tx of input.kolTxRows) {
+    if (rowKolTxActionNormalized(tx) !== 'buy') continue;
+    const tokenMint = rowTokenMint(tx);
+    if (!tokenMint) continue;
+    buysByToken.set(tokenMint, [...(buysByToken.get(tokenMint) ?? []), tx]);
+  }
+  return input.rotationPaperRows
+    .filter((row) => isRotationUnderfillRow(row) && isSingleKolRow(row))
+    .map((row) => ({
+      row,
+      candidates: secondKolCandidatesForRow(row, buysByToken).filter((candidate) => candidate.delaySec <= 30),
+    }))
+    .filter((item) => item.candidates.length > 0);
+}
+
+function summarizeSecondKolPromotionGapToken(input: {
+  tokenMint: string;
+  rows: Array<{ row: JsonRow; candidates: Array<{ kol: string; delaySec: number }> }>;
+}): RotationSecondKolPromotionGapTokenStats {
+  const paperRows = input.rows.map((item) => item.row);
+  const delays = input.rows.flatMap((item) => item.candidates.map((candidate) => candidate.delaySec));
+  return {
+    tokenMint: input.tokenMint,
+    shortMint: shortTokenMint(input.tokenMint),
+    rows: paperRows.length,
+    routeProofRows: paperRows.filter((row) => !isUnderfillRouteUnknown(row)).length,
+    costAwareRows: paperRows.filter(isCostAwareUnderfillRow).length,
+    routeKnownCostAwareRows: paperRows.filter(isRouteKnownCostAwareUnderfillRow).length,
+    medianSecondKolDelaySec: percentile(delays, 0.5),
+    topRouteUnknownReasons: countByLabel(paperRows.flatMap(routeUnknownReasonsForRow), 'reason').slice(0, 5) as Array<{ reason: string; count: number }>,
+  };
+}
+
+function routeProofRecoveryNextSprint(hint: RouteProofRecoveryHint): string {
+  if (hint === 'collect_sample') return 'collect_2nd_kol_30_rows';
+  if (hint === 'route_proof_ready') return 'check_cost_aware_and_review_metadata';
+  if (hint === 'review_true_no_route_before_live') return 'drill_down_true_no_sell_route';
+  if (hint === 'record_exit_quote_and_security_evidence') return 'record_exit_quote_and_security_evidence';
+  if (hint === 'record_exit_quote_evidence') return 'record_exit_quote_evidence';
+  if (hint === 'record_security_client_evidence') return 'record_security_client_evidence';
+  if (hint === 'record_positive_route_probe') return 'record_positive_route_probe';
+  return 'collect_more_rows';
+}
+
+function routeProofFreshSecondKolNextSprint(input: {
+  rows: number;
+  freshRows: number;
+  freshRouteProofRows: number;
+  freshCostAwareRows: number;
+  freshRouteKnownCostAwareRows: number;
+  freshExitQuoteEvidenceRows: number;
+}): string {
+  if (input.rows === 0) return 'collect_2nd_kol_30_rows';
+  if (input.freshRows === 0) return 'collect_fresh_2nd_kol_30_rows';
+  if (input.freshRouteKnownCostAwareRows > 0) return 'review_fresh_2nd_kol_candidates';
+  if (input.freshRouteProofRows === 0) {
+    return input.freshExitQuoteEvidenceRows === 0
+      ? 'record_exit_quote_evidence'
+      : 'review_exit_quote_rejections_or_errors';
+  }
+  if (input.freshCostAwareRows === 0) return 'write_cost_aware_shadow_for_fresh_2nd_kol';
+  return 'recover_cost_aware_route_proof';
+}
+
+function summarizeRouteProofRecovery(rows: JsonRow[]): RouteProofRecoverySummary {
+  let structuralBlockRows = 0;
+  let dataGapRows = 0;
+  let infraRetryRows = 0;
+  let unknownRows = 0;
+  let explicitNoSellRouteRows = 0;
+  let exitLiquidityUnknownRows = 0;
+  let securityDataGapRows = 0;
+  let mixedExitLiquidityAndDataGapRows = 0;
+  let missingPositiveEvidenceRows = 0;
+
+  for (const row of rows) {
+    const truth = routeTruthBucket(row);
+    if (truth.recoverability === 'structural_block') structuralBlockRows += 1;
+    else if (truth.recoverability === 'data_gap') dataGapRows += 1;
+    else if (truth.recoverability === 'infra_retry') infraRetryRows += 1;
+    else if (truth.recoverability === 'unknown') unknownRows += 1;
+
+    const labels = routeUnknownReasonsForRow(row);
+    const hasExplicitNoSellRoute = labels.some((label) =>
+      label === 'NO_SELL_ROUTE' ||
+      label === 'ROTATION_UNDERFILL_LIVE_EXIT_ROUTE_UNKNOWN'
+    );
+    const hasExitLiquidityUnknown = labels.some((label) => label === 'EXIT_LIQUIDITY_UNKNOWN');
+    const hasSecurityDataGap = labels.some((label) =>
+      label === 'TOKEN_QUALITY_UNKNOWN' ||
+      label === 'NO_SECURITY_DATA' ||
+      label === 'NO_SECURITY_CLIENT' ||
+      label === 'SECURITY_CLIENT'
+    );
+    const hasMissingPositiveEvidence = labels.some((label) => label === 'MISSING_POSITIVE_ROUTE_EVIDENCE');
+
+    if (hasExplicitNoSellRoute) explicitNoSellRouteRows += 1;
+    if (hasExitLiquidityUnknown) exitLiquidityUnknownRows += 1;
+    if (hasSecurityDataGap) securityDataGapRows += 1;
+    if (hasExitLiquidityUnknown && hasSecurityDataGap) mixedExitLiquidityAndDataGapRows += 1;
+    if (hasMissingPositiveEvidence) missingPositiveEvidenceRows += 1;
+  }
+
+  const routeKnownRows = rows.filter((row) => !isUnderfillRouteUnknown(row)).length;
+  const routeProofRows = rows.filter((row) => routeTruthEvidenceSources(row).length > 0).length;
+  let recoveryHint: RouteProofRecoveryHint = 'collect_more_rows';
+  if (rows.length === 0) {
+    recoveryHint = 'collect_sample';
+  } else if (routeKnownRows === rows.length) {
+    recoveryHint = 'route_proof_ready';
+  } else if (mixedExitLiquidityAndDataGapRows / rows.length >= 0.5) {
+    recoveryHint = 'record_exit_quote_and_security_evidence';
+  } else if (exitLiquidityUnknownRows > 0) {
+    recoveryHint = 'record_exit_quote_evidence';
+  } else if (securityDataGapRows > 0) {
+    recoveryHint = 'record_security_client_evidence';
+  } else if (explicitNoSellRouteRows > 0) {
+    recoveryHint = 'review_true_no_route_before_live';
+  } else if (missingPositiveEvidenceRows > 0) {
+    recoveryHint = 'record_positive_route_probe';
+  }
+
+  return {
+    routeKnownRows,
+    routeProofRows,
+    structuralBlockRows,
+    dataGapRows,
+    infraRetryRows,
+    unknownRows,
+    explicitNoSellRouteRows,
+    exitLiquidityUnknownRows,
+    securityDataGapRows,
+    mixedExitLiquidityAndDataGapRows,
+    missingPositiveEvidenceRows,
+    recoveryHint,
+    nextSprint: routeProofRecoveryNextSprint(recoveryHint),
+  };
+}
+
+function buildRotationSecondKolPromotionGapStats(input: {
+  rotationPaperRows: JsonRow[];
+  kolTxRows: JsonRow[];
+  assumedNetworkFeeSol: number;
+  routeProofFreshSinceMs?: number;
+  currentSessionStartedAtMs?: number;
+}): RotationSecondKolPromotionGapStats {
+  const rowsWithCandidates = secondKolWithin30Rows(input);
+  const rows = rowsWithCandidates.map((item) => item.row);
+  const recovery = summarizeRouteProofRecovery(rows);
+  const freshCutoff = routeProofFreshCutoff(
+    input.rotationPaperRows.filter(isRotationUnderfillRow),
+    input.routeProofFreshSinceMs,
+    input.currentSessionStartedAtMs
+  );
+  const freshRows = freshCutoff.cutoffMs == null
+    ? rows
+    : rows.filter((row) => {
+      const closeMs = rowCloseTimeMs(row);
+      return Number.isFinite(closeMs) && closeMs >= (freshCutoff.cutoffMs ?? 0);
+    });
+  const routeProofRows = rows.filter((row) => !isUnderfillRouteUnknown(row));
+  const routeKnownCostAwareRows = rows.filter(isRouteKnownCostAwareUnderfillRow);
+  const costAwareRows = rows.filter(isCostAwareUnderfillRow);
+  const routeKnownMissingCostAwareRows = routeProofRows.filter((row) => !isCostAwareUnderfillRow(row));
+  const costAwareRouteUnknownRows = costAwareRows.filter(isUnderfillRouteUnknown);
+  const freshRouteProofRows = freshRows.filter((row) => !isUnderfillRouteUnknown(row));
+  const freshCostAwareRows = freshRows.filter(isCostAwareUnderfillRow);
+  const freshRouteKnownCostAwareRows = freshRows.filter(isRouteKnownCostAwareUnderfillRow);
+  const freshExitQuoteEvidenceRows = freshRows.filter(hasExitSellQuoteEvidence);
+  const mfeValues = rows.map(rowMfePct).filter((value): value is number => value != null);
+  const tokenOnlyValues = rows.map((row) => num(row.netSolTokenOnly) ?? numberOrZero(row.netSol));
+  const byToken = new Map<string, Array<{ row: JsonRow; candidates: Array<{ kol: string; delaySec: number }> }>>();
+  for (const item of rowsWithCandidates) {
+    const tokenMint = rowTokenMintDeep(item.row);
+    if (!tokenMint) continue;
+    byToken.set(tokenMint, [...(byToken.get(tokenMint) ?? []), item]);
+  }
+  const topTokens = [...byToken.entries()]
+    .map(([tokenMint, scoped]) => summarizeSecondKolPromotionGapToken({ tokenMint, rows: scoped }))
+    .sort((a, b) =>
+      b.routeKnownCostAwareRows - a.routeKnownCostAwareRows ||
+      b.routeProofRows - a.routeProofRows ||
+      b.costAwareRows - a.costAwareRows ||
+      b.rows - a.rows ||
+      a.tokenMint.localeCompare(b.tokenMint)
+    )
+    .slice(0, 10);
+
+  const reasons: string[] = [];
+  let verdict: RotationSecondKolPromotionGapVerdict = 'COLLECT';
+  if (rows.length === 0) {
+    verdict = 'NO_SECOND_KOL_30';
+    reasons.push('no single-KOL underfill rows had a second KOL buy within 30s');
+  } else if (routeKnownCostAwareRows.length > 0) {
+    verdict = 'REVIEW_CANDIDATES_EXIST';
+    reasons.push('second-KOL <=30s rows include route-known cost-aware review candidates');
+  } else if (routeProofRows.length === 0 && costAwareRows.length === 0) {
+    verdict = 'BLOCKED_BY_ROUTE_PROOF_AND_COST_AWARE';
+    reasons.push('second-KOL <=30s rows have neither route proof nor cost-aware shadow closes');
+  } else if (routeProofRows.length === 0) {
+    verdict = 'BLOCKED_BY_ROUTE_PROOF';
+    reasons.push('second-KOL <=30s rows have cost-aware shadows but no route proof');
+  } else if (routeKnownMissingCostAwareRows.length > 0 || costAwareRows.length === 0) {
+    verdict = 'BLOCKED_BY_COST_AWARE';
+    reasons.push('second-KOL <=30s route-known rows did not write cost-aware shadow closes');
+  } else {
+    reasons.push('second-KOL <=30s promotion blockers are mixed; keep collecting');
+  }
+
+  return {
+    verdict,
+    reasons,
+    rows: rows.length,
+    routeProofRows: routeProofRows.length,
+    routeUnknownRows: rows.length - routeProofRows.length,
+    costAwareRows: costAwareRows.length,
+    routeKnownCostAwareRows: routeKnownCostAwareRows.length,
+    routeKnownMissingCostAwareRows: routeKnownMissingCostAwareRows.length,
+    costAwareRouteUnknownRows: costAwareRouteUnknownRows.length,
+    candidateIdRows: rows.filter((row) => rowCandidateId(row)).length,
+    participantTimestampRows: rows.filter((row) => rowParticipants(row).some((item) => item.timestampMs != null)).length,
+    structuralBlockRows: recovery.structuralBlockRows,
+    dataGapRows: recovery.dataGapRows,
+    infraRetryRows: recovery.infraRetryRows,
+    unknownRows: recovery.unknownRows,
+    explicitNoSellRouteRows: recovery.explicitNoSellRouteRows,
+    exitLiquidityUnknownRows: recovery.exitLiquidityUnknownRows,
+    securityDataGapRows: recovery.securityDataGapRows,
+    mixedExitLiquidityAndDataGapRows: recovery.mixedExitLiquidityAndDataGapRows,
+    missingPositiveEvidenceRows: recovery.missingPositiveEvidenceRows,
+    recoveryHint: recovery.recoveryHint,
+    nextSprint: recovery.nextSprint,
+    freshCutoffSource: freshCutoff.cutoffSource,
+    freshSince: freshCutoff.cutoffMs == null ? null : new Date(freshCutoff.cutoffMs).toISOString(),
+    freshRows: freshRows.length,
+    staleRows: rows.length - freshRows.length,
+    freshRouteProofRows: freshRouteProofRows.length,
+    freshRouteUnknownRows: freshRows.length - freshRouteProofRows.length,
+    freshCostAwareRows: freshCostAwareRows.length,
+    freshRouteKnownCostAwareRows: freshRouteKnownCostAwareRows.length,
+    freshExitQuoteEvidenceRows: freshExitQuoteEvidenceRows.length,
+    freshNextSprint: routeProofFreshSecondKolNextSprint({
+      rows: rows.length,
+      freshRows: freshRows.length,
+      freshRouteProofRows: freshRouteProofRows.length,
+      freshCostAwareRows: freshCostAwareRows.length,
+      freshRouteKnownCostAwareRows: freshRouteKnownCostAwareRows.length,
+      freshExitQuoteEvidenceRows: freshExitQuoteEvidenceRows.length,
+    }),
+    medianSecondKolDelaySec: percentile(rowsWithCandidates.flatMap((item) => item.candidates.map((candidate) => candidate.delaySec)), 0.5),
+    medianMfePct: percentile(mfeValues, 0.5),
+    refundAdjustedNetSol: tokenOnlyValues.length > 0
+      ? tokenOnlyValues.reduce((sum, value) => sum + value, 0) - rows.length * input.assumedNetworkFeeSol
+      : null,
+    topRouteUnknownReasons: countByLabel(rows.flatMap(routeUnknownReasonsForRow), 'reason').slice(0, 8) as Array<{ reason: string; count: number }>,
+    topMissingCostAwareArms: countByLabel(routeKnownMissingCostAwareRows.map(rowArmName), 'arm').slice(0, 8) as Array<{ arm: string; count: number }>,
+    topExitReasons: buildTopExitReasons(rows),
+    topTokens,
   };
 }
 
@@ -4826,6 +5490,125 @@ function buildRotationStaleBuyReview(input: {
   };
 }
 
+function isKolHunterAdmissionSkipProbe(row: JsonRow): boolean {
+  const extras = obj(row.extras);
+  return str(row.lane) === 'kol_hunter' && (
+    str(extras.eventType) === 'kol_hunter_admission_skip' ||
+    str(row.signalSource) === 'kol_hunter_admission_skip' ||
+    str(row.rejectReason) === 'kol_hunter_max_concurrent_skip'
+  );
+}
+
+function rowMissedAlphaKolIds(row: JsonRow): string[] {
+  const extras = obj(row.extras);
+  const fromParticipants = rowPolicyParticipants(row).map((item) => item.id);
+  const direct = [
+    str(extras.kolId),
+    str(row.kolId),
+    str(extras.kol),
+    str(row.kol),
+  ].filter((value) => value.length > 0);
+  const ids = [...fromParticipants, ...direct].filter((value) => value !== '(unknown)');
+  return ids.length > 0 ? ids : ['(unknown)'];
+}
+
+function summarizeAdmissionSkipToken(input: {
+  tokenMint: string;
+  rows: JsonRow[];
+  horizonsSec: number[];
+  roundTripCostPct: number;
+}): KolHunterAdmissionSkipTokenStats {
+  const probeRows = input.rows.filter((row) => (rowHorizon(row) ?? 0) > 0);
+  const horizons = summarize(probeRows, input.horizonsSec, input.roundTripCostPct);
+  const best = horizons
+    .filter((row) => row.medianPostCostDeltaPct != null)
+    .sort((a, b) => (b.medianPostCostDeltaPct ?? -Infinity) - (a.medianPostCostDeltaPct ?? -Infinity))[0];
+  return {
+    tokenMint: input.tokenMint,
+    shortMint: shortTokenMint(input.tokenMint),
+    rows: input.rows.length,
+    probeRows: probeRows.length,
+    okRows: probeRows.filter(isOk).length,
+    bestHorizonSec: best?.horizonSec ?? null,
+    bestMedianPostCostDeltaPct: best?.medianPostCostDeltaPct ?? null,
+    topKols: countByLabel(input.rows.flatMap(rowMissedAlphaKolIds), 'kol').slice(0, 5) as Array<{ kol: string; count: number }>,
+  };
+}
+
+function buildKolHunterAdmissionSkipMarkouts(input: {
+  sinceMs: number;
+  missedAlphaRows: JsonRow[];
+  horizonsSec: number[];
+  roundTripCostPct: number;
+}): KolHunterAdmissionSkipMarkoutStats {
+  const rows = input.missedAlphaRows.filter(isKolHunterAdmissionSkipProbe);
+  const probeRows = rows.filter((row) => (rowHorizon(row) ?? 0) > 0);
+  const horizons = summarize(probeRows, input.horizonsSec, input.roundTripCostPct);
+  const okCoverages = horizons
+    .filter((row) => row.rows > 0)
+    .map((row) => row.okRows / row.rows);
+  const minOkCoverage = okCoverages.length > 0 ? Math.min(...okCoverages) : null;
+  const primary = horizons.find((row) => row.horizonSec === 30) ?? horizons[0];
+  const primaryPostCostPositiveRate = primary && primary.okRows > 0
+    ? primary.positivePostCostRows / primary.okRows
+    : null;
+  const byMint = new Map<string, JsonRow[]>();
+  for (const row of rows) {
+    const mint = rowTokenMintDeep(row) || '(unknown)';
+    byMint.set(mint, [...(byMint.get(mint) ?? []), row]);
+  }
+  const topTokens = [...byMint.entries()]
+    .map(([tokenMint, scoped]) => summarizeAdmissionSkipToken({
+      tokenMint,
+      rows: scoped,
+      horizonsSec: input.horizonsSec,
+      roundTripCostPct: input.roundTripCostPct,
+    }))
+    .sort((a, b) =>
+      b.probeRows - a.probeRows ||
+      (b.bestMedianPostCostDeltaPct ?? -Infinity) - (a.bestMedianPostCostDeltaPct ?? -Infinity) ||
+      a.tokenMint.localeCompare(b.tokenMint)
+    )
+    .slice(0, 8);
+
+  const reasons: string[] = [];
+  let verdict: KolHunterAdmissionSkipMarkoutVerdict = 'NO_ROWS';
+  if (rows.length === 0) {
+    reasons.push('no admission-skip paper probes in report window');
+  } else if (probeRows.length < 10) {
+    verdict = 'COLLECT';
+    reasons.push(`admission-skip probe rows ${probeRows.length} < 10`);
+  } else if ((minOkCoverage ?? 0) < EVIDENCE_MIN_OK_COVERAGE) {
+    verdict = 'COLLECT';
+    reasons.push(`probe ok coverage ${formatPct(minOkCoverage)} < ${formatPct(EVIDENCE_MIN_OK_COVERAGE)}`);
+  } else if ((primary?.medianPostCostDeltaPct ?? 0) <= 0 || (primaryPostCostPositiveRate ?? 0) < 0.55) {
+    verdict = 'NEGATIVE_AFTER_COST';
+    reasons.push(`T+${primary?.horizonSec ?? 'n/a'} post-cost median ${formatPct(primary?.medianPostCostDeltaPct ?? null)}, positive ${formatPct(primaryPostCostPositiveRate)}`);
+  } else {
+    verdict = 'PAPER_REVIEW_CANDIDATE';
+    reasons.push('admission-skip paper probes are positive after cost; review capacity policy separately before any live change');
+  }
+
+  return {
+    since: new Date(input.sinceMs).toISOString(),
+    verdict,
+    reasons,
+    rows: rows.length,
+    probeRows: probeRows.length,
+    okRows: probeRows.filter(isOk).length,
+    tokenRows: byMint.size,
+    maxConcurrentRows: rows.filter((row) => str(row.rejectReason) === 'kol_hunter_max_concurrent_skip').length,
+    minOkCoverage,
+    primaryHorizonSec: primary?.horizonSec ?? null,
+    primaryMedianPostCostDeltaPct: primary?.medianPostCostDeltaPct ?? null,
+    primaryPostCostPositiveRate,
+    horizons,
+    topKols: countByLabel(rows.flatMap(rowMissedAlphaKolIds), 'kol').slice(0, 8) as Array<{ kol: string; count: number }>,
+    topReasons: countByLabel(rows.map(rowMissedAlphaRejectReason), 'reason').slice(0, 8) as Array<{ reason: string; count: number }>,
+    topTokens,
+  };
+}
+
 function summarizePriceContextTokenMarkouts(
   token: RotationDetectorReplayTokenStats,
   rows: JsonRow[],
@@ -6652,6 +7435,38 @@ function renderRotationStaleBuyReview(row: RotationStaleBuyReviewStats): string 
   ].join('\n');
 }
 
+function renderKolHunterAdmissionSkipMarkouts(row: KolHunterAdmissionSkipMarkoutStats): string {
+  const tokenRows = row.topTokens.length === 0
+    ? '_No admission-skip token probes._'
+    : [
+        '| token | rows | probes | ok | best horizon | best postCost | top KOLs |',
+        '|---|---:|---:|---:|---:|---:|---|',
+        ...row.topTokens.map((token) =>
+          `| ${token.shortMint} | ${token.rows} | ${token.probeRows} | ${token.okRows} | ` +
+          `${token.bestHorizonSec == null ? 'n/a' : `${token.bestHorizonSec}s`} | ` +
+          `${formatPct(token.bestMedianPostCostDeltaPct)} | ` +
+          `${token.topKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'} |`
+        ),
+      ].join('\n');
+  return [
+    '| verdict | since | rows | probes | ok | tokens | max-concurrent rows | min ok coverage | primary | primary postCost | primary positive | top KOLs | top reasons | reasons |',
+    '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|',
+    `| ${row.verdict} | ${row.since} | ${row.rows} | ${row.probeRows} | ${row.okRows} | ` +
+      `${row.tokenRows} | ${row.maxConcurrentRows} | ${formatPct(row.minOkCoverage)} | ` +
+      `${row.primaryHorizonSec == null ? 'n/a' : `${row.primaryHorizonSec}s`} | ` +
+      `${formatPct(row.primaryMedianPostCostDeltaPct)} | ${formatPct(row.primaryPostCostPositiveRate)} | ` +
+      `${row.topKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'} | ` +
+      `${row.topReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'} | ` +
+      `${row.reasons.join('; ') || 'n/a'} |`,
+    '',
+    '### Admission-Skip Horizons',
+    renderStatsTable(row.horizons),
+    '',
+    '### Admission-Skip Tokens',
+    tokenRows,
+  ].join('\n');
+}
+
 function renderRotationPriceContextMarkouts(row: RotationPriceContextMarkoutStats): string {
   const tokenRows = row.topTokens.length === 0
     ? '_No covered price-context token markouts._'
@@ -7038,7 +7853,83 @@ function renderReviewCohortGenerationAudit(row: ReviewCohortGenerationAuditStats
       `${row.missingParticipantTimestampRows} | ` +
       `${row.primaryRouteKnownTwoPlusWithoutCostAwareCloneRows}/${row.primaryRouteKnownTwoPlusRows} |`,
     '',
+    `- diagnosis: ${row.diagnosis}`,
+    `- next action: ${row.nextAction}`,
+    `- single-KOL route-known cost-aware rows: ${row.singleKolRouteKnownCostAwareRows}/${row.routeKnownCostAwareRows}`,
+    `- review metadata gaps: candidateId ${row.reviewMissingCandidateIdRows}/${row.reviewRows}, ` +
+      `participant timestamps ${row.reviewMissingParticipantTimestampRows}/${row.reviewRows}`,
     `- blockers: ${row.blockerReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'}`,
+  ].join('\n');
+}
+
+function renderRotationSecondKolOpportunityFunnel(row: RotationSecondKolOpportunityFunnelStats): string {
+  const tokens = row.topTokens.length === 0
+    ? '_No single-KOL token rows._'
+    : [
+        '| token | rows | second KOL | <=30s | route-known cost-aware | route-known cost-aware <=30s | median delay | top second KOLs |',
+        '|---|---:|---:|---:|---:|---:|---:|---|',
+        ...row.topTokens.map((token) =>
+          `| ${token.shortMint} | ${token.rows} | ${token.secondKolRows} | ${token.secondKolWithin30Rows} | ` +
+          `${token.routeKnownCostAwareRows} | ${token.routeKnownCostAwareSecondWithin30Rows} | ` +
+          `${token.medianSecondKolDelaySec == null ? 'n/a' : `${token.medianSecondKolDelaySec.toFixed(0)}s`} | ` +
+          `${token.topSecondKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'} |`
+        ),
+      ].join('\n');
+  return [
+    '| verdict | underfill | single KOL | token | entry time | tx coverage | route-known cost-aware single | second seen | <=15s | <=30s | <=60s | late<=180s | route-known cost-aware <=30s | potential review | true single | top second KOLs | reasons |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|',
+    `| ${row.verdict} | ${row.underfillRows} | ${row.singleKolRows} | ${row.rowsWithToken} | ` +
+      `${row.rowsWithEntryTime} | ${row.rowsWithTxCoverage} | ${row.routeKnownCostAwareSingleRows} | ` +
+      `${row.secondKolSeenRows} | ${row.secondKolWithin15Rows} | ${row.secondKolWithin30Rows} | ` +
+      `${row.secondKolWithin60Rows} | ${row.secondKolLate180Rows} | ${row.routeKnownCostAwareSecondWithin30Rows} | ` +
+      `${row.potentialReviewRows} | ${row.trueSingleRows} | ` +
+      `${row.topSecondKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'} | ` +
+      `${row.reasons.join('; ') || 'n/a'} |`,
+    '',
+    '### 2nd-KOL Opportunity Tokens',
+    tokens,
+  ].join('\n');
+}
+
+function renderRotationSecondKolPromotionGap(row: RotationSecondKolPromotionGapStats): string {
+  const tokens = row.topTokens.length === 0
+    ? '_No second-KOL <=30s token rows._'
+    : [
+        '| token | rows | route proof | cost-aware | route-known cost-aware | median delay | route unknown reasons |',
+        '|---|---:|---:|---:|---:|---:|---|',
+        ...row.topTokens.map((token) =>
+          `| ${token.shortMint} | ${token.rows} | ${token.routeProofRows} | ${token.costAwareRows} | ` +
+          `${token.routeKnownCostAwareRows} | ` +
+          `${token.medianSecondKolDelaySec == null ? 'n/a' : `${token.medianSecondKolDelaySec.toFixed(0)}s`} | ` +
+          `${token.topRouteUnknownReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'} |`
+        ),
+      ].join('\n');
+  return [
+    '| verdict | rows | route proof | route unknown | cost-aware | route-known cost-aware | route-known missing cost-aware | cost-aware route unknown | route diagnosis | recovery hint | historical next | fresh cutoff | fresh rows | fresh route proof | fresh cost-aware | fresh route-known cost-aware | fresh exit evidence | fresh next | candidateId | participant timestamps | median 2nd delay | med MFE | refund-adjusted | top route unknown | top missing cost-aware arms | top exits | reasons |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|---|---|---|---|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|---|---|---|---|',
+    `| ${row.verdict} | ${row.rows} | ${row.routeProofRows} | ${row.routeUnknownRows} | ` +
+      `${row.costAwareRows} | ${row.routeKnownCostAwareRows} | ${row.routeKnownMissingCostAwareRows} | ` +
+      `${row.costAwareRouteUnknownRows} | ` +
+      `structural=${row.structuralBlockRows}, dataGap=${row.dataGapRows}, infra=${row.infraRetryRows}, ` +
+      `unknown=${row.unknownRows}, exitUnknown=${row.exitLiquidityUnknownRows}, ` +
+      `securityGap=${row.securityDataGapRows}, mixed=${row.mixedExitLiquidityAndDataGapRows}, ` +
+      `missingProof=${row.missingPositiveEvidenceRows} | ${row.recoveryHint} | ${row.nextSprint} | ` +
+      `${row.freshSince ?? 'n/a'} (${row.freshCutoffSource}) | ` +
+      `${row.freshRows}/${row.rows} stale=${row.staleRows} | ` +
+      `${row.freshRouteProofRows}/${row.freshRows} | ${row.freshCostAwareRows}/${row.freshRows} | ` +
+      `${row.freshRouteKnownCostAwareRows}/${row.freshRows} | ${row.freshExitQuoteEvidenceRows}/${row.freshRows} | ` +
+      `${row.freshNextSprint} | ` +
+      `${row.candidateIdRows}/${row.rows} | ` +
+      `${row.participantTimestampRows}/${row.rows} | ` +
+      `${row.medianSecondKolDelaySec == null ? 'n/a' : `${row.medianSecondKolDelaySec.toFixed(0)}s`} | ` +
+      `${formatPct(row.medianMfePct)} | ${formatSol(row.refundAdjustedNetSol)} | ` +
+      `${row.topRouteUnknownReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'} | ` +
+      `${row.topMissingCostAwareArms.map((item) => `${item.arm}:${item.count}`).join(', ') || 'n/a'} | ` +
+      `${row.topExitReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'} | ` +
+      `${row.reasons.join('; ') || 'n/a'} |`,
+    '',
+    '### 2nd-KOL Promotion Gap Tokens',
+    tokens,
   ].join('\n');
 }
 
@@ -7396,6 +8287,14 @@ function renderReport(report: RotationReport): string {
     '> Report-only. Separates no opportunity from missing recording/proof before route_known_2kol_cost_aware can be trusted.',
     renderReviewCohortGenerationAudit(report.reviewCohortGenerationAudit),
     '',
+    '## Rotation 2nd-KOL Opportunity Funnel',
+    '> Report-only. Joins single-KOL underfill closes with same-token KOL buy flow to separate true single-KOL from second-KOL linkage gaps.',
+    renderRotationSecondKolOpportunityFunnel(report.rotationSecondKolOpportunityFunnel),
+    '',
+    '## Rotation 2nd-KOL Promotion Gap',
+    '> Report-only. Explains why second-KOL <=30s paper opportunities still fail the route-known cost-aware review cohort.',
+    renderRotationSecondKolPromotionGap(report.rotationSecondKolPromotionGap),
+    '',
     '## Route Unknown Reasons',
     '> Report-only. Splits route-unknown paper winners from missing/unsafe exit-route evidence. Reasons are non-exclusive; one close can appear in multiple reason rows.',
     renderRouteUnknownReasons(report.routeUnknownReasons),
@@ -7411,6 +8310,10 @@ function renderReport(report: RotationReport): string {
     '## Rotation Candidate Funnel Since Session',
     '> Report-only. Splits current-session KOL input, rotation candidate formation, no-trade/policy ledgers, and paper closes. Live routing is unchanged.',
     renderRotationCandidateFunnel(report.rotationCandidateFunnel),
+    '',
+    '## KOL Admission-Skip Markouts',
+    '> Report-only. Measures KOL buys skipped by live admission/capacity gates as paper probes. This section never changes live routing.',
+    renderKolHunterAdmissionSkipMarkouts(report.kolHunterAdmissionSkipMarkouts),
     '',
     '## Rotation Detector Replay Since Session',
     '> Report-only. Replays current-session KOL tx against rotation detector defaults to explain detector-side starvation before any live or paper policy change.',
@@ -7610,6 +8513,12 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
     policyDecisionRows: recentPolicyDecisionRows,
     rotationPaperRows,
   });
+  const kolHunterAdmissionSkipMarkouts = buildKolHunterAdmissionSkipMarkouts({
+    sinceMs: args.sinceMs,
+    missedAlphaRows: recentMissedAlphaRows,
+    horizonsSec: args.horizonsSec,
+    roundTripCostPct: args.roundTripCostPct,
+  });
   const rotationDetectorReplay = buildRotationDetectorReplayStats({
     sinceMs: args.sinceMs,
     currentSessionStartedAtMs: Number.isFinite(currentSessionStartedAtMs) ? currentSessionStartedAtMs : undefined,
@@ -7683,6 +8592,17 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
   );
   const paperCohortValidity = buildPaperCohortValidityStats(rotationPaperRows);
   const reviewCohortGenerationAudit = buildReviewCohortGenerationAuditStats(rotationPaperRows);
+  const rotationSecondKolOpportunityFunnel = buildRotationSecondKolOpportunityFunnelStats({
+    rotationPaperRows,
+    kolTxRows,
+  });
+  const rotationSecondKolPromotionGap = buildRotationSecondKolPromotionGapStats({
+    rotationPaperRows,
+    kolTxRows,
+    assumedNetworkFeeSol,
+    routeProofFreshSinceMs: args.routeProofFreshSinceMs,
+    currentSessionStartedAtMs: Number.isFinite(currentSessionStartedAtMs) ? currentSessionStartedAtMs : undefined,
+  });
   const reviewRows = selectRouteKnown2KolCostAwareUnderfillRows(rotationPaperRows);
   const reviewCandidateIds = new Set(
     reviewRows
@@ -7800,6 +8720,7 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
     routeTruthAudit,
     routeProofFreshness,
     rotationCandidateFunnel,
+    kolHunterAdmissionSkipMarkouts,
     rotationDetectorReplay,
     rotationDetectorReplayWindow,
     rotationDetectorBlockerMarkouts,
@@ -7817,6 +8738,8 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
     posthocSecondKolRecoveryBacklog,
     paperCohortValidity,
     reviewCohortGenerationAudit,
+    rotationSecondKolOpportunityFunnel,
+    rotationSecondKolPromotionGap,
     liveEquivalenceDrilldown,
     reviewCohortEvidence,
     paperExitProxies,

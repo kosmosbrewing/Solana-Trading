@@ -221,6 +221,48 @@ describe('smart-v3-evidence-report', () => {
     expect(markdown).toContain('MFE>=12 walletLose');
   });
 
+  it('audits hardcut continuation without changing live exit policy', async () => {
+    await writeFile(path.join(dir, 'smart-v3-paper-trades.jsonl'), jsonl(smartV3TradeRows(3, {
+      exitReason: 'smart_v3_mae_fast_fail',
+      netSol: -0.001,
+      netSolTokenOnly: -0.0005,
+      maeAt5s: -0.05,
+      mfePctPeak: 0.01,
+    })));
+    await writeFile(path.join(dir, 'smart-v3-live-trades.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl(
+      smartV3MarkoutRows(3, [30, 60, 300, 1800], -0.1)
+    ));
+
+    const report = await buildSmartV3EvidenceReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [30, 60, 300, 1800],
+      roundTripCostPct: 0.005,
+      assumedAtaRentSol: 0.002,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.hardcutContinuationAudit).toMatchObject({
+      verdict: 'HARDCUT_HELPED',
+      rows: 3,
+      paperRows: 3,
+      liveRows: 0,
+      markoutRows: 12,
+      okRows: 12,
+      minOkCoverage: 1,
+      primaryHorizonSec: 300,
+      primaryMedianPostCostDeltaPct: -0.10500000000000001,
+      primaryPostCostPositiveRate: 0,
+      primaryTailRows: 0,
+    });
+
+    const markdown = renderSmartV3EvidenceReportMarkdown(report);
+    expect(markdown).toContain('## Smart-v3 Hardcut Continuation Audit');
+    expect(markdown).toContain('HARDCUT_HELPED');
+    expect(markdown).toContain('never changes live exits automatically');
+  });
+
   it('splits smart-v3 paper rows and markout coverage by armName', async () => {
     const mainRows = smartV3TradeRows(6);
     const fastFailRows = smartV3TradeRows(4, {

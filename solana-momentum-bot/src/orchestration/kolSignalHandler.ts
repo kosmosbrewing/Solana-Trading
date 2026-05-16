@@ -6940,7 +6940,7 @@ async function checkKolSellQuoteSized(
         flags: [...baseFlags, `SELL_REJECT_${(sellResult.reason ?? 'unknown').toUpperCase()}`],
       };
     }
-    return { approved: true, flags: baseFlags };
+    return { approved: true, flags: [...baseFlags, 'SELL_ROUTE_OK', 'EXIT_LIQUIDITY_KNOWN'] };
   } catch (err) {
     log.debug(`[KOL_HUNTER_SURVIVAL] sellQuoteProbe error ${tokenMint.slice(0, 12)}: ${err}`);
     // false halt 방지 — observability flag 만 남기고 진입 허용
@@ -9327,6 +9327,8 @@ function buildKolBaseLedgerRecord(
     partialTakeT1LiveFailedAtSec: pos.partialTakeT1LiveFailedAtSec ?? null,
     partialTakeT1LiveFailureCount: pos.partialTakeT1LiveFailureCount ?? 0,
     kols: pos.participatingKols,
+    participatingKols: pos.participatingKols,
+    entryParticipatingKols: pos.participatingKols,
     kolScore: pos.kolScore,
     // MISSION_CONTROL §Control 5 telemetry — arm identity + discovery context + parameter trace.
     lane: LANE_STRATEGY,

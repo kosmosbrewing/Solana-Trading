@@ -159,6 +159,29 @@ interface SmartV3BleedReview {
   liveMedianHoldSec: number | null;
 }
 
+type SmartV3HardcutContinuationVerdict =
+  | 'NO_HARDCUTS'
+  | 'COLLECT'
+  | 'HARDCUT_HELPED'
+  | 'HARDCUT_WINNER_KILL_RISK';
+
+interface SmartV3HardcutContinuationAudit {
+  verdict: SmartV3HardcutContinuationVerdict;
+  reasons: string[];
+  rows: number;
+  paperRows: number;
+  liveRows: number;
+  markoutRows: number;
+  okRows: number;
+  minOkCoverage: number | null;
+  primaryHorizonSec: number | null;
+  primaryMedianPostCostDeltaPct: number | null;
+  primaryPostCostPositiveRate: number | null;
+  primaryTailRows: number;
+  topExitReasons: Array<{ reason: string; count: number }>;
+  horizons: HorizonStats[];
+}
+
 interface SmartV3EvidenceReport {
   generatedAt: string;
   realtimeDir: string;
@@ -189,6 +212,7 @@ interface SmartV3EvidenceReport {
   };
   evidenceVerdicts: SmartV3EvidenceVerdict[];
   bleedReview: SmartV3BleedReview;
+  hardcutContinuationAudit: SmartV3HardcutContinuationAudit;
   kolTransferPosterior: {
     input: string;
     rows: number;
@@ -866,6 +890,67 @@ function buildSmartV3BleedReview(cohorts: SmartV3CohortStats[]): SmartV3BleedRev
   };
 }
 
+function buildSmartV3HardcutContinuationAudit(input: {
+  paperRows: JsonRow[];
+  liveRows: JsonRow[];
+  markoutRows: JsonRow[];
+  horizonsSec: number[];
+  roundTripCostPct: number;
+}): SmartV3HardcutContinuationAudit {
+  const paperHardcuts = input.paperRows.filter(isHardCut);
+  const liveHardcuts = input.liveRows.filter(isHardCut);
+  const hardcuts = [...paperHardcuts, ...liveHardcuts];
+  const positionIds = new Set(hardcuts.map(tradePositionId).filter(Boolean));
+  const rows = input.markoutRows.filter((row) =>
+    anchorTypeOf(row) === 'sell' &&
+    positionIds.has(tradePositionId(row))
+  );
+  const horizons = summarizeMarkoutRows(rows, input.horizonsSec, input.roundTripCostPct, positionIds);
+  const coverages = horizons
+    .map((row) => row.okCoverage)
+    .filter((value): value is number => value != null);
+  const minOkCoverage = coverages.length > 0 ? Math.min(...coverages) : null;
+  const primary = statAt(horizons, 300) ?? statAt(horizons, 60) ?? horizons[0];
+  const primaryPostCostPositiveRate = primary && primary.okRows > 0
+    ? primary.positivePostCostRows / primary.okRows
+    : null;
+  const reasons: string[] = [];
+  let verdict: SmartV3HardcutContinuationVerdict = 'COLLECT';
+
+  if (hardcuts.length === 0) {
+    verdict = 'NO_HARDCUTS';
+    reasons.push('no smart-v3 hardcut closes in window');
+  } else if ((minOkCoverage ?? 0) < EVIDENCE_MIN_OK_COVERAGE) {
+    verdict = 'COLLECT';
+    reasons.push(`hardcut sell markout coverage ${ratio(minOkCoverage)} < ${ratio(EVIDENCE_MIN_OK_COVERAGE)}`);
+  } else if ((primary?.tailRows ?? 0) > 0 || (primary?.medianPostCostDeltaPct ?? 0) >= 0.1) {
+    verdict = 'HARDCUT_WINNER_KILL_RISK';
+    reasons.push(`T+${primary?.horizonSec ?? 'n/a'} hardcut continuation stayed strong after cost`);
+  } else if ((primary?.medianPostCostDeltaPct ?? 0) <= 0 && (primaryPostCostPositiveRate ?? 0) < 0.4) {
+    verdict = 'HARDCUT_HELPED';
+    reasons.push(`T+${primary?.horizonSec ?? 'n/a'} hardcut continuation was weak after cost`);
+  } else {
+    reasons.push(`T+${primary?.horizonSec ?? 'n/a'} hardcut continuation is mixed; keep collecting`);
+  }
+
+  return {
+    verdict,
+    reasons,
+    rows: hardcuts.length,
+    paperRows: paperHardcuts.length,
+    liveRows: liveHardcuts.length,
+    markoutRows: rows.length,
+    okRows: rows.filter(isOkMarkout).length,
+    minOkCoverage,
+    primaryHorizonSec: primary?.horizonSec ?? null,
+    primaryMedianPostCostDeltaPct: primary?.medianPostCostDeltaPct ?? null,
+    primaryPostCostPositiveRate,
+    primaryTailRows: primary?.tailRows ?? 0,
+    topExitReasons: countTop(hardcuts, (row) => str(row.exitReason) || str(row.closeReason)),
+    horizons,
+  };
+}
+
 function groupByEntryReason(mode: 'paper' | 'live', rows: JsonRow[]): Array<{ reason: string; rows: JsonRow[] }> {
   const groups = new Map<string, JsonRow[]>();
   groups.set('all', rows);
@@ -1018,6 +1103,13 @@ export async function buildSmartV3EvidenceReport(args: Args): Promise<SmartV3Evi
     return buildVerdict(cohort, cohortMarkouts?.afterBuy ?? [], cohortMarkouts?.afterSell ?? []);
   });
   const bleedReview = buildSmartV3BleedReview(cohorts);
+  const hardcutContinuationAudit = buildSmartV3HardcutContinuationAudit({
+    paperRows,
+    liveRows,
+    markoutRows,
+    horizonsSec: args.horizonsSec,
+    roundTripCostPct: args.roundTripCostPct,
+  });
   const kolTransferPosterior = buildKolTransferPosteriorReport(kolTransferRows as unknown as KolTransferRow[], {
     input: kolTransferInput,
     sinceSec: Math.floor(args.sinceMs / 1000),
@@ -1049,6 +1141,7 @@ export async function buildSmartV3EvidenceReport(args: Args): Promise<SmartV3Evi
     },
     evidenceVerdicts,
     bleedReview,
+    hardcutContinuationAudit,
     kolTransferPosterior: {
       input: kolTransferInput,
       rows: kolTransferPosterior.rows,
@@ -1177,6 +1270,29 @@ export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceRepor
     report.bleedReview.liveMedianHoldSec == null ? 'n/a' : `${report.bleedReview.liveMedianHoldSec.toFixed(0)}s`,
     report.bleedReview.reasons.join('; ') || 'n/a',
   ].join(' | ') + ' |');
+  lines.push('');
+
+  lines.push('## Smart-v3 Hardcut Continuation Audit');
+  lines.push('> Report-only. Checks whether hardcut exits were followed by post-cost continuation. This never changes live exits automatically.');
+  lines.push('| verdict | closes | paper/live | markouts | ok | minCov | primary | medPostCost | positive | tail5x+ | top exits | reasons |');
+  lines.push('|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|');
+  lines.push([
+    `| ${report.hardcutContinuationAudit.verdict}`,
+    report.hardcutContinuationAudit.rows,
+    `${report.hardcutContinuationAudit.paperRows}/${report.hardcutContinuationAudit.liveRows}`,
+    report.hardcutContinuationAudit.markoutRows,
+    report.hardcutContinuationAudit.okRows,
+    ratio(report.hardcutContinuationAudit.minOkCoverage),
+    report.hardcutContinuationAudit.primaryHorizonSec == null ? 'n/a' : `${report.hardcutContinuationAudit.primaryHorizonSec}s`,
+    pct(report.hardcutContinuationAudit.primaryMedianPostCostDeltaPct),
+    ratio(report.hardcutContinuationAudit.primaryPostCostPositiveRate),
+    report.hardcutContinuationAudit.primaryTailRows,
+    report.hardcutContinuationAudit.topExitReasons.map((entry) => `${entry.reason}:${entry.count}`).join(', ') || 'n/a',
+    report.hardcutContinuationAudit.reasons.join('; ') || 'n/a',
+  ].join(' | ') + ' |');
+  lines.push('');
+  lines.push('### Hardcut Continuation Horizons');
+  lines.push(renderHorizonTable(report.hardcutContinuationAudit.horizons));
   lines.push('');
 
   lines.push('## Closed Trades');

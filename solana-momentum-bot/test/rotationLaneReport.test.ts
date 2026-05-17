@@ -439,6 +439,124 @@ describe('rotation-lane-report', () => {
     expect(markdown).toContain('## Markouts By Arm');
   });
 
+  it('adds an intraday bottleneck board for loss hours and concentration', async () => {
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([
+      {
+        strategy: 'kol_hunter',
+        lane: 'kol_hunter',
+        armName: 'rotation_underfill_v1',
+        profileArm: 'rotation_underfill_cost_aware_exit_v2',
+        entryArm: 'rotation_underfill_v1',
+        kolEntryReason: 'rotation_v1',
+        positionId: 'intraday-win-1',
+        tokenMint: 'MintIntradayWin111111111111111111111111',
+        closedAt: '2026-05-02T00:01:00.000Z',
+        exitReason: 'winner_trailing_t1',
+        holdSec: 18,
+        netSol: 0.002,
+        netSolTokenOnly: 0.0022,
+        mfePctPeak: 0.15,
+        routeFound: true,
+        rotationMonetizableEdge: { pass: true, costRatio: 0.04 },
+        kols: [{ id: 'dv', timestamp: '2026-05-02T00:00:50.000Z' }],
+        survivalFlags: ['ROTATION_UNDERFILL_KOLS_1'],
+      },
+      {
+        strategy: 'kol_hunter',
+        lane: 'kol_hunter',
+        armName: 'rotation_underfill_v1',
+        profileArm: 'rotation_underfill_cost_aware_exit_v2',
+        entryArm: 'rotation_underfill_v1',
+        kolEntryReason: 'rotation_v1',
+        positionId: 'intraday-win-2',
+        tokenMint: 'MintIntradayWin111111111111111111111111',
+        closedAt: '2026-05-02T00:03:00.000Z',
+        exitReason: 'winner_trailing_t1',
+        holdSec: 24,
+        netSol: 0.001,
+        netSolTokenOnly: 0.0012,
+        mfePctPeak: 0.09,
+        routeFound: true,
+        rotationMonetizableEdge: { pass: true, costRatio: 0.05 },
+        kols: [{ id: 'dv', timestamp: '2026-05-02T00:02:45.000Z' }],
+        survivalFlags: ['ROTATION_UNDERFILL_KOLS_1'],
+      },
+      {
+        strategy: 'kol_hunter',
+        lane: 'kol_hunter',
+        armName: 'rotation_underfill_v1',
+        profileArm: 'rotation_underfill_cost_aware_exit_v2',
+        entryArm: 'rotation_underfill_v1',
+        kolEntryReason: 'rotation_v1',
+        positionId: 'intraday-loss-1',
+        tokenMint: 'MintIntradayLoss1111111111111111111111',
+        closedAt: '2026-05-02T01:01:00.000Z',
+        exitReason: 'rotation_dead_on_arrival',
+        holdSec: 20,
+        netSol: -0.002,
+        netSolTokenOnly: -0.0018,
+        mfePctPeak: 0.01,
+        routeFound: true,
+        kols: [{ id: 'noob_mini', timestamp: '2026-05-02T01:00:45.000Z' }],
+        survivalFlags: ['ROTATION_UNDERFILL_KOLS_1'],
+      },
+    ]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [15],
+      roundTripCostPct: 0.005,
+      assumedAtaRentSol: 0.001,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.intradayBottlenecks).toMatchObject({
+      rows: 3,
+      routeProofRows: 3,
+      twoPlusKolRows: 0,
+      costAwareRows: 3,
+    });
+    expect(report.intradayBottlenecks.hours.find((row) => row.kstHour === 9)).toMatchObject({
+      rows: 2,
+      verdict: 'DIAGNOSTIC_ONLY',
+    });
+    expect(report.intradayBottlenecks.hours.find((row) => row.kstHour === 10)).toMatchObject({
+      rows: 1,
+      verdict: 'LOSS_REGIME',
+    });
+    expect(report.intradayBottlenecks.topWinningKols[0]).toMatchObject({
+      label: 'dv',
+      rows: 2,
+    });
+    expect(report.intradayBottlenecks.topLosingKols[0]).toMatchObject({
+      label: 'noob_mini',
+      rows: 1,
+    });
+    expect(report.weeklyPattern).toMatchObject({
+      rows: 3,
+    });
+    expect(report.weeklyPattern.shadowGateCandidates.map((row) => row.policy)).toEqual(expect.arrayContaining([
+      'baseline_all_rotation_paper',
+      'loss_regime_hour_block',
+      'bad_kol_block',
+      'good_kol_focus',
+      'doa_1h_kol_cooldown',
+    ]));
+
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('## Rotation Intraday Bottleneck Board');
+    expect(markdown).toContain('## Rotation 7D Pattern Board');
+    expect(markdown).toContain('7D Paper Shadow Gate Candidates');
+    expect(markdown).toContain('DIAGNOSTIC_ONLY');
+    expect(markdown).toContain('LOSS_REGIME');
+    expect(markdown).toContain('Top Tokens');
+    expect(markdown).toContain('noob_mini');
+  });
+
   it('splits underfill paper trades into route-known and cost-aware cohorts', async () => {
     await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([
       {

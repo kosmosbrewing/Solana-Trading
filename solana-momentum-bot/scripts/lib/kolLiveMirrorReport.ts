@@ -116,15 +116,24 @@ function classifyPair(liveNetSol: number, mirrorNetSol: number): LiveMirrorClass
 
 function buildPairs(liveRows: JsonRow[], mirrorRows: JsonRow[]): KolLiveMirrorPair[] {
   const liveByPositionId = new Map<string, JsonRow>();
+  const liveByDecisionId = new Map<string, JsonRow>();
   for (const row of liveRows) {
     const positionId = valueStr(row, 'positionId');
     if (positionId) liveByPositionId.set(positionId, row);
+    const decisionId = valueStr(row, 'liveEquivalenceDecisionId');
+    if (decisionId) liveByDecisionId.set(decisionId, row);
   }
   const pairs: KolLiveMirrorPair[] = [];
   for (const mirror of mirrorRows) {
     const parentPositionId = valueStr(mirror, 'parentPositionId');
-    const live = parentPositionId ? liveByPositionId.get(parentPositionId) : undefined;
+    const mirrorDecisionId = valueStr(mirror, 'liveEquivalenceDecisionId');
+    const live = parentPositionId
+      ? liveByPositionId.get(parentPositionId) ?? (mirrorDecisionId ? liveByDecisionId.get(mirrorDecisionId) : undefined)
+      : mirrorDecisionId
+        ? liveByDecisionId.get(mirrorDecisionId)
+        : undefined;
     if (!live) continue;
+    const livePositionId = valueStr(live, 'positionId') || parentPositionId;
     const liveNetSol = firstNum(live, ['netSol', 'walletDeltaSol', 'dbPnlSol']) ?? 0;
     const mirrorNetSol = firstNum(mirror, ['netSolTokenOnly', 'netSol']) ?? 0;
     const liveNetPct = firstNum(live, ['netPct', 'netPctTokenOnly']);
@@ -133,10 +142,10 @@ function buildPairs(liveRows: JsonRow[], mirrorRows: JsonRow[]): KolLiveMirrorPa
       ? rounded(mirrorNetPct - liveNetPct)
       : null;
     pairs.push({
-      livePositionId: parentPositionId,
+      livePositionId,
       mirrorPositionId: valueStr(mirror, 'positionId'),
       tokenMint: valueStr(live, 'tokenMint') || valueStr(mirror, 'tokenMint') || null,
-      decisionId: valueStr(live, 'liveEquivalenceDecisionId') || valueStr(mirror, 'liveEquivalenceDecisionId') || null,
+      decisionId: valueStr(live, 'liveEquivalenceDecisionId') || mirrorDecisionId || null,
       liveExitReason: valueStr(live, 'exitReason') || 'unknown',
       mirrorExitReason: valueStr(mirror, 'exitReason') || 'unknown',
       liveNetSol,

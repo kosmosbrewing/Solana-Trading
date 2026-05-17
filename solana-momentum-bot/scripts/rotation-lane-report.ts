@@ -163,6 +163,128 @@ interface WinnerEntryDiagnosticStats {
   unknownQualityRate: number | null;
 }
 
+type RotationIntradayBottleneckVerdict =
+  | 'DIAGNOSTIC_ONLY'
+  | 'LOSS_REGIME'
+  | 'WATCH_EDGE'
+  | 'LIVE_ELIGIBLE_REVIEW';
+
+interface RotationIntradayHourStats {
+  kstHour: number;
+  rows: number;
+  wins: number;
+  losses: number;
+  refundAdjustedNetSol: number;
+  walletDragStressSol: number;
+  postCostPositiveRate: number | null;
+  routeProofRows: number;
+  twoPlusKolRows: number;
+  costAwareRows: number;
+  t1Rows: number;
+  medianMfePct: number | null;
+  medianHoldSec: number | null;
+  topArm: string;
+  topArmRows: number;
+  topExitReasons: Array<{ reason: string; count: number }>;
+  verdict: RotationIntradayBottleneckVerdict;
+  reasons: string[];
+}
+
+interface RotationConcentrationStats {
+  label: string;
+  rows: number;
+  wins: number;
+  losses: number;
+  refundAdjustedNetSol: number;
+  walletDragStressSol: number;
+  shareOfPositiveNet: number | null;
+  topKols: Array<{ kol: string; count: number }>;
+  topArms: Array<{ arm: string; count: number }>;
+  topExitReasons: Array<{ reason: string; count: number }>;
+}
+
+interface RotationIntradayBottleneckStats {
+  since: string;
+  rows: number;
+  refundAdjustedNetSol: number;
+  walletDragStressSol: number;
+  postCostPositiveRate: number | null;
+  routeProofRows: number;
+  twoPlusKolRows: number;
+  costAwareRows: number;
+  topWinnerShare: number | null;
+  reasons: string[];
+  hours: RotationIntradayHourStats[];
+  topWinningTokens: RotationConcentrationStats[];
+  topLosingTokens: RotationConcentrationStats[];
+  topWinningKols: RotationConcentrationStats[];
+  topLosingKols: RotationConcentrationStats[];
+}
+
+interface RotationDailyPatternStats {
+  day: string;
+  rows: number;
+  wins: number;
+  losses: number;
+  refundAdjustedNetSol: number;
+  walletDragStressSol: number;
+  postCostPositiveRate: number | null;
+  routeProofRows: number;
+  twoPlusKolRows: number;
+  costAwareRows: number;
+  t1Rows: number;
+}
+
+interface RotationRepeatedLossHourStats {
+  kstHour: number;
+  observedDays: number;
+  lossDays: number;
+  rows: number;
+  refundAdjustedNetSol: number;
+  walletDragStressSol: number;
+  lossDayRate: number | null;
+}
+
+type RotationShadowGateVerdict =
+  | 'BASELINE'
+  | 'COLLECT'
+  | 'FORWARD_PAPER_CANDIDATE'
+  | 'WATCH'
+  | 'REJECT_IN_SAMPLE';
+
+interface RotationShadowGateCandidateStats {
+  policy: string;
+  role: 'baseline' | 'paper_shadow';
+  verdict: RotationShadowGateVerdict;
+  nextAction: string;
+  retainedRows: number;
+  skippedRows: number;
+  refundAdjustedNetSol: number;
+  walletDragStressSol: number;
+  postCostPositiveRate: number | null;
+  maxLosingStreak: number;
+  t1Rate: number | null;
+  skippedLossSavedSol: number;
+  missedWinnerCostSol: number;
+  routeProofRows: number;
+  twoPlusKolRows: number;
+  costAwareRows: number;
+  blockedHours: number[];
+  blockedKols: string[];
+  focusedKols: string[];
+  reasons: string[];
+}
+
+interface RotationWeeklyPatternStats {
+  since: string;
+  rows: number;
+  intraday: RotationIntradayBottleneckStats;
+  daily: RotationDailyPatternStats[];
+  repeatedLossHours: RotationRepeatedLossHourStats[];
+  shadowGateCandidates: RotationShadowGateCandidateStats[];
+  reasons: string[];
+}
+
 interface UnderfillEntryQualityStats {
   scope: 'paper' | 'live';
   rows: number;
@@ -1417,6 +1539,8 @@ interface RotationReport {
     winnerEntryPairings: WinnerEntryPairingStats[];
     winnerEntryDiagnostics: WinnerEntryDiagnosticStats[];
   };
+  intradayBottlenecks: RotationIntradayBottleneckStats;
+  weeklyPattern: RotationWeeklyPatternStats;
   liveTrades: {
     totalRows: number;
     rotationRows: number;
@@ -1894,6 +2018,599 @@ function buildTopExitReasons(rows: JsonRow[]): Array<{ reason: string; count: nu
     .map(([reason, count]) => ({ reason, count }))
     .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason))
     .slice(0, 5);
+}
+
+function rowPaperTokenOnlyNetSol(row: JsonRow): number {
+  return num(row.netSolTokenOnly) ?? numberOrZero(row.netSol);
+}
+
+function rowRefundAdjustedNetSol(row: JsonRow, assumedNetworkFeeSol: number): number {
+  return rowPaperTokenOnlyNetSol(row) - assumedNetworkFeeSol;
+}
+
+function rowWalletDragStressSol(
+  row: JsonRow,
+  assumedAtaRentSol: number,
+  assumedNetworkFeeSol: number
+): number {
+  return rowPaperTokenOnlyNetSol(row) - assumedAtaRentSol - assumedNetworkFeeSol;
+}
+
+function rowHoldSec(row: JsonRow): number | null {
+  return num(row.holdSec);
+}
+
+function kstHourFromMs(ms: number): number | null {
+  if (!Number.isFinite(ms)) return null;
+  return new Date(ms + 9 * 3600_000).getUTCHours();
+}
+
+function rowKstHour(row: JsonRow): number | null {
+  return kstHourFromMs(rowCloseTimeMs(row));
+}
+
+function rowKolLabels(row: JsonRow): string[] {
+  const ids = rowParticipants(row)
+    .map((item) => item.id)
+    .filter(Boolean);
+  return [...new Set(ids)];
+}
+
+function topArmForRows(rows: JsonRow[]): { arm: string; count: number } {
+  const [top] = countByLabel(rows.map(rowArmName), 'arm') as Array<{ arm: string; count: number }>;
+  return top ?? { arm: '(unknown)', count: 0 };
+}
+
+function routeProofRow(row: JsonRow): boolean {
+  return routeTruthEvidenceSources(row).length > 0 && !isUnderfillRouteUnknown(row);
+}
+
+function buildRotationIntradayHourStats(
+  kstHour: number,
+  rows: JsonRow[],
+  assumedAtaRentSol: number,
+  assumedNetworkFeeSol: number
+): RotationIntradayHourStats {
+  const refundAdjustedValues = rows.map((row) => rowRefundAdjustedNetSol(row, assumedNetworkFeeSol));
+  const walletDragValues = rows.map((row) => rowWalletDragStressSol(row, assumedAtaRentSol, assumedNetworkFeeSol));
+  const refundAdjustedNetSol = refundAdjustedValues.reduce((sum, value) => sum + value, 0);
+  const walletDragStressSol = walletDragValues.reduce((sum, value) => sum + value, 0);
+  const postCostPositiveRate = ratio(refundAdjustedValues.filter((value) => value > 0).length, rows.length);
+  const routeProofRows = rows.filter(routeProofRow).length;
+  const twoPlusKolRows = rows.filter(isTwoPlusKolRow).length;
+  const costAwareRows = rows.filter(isCostAwareUnderfillRow).length;
+  const topArm = topArmForRows(rows);
+  const reasons: string[] = [];
+
+  if (twoPlusKolRows === 0) reasons.push('2+ KOL live-eligible evidence is missing');
+  if (refundAdjustedNetSol < 0) reasons.push(`refund-adjusted net ${formatSol(refundAdjustedNetSol)} < 0`);
+  if (walletDragStressSol < 0) reasons.push(`wallet-drag stress ${formatSol(walletDragStressSol)} < 0`);
+  if ((postCostPositiveRate ?? 0) < ROTATION_PAPER_COMPOUND_MIN_POST_COST_POSITIVE_RATE) {
+    reasons.push(`postCost>0 ${formatPct(postCostPositiveRate)} < ${formatPct(ROTATION_PAPER_COMPOUND_MIN_POST_COST_POSITIVE_RATE)}`);
+  }
+
+  let verdict: RotationIntradayBottleneckVerdict = 'LIVE_ELIGIBLE_REVIEW';
+  if (refundAdjustedNetSol < 0 || (walletDragStressSol < 0 && (postCostPositiveRate ?? 0) < 0.5)) {
+    verdict = 'LOSS_REGIME';
+  } else if (twoPlusKolRows === 0) {
+    verdict = 'DIAGNOSTIC_ONLY';
+  } else if (
+    refundAdjustedNetSol > 0 &&
+    (postCostPositiveRate ?? 0) >= ROTATION_PAPER_COMPOUND_MIN_POST_COST_POSITIVE_RATE &&
+    routeProofRows === rows.length &&
+    costAwareRows > 0
+  ) {
+    verdict = 'WATCH_EDGE';
+  }
+
+  return {
+    kstHour,
+    rows: rows.length,
+    wins: refundAdjustedValues.filter((value) => value > 0).length,
+    losses: refundAdjustedValues.filter((value) => value <= 0).length,
+    refundAdjustedNetSol,
+    walletDragStressSol,
+    postCostPositiveRate,
+    routeProofRows,
+    twoPlusKolRows,
+    costAwareRows,
+    t1Rows: rows.filter(rowHasT1).length,
+    medianMfePct: percentile(rows.map(rowMfePct).filter((value): value is number => value != null), 0.5),
+    medianHoldSec: percentile(rows.map(rowHoldSec).filter((value): value is number => value != null), 0.5),
+    topArm: topArm.arm,
+    topArmRows: topArm.count,
+    topExitReasons: buildTopExitReasons(rows),
+    verdict,
+    reasons,
+  };
+}
+
+function buildRotationConcentrationStats(
+  label: string,
+  rows: JsonRow[],
+  totalPositiveNetSol: number,
+  assumedAtaRentSol: number,
+  assumedNetworkFeeSol: number
+): RotationConcentrationStats {
+  const refundAdjustedValues = rows.map((row) => rowRefundAdjustedNetSol(row, assumedNetworkFeeSol));
+  const refundAdjustedNetSol = refundAdjustedValues.reduce((sum, value) => sum + value, 0);
+  return {
+    label,
+    rows: rows.length,
+    wins: refundAdjustedValues.filter((value) => value > 0).length,
+    losses: refundAdjustedValues.filter((value) => value <= 0).length,
+    refundAdjustedNetSol,
+    walletDragStressSol: rows
+      .map((row) => rowWalletDragStressSol(row, assumedAtaRentSol, assumedNetworkFeeSol))
+      .reduce((sum, value) => sum + value, 0),
+    shareOfPositiveNet: refundAdjustedNetSol > 0 && totalPositiveNetSol > 0
+      ? refundAdjustedNetSol / totalPositiveNetSol
+      : null,
+    topKols: countByLabel(rows.flatMap(rowKolLabels), 'kol').slice(0, 3) as Array<{ kol: string; count: number }>,
+    topArms: countByLabel(rows.map(rowArmName), 'arm').slice(0, 3) as Array<{ arm: string; count: number }>,
+    topExitReasons: buildTopExitReasons(rows).slice(0, 3),
+  };
+}
+
+function buildRotationConcentrationBy(
+  rows: JsonRow[],
+  labelForRow: (row: JsonRow) => string[],
+  totalPositiveNetSol: number,
+  assumedAtaRentSol: number,
+  assumedNetworkFeeSol: number
+): RotationConcentrationStats[] {
+  const buckets = new Map<string, JsonRow[]>();
+  for (const row of rows) {
+    const labels = labelForRow(row).filter(Boolean);
+    for (const label of labels.length > 0 ? labels : ['(unknown)']) {
+      buckets.set(label, [...(buckets.get(label) ?? []), row]);
+    }
+  }
+  return [...buckets.entries()]
+    .map(([label, scoped]) => buildRotationConcentrationStats(
+      label,
+      scoped,
+      totalPositiveNetSol,
+      assumedAtaRentSol,
+      assumedNetworkFeeSol
+    ));
+}
+
+function buildRotationIntradayBottlenecks(
+  rows: JsonRow[],
+  sinceMs: number,
+  assumedAtaRentSol: number,
+  assumedNetworkFeeSol: number
+): RotationIntradayBottleneckStats {
+  const ordered = [...rows].sort((a, b) => rowCloseTimeMs(a) - rowCloseTimeMs(b));
+  const refundAdjustedValues = ordered.map((row) => rowRefundAdjustedNetSol(row, assumedNetworkFeeSol));
+  const positiveTotal = refundAdjustedValues
+    .filter((value) => value > 0)
+    .reduce((sum, value) => sum + value, 0);
+  const hourlyBuckets = new Map<number, JsonRow[]>();
+  for (const row of ordered) {
+    const hour = rowKstHour(row);
+    if (hour == null) continue;
+    hourlyBuckets.set(hour, [...(hourlyBuckets.get(hour) ?? []), row]);
+  }
+  const hours = [...hourlyBuckets.entries()]
+    .map(([hour, scoped]) => buildRotationIntradayHourStats(hour, scoped, assumedAtaRentSol, assumedNetworkFeeSol))
+    .sort((a, b) => a.kstHour - b.kstHour);
+  const byToken = buildRotationConcentrationBy(
+    ordered,
+    (row) => [shortTokenMint(rowTokenMintDeep(row) || '(unknown)')],
+    positiveTotal,
+    assumedAtaRentSol,
+    assumedNetworkFeeSol
+  );
+  const byKol = buildRotationConcentrationBy(
+    ordered,
+    rowKolLabels,
+    positiveTotal,
+    assumedAtaRentSol,
+    assumedNetworkFeeSol
+  );
+  const topWinningTokens = byToken
+    .filter((row) => row.refundAdjustedNetSol > 0)
+    .sort((a, b) => b.refundAdjustedNetSol - a.refundAdjustedNetSol || b.rows - a.rows)
+    .slice(0, 8);
+  const topLosingTokens = byToken
+    .filter((row) => row.refundAdjustedNetSol < 0)
+    .sort((a, b) => a.refundAdjustedNetSol - b.refundAdjustedNetSol || b.rows - a.rows)
+    .slice(0, 8);
+  const topWinningKols = byKol
+    .filter((row) => row.refundAdjustedNetSol > 0)
+    .sort((a, b) => b.refundAdjustedNetSol - a.refundAdjustedNetSol || b.rows - a.rows)
+    .slice(0, 8);
+  const topLosingKols = byKol
+    .filter((row) => row.refundAdjustedNetSol < 0)
+    .sort((a, b) => a.refundAdjustedNetSol - b.refundAdjustedNetSol || b.rows - a.rows)
+    .slice(0, 8);
+  const refundAdjustedNetSol = refundAdjustedValues.reduce((sum, value) => sum + value, 0);
+  const walletDragStressSol = ordered
+    .map((row) => rowWalletDragStressSol(row, assumedAtaRentSol, assumedNetworkFeeSol))
+    .reduce((sum, value) => sum + value, 0);
+  const reasons: string[] = [];
+  if (ordered.length === 0) {
+    reasons.push('no rotation paper closes in report window');
+  }
+  if (ordered.length > 0 && ordered.filter(isTwoPlusKolRow).length === 0) {
+    reasons.push('all closes are diagnostic-only for live promotion because 2+ KOL evidence is missing');
+  }
+  const topWinnerShare = topWinningTokens[0]?.shareOfPositiveNet ?? null;
+  if (topWinnerShare != null && topWinnerShare >= 0.35) {
+    reasons.push(`top winning token concentration ${formatPct(topWinnerShare)} >= 35%`);
+  }
+  const lossHours = hours.filter((row) => row.verdict === 'LOSS_REGIME');
+  if (lossHours.length > 0) {
+    reasons.push(`loss-regime KST hours: ${lossHours.map((row) => `${String(row.kstHour).padStart(2, '0')}:00`).join(', ')}`);
+  }
+
+  return {
+    since: new Date(sinceMs).toISOString(),
+    rows: ordered.length,
+    refundAdjustedNetSol,
+    walletDragStressSol,
+    postCostPositiveRate: ratio(refundAdjustedValues.filter((value) => value > 0).length, ordered.length),
+    routeProofRows: ordered.filter(routeProofRow).length,
+    twoPlusKolRows: ordered.filter(isTwoPlusKolRow).length,
+    costAwareRows: ordered.filter(isCostAwareUnderfillRow).length,
+    topWinnerShare,
+    reasons,
+    hours,
+    topWinningTokens,
+    topLosingTokens,
+    topWinningKols,
+    topLosingKols,
+  };
+}
+
+function kstDayFromMs(ms: number): string {
+  return new Date(ms + 9 * 3600_000).toISOString().slice(0, 10);
+}
+
+function summarizeRotationDailyPattern(
+  day: string,
+  rows: JsonRow[],
+  assumedAtaRentSol: number,
+  assumedNetworkFeeSol: number
+): RotationDailyPatternStats {
+  const refundAdjustedValues = rows.map((row) => rowRefundAdjustedNetSol(row, assumedNetworkFeeSol));
+  return {
+    day,
+    rows: rows.length,
+    wins: refundAdjustedValues.filter((value) => value > 0).length,
+    losses: refundAdjustedValues.filter((value) => value <= 0).length,
+    refundAdjustedNetSol: refundAdjustedValues.reduce((sum, value) => sum + value, 0),
+    walletDragStressSol: rows
+      .map((row) => rowWalletDragStressSol(row, assumedAtaRentSol, assumedNetworkFeeSol))
+      .reduce((sum, value) => sum + value, 0),
+    postCostPositiveRate: ratio(refundAdjustedValues.filter((value) => value > 0).length, rows.length),
+    routeProofRows: rows.filter(routeProofRow).length,
+    twoPlusKolRows: rows.filter(isTwoPlusKolRow).length,
+    costAwareRows: rows.filter(isCostAwareUnderfillRow).length,
+    t1Rows: rows.filter(rowHasT1).length,
+  };
+}
+
+function isLossRegimeBucket(
+  rows: JsonRow[],
+  assumedAtaRentSol: number,
+  assumedNetworkFeeSol: number
+): boolean {
+  const refundAdjustedValues = rows.map((row) => rowRefundAdjustedNetSol(row, assumedNetworkFeeSol));
+  const refundAdjustedNetSol = refundAdjustedValues.reduce((sum, value) => sum + value, 0);
+  const walletDragStressSol = rows
+    .map((row) => rowWalletDragStressSol(row, assumedAtaRentSol, assumedNetworkFeeSol))
+    .reduce((sum, value) => sum + value, 0);
+  const postCostPositiveRate = ratio(refundAdjustedValues.filter((value) => value > 0).length, rows.length);
+  return refundAdjustedNetSol < 0 || walletDragStressSol < 0 || (postCostPositiveRate ?? 0) < 0.45;
+}
+
+function buildRepeatedLossHours(
+  rows: JsonRow[],
+  assumedAtaRentSol: number,
+  assumedNetworkFeeSol: number
+): RotationRepeatedLossHourStats[] {
+  const dayHourBuckets = new Map<string, { day: string; hour: number; rows: JsonRow[] }>();
+  for (const row of rows) {
+    const closeMs = rowCloseTimeMs(row);
+    if (!Number.isFinite(closeMs)) continue;
+    const day = kstDayFromMs(closeMs);
+    const hour = rowKstHour(row);
+    if (hour == null) continue;
+    const key = `${day}:${hour}`;
+    const bucket = dayHourBuckets.get(key) ?? { day, hour, rows: [] };
+    bucket.rows.push(row);
+    dayHourBuckets.set(key, bucket);
+  }
+
+  const byHour = new Map<number, Array<{ rows: JsonRow[]; loss: boolean }>>();
+  for (const bucket of dayHourBuckets.values()) {
+    if (bucket.rows.length < 3) continue;
+    byHour.set(bucket.hour, [
+      ...(byHour.get(bucket.hour) ?? []),
+      {
+        rows: bucket.rows,
+        loss: isLossRegimeBucket(bucket.rows, assumedAtaRentSol, assumedNetworkFeeSol),
+      },
+    ]);
+  }
+
+  return [...byHour.entries()]
+    .map(([kstHour, buckets]) => {
+      const scopedRows = buckets.flatMap((bucket) => bucket.rows);
+      const refundAdjustedValues = scopedRows.map((row) => rowRefundAdjustedNetSol(row, assumedNetworkFeeSol));
+      return {
+        kstHour,
+        observedDays: buckets.length,
+        lossDays: buckets.filter((bucket) => bucket.loss).length,
+        rows: scopedRows.length,
+        refundAdjustedNetSol: refundAdjustedValues.reduce((sum, value) => sum + value, 0),
+        walletDragStressSol: scopedRows
+          .map((row) => rowWalletDragStressSol(row, assumedAtaRentSol, assumedNetworkFeeSol))
+          .reduce((sum, value) => sum + value, 0),
+        lossDayRate: ratio(buckets.filter((bucket) => bucket.loss).length, buckets.length),
+      };
+    })
+    .sort((a, b) =>
+      b.lossDays - a.lossDays ||
+      (b.lossDayRate ?? 0) - (a.lossDayRate ?? 0) ||
+      a.refundAdjustedNetSol - b.refundAdjustedNetSol ||
+      a.kstHour - b.kstHour
+    );
+}
+
+function maxLosingStreakForRows(rows: JsonRow[], assumedNetworkFeeSol: number): number {
+  const values = [...rows]
+    .sort((a, b) => rowCloseTimeMs(a) - rowCloseTimeMs(b))
+    .map((row) => rowRefundAdjustedNetSol(row, assumedNetworkFeeSol));
+  return maxLosingStreak(values);
+}
+
+function summarizeRotationShadowGateCandidate(input: {
+  policy: string;
+  role?: RotationShadowGateCandidateStats['role'];
+  sourceRows: JsonRow[];
+  retainedRows: JsonRow[];
+  assumedAtaRentSol: number;
+  assumedNetworkFeeSol: number;
+  blockedHours?: number[];
+  blockedKols?: string[];
+  focusedKols?: string[];
+  reasons?: string[];
+}): RotationShadowGateCandidateStats {
+  const retainedSet = new Set(input.retainedRows);
+  const skippedRows = input.sourceRows.filter((row) => !retainedSet.has(row));
+  const retainedRefundValues = input.retainedRows.map((row) => rowRefundAdjustedNetSol(row, input.assumedNetworkFeeSol));
+  return {
+    policy: input.policy,
+    role: input.role ?? 'paper_shadow',
+    verdict: input.role === 'baseline' ? 'BASELINE' : 'COLLECT',
+    nextAction: input.role === 'baseline' ? 'reference only' : 'collect forward paper before any runtime use',
+    retainedRows: input.retainedRows.length,
+    skippedRows: skippedRows.length,
+    refundAdjustedNetSol: retainedRefundValues.reduce((sum, value) => sum + value, 0),
+    walletDragStressSol: input.retainedRows
+      .map((row) => rowWalletDragStressSol(row, input.assumedAtaRentSol, input.assumedNetworkFeeSol))
+      .reduce((sum, value) => sum + value, 0),
+    postCostPositiveRate: ratio(retainedRefundValues.filter((value) => value > 0).length, input.retainedRows.length),
+    maxLosingStreak: maxLosingStreakForRows(input.retainedRows, input.assumedNetworkFeeSol),
+    t1Rate: ratio(input.retainedRows.filter(rowHasT1).length, input.retainedRows.length),
+    skippedLossSavedSol: skippedRows
+      .map((row) => rowRefundAdjustedNetSol(row, input.assumedNetworkFeeSol))
+      .filter((value) => value < 0)
+      .reduce((sum, value) => sum + Math.abs(value), 0),
+    missedWinnerCostSol: skippedRows
+      .map((row) => rowRefundAdjustedNetSol(row, input.assumedNetworkFeeSol))
+      .filter((value) => value > 0)
+      .reduce((sum, value) => sum + value, 0),
+    routeProofRows: input.retainedRows.filter(routeProofRow).length,
+    twoPlusKolRows: input.retainedRows.filter(isTwoPlusKolRow).length,
+    costAwareRows: input.retainedRows.filter(isCostAwareUnderfillRow).length,
+    blockedHours: [...(input.blockedHours ?? [])].sort((a, b) => a - b),
+    blockedKols: [...(input.blockedKols ?? [])].sort(),
+    focusedKols: [...(input.focusedKols ?? [])].sort(),
+    reasons: input.reasons ?? [],
+  };
+}
+
+function classifyRotationShadowGateCandidate(
+  row: RotationShadowGateCandidateStats,
+  baseline: RotationShadowGateCandidateStats
+): RotationShadowGateCandidateStats {
+  if (row.role === 'baseline') return row;
+  const reasons = [...row.reasons];
+  let verdict: RotationShadowGateVerdict = 'WATCH';
+  let nextAction = 'keep report-only; do not apply to runtime';
+  if (row.retainedRows < ROTATION_PAPER_COMPOUND_MIN_CLOSES) {
+    verdict = 'COLLECT';
+    nextAction = 'collect more historical/fresh rows before interpreting this shadow';
+    reasons.push(`retained rows ${row.retainedRows} < ${ROTATION_PAPER_COMPOUND_MIN_CLOSES}`);
+  } else if (row.refundAdjustedNetSol <= 0) {
+    verdict = 'REJECT_IN_SAMPLE';
+    nextAction = 'reject this shadow candidate';
+    reasons.push(`refund-adjusted net ${formatSol(row.refundAdjustedNetSol)} <= 0`);
+  } else if (
+    row.policy === 'good_kol_focus' &&
+    row.walletDragStressSol >= 0 &&
+    (row.postCostPositiveRate ?? 0) >= ROTATION_PAPER_COMPOUND_MIN_POST_COST_POSITIVE_RATE
+  ) {
+    verdict = 'FORWARD_PAPER_CANDIDATE';
+    nextAction = 'run as fresh paper shadow only; live promotion remains blocked';
+    reasons.push('focus cohort passes wallet stress and postCost positive thresholds in-sample');
+  } else if (
+    row.walletDragStressSol > baseline.walletDragStressSol &&
+    (row.postCostPositiveRate ?? 0) >= ROTATION_PAPER_COMPOUND_MIN_POST_COST_POSITIVE_RATE &&
+    row.skippedLossSavedSol > row.missedWinnerCostSol
+  ) {
+    verdict = 'FORWARD_PAPER_CANDIDATE';
+    nextAction = 'run as fresh paper shadow only; live promotion remains blocked';
+    reasons.push('block policy improves wallet stress, postCost rate, and saved loss beats missed winner in-sample');
+  } else {
+    reasons.push('does not pass the full forward-paper gate yet');
+  }
+  return {
+    ...row,
+    verdict,
+    nextAction,
+    reasons,
+  };
+}
+
+function kolStatsForRows(
+  rows: JsonRow[],
+  assumedAtaRentSol: number,
+  assumedNetworkFeeSol: number
+): RotationConcentrationStats[] {
+  const refundAdjustedValues = rows.map((row) => rowRefundAdjustedNetSol(row, assumedNetworkFeeSol));
+  const positiveTotal = refundAdjustedValues
+    .filter((value) => value > 0)
+    .reduce((sum, value) => sum + value, 0);
+  return buildRotationConcentrationBy(rows, rowKolLabels, positiveTotal, assumedAtaRentSol, assumedNetworkFeeSol);
+}
+
+function buildDoaCooldownRetainedRows(rows: JsonRow[], assumedNetworkFeeSol: number): JsonRow[] {
+  const cooldownMs = 3600_000;
+  const cooldownByKol = new Map<string, number>();
+  const retained: JsonRow[] = [];
+  for (const row of [...rows].sort((a, b) => rowCloseTimeMs(a) - rowCloseTimeMs(b))) {
+    const closeMs = rowCloseTimeMs(row);
+    const kols = rowKolLabels(row);
+    const blocked = kols.some((kol) => (cooldownByKol.get(kol) ?? 0) > closeMs);
+    if (blocked) continue;
+    retained.push(row);
+    const reason = str(row.exitReason);
+    if (reason === 'rotation_dead_on_arrival' && rowRefundAdjustedNetSol(row, assumedNetworkFeeSol) <= 0) {
+      for (const kol of kols) cooldownByKol.set(kol, closeMs + cooldownMs);
+    }
+  }
+  return retained;
+}
+
+function buildRotationShadowGateCandidates(
+  rows: JsonRow[],
+  repeatedLossHours: RotationRepeatedLossHourStats[],
+  assumedAtaRentSol: number,
+  assumedNetworkFeeSol: number
+): RotationShadowGateCandidateStats[] {
+  const lossHours = new Set(
+    repeatedLossHours
+      .filter((row) => row.observedDays >= 3 && (row.lossDayRate ?? 0) >= 0.8 && row.rows >= 10)
+      .map((row) => row.kstHour)
+  );
+  const kolStats = kolStatsForRows(rows, assumedAtaRentSol, assumedNetworkFeeSol);
+  const badKols = new Set(
+    kolStats
+      .filter((row) => row.rows >= 10 && row.refundAdjustedNetSol < 0)
+      .map((row) => row.label)
+  );
+  const goodKols = new Set(
+    kolStats
+      .filter((row) => row.rows >= 10 && row.refundAdjustedNetSol > 0 && row.walletDragStressSol >= 0)
+      .map((row) => row.label)
+  );
+  const hasKol = (row: JsonRow, kols: Set<string>) => rowKolLabels(row).some((kol) => kols.has(kol));
+  const hourAllowed = (row: JsonRow) => {
+    const hour = rowKstHour(row);
+    return hour == null || !lossHours.has(hour);
+  };
+
+  const candidates = [
+    summarizeRotationShadowGateCandidate({
+      policy: 'baseline_all_rotation_paper',
+      role: 'baseline',
+      sourceRows: rows,
+      retainedRows: rows,
+      assumedAtaRentSol,
+      assumedNetworkFeeSol,
+      reasons: ['current paper rows without historical shadow filtering'],
+    }),
+    summarizeRotationShadowGateCandidate({
+      policy: 'loss_regime_hour_block',
+      sourceRows: rows,
+      retainedRows: rows.filter(hourAllowed),
+      assumedAtaRentSol,
+      assumedNetworkFeeSol,
+      blockedHours: [...lossHours],
+      reasons: ['in-sample: skip KST hours that were loss-regime on >=80% of observed days with >=10 closes'],
+    }),
+    summarizeRotationShadowGateCandidate({
+      policy: 'bad_kol_block',
+      sourceRows: rows,
+      retainedRows: rows.filter((row) => !hasKol(row, badKols)),
+      assumedAtaRentSol,
+      assumedNetworkFeeSol,
+      blockedKols: [...badKols],
+      reasons: ['in-sample: skip KOLs with >=10 rows and negative refund-adjusted net'],
+    }),
+    summarizeRotationShadowGateCandidate({
+      policy: 'good_kol_focus',
+      sourceRows: rows,
+      retainedRows: rows.filter((row) => hasKol(row, goodKols)),
+      assumedAtaRentSol,
+      assumedNetworkFeeSol,
+      focusedKols: [...goodKols],
+      reasons: ['in-sample: retain only KOLs with >=10 rows, refund-adjusted net >0, and wallet-drag stress >=0'],
+    }),
+    summarizeRotationShadowGateCandidate({
+      policy: 'doa_1h_kol_cooldown',
+      sourceRows: rows,
+      retainedRows: buildDoaCooldownRetainedRows(rows, assumedNetworkFeeSol),
+      assumedAtaRentSol,
+      assumedNetworkFeeSol,
+      reasons: ['sequential shadow: after a KOL causes a refund-negative rotation_dead_on_arrival close, skip that KOL for 1h'],
+    }),
+  ];
+  const baseline = candidates[0];
+  return candidates.map((row) => classifyRotationShadowGateCandidate(row, baseline));
+}
+
+function buildRotationWeeklyPatternStats(
+  rows: JsonRow[],
+  sinceMs: number,
+  assumedAtaRentSol: number,
+  assumedNetworkFeeSol: number
+): RotationWeeklyPatternStats {
+  const byDay = new Map<string, JsonRow[]>();
+  for (const row of rows) {
+    const closeMs = rowCloseTimeMs(row);
+    if (!Number.isFinite(closeMs)) continue;
+    const day = kstDayFromMs(closeMs);
+    byDay.set(day, [...(byDay.get(day) ?? []), row]);
+  }
+  const daily = [...byDay.entries()]
+    .map(([day, scoped]) => summarizeRotationDailyPattern(day, scoped, assumedAtaRentSol, assumedNetworkFeeSol))
+    .sort((a, b) => a.day.localeCompare(b.day));
+  const repeatedLossHours = buildRepeatedLossHours(rows, assumedAtaRentSol, assumedNetworkFeeSol);
+  const shadowGateCandidates = buildRotationShadowGateCandidates(rows, repeatedLossHours, assumedAtaRentSol, assumedNetworkFeeSol);
+  const reasons: string[] = [];
+  if (rows.length === 0) {
+    reasons.push('no rotation paper rows in weekly pattern window');
+  }
+  const liveEligible = rows.filter((row) => routeProofRow(row) && isTwoPlusKolRow(row) && isCostAwareUnderfillRow(row)).length;
+  if (liveEligible === 0 && rows.length > 0) {
+    reasons.push('route-known 2+ KOL cost-aware weekly sample is still zero; this board is not live promotion evidence');
+  }
+  const bestShadow = shadowGateCandidates
+    .filter((row) => row.role === 'paper_shadow' && row.retainedRows >= 50)
+    .sort((a, b) =>
+      b.walletDragStressSol - a.walletDragStressSol ||
+      (b.postCostPositiveRate ?? 0) - (a.postCostPositiveRate ?? 0) ||
+      b.refundAdjustedNetSol - a.refundAdjustedNetSol
+    )[0];
+  if (bestShadow) {
+    reasons.push(`best in-sample shadow by wallet stress: ${bestShadow.policy}`);
+  }
+  return {
+    since: new Date(sinceMs).toISOString(),
+    rows: rows.length,
+    intraday: buildRotationIntradayBottlenecks(rows, sinceMs, assumedAtaRentSol, assumedNetworkFeeSol),
+    daily,
+    repeatedLossHours,
+    shadowGateCandidates,
+    reasons,
+  };
 }
 
 function normalizeReturnFraction(value: number | null): number | null {
@@ -7774,6 +8491,131 @@ function renderWinnerEntryDiagnosticsTable(rows: WinnerEntryDiagnosticStats[]): 
   ].join('\n');
 }
 
+function renderRotationIntradayHours(rows: RotationIntradayHourStats[]): string {
+  if (rows.length === 0) return '_No intraday paper close rows._';
+  return [
+    '| KST hour | closes | W/L | refund SOL | wallet stress SOL | postCost>0 | route proof | 2+ KOL | cost-aware | T1 | med MFE | med hold | top arm | top exits | verdict | blockers |',
+    '|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|---|',
+    ...rows.map((row) =>
+      `| ${String(row.kstHour).padStart(2, '0')}:00 | ${row.rows} | ${row.wins}/${row.losses} | ` +
+      `${formatSol(row.refundAdjustedNetSol)} | ${formatSol(row.walletDragStressSol)} | ${formatPct(row.postCostPositiveRate)} | ` +
+      `${row.routeProofRows}/${row.rows} | ${row.twoPlusKolRows}/${row.rows} | ${row.costAwareRows}/${row.rows} | ` +
+      `${row.t1Rows}/${row.rows} | ${formatPct(row.medianMfePct)} | ` +
+      `${row.medianHoldSec == null ? 'n/a' : `${row.medianHoldSec.toFixed(0)}s`} | ` +
+      `${row.topArm}:${row.topArmRows} | ${row.topExitReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'} | ` +
+      `${row.verdict} | ${row.reasons.join('; ') || 'n/a'} |`
+    ),
+  ].join('\n');
+}
+
+function renderRotationConcentrationTable(rows: RotationConcentrationStats[]): string {
+  if (rows.length === 0) return '_No concentration rows._';
+  return [
+    '| label | closes | W/L | refund SOL | wallet stress SOL | positive share | top KOLs | top arms | top exits |',
+    '|---|---:|---:|---:|---:|---:|---|---|---|',
+    ...rows.map((row) =>
+      `| ${row.label} | ${row.rows} | ${row.wins}/${row.losses} | ${formatSol(row.refundAdjustedNetSol)} | ` +
+      `${formatSol(row.walletDragStressSol)} | ${formatPct(row.shareOfPositiveNet)} | ` +
+      `${row.topKols.map((item) => `${item.kol}:${item.count}`).join(', ') || 'n/a'} | ` +
+      `${row.topArms.map((item) => `${item.arm}:${item.count}`).join(', ') || 'n/a'} | ` +
+      `${row.topExitReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a'} |`
+    ),
+  ].join('\n');
+}
+
+function renderRotationIntradayBottlenecks(row: RotationIntradayBottleneckStats): string {
+  return [
+    `Window since: ${row.since}`,
+    `Closes: ${row.rows} · refund-adjusted ${formatSol(row.refundAdjustedNetSol)} · wallet-drag stress ${formatSol(row.walletDragStressSol)} · postCost>0 ${formatPct(row.postCostPositiveRate)}`,
+    `Route proof: ${row.routeProofRows}/${row.rows} · 2+ KOL: ${row.twoPlusKolRows}/${row.rows} · cost-aware: ${row.costAwareRows}/${row.rows} · top winner share: ${formatPct(row.topWinnerShare)}`,
+    row.reasons.length > 0 ? `Bottlenecks: ${row.reasons.join('; ')}` : 'Bottlenecks: none flagged',
+    '',
+    '### By KST Hour',
+    renderRotationIntradayHours(row.hours),
+    '',
+    '### Top Tokens — Winners',
+    renderRotationConcentrationTable(row.topWinningTokens),
+    '',
+    '### Top Tokens — Losers',
+    renderRotationConcentrationTable(row.topLosingTokens),
+    '',
+    '_KOL concentration is attribution-only. If a future close has multiple KOLs, the same close can appear in multiple KOL buckets._',
+    '',
+    '### Top KOLs — Winners',
+    renderRotationConcentrationTable(row.topWinningKols),
+    '',
+    '### Top KOLs — Losers',
+    renderRotationConcentrationTable(row.topLosingKols),
+  ].join('\n');
+}
+
+function renderRotationDailyPattern(rows: RotationDailyPatternStats[]): string {
+  if (rows.length === 0) return '_No daily pattern rows._';
+  return [
+    '| KST day | closes | W/L | refund SOL | wallet stress SOL | postCost>0 | route proof | 2+ KOL | cost-aware | T1 |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
+    ...rows.map((row) =>
+      `| ${row.day} | ${row.rows} | ${row.wins}/${row.losses} | ${formatSol(row.refundAdjustedNetSol)} | ` +
+      `${formatSol(row.walletDragStressSol)} | ${formatPct(row.postCostPositiveRate)} | ` +
+      `${row.routeProofRows}/${row.rows} | ${row.twoPlusKolRows}/${row.rows} | ${row.costAwareRows}/${row.rows} | ${row.t1Rows}/${row.rows} |`
+    ),
+  ].join('\n');
+}
+
+function renderRotationRepeatedLossHours(rows: RotationRepeatedLossHourStats[]): string {
+  if (rows.length === 0) return '_No repeated loss-hour rows._';
+  return [
+    '| KST hour | observed days | loss days | closes | refund SOL | wallet stress SOL | loss-day rate |',
+    '|---:|---:|---:|---:|---:|---:|---:|',
+    ...rows.map((row) =>
+      `| ${String(row.kstHour).padStart(2, '0')}:00 | ${row.observedDays} | ${row.lossDays} | ${row.rows} | ` +
+      `${formatSol(row.refundAdjustedNetSol)} | ${formatSol(row.walletDragStressSol)} | ${formatPct(row.lossDayRate)} |`
+    ),
+  ].join('\n');
+}
+
+function renderRotationShadowGateCandidates(rows: RotationShadowGateCandidateStats[]): string {
+  if (rows.length === 0) return '_No paper shadow gate candidates._';
+  return [
+    '| policy | role | verdict | retained/skipped | refund SOL | wallet stress SOL | postCost>0 | max loss streak | T1 | saved loss | missed winner | route proof | 2+ KOL | cost-aware | knobs | next | reasons |',
+    '|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|',
+    ...rows.map((row) => {
+      const knobs = [
+        row.blockedHours.length > 0 ? `hours=${row.blockedHours.map((hour) => String(hour).padStart(2, '0')).join(',')}` : '',
+        row.blockedKols.length > 0 ? `blockedKols=${row.blockedKols.join(',')}` : '',
+        row.focusedKols.length > 0 ? `focusedKols=${row.focusedKols.join(',')}` : '',
+      ].filter(Boolean).join('; ') || 'n/a';
+      return `| ${row.policy} | ${row.role} | ${row.verdict} | ${row.retainedRows}/${row.skippedRows} | ` +
+        `${formatSol(row.refundAdjustedNetSol)} | ${formatSol(row.walletDragStressSol)} | ${formatPct(row.postCostPositiveRate)} | ` +
+        `${row.maxLosingStreak} | ${formatPct(row.t1Rate)} | ${formatSol(row.skippedLossSavedSol)} | ${formatSol(row.missedWinnerCostSol)} | ` +
+        `${row.routeProofRows}/${row.retainedRows} | ${row.twoPlusKolRows}/${row.retainedRows} | ${row.costAwareRows}/${row.retainedRows} | ` +
+        `${knobs} | ${row.nextAction} | ${row.reasons.join('; ') || 'n/a'} |`;
+    }),
+  ].join('\n');
+}
+
+function renderRotationWeeklyPattern(row: RotationWeeklyPatternStats): string {
+  return [
+    `Window since: ${row.since}`,
+    `Closes: ${row.rows} · refund-adjusted ${formatSol(row.intraday.refundAdjustedNetSol)} · wallet-drag stress ${formatSol(row.intraday.walletDragStressSol)} · postCost>0 ${formatPct(row.intraday.postCostPositiveRate)}`,
+    `Route proof: ${row.intraday.routeProofRows}/${row.rows} · 2+ KOL: ${row.intraday.twoPlusKolRows}/${row.rows} · cost-aware: ${row.intraday.costAwareRows}/${row.rows}`,
+    row.reasons.length > 0 ? `Bottlenecks: ${row.reasons.join('; ')}` : 'Bottlenecks: none flagged',
+    '',
+    '### 7D Daily Pattern',
+    renderRotationDailyPattern(row.daily),
+    '',
+    '### 7D Repeated Loss Hours',
+    renderRotationRepeatedLossHours(row.repeatedLossHours),
+    '',
+    '### 7D Paper Shadow Gate Candidates',
+    '> In-sample only. A good row here means "try as forward paper shadow", not live promotion.',
+    renderRotationShadowGateCandidates(row.shadowGateCandidates),
+    '',
+    '### 7D Intraday Detail',
+    renderRotationIntradayHours(row.intraday.hours),
+  ].join('\n');
+}
+
 function renderUnderfillEntryQualityTable(rows: UnderfillEntryQualityStats[]): string {
   if (rows.length === 0) return '_No underfill entry-quality rows._';
   const lines = [
@@ -8931,6 +9773,14 @@ function renderReport(report: RotationReport): string {
     '## Paper Trades By Arm',
     renderPaperArmTable(report.paperTrades.byArm),
     '',
+    '## Rotation Intraday Bottleneck Board',
+    '> Report-only. Uses paper closes to separate short-lived edge, loss-regime hours, and token/KOL concentration. `DIAGNOSTIC_ONLY` means do not treat the row as live promotion evidence.',
+    renderRotationIntradayBottlenecks(report.intradayBottlenecks),
+    '',
+    '## Rotation 7D Pattern Board',
+    '> Report-only. Uses the same bottleneck logic on a 7-day window to find repeated patterns. Shadow gates are in-sample hypotheses only and never change live routing.',
+    renderRotationWeeklyPattern(report.weeklyPattern),
+    '',
     '## Winner Entry Pairing',
     '> `winner_trailing_t1` is an exit state after T1 promotion, so this table checks which entry arms most often reach that exit bucket.',
     renderWinnerEntryPairingTable(report.paperTrades.winnerEntryPairings),
@@ -9184,6 +10034,13 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
     return Number.isFinite(t) && t >= args.sinceMs;
   });
   const rotationPaperRows = recentPaperRows.filter(isRotationPaperTrade);
+  const weeklyPatternSinceMs = Math.min(args.sinceMs, Date.now() - 7 * 86400_000);
+  const weeklyPatternRows = paperTrades
+    .filter((row) => {
+      const t = timeMs(row.closedAt) || timeMs(row.exitTimeSec) || timeMs(row.entryTimeSec);
+      return Number.isFinite(t) && t >= weeklyPatternSinceMs;
+    })
+    .filter(isRotationPaperTrade);
   const recentLiveRows = projectedLiveTrades.filter((row) => {
     const t = timeMs(row.closedAt) || timeMs(row.exitTimeSec) || timeMs(row.entryTimeSec);
     return Number.isFinite(t) && t >= args.sinceMs;
@@ -9442,6 +10299,18 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
       winnerEntryPairings,
       winnerEntryDiagnostics,
     },
+    intradayBottlenecks: buildRotationIntradayBottlenecks(
+      rotationPaperRows,
+      args.sinceMs,
+      assumedAtaRentSol,
+      assumedNetworkFeeSol
+    ),
+    weeklyPattern: buildRotationWeeklyPatternStats(
+      weeklyPatternRows,
+      weeklyPatternSinceMs,
+      assumedAtaRentSol,
+      assumedNetworkFeeSol
+    ),
     liveTrades: {
       totalRows: recentLiveRows.length,
       rotationRows: rotationLiveRows.length,

@@ -166,6 +166,7 @@ const ROTATION_UNDERFILL_ARM = 'rotation_underfill_v1';
 const ROTATION_EXIT_FLOW_ARM = 'rotation_exit_kol_flow_v1';
 const ROTATION_UNDERFILL_EXIT_FLOW_PROFILE_ARM = 'rotation_underfill_exit_flow_v1';
 const ROTATION_UNDERFILL_COST_AWARE_PROFILE_ARM = 'rotation_underfill_cost_aware_exit_v2';
+const ROTATION_GOOD_KOL_FOCUS_ARM = 'rotation_good_kol_focus_v1';
 const SMART_V3_FAST_FAIL_LIVE_MIRROR_ARM = 'smart_v3_fast_fail_live_mirror_v1';
 const SMART_V3_PROBE_CONFIRM_SHADOW_ARM = 'smart_v3_probe_confirm_shadow_v1';
 const SMART_V3_PROBE_CONFIRM_SHADOW_PARAMETER_VERSION = 'smart-v3-probe-confirm-shadow-v1.0.0';
@@ -2400,6 +2401,7 @@ function shouldCloseSmartV3MfeFloor(
   if (!config.kolHunterSmartV3MfeFloorEnabled) return false;
   if (!isSmartV3Position(pos)) return false;
   if (isRotationFamilyMarkoutPosition(pos)) return false;
+  if (isProbePolicyShadow(pos)) return false;
   if (pos.isTailPosition === true) return false;
 
   const state = refreshSmartV3MfeFloorState(pos, mfePct, nowSec);
@@ -2467,6 +2469,7 @@ function armNameForVersion(parameterVersion: string): string {
   if (parameterVersion === config.kolHunterRotationV1ParameterVersion) return 'kol_hunter_rotation_v1';
   if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) return ROTATION_UNDERFILL_ARM;
   if (parameterVersion === config.kolHunterRotationUnderfillCostAwareParameterVersion) return ROTATION_UNDERFILL_COST_AWARE_PROFILE_ARM;
+  if (parameterVersion === config.kolHunterRotationGoodKolFocusParameterVersion) return ROTATION_GOOD_KOL_FOCUS_ARM;
   if (parameterVersion === ROTATION_SECOND_KOL_WAIT_PARAMETER_VERSION) return ROTATION_SECOND_KOL_WAIT_ARM;
   if (parameterVersion === config.kolHunterRotationExitFlowParameterVersion) return ROTATION_EXIT_FLOW_ARM;
   if (parameterVersion === config.kolHunterRotationChaseTopupParameterVersion) return 'rotation_chase_topup_v1';
@@ -2490,6 +2493,8 @@ interface RotationPaperArmSpec extends DynamicExitParams {
   costAwareT1MaxMfe?: number;
   costAwareProfitFloorMult?: number;
   costAwareProfitFloorBufferPct?: number;
+  requiredKolIds?: string[];
+  extraSurvivalFlags?: string[];
 }
 
 interface SmartV3PaperArmSpec extends DynamicExitParams {
@@ -2645,8 +2650,38 @@ function buildRotationPaperArmSpecs(primaryVersion: string): RotationPaperArmSpe
     costAwareProfitFloorMult: config.kolHunterRotationUnderfillCostAwareProfitFloorMult,
     costAwareProfitFloorBufferPct: config.kolHunterRotationUnderfillCostAwareProfitFloorBufferPct,
   };
+  const goodKolFocusSpec: RotationPaperArmSpec = {
+    suffix: 'good-kol-focus',
+    armName: ROTATION_GOOD_KOL_FOCUS_ARM,
+    profileArm: ROTATION_GOOD_KOL_FOCUS_ARM,
+    parameterVersion: config.kolHunterRotationGoodKolFocusParameterVersion,
+    enabled: config.kolHunterRotationGoodKolFocusPaperEnabled &&
+      config.kolHunterRotationGoodKolFocusKolIds.length > 0,
+    t1Mfe: config.kolHunterRotationUnderfillCostAwareT1MinMfe,
+    t1TrailPct: config.kolHunterRotationUnderfillCostAwareT1TrailPct,
+    t1ProfitFloorMult: config.kolHunterRotationUnderfillCostAwareProfitFloorMult,
+    probeFlatTimeoutSec: config.kolHunterRotationUnderfillCostAwareProbeTimeoutSec,
+    probeHardCutPct: config.kolHunterRotationUnderfillCostAwareHardCutPct,
+    rotationDoaWindowSec: config.kolHunterRotationUnderfillDoaWindowSec,
+    rotationDoaMinMfePct: config.kolHunterRotationUnderfillDoaMinMfePct,
+    rotationDoaMaxMaePct: config.kolHunterRotationUnderfillDoaMaxMaePct,
+    flowExit: true,
+    costAwareExit: true,
+    costAwareT1MinMfe: config.kolHunterRotationUnderfillCostAwareT1MinMfe,
+    costAwareT1BufferPct: config.kolHunterRotationUnderfillCostAwareT1BufferPct,
+    costAwareT1MaxMfe: config.kolHunterRotationUnderfillCostAwareT1MaxMfe,
+    costAwareProfitFloorMult: config.kolHunterRotationUnderfillCostAwareProfitFloorMult,
+    costAwareProfitFloorBufferPct: config.kolHunterRotationUnderfillCostAwareProfitFloorBufferPct,
+    requiredKolIds: config.kolHunterRotationGoodKolFocusKolIds,
+    extraSurvivalFlags: [
+      'ROTATION_GOOD_KOL_FOCUS_FORWARD_PAPER',
+      ...config.kolHunterRotationGoodKolFocusKolIds.map((kolId) =>
+        `ROTATION_GOOD_KOL_FOCUS_KOL_${kolId.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}`
+      ),
+    ],
+  };
   if (primaryVersion === config.kolHunterRotationUnderfillParameterVersion) {
-    return [flowSpec, underfillCostAwareSpec];
+    return [flowSpec, underfillCostAwareSpec, goodKolFocusSpec];
   }
   return [
     {
@@ -2721,9 +2756,15 @@ function rotationPaperArmRejectReason(
   spec: RotationPaperArmSpec,
   entryPrice: number,
   anchorPrice: number | undefined,
-  survivalFlags: string[]
+  survivalFlags: string[],
+  participatingKols: KolDiscoveryScore['participatingKols']
 ): string | undefined {
   if (!spec.enabled) return 'disabled';
+  if (spec.requiredKolIds?.length) {
+    const seen = new Set(participatingKols.map((kol) => kol.id.toLowerCase()));
+    const hasRequiredKol = spec.requiredKolIds.some((kolId) => seen.has(kolId.toLowerCase()));
+    if (!hasRequiredKol) return 'focus_kol_missing';
+  }
   const priceResponsePct = rotationPriceResponsePct(entryPrice, anchorPrice);
   if (
     typeof spec.minPriceResponsePct === 'number' &&
@@ -2789,6 +2830,7 @@ function applyRotationPaperArmSpec(pos: PaperPosition, spec: RotationPaperArmSpe
     'ROTATION_V1_PAPER_PARAM_ARM',
     `ROTATION_V1_PAPER_ARM_${spec.suffix.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}`,
     ...costAwareFlags,
+    ...(spec.extraSurvivalFlags ?? []),
   ];
 }
 
@@ -7724,6 +7766,7 @@ async function enterPaperPosition(
     );
     for (const spec of smartArmSpecs) {
       if (!spec.enabled) continue;
+      if (spec.minIndependentKol != null && entryIndependentKolCount < spec.minIndependentKol) continue;
       const arm = makePosition(`${positionId}-${spec.suffix}`, primaryVersion, true, positionId);
       applySmartV3PaperArmSpec(arm, spec);
       positions.push(arm);
@@ -7744,14 +7787,15 @@ async function enterPaperPosition(
         spec,
         entryPrice,
         options.rotationAnchorPrice,
-        combinedSurvivalFlags
+        combinedSurvivalFlags,
+        entryParticipatingKols
       );
       if (rejectReason) {
         log.debug(
           `[KOL_HUNTER_ROTATION_PAPER_ARM_SKIP] ${tokenMint.slice(0, 8)} ` +
           `arm=${spec.armName} reason=${rejectReason}`
         );
-        if (rejectReason !== 'disabled') {
+        if (rejectReason !== 'disabled' && rejectReason !== 'focus_kol_missing') {
           trackRotationPaperArmSkipMarkout(
             cand,
             score,
@@ -9120,7 +9164,8 @@ function closePosition(
   // 2026-04-30 (B1 refactor): KOL close-site 는 모두 'kol_close' 로 통일.
   //   세부 분기는 rejectReason 으로 보존 (winner-kill-analyzer 등이 reason 별 cohort 분리 가능).
   //   이전: 5 close reason 별 enum 매핑 → reject-side 와 enum 공유로 close vs reject 구분 약함.
-  if (!pos.isShadowArm) {
+  const shouldTrackCloseMissedAlpha = !pos.isShadowArm || isProbePolicyShadow(pos);
+  if (shouldTrackCloseMissedAlpha) {
     trackRejectForMissedAlpha(
       {
         rejectCategory: 'kol_close',
@@ -9150,7 +9195,11 @@ function closePosition(
           parameterVersion: pos.parameterVersion,
           isLive: false,
           isShadowArm: pos.isShadowArm,
+          paperRole: pos.paperRole ?? null,
           parentPositionId: pos.parentPositionId ?? null,
+          probePolicyConfirmHorizonSec: pos.probePolicyConfirmHorizonSec ?? null,
+          probePolicyConfirmThresholdPct: pos.probePolicyConfirmThresholdPct ?? null,
+          probePolicyTargetHorizonSec: pos.probePolicyTargetHorizonSec ?? null,
           kolEntryReason: pos.kolEntryReason,
           kolConvictionLevel: pos.kolConvictionLevel,
           kolReinforcementCount: pos.kolReinforcementCount,
@@ -9179,7 +9228,10 @@ function closePosition(
           ...buildKolAttributionRecord(pos),
         },
       },
-      buildObserverConfig()
+      {
+        ...buildObserverConfig(),
+        writeScheduleMarker: isProbePolicyShadow(pos),
+      }
     );
   }
 
@@ -11390,29 +11442,29 @@ async function enterLivePosition(
     registerLivePairedPaperPosition(mirrorPos);
 
     const probeSpec = buildSmartV3ProbeConfirmShadowSpec();
-    const probeId = `${mirrorId}-${probeSpec.suffix}`;
-    const probeBelowMinKol = score.independentKolCount < (probeSpec.minIndependentKol ?? 0);
-    const probePos: PaperPosition = {
-      ...mirrorPos,
-      positionId: probeId,
-      parentPositionId: mirrorId,
-      paperRole: 'probe_policy_shadow',
-      executionPlanSnapshot: mirrorPos.executionPlanSnapshot
-        ? {
-            ...mirrorPos.executionPlanSnapshot,
-            planId: `paper:${probeId}:plan`,
-            mode: 'paper',
-          }
-        : undefined,
-      survivalFlags: [
-        ...mirrorPos.survivalFlags,
-        'LIVE_PAIRED_PAPER_SHADOW',
-        ...(probeBelowMinKol ? [`SMART_V3_PROBE_BELOW_MIN_KOL_${score.independentKolCount}`] : []),
-      ],
-    };
-    applySmartV3PaperArmSpec(probePos, probeSpec);
-    registerLivePairedPaperPosition(probePos);
-    addedArms.push(probePos.armName);
+    if (score.independentKolCount >= (probeSpec.minIndependentKol ?? 0)) {
+      const probeId = `${mirrorId}-${probeSpec.suffix}`;
+      const probePos: PaperPosition = {
+        ...mirrorPos,
+        positionId: probeId,
+        parentPositionId: mirrorId,
+        paperRole: 'probe_policy_shadow',
+        executionPlanSnapshot: mirrorPos.executionPlanSnapshot
+          ? {
+              ...mirrorPos.executionPlanSnapshot,
+              planId: `paper:${probeId}:plan`,
+              mode: 'paper',
+            }
+          : undefined,
+        survivalFlags: [
+          ...mirrorPos.survivalFlags,
+          'LIVE_PAIRED_PAPER_SHADOW',
+        ],
+      };
+      applySmartV3PaperArmSpec(probePos, probeSpec);
+      registerLivePairedPaperPosition(probePos);
+      addedArms.push(probePos.armName);
+    }
     log.info(
       `[KOL_HUNTER_SMART_V3_LIVE_MIRROR_ARMS] ${positionId} ${tokenMint.slice(0, 8)} ` +
       `arms=${addedArms.join(',')}`
@@ -11457,6 +11509,54 @@ async function enterLivePosition(
     if (addedArms.length > 0) {
       log.info(
         `[KOL_HUNTER_SMART_V3_PAPER_ARMS] ${positionId} ${tokenMint.slice(0, 8)} ` +
+        `(paired with LIVE main) arms=${addedArms.join(',')}`
+      );
+    }
+  }
+  if (primaryVersion === config.kolHunterRotationUnderfillParameterVersion) {
+    const addedArms: string[] = [];
+    for (const spec of buildRotationPaperArmSpecs(primaryVersion)) {
+      if (spec.armName !== ROTATION_GOOD_KOL_FOCUS_ARM) continue;
+      const rejectReason = rotationPaperArmRejectReason(
+        spec,
+        liveTokenEntryPrice,
+        options.rotationAnchorPrice,
+        position.survivalFlags,
+        entryParticipatingKols
+      );
+      if (rejectReason) continue;
+      const shadowId = `${positionId}-${spec.suffix}`;
+      const shadowPos: PaperPosition = {
+        ...position,
+        positionId: shadowId,
+        armName: spec.armName,
+        parameterVersion: spec.parameterVersion,
+        isShadowArm: true,
+        parentPositionId: positionId,
+        paperRole: 'shadow',
+        isLive: false,
+        dbTradeId: undefined,
+        entryTxSignature: undefined,
+        entrySlippageBps: undefined,
+        executionPlanSnapshot: position.executionPlanSnapshot
+          ? {
+              ...position.executionPlanSnapshot,
+              planId: `paper:${shadowId}:plan`,
+              mode: 'paper',
+            }
+          : undefined,
+        survivalFlags: [
+          ...position.survivalFlags,
+          'LIVE_PAIRED_PAPER_SHADOW',
+        ],
+      };
+      applyRotationPaperArmSpec(shadowPos, spec);
+      registerLivePairedPaperPosition(shadowPos);
+      addedArms.push(shadowPos.armName);
+    }
+    if (addedArms.length > 0) {
+      log.info(
+        `[KOL_HUNTER_ROTATION_PAPER_ARMS] ${positionId} ${tokenMint.slice(0, 8)} ` +
         `(paired with LIVE main) arms=${addedArms.join(',')}`
       );
     }

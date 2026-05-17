@@ -451,6 +451,11 @@ export const kolHunter = {
   kolHunterRotationUnderfillCostAwareProbeTimeoutSec: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_COST_AWARE_PROBE_TIMEOUT_SEC', '30'),
   kolHunterRotationUnderfillCostAwareHardCutPct: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_COST_AWARE_HARD_CUT_PCT', '0.04'),
   kolHunterRotationUnderfillCostAwareParameterVersion: process.env.KOL_HUNTER_ROTATION_UNDERFILL_COST_AWARE_PARAMETER_VERSION ?? 'rotation-underfill-cost-aware-exit-v2.0.0',
+  // 2026-05-17: report-derived forward paper candidate. This is a paper-only
+  // focus cohort; it must prove itself fresh before any live routing change.
+  kolHunterRotationGoodKolFocusPaperEnabled: boolOptional('KOL_HUNTER_ROTATION_GOOD_KOL_FOCUS_PAPER_ENABLED', true),
+  kolHunterRotationGoodKolFocusKolIds: parseStringList(optional('KOL_HUNTER_ROTATION_GOOD_KOL_FOCUS_KOL_IDS', 'dv,kadenox,letterbomb,naruza')),
+  kolHunterRotationGoodKolFocusParameterVersion: process.env.KOL_HUNTER_ROTATION_GOOD_KOL_FOCUS_PARAMETER_VERSION ?? 'rotation-good-kol-focus-v1.0.0',
   kolHunterRotationPaperAssumedAtaRentSol: numEnv('KOL_HUNTER_ROTATION_PAPER_ASSUMED_ATA_RENT_SOL', '0.00207408'),
   kolHunterRotationPaperAssumedNetworkFeeSol: numEnv('KOL_HUNTER_ROTATION_PAPER_ASSUMED_NETWORK_FEE_SOL', '0.000105'),
   kolHunterRotationPaperNotifyEnabled: boolOptional('KOL_HUNTER_ROTATION_PAPER_NOTIFY_ENABLED', true),

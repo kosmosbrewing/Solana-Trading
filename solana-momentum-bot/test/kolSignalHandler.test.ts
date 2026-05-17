@@ -347,6 +347,9 @@ jest.mock('../src/utils/config', () => ({
     kolHunterRotationUnderfillCostAwareProbeTimeoutSec: 30,
     kolHunterRotationUnderfillCostAwareHardCutPct: 0.04,
     kolHunterRotationUnderfillCostAwareParameterVersion: 'rotation-underfill-cost-aware-exit-v2.0.0',
+    kolHunterRotationGoodKolFocusPaperEnabled: false,
+    kolHunterRotationGoodKolFocusKolIds: ['dv', 'kadenox', 'letterbomb', 'naruza'],
+    kolHunterRotationGoodKolFocusParameterVersion: 'rotation-good-kol-focus-v1.0.0',
     kolHunterRotationPaperAssumedAtaRentSol: 0.00207408,
     kolHunterRotationPaperAssumedNetworkFeeSol: 0.000105,
     kolHunterRotationLiveKolDecayEnabled: true,
@@ -753,6 +756,7 @@ describe('kolSignalHandler — state machine', () => {
     mockedConfig.kolHunterSmartV3PullbackLiveEnabled = false;
     mockedConfig.kolHunterSmartV3MinFreshAfterSellKols = 2;
     mockedConfig.kolHunterSmartV3PullbackMinKolCount = 1;
+    mockedConfig.kolHunterSmartV3VelocityMinIndependentKol = 2;
     mockedConfig.kolHunterSmartV3MaeFastFailEnabled = true;
     mockedConfig.kolHunterSmartV3MaeFastFailMinElapsedSec = 5;
     mockedConfig.kolHunterSmartV3MaeFastFailMaxMfePct = 0.03;
@@ -1052,11 +1056,13 @@ describe('kolSignalHandler — state machine', () => {
 
     it('smart-v3 paper arms enabled: 동일 trigger 에 fast-fail/runner-relaxed shadow arms 를 병렬 생성한다', async () => {
       mockedConfig.kolHunterSmartV3FreshWindowSec = 120;
+      mockedConfig.kolHunterSmartV3VelocityMinIndependentKol = 3;
       mockedConfig.kolHunterSmartV3PaperArmsEnabled = true;
       stubFeed.setInitialPrice(MINT_SMART, 0.001);
 
       await handleKolSwap(buyTx('k1', 'S', MINT_SMART, 70_000));
       await handleKolSwap(buyTx('k2', 'A', MINT_SMART));
+      await handleKolSwap(buyTx('k3', 'A', MINT_SMART));
       await flushAsync();
 
       const positions = __testGetActive();
@@ -1091,6 +1097,7 @@ describe('kolSignalHandler — state machine', () => {
 
     it('smart-v3 new-pool context 가 있으면 new_pool_confirmed paper arm 을 추가한다', async () => {
       mockedConfig.kolHunterSmartV3FreshWindowSec = 120;
+      mockedConfig.kolHunterSmartV3VelocityMinIndependentKol = 3;
       mockedConfig.kolHunterSmartV3PaperArmsEnabled = true;
       mockedConfig.kolHunterSmartV3NewPoolConfirmedPaperEnabled = true;
       const registry = new HeliusPoolRegistry();
@@ -1110,6 +1117,7 @@ describe('kolSignalHandler — state machine', () => {
 
       await handleKolSwap(buyTx('k1', 'S', MINT_SMART, 70_000));
       await handleKolSwap(buyTx('k2', 'A', MINT_SMART));
+      await handleKolSwap(buyTx('k3', 'A', MINT_SMART));
       await flushAsync();
 
       const positions = __testGetActive();
@@ -1346,6 +1354,39 @@ describe('kolSignalHandler — state machine', () => {
         .filter((row) => row.positionId === pos!.positionId);
       expect(rows.at(-1)?.smartV3ProfitFloorExit).toBe(true);
       expect(rows.at(-1)?.extras?.smartV3ProfitFloorExit).toBe(true);
+    });
+
+    it('smart-v3 probe-policy shadow 는 MFE floor 보다 confirm fail cut 을 우선 기록한다', async () => {
+      mockedConfig.missedAlphaObserverEnabled = true;
+      mockedConfig.kolHunterSmartV3FreshWindowSec = 120;
+      mockedConfig.kolHunterSmartV3VelocityMinIndependentKol = 3;
+      mockedConfig.kolHunterSmartV3PaperArmsEnabled = true;
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('k1', 'S', MINT_SMART, 70_000));
+      await handleKolSwap(buyTx('k2', 'A', MINT_SMART));
+      await handleKolSwap(buyTx('k3', 'A', MINT_SMART));
+      await flushAsync();
+
+      const probe = __testGetActive().find((p) => p.armName === 'smart_v3_probe_confirm_shadow_v1');
+      expect(probe).toBeDefined();
+      probe!.entryTimeSec = Math.floor(Date.now() / 1000) - 31;
+      probe!.entryPriceTokenOnly = probe!.marketReferencePrice;
+      probe!.peakPrice = probe!.marketReferencePrice * 1.25;
+      probe!.troughPrice = probe!.marketReferencePrice;
+      let captured: any = null;
+      kolHunterEvents.once('paper_close', (evt) => { captured = evt; });
+      __testTriggerTick(probe!.positionId, probe!.marketReferencePrice * 0.98);
+      await flushAsync();
+
+      expect(captured?.reason).toBe('probe_policy_confirm_fail_cut');
+      expect(captured?.reason).not.toBe('smart_v3_mfe_floor_exit');
+      expect(__testGetActive().some((active) => active.positionId === probe!.positionId)).toBe(false);
+      const rows = mockAppendFile.mock.calls
+        .filter((call) => typeof call[0] === 'string' && call[0].includes('missed-alpha.jsonl'))
+        .map((call) => JSON.parse(String(call[1]).trim()))
+        .filter((row) => row.extras?.positionId === probe!.positionId);
+      expect(rows.at(-1)?.rejectReason).toBe('probe_policy_confirm_fail_cut');
+      expect(rows.at(-1)?.extras?.paperRole).toBe('probe_policy_shadow');
     });
 
     it('first tick 대기 중 같은 mint buy 는 기존 smart-v3 pending 에 합류해 observe 중복을 막는다', async () => {
@@ -1960,6 +2001,65 @@ describe('kolSignalHandler — state machine', () => {
       expect(costAware.t1ProfitFloorMult).toBeCloseTo(1.18);
       expect(costAware.t1ProfitFloorMult).toBeLessThanOrEqual(1 + (costAware.t1MfeOverride ?? 0));
       expect(costAware.survivalFlags).toContain('ROTATION_COST_AWARE_FLOOR_CAPPED_TO_T1');
+    });
+
+    it('rotation-underfill: good KOL focus fresh paper shadow 는 focus KOL 에만 열린다', async () => {
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterRotationPaperArmsEnabled = true;
+      mockedConfig.kolHunterRotationUnderfillCostAwarePaperEnabled = false;
+      mockedConfig.kolHunterRotationGoodKolFocusPaperEnabled = true;
+      mockedConfig.kolHunterSmartV3VelocityScoreThreshold = 99;
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+
+      await handleKolSwap(buyTxWithFill('dv', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+
+      const positions = __testGetActive();
+      expect(positions.map((p) => p.armName).sort()).toEqual([
+        'rotation_exit_kol_flow_v1',
+        'rotation_good_kol_focus_v1',
+        'rotation_underfill_v1',
+      ]);
+      const focus = positions.find((p) => p.armName === 'rotation_good_kol_focus_v1')!;
+      const parent = positions.find((p) => p.armName === 'rotation_underfill_v1')!;
+      expect(focus).toBeDefined();
+      expect(focus.isShadowArm).toBe(true);
+      expect(focus.parentPositionId).toBe(parent.positionId);
+      expect(focus.parameterVersion).toBe('rotation-good-kol-focus-v1.0.0');
+      expect(focus.paperRole).toBe('shadow');
+      expect(focus.profileArm).toBe('rotation_good_kol_focus_v1');
+      expect(focus.entryArm).toBe('rotation_underfill_v1');
+      expect(focus.exitArm).toBe('rotation_good_kol_focus_v1');
+      expect(focus.rotationFlowExitEnabled).toBe(true);
+      expect(focus.t1MfeOverride).toBe(0.12);
+      expect(focus.t1TrailPctOverride).toBe(0.045);
+      expect(focus.t1ProfitFloorMult).toBe(1.10);
+      expect(focus.survivalFlags).toContain('ROTATION_GOOD_KOL_FOCUS_FORWARD_PAPER');
+      expect(focus.survivalFlags).toContain('ROTATION_GOOD_KOL_FOCUS_KOL_DV');
+    });
+
+    it('rotation-underfill: good KOL focus shadow 는 non-focus KOL 에서는 조용히 skip 한다', async () => {
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterRotationPaperArmsEnabled = true;
+      mockedConfig.kolHunterRotationUnderfillCostAwarePaperEnabled = false;
+      mockedConfig.kolHunterRotationGoodKolFocusPaperEnabled = true;
+      mockedConfig.kolHunterSmartV3VelocityScoreThreshold = 99;
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+
+      expect(__testGetActive().map((p) => p.armName).sort()).toEqual([
+        'rotation_exit_kol_flow_v1',
+        'rotation_underfill_v1',
+      ]);
+      const focusSkips = mockAppendFile.mock.calls
+        .filter((call) => typeof call[0] === 'string' && call[0].includes('missed-alpha.jsonl'))
+        .map((call) => JSON.parse(String(call[1]).trim()))
+        .filter((row) => row.extras?.armName === 'rotation_good_kol_focus_v1');
+      expect(focusSkips).toHaveLength(0);
     });
 
     it('rotation-chase-topup: S/A KOL top-up 이 더 높은 fill price 로 붙으면 paper-only 진입한다', async () => {
@@ -3716,7 +3816,7 @@ describe('kolSignalHandler — state machine', () => {
       expect(equivalence?.candidateId).toContain(':smart_v3_fast_fail_live_v1:');
     });
 
-    it('smart-v3 fast-fail live arm: live 진입과 같은 decisionId 로 paper mirror/probe 를 병렬 생성한다', async () => {
+    it('smart-v3 fast-fail live arm: live 진입과 같은 decisionId 로 paper mirror 를 생성하고 3-KOL 미만 probe 는 만들지 않는다', async () => {
       const { ctx, executeBuy, insertTrade } = buildLiveCtx();
       __testInit({
         priceFeed: stubFeed as unknown as never,
@@ -3749,14 +3849,7 @@ describe('kolSignalHandler — state machine', () => {
       expect(mirror?.executionPlanSnapshot?.referencePrice).toBe(live?.executionPlanSnapshot?.referencePrice);
       expect(mirror?.survivalFlags).toContain('SMART_V3_FAST_FAIL_LIVE_MIRROR');
 
-      expect(probe?.isLive).toBe(false);
-      expect(probe?.paperRole).toBe('probe_policy_shadow');
-      expect(probe?.parentPositionId).toBe(mirror?.positionId);
-      expect(probe?.liveEquivalenceDecisionId).toBe(live?.liveEquivalenceDecisionId);
-      expect(probe?.probePolicyConfirmHorizonSec).toBe(30);
-      expect(probe?.probePolicyConfirmThresholdPct).toBe(0.08);
-      expect(probe?.probePolicyTargetHorizonSec).toBe(1800);
-      expect(probe?.executionPlanSnapshot?.mode).toBe('paper');
+      expect(probe).toBeUndefined();
     });
 
     it('smart-v3 fast-fail live arm: arm threshold 초과 집중은 paper fallback 으로 유지한다', async () => {
@@ -4241,6 +4334,48 @@ describe('kolSignalHandler — state machine', () => {
       ]));
       expect(live?.survivalFlags).not.toContain('ROTATION_UNDERFILL_PAPER_ONLY');
       expect(live?.survivalFlags).not.toContain('ROTATION_V1_LIVE_DISABLED');
+    });
+
+    it('rotation-underfill live canary: good KOL focus 는 live 주문 변경 없이 paired paper shadow 를 만든다', async () => {
+      const { ctx, executeBuy, insertTrade } = buildLiveCtx();
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterLiveMinIndependentKol = 2;
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterRotationV1LiveEnabled = false;
+      mockedConfig.kolHunterRotationV1MinIndependentKol = 1;
+      mockedConfig.kolHunterRotationPaperArmsEnabled = true;
+      mockedConfig.kolHunterRotationUnderfillLiveCanaryEnabled = true;
+      mockedConfig.kolHunterRotationUnderfillLiveExitFlowEnabled = true;
+      mockedConfig.kolHunterRotationGoodKolFocusPaperEnabled = true;
+
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+      await handleKolSwap(buyTxWithFill('dv', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+
+      expect(executeBuy).toHaveBeenCalledTimes(1);
+      expect(insertTrade).toHaveBeenCalledTimes(1);
+      const positions = __testGetActive();
+      const live = positions.find((p) => p.isLive === true)!;
+      const focus = positions.find((p) => p.armName === 'rotation_good_kol_focus_v1')!;
+      expect(live.armName).toBe('rotation_underfill_v1');
+      expect(focus).toBeDefined();
+      expect(focus.isLive).toBe(false);
+      expect(focus.isShadowArm).toBe(true);
+      expect(focus.parentPositionId).toBe(live.positionId);
+      expect(focus.paperRole).toBe('shadow');
+      expect(focus.executionPlanSnapshot).toEqual(expect.objectContaining({
+        mode: 'paper',
+        candidateId: live.liveEquivalenceCandidateId,
+        decisionId: live.liveEquivalenceDecisionId,
+      }));
+      expect(focus.survivalFlags).toEqual(expect.arrayContaining([
+        'LIVE_PAIRED_PAPER_SHADOW',
+        'ROTATION_GOOD_KOL_FOCUS_FORWARD_PAPER',
+        'ROTATION_COST_AWARE_EXIT_V2',
+      ]));
     });
 
     it('rotation-underfill exit-flow profile allowlist: paper/live 비교용 profileArm 을 보존한다', async () => {

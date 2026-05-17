@@ -46,6 +46,56 @@ export interface ProbePolicyShadowCohortComparison extends ProbePolicyShadowComp
   cohort: string;
 }
 
+export interface ProbePolicyShadowFunnel {
+  parentRows: number;
+  eligibleParentRows: number;
+  belowMinParentRows: number;
+  unknownParentRows: number;
+  probeRows: number;
+  eligibleProbeRows: number;
+  belowMinProbeRows: number;
+  unknownProbeRows: number;
+  pairedRows: number;
+  eligiblePairedRows: number;
+  eligibleParentWithoutProbeRows: number;
+  unpairedProbeRows: number;
+  allPairCoverage: number | null;
+  eligiblePairCoverage: number | null;
+  reasons: string[];
+}
+
+export interface ProbePolicyShadowWinnerKillAudit {
+  closeReason: 'probe_policy_confirm_fail_cut';
+  targetOffsetSec: number;
+  thresholdMfe: number;
+  cutRows: number;
+  observedTargetRows: number;
+  winnerKillRows: number;
+  winnerKillRate: number | null;
+  observationCoverage: number | null;
+  examples: Array<{
+    positionId: string;
+    tokenMint: string;
+    postMfe: number;
+  }>;
+}
+
+export interface ProbePolicyShadowQualitySplit {
+  cohort: string;
+  pairedRows: number;
+  stats: ProbePolicyShadowStats;
+  exitReasons: Array<{ reason: string; count: number }>;
+}
+
+export type ProbePolicyShadowPromotionCheckStatus = 'PASS' | 'COLLECT' | 'FAIL';
+
+export interface ProbePolicyShadowPromotionCheck {
+  name: string;
+  status: ProbePolicyShadowPromotionCheckStatus;
+  current: string;
+  required: string;
+}
+
 export interface ProbePolicyShadowReport {
   generatedAt: string;
   realtimeDir: string;
@@ -59,8 +109,11 @@ export interface ProbePolicyShadowReport {
   probeRows: number;
   parentRows: number;
   pairedRows: number;
+  funnel: ProbePolicyShadowFunnel;
+  winnerKillAudit: ProbePolicyShadowWinnerKillAudit;
   comparison: ProbePolicyShadowComparison;
   cohorts: ProbePolicyShadowCohortComparison[];
+  qualitySplits: ProbePolicyShadowQualitySplit[];
   exitReasons: Array<{ reason: string; count: number }>;
   verdict: ProbePolicyShadowVerdict;
   reasons: string[];
@@ -68,5 +121,9 @@ export interface ProbePolicyShadowReport {
     forwardPaperMinCloses: number;
     livePromotionAllowed: false;
     requiresSeparateReview: true;
+    targetCohort: 'kol:KOL_3plus';
+    targetPairedCloses: number;
+    nextAction: 'COLLECT_FORWARD_PAPER' | 'BLOCK_PROMOTION_REVIEW_ROOT_CAUSE' | 'BUILD_WALLET_TRUTH_REVIEW_PACKET';
+    checks: ProbePolicyShadowPromotionCheck[];
   };
 }

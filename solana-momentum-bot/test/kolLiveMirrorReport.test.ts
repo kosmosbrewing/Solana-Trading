@@ -17,6 +17,7 @@ function liveRow(params: {
   netSol: number;
   netPct: number;
   exitReason?: string;
+  decisionId?: string;
 }): unknown {
   return {
     positionId: params.positionId,
@@ -29,7 +30,7 @@ function liveRow(params: {
     mfePctPeakTokenOnly: 0.2,
     holdSec: 20,
     exitReason: params.exitReason ?? 'live_close',
-    liveEquivalenceDecisionId: `decision-${params.positionId}`,
+    liveEquivalenceDecisionId: params.decisionId ?? `decision-${params.positionId}`,
   };
 }
 
@@ -40,6 +41,7 @@ function mirrorRow(params: {
   netSolTokenOnly: number;
   netPctTokenOnly: number;
   exitReason?: string;
+  decisionId?: string;
 }): unknown {
   return {
     positionId: params.positionId,
@@ -53,7 +55,7 @@ function mirrorRow(params: {
     mfePctPeakTokenOnly: 0.25,
     holdSec: 22,
     exitReason: params.exitReason ?? 'mirror_close',
-    liveEquivalenceDecisionId: `decision-${params.parentPositionId}`,
+    liveEquivalenceDecisionId: params.decisionId ?? `decision-${params.parentPositionId}`,
   };
 }
 
@@ -116,6 +118,42 @@ describe('kol-live-mirror-report', () => {
     expect(report.verdict).toBe('STRATEGY_LOSS_REVIEW');
     expect(report.classifications.strategy_loss).toBe(2);
     expect(report.topStrategyLosses).toHaveLength(2);
+  });
+
+  it('falls back to decisionId when mirror parentPositionId is unavailable', async () => {
+    await writeFile(path.join(dir, 'kol-live-trades.jsonl'), jsonl([
+      liveRow({
+        positionId: 'live-1',
+        closedAt: '2026-05-01T00:00:00.000Z',
+        netSol: -0.003,
+        netPct: -0.15,
+        decisionId: 'decision-shared-1',
+      }),
+    ]));
+    await writeFile(path.join(dir, 'kol-paper-trades.jsonl'), jsonl([
+      mirrorRow({
+        positionId: 'mirror-1',
+        parentPositionId: 'legacy-missing-parent',
+        closedAt: '2026-05-01T00:00:01.000Z',
+        netSolTokenOnly: 0.001,
+        netPctTokenOnly: 0.05,
+        decisionId: 'decision-shared-1',
+      }),
+    ]));
+
+    const report = await buildKolLiveMirrorReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      minPairs: 1,
+      executionDragRate: 0.2,
+      strategyLossRate: 0.5,
+    });
+
+    expect(report.pairedRows).toBe(1);
+    expect(report.liveWithoutMirrorRows).toBe(0);
+    expect(report.unpairedMirrorRows).toBe(0);
+    expect(report.topExecutionDrags[0]?.livePositionId).toBe('live-1');
+    expect(report.topExecutionDrags[0]?.decisionId).toBe('decision-shared-1');
   });
 
   it('parses args and renders collection guardrails', () => {

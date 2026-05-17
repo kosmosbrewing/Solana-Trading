@@ -6,10 +6,12 @@ import {
 } from './markoutCandidateStore';
 import {
   PROBE_POLICY_PARENT_ARM,
+  PROBE_POLICY_PARENT_ARMS,
   PROBE_POLICY_SHADOW_ARM,
   PROBE_POLICY_SHADOW_ROLE,
   type ProbePolicyShadowArgs,
   type ProbePolicyShadowComparison,
+  type ProbePolicyShadowCohortComparison,
   type ProbePolicyShadowReport,
   type ProbePolicyShadowStats,
   type ProbePolicyShadowVerdict,
@@ -29,6 +31,13 @@ function valueStr(row: JsonRow, key: string): string {
 
 function valueNum(row: JsonRow, key: string): number | null {
   return num(row[key]) ?? num(extrasOf(row)[key]);
+}
+
+function valueArray(row: JsonRow, key: string): unknown[] {
+  const direct = row[key];
+  if (Array.isArray(direct)) return direct;
+  const extra = extrasOf(row)[key];
+  return Array.isArray(extra) ? extra : [];
 }
 
 function timeMs(value: unknown): number {
@@ -89,7 +98,8 @@ function isProbeShadow(row: JsonRow): boolean {
 }
 
 function isParentRow(row: JsonRow): boolean {
-  return valueStr(row, 'armName') === PROBE_POLICY_PARENT_ARM;
+  const armName = valueStr(row, 'armName');
+  return PROBE_POLICY_PARENT_ARMS.some((parentArm) => parentArm === armName);
 }
 
 function closeRowsSince(rows: JsonRow[], sinceMs: number): JsonRow[] {
@@ -132,6 +142,50 @@ function buildComparison(probeRows: JsonRow[], rowsByPositionId: Map<string, Jso
   };
 }
 
+function parentArmForProbe(probe: JsonRow, rowsByPositionId: Map<string, JsonRow>): string {
+  const parentPositionId = valueStr(probe, 'parentPositionId');
+  const parent = parentPositionId ? rowsByPositionId.get(parentPositionId) : undefined;
+  return parent ? valueStr(parent, 'armName') || 'unknown_parent' : 'unknown_parent';
+}
+
+function kolBucketForProbe(probe: JsonRow): string {
+  const flags = valueArray(probe, 'survivalFlags')
+    .map((value) => typeof value === 'string' ? value : '')
+    .filter(Boolean);
+  if (flags.some((flag) => flag.startsWith('SMART_V3_PROBE_BELOW_MIN_KOL_'))) {
+    return 'kol:below_min';
+  }
+  const kols = valueNum(probe, 'independentKolCount');
+  if (kols == null) return 'kol:unknown';
+  if (kols >= 3) return 'kol:KOL_3plus';
+  return `kol:KOL_${Math.max(0, Math.floor(kols))}`;
+}
+
+function buildCohortComparisons(
+  probeRows: JsonRow[],
+  rowsByPositionId: Map<string, JsonRow>
+): ProbePolicyShadowCohortComparison[] {
+  const cohorts = new Map<string, JsonRow[]>();
+  for (const probe of probeRows) {
+    const parentArm = parentArmForProbe(probe, rowsByPositionId);
+    const labels = [
+      `parent:${parentArm}`,
+      kolBucketForProbe(probe),
+    ];
+    for (const label of labels) {
+      const rows = cohorts.get(label) ?? [];
+      rows.push(probe);
+      cohorts.set(label, rows);
+    }
+  }
+  return [...cohorts.entries()]
+    .map(([cohort, rows]) => ({
+      cohort,
+      ...buildComparison(rows, rowsByPositionId),
+    }))
+    .sort((a, b) => b.pairedRows - a.pairedRows || a.cohort.localeCompare(b.cohort));
+}
+
 function verdictFor(comparison: ProbePolicyShadowComparison, args: ProbePolicyShadowArgs): ProbePolicyShadowVerdict {
   if (comparison.probe.rows < args.minCloses || comparison.pairedRows < args.minCloses) return 'COLLECT';
   if ((comparison.tailKillDelta ?? 0) > args.maxTailKillRate) return 'TAIL_KILL_RISK';
@@ -159,6 +213,7 @@ export async function buildProbePolicyShadowReport(args: ProbePolicyShadowArgs):
   const probeRows = paperRows.filter(isProbeShadow);
   const parentRows = paperRows.filter(isParentRow);
   const comparison = buildComparison(probeRows, rowsByPositionId);
+  const cohorts = buildCohortComparisons(probeRows, rowsByPositionId);
   const partial = {
     generatedAt: new Date().toISOString(),
     realtimeDir: args.realtimeDir,
@@ -167,11 +222,13 @@ export async function buildProbePolicyShadowReport(args: ProbePolicyShadowArgs):
     maxTailKillRate: args.maxTailKillRate,
     probeArm: PROBE_POLICY_SHADOW_ARM,
     parentArm: PROBE_POLICY_PARENT_ARM,
+    parentArms: [...PROBE_POLICY_PARENT_ARMS],
     paperRows: paperRows.length,
     probeRows: probeRows.length,
     parentRows: parentRows.length,
     pairedRows: comparison.pairedRows,
     comparison,
+    cohorts,
     exitReasons: countExitReasons(probeRows),
     verdict: verdictFor(comparison, args),
     promotionGate: {

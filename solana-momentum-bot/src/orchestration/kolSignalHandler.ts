@@ -148,6 +148,9 @@ const ROTATION_UNDERFILL_ARM = 'rotation_underfill_v1';
 const ROTATION_EXIT_FLOW_ARM = 'rotation_exit_kol_flow_v1';
 const ROTATION_UNDERFILL_EXIT_FLOW_PROFILE_ARM = 'rotation_underfill_exit_flow_v1';
 const ROTATION_UNDERFILL_COST_AWARE_PROFILE_ARM = 'rotation_underfill_cost_aware_exit_v2';
+const ROTATION_SECOND_KOL_WAIT_PARAMETER_VERSION = 'rotation-second-kol-wait-conversion-v1.0.0';
+const ROTATION_SECOND_KOL_WAIT_ARM = 'rotation_second_kol_wait_conversion_v1';
+const ROTATION_SECOND_KOL_WAIT_MAX_DELAY_MS = 30_000;
 const PAPER_CLOSE_WRITER_SCHEMA_VERSION = 'kol-paper-close/v2';
 const ROTATION_EXIT_ROUTE_PROOF_SCHEMA_VERSION = 'rotation-exit-route-proof/v1';
 const KOL_EXECUTION_PLAN_SCHEMA_VERSION = 'kol-execution-plan/v1';
@@ -305,6 +308,8 @@ export interface PaperPosition {
   rotationFirstBuyAtMs?: number;
   rotationLastBuyAtMs?: number;
   rotationLastBuyAgeMs?: number;
+  parentUnderfillPositionId?: string;
+  secondKolDelaySec?: number;
   rotationScore?: number;
   underfillReferenceSolAmount?: number;
   underfillReferenceTokenAmount?: number;
@@ -521,6 +526,7 @@ interface PaperEntryOptions {
   profileArm?: string;
   entryArm?: string;
   exitArm?: string;
+  parentPositionId?: string;
   canaryLane?: EntryLane;
   entryReason?: KolEntryReason;
   convictionLevel?: KolConvictionLevel;
@@ -535,6 +541,8 @@ interface PaperEntryOptions {
   rotationFirstBuyAtMs?: number;
   rotationLastBuyAtMs?: number;
   rotationLastBuyAgeMs?: number;
+  parentUnderfillPositionId?: string;
+  secondKolDelaySec?: number;
   rotationScore?: number;
   underfillReferenceSolAmount?: number;
   underfillReferenceTokenAmount?: number;
@@ -591,6 +599,7 @@ interface PendingCandidate {
     anchorPrice?: number;
     enteredAtMs?: number;
     underfillEnteredAtMs?: number;
+    secondKolWaitEnteredAtMs?: number;
     chaseTopupEnteredAtMs?: number;
     noTradeReasonsEmitted: Set<string>;
     underfillNoTradeReasonsEmitted?: Set<string>;
@@ -1179,6 +1188,8 @@ function buildKolAttributionRecord(pos: PaperPosition): Record<string, unknown> 
     liveEquivalenceLiveWouldEnter: pos.liveEquivalenceLiveWouldEnter ?? null,
     liveEquivalenceLiveBlockReason: pos.liveEquivalenceLiveBlockReason ?? null,
     liveEquivalenceLiveBlockFlags: pos.liveEquivalenceLiveBlockFlags ?? null,
+    parentUnderfillPositionId: pos.parentUnderfillPositionId ?? null,
+    secondKolDelaySec: pos.secondKolDelaySec ?? null,
   };
 }
 
@@ -1225,6 +1236,8 @@ function trackPaperPositionMarkout(
         rotationFirstBuyAtMs: pos.rotationFirstBuyAtMs ?? null,
         rotationLastBuyAtMs: pos.rotationLastBuyAtMs ?? null,
         rotationLastBuyAgeMs: pos.rotationLastBuyAgeMs ?? null,
+        parentUnderfillPositionId: pos.parentUnderfillPositionId ?? null,
+        secondKolDelaySec: pos.secondKolDelaySec ?? null,
         rotationScore: pos.rotationScore ?? null,
         underfillReferenceSolAmount: pos.underfillReferenceSolAmount ?? null,
         underfillReferenceTokenAmount: pos.underfillReferenceTokenAmount ?? null,
@@ -2449,6 +2462,7 @@ function armNameForVersion(parameterVersion: string): string {
   if (parameterVersion === config.kolHunterRotationV1ParameterVersion) return 'kol_hunter_rotation_v1';
   if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) return ROTATION_UNDERFILL_ARM;
   if (parameterVersion === config.kolHunterRotationUnderfillCostAwareParameterVersion) return ROTATION_UNDERFILL_COST_AWARE_PROFILE_ARM;
+  if (parameterVersion === ROTATION_SECOND_KOL_WAIT_PARAMETER_VERSION) return ROTATION_SECOND_KOL_WAIT_ARM;
   if (parameterVersion === config.kolHunterRotationExitFlowParameterVersion) return ROTATION_EXIT_FLOW_ARM;
   if (parameterVersion === config.kolHunterRotationChaseTopupParameterVersion) return 'rotation_chase_topup_v1';
   if (parameterVersion === config.kolHunterCapitulationReboundParameterVersion) return CAPITULATION_REBOUND_ARM;
@@ -2768,6 +2782,7 @@ function defaultEntryReasonForVersion(parameterVersion: string): KolEntryReason 
   if (parameterVersion === config.kolHunterSwingV2ParameterVersion) return 'swing_v2';
   if (parameterVersion === config.kolHunterRotationV1ParameterVersion) return 'rotation_v1';
   if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) return 'rotation_v1';
+  if (parameterVersion === ROTATION_SECOND_KOL_WAIT_PARAMETER_VERSION) return 'rotation_v1';
   if (parameterVersion === config.kolHunterRotationExitFlowParameterVersion) return 'rotation_v1';
   if (parameterVersion === config.kolHunterRotationChaseTopupParameterVersion) return 'rotation_v1';
   if (isCapitulationParameterVersion(parameterVersion)) return 'capitulation_rebound';
@@ -2779,6 +2794,7 @@ function defaultConvictionForVersion(parameterVersion: string): KolConvictionLev
   if (parameterVersion === config.kolHunterSwingV2ParameterVersion) return 'HIGH';
   if (parameterVersion === config.kolHunterRotationV1ParameterVersion) return 'MEDIUM_HIGH';
   if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) return 'MEDIUM_HIGH';
+  if (parameterVersion === ROTATION_SECOND_KOL_WAIT_PARAMETER_VERSION) return 'MEDIUM_HIGH';
   if (parameterVersion === config.kolHunterRotationExitFlowParameterVersion) return 'MEDIUM_HIGH';
   if (parameterVersion === config.kolHunterRotationChaseTopupParameterVersion) return 'MEDIUM_HIGH';
   if (isCapitulationParameterVersion(parameterVersion)) return 'MEDIUM_HIGH';
@@ -2831,9 +2847,22 @@ function dynamicExitParamsForEntry(reason: KolEntryReason): DynamicExitParams {
 function dynamicExitParamsForPosition(parameterVersion: string, reason: KolEntryReason): DynamicExitParams {
   if (
     parameterVersion === config.kolHunterRotationUnderfillParameterVersion ||
+    parameterVersion === ROTATION_SECOND_KOL_WAIT_PARAMETER_VERSION ||
     parameterVersion === config.kolHunterRotationExitFlowParameterVersion ||
     parameterVersion === config.kolHunterRotationChaseTopupParameterVersion
   ) {
+    if (parameterVersion === ROTATION_SECOND_KOL_WAIT_PARAMETER_VERSION) {
+      return {
+        t1Mfe: config.kolHunterRotationUnderfillCostAwareT1MinMfe,
+        t1TrailPct: config.kolHunterRotationUnderfillCostAwareT1TrailPct,
+        t1ProfitFloorMult: config.kolHunterRotationUnderfillCostAwareProfitFloorMult,
+        probeFlatTimeoutSec: config.kolHunterRotationUnderfillCostAwareProbeTimeoutSec,
+        probeHardCutPct: config.kolHunterRotationUnderfillCostAwareHardCutPct,
+        rotationDoaWindowSec: config.kolHunterRotationUnderfillDoaWindowSec,
+        rotationDoaMinMfePct: config.kolHunterRotationUnderfillDoaMinMfePct,
+        rotationDoaMaxMaePct: config.kolHunterRotationUnderfillDoaMaxMaePct,
+      };
+    }
     return {
       t1Mfe: config.kolHunterRotationUnderfillT1Mfe,
       t1TrailPct: config.kolHunterRotationUnderfillT1TrailPct,
@@ -3155,6 +3184,7 @@ export async function handleKolSwap(tx: KolTx): Promise<void> {
     if (existingPending.smartV3) {
       await evaluateSmartV3Triggers(existingPending);
     }
+    await maybeEnterRotationSecondKolWaitConversion(existingPending, tx, Date.now());
     if (activeBeforeEvaluate.length > 0) {
       for (const pos of activeBeforeEvaluate) applySmartV3Reinforcement(pos, tx);
     }
@@ -4674,7 +4704,11 @@ function buildRotationUnderfillParticipants(
     }));
 }
 
-function evaluateRotationUnderfillTriggerState(cand: PendingCandidate, nowMs: number): RotationV1TriggerResult {
+function evaluateRotationUnderfillTriggerState(
+  cand: PendingCandidate,
+  nowMs: number,
+  options: { ignoreAlreadyEntered?: boolean } = {}
+): RotationV1TriggerResult {
   const empty = {
     buyCount: 0,
     smallBuyCount: 0,
@@ -4694,7 +4728,7 @@ function evaluateRotationUnderfillTriggerState(cand: PendingCandidate, nowMs: nu
     return { triggered: false, flags: [], reason: 'disabled', telemetry: empty };
   }
   const rotationState = ensureRotationV1State(cand);
-  if (rotationState.underfillEnteredAtMs) {
+  if (rotationState.underfillEnteredAtMs && options.ignoreAlreadyEntered !== true) {
     return { triggered: false, flags: [], reason: 'already_entered', telemetry: empty };
   }
   const smart = cand.smartV3;
@@ -5611,6 +5645,89 @@ function emitRotationChaseTopupNoTradePolicy(
     recentJupiter429: currentRecentJupiter429(),
   });
   trackRotationChaseTopupNoTradeMarkout(cand, score, result, reason, flags);
+}
+
+async function maybeEnterRotationSecondKolWaitConversion(
+  cand: PendingCandidate,
+  tx: KolTx,
+  nowMs: number
+): Promise<void> {
+  if (tx.action !== 'buy') return;
+  const rotationState = ensureRotationV1State(cand);
+  if (!rotationState.underfillEnteredAtMs || rotationState.secondKolWaitEnteredAtMs) return;
+  const parent = getActivePositionsByMint(cand.tokenMint).find((pos) =>
+    pos.armName === ROTATION_UNDERFILL_ARM &&
+    pos.isLive !== true &&
+    pos.isShadowArm !== true &&
+    pos.independentKolCount === 1
+  );
+  if (!parent) return;
+  if (getActivePositionsByMint(cand.tokenMint).some((pos) => pos.armName === ROTATION_SECOND_KOL_WAIT_ARM)) {
+    rotationState.secondKolWaitEnteredAtMs = nowMs;
+    return;
+  }
+
+  const result = evaluateRotationUnderfillTriggerState(cand, nowMs, { ignoreAlreadyEntered: true });
+  if (!result.triggered || result.telemetry.distinctRotationKols < 2) return;
+  const firstBuyAtMs = result.telemetry.firstBuyAtMs;
+  const lastBuyAtMs = result.telemetry.lastBuyAtMs;
+  if (firstBuyAtMs == null || lastBuyAtMs == null) return;
+  const secondKolDelayMs = Math.max(0, lastBuyAtMs - firstBuyAtMs);
+  if (secondKolDelayMs > ROTATION_SECOND_KOL_WAIT_MAX_DELAY_MS) return;
+
+  rotationState.secondKolWaitEnteredAtMs = nowMs;
+  const score = computeKolDiscoveryScoreCached(cand.tokenMint, nowMs);
+  const delaySec = Math.round(secondKolDelayMs / 1000);
+  const flags = [
+    ...result.flags,
+    'ROTATION_SECOND_KOL_WAIT_CONVERSION',
+    secondKolDelayMs <= 15_000
+      ? 'ROTATION_SECOND_KOL_WAIT_LE_15S'
+      : 'ROTATION_SECOND_KOL_WAIT_LE_30S',
+    `ROTATION_SECOND_KOL_DELAY_${delaySec}S`,
+    'ROTATION_COST_AWARE_EXIT_V2',
+    'ROTATION_SECOND_KOL_PAPER_ONLY',
+  ];
+  log.info(
+    `[KOL_HUNTER_ROTATION_SECOND_KOL_WAIT_TRIGGER] ${cand.tokenMint.slice(0, 8)} ` +
+    `delay=${delaySec}s kols=${result.telemetry.distinctRotationKols} ` +
+    `refMove=${(result.telemetry.priceResponsePct * 100).toFixed(2)}%`
+  );
+  await enterPaperPosition(
+    cand.tokenMint,
+    cand,
+    score,
+    flags,
+    {
+      parameterVersion: ROTATION_SECOND_KOL_WAIT_PARAMETER_VERSION,
+      positionIdSuffix: 'second-kol-wait',
+      profileArm: ROTATION_SECOND_KOL_WAIT_ARM,
+      entryArm: ROTATION_UNDERFILL_ARM,
+      exitArm: ROTATION_SECOND_KOL_WAIT_ARM,
+      parentPositionId: parent.positionId,
+      entryReason: 'rotation_v1',
+      convictionLevel: 'MEDIUM_HIGH',
+      tokenDecimals: cand.smartV3?.tokenDecimals,
+      tokenDecimalsSource: cand.smartV3?.tokenDecimalsSource,
+      rotationTelemetry: result.telemetry,
+      rotationAnchorKols: result.telemetry.anchorKols,
+      rotationAnchorPrice: result.telemetry.anchorPrice,
+      rotationAnchorPriceSource: result.telemetry.anchorPriceSource,
+      rotationFirstBuyAtMs: firstBuyAtMs,
+      rotationLastBuyAtMs: lastBuyAtMs,
+      rotationLastBuyAgeMs: result.telemetry.lastBuyAgeMs ?? undefined,
+      parentUnderfillPositionId: parent.positionId,
+      secondKolDelaySec: secondKolDelayMs / 1000,
+      rotationScore: result.telemetry.rotationScore,
+      underfillReferenceSolAmount: result.telemetry.underfillReferenceSolAmount,
+      underfillReferenceTokenAmount: result.telemetry.underfillReferenceTokenAmount,
+      rotationFlowExitEnabled: true,
+      entryIndependentKolCount: result.telemetry.distinctRotationKols,
+      entryKolScore: result.telemetry.rotationScore,
+      entryParticipatingKols: result.participatingKols ?? score.participatingKols,
+      paperRole: 'research_arm',
+    }
+  );
 }
 
 function emitCapitulationNoTradePolicy(
@@ -7634,6 +7751,8 @@ async function enterPaperPosition(
       rotationFirstBuyAtMs: options.rotationFirstBuyAtMs,
       rotationLastBuyAtMs: options.rotationLastBuyAtMs,
       rotationLastBuyAgeMs: options.rotationLastBuyAgeMs,
+      parentUnderfillPositionId: options.parentUnderfillPositionId,
+      secondKolDelaySec: options.secondKolDelaySec,
       rotationScore: options.rotationScore,
       underfillReferenceSolAmount: options.underfillReferenceSolAmount,
       underfillReferenceTokenAmount: options.underfillReferenceTokenAmount,
@@ -7701,7 +7820,7 @@ async function enterPaperPosition(
   };
 
   const positions = [
-    makePosition(positionId, primaryVersion, false),
+    makePosition(positionId, primaryVersion, false, options.parentPositionId),
   ];
   if (swingEligible) {
     positions.push(
@@ -9848,6 +9967,8 @@ function buildKolBaseLedgerRecord(
     exitArm: pos.exitArm ?? pos.armName,
     isShadowArm: pos.isShadowArm,
     parentPositionId: pos.parentPositionId ?? null,
+    parentUnderfillPositionId: pos.parentUnderfillPositionId ?? null,
+    secondKolDelaySec: pos.secondKolDelaySec ?? null,
     entryReason: pos.kolEntryReason,
     kolEntryReason: pos.kolEntryReason,
     convictionLevel: pos.kolConvictionLevel,
@@ -9960,6 +10081,8 @@ function buildKolLedgerExtras(
     convictionLevel: pos.kolConvictionLevel,
     parameterVersion: pos.parameterVersion,
     parentPositionId: pos.parentPositionId ?? null,
+    parentUnderfillPositionId: pos.parentUnderfillPositionId ?? null,
+    secondKolDelaySec: pos.secondKolDelaySec ?? null,
     isShadowArm: pos.isShadowArm,
     isShadowKol: pos.isShadowKol ?? false,
     isTailPosition: pos.isTailPosition ?? false,

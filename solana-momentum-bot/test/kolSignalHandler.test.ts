@@ -4539,8 +4539,15 @@ describe('kolSignalHandler — state machine', () => {
       expect(insertTrade).not.toHaveBeenCalled();
       const paper = __testGetActive().find((p) => p.isLive !== true);
       expect(paper?.armName).toBe('rotation_underfill_v1');
+      expect(paper?.executionGuard).toEqual(expect.objectContaining({
+        guard: 'rotation_underfill_live_pretrade_reject',
+        action: 'pretrade_reject',
+      }));
       expect(paper?.executionGuardAction).toBe('pretrade_reject');
       expect(paper?.executionGuardReason).toContain('rotation_underfill_pretrade_discount_pct');
+      expect(paper?.executionPlanSnapshot?.executionGuard).toEqual(expect.objectContaining({
+        guard: 'rotation_underfill_live_pretrade_reject',
+      }));
       expect(paper?.survivalFlags).toContain('ROTATION_UNDERFILL_LIVE_PRETRADE_REJECT');
     });
 
@@ -4576,8 +4583,15 @@ describe('kolSignalHandler — state machine', () => {
       expect(executeSell).not.toHaveBeenCalled();
       const live = __testGetActive().find((p) => p.isLive === true);
       expect(live?.armName).toBe('rotation_underfill_v1');
+      expect(live?.executionGuard).toEqual(expect.objectContaining({
+        guard: 'rotation_underfill_actual_discount_warn',
+        action: 'telemetry_only',
+      }));
       expect(live?.executionGuardAction).toBe('telemetry_only');
       expect(live?.executionGuardReason).toBe('rotation_underfill_actual_discount_pct=0.0050');
+      expect(live?.executionPlanSnapshot?.executionGuard).toEqual(expect.objectContaining({
+        guard: 'rotation_underfill_actual_discount_warn',
+      }));
       expect(live?.state).toBe('PROBE');
     });
 
@@ -4889,6 +4903,14 @@ describe('kolSignalHandler — state machine', () => {
       expect(positions).toHaveLength(1);
       expect(positions[0].isLive).toBeFalsy();
       expect(positions[0].entryPrice).toBeCloseTo(0.0016, 8);
+      expect(positions[0].executionGuard).toEqual(expect.objectContaining({
+        guard: 'live_fresh_reference_reject',
+        action: 'fallback_paper',
+      }));
+      expect(positions[0].paperRole).toBe('fallback_execution_safety');
+      expect(positions[0].executionPlanSnapshot?.executionGuard).toEqual(expect.objectContaining({
+        guard: 'live_fresh_reference_reject',
+      }));
       expect(positions[0].survivalFlags).toContain('LIVE_FRESH_REFERENCE_REJECT');
       expect(positions[0].survivalFlags.some((flag) => flag.startsWith('LIVE_FRESH_REFERENCE_DRIFT_PCT='))).toBe(true);
       expect(positions[0].smartV3LiveEligibleShadow).toBe(false);

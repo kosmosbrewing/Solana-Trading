@@ -34,6 +34,370 @@ describe('historical-loss-miner', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
+  it('surfaces wallet-positive narrow compounding cohorts without promoting research-only rows', async () => {
+    const mirrorRows = Array.from({ length: 30 }, (_, index) => closeRow({
+      positionId: `mirror-${index}`,
+      armName: 'rotation_underfill_cost_aware_exit_v2',
+      profileArm: 'rotation_underfill_cost_aware_exit_v2',
+      paperRole: 'mirror',
+      routeFound: true,
+      independentKolCount: 2,
+      secondKolDelaySec: 12,
+      closedAt: `2026-05-16T00:${String(index).padStart(2, '0')}:00.000Z`,
+      exitReason: index % 3 === 0 ? 'probe_flat_cut' : 'winner_trailing_t1',
+      netSol: index % 3 === 0 ? -0.001 : 0.002,
+      netSolTokenOnly: index % 3 === 0 ? -0.0008 : 0.0022,
+      mfePctPeak: index % 3 === 0 ? 0.02 : 0.18,
+      holdSec: 35,
+      survivalFlags: ['ROTATION_UNDERFILL_KOLS_2', 'ROTATION_COST_AWARE_EXIT_V2'],
+    }));
+    const researchRows = Array.from({ length: 30 }, (_, index) => closeRow({
+      positionId: `research-${index}`,
+      armName: 'rotation_second_kol_wait_conversion_v1',
+      profileArm: 'rotation_second_kol_wait_conversion_v1',
+      paperRole: 'research_arm',
+      routeFound: true,
+      independentKolCount: 2,
+      secondKolDelaySec: 10,
+      closedAt: `2026-05-16T01:${String(index).padStart(2, '0')}:00.000Z`,
+      exitReason: 'winner_trailing_t1',
+      netSol: 0.01,
+      netSolTokenOnly: 0.011,
+      mfePctPeak: 0.3,
+      holdSec: 40,
+      survivalFlags: ['ROTATION_SECOND_KOL_WAIT_CONVERSION'],
+    }));
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([
+      ...mirrorRows,
+      ...researchRows,
+    ]));
+    await writeFile(path.join(dir, 'rotation-v1-live-trades.jsonl'), jsonl(
+      Array.from({ length: 2 }, (_, index) => closeRow({
+        positionId: `live-smoke-${index}`,
+        armName: 'rotation_underfill_cost_aware_exit_v2',
+        profileArm: 'rotation_underfill_cost_aware_exit_v2',
+        routeFound: true,
+        independentKolCount: 2,
+        secondKolDelaySec: 12,
+        closedAt: `2026-05-16T02:0${index}:00.000Z`,
+        exitReason: 'winner_trailing_t1',
+        netSol: 0.002,
+        netSolTokenOnly: 0.0022,
+        mfePctPeak: 0.18,
+        holdSec: 35,
+        survivalFlags: ['ROTATION_UNDERFILL_KOLS_2', 'ROTATION_COST_AWARE_EXIT_V2'],
+      }))
+    ));
+
+    const report = await buildHistoricalLossReport({
+      realtimeDir: dir,
+      nowMs: Date.parse('2026-05-16T12:00:00.000Z'),
+      freshWindowSpecs: ['24h', '3d', '7d'],
+      minRows: 30,
+      maxP90Mfe: 0.03,
+    });
+
+    expect(report.missionCompoundingBoard).toMatchObject({
+      verdict: 'PAPER_COHORT_FOUND',
+      requiredRows: 30,
+      primaryAction: 'lock the cohort as paper mirror and collect live-equivalence rows',
+    });
+    expect(report.missionCompoundingBoard.candidates.find((row) =>
+      row.label === 'rotation|route_known|2plus|cost_aware|secondKOL<=15s'
+    )).toMatchObject({
+      verdict: 'PAPER_MIRROR_CANDIDATE',
+      comparableRows: 32,
+      liveRows: 2,
+      paperRows: 30,
+      researchRows: 30,
+      walletWins: 22,
+      walletLosses: 10,
+      walletNetSol: 0.034,
+      maxLossStreak: 1,
+      blockers: [],
+    });
+    expect(report.missionCompoundingBoard.candidates.find((row) =>
+      row.label === 'rotation|runtime_second_kol_wait'
+    )).toMatchObject({
+      verdict: 'RESEARCH_ONLY',
+      comparableRows: 0,
+      researchRows: 30,
+      blockers: ['research-only rows are not live-equivalent', 'sample 0/30', 'wallet net 0.000000 <= 0', 'wallet win rate n/a < 55.0%'],
+    });
+
+    const markdown = renderHistoricalLossReport(report);
+    expect(markdown).toContain('Mission Compounding Cohort Board');
+    expect(markdown).toContain('PAPER_COHORT_FOUND');
+    expect(markdown).toContain('Research/shadow rows cannot prove live readiness');
+  });
+
+  it('rejects demoted paper-only policy cohorts even when historical paper net is positive', async () => {
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl(
+      Array.from({ length: 30 }, (_, index) => closeRow({
+        positionId: `demoted-chase-${index}`,
+        armName: 'rotation_chase_topup_v1',
+        profileArm: 'rotation_chase_topup_v1',
+        closedAt: `2026-05-16T03:${String(index).padStart(2, '0')}:00.000Z`,
+        exitReason: index % 4 === 0 ? 'probe_flat_cut' : 'winner_trailing_t1',
+        netSol: index % 4 === 0 ? -0.001 : 0.004,
+        netSolTokenOnly: index % 4 === 0 ? -0.0008 : 0.0042,
+        mfePctPeak: index % 4 === 0 ? 0.01 : 0.22,
+        holdSec: 30,
+        survivalFlags: [
+          'ROTATION_CHASE_TOPUP_V1',
+          'ROTATION_CHASE_TOPUP_PAPER_ONLY',
+          'ROTATION_CHASE_BUYS_2',
+          'ROTATION_EDGE_COST_RATIO_0.137',
+        ],
+      }))
+    ));
+
+    const report = await buildHistoricalLossReport({
+      realtimeDir: dir,
+      nowMs: Date.parse('2026-05-16T12:00:00.000Z'),
+      freshWindowSpecs: ['24h', '3d', '7d'],
+      minRows: 30,
+      maxP90Mfe: 0.03,
+    });
+
+    expect(report.missionCompoundingBoard).toMatchObject({
+      verdict: 'NO_COMPOUNDING_COHORT',
+      primaryAction: 'no compounding cohort; keep loss-mining and reject weak cohorts',
+    });
+    expect(report.missionCompoundingBoard.candidates.find((row) =>
+      row.label === 'rotation|flags:ROTATION_CHASE_BUYS_2 + ROTATION_EDGE_COST_RATIO_0.137'
+    )).toMatchObject({
+      verdict: 'REJECT_POLICY_DEMOTED',
+      comparableRows: 30,
+      paperOnlyPolicyRows: 30,
+      paperOnlyPolicyRate: 1,
+      blockers: [
+        'paper-only/demoted policy rows 100.0% >= 80.0%',
+      ],
+      nextAction: 'keep diagnostic only; do not use demoted/paper-only policy as compounding proof',
+    });
+  });
+
+  it('rejects undersampled cohorts when the required win-rate is already unreachable', async () => {
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl(
+      Array.from({ length: 29 }, (_, index) => closeRow({
+        positionId: `unreachable-win-rate-${index}`,
+        armName: 'rotation_underfill_cost_aware_exit_v2',
+        profileArm: 'rotation_underfill_cost_aware_exit_v2',
+        paperRole: 'mirror',
+        routeFound: true,
+        independentKolCount: 2,
+        secondKolDelaySec: 12,
+        closedAt: `2026-05-16T04:${String(index).padStart(2, '0')}:00.000Z`,
+        exitReason: index < 11 ? 'winner_trailing_t1' : 'probe_flat_cut',
+        netSol: index < 11 ? 0.004 : -0.001,
+        netSolTokenOnly: index < 11 ? 0.0042 : -0.0008,
+        mfePctPeak: index < 11 ? 0.18 : 0.02,
+        holdSec: 35,
+        survivalFlags: ['ROTATION_UNDERFILL_KOLS_2', 'ROTATION_COST_AWARE_EXIT_V2'],
+      }))
+    ));
+
+    const report = await buildHistoricalLossReport({
+      realtimeDir: dir,
+      nowMs: Date.parse('2026-05-16T12:00:00.000Z'),
+      freshWindowSpecs: ['24h', '3d', '7d'],
+      minRows: 30,
+      maxP90Mfe: 0.03,
+    });
+
+    expect(report.missionCompoundingBoard.candidates.find((row) =>
+      row.label === 'rotation|route_known|2plus|cost_aware|secondKOL<=15s'
+    )).toMatchObject({
+      verdict: 'REJECT_LOW_WIN_RATE',
+      comparableRows: 29,
+      walletWins: 11,
+      walletLosses: 18,
+      walletWinRate: 11 / 29,
+      blockers: expect.arrayContaining([
+        'wallet win rate cannot reach 55.0% by 30 rows (max 40.0%)',
+        'sample 29/30',
+        'wallet win rate 37.9% < 55.0%',
+      ]),
+    });
+  });
+
+  it('rejects route or exit-liquidity unknown cohorts before waiting for more compounding sample', async () => {
+    await writeFile(path.join(dir, 'smart-v3-paper-trades.jsonl'), jsonl(
+      Array.from({ length: 30 }, (_, index) => closeRow({
+        positionId: `execution-gap-${index}`,
+        armName: 'kol_hunter_smart_v3',
+        profileArm: 'kol_hunter_smart_v3',
+        paperRole: 'mirror',
+        routeFound: false,
+        closedAt: `2026-05-16T05:${String(index).padStart(2, '0')}:00.000Z`,
+        exitReason: index % 3 === 0 ? 'probe_flat_cut' : 'winner_trailing_t1',
+        netSol: index % 3 === 0 ? -0.001 : 0.004,
+        netSolTokenOnly: index % 3 === 0 ? -0.0008 : 0.0042,
+        mfePctPeak: index % 3 === 0 ? 0.01 : 0.22,
+        holdSec: 30,
+        survivalFlags: [
+          'SMART_V3_LAST_BUY_AGE_1S',
+          'SMART_V3_QUALITY_EXIT_LIQUIDITY_UNKNOWN',
+        ],
+      }))
+    ));
+
+    const report = await buildHistoricalLossReport({
+      realtimeDir: dir,
+      nowMs: Date.parse('2026-05-16T12:00:00.000Z'),
+      freshWindowSpecs: ['24h', '3d', '7d'],
+      minRows: 30,
+      maxP90Mfe: 0.03,
+    });
+
+    expect(report.missionCompoundingBoard.candidates.find((row) =>
+      row.label === 'smart_v3|flags:SMART_V3_LAST_BUY_AGE_1S + SMART_V3_QUALITY_EXIT_LIQUIDITY_UNKNOWN'
+    )).toMatchObject({
+      verdict: 'REJECT_EXECUTION_GAP',
+      comparableRows: 30,
+      executionGapRows: 30,
+      executionGapRate: 1,
+      executionGapBreakdown: [
+        { kind: 'exit_liquidity_unknown', rows: 30 },
+        { kind: 'route_unknown', rows: 30 },
+      ],
+      blockers: [
+        'execution evidence gap rows 100.0% >= 80.0%',
+      ],
+      nextAction: 'fix route/exit-liquidity evidence before treating this as compounding proof',
+    });
+    expect(report.missionCompoundingBoard.executionGapSummary.find((row) =>
+      row.kind === 'exit_liquidity_unknown'
+    )).toMatchObject({
+      rows: expect.any(Number),
+      uniqueRows: 30,
+      nextAction: 'persist sell quote and exit-liquidity proof before interpreting PnL',
+    });
+    expect(report.missionCompoundingBoard.executionGapSummary.find((row) =>
+      row.kind === 'route_unknown'
+    )).toMatchObject({
+      rows: expect.any(Number),
+      uniqueRows: 30,
+      nextAction: 'fix routeFound/sellRouteFound writer coverage or route-proof join',
+    });
+  });
+
+  it('does not let one-off thin live rows drive the mission compounding board verdict', async () => {
+    await writeFile(path.join(dir, 'kol-live-trades.jsonl'), jsonl([
+      closeRow({
+        positionId: 'thin-live-row',
+        armName: 'kol_hunter_v1',
+        profileArm: 'kol_hunter_v1',
+        closedAt: '2026-05-16T06:00:00.000Z',
+        exitReason: 'probe_flat_cut',
+        netSol: -0.006,
+        netSolTokenOnly: -0.005,
+        mfePctPeak: 0,
+        holdSec: 20,
+        survivalFlags: ['KOL_HUNTER_V1'],
+      }),
+    ]));
+
+    const report = await buildHistoricalLossReport({
+      realtimeDir: dir,
+      nowMs: Date.parse('2026-05-16T12:00:00.000Z'),
+      freshWindowSpecs: ['24h', '3d', '7d'],
+      minRows: 30,
+      maxP90Mfe: 0.03,
+    });
+
+    expect(report.missionCompoundingBoard).toMatchObject({
+      verdict: 'NO_COMPOUNDING_COHORT',
+      minTrackingRows: 15,
+      primaryAction: 'no compounding cohort; keep loss-mining and reject weak cohorts',
+      candidates: [],
+    });
+    expect(report.missionCompoundingBoard.blockerSummary).toEqual([]);
+  });
+
+  it('summarizes why no mission compounding cohort exists by blocker category', async () => {
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([
+      ...Array.from({ length: 20 }, (_, index) => closeRow({
+        positionId: `research-only-${index}`,
+        armName: 'rotation_underfill_cost_aware_exit_v2',
+        profileArm: 'rotation_underfill_cost_aware_exit_v2',
+        paperRole: 'research_arm',
+        routeFound: true,
+        closedAt: `2026-05-16T07:${String(index).padStart(2, '0')}:00.000Z`,
+        exitReason: 'winner_trailing_t1',
+        netSol: 0.003,
+        netSolTokenOnly: 0.0032,
+        mfePctPeak: 0.2,
+        survivalFlags: ['ROTATION_COST_AWARE_EXIT_V2'],
+      })),
+      ...Array.from({ length: 20 }, (_, index) => closeRow({
+        positionId: `demoted-${index}`,
+        armName: 'rotation_chase_topup_v1',
+        profileArm: 'rotation_chase_topup_v1',
+        closedAt: `2026-05-16T08:${String(index).padStart(2, '0')}:00.000Z`,
+        exitReason: 'winner_trailing_t1',
+        netSol: 0.003,
+        netSolTokenOnly: 0.0032,
+        mfePctPeak: 0.2,
+        survivalFlags: ['ROTATION_CHASE_TOPUP_PAPER_ONLY'],
+      })),
+    ]));
+    await writeFile(path.join(dir, 'smart-v3-paper-trades.jsonl'), jsonl(
+      Array.from({ length: 20 }, (_, index) => closeRow({
+        positionId: `execution-gap-summary-${index}`,
+        armName: 'kol_hunter_smart_v3',
+        profileArm: 'kol_hunter_smart_v3',
+        paperRole: 'mirror',
+        routeFound: false,
+        closedAt: `2026-05-16T09:${String(index).padStart(2, '0')}:00.000Z`,
+        exitReason: 'winner_trailing_t1',
+        netSol: 0.003,
+        netSolTokenOnly: 0.0032,
+        mfePctPeak: 0.2,
+        survivalFlags: ['SMART_V3_QUALITY_EXIT_LIQUIDITY_UNKNOWN'],
+      }))
+    ));
+
+    const report = await buildHistoricalLossReport({
+      realtimeDir: dir,
+      nowMs: Date.parse('2026-05-16T12:00:00.000Z'),
+      freshWindowSpecs: ['24h', '3d', '7d'],
+      minRows: 30,
+      maxP90Mfe: 0.03,
+    });
+
+    expect(report.missionCompoundingBoard.blockerSummary.find((row) =>
+      row.blocker === 'research_only'
+    )).toMatchObject({
+      cohorts: expect.any(Number),
+      researchRows: expect.any(Number),
+      nextAction: 'convert only the most promising research arms into comparable paper mirror rows',
+    });
+    expect(report.missionCompoundingBoard.blockerSummary.find((row) =>
+      row.blocker === 'demoted_policy'
+    )).toMatchObject({
+      comparableRows: expect.any(Number),
+      nextAction: 'keep demoted/paper-only cohorts diagnostic; do not re-enable live without new ADR evidence',
+    });
+    expect(report.missionCompoundingBoard.blockerSummary.find((row) =>
+      row.blocker === 'execution_gap'
+    )).toMatchObject({
+      comparableRows: expect.any(Number),
+      nextAction: 'fix route/exit/security proof before collecting more PnL evidence',
+    });
+
+    const markdown = renderHistoricalLossReport(report);
+    expect(markdown).toContain('Blocker decomposition');
+    expect(markdown).toContain('Execution gap decomposition');
+    expect(markdown).toContain('unique rows');
+    expect(markdown).toContain('research_only');
+    expect(markdown).toContain('demoted_policy');
+    expect(markdown).toContain('execution_gap');
+    expect(markdown).toContain('exit_liquidity_unknown');
+    expect(markdown).toContain('route_unknown');
+  });
+
   it('surfaces repeated zero-MFE wallet-loss buckets without treating decimals provenance as actionable', async () => {
     await writeFile(path.join(dir, 'rotation-v1-live-trades.jsonl'), jsonl([
       closeRow({

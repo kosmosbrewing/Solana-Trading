@@ -47,6 +47,7 @@ interface HistoricalLossReport {
     maxP90MfePct: number;
   };
   ledgers: BucketStats[];
+  missionCompoundingBoard: MissionCompoundingBoard;
   counterfactuals: BucketStats[];
   paperShadowGateQueue: PaperShadowGateQueueItem[];
   paperShadowBlockCounters: PaperShadowBlockCounter[];
@@ -66,6 +67,120 @@ interface HistoricalLossReport {
   exitBuckets: BucketStats[];
   armExitBuckets: BucketStats[];
   flagBuckets: BucketStats[];
+}
+
+type MissionCompoundingBoardVerdict =
+  | 'LIVE_COHORT_PROVEN'
+  | 'PAPER_COHORT_FOUND'
+  | 'WAIT_SAMPLE'
+  | 'NO_COMPOUNDING_COHORT';
+
+type MissionCompoundingCohortVerdict =
+  | 'READY_FOR_MICRO_LIVE_REVIEW'
+  | 'PAPER_MIRROR_CANDIDATE'
+  | 'WAIT_SAMPLE'
+  | 'RESEARCH_ONLY'
+  | 'REJECT_POLICY_DEMOTED'
+  | 'REJECT_EXECUTION_GAP'
+  | 'REJECT_WALLET_NEGATIVE'
+  | 'REJECT_LOW_WIN_RATE'
+  | 'REJECT_LOSS_STREAK'
+  | 'REJECT_WALLET_DRAG';
+
+interface MissionCompoundingBoard {
+  verdict: MissionCompoundingBoardVerdict;
+  requiredRows: number;
+  minTrackingRows: number;
+  minWalletWinRate: number;
+  maxLossStreak: number;
+  maxWalletDragRate: number;
+  primaryAction: string;
+  blockerSummary: MissionCompoundingBlockerSummary[];
+  executionGapSummary: MissionExecutionGapSummary[];
+  candidates: MissionCompoundingCohort[];
+}
+
+type MissionCompoundingBlocker =
+  | 'research_only'
+  | 'demoted_policy'
+  | 'execution_gap'
+  | 'thin_sample'
+  | 'wallet_negative'
+  | 'low_win_rate'
+  | 'loss_streak'
+  | 'wallet_drag'
+  | 'other';
+
+interface MissionCompoundingBlockerSummary {
+  blocker: MissionCompoundingBlocker;
+  cohorts: number;
+  rows: number;
+  comparableRows: number;
+  liveRows: number;
+  paperRows: number;
+  researchRows: number;
+  walletNetSol: number;
+  topLabels: string[];
+  nextAction: string;
+}
+
+type MissionExecutionGapKind =
+  | 'exit_liquidity_unknown'
+  | 'route_unknown'
+  | 'security_unknown'
+  | 'token_quality_unknown'
+  | 'venue_unknown'
+  | 'other_execution_gap';
+
+interface MissionExecutionGapBreakdown {
+  kind: MissionExecutionGapKind;
+  rows: number;
+}
+
+interface MissionExecutionGapSummary {
+  kind: MissionExecutionGapKind;
+  cohorts: number;
+  rows: number;
+  uniqueRows: number;
+  liveRows: number;
+  paperRows: number;
+  researchRows: number;
+  walletNetSol: number;
+  topLabels: string[];
+  nextAction: string;
+}
+
+interface MissionCompoundingCohort {
+  rank: number;
+  label: string;
+  lane: string;
+  evidenceRole: 'live_wallet' | 'paper_mirror' | 'paper_mixed' | 'research_only';
+  verdict: MissionCompoundingCohortVerdict;
+  rows: number;
+  comparableRows: number;
+  liveRows: number;
+  paperRows: number;
+  researchRows: number;
+  paperOnlyPolicyRows: number;
+  paperOnlyPolicyRate: number | null;
+  executionGapRows: number;
+  executionGapRate: number | null;
+  executionGapBreakdown: MissionExecutionGapBreakdown[];
+  walletWins: number;
+  walletLosses: number;
+  walletWinRate: number | null;
+  walletNetSol: number;
+  avgWalletNetSol: number;
+  tokenOnlyWinnerWalletLoserRows: number;
+  tokenOnlyWinnerWalletLoserRate: number | null;
+  actual5xRows: number;
+  p50MfePct: number | null;
+  p90MfePct: number | null;
+  medianHoldSec: number | null;
+  maxLossStreak: number;
+  worstLossSol: number;
+  blockers: string[];
+  nextAction: string;
 }
 
 interface PaperShadowGateQueueItem {
@@ -310,6 +425,10 @@ const LEDGERS: LedgerSpec[] = [
   { name: 'kol_live', fileName: 'kol-live-trades.jsonl', mode: 'live', lane: 'kol' },
 ];
 
+const DEMOTED_OR_PAPER_ONLY_ARMS = new Set([
+  'rotation_chase_topup_v1',
+]);
+
 function parseArgs(argv: string[]): Args {
   const args: Args = {
     realtimeDir: path.resolve(process.cwd(), 'data/realtime'),
@@ -389,6 +508,12 @@ function str(...values: unknown[]): string {
   return 'unknown';
 }
 
+function boolValue(value: unknown): boolean | null {
+  if (value === true || value === 'true' || value === 1 || value === '1') return true;
+  if (value === false || value === 'false' || value === 0 || value === '0') return false;
+  return null;
+}
+
 function timeMs(row: JsonRow): number {
   return Date.parse(str(row.closedAt, row.exitTimeIso, row.openedAt)) ||
     (num(row.exitTimeSec) ?? num(row.entryTimeSec) ?? 0) * 1000;
@@ -404,6 +529,10 @@ function tokenNetSol(row: JsonRow): number {
 
 function mfePct(row: JsonRow): number {
   return num(row.mfePctPeak, row.mfePct, row.maxMfePct) ?? 0;
+}
+
+function holdSec(row: JsonRow): number | null {
+  return num(row.holdSec, row.holdSeconds, row.durationSec);
 }
 
 function percentile(values: number[], p: number): number | null {
@@ -489,6 +618,10 @@ function summarize(bucketType: string, label: string, rows: JsonRow[]): BucketSt
 
 function round(value: number): number {
   return Number(value.toFixed(6));
+}
+
+function ratio(numerator: number, denominator: number): number | null {
+  return denominator > 0 ? numerator / denominator : null;
 }
 
 function groups(rows: JsonRow[], bucketType: string, labelsFor: (row: JsonRow) => string[]): BucketStats[] {
@@ -845,6 +978,192 @@ function strategyLane(row: JsonRow): string {
   if (raw.includes('smart_v3')) return 'smart_v3';
   if (raw.includes('rotation')) return 'rotation';
   return str(row.__lane, raw);
+}
+
+function armIdentity(row: JsonRow): string {
+  return str(row.profileArm, row.armName, row.entryArm, row.kolEntryReason, row.__lane);
+}
+
+function isResearchOnlyRow(row: JsonRow): boolean {
+  const extras = row.extras && typeof row.extras === 'object' ? row.extras : {};
+  const role = str(row.paperRole, extras.paperRole, '');
+  if (role === 'research_arm' || role === 'shadow' || role === 'no_trade_counterfactual') return true;
+  if (boolValue(row.isShadowArm) === true || boolValue(extras.isShadowArm) === true) return true;
+  return false;
+}
+
+function isPaperOnlyPolicyRow(row: JsonRow): boolean {
+  if (DEMOTED_OR_PAPER_ONLY_ARMS.has(armIdentity(row))) return true;
+  return flags(row).some((flag) => flag.includes('PAPER_ONLY') || flag.includes('LIVE_DISABLED'));
+}
+
+function isExecutionEvidenceGapRow(row: JsonRow): boolean {
+  if (boolValue(row.routeFound) === false || boolValue(row.sellRouteFound) === false || boolValue(row.exitRouteFound) === false) {
+    return true;
+  }
+  return flags(row).some((flag) =>
+    flag.includes('EXIT_LIQUIDITY_UNKNOWN') ||
+    flag.includes('ROUTE_UNKNOWN') ||
+    flag.includes('NO_ROUTE') ||
+    flag.includes('ROUTE_PROOF_GAP') ||
+    flag.includes('VENUE_UNKNOWN') ||
+    flag.includes('TOKEN_QUALITY_UNKNOWN') ||
+    flag.includes('UNCLEAN_TOKEN') ||
+    flag.includes('NO_SECURITY_DATA') ||
+    flag.includes('NO_SECURITY_CLIENT') ||
+    flag.includes('SECURITY_UNKNOWN')
+  );
+}
+
+function executionGapKinds(row: JsonRow): MissionExecutionGapKind[] {
+  const rowFlags = flags(row);
+  const kinds = new Set<MissionExecutionGapKind>();
+  if (rowFlags.some((flag) => flag.includes('EXIT_LIQUIDITY_UNKNOWN'))) kinds.add('exit_liquidity_unknown');
+  if (
+    boolValue(row.routeFound) === false ||
+    boolValue(row.sellRouteFound) === false ||
+    boolValue(row.exitRouteFound) === false ||
+    rowFlags.some((flag) =>
+      flag.includes('ROUTE_UNKNOWN') ||
+      flag.includes('NO_ROUTE') ||
+      flag.includes('ROUTE_PROOF_GAP')
+    )
+  ) {
+    kinds.add('route_unknown');
+  }
+  if (rowFlags.some((flag) =>
+    flag.includes('NO_SECURITY_DATA') ||
+    flag.includes('NO_SECURITY_CLIENT') ||
+    flag.includes('SECURITY_UNKNOWN')
+  )) {
+    kinds.add('security_unknown');
+  }
+  if (rowFlags.some((flag) =>
+    flag.includes('TOKEN_QUALITY_UNKNOWN') ||
+    flag.includes('UNCLEAN_TOKEN')
+  )) {
+    kinds.add('token_quality_unknown');
+  }
+  if (rowFlags.some((flag) => flag.includes('VENUE_UNKNOWN'))) kinds.add('venue_unknown');
+  if (kinds.size === 0 && isExecutionEvidenceGapRow(row)) kinds.add('other_execution_gap');
+  return [...kinds];
+}
+
+function missionRowKey(row: JsonRow): string {
+  const extras = row.extras && typeof row.extras === 'object' ? row.extras : {};
+  const directId = str(
+    row.positionId,
+    extras.positionId,
+    row.dbTradeId,
+    extras.dbTradeId,
+    row.entryTxSignature,
+    row.exitTxSignature,
+    row.signature,
+    row.txSignature
+  );
+  if (directId !== 'unknown') return `${str(row.__ledger)}:${directId}`;
+  return [
+    str(row.__ledger),
+    str(row.tokenMint, extras.tokenMint, row.mint),
+    str(row.closedAt, row.exitTimeIso, row.openedAt),
+    str(row.exitReason, row.closeReason),
+    walletNetSol(row).toFixed(9),
+  ].join(':');
+}
+
+function isRouteKnownRow(row: JsonRow): boolean {
+  const extras = row.extras && typeof row.extras === 'object' ? row.extras : {};
+  return boolValue(row.routeFound) === true ||
+    boolValue(row.sellRouteFound) === true ||
+    boolValue(row.exitRouteFound) === true ||
+    boolValue(extras.routeFound) === true ||
+    boolValue(extras.sellRouteFound) === true ||
+    boolValue(extras.exitRouteFound) === true;
+}
+
+function isCostAwareRow(row: JsonRow): boolean {
+  const raw = `${armIdentity(row)} ${str(row.parameterVersion)}`;
+  return raw.includes('cost_aware') ||
+    raw.includes('cost-aware') ||
+    raw.includes('second_kol_wait') ||
+    flags(row).includes('ROTATION_COST_AWARE_EXIT_V2');
+}
+
+function independentKolCount(row: JsonRow): number | null {
+  const direct = num(row.independentKolCount, row.kolCount);
+  if (direct != null) return direct;
+  if (Array.isArray(row.kols)) return row.kols.length;
+  const flagCount = flags(row).reduce<number | null>((max, flag) => {
+    const match = flag.match(/(?:KOLS|FRESH_KOLS|UNDERFILL_KOLS)_(\d+)/);
+    if (!match) return max;
+    const parsed = Number(match[1]);
+    return max == null ? parsed : Math.max(max, parsed);
+  }, null);
+  return flagCount;
+}
+
+function secondKolDelaySec(row: JsonRow): number | null {
+  const direct = num(row.secondKolDelaySec);
+  if (direct != null) return direct;
+  if (!Array.isArray(row.kols) || row.kols.length < 2) return null;
+  const times = row.kols
+    .map((kol) => Date.parse(str(kol?.timestamp, kol?.time, kol?.blockTime)))
+    .filter(Number.isFinite)
+    .sort((a, b) => a - b);
+  if (times.length < 2) return null;
+  return (times[1] - times[0]) / 1000;
+}
+
+function missionFeatureFlags(row: JsonRow): string[] {
+  return flags(row)
+    .filter(isConjunctiveSplitFlag)
+    .filter((flag) =>
+      flag.startsWith('SMART_V3_') ||
+      flag.startsWith('ROTATION_')
+    )
+    .slice(0, 8);
+}
+
+function missionCohortLabels(row: JsonRow): string[] {
+  const labels = new Set<string>();
+  const lane = strategyLane(row);
+  const arm = armIdentity(row);
+  labels.add(`${lane}|arm:${arm}`);
+
+  const routeKnown = isRouteKnownRow(row);
+  const costAware = isCostAwareRow(row);
+  const kolCount = independentKolCount(row);
+  const secondDelay = secondKolDelaySec(row);
+
+  if (lane === 'rotation') {
+    labels.add('rotation|underfill_all');
+    if (routeKnown) labels.add('rotation|route_known');
+    if (costAware) labels.add('rotation|cost_aware');
+    if ((kolCount ?? 0) >= 2) labels.add('rotation|2plus_kol');
+    if (routeKnown && costAware && (kolCount ?? 0) >= 2) labels.add('rotation|route_known|2plus|cost_aware');
+    if (routeKnown && costAware && (kolCount ?? 0) >= 2 && secondDelay != null && secondDelay <= 15) {
+      labels.add('rotation|route_known|2plus|cost_aware|secondKOL<=15s');
+    }
+    if (routeKnown && costAware && (kolCount ?? 0) >= 2 && secondDelay != null && secondDelay <= 30) {
+      labels.add('rotation|route_known|2plus|cost_aware|secondKOL<=30s');
+    }
+    if (arm.includes('second_kol_wait')) labels.add('rotation|runtime_second_kol_wait');
+  }
+
+  if (lane === 'smart_v3') {
+    labels.add('smart_v3|all');
+    if ((kolCount ?? 0) >= 2 || flags(row).includes('SMART_V3_FRESH_KOLS_2')) labels.add('smart_v3|fresh_2plus_kol');
+    if (routeKnown) labels.add('smart_v3|route_known');
+  }
+
+  const featureFlags = missionFeatureFlags(row);
+  for (const flag of featureFlags) labels.add(`${lane}|flag:${flag}`);
+  for (let i = 0; i < featureFlags.length; i += 1) {
+    for (let j = i + 1; j < featureFlags.length; j += 1) {
+      labels.add(`${lane}|flags:${featureFlags[i]} + ${featureFlags[j]}`);
+    }
+  }
+  return [...labels];
 }
 
 function diagnosticProxyVerdict(input: {
@@ -1649,6 +1968,418 @@ function counterfactuals(rows: JsonRow[]): BucketStats[] {
     .sort((a, b) => b.avoidableWalletLossSol - a.avoidableWalletLossSol);
 }
 
+function buildMissionCompoundingBoard(rows: JsonRow[], args: Args): MissionCompoundingBoard {
+  const requiredRows = Math.max(30, args.minRows);
+  const minTrackingRows = Math.max(2, Math.ceil(requiredRows / 2));
+  const minWalletWinRate = 0.55;
+  const maxLossStreak = 5;
+  const maxWalletDragRate = 0.25;
+  const grouped = new Map<string, JsonRow[]>();
+  for (const row of rows) {
+    for (const label of missionCohortLabels(row)) {
+      grouped.set(label, [...(grouped.get(label) ?? []), row]);
+    }
+  }
+  const trackedCandidates = [...grouped.entries()]
+    .map(([label, scoped]) =>
+      buildMissionCompoundingCohort(label, scoped, {
+        requiredRows,
+        minWalletWinRate,
+        maxLossStreak,
+        maxWalletDragRate,
+      })
+    )
+    .filter((candidate) =>
+      candidate.comparableRows >= minTrackingRows ||
+      candidate.researchRows >= minTrackingRows
+    )
+    .sort(compareMissionCompoundingCohorts);
+  const candidates = trackedCandidates
+    .slice(0, 30)
+    .map((candidate, index) => ({ ...candidate, rank: index + 1 }));
+  const verdict = missionCompoundingBoardVerdict(trackedCandidates);
+  return {
+    verdict,
+    requiredRows,
+    minTrackingRows,
+    minWalletWinRate,
+    maxLossStreak,
+    maxWalletDragRate,
+    primaryAction: missionCompoundingBoardAction(verdict),
+    blockerSummary: buildMissionCompoundingBlockerSummary(trackedCandidates),
+    executionGapSummary: buildMissionExecutionGapSummary(trackedCandidates, grouped),
+    candidates,
+  };
+}
+
+function buildMissionCompoundingCohort(
+  label: string,
+  rows: JsonRow[],
+  criteria: {
+    requiredRows: number;
+    minWalletWinRate: number;
+    maxLossStreak: number;
+    maxWalletDragRate: number;
+  }
+): MissionCompoundingCohort {
+  const researchRows = rows.filter(isResearchOnlyRow);
+  const comparableRows = rows.filter((row) => !isResearchOnlyRow(row));
+  const liveRows = comparableRows.filter((row) => row.__mode === 'live');
+  const paperRows = comparableRows.filter((row) => row.__mode === 'paper');
+  const paperOnlyPolicyRows = comparableRows.filter(isPaperOnlyPolicyRow).length;
+  const executionGapRows = comparableRows.filter(isExecutionEvidenceGapRow).length;
+  const executionGapBreakdown = buildExecutionGapBreakdown(comparableRows);
+  const walletWins = comparableRows.filter((row) => walletNetSol(row) > 0).length;
+  const walletLosses = comparableRows.filter((row) => walletNetSol(row) <= 0).length;
+  const walletNetSolValue = round(comparableRows.reduce((sum, row) => sum + walletNetSol(row), 0));
+  const tokenOnlyWinnerWalletLoserRows = comparableRows.filter((row) =>
+    tokenNetSol(row) > 0 && walletNetSol(row) <= 0
+  ).length;
+  const sortedRows = [...comparableRows].sort((a, b) => timeMs(a) - timeMs(b));
+  const maxLossStreak = maxConsecutiveLosses(sortedRows);
+  const blockers = missionCompoundingBlockers({
+    rows,
+    comparableRows,
+    walletWins,
+    walletNetSol: walletNetSolValue,
+    walletWinRate: ratio(walletWins, comparableRows.length),
+    tokenOnlyWinnerWalletLoserRate: ratio(tokenOnlyWinnerWalletLoserRows, comparableRows.length),
+    paperOnlyPolicyRate: ratio(paperOnlyPolicyRows, comparableRows.length),
+    executionGapRate: ratio(executionGapRows, comparableRows.length),
+    maxLossStreak,
+    criteria,
+  });
+  const verdict = missionCompoundingVerdict({
+    liveRows: liveRows.length,
+    requiredRows: criteria.requiredRows,
+    blockers,
+  });
+  return {
+    rank: 0,
+    label,
+    lane: majorityLane(rows),
+    evidenceRole: missionEvidenceRole({ comparableRows: comparableRows.length, liveRows: liveRows.length, paperRows: paperRows.length, researchRows: researchRows.length }),
+    verdict,
+    rows: rows.length,
+    comparableRows: comparableRows.length,
+    liveRows: liveRows.length,
+    paperRows: paperRows.length,
+    researchRows: researchRows.length,
+    paperOnlyPolicyRows,
+    paperOnlyPolicyRate: ratio(paperOnlyPolicyRows, comparableRows.length),
+    executionGapRows,
+    executionGapRate: ratio(executionGapRows, comparableRows.length),
+    executionGapBreakdown,
+    walletWins,
+    walletLosses,
+    walletWinRate: ratio(walletWins, comparableRows.length),
+    walletNetSol: walletNetSolValue,
+    avgWalletNetSol: round(walletNetSolValue / Math.max(1, comparableRows.length)),
+    tokenOnlyWinnerWalletLoserRows,
+    tokenOnlyWinnerWalletLoserRate: ratio(tokenOnlyWinnerWalletLoserRows, comparableRows.length),
+    actual5xRows: comparableRows.filter((row) => mfePct(row) >= 4).length,
+    p50MfePct: percentile(comparableRows.map(mfePct), 0.5),
+    p90MfePct: percentile(comparableRows.map(mfePct), 0.9),
+    medianHoldSec: percentile(comparableRows.map(holdSec).filter((value): value is number => value != null), 0.5),
+    maxLossStreak,
+    worstLossSol: round(Math.min(0, ...comparableRows.map(walletNetSol))),
+    blockers,
+    nextAction: missionCompoundingNextAction(verdict),
+  };
+}
+
+function missionEvidenceRole(input: {
+  comparableRows: number;
+  liveRows: number;
+  paperRows: number;
+  researchRows: number;
+}): MissionCompoundingCohort['evidenceRole'] {
+  if (input.comparableRows === 0 && input.researchRows > 0) return 'research_only';
+  if (input.liveRows > 0 && input.paperRows === 0) return 'live_wallet';
+  if (input.liveRows > 0 && input.paperRows > 0) return 'paper_mixed';
+  return 'paper_mirror';
+}
+
+function maxConsecutiveLosses(rows: JsonRow[]): number {
+  let current = 0;
+  let max = 0;
+  for (const row of rows) {
+    if (walletNetSol(row) <= 0) {
+      current += 1;
+      max = Math.max(max, current);
+    } else {
+      current = 0;
+    }
+  }
+  return max;
+}
+
+function buildExecutionGapBreakdown(rows: JsonRow[]): MissionExecutionGapBreakdown[] {
+  const counts = new Map<MissionExecutionGapKind, number>();
+  for (const row of rows) {
+    for (const kind of executionGapKinds(row)) {
+      counts.set(kind, (counts.get(kind) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .map(([kind, count]) => ({ kind, rows: count }))
+    .sort((a, b) => b.rows - a.rows || executionGapKindRank(a.kind) - executionGapKindRank(b.kind));
+}
+
+function executionGapKindRank(kind: MissionExecutionGapKind): number {
+  if (kind === 'exit_liquidity_unknown') return 0;
+  if (kind === 'route_unknown') return 1;
+  if (kind === 'venue_unknown') return 2;
+  if (kind === 'security_unknown') return 3;
+  if (kind === 'token_quality_unknown') return 4;
+  return 5;
+}
+
+function missionCompoundingBlockers(input: {
+  rows: JsonRow[];
+  comparableRows: JsonRow[];
+  walletWins: number;
+  walletNetSol: number;
+  walletWinRate: number | null;
+  tokenOnlyWinnerWalletLoserRate: number | null;
+  paperOnlyPolicyRate: number | null;
+  executionGapRate: number | null;
+  maxLossStreak: number;
+  criteria: {
+    requiredRows: number;
+    minWalletWinRate: number;
+    maxLossStreak: number;
+    maxWalletDragRate: number;
+  };
+}): string[] {
+  const blockers: string[] = [];
+  if (input.rows.length > 0 && input.comparableRows.length === 0) blockers.push('research-only rows are not live-equivalent');
+  if ((input.paperOnlyPolicyRate ?? 0) >= 0.8) {
+    blockers.push(`paper-only/demoted policy rows ${formatRate(input.paperOnlyPolicyRate)} >= 80.0%`);
+  }
+  if ((input.executionGapRate ?? 0) >= 0.8) {
+    blockers.push(`execution evidence gap rows ${formatRate(input.executionGapRate)} >= 80.0%`);
+  }
+  if (input.comparableRows.length < input.criteria.requiredRows) {
+    const remainingRows = input.criteria.requiredRows - input.comparableRows.length;
+    const maxReachableWinRate = (input.walletWins + remainingRows) / input.criteria.requiredRows;
+    if (maxReachableWinRate < input.criteria.minWalletWinRate) {
+      blockers.push(
+        `wallet win rate cannot reach ${formatRate(input.criteria.minWalletWinRate)} by ` +
+        `${input.criteria.requiredRows} rows (max ${formatRate(maxReachableWinRate)})`
+      );
+    }
+  }
+  if (input.comparableRows.length < input.criteria.requiredRows) {
+    blockers.push(`sample ${input.comparableRows.length}/${input.criteria.requiredRows}`);
+  }
+  if (input.walletNetSol <= 0) blockers.push(`wallet net ${input.walletNetSol.toFixed(6)} <= 0`);
+  if ((input.walletWinRate ?? 0) < input.criteria.minWalletWinRate) {
+    blockers.push(`wallet win rate ${formatRate(input.walletWinRate)} < ${formatRate(input.criteria.minWalletWinRate)}`);
+  }
+  if (input.maxLossStreak > input.criteria.maxLossStreak) {
+    blockers.push(`max loss streak ${input.maxLossStreak} > ${input.criteria.maxLossStreak}`);
+  }
+  if ((input.tokenOnlyWinnerWalletLoserRate ?? 0) > input.criteria.maxWalletDragRate) {
+    blockers.push(`wallet-drag rate ${formatRate(input.tokenOnlyWinnerWalletLoserRate)} > ${formatRate(input.criteria.maxWalletDragRate)}`);
+  }
+  return blockers;
+}
+
+function missionCompoundingVerdict(input: {
+  liveRows: number;
+  requiredRows: number;
+  blockers: string[];
+}): MissionCompoundingCohortVerdict {
+  if (input.blockers.some((blocker) => blocker.includes('research-only'))) return 'RESEARCH_ONLY';
+  if (input.blockers.some((blocker) => blocker.startsWith('paper-only/demoted'))) return 'REJECT_POLICY_DEMOTED';
+  if (input.blockers.some((blocker) => blocker.startsWith('execution evidence gap'))) return 'REJECT_EXECUTION_GAP';
+  if (input.blockers.some((blocker) => blocker.startsWith('wallet win rate cannot reach'))) return 'REJECT_LOW_WIN_RATE';
+  if (input.blockers.some((blocker) => blocker.startsWith('sample '))) return 'WAIT_SAMPLE';
+  if (input.blockers.some((blocker) => blocker.startsWith('wallet net'))) return 'REJECT_WALLET_NEGATIVE';
+  if (input.blockers.some((blocker) => blocker.startsWith('wallet win rate'))) return 'REJECT_LOW_WIN_RATE';
+  if (input.blockers.some((blocker) => blocker.startsWith('max loss streak'))) return 'REJECT_LOSS_STREAK';
+  if (input.blockers.some((blocker) => blocker.startsWith('wallet-drag rate'))) return 'REJECT_WALLET_DRAG';
+  return input.liveRows >= input.requiredRows ? 'READY_FOR_MICRO_LIVE_REVIEW' : 'PAPER_MIRROR_CANDIDATE';
+}
+
+function missionCompoundingNextAction(verdict: MissionCompoundingCohortVerdict): string {
+  if (verdict === 'READY_FOR_MICRO_LIVE_REVIEW') return 'prepare manual micro-live review; keep ticket/floor unchanged';
+  if (verdict === 'PAPER_MIRROR_CANDIDATE') return 'keep as paper mirror candidate; require live-equivalence before micro-live';
+  if (verdict === 'WAIT_SAMPLE') return 'continue collecting this exact cohort';
+  if (verdict === 'RESEARCH_ONLY') return 'do not promote; first create comparable paper mirror rows';
+  if (verdict === 'REJECT_POLICY_DEMOTED') return 'keep diagnostic only; do not use demoted/paper-only policy as compounding proof';
+  if (verdict === 'REJECT_EXECUTION_GAP') return 'fix route/exit-liquidity evidence before treating this as compounding proof';
+  if (verdict === 'REJECT_WALLET_NEGATIVE') return 'remove from compounding candidate set';
+  if (verdict === 'REJECT_LOW_WIN_RATE') return 'narrow entry gate or reject cohort';
+  if (verdict === 'REJECT_LOSS_STREAK') return 'add loss-streak blocker or reject cohort';
+  return 'fix wallet drag before considering promotion';
+}
+
+function compareMissionCompoundingCohorts(a: MissionCompoundingCohort, b: MissionCompoundingCohort): number {
+  return missionCompoundingRank(a.verdict) - missionCompoundingRank(b.verdict) ||
+    b.comparableRows - a.comparableRows ||
+    b.walletNetSol - a.walletNetSol ||
+    (b.walletWinRate ?? 0) - (a.walletWinRate ?? 0) ||
+    a.label.localeCompare(b.label);
+}
+
+function missionCompoundingRank(verdict: MissionCompoundingCohortVerdict): number {
+  if (verdict === 'READY_FOR_MICRO_LIVE_REVIEW') return 0;
+  if (verdict === 'PAPER_MIRROR_CANDIDATE') return 1;
+  if (verdict === 'WAIT_SAMPLE') return 2;
+  if (verdict === 'RESEARCH_ONLY') return 3;
+  if (verdict === 'REJECT_POLICY_DEMOTED') return 4;
+  if (verdict === 'REJECT_EXECUTION_GAP') return 5;
+  return 6;
+}
+
+function missionCompoundingBoardVerdict(candidates: MissionCompoundingCohort[]): MissionCompoundingBoardVerdict {
+  if (candidates.some((candidate) => candidate.verdict === 'READY_FOR_MICRO_LIVE_REVIEW')) return 'LIVE_COHORT_PROVEN';
+  if (candidates.some((candidate) => candidate.verdict === 'PAPER_MIRROR_CANDIDATE')) return 'PAPER_COHORT_FOUND';
+  if (candidates.some((candidate) => candidate.verdict === 'WAIT_SAMPLE')) return 'WAIT_SAMPLE';
+  return 'NO_COMPOUNDING_COHORT';
+}
+
+function missionCompoundingBoardAction(verdict: MissionCompoundingBoardVerdict): string {
+  if (verdict === 'LIVE_COHORT_PROVEN') return 'manual micro-live review only; no size increase';
+  if (verdict === 'PAPER_COHORT_FOUND') return 'lock the cohort as paper mirror and collect live-equivalence rows';
+  if (verdict === 'WAIT_SAMPLE') return 'do not change live; keep collecting exact narrow cohort rows';
+  return 'no compounding cohort; keep loss-mining and reject weak cohorts';
+}
+
+function buildMissionCompoundingBlockerSummary(
+  candidates: MissionCompoundingCohort[]
+): MissionCompoundingBlockerSummary[] {
+  const buckets = new Map<MissionCompoundingBlocker, MissionCompoundingCohort[]>();
+  for (const candidate of candidates) {
+    const blocker = missionCompoundingPrimaryBlocker(candidate);
+    buckets.set(blocker, [...(buckets.get(blocker) ?? []), candidate]);
+  }
+  return [...buckets.entries()]
+    .map(([blocker, scoped]) => ({
+      blocker,
+      cohorts: scoped.length,
+      rows: scoped.reduce((sum, row) => sum + row.rows, 0),
+      comparableRows: scoped.reduce((sum, row) => sum + row.comparableRows, 0),
+      liveRows: scoped.reduce((sum, row) => sum + row.liveRows, 0),
+      paperRows: scoped.reduce((sum, row) => sum + row.paperRows, 0),
+      researchRows: scoped.reduce((sum, row) => sum + row.researchRows, 0),
+      walletNetSol: round(scoped.reduce((sum, row) => sum + row.walletNetSol, 0)),
+      topLabels: scoped.slice(0, 5).map((row) => row.label),
+      nextAction: missionCompoundingBlockerNextAction(blocker),
+    }))
+    .sort((a, b) =>
+      missionCompoundingBlockerRank(a.blocker) - missionCompoundingBlockerRank(b.blocker) ||
+      b.rows - a.rows ||
+      a.blocker.localeCompare(b.blocker)
+    );
+}
+
+function buildMissionExecutionGapSummary(
+  candidates: MissionCompoundingCohort[],
+  groupedRows: Map<string, JsonRow[]>
+): MissionExecutionGapSummary[] {
+  const buckets = new Map<
+    MissionExecutionGapKind,
+    { rows: number; rowKeys: Set<string>; candidates: MissionCompoundingCohort[] }
+  >();
+  for (const candidate of candidates) {
+    if (missionCompoundingPrimaryBlocker(candidate) !== 'execution_gap') continue;
+    for (const item of candidate.executionGapBreakdown) {
+      const bucket = buckets.get(item.kind) ?? { rows: 0, rowKeys: new Set<string>(), candidates: [] };
+      bucket.rows += item.rows;
+      bucket.candidates.push(candidate);
+      for (const row of groupedRows.get(candidate.label) ?? []) {
+        if (isResearchOnlyRow(row)) continue;
+        if (executionGapKinds(row).includes(item.kind)) bucket.rowKeys.add(missionRowKey(row));
+      }
+      buckets.set(item.kind, bucket);
+    }
+  }
+  return [...buckets.entries()]
+    .map(([kind, bucket]) => {
+      const uniqueCandidates = uniqueByLabel(bucket.candidates);
+      return {
+        kind,
+        cohorts: uniqueCandidates.length,
+        rows: bucket.rows,
+        uniqueRows: bucket.rowKeys.size,
+        liveRows: uniqueCandidates.reduce((sum, row) => sum + row.liveRows, 0),
+        paperRows: uniqueCandidates.reduce((sum, row) => sum + row.paperRows, 0),
+        researchRows: uniqueCandidates.reduce((sum, row) => sum + row.researchRows, 0),
+        walletNetSol: round(uniqueCandidates.reduce((sum, row) => sum + row.walletNetSol, 0)),
+        topLabels: uniqueCandidates.slice(0, 5).map((row) => row.label),
+        nextAction: missionExecutionGapNextAction(kind),
+      };
+    })
+    .sort((a, b) =>
+      executionGapKindRank(a.kind) - executionGapKindRank(b.kind) ||
+      b.rows - a.rows ||
+      a.kind.localeCompare(b.kind)
+    );
+}
+
+function uniqueByLabel(candidates: MissionCompoundingCohort[]): MissionCompoundingCohort[] {
+  const seen = new Set<string>();
+  const unique: MissionCompoundingCohort[] = [];
+  for (const candidate of candidates) {
+    if (seen.has(candidate.label)) continue;
+    seen.add(candidate.label);
+    unique.push(candidate);
+  }
+  return unique;
+}
+
+function missionExecutionGapNextAction(kind: MissionExecutionGapKind): string {
+  if (kind === 'exit_liquidity_unknown') return 'persist sell quote and exit-liquidity proof before interpreting PnL';
+  if (kind === 'route_unknown') return 'fix routeFound/sellRouteFound writer coverage or route-proof join';
+  if (kind === 'venue_unknown') return 'persist venue/DEX proof before candidate review';
+  if (kind === 'security_unknown') return 'refresh security evidence writer before candidate review';
+  if (kind === 'token_quality_unknown') return 'persist token-quality observation before candidate review';
+  return 'inspect execution evidence writer for uncategorized gaps';
+}
+
+function missionCompoundingPrimaryBlocker(candidate: MissionCompoundingCohort): MissionCompoundingBlocker {
+  if (candidate.verdict === 'RESEARCH_ONLY') return 'research_only';
+  if (candidate.verdict === 'REJECT_POLICY_DEMOTED') return 'demoted_policy';
+  if (candidate.verdict === 'REJECT_EXECUTION_GAP') return 'execution_gap';
+  if (candidate.blockers.some((blocker) => blocker.startsWith('sample '))) return 'thin_sample';
+  if (candidate.blockers.some((blocker) => blocker.startsWith('wallet net'))) return 'wallet_negative';
+  if (candidate.blockers.some((blocker) => blocker.startsWith('wallet win rate'))) return 'low_win_rate';
+  if (candidate.blockers.some((blocker) => blocker.startsWith('max loss streak'))) return 'loss_streak';
+  if (candidate.blockers.some((blocker) => blocker.startsWith('wallet-drag rate'))) return 'wallet_drag';
+  return 'other';
+}
+
+function missionCompoundingBlockerRank(blocker: MissionCompoundingBlocker): number {
+  if (blocker === 'research_only') return 0;
+  if (blocker === 'demoted_policy') return 1;
+  if (blocker === 'execution_gap') return 2;
+  if (blocker === 'thin_sample') return 3;
+  if (blocker === 'wallet_negative') return 4;
+  if (blocker === 'low_win_rate') return 5;
+  if (blocker === 'loss_streak') return 6;
+  if (blocker === 'wallet_drag') return 7;
+  return 8;
+}
+
+function missionCompoundingBlockerNextAction(blocker: MissionCompoundingBlocker): string {
+  if (blocker === 'research_only') return 'convert only the most promising research arms into comparable paper mirror rows';
+  if (blocker === 'demoted_policy') return 'keep demoted/paper-only cohorts diagnostic; do not re-enable live without new ADR evidence';
+  if (blocker === 'execution_gap') return 'fix route/exit/security proof before collecting more PnL evidence';
+  if (blocker === 'thin_sample') return 'collect exact comparable rows until minTracking/required sample is reached';
+  if (blocker === 'wallet_negative') return 'reject or tighten entry; wallet economics are negative';
+  if (blocker === 'low_win_rate') return 'narrow the cohort or discard; win rate cannot support daily compounding';
+  if (blocker === 'loss_streak') return 'add loss-streak guard before any review';
+  if (blocker === 'wallet_drag') return 'fix cost/rent/slippage drag before review';
+  return 'manual review';
+}
+
+function formatRate(value: number | null): string {
+  return value == null ? 'n/a' : `${(value * 100).toFixed(1)}%`;
+}
+
 export async function buildHistoricalLossReport(args: Args): Promise<HistoricalLossReport> {
   const rowsByLedger = await Promise.all(LEDGERS.map(async (spec) => {
     const rows = await readJsonl(path.join(args.realtimeDir, spec.fileName));
@@ -1687,6 +2418,7 @@ export async function buildHistoricalLossReport(args: Args): Promise<HistoricalL
     since: args.sinceMs == null ? null : new Date(args.sinceMs).toISOString(),
     criteria: { minRows: args.minRows, maxP90MfePct: args.maxP90Mfe },
     ledgers,
+    missionCompoundingBoard: buildMissionCompoundingBoard(allRows, args),
     counterfactuals: counterfactuals(allRows),
     paperShadowGateQueue,
     paperShadowBlockCounters,
@@ -1719,6 +2451,68 @@ function renderTable(rows: BucketStats[]): string {
       `${row.walletNetSol.toFixed(6)} | ${row.tokenNetSol.toFixed(6)} | ${row.avgWalletNetSol.toFixed(6)} | ` +
       `${row.zeroMfeRows} | ${row.p90MfePct == null ? 'n/a' : (row.p90MfePct * 100).toFixed(2) + '%'} | ` +
       `${row.actual5xRows} | ${row.killedWalletWinners} | ${row.avoidableWalletLossSol.toFixed(6)} | ${row.recommendedAction} |`
+    ),
+  ].join('\n');
+}
+
+function renderMissionCompoundingBoard(board: MissionCompoundingBoard): string {
+  const summary = [
+    `Verdict: ${board.verdict}`,
+    `Primary action: ${board.primaryAction}`,
+    `Criteria: requiredRows>=${board.requiredRows}, minTrackingRows>=${board.minTrackingRows}, walletWinRate>=${formatRate(board.minWalletWinRate)}, ` +
+      `maxLossStreak<=${board.maxLossStreak}, walletDrag<=${formatRate(board.maxWalletDragRate)}`,
+  ].join('\n\n');
+  const blockerSummary = renderMissionCompoundingBlockerSummary(board.blockerSummary);
+  const executionGapSummary = renderMissionExecutionGapSummary(board.executionGapSummary);
+  if (board.candidates.length === 0) return `${summary}\n\n${blockerSummary}\n\n${executionGapSummary}\n\n_No mission compounding candidates._`;
+  return [
+    summary,
+    '',
+    blockerSummary,
+    '',
+    executionGapSummary,
+    '',
+    '| rank | label | lane | role | verdict | rows | comparable | live/paper/research | paper-only policy | execution gap | W/L | wallet win | wallet SOL | avg SOL | wallet-drag | 5x | p90 MFE | hold | loss streak | worst loss | blockers | next action |',
+    '|---:|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|',
+    ...board.candidates.map((row) =>
+      `| ${row.rank} | ${row.label} | ${row.lane} | ${row.evidenceRole} | ${row.verdict} | ` +
+      `${row.rows} | ${row.comparableRows} | ${row.liveRows}/${row.paperRows}/${row.researchRows} | ` +
+      `${row.paperOnlyPolicyRows} (${formatRate(row.paperOnlyPolicyRate)}) | ` +
+      `${row.executionGapRows} (${formatRate(row.executionGapRate)}) | ` +
+      `${row.walletWins}/${row.walletLosses} | ${formatRate(row.walletWinRate)} | ${row.walletNetSol.toFixed(6)} | ` +
+      `${row.avgWalletNetSol.toFixed(6)} | ${row.tokenOnlyWinnerWalletLoserRows} (${formatRate(row.tokenOnlyWinnerWalletLoserRate)}) | ` +
+      `${row.actual5xRows} | ${row.p90MfePct == null ? 'n/a' : (row.p90MfePct * 100).toFixed(2) + '%'} | ` +
+      `${row.medianHoldSec == null ? 'n/a' : row.medianHoldSec.toFixed(1) + 's'} | ${row.maxLossStreak} | ` +
+      `${row.worstLossSol.toFixed(6)} | ${row.blockers.length === 0 ? 'none' : row.blockers.join('; ')} | ${row.nextAction} |`
+    ),
+  ].join('\n');
+}
+
+function renderMissionCompoundingBlockerSummary(rows: MissionCompoundingBlockerSummary[]): string {
+  if (rows.length === 0) return '_No mission compounding blocker summary rows._';
+  return [
+    'Blocker decomposition:',
+    '',
+    '| blocker | cohorts | rows | comparable | live/paper/research | wallet SOL | top labels | next action |',
+    '|---|---:|---:|---:|---:|---:|---|---|',
+    ...rows.map((row) =>
+      `| ${row.blocker} | ${row.cohorts} | ${row.rows} | ${row.comparableRows} | ` +
+      `${row.liveRows}/${row.paperRows}/${row.researchRows} | ${row.walletNetSol.toFixed(6)} | ` +
+      `${row.topLabels.join('<br>')} | ${row.nextAction} |`
+    ),
+  ].join('\n');
+}
+
+function renderMissionExecutionGapSummary(rows: MissionExecutionGapSummary[]): string {
+  if (rows.length === 0) return '_No mission execution gap summary rows._';
+  return [
+    'Execution gap decomposition:',
+    '',
+    '| kind | cohorts | row refs | unique rows | live/paper/research | wallet SOL | top labels | next action |',
+    '|---|---:|---:|---:|---:|---:|---|---|',
+    ...rows.map((row) =>
+      `| ${row.kind} | ${row.cohorts} | ${row.rows} | ${row.uniqueRows} | ${row.liveRows}/${row.paperRows}/${row.researchRows} | ` +
+      `${row.walletNetSol.toFixed(6)} | ${row.topLabels.join('<br>')} | ${row.nextAction} |`
     ),
   ].join('\n');
 }
@@ -1909,6 +2703,10 @@ export function renderHistoricalLossReport(report: HistoricalLossReport): string
     `Since: ${report.since ?? 'all data'}`,
     `Criteria: minRows=${report.criteria.minRows}, p90Mfe<=${(report.criteria.maxP90MfePct * 100).toFixed(2)}%, actual5x=0, walletNet<0`,
     'Policy note: pre-entry proxy candidates are the leakage-safe paper-shadow targets. Post-close diagnostics explain loss modes, but are not direct live entry gates.',
+    '',
+    '## Mission Compounding Cohort Board',
+    'Root-cause read: this board asks whether any narrow, comparable cohort is wallet-positive enough for slow compounding. Research/shadow rows cannot prove live readiness.',
+    renderMissionCompoundingBoard(report.missionCompoundingBoard),
     '',
     '## Paper Shadow Gate Queue',
     renderPaperShadowGateQueue(report.paperShadowGateQueue),

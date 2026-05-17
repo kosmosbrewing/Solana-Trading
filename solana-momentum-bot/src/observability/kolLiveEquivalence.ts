@@ -27,6 +27,7 @@ export type KolPaperRole =
   | 'fallback_execution_safety'
   | 'research_arm'
   | 'shadow'
+  | 'probe_policy_shadow'
   | 'no_trade_counterfactual';
 
 export interface KolLiveEquivalenceParticipant {

@@ -1814,6 +1814,50 @@ describe('kolSignalHandler — state machine', () => {
       expect(positions[0].rotationDoaWindowSecOverride).toBe(10);
     });
 
+    it('rotation-underfill: 1-KOL 진입 후 30초 안에 2번째 KOL 이 붙으면 wait-conversion paper arm 을 연다', async () => {
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterSmartV3VelocityScoreThreshold = 99;
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 0.25, 10_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+
+      expect(__testGetActive().map((p) => p.armName)).toEqual(['rotation_underfill_v1']);
+
+      await handleKolSwap(buyTxWithFill('dv', 'A', MINT_ROTATION, 0.001, 0.25, 0));
+      await flushAsync();
+
+      const positions = __testGetActive();
+      expect(positions.map((p) => p.armName).sort()).toEqual([
+        'rotation_second_kol_wait_conversion_v1',
+        'rotation_underfill_v1',
+      ]);
+      const parent = positions.find((p) => p.armName === 'rotation_underfill_v1');
+      const waitArm = positions.find((p) => p.armName === 'rotation_second_kol_wait_conversion_v1');
+      expect(waitArm).toBeDefined();
+      expect(waitArm?.parameterVersion).toBe('rotation-second-kol-wait-conversion-v1.0.0');
+      expect(waitArm?.entryArm).toBe('rotation_underfill_v1');
+      expect(waitArm?.exitArm).toBe('rotation_second_kol_wait_conversion_v1');
+      expect(waitArm?.profileArm).toBe('rotation_second_kol_wait_conversion_v1');
+      expect(waitArm?.parentPositionId).toBe(parent?.positionId);
+      expect(waitArm?.parentUnderfillPositionId).toBe(parent?.positionId);
+      expect(waitArm?.secondKolDelaySec).toBeCloseTo(10);
+      expect(waitArm?.isLive).not.toBe(true);
+      expect(waitArm?.paperRole).toBe('research_arm');
+      expect(waitArm?.independentKolCount).toBe(2);
+      expect(waitArm?.participatingKols.map((k) => k.id).sort()).toEqual(['decu', 'dv']);
+      expect(waitArm?.rotationAnchorKols?.sort()).toEqual(['decu', 'dv']);
+      expect(waitArm?.survivalFlags).toContain('ROTATION_SECOND_KOL_WAIT_CONVERSION');
+      expect(waitArm?.survivalFlags).toContain('ROTATION_SECOND_KOL_WAIT_LE_15S');
+      expect(waitArm?.survivalFlags).toContain('ROTATION_COST_AWARE_EXIT_V2');
+      expect(waitArm?.t1MfeOverride).toBe(0.12);
+      expect(waitArm?.t1TrailPctOverride).toBe(0.045);
+      expect(waitArm?.t1ProfitFloorMult).toBe(1.10);
+      expect(waitArm?.rotationFlowExitEnabled).toBe(true);
+      expect(waitArm?.rotationMonetizableEdge?.schemaVersion).toBe('rotation-monetizable-edge/v1');
+    });
+
     it('rotation-exit-flow: underfill entry 의 anchor sell 을 sellPressure 기반으로 부분 축소한다', async () => {
       mockedConfig.kolHunterRotationV1Enabled = true;
       mockedConfig.kolHunterRotationPaperArmsEnabled = true;

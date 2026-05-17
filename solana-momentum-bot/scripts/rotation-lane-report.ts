@@ -38,6 +38,8 @@ const EVIDENCE_REQUIRED_COVERAGE_HORIZONS_SEC = EVIDENCE_PRIMARY_HORIZONS_SEC;
 const ROTATION_DECAY_GRACE_MIN_TOKENS = 10;
 const ROTATION_CONTROL_ARM = 'kol_hunter_rotation_v1';
 const ROTATION_LIVE_READINESS_ARM = 'rotation_underfill_cost_aware_exit_v2';
+const ROTATION_SECOND_KOL_WAIT_ARM = 'rotation_second_kol_wait_conversion_v1';
+const ROTATION_SECOND_KOL_WAIT_MIN_PAIR_COVERAGE = 0.8;
 const ROTATION_LIVE_READINESS_MIN_CLOSES = 50;
 const ROTATION_LIVE_READINESS_MIN_POST_COST_POSITIVE_RATE = 0.5;
 const ROTATION_PAPER_COMPOUND_MIN_CLOSES = 50;
@@ -672,6 +674,106 @@ interface MicroLiveReviewPacket {
   timestampedSecondKolRows: number;
   closes: number;
   plan: MicroLivePlan;
+}
+
+type RotationSecondKolWaitSiblingVerdict =
+  | 'NO_RUNTIME_PAIRS'
+  | 'DATA_GAP'
+  | 'WAIT_SAMPLE'
+  | 'CHILD_BEATS_PARENT'
+  | 'PARENT_BEATS_CHILD'
+  | 'MIXED';
+
+type RotationSecondKolWaitPairIntegrityVerdict =
+  | 'NO_RUNTIME_CHILDREN'
+  | 'DATA_GAP'
+  | 'PASS';
+
+interface RotationSecondKolWaitPairIntegrity {
+  verdict: RotationSecondKolWaitPairIntegrityVerdict;
+  childRows: number;
+  childWithParentIdRows: number;
+  linkedParentRows: number;
+  parentMissingRows: number;
+  duplicateChildRows: number;
+  closeTimingMismatchRows: number;
+  pairCoverage: number | null;
+  minPairCoverage: number;
+  reasons: string[];
+}
+
+interface RotationSecondKolWaitSiblingComparison {
+  verdict: RotationSecondKolWaitSiblingVerdict;
+  pairs: number;
+  minRequiredPairs: number;
+  childWins: number;
+  parentWins: number;
+  ties: number;
+  childRefundAdjustedNetSol: number | null;
+  parentRefundAdjustedNetSol: number | null;
+  deltaNetSol: number | null;
+  medianDeltaNetSol: number | null;
+  medianDeltaMfePct: number | null;
+  medianSecondKolDelaySec: number | null;
+  reasons: string[];
+}
+
+type CompoundingProofVerdict =
+  | 'NOT_PROVEN'
+  | 'REJECT'
+  | 'PAPER_PROVEN'
+  | 'READY_FOR_MICRO_LIVE_REVIEW'
+  | 'LIVE_PROVEN';
+
+type CompoundingProofRequirementStatus = 'PASS' | 'WAIT' | 'FAIL' | 'DATA_GAP';
+
+interface CompoundingProofRequirement {
+  name: string;
+  status: CompoundingProofRequirementStatus;
+  current: string;
+  required: string;
+}
+
+interface CompoundingProofPacket {
+  verdict: CompoundingProofVerdict;
+  cohort: string;
+  proofStage: 'research' | 'paper_mirror' | 'micro_live_ready' | 'live_proven';
+  paperCloses: number;
+  liveCloses: number;
+  liveWalletNetSol: number | null;
+  liveWalletPositiveRate: number | null;
+  requirements: CompoundingProofRequirement[];
+  blockers: string[];
+  nextAction: string;
+}
+
+type CompoundingHistoricalVerdict =
+  | 'LIVE_ELIGIBLE_EDGE_PRESENT'
+  | 'LIVE_ELIGIBLE_UNPROVEN'
+  | 'ONLY_DIAGNOSTIC_EDGE'
+  | 'ROUTE_PROOF_GAP'
+  | 'NO_COMPOUNDING_COHORT';
+
+interface CompoundingHistoricalBucket {
+  bucket: string;
+  role: 'compounding_candidate' | 'diagnostic_only' | 'evidence_gap' | 'cost_gap' | 'wallet_drag';
+  rows: number;
+  refundAdjustedNetSol: number | null;
+  postCostPositiveRate: number | null;
+  t1Rate: number | null;
+  medianMfePct: number | null;
+}
+
+interface CompoundingHistoricalDecomposition {
+  verdict: CompoundingHistoricalVerdict;
+  underfillRows: number;
+  liveEligibleRows: number;
+  diagnosticSingleKolRows: number;
+  routeUnknownRows: number;
+  tokenOnlyWinnerWalletLoserRows: number;
+  buckets: CompoundingHistoricalBucket[];
+  reasons: string[];
+  nextAction: string;
 }
 
 interface RotationReadinessHorizonCoverage {
@@ -1347,6 +1449,8 @@ interface RotationReport {
   reviewCohortGenerationAudit: ReviewCohortGenerationAuditStats;
   rotationSecondKolOpportunityFunnel: RotationSecondKolOpportunityFunnelStats;
   rotationSecondKolPromotionGap: RotationSecondKolPromotionGapStats;
+  rotationSecondKolWaitPairIntegrity: RotationSecondKolWaitPairIntegrity;
+  rotationSecondKolWaitSiblingComparison: RotationSecondKolWaitSiblingComparison;
   liveEquivalenceDrilldown: LiveEquivalenceDrilldownStats[];
   reviewCohortEvidence: ReviewCohortEvidenceStats;
   paperExitProxies: PaperExitProxyStats[];
@@ -1354,6 +1458,8 @@ interface RotationReport {
   rotationCompoundFitness: RotationCompoundFitnessGate;
   reviewCohortDecision: ReviewCohortDecision;
   microLiveReviewPacket: MicroLiveReviewPacket;
+  compoundingProofPacket: CompoundingProofPacket;
+  compoundingHistoricalDecomposition: CompoundingHistoricalDecomposition;
   rotationPaperCompoundReadiness: RotationPaperCompoundReadiness;
   rotationLiveReadiness: RotationLiveReadiness;
   evidenceVerdicts: EvidenceVerdict[];
@@ -1524,6 +1630,10 @@ function rowPositionId(row: JsonRow): string {
 
 function rowParentPositionId(row: JsonRow): string {
   return rowStringWithExtras(row, ['parentPositionId']);
+}
+
+function rowParentUnderfillPositionId(row: JsonRow): string {
+  return rowStringWithExtras(row, ['parentUnderfillPositionId']) || rowParentPositionId(row);
 }
 
 function rowTokenMint(row: JsonRow): string {
@@ -2134,8 +2244,10 @@ function isRotationUnderfillRow(row: JsonRow): boolean {
   const entryArm = rowStringWithExtras(row, ['entryArm']);
   const profileArm = rowStringWithExtras(row, ['profileArm']);
   return arm.startsWith('rotation_underfill') ||
+    arm === ROTATION_SECOND_KOL_WAIT_ARM ||
     entryArm.startsWith('rotation_underfill') ||
     profileArm.startsWith('rotation_underfill') ||
+    profileArm === ROTATION_SECOND_KOL_WAIT_ARM ||
     rowSurvivalFlags(row).some((flag) => flag.startsWith('ROTATION_UNDERFILL'));
 }
 
@@ -2144,9 +2256,17 @@ function isCostAwareUnderfillRow(row: JsonRow): boolean {
   const profileArm = rowStringWithExtras(row, ['profileArm']);
   const parameterVersion = rowStringWithExtras(row, ['parameterVersion']);
   return arm === 'rotation_underfill_cost_aware_exit_v2' ||
+    arm === ROTATION_SECOND_KOL_WAIT_ARM ||
     profileArm === 'rotation_underfill_cost_aware_exit_v2' ||
+    profileArm === ROTATION_SECOND_KOL_WAIT_ARM ||
     parameterVersion.includes('cost-aware') ||
     rowSurvivalFlags(row).some((flag) => flag === 'ROTATION_COST_AWARE_EXIT_V2');
+}
+
+function isSecondKolWaitRuntimeRow(row: JsonRow): boolean {
+  const arm = rowArmName(row);
+  const profileArm = rowStringWithExtras(row, ['profileArm']);
+  return arm === ROTATION_SECOND_KOL_WAIT_ARM || profileArm === ROTATION_SECOND_KOL_WAIT_ARM;
 }
 
 function isRouteKnownCostAwareUnderfillRow(row: JsonRow): boolean {
@@ -4218,6 +4338,414 @@ function buildMicroLiveReviewPacket(
         'stop if first 3 linked live closes are refund-adjusted net negative',
       ],
     },
+  };
+}
+
+function statusForReadinessVerdict(
+  verdict: RotationPaperCompoundReadinessVerdict | RotationLiveReadinessVerdict | CompoundFitnessVerdict | ReviewCohortDecisionVerdict | MicroLiveReviewVerdict
+): CompoundingProofRequirementStatus {
+  if (
+    verdict === 'PAPER_READY' ||
+    verdict === 'READY_FOR_MICRO_LIVE' ||
+    verdict === 'PASS' ||
+    verdict === 'READY_FOR_MICRO_LIVE_REVIEW'
+  ) {
+    return 'PASS';
+  }
+  if (
+    verdict === 'COST_REJECT' ||
+    verdict === 'REJECT' ||
+    verdict === 'EARLY_REJECT'
+  ) {
+    return 'FAIL';
+  }
+  if (
+    verdict === 'DATA_GAP' ||
+    verdict === 'WAIT_REVIEW_COHORT_METADATA' ||
+    verdict === 'WAIT_LIVE_EQUIVALENCE_DATA'
+  ) {
+    return 'DATA_GAP';
+  }
+  return 'WAIT';
+}
+
+function buildCompoundingProofPacket(
+  paper: RotationPaperCompoundReadiness,
+  live: RotationLiveReadiness,
+  compound: RotationCompoundFitnessGate,
+  decision: ReviewCohortDecision,
+  micro: MicroLiveReviewPacket,
+  liveRows: JsonRow[]
+): CompoundingProofPacket {
+  const cohort = 'route_known_2kol_cost_aware';
+  const liveProofRows = selectRouteKnown2KolCostAwareUnderfillRows(liveRows);
+  const liveWalletNetSol = liveProofRows.length > 0
+    ? liveProofRows.reduce((sum, row) => sum + numberOrZero(row.netSol), 0)
+    : null;
+  const liveWalletPositiveRate = ratio(
+    liveProofRows.filter((row) => numberOrZero(row.netSol) > 0).length,
+    liveProofRows.length
+  );
+  let liveProofStatus: CompoundingProofRequirementStatus = 'DATA_GAP';
+  if (liveProofRows.length >= 30 && (liveWalletNetSol ?? 0) > 0) {
+    liveProofStatus = 'PASS';
+  } else if (liveProofRows.length >= 30) {
+    liveProofStatus = 'FAIL';
+  } else if (liveProofRows.length > 0) {
+    liveProofStatus = 'WAIT';
+  }
+
+  const requirements: CompoundingProofRequirement[] = [
+    {
+      name: 'paper live-eligible sample',
+      status: paper.closes >= paper.minRequiredCloses ? 'PASS' : paper.closes > 0 ? 'WAIT' : 'DATA_GAP',
+      current: `${paper.closes}`,
+      required: `>=${paper.minRequiredCloses}`,
+    },
+    {
+      name: 'paper after-cost economics',
+      status: statusForReadinessVerdict(paper.verdict),
+      current: `${paper.verdict}, net=${formatSol(paper.refundAdjustedNetSol)}, postCost>0=${formatPct(paper.postCostPositiveRate)}`,
+      required: 'PAPER_READY',
+    },
+    {
+      name: 'compound fitness',
+      status: statusForReadinessVerdict(compound.verdict),
+      current: `${compound.verdict}, maxLossStreak=${compound.maxLosingStreak ?? 'n/a'}`,
+      required: 'PASS',
+    },
+    {
+      name: '50-close review decision',
+      status: statusForReadinessVerdict(decision.verdict),
+      current: `${decision.verdict}, closes=${decision.closes}/${decision.minDecisionCloses}`,
+      required: 'PASS',
+    },
+    {
+      name: 'micro-live review packet',
+      status: statusForReadinessVerdict(micro.verdict),
+      current: `${micro.verdict}, linked=${micro.linkedLiveEquivalenceRows}/${micro.liveEquivalenceRows}, blockers=${micro.liveEquivalenceBlockers}`,
+      required: 'READY_FOR_MICRO_LIVE_REVIEW',
+    },
+    {
+      name: 'live wallet proof',
+      status: liveProofStatus,
+      current: `${liveProofRows.length} closes, walletNet=${formatSol(liveWalletNetSol)}, walletWin=${formatPct(liveWalletPositiveRate)}`,
+      required: '>=30 live closes and walletNet > 0',
+    },
+  ];
+  const blockers = requirements
+    .filter((row) => row.status !== 'PASS')
+    .map((row) => `${row.name}: ${row.status} (${row.current}; need ${row.required})`);
+  const hasFail = requirements.some((row) => row.status === 'FAIL');
+  const preLiveRequirements = requirements.filter((row) => row.name !== 'live wallet proof');
+  let verdict: CompoundingProofVerdict = 'NOT_PROVEN';
+  if (hasFail) {
+    verdict = 'REJECT';
+  } else if (requirements.every((row) => row.status === 'PASS')) {
+    verdict = 'LIVE_PROVEN';
+  } else if (micro.verdict === 'READY_FOR_MICRO_LIVE_REVIEW') {
+    verdict = 'READY_FOR_MICRO_LIVE_REVIEW';
+  } else if (preLiveRequirements.every((row) => row.status === 'PASS')) {
+    verdict = 'PAPER_PROVEN';
+  }
+  const proofStage: CompoundingProofPacket['proofStage'] =
+    verdict === 'LIVE_PROVEN' ? 'live_proven' :
+    verdict === 'READY_FOR_MICRO_LIVE_REVIEW' ? 'micro_live_ready' :
+    verdict === 'PAPER_PROVEN' ? 'paper_mirror' :
+    'research';
+  const nextAction =
+    verdict === 'LIVE_PROVEN'
+      ? 'manual scale review only after separate wallet-floor risk check'
+      : verdict === 'READY_FOR_MICRO_LIVE_REVIEW'
+      ? 'manual micro-live review; collect >=30 linked wallet-truth closes before scale-up'
+      : verdict === 'PAPER_PROVEN'
+      ? 'clear micro-live/live-equivalence gaps before any live sample'
+      : verdict === 'REJECT'
+      ? 'do not promote; fix failed economics or discard cohort'
+      : 'continue paper-first evidence collection for the live-eligible cohort';
+
+  return {
+    verdict,
+    cohort,
+    proofStage,
+    paperCloses: paper.closes,
+    liveCloses: liveProofRows.length,
+    liveWalletNetSol,
+    liveWalletPositiveRate,
+    requirements,
+    blockers,
+    nextAction,
+  };
+}
+
+function buildCompoundingHistoricalBucket(
+  bucket: string,
+  role: CompoundingHistoricalBucket['role'],
+  rows: JsonRow[],
+  assumedNetworkFeeSol: number
+): CompoundingHistoricalBucket {
+  const refundAdjustedValues = rows.map((row) =>
+    (num(row.netSolTokenOnly) ?? numberOrZero(row.netSol)) - assumedNetworkFeeSol
+  );
+  return {
+    bucket,
+    role,
+    rows: rows.length,
+    refundAdjustedNetSol: rows.length > 0
+      ? refundAdjustedValues.reduce((sum, value) => sum + value, 0)
+      : null,
+    postCostPositiveRate: ratio(refundAdjustedValues.filter((value) => value > 0).length, rows.length),
+    t1Rate: ratio(rows.filter(rowHasT1).length, rows.length),
+    medianMfePct: percentile(rows.map(rowMfePct).filter((value): value is number => value != null), 0.5),
+  };
+}
+
+function buildCompoundingHistoricalDecomposition(
+  rows: JsonRow[],
+  assumedNetworkFeeSol: number
+): CompoundingHistoricalDecomposition {
+  const underfillRows = rows.filter(isRotationUnderfillRow);
+  const routeKnownRows = underfillRows.filter((row) => !isUnderfillRouteUnknown(row));
+  const liveEligibleRows = selectRouteKnown2KolCostAwareUnderfillRows(rows);
+  const diagnosticSingleKolRows = routeKnownRows.filter((row) =>
+    isSingleKolRow(row) && isCostAwareUnderfillRow(row)
+  );
+  const routeUnknownRows = underfillRows.filter(isUnderfillRouteUnknown);
+  const routeKnownMissingCostAwareRows = routeKnownRows.filter((row) => !isCostAwareUnderfillRow(row));
+  const tokenOnlyWinnerWalletLoserRows = underfillRows.filter((row) =>
+    (num(row.netSolTokenOnly) ?? numberOrZero(row.netSol)) > 0 &&
+    numberOrZero(row.netSol) <= 0
+  );
+  const buckets = [
+    buildCompoundingHistoricalBucket(
+      'live_eligible_2plus_route_known_cost_aware',
+      'compounding_candidate',
+      liveEligibleRows,
+      assumedNetworkFeeSol
+    ),
+    buildCompoundingHistoricalBucket(
+      'diagnostic_1kol_route_known_cost_aware',
+      'diagnostic_only',
+      diagnosticSingleKolRows,
+      assumedNetworkFeeSol
+    ),
+    buildCompoundingHistoricalBucket(
+      'route_unknown_underfill',
+      'evidence_gap',
+      routeUnknownRows,
+      assumedNetworkFeeSol
+    ),
+    buildCompoundingHistoricalBucket(
+      'route_known_missing_cost_aware',
+      'cost_gap',
+      routeKnownMissingCostAwareRows,
+      assumedNetworkFeeSol
+    ),
+    buildCompoundingHistoricalBucket(
+      'token_only_winner_wallet_loser',
+      'wallet_drag',
+      tokenOnlyWinnerWalletLoserRows,
+      assumedNetworkFeeSol
+    ),
+  ];
+  const liveEligibleBucket = buckets[0];
+  const liveEligibleNet = liveEligibleBucket.refundAdjustedNetSol ?? 0;
+  const liveEligiblePositive = liveEligibleBucket.postCostPositiveRate ?? 0;
+  const reasons: string[] = [];
+  let verdict: CompoundingHistoricalVerdict = 'NO_COMPOUNDING_COHORT';
+  if (
+    liveEligibleRows.length >= ROTATION_COMPOUND_DECISION_MIN_CLOSES &&
+    liveEligibleNet > 0 &&
+    liveEligiblePositive >= ROTATION_PAPER_COMPOUND_MIN_POST_COST_POSITIVE_RATE
+  ) {
+    verdict = 'LIVE_ELIGIBLE_EDGE_PRESENT';
+    reasons.push('live-eligible 2+KOL route-known cost-aware cohort has enough positive historical paper evidence');
+  } else if (liveEligibleRows.length > 0) {
+    verdict = 'LIVE_ELIGIBLE_UNPROVEN';
+    reasons.push(
+      `live-eligible cohort exists but is not proven: rows=${liveEligibleRows.length}/${ROTATION_COMPOUND_DECISION_MIN_CLOSES}, ` +
+      `net=${formatSol(liveEligibleBucket.refundAdjustedNetSol)}, postCost>0=${formatPct(liveEligibleBucket.postCostPositiveRate)}`
+    );
+  } else if (diagnosticSingleKolRows.length > 0) {
+    verdict = 'ONLY_DIAGNOSTIC_EDGE';
+    reasons.push('route-known cost-aware edge exists only in entry-aligned 1-KOL diagnostic rows');
+  } else if (routeUnknownRows.length > 0) {
+    verdict = 'ROUTE_PROOF_GAP';
+    reasons.push('underfill rows exist, but route-unknown evidence blocks compounding interpretation');
+  } else {
+    reasons.push('no underfill compounding cohort in the report window');
+  }
+
+  const nextAction =
+    verdict === 'LIVE_ELIGIBLE_EDGE_PRESENT'
+      ? 'use the proof packet to check live-equivalence and micro-live readiness; do not scale without live wallet proof'
+      : verdict === 'LIVE_ELIGIBLE_UNPROVEN'
+      ? 'continue paper-first collection only for entry-aligned 2+KOL route-known cost-aware rows'
+      : verdict === 'ONLY_DIAGNOSTIC_EDGE'
+      ? 'keep 1-KOL edge diagnostic; test second-KOL conversion before live'
+      : verdict === 'ROUTE_PROOF_GAP'
+      ? 'fix route proof or exit evidence before interpreting historical PnL'
+      : 'keep searching; current window has no compounding candidate cohort';
+
+  return {
+    verdict,
+    underfillRows: underfillRows.length,
+    liveEligibleRows: liveEligibleRows.length,
+    diagnosticSingleKolRows: diagnosticSingleKolRows.length,
+    routeUnknownRows: routeUnknownRows.length,
+    tokenOnlyWinnerWalletLoserRows: tokenOnlyWinnerWalletLoserRows.length,
+    buckets,
+    reasons,
+    nextAction,
+  };
+}
+
+function buildSecondKolWaitSiblingComparison(
+  rows: JsonRow[],
+  assumedNetworkFeeSol: number,
+  integrity: RotationSecondKolWaitPairIntegrity = buildSecondKolWaitPairIntegrity(rows)
+): RotationSecondKolWaitSiblingComparison {
+  const minRequiredPairs = ROTATION_COMPOUND_REVIEW_MIN_CLOSES;
+  const byPositionId = new Map<string, JsonRow>();
+  for (const row of rows) {
+    const positionId = rowPositionId(row);
+    if (positionId) byPositionId.set(positionId, row);
+  }
+  const pairs = rows
+    .filter(isSecondKolWaitRuntimeRow)
+    .flatMap((child) => {
+      const parentId = rowParentUnderfillPositionId(child);
+      const parent = parentId ? byPositionId.get(parentId) : undefined;
+      return parent && isRotationUnderfillRow(parent)
+        ? [{ child, parent }]
+        : [];
+    });
+  const childValues = pairs.map(({ child }) =>
+    (num(child.netSolTokenOnly) ?? numberOrZero(child.netSol)) - assumedNetworkFeeSol
+  );
+  const parentValues = pairs.map(({ parent }) =>
+    (num(parent.netSolTokenOnly) ?? numberOrZero(parent.netSol)) - assumedNetworkFeeSol
+  );
+  const deltas = pairs.map((_, index) => childValues[index] - parentValues[index]);
+  const mfeDeltas = pairs
+    .map(({ child, parent }) => {
+      const childMfe = rowMfePct(child);
+      const parentMfe = rowMfePct(parent);
+      return childMfe == null || parentMfe == null ? null : childMfe - parentMfe;
+    })
+    .filter((value): value is number => value != null);
+  const delays = pairs
+    .map(({ child }) => num(child.secondKolDelaySec) ?? rowNumWithExtras(child, ['secondKolDelaySec']) ?? secondKolDelaySec(child))
+    .filter((value): value is number => value != null);
+  const childWins = deltas.filter((value) => value > 0).length;
+  const parentWins = deltas.filter((value) => value < 0).length;
+  const ties = deltas.length - childWins - parentWins;
+  const deltaNetSol = deltas.length > 0 ? deltas.reduce((sum, value) => sum + value, 0) : null;
+  const childRefundAdjustedNetSol = childValues.length > 0
+    ? childValues.reduce((sum, value) => sum + value, 0)
+    : null;
+  const parentRefundAdjustedNetSol = parentValues.length > 0
+    ? parentValues.reduce((sum, value) => sum + value, 0)
+    : null;
+  const childWinRate = ratio(childWins, pairs.length);
+  const reasons: string[] = [];
+  let verdict: RotationSecondKolWaitSiblingVerdict = 'NO_RUNTIME_PAIRS';
+  if (integrity.verdict === 'DATA_GAP') {
+    verdict = 'DATA_GAP';
+    reasons.push(`pair integrity DATA_GAP: ${integrity.reasons.join('; ') || 'unknown'}`);
+  } else if (pairs.length === 0) {
+    reasons.push('no closed second-KOL wait runtime rows linked to a parent underfill close');
+  } else if (pairs.length < minRequiredPairs) {
+    verdict = 'WAIT_SAMPLE';
+    reasons.push(`collect sibling pairs ${pairs.length}/${minRequiredPairs}`);
+  } else if ((deltaNetSol ?? 0) > 0 && (childWinRate ?? 0) >= 0.55) {
+    verdict = 'CHILD_BEATS_PARENT';
+    reasons.push('wait-conversion child beats immediate underfill parent after cost');
+  } else if ((deltaNetSol ?? 0) < 0 && (childWinRate ?? 0) < 0.45) {
+    verdict = 'PARENT_BEATS_CHILD';
+    reasons.push('immediate underfill parent beats wait-conversion child after cost');
+  } else {
+    verdict = 'MIXED';
+    reasons.push('sibling comparison is mixed; do not promote wait-conversion yet');
+  }
+  return {
+    verdict,
+    pairs: pairs.length,
+    minRequiredPairs,
+    childWins,
+    parentWins,
+    ties,
+    childRefundAdjustedNetSol,
+    parentRefundAdjustedNetSol,
+    deltaNetSol,
+    medianDeltaNetSol: percentile(deltas, 0.5),
+    medianDeltaMfePct: percentile(mfeDeltas, 0.5),
+    medianSecondKolDelaySec: percentile(delays, 0.5),
+    reasons,
+  };
+}
+
+function buildSecondKolWaitPairIntegrity(rows: JsonRow[]): RotationSecondKolWaitPairIntegrity {
+  const childRows = rows.filter(isSecondKolWaitRuntimeRow);
+  const byPositionId = new Map<string, JsonRow>();
+  for (const row of rows) {
+    const positionId = rowPositionId(row);
+    if (positionId) byPositionId.set(positionId, row);
+  }
+
+  const childPositionIds = childRows
+    .map(rowPositionId)
+    .filter((value): value is string => Boolean(value));
+  const duplicateChildRows = childPositionIds.length - new Set(childPositionIds).size;
+  const linkedPairs = childRows.flatMap((child) => {
+    const parentId = rowParentUnderfillPositionId(child);
+    const parent = parentId ? byPositionId.get(parentId) : undefined;
+    return parent && isRotationUnderfillRow(parent) ? [{ child, parent }] : [];
+  });
+  const childWithParentIdRows = childRows.filter((row) => Boolean(rowParentUnderfillPositionId(row))).length;
+  const linkedParentRows = linkedPairs.length;
+  const parentMissingRows = childRows.length - linkedParentRows;
+  const closeTimingMismatchRows = linkedPairs.filter(({ child, parent }) => {
+    const childCloseTimeMs = rowCloseTimeMs(child);
+    const parentCloseTimeMs = rowCloseTimeMs(parent);
+    return childCloseTimeMs != null && parentCloseTimeMs != null && childCloseTimeMs < parentCloseTimeMs;
+  }).length;
+  const pairCoverage = ratio(linkedParentRows, childRows.length);
+  const reasons: string[] = [];
+  let verdict: RotationSecondKolWaitPairIntegrityVerdict = 'NO_RUNTIME_CHILDREN';
+
+  if (childRows.length === 0) {
+    reasons.push('no runtime second-KOL wait child rows');
+  } else if (
+    parentMissingRows > 0 ||
+    duplicateChildRows > 0 ||
+    (pairCoverage ?? 0) < ROTATION_SECOND_KOL_WAIT_MIN_PAIR_COVERAGE
+  ) {
+    verdict = 'DATA_GAP';
+    if (parentMissingRows > 0) reasons.push(`parent missing rows ${parentMissingRows}/${childRows.length}`);
+    if (duplicateChildRows > 0) reasons.push(`duplicate child position rows ${duplicateChildRows}`);
+    if ((pairCoverage ?? 0) < ROTATION_SECOND_KOL_WAIT_MIN_PAIR_COVERAGE) {
+      reasons.push(`pair coverage ${formatPct(pairCoverage)} below ${formatPct(ROTATION_SECOND_KOL_WAIT_MIN_PAIR_COVERAGE)}`);
+    }
+  } else {
+    verdict = 'PASS';
+    reasons.push('runtime child rows are linked to underfill parents');
+  }
+  if (closeTimingMismatchRows > 0) {
+    reasons.push(`child closed before parent rows ${closeTimingMismatchRows}; verify sibling exit timing before interpreting deltas`);
+  }
+
+  return {
+    verdict,
+    childRows: childRows.length,
+    childWithParentIdRows,
+    linkedParentRows,
+    parentMissingRows,
+    duplicateChildRows,
+    closeTimingMismatchRows,
+    pairCoverage,
+    minPairCoverage: ROTATION_SECOND_KOL_WAIT_MIN_PAIR_COVERAGE,
+    reasons,
   };
 }
 
@@ -8141,6 +8669,74 @@ function renderMicroLiveReviewPacket(row: MicroLiveReviewPacket): string {
   ].join('\n');
 }
 
+function renderCompoundingProofPacket(row: CompoundingProofPacket): string {
+  const requirements = [
+    '| requirement | status | current | required |',
+    '|---|---|---|---|',
+    ...row.requirements.map((item) =>
+      `| ${item.name} | ${item.status} | ${item.current} | ${item.required} |`
+    ),
+  ].join('\n');
+  return [
+    '| verdict | proof stage | cohort | paper closes | live closes | live wallet net | live wallet win | next action |',
+    '|---|---|---|---:|---:|---:|---:|---|',
+    `| ${row.verdict} | ${row.proofStage} | ${row.cohort} | ${row.paperCloses} | ${row.liveCloses} | ` +
+      `${formatSol(row.liveWalletNetSol)} | ${formatPct(row.liveWalletPositiveRate)} | ${row.nextAction} |`,
+    '',
+    requirements,
+    '',
+    row.blockers.length === 0
+      ? '- blockers: none'
+      : `- blockers: ${row.blockers.join('; ')}`,
+  ].join('\n');
+}
+
+function renderCompoundingHistoricalDecomposition(row: CompoundingHistoricalDecomposition): string {
+  const buckets = [
+    '| bucket | role | rows | refund-adjusted | postCost>0 | T1 | med MFE |',
+    '|---|---|---:|---:|---:|---:|---:|',
+    ...row.buckets.map((bucket) =>
+      `| ${bucket.bucket} | ${bucket.role} | ${bucket.rows} | ${formatSol(bucket.refundAdjustedNetSol)} | ` +
+      `${formatPct(bucket.postCostPositiveRate)} | ${formatPct(bucket.t1Rate)} | ${formatPct(bucket.medianMfePct)} |`
+    ),
+  ].join('\n');
+  return [
+    '| verdict | underfill | live-eligible | diagnostic 1-KOL | route unknown | token-only winner wallet loser | next action |',
+    '|---|---:|---:|---:|---:|---:|---|',
+    `| ${row.verdict} | ${row.underfillRows} | ${row.liveEligibleRows} | ${row.diagnosticSingleKolRows} | ` +
+      `${row.routeUnknownRows} | ${row.tokenOnlyWinnerWalletLoserRows} | ${row.nextAction} |`,
+    '',
+    buckets,
+    '',
+    `- reasons: ${row.reasons.join('; ') || 'n/a'}`,
+  ].join('\n');
+}
+
+function renderSecondKolWaitSiblingComparison(row: RotationSecondKolWaitSiblingComparison): string {
+  return [
+    '| verdict | pairs | child wins | parent wins | ties | child net | parent net | delta net | med delta net | med delta MFE | med 2nd-KOL delay |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
+    `| ${row.verdict} | ${row.pairs}/${row.minRequiredPairs} | ${row.childWins} | ${row.parentWins} | ${row.ties} | ` +
+      `${formatSol(row.childRefundAdjustedNetSol)} | ${formatSol(row.parentRefundAdjustedNetSol)} | ` +
+      `${formatSol(row.deltaNetSol)} | ${formatSol(row.medianDeltaNetSol)} | ${formatPct(row.medianDeltaMfePct)} | ` +
+      `${row.medianSecondKolDelaySec == null ? 'n/a' : `${row.medianSecondKolDelaySec.toFixed(1)}s`} |`,
+    '',
+    `- reasons: ${row.reasons.join('; ') || 'n/a'}`,
+  ].join('\n');
+}
+
+function renderSecondKolWaitPairIntegrity(row: RotationSecondKolWaitPairIntegrity): string {
+  return [
+    '| verdict | child | parent id | linked parent | parent missing | duplicate child | close timing mismatch | pair coverage | min coverage |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|---:|',
+    `| ${row.verdict} | ${row.childRows} | ${row.childWithParentIdRows} | ${row.linkedParentRows} | ` +
+      `${row.parentMissingRows} | ${row.duplicateChildRows} | ${row.closeTimingMismatchRows} | ` +
+      `${formatPct(row.pairCoverage)} | ${formatPct(row.minPairCoverage)} |`,
+    '',
+    `- reasons: ${row.reasons.join('; ') || 'n/a'}`,
+  ].join('\n');
+}
+
 function renderRotationLiveReadiness(row: RotationLiveReadiness): string {
   return [
     '| arm | verdict | cohort | closes | min markout coverage | primary postCost | refund-adjusted | postCost>0 | edge pass | T1 rate | med MFE | evidence | reasons |',
@@ -8399,6 +8995,14 @@ function renderReport(report: RotationReport): string {
     '> Report-only. Explains why second-KOL <=30s paper opportunities still fail the route-known cost-aware review cohort.',
     renderRotationSecondKolPromotionGap(report.rotationSecondKolPromotionGap),
     '',
+    '## Rotation 2nd-KOL Wait Pair Integrity',
+    '> Report-only. Audits runtime wait-conversion child rows before sibling PnL comparison. DATA_GAP means the comparison is attribution-only, not strategy evidence.',
+    renderSecondKolWaitPairIntegrity(report.rotationSecondKolWaitPairIntegrity),
+    '',
+    '## Rotation 2nd-KOL Wait Sibling Comparison',
+    '> Report-only. Compares runtime wait-conversion child closes against their immediate underfill parent closes. This tests whether waiting actually beats entering at the first underfill.',
+    renderSecondKolWaitSiblingComparison(report.rotationSecondKolWaitSiblingComparison),
+    '',
     '## Route Unknown Reasons',
     '> Report-only. Splits route-unknown paper winners from missing/unsafe exit-route evidence. Reasons are non-exclusive; one close can appear in multiple reason rows.',
     renderRouteUnknownReasons(report.routeUnknownReasons),
@@ -8470,6 +9074,14 @@ function renderReport(report: RotationReport): string {
     '## Rotation Compound Fitness Gate',
     '> Report-only. Slow-compound gate for the route-known 2+KOL cost-aware cohort; this never enables live automatically.',
     renderCompoundFitnessGate(report.rotationCompoundFitness),
+    '',
+    '## Historical Compounding Decomposition',
+    '> Report-only. Re-splits the report-window underfill closes into live-eligible, diagnostic-only, route-proof gap, cost-gap, and wallet-drag buckets.',
+    renderCompoundingHistoricalDecomposition(report.compoundingHistoricalDecomposition),
+    '',
+    '## Compounding Proof Packet',
+    '> Report-only. This is the single daily-compounding proof read: paper readiness is not live proof until the same live-eligible cohort has wallet-positive live closes.',
+    renderCompoundingProofPacket(report.compoundingProofPacket),
     '',
     '## Review Cohort Decision',
     '> Report-only. Compresses collect/watch/reject/pass for the route-known 2+KOL cost-aware paper cohort; live routing remains unchanged.',
@@ -8710,6 +9322,12 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
     routeProofFreshSinceMs: args.routeProofFreshSinceMs,
     currentSessionStartedAtMs: Number.isFinite(currentSessionStartedAtMs) ? currentSessionStartedAtMs : undefined,
   });
+  const rotationSecondKolWaitPairIntegrity = buildSecondKolWaitPairIntegrity(rotationPaperRows);
+  const rotationSecondKolWaitSiblingComparison = buildSecondKolWaitSiblingComparison(
+    rotationPaperRows,
+    assumedNetworkFeeSol,
+    rotationSecondKolWaitPairIntegrity
+  );
   const reviewRows = selectRouteKnown2KolCostAwareUnderfillRows(rotationPaperRows);
   const reviewCandidateIds = new Set(
     reviewRows
@@ -8770,6 +9388,18 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
     rotationCompoundFitness,
     reviewLiveEquivalence,
     reviewCohortEvidence
+  );
+  const compoundingProofPacket = buildCompoundingProofPacket(
+    rotationPaperCompoundReadiness,
+    rotationLiveReadiness,
+    rotationCompoundFitness,
+    reviewCohortDecision,
+    microLiveReviewPacket,
+    rotationLiveRows
+  );
+  const compoundingHistoricalDecomposition = buildCompoundingHistoricalDecomposition(
+    rotationPaperRows,
+    assumedNetworkFeeSol
   );
   const coverageLoad: {
     status: KolPosteriorCoverageLoadStatus;
@@ -8847,6 +9477,8 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
     reviewCohortGenerationAudit,
     rotationSecondKolOpportunityFunnel,
     rotationSecondKolPromotionGap,
+    rotationSecondKolWaitPairIntegrity,
+    rotationSecondKolWaitSiblingComparison,
     liveEquivalenceDrilldown,
     reviewCohortEvidence,
     paperExitProxies,
@@ -8854,6 +9486,8 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
     rotationCompoundFitness,
     reviewCohortDecision,
     microLiveReviewPacket,
+    compoundingProofPacket,
+    compoundingHistoricalDecomposition,
     rotationPaperCompoundReadiness,
     rotationLiveReadiness,
     evidenceVerdicts,

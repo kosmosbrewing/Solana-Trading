@@ -209,6 +209,42 @@ describe('kol-live-mirror-report', () => {
     expect(report.topExecutionDrags[0]?.livePositionId).toBe('rotation-live-1');
   });
 
+  it('reads lane-specific live and paper files without double-counting duplicate closes', async () => {
+    const rotationLive = liveRow({
+      positionId: 'rotation-live-file-1',
+      closedAt: '2026-05-01T00:00:00.000Z',
+      netSol: -0.003,
+      netPct: -0.15,
+      armName: 'rotation_underfill_v1',
+      profileArm: 'rotation_underfill_exit_flow_v1',
+    });
+    await writeFile(path.join(dir, 'kol-live-trades.jsonl'), jsonl([rotationLive]));
+    await writeFile(path.join(dir, 'rotation-v1-live-trades.jsonl'), jsonl([rotationLive]));
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([
+      mirrorRow({
+        positionId: 'rotation-mirror-file-1',
+        parentPositionId: 'rotation-live-file-1',
+        closedAt: '2026-05-01T00:00:01.000Z',
+        netSolTokenOnly: 0.001,
+        netPctTokenOnly: 0.05,
+      }),
+    ]));
+
+    const report = await buildKolLiveMirrorReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      minPairs: 1,
+      executionDragRate: 0.2,
+      strategyLossRate: 0.5,
+      armFilter: 'rotation_underfill_exit_flow_v1',
+    });
+
+    expect(report.liveRows).toBe(1);
+    expect(report.mirrorRows).toBe(1);
+    expect(report.pairedRows).toBe(1);
+    expect(report.topExecutionDrags[0]?.livePositionId).toBe('rotation-live-file-1');
+  });
+
   it('parses args and renders collection guardrails', () => {
     const args = parseKolLiveMirrorArgs(['--realtime-dir', dir, '--since', '12h', '--min-pairs', '5', '--arm', 'rotation_underfill_exit_flow_v1']);
     expect(args.realtimeDir).toBe(path.resolve(dir));

@@ -24,6 +24,19 @@ const CLASSIFICATIONS: LiveMirrorClassification[] = [
   'paper_false_negative',
 ];
 
+const LIVE_TRADE_FILES = [
+  'kol-live-trades.jsonl',
+  'smart-v3-live-trades.jsonl',
+  'rotation-v1-live-trades.jsonl',
+];
+
+const PAPER_TRADE_FILES = [
+  'kol-paper-trades.jsonl',
+  'smart-v3-paper-trades.jsonl',
+  'rotation-v1-paper-trades.jsonl',
+  'capitulation-rebound-paper-trades.jsonl',
+];
+
 function extrasOf(row: JsonRow): JsonRow {
   return typeof row.extras === 'object' && row.extras != null ? row.extras as JsonRow : {};
 }
@@ -70,6 +83,30 @@ function closeRowsSince(rows: JsonRow[], sinceMs: number): JsonRow[] {
     const atMs = rowTimeMs(row);
     return Number.isFinite(atMs) && atMs >= sinceMs;
   });
+}
+
+function dedupeCloseRows(rows: JsonRow[]): JsonRow[] {
+  const seen = new Set<string>();
+  const out: JsonRow[] = [];
+  for (const row of rows) {
+    const positionId = valueStr(row, 'positionId');
+    const key = positionId || [
+      valueStr(row, 'tokenMint') || 'unknown',
+      valueStr(row, 'closedAt') || String(rowTimeMs(row)),
+      valueStr(row, 'exitReason') || 'unknown',
+    ].join('|');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+  return out;
+}
+
+async function readTradeRows(realtimeDir: string, files: string[]): Promise<JsonRow[]> {
+  const rows = await Promise.all(
+    files.map((file) => readJsonl(path.join(realtimeDir, file)))
+  );
+  return dedupeCloseRows(rows.flat());
 }
 
 function isTailRow(row: JsonRow): boolean {
@@ -228,8 +265,8 @@ function reasonsFor(report: Omit<KolLiveMirrorReport, 'reasons'>): string[] {
 
 export async function buildKolLiveMirrorReport(args: KolLiveMirrorArgs): Promise<KolLiveMirrorReport> {
   const [rawLiveRows, rawPaperRows] = await Promise.all([
-    readJsonl(path.join(args.realtimeDir, 'kol-live-trades.jsonl')),
-    readJsonl(path.join(args.realtimeDir, 'kol-paper-trades.jsonl')),
+    readTradeRows(args.realtimeDir, LIVE_TRADE_FILES),
+    readTradeRows(args.realtimeDir, PAPER_TRADE_FILES),
   ]);
   const normalizedArmFilter = args.armFilter?.toLowerCase();
   const liveRows = closeRowsSince(rawLiveRows, args.sinceMs)

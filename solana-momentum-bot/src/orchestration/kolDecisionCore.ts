@@ -3,6 +3,7 @@ import type {
   KolLiveEquivalenceDecisionStage,
   KolPaperRole,
 } from '../observability/kolLiveEquivalence';
+import { createHash } from 'crypto';
 
 export const KOL_EXECUTION_PLAN_SCHEMA_VERSION = 'kol-execution-plan/v1' as const;
 export const KOL_EXECUTION_GUARD_SCHEMA_VERSION = 'kol-execution-guard/v1' as const;
@@ -48,6 +49,7 @@ export interface KolDecisionTraceFields {
 export interface KolExecutionPlanSnapshot {
   schemaVersion: typeof KOL_EXECUTION_PLAN_SCHEMA_VERSION;
   planId: string;
+  executionPlanHash: string;
   mode: 'paper' | 'live';
   candidateId: string | null;
   decisionId: string | null;
@@ -58,6 +60,46 @@ export interface KolExecutionPlanSnapshot {
   routeFound: boolean | null;
   sellQuoteReason: string | null;
   executionGuard: KolExecutionGuardSnapshot | null;
+}
+
+function normalizePlanNumber(value: number): number | null {
+  if (!Number.isFinite(value)) return null;
+  return Number(value.toPrecision(12));
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+    .join(',')}}`;
+}
+
+function executionPlanHash(input: {
+  candidateId: string | null;
+  decisionId: string | null;
+  referencePrice: number;
+  ticketSol: number;
+  expectedQuantity: number;
+  tokenDecimals: number | null;
+  routeFound: boolean | null;
+  sellQuoteReason: string | null;
+  executionGuard: KolExecutionGuardSnapshot | null;
+}): string {
+  const hashInput = {
+    candidateId: input.candidateId,
+    decisionId: input.decisionId,
+    referencePrice: normalizePlanNumber(input.referencePrice),
+    ticketSol: normalizePlanNumber(input.ticketSol),
+    expectedQuantity: normalizePlanNumber(input.expectedQuantity),
+    tokenDecimals: input.tokenDecimals,
+    routeFound: input.routeFound,
+    sellQuoteReason: input.sellQuoteReason,
+    executionGuard: input.executionGuard,
+  };
+  return createHash('sha256').update(stableStringify(hashInput)).digest('hex').slice(0, 24);
 }
 
 export function buildKolExecutionGuardSnapshot(input: {
@@ -153,20 +195,36 @@ export function buildKolExecutionPlanSnapshot(input: {
   executionGuard?: KolExecutionGuardSnapshot | null;
 }): KolExecutionPlanSnapshot {
   const decisionId = decisionIdForTrace(input.trace) ?? null;
+  const candidateId = input.trace.liveEquivalenceCandidateId ?? null;
+  const tokenDecimals = input.tokenDecimals ?? null;
+  const routeFound = input.sellQuoteEvidence?.routeFound ?? null;
+  const sellQuoteReason = input.sellQuoteEvidence?.reason ?? null;
+  const executionGuard = input.executionGuard ?? null;
   return {
     schemaVersion: KOL_EXECUTION_PLAN_SCHEMA_VERSION,
     planId: decisionId
       ? `${decisionId}:${input.mode}:${input.positionId}:plan`
       : `${input.mode}:${input.positionId}:plan`,
+    executionPlanHash: executionPlanHash({
+      candidateId,
+      decisionId,
+      referencePrice: input.referencePrice,
+      ticketSol: input.ticketSol,
+      expectedQuantity: input.expectedQuantity,
+      tokenDecimals,
+      routeFound,
+      sellQuoteReason,
+      executionGuard,
+    }),
     mode: input.mode,
-    candidateId: input.trace.liveEquivalenceCandidateId ?? null,
+    candidateId,
     decisionId,
     referencePrice: input.referencePrice,
     ticketSol: input.ticketSol,
     expectedQuantity: input.expectedQuantity,
-    tokenDecimals: input.tokenDecimals ?? null,
-    routeFound: input.sellQuoteEvidence?.routeFound ?? null,
-    sellQuoteReason: input.sellQuoteEvidence?.reason ?? null,
-    executionGuard: input.executionGuard ?? null,
+    tokenDecimals,
+    routeFound,
+    sellQuoteReason,
+    executionGuard,
   };
 }

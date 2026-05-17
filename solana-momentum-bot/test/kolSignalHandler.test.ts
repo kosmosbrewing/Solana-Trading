@@ -4359,8 +4359,23 @@ describe('kolSignalHandler — state machine', () => {
       expect(insertTrade).toHaveBeenCalledTimes(1);
       const positions = __testGetActive();
       const live = positions.find((p) => p.isLive === true)!;
+      const mirror = positions.find((p) => p.paperRole === 'mirror' && p.parentPositionId === live.positionId)!;
       const focus = positions.find((p) => p.armName === 'rotation_good_kol_focus_v1')!;
       expect(live.armName).toBe('rotation_underfill_v1');
+      expect(mirror).toBeDefined();
+      expect(mirror.isLive).toBe(false);
+      expect(mirror.isShadowArm).toBe(true);
+      expect(mirror.armName).toBe(live.armName);
+      expect(mirror.executionPlanSnapshot).toEqual(expect.objectContaining({
+        mode: 'paper',
+        candidateId: live.liveEquivalenceCandidateId,
+        decisionId: live.liveEquivalenceDecisionId,
+        executionPlanHash: live.executionPlanSnapshot?.executionPlanHash,
+      }));
+      expect(mirror.survivalFlags).toEqual(expect.arrayContaining([
+        'LIVE_PAIRED_PAPER_MIRROR',
+        'ROTATION_UNDERFILL_LIVE_MIRROR',
+      ]));
       expect(focus).toBeDefined();
       expect(focus.isLive).toBe(false);
       expect(focus.isShadowArm).toBe(true);

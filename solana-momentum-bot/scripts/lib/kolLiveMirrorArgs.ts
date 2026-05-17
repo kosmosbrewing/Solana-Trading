@@ -21,6 +21,7 @@ export function parseKolLiveMirrorArgs(argv: string[]): KolLiveMirrorArgs {
     else if (arg === '--min-pairs') args.minPairs = parsePositiveInteger(argv[++i], arg);
     else if (arg === '--execution-drag-rate') args.executionDragRate = parseRate(argv[++i], arg);
     else if (arg === '--strategy-loss-rate') args.strategyLossRate = parseRate(argv[++i], arg);
+    else if (arg === '--arm') args.armFilter = argv[++i];
     else if (arg === '--md') args.mdOut = path.resolve(argv[++i]);
     else if (arg === '--json') args.jsonOut = path.resolve(argv[++i]);
   }

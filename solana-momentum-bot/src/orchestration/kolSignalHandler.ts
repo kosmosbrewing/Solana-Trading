@@ -11515,6 +11515,33 @@ async function enterLivePosition(
   }
   if (primaryVersion === config.kolHunterRotationUnderfillParameterVersion) {
     const addedArms: string[] = [];
+    const mirrorId = `${positionId}-live-mirror`;
+    const mirrorPos: PaperPosition = {
+      ...position,
+      positionId: mirrorId,
+      isShadowArm: true,
+      parentPositionId: positionId,
+      paperRole: 'mirror',
+      isLive: false,
+      dbTradeId: undefined,
+      entryTxSignature: undefined,
+      entrySlippageBps: undefined,
+      executionPlanSnapshot: position.executionPlanSnapshot
+        ? {
+            ...position.executionPlanSnapshot,
+            planId: `paper:${mirrorId}:plan`,
+            mode: 'paper',
+          }
+        : undefined,
+      survivalFlags: [
+        ...position.survivalFlags,
+        'LIVE_PAIRED_PAPER_MIRROR',
+        'ROTATION_UNDERFILL_LIVE_MIRROR',
+      ],
+    };
+    registerLivePairedPaperPosition(mirrorPos);
+    addedArms.push(mirrorPos.armName);
+
     for (const spec of buildRotationPaperArmSpecs(primaryVersion)) {
       if (spec.armName !== ROTATION_GOOD_KOL_FOCUS_ARM) continue;
       const rejectReason = rotationPaperArmRejectReason(

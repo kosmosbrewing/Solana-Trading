@@ -45,7 +45,7 @@ describe('kolDecisionCore', () => {
     expect(decisionIdForTrace(trace)).toBe(
       'candidate-2:live_fresh_reference_reject:block:fresh_reference_drift'
     );
-    expect(buildKolExecutionPlanSnapshot({
+    const paperPlan = buildKolExecutionPlanSnapshot({
       mode: 'paper',
       positionId: 'pos-1',
       trace,
@@ -54,9 +54,22 @@ describe('kolDecisionCore', () => {
       expectedQuantity: 20,
       tokenDecimals: 6,
       sellQuoteEvidence: { routeFound: true, reason: null },
-    })).toEqual({
+    });
+    const livePlan = buildKolExecutionPlanSnapshot({
+      mode: 'live',
+      positionId: 'live-pos-1',
+      trace,
+      referencePrice: 0.001,
+      ticketSol: 0.02,
+      expectedQuantity: 20,
+      tokenDecimals: 6,
+      sellQuoteEvidence: { routeFound: true, reason: null },
+    });
+
+    expect(paperPlan).toEqual({
       schemaVersion: 'kol-execution-plan/v1',
       planId: 'candidate-2:live_fresh_reference_reject:block:fresh_reference_drift:paper:pos-1:plan',
+      executionPlanHash: expect.any(String),
       mode: 'paper',
       candidateId: 'candidate-2',
       decisionId: 'candidate-2:live_fresh_reference_reject:block:fresh_reference_drift',
@@ -68,6 +81,8 @@ describe('kolDecisionCore', () => {
       sellQuoteReason: null,
       executionGuard: null,
     });
+    expect(paperPlan.executionPlanHash).toHaveLength(24);
+    expect(livePlan.executionPlanHash).toBe(paperPlan.executionPlanHash);
   });
 
   it('embeds execution guard snapshots in execution plans', () => {

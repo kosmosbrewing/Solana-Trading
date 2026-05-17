@@ -18,11 +18,14 @@ function liveRow(params: {
   netPct: number;
   exitReason?: string;
   decisionId?: string;
+  armName?: string;
+  profileArm?: string;
 }): unknown {
   return {
     positionId: params.positionId,
     tokenMint: `Mint${params.positionId}`,
-    armName: 'smart_v3_fast_fail_live_v1',
+    armName: params.armName ?? 'smart_v3_fast_fail_live_v1',
+    profileArm: params.profileArm,
     paperRole: null,
     closedAt: params.closedAt,
     netSol: params.netSol,
@@ -156,10 +159,61 @@ describe('kol-live-mirror-report', () => {
     expect(report.topExecutionDrags[0]?.decisionId).toBe('decision-shared-1');
   });
 
+  it('can scope mirror diagnostics to a single live arm', async () => {
+    await writeFile(path.join(dir, 'kol-live-trades.jsonl'), jsonl([
+      liveRow({
+        positionId: 'rotation-live-1',
+        closedAt: '2026-05-01T00:00:00.000Z',
+        netSol: -0.003,
+        netPct: -0.15,
+        armName: 'rotation_underfill_v1',
+        profileArm: 'rotation_underfill_exit_flow_v1',
+      }),
+      liveRow({
+        positionId: 'smart-live-1',
+        closedAt: '2026-05-01T00:01:00.000Z',
+        netSol: -0.002,
+        netPct: -0.10,
+      }),
+    ]));
+    await writeFile(path.join(dir, 'kol-paper-trades.jsonl'), jsonl([
+      mirrorRow({
+        positionId: 'rotation-mirror-1',
+        parentPositionId: 'rotation-live-1',
+        closedAt: '2026-05-01T00:00:01.000Z',
+        netSolTokenOnly: 0.001,
+        netPctTokenOnly: 0.05,
+      }),
+      mirrorRow({
+        positionId: 'smart-mirror-1',
+        parentPositionId: 'smart-live-1',
+        closedAt: '2026-05-01T00:01:01.000Z',
+        netSolTokenOnly: 0.002,
+        netPctTokenOnly: 0.10,
+      }),
+    ]));
+
+    const report = await buildKolLiveMirrorReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      minPairs: 1,
+      executionDragRate: 0.2,
+      strategyLossRate: 0.5,
+      armFilter: 'rotation_underfill_exit_flow_v1',
+    });
+
+    expect(report.liveArm).toBe('arm=rotation_underfill_exit_flow_v1');
+    expect(report.liveRows).toBe(1);
+    expect(report.mirrorRows).toBe(1);
+    expect(report.pairedRows).toBe(1);
+    expect(report.topExecutionDrags[0]?.livePositionId).toBe('rotation-live-1');
+  });
+
   it('parses args and renders collection guardrails', () => {
-    const args = parseKolLiveMirrorArgs(['--realtime-dir', dir, '--since', '12h', '--min-pairs', '5']);
+    const args = parseKolLiveMirrorArgs(['--realtime-dir', dir, '--since', '12h', '--min-pairs', '5', '--arm', 'rotation_underfill_exit_flow_v1']);
     expect(args.realtimeDir).toBe(path.resolve(dir));
     expect(args.minPairs).toBe(5);
+    expect(args.armFilter).toBe('rotation_underfill_exit_flow_v1');
 
     const markdown = renderKolLiveMirrorReport({
       generatedAt: '2026-05-01T00:00:00.000Z',

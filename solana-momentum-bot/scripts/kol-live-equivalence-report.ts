@@ -4,11 +4,18 @@ import path from 'path';
 const LIVE_CANDIDATE_LINK_MIN_COVERAGE = 0.9;
 const LIVE_FALLBACK_ATTRIBUTION_WINDOW_MS = 5 * 60 * 1000;
 const DECISION_ATTRIBUTION_MIN_COVERAGE = 0.9;
+const PROMOTION_MIN_MIRROR_PAIRS = 30;
 
 type JsonRecord = Record<string, unknown>;
 
 type LiveAttributionStatus = 'exact' | 'fallback' | 'ambiguous' | 'no_candidate' | 'missing_fields';
-type PaperRole = 'mirror' | 'fallback_execution_safety' | 'research_arm' | 'shadow' | 'no_trade_counterfactual';
+type PaperRole =
+  | 'mirror'
+  | 'fallback_execution_safety'
+  | 'research_arm'
+  | 'shadow'
+  | 'probe_policy_shadow'
+  | 'no_trade_counterfactual';
 
 interface LiveAttribution {
   row: JsonRecord;
@@ -66,6 +73,18 @@ interface ExecutionGuardBucket {
   fallbackPaperRows: number;
   rejectRows: number;
   deferRows: number;
+}
+
+interface ArmReadinessBucket {
+  arm: string;
+  status: 'paper_only' | 'mirror_collecting' | 'canary_ready' | 'live_blocked_by_equivalence';
+  decisions: number;
+  liveAttempted: number;
+  comparablePaper: number;
+  readyPaper: number;
+  pairedMirror: number;
+  excludedPaper: number;
+  legacyNoHash: number;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -430,6 +449,7 @@ function isPaperRole(value: string | null): value is PaperRole {
     value === 'fallback_execution_safety' ||
     value === 'research_arm' ||
     value === 'shadow' ||
+    value === 'probe_policy_shadow' ||
     value === 'no_trade_counterfactual';
 }
 
@@ -459,8 +479,29 @@ function comparablePaperRole(role: PaperRole | null): boolean {
   return role === 'mirror' || role === 'fallback_execution_safety';
 }
 
+function excludedPromotionPaperRole(role: PaperRole | null): boolean {
+  return role === 'research_arm' ||
+    role === 'shadow' ||
+    role === 'probe_policy_shadow' ||
+    role === 'no_trade_counterfactual';
+}
+
 function comparablePaperRow(row: JsonRecord, equivalenceByCandidate: Map<string, JsonRecord>): boolean {
   return comparablePaperRole(inferPaperRole(row, equivalenceByCandidate));
+}
+
+function armReadinessStatus(input: {
+  liveAttempted: number;
+  comparablePaper: number;
+  readyPaper: number;
+  pairedMirror: number;
+  excludedPaper: number;
+}): ArmReadinessBucket['status'] {
+  if (input.pairedMirror >= PROMOTION_MIN_MIRROR_PAIRS) return 'canary_ready';
+  if (input.liveAttempted > 0 || input.pairedMirror > 0) return 'mirror_collecting';
+  if (input.readyPaper > 0 || input.comparablePaper > 0) return 'live_blocked_by_equivalence';
+  if (input.excludedPaper > 0) return 'paper_only';
+  return 'paper_only';
 }
 
 function executionGuardOf(row: JsonRecord): JsonRecord | null {
@@ -468,6 +509,13 @@ function executionGuardOf(row: JsonRecord): JsonRecord | null {
   if (direct) return direct;
   const plan = obj(row, 'executionPlanSnapshot');
   return plan ? obj(plan, 'executionGuard') : null;
+}
+
+function executionPlanHashOf(row: JsonRecord): string | null {
+  const direct = str(row, 'executionPlanHash');
+  if (direct) return direct;
+  const plan = obj(row, 'executionPlanSnapshot');
+  return plan ? str(plan, 'executionPlanHash') : null;
 }
 
 function addExecutionGuard(
@@ -637,7 +685,10 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
   }
   const liveByCandidate = new Map<string, JsonRecord[]>();
   const liveByDecision = new Map<string, JsonRecord[]>();
+  const liveByPositionId = new Map<string, JsonRecord>();
   for (const attribution of liveAttributions) {
+    const positionId = str(attribution.row, 'positionId');
+    if (positionId) liveByPositionId.set(positionId, attribution.row);
     const candidateId = attribution.candidateId;
     if (candidateId) {
       const rows = liveByCandidate.get(candidateId) ?? [];
@@ -651,6 +702,91 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
       liveByDecision.set(decisionId, rows);
     }
   }
+
+  const promotionComparablePaperRows = paperRows.filter((row) =>
+    comparablePaperRow(row, equivalenceByCandidate)
+  );
+  const promotionReadyPaperRows = promotionComparablePaperRows.filter((row) =>
+    str(row, 'liveEquivalenceDecisionId') && executionPlanHashOf(row)
+  );
+  const promotionExcludedPaperRows = paperRows.filter((row) =>
+    excludedPromotionPaperRole(inferPaperRole(row, equivalenceByCandidate))
+  );
+  const mirrorPaperRows = paperRows.filter((row) =>
+    inferPaperRole(row, equivalenceByCandidate) === 'mirror'
+  );
+  const pairedMirrorPaperRows = mirrorPaperRows.filter((row) => {
+    const parentPositionId = str(row, 'parentPositionId');
+    const decisionId = str(row, 'liveEquivalenceDecisionId');
+    return Boolean(
+      (parentPositionId && liveByPositionId.has(parentPositionId)) ||
+      (decisionId && (liveByDecision.get(decisionId)?.length ?? 0) > 0)
+    );
+  });
+  const promotionEvidenceVerdict =
+    pairedMirrorPaperRows.length >= PROMOTION_MIN_MIRROR_PAIRS
+      ? 'MIRROR_SAMPLE_READY'
+      : promotionReadyPaperRows.length > 0
+        ? 'COLLECT_MIRROR_PAIRS'
+        : 'NOT_PROVEN';
+  const legacyNoHashPaperRows = promotionComparablePaperRows.filter((row) =>
+    row.executionPlanSnapshot != null && !executionPlanHashOf(row)
+  );
+  const legacyNoHashLiveRows = liveRows.filter((row) =>
+    row.executionPlanSnapshot != null && !executionPlanHashOf(row)
+  );
+
+  const readinessArmNames = new Set<string>();
+  for (const row of equivalence) readinessArmNames.add(armKey(row));
+  for (const row of paperRows) readinessArmNames.add(armKey(row));
+  for (const row of liveRows) readinessArmNames.add(armKey(row));
+  const armReadinessRows: ArmReadinessBucket[] = [...readinessArmNames]
+    .sort()
+    .map((arm) => {
+      const armEquivalence = equivalence.filter((row) => armKey(row) === arm);
+      const armPaper = paperRows.filter((row) => armKey(row) === arm);
+      const armComparable = armPaper.filter((row) => comparablePaperRow(row, equivalenceByCandidate));
+      const armReady = armComparable.filter((row) => str(row, 'liveEquivalenceDecisionId') && executionPlanHashOf(row));
+      const armMirror = armPaper.filter((row) => inferPaperRole(row, equivalenceByCandidate) === 'mirror');
+      const armPairedMirror = armMirror.filter((row) => {
+        const parentPositionId = str(row, 'parentPositionId');
+        const decisionId = str(row, 'liveEquivalenceDecisionId');
+        return Boolean(
+          (parentPositionId && liveByPositionId.has(parentPositionId)) ||
+          (decisionId && (liveByDecision.get(decisionId)?.length ?? 0) > 0)
+        );
+      });
+      const armExcluded = armPaper.filter((row) =>
+        excludedPromotionPaperRole(inferPaperRole(row, equivalenceByCandidate))
+      );
+      const armLegacyNoHash = armComparable.filter((row) =>
+        row.executionPlanSnapshot != null && !executionPlanHashOf(row)
+      );
+      const liveAttempted = armEquivalence.filter((row) => bool(row, 'liveAttempted')).length;
+      return {
+        arm,
+        status: armReadinessStatus({
+          liveAttempted,
+          comparablePaper: armComparable.length,
+          readyPaper: armReady.length,
+          pairedMirror: armPairedMirror.length,
+          excludedPaper: armExcluded.length,
+        }),
+        decisions: armEquivalence.length,
+        liveAttempted,
+        comparablePaper: armComparable.length,
+        readyPaper: armReady.length,
+        pairedMirror: armPairedMirror.length,
+        excludedPaper: armExcluded.length,
+        legacyNoHash: armLegacyNoHash.length,
+      };
+    })
+    .filter((row) =>
+      row.decisions > 0 ||
+      row.comparablePaper > 0 ||
+      row.excludedPaper > 0 ||
+      row.pairedMirror > 0
+    );
 
   const byArm = new Map<string, SummaryBucket>();
   const mfeByArm = new Map<string, number[]>();
@@ -734,9 +870,13 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
   const paperRowsWithExecutionPlan = paperRows.filter((row) => row.executionPlanSnapshot != null).length;
   const paperAttributedRowsWithExecutionPlan =
     paperRowsWithInferredRole.filter((row) => row.executionPlanSnapshot != null).length;
+  const paperRowsWithExecutionPlanHash = paperRows.filter((row) => executionPlanHashOf(row)).length;
+  const paperAttributedRowsWithExecutionPlanHash =
+    paperRowsWithInferredRole.filter((row) => executionPlanHashOf(row)).length;
   const liveRowsWithCandidateId = liveAttributions.filter((row) => row.status === 'exact').length;
   const liveRowsWithDecisionId = liveRows.filter((row) => str(row, 'liveEquivalenceDecisionId')).length;
   const liveRowsWithExecutionPlan = liveRows.filter((row) => row.executionPlanSnapshot != null).length;
+  const liveRowsWithExecutionPlanHash = liveRows.filter((row) => executionPlanHashOf(row)).length;
   const liveRowsLinkedByFallback = liveAttributions.filter((row) => row.status === 'fallback').length;
   const liveRowsAmbiguous = liveAttributions.filter((row) => row.status === 'ambiguous').length;
   const liveRowsNoCandidateFound = liveAttributions.filter((row) => row.status === 'no_candidate').length;
@@ -750,6 +890,10 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
     (row.status === 'exact' || row.status === 'fallback') &&
     row.row.executionPlanSnapshot != null
   ).length;
+  const liveLinkedRowsWithExecutionPlanHash = liveAttributions.filter((row) =>
+    (row.status === 'exact' || row.status === 'fallback') &&
+    executionPlanHashOf(row.row)
+  ).length;
   const unlinkedLiveRows = liveRows.length - liveRowsLinkedTotal;
   const liveCandidateLinkCoverage = liveRows.length > 0 ? liveRowsLinkedTotal / liveRows.length : null;
   const equivalenceDecisionIdCoverage =
@@ -762,12 +906,22 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
     paperRows.length > 0 ? paperRowsWithExecutionPlan / paperRows.length : null;
   const paperAttributedExecutionPlanCoverage =
     paperRowsWithInferredPaperRole > 0 ? paperAttributedRowsWithExecutionPlan / paperRowsWithInferredPaperRole : null;
+  const paperExecutionPlanHashCoverage =
+    paperRows.length > 0 ? paperRowsWithExecutionPlanHash / paperRows.length : null;
+  const paperAttributedExecutionPlanHashCoverage =
+    paperRowsWithInferredPaperRole > 0
+      ? paperAttributedRowsWithExecutionPlanHash / paperRowsWithInferredPaperRole
+      : null;
   const liveDecisionIdCoverage =
     liveRowsLinkedTotal > 0 ? liveLinkedRowsWithDecisionId / liveRowsLinkedTotal : null;
   const liveExecutionPlanCoverage =
     liveRows.length > 0 ? liveRowsWithExecutionPlan / liveRows.length : null;
   const liveLinkedExecutionPlanCoverage =
     liveRowsLinkedTotal > 0 ? liveLinkedRowsWithExecutionPlan / liveRowsLinkedTotal : null;
+  const liveExecutionPlanHashCoverage =
+    liveRows.length > 0 ? liveRowsWithExecutionPlanHash / liveRows.length : null;
+  const liveLinkedExecutionPlanHashCoverage =
+    liveRowsLinkedTotal > 0 ? liveLinkedRowsWithExecutionPlanHash / liveRowsLinkedTotal : null;
   const liveAttributionBreakdown = {
     exact: liveRowsWithCandidateId,
     fallback: liveRowsLinkedByFallback,
@@ -840,12 +994,16 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
     `- paper closes without inferred paperRole: ${paperRowsWithoutInferredPaperRole}`,
     `- paper closes with executionPlan: ${paperRowsWithExecutionPlan}`,
     `- paper attributed closes with executionPlan: ${paperAttributedRowsWithExecutionPlan}`,
+    `- paper closes with executionPlanHash: ${paperRowsWithExecutionPlanHash}`,
+    `- paper attributed closes with executionPlanHash: ${paperAttributedRowsWithExecutionPlanHash}`,
     `- live closes: ${liveRows.length}`,
     `- live closes with candidateId: ${liveRowsWithCandidateId}`,
     `- live closes with decisionId: ${liveRowsWithDecisionId}`,
     `- live linked closes with decisionId: ${liveLinkedRowsWithDecisionId}`,
     `- live closes with executionPlan: ${liveRowsWithExecutionPlan}`,
     `- live linked closes with executionPlan: ${liveLinkedRowsWithExecutionPlan}`,
+    `- live closes with executionPlanHash: ${liveRowsWithExecutionPlanHash}`,
+    `- live linked closes with executionPlanHash: ${liveLinkedRowsWithExecutionPlanHash}`,
     `- live fallback-linked closes: ${liveRowsLinkedByFallback}`,
     `- live linked closes total: ${liveRowsLinkedTotal}`,
     `- unlinked live closes: ${unlinkedLiveRows}`,
@@ -855,12 +1013,23 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
     `- paperRole coverage: ${pct(paperRoleCoverage)}`,
     `- paper executionPlan coverage: ${pct(paperExecutionPlanCoverage)}`,
     `- paper attributed executionPlan coverage: ${pct(paperAttributedExecutionPlanCoverage)}`,
+    `- paper executionPlanHash coverage: ${pct(paperExecutionPlanHashCoverage)}`,
+    `- paper attributed executionPlanHash coverage: ${pct(paperAttributedExecutionPlanHashCoverage)}`,
     `- live linked decisionId coverage: ${pct(liveDecisionIdCoverage)}`,
     `- live executionPlan coverage: ${pct(liveExecutionPlanCoverage)}`,
     `- live linked executionPlan coverage: ${pct(liveLinkedExecutionPlanCoverage)}`,
+    `- live executionPlanHash coverage: ${pct(liveExecutionPlanHashCoverage)}`,
+    `- live linked executionPlanHash coverage: ${pct(liveLinkedExecutionPlanHashCoverage)}`,
     `- live attempted equivalence rows: ${liveAttemptedRows}`,
     `- execution guard sidecar rows: ${executionGuardRows.length}`,
     `- trade rows with executionGuard: ${tradeRowsWithExecutionGuard.length}`,
+    `- promotion evidence verdict: ${promotionEvidenceVerdict}`,
+    `- promotion comparable paper closes: ${promotionComparablePaperRows.length}`,
+    `- promotion ready paper closes: ${promotionReadyPaperRows.length}`,
+    `- promotion paired mirror closes: ${pairedMirrorPaperRows.length}/${PROMOTION_MIN_MIRROR_PAIRS}`,
+    `- promotion excluded paper closes: ${promotionExcludedPaperRows.length}`,
+    `- legacy no-hash comparable paper closes excluded: ${legacyNoHashPaperRows.length}`,
+    `- legacy no-hash live closes: ${legacyNoHashLiveRows.length}`,
     `- reasons: ${verdictReasons.join('; ') || 'n/a'}`,
     `- attribution warnings: ${decisionAttributionWarnings.join('; ') || 'n/a'}`,
     '',
@@ -876,6 +1045,22 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
     '|---|---:|---:|---:|---:|---:|---:|---:|---:|',
     ...decisionGapRows.map(([bucketName, bucket]) =>
       `| ${bucketName} | ${bucket.decisions} | ${bucket.comparablePaperCloses} | ${bucket.researchPaperCloses} | ${bucket.shadowPaperCloses} | ${bucket.liveCloses} | ${sol(bucket.comparablePaperNetSol)} | ${sol(bucket.researchPaperNetSol)} | ${sol(bucket.liveNetSol)} |`
+    ),
+    '',
+    '## Promotion Evidence Gate',
+    '',
+    '> Only `mirror` and `fallback_execution_safety` paper can support live review. `research_arm`, `shadow`, `probe_policy_shadow`, and counterfactual rows are excluded.',
+    '',
+    '| verdict | comparable paper | ready paper | paired mirror | excluded paper | min mirror pairs |',
+    '|---|---:|---:|---:|---:|---:|',
+    `| ${promotionEvidenceVerdict} | ${promotionComparablePaperRows.length} | ${promotionReadyPaperRows.length} | ${pairedMirrorPaperRows.length} | ${promotionExcludedPaperRows.length} | ${PROMOTION_MIN_MIRROR_PAIRS} |`,
+    '',
+    '### Arm Readiness',
+    '',
+    '| arm | status | decisions | live attempted | comparable paper | ready paper | paired mirror | excluded paper | legacy no-hash |',
+    '|---|---|---:|---:|---:|---:|---:|---:|---:|',
+    ...armReadinessRows.map((row) =>
+      `| ${row.arm} | ${row.status} | ${row.decisions} | ${row.liveAttempted} | ${row.comparablePaper} | ${row.readyPaper} | ${row.pairedMirror} | ${row.excludedPaper} | ${row.legacyNoHash} |`
     ),
     '',
     '## Execution Guard Breakdown',
@@ -935,12 +1120,16 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
       paperRowsWithoutInferredPaperRole,
       paperRowsWithExecutionPlan,
       paperAttributedRowsWithExecutionPlan,
+      paperRowsWithExecutionPlanHash,
+      paperAttributedRowsWithExecutionPlanHash,
       liveRows: liveRows.length,
       liveRowsWithCandidateId,
       liveRowsWithDecisionId,
       liveLinkedRowsWithDecisionId,
       liveRowsWithExecutionPlan,
       liveLinkedRowsWithExecutionPlan,
+      liveRowsWithExecutionPlanHash,
+      liveLinkedRowsWithExecutionPlanHash,
       liveRowsLinkedByFallback,
       liveRowsLinkedTotal,
       unlinkedLiveRows,
@@ -950,12 +1139,25 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
       paperRoleCoverage,
       paperExecutionPlanCoverage,
       paperAttributedExecutionPlanCoverage,
+      paperExecutionPlanHashCoverage,
+      paperAttributedExecutionPlanHashCoverage,
       liveDecisionIdCoverage,
       liveExecutionPlanCoverage,
       liveLinkedExecutionPlanCoverage,
+      liveExecutionPlanHashCoverage,
+      liveLinkedExecutionPlanHashCoverage,
       liveAttributionBreakdown,
       executionGuardRows: executionGuardRows.length,
       tradeRowsWithExecutionGuard: tradeRowsWithExecutionGuard.length,
+      promotionEvidenceVerdict,
+      promotionComparablePaperRows: promotionComparablePaperRows.length,
+      promotionReadyPaperRows: promotionReadyPaperRows.length,
+      promotionPairedMirrorRows: pairedMirrorPaperRows.length,
+      promotionExcludedPaperRows: promotionExcludedPaperRows.length,
+      legacyNoHashComparablePaperRows: legacyNoHashPaperRows.length,
+      legacyNoHashLiveRows: legacyNoHashLiveRows.length,
+      promotionMinMirrorPairs: PROMOTION_MIN_MIRROR_PAIRS,
+      armReadiness: armReadinessRows,
       executionGuardBreakdown: Object.fromEntries(executionGuardBreakdownRows),
       decisionAttributionWarnings,
       liveAttemptedRows,

@@ -5,8 +5,6 @@ import {
   str,
 } from './markoutCandidateStore';
 import {
-  SMART_V3_FAST_FAIL_LIVE_ARM,
-  SMART_V3_FAST_FAIL_LIVE_MIRROR_ARM,
   type KolLiveMirrorArgs,
   type KolLiveMirrorPair,
   type KolLiveMirrorReport,
@@ -36,6 +34,10 @@ function valueStr(row: JsonRow, key: string): string {
 
 function valueNum(row: JsonRow, key: string): number | null {
   return num(row[key]) ?? num(extrasOf(row)[key]);
+}
+
+function rowArmKey(row: JsonRow): string {
+  return valueStr(row, 'profileArm') || valueStr(row, 'armName') || 'unknown';
 }
 
 function firstNum(row: JsonRow, keys: string[]): number | null {
@@ -68,6 +70,12 @@ function closeRowsSince(rows: JsonRow[], sinceMs: number): JsonRow[] {
     const atMs = rowTimeMs(row);
     return Number.isFinite(atMs) && atMs >= sinceMs;
   });
+}
+
+function isTailRow(row: JsonRow): boolean {
+  if (valueStr(row, 'isTailPosition') === 'true') return true;
+  const positionId = valueStr(row, 'positionId');
+  return positionId.endsWith('-tail');
 }
 
 function rounded(value: number | null): number | null {
@@ -223,13 +231,25 @@ export async function buildKolLiveMirrorReport(args: KolLiveMirrorArgs): Promise
     readJsonl(path.join(args.realtimeDir, 'kol-live-trades.jsonl')),
     readJsonl(path.join(args.realtimeDir, 'kol-paper-trades.jsonl')),
   ]);
+  const normalizedArmFilter = args.armFilter?.toLowerCase();
   const liveRows = closeRowsSince(rawLiveRows, args.sinceMs)
-    .filter((row) => valueStr(row, 'armName') === SMART_V3_FAST_FAIL_LIVE_ARM);
+    .filter((row) => !isTailRow(row))
+    .filter((row) => !normalizedArmFilter || rowArmKey(row).toLowerCase() === normalizedArmFilter);
+  const livePositionIds = new Set(liveRows.map((row) => valueStr(row, 'positionId')).filter(Boolean));
+  const liveDecisionIds = new Set(liveRows.map((row) => valueStr(row, 'liveEquivalenceDecisionId')).filter(Boolean));
   const mirrorRows = closeRowsSince(rawPaperRows, args.sinceMs)
     .filter((row) =>
-      valueStr(row, 'armName') === SMART_V3_FAST_FAIL_LIVE_MIRROR_ARM &&
       valueStr(row, 'paperRole') === 'mirror'
-    );
+    )
+    .filter((row) => {
+      if (!normalizedArmFilter) return true;
+      const parentPositionId = valueStr(row, 'parentPositionId');
+      const decisionId = valueStr(row, 'liveEquivalenceDecisionId');
+      return Boolean(
+        (parentPositionId && livePositionIds.has(parentPositionId)) ||
+        (decisionId && liveDecisionIds.has(decisionId))
+      );
+    });
   const pairs = buildPairs(liveRows, mirrorRows);
   const pairedLiveIds = new Set(pairs.map((pair) => pair.livePositionId));
   const pairedMirrorIds = new Set(pairs.map((pair) => pair.mirrorPositionId));
@@ -241,8 +261,8 @@ export async function buildKolLiveMirrorReport(args: KolLiveMirrorArgs): Promise
     generatedAt: new Date().toISOString(),
     realtimeDir: args.realtimeDir,
     since: new Date(args.sinceMs).toISOString(),
-    liveArm: SMART_V3_FAST_FAIL_LIVE_ARM,
-    mirrorArm: SMART_V3_FAST_FAIL_LIVE_MIRROR_ARM,
+    liveArm: args.armFilter ? `arm=${args.armFilter}` : 'all_live_primary',
+    mirrorArm: 'paperRole=mirror',
     minPairs: args.minPairs,
     paperRows: rawPaperRows.length,
     liveRows: liveRows.length,

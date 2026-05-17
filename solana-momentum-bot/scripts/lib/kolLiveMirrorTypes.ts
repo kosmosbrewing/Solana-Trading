@@ -23,6 +23,7 @@ export interface KolLiveMirrorArgs {
   minPairs: number;
   executionDragRate: number;
   strategyLossRate: number;
+  armFilter?: string;
   mdOut?: string;
   jsonOut?: string;
 }

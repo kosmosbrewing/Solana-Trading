@@ -170,6 +170,96 @@ describe('kol live equivalence observability', () => {
     expect(report.md).toContain('| rotation_underfill_v1 | 1 | 0 | 0 | 1 | 1/0 | +0.0100 | +0.0120 | 25.0% | 0 | +0.0000 |');
   });
 
+  it('adds execution guard sidecar rows to the live-equivalence report', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'kol-live-equivalence-guards-'));
+    const now = new Date().toISOString();
+    await writeFile(path.join(dir, 'kol-live-equivalence.jsonl'), JSON.stringify({
+      schemaVersion: KOL_LIVE_EQUIVALENCE_SCHEMA_VERSION,
+      generatedAt: now,
+      candidateId: 'candidate-guard-1',
+      tokenMint: 'mint',
+      entrySignalLabel: 'smart-v3',
+      armName: 'kol_hunter_smart_v3',
+      parameterVersion: 'smart-v3.0.0',
+      entryReason: 'velocity',
+      convictionLevel: 'HIGH',
+      paperWouldEnter: true,
+      liveWouldEnter: true,
+      liveAttempted: true,
+      decisionId: 'candidate-guard-1:pre_execution_live_allowed:enter:none',
+      decisionAction: 'enter',
+      paperRole: null,
+      decisionStage: 'pre_execution_live_allowed',
+      liveBlockReason: null,
+      liveBlockFlags: [],
+      paperOnlyReason: null,
+      isShadowKol: false,
+      isLiveCanaryActive: true,
+      hasBotContext: true,
+      independentKolCount: 2,
+      effectiveIndependentKolCount: 2,
+      kolScore: 6,
+      participatingKols: [],
+      survivalFlags: [],
+      source: 'runtime',
+    }) + '\n', 'utf8');
+    await writeFile(path.join(dir, 'kol-execution-guards.jsonl'), [
+      JSON.stringify({
+        schemaVersion: 'kol-execution-guard-row/v1',
+        generatedAt: now,
+        tokenMint: 'mint',
+        mode: 'paper',
+        candidateId: 'candidate-guard-1',
+        decisionId: 'candidate-guard-1:live_fresh_reference_reject:block:drift',
+        executionGuard: {
+          schemaVersion: 'kol-execution-guard/v1',
+          guard: 'live_fresh_reference_reject',
+          action: 'fallback_paper',
+          reason: 'drift',
+          flags: ['LIVE_FRESH_REFERENCE_REJECT'],
+        },
+        source: 'runtime',
+      }),
+      JSON.stringify({
+        schemaVersion: 'kol-execution-guard-row/v1',
+        generatedAt: now,
+        tokenMint: 'mint',
+        mode: 'live',
+        candidateId: 'candidate-guard-1',
+        decisionId: 'candidate-guard-1:pre_execution_live_allowed:enter:none',
+        executionGuard: {
+          schemaVersion: 'kol-execution-guard/v1',
+          guard: 'canary_slot_full',
+          action: 'defer',
+          reason: 'canary_slot_full',
+          flags: ['CANARY_SLOT_FULL'],
+        },
+        source: 'runtime',
+      }),
+    ].join('\n') + '\n', 'utf8');
+
+    const report = await buildReport({
+      realtimeDir: dir,
+      sinceMs: Date.now() - 60_000,
+    });
+
+    expect(report.json.executionGuardRows).toBe(2);
+    expect(report.json.executionGuardBreakdown).toEqual(expect.objectContaining({
+      live_fresh_reference_reject: expect.objectContaining({
+        rows: 1,
+        paperRows: 1,
+        fallbackPaperRows: 1,
+      }),
+      canary_slot_full: expect.objectContaining({
+        rows: 1,
+        liveRows: 1,
+        deferRows: 1,
+      }),
+    }));
+    expect(report.md).toContain('## Execution Guard Breakdown');
+    expect(report.md).toContain('| live_fresh_reference_reject | 1 | 1 | 0 | 1 | 0 | 0 |');
+  });
+
   it('infers legacy paper roles without mutating old close rows', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'kol-live-equivalence-legacy-role-'));
     const now = new Date().toISOString();

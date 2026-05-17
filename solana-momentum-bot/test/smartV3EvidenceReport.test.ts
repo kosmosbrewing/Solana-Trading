@@ -118,6 +118,36 @@ describe('smart-v3-evidence-report', () => {
     expect(renderSmartV3EvidenceReportMarkdown(report)).toContain('paper live-eligible rows: 6');
   });
 
+  it('excludes explicit research and shadow paper roles from comparable smart-v3 cohorts', async () => {
+    const rows = smartV3TradeRows(5).map((row, index) => ({
+      ...row,
+      positionId: `role-split-${index}`,
+      paperRole: ['mirror', 'fallback_execution_safety', 'research_arm', 'shadow', undefined][index],
+      isShadowArm: index === 4,
+      smartV3LiveEligibleShadow: true,
+    }));
+    await writeFile(path.join(dir, 'smart-v3-paper-trades.jsonl'), jsonl(rows));
+    await writeFile(path.join(dir, 'smart-v3-live-trades.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+
+    const report = await buildSmartV3EvidenceReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [30, 60, 300, 1800],
+      roundTripCostPct: 0.005,
+      assumedAtaRentSol: 0.002,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.tradeRows.paperRows).toBe(5);
+    expect(report.tradeRows.paperComparableRows).toBe(2);
+    expect(report.tradeRows.paperResearchRows).toBe(1);
+    expect(report.tradeRows.paperShadowRows).toBe(2);
+    expect(report.tradeRows.paperLiveEligibleRows).toBe(2);
+    expect(report.tradeRows.byCohort.find((entry) => entry.cohort === 'paper:velocity')?.rows).toBe(2);
+    expect(renderSmartV3EvidenceReportMarkdown(report)).toContain('paper comparable rows: 2');
+  });
+
   it('counts pre-T1 MFE giveback bands for smart-v3 close diagnostics', async () => {
     const rows = [
       ...smartV3TradeRows(2, {

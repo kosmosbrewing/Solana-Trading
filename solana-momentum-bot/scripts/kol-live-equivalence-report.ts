@@ -59,6 +59,15 @@ interface DecisionGapBucket {
   liveNetSol: number;
 }
 
+interface ExecutionGuardBucket {
+  rows: number;
+  paperRows: number;
+  liveRows: number;
+  fallbackPaperRows: number;
+  rejectRows: number;
+  deferRows: number;
+}
+
 function parseArgs(argv: string[]): Args {
   let realtimeDir = 'data/realtime';
   let since = '24h';
@@ -158,6 +167,11 @@ function num(row: JsonRecord, key: string): number | null {
 
 function bool(row: JsonRecord, key: string): boolean {
   return row[key] === true;
+}
+
+function obj(row: JsonRecord, key: string): JsonRecord | null {
+  const value = row[key];
+  return typeof value === 'object' && value != null ? value as JsonRecord : null;
 }
 
 function armKey(row: JsonRecord): string {
@@ -391,6 +405,17 @@ function emptyDecisionGapBucket(): DecisionGapBucket {
   };
 }
 
+function emptyExecutionGuardBucket(): ExecutionGuardBucket {
+  return {
+    rows: 0,
+    paperRows: 0,
+    liveRows: 0,
+    fallbackPaperRows: 0,
+    rejectRows: 0,
+    deferRows: 0,
+  };
+}
+
 function pct(value: number | null): string {
   if (value == null || !Number.isFinite(value)) return 'n/a';
   return `${(value * 100).toFixed(1)}%`;
@@ -436,6 +461,32 @@ function comparablePaperRole(role: PaperRole | null): boolean {
 
 function comparablePaperRow(row: JsonRecord, equivalenceByCandidate: Map<string, JsonRecord>): boolean {
   return comparablePaperRole(inferPaperRole(row, equivalenceByCandidate));
+}
+
+function executionGuardOf(row: JsonRecord): JsonRecord | null {
+  const direct = obj(row, 'executionGuard');
+  if (direct) return direct;
+  const plan = obj(row, 'executionPlanSnapshot');
+  return plan ? obj(plan, 'executionGuard') : null;
+}
+
+function addExecutionGuard(
+  buckets: Map<string, ExecutionGuardBucket>,
+  row: JsonRecord
+): void {
+  const guard = executionGuardOf(row);
+  if (!guard) return;
+  const name = str(guard, 'guard') ?? 'unknown';
+  const action = str(guard, 'action') ?? 'unknown';
+  const mode = str(row, 'mode') ?? (bool(row, 'isLive') ? 'live' : 'paper');
+  const bucket = buckets.get(name) ?? emptyExecutionGuardBucket();
+  bucket.rows += 1;
+  if (mode === 'live') bucket.liveRows += 1;
+  if (mode === 'paper') bucket.paperRows += 1;
+  if (action === 'fallback_paper') bucket.fallbackPaperRows += 1;
+  if (action === 'reject') bucket.rejectRows += 1;
+  if (action === 'defer') bucket.deferRows += 1;
+  buckets.set(name, bucket);
 }
 
 function netSolSum(rows: JsonRecord[]): number {
@@ -514,6 +565,8 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
     'smart-v3-live-trades.jsonl',
     'rotation-v1-live-trades.jsonl',
   ];
+  const executionGuardRows = (await readJsonl(path.join(realtimeDir, 'kol-execution-guards.jsonl')))
+    .filter((row) => rowTimeMs(row) >= args.sinceMs);
   const paperRows = dedupeTradeRows(
     (await Promise.all(paperFiles.map((file) => readJsonl(path.join(realtimeDir, file)))))
       .flat()
@@ -557,6 +610,14 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
   }
   const liveAttributionCandidates = equivalence.filter((row) => bool(row, 'liveAttempted'));
   const liveAttributions = liveRows.map((row) => attributeLiveRow(row, liveAttributionCandidates));
+  const tradeRowsWithExecutionGuard = [...paperRows, ...liveRows].filter((row) => executionGuardOf(row) != null);
+  const executionGuardEventRows = executionGuardRows.length > 0
+    ? executionGuardRows
+    : tradeRowsWithExecutionGuard;
+  const executionGuardBuckets = new Map<string, ExecutionGuardBucket>();
+  for (const row of executionGuardEventRows) {
+    addExecutionGuard(executionGuardBuckets, row);
+  }
 
   const paperByCandidate = new Map<string, JsonRecord[]>();
   const paperByDecision = new Map<string, JsonRecord[]>();
@@ -762,6 +823,8 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
     .sort((a, b) => b[1].closes - a[1].closes || a[0].localeCompare(b[0]));
   const decisionGapRows = [...decisionGapBuckets.entries()]
     .sort((a, b) => b[1].decisions - a[1].decisions || a[0].localeCompare(b[0]));
+  const executionGuardBreakdownRows = [...executionGuardBuckets.entries()]
+    .sort((a, b) => b[1].rows - a[1].rows || a[0].localeCompare(b[0]));
   const lines = [
     `# KOL Live Equivalence Report`,
     '',
@@ -796,6 +859,8 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
     `- live executionPlan coverage: ${pct(liveExecutionPlanCoverage)}`,
     `- live linked executionPlan coverage: ${pct(liveLinkedExecutionPlanCoverage)}`,
     `- live attempted equivalence rows: ${liveAttemptedRows}`,
+    `- execution guard sidecar rows: ${executionGuardRows.length}`,
+    `- trade rows with executionGuard: ${tradeRowsWithExecutionGuard.length}`,
     `- reasons: ${verdictReasons.join('; ') || 'n/a'}`,
     `- attribution warnings: ${decisionAttributionWarnings.join('; ') || 'n/a'}`,
     '',
@@ -811,6 +876,14 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
     '|---|---:|---:|---:|---:|---:|---:|---:|---:|',
     ...decisionGapRows.map(([bucketName, bucket]) =>
       `| ${bucketName} | ${bucket.decisions} | ${bucket.comparablePaperCloses} | ${bucket.researchPaperCloses} | ${bucket.shadowPaperCloses} | ${bucket.liveCloses} | ${sol(bucket.comparablePaperNetSol)} | ${sol(bucket.researchPaperNetSol)} | ${sol(bucket.liveNetSol)} |`
+    ),
+    '',
+    '## Execution Guard Breakdown',
+    '',
+    '| guard | rows | paper | live | fallback paper | reject | defer |',
+    '|---|---:|---:|---:|---:|---:|---:|',
+    ...executionGuardBreakdownRows.map(([guard, bucket]) =>
+      `| ${guard} | ${bucket.rows} | ${bucket.paperRows} | ${bucket.liveRows} | ${bucket.fallbackPaperRows} | ${bucket.rejectRows} | ${bucket.deferRows} |`
     ),
     '',
     '## Paper Role Counts',
@@ -881,6 +954,9 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
       liveExecutionPlanCoverage,
       liveLinkedExecutionPlanCoverage,
       liveAttributionBreakdown,
+      executionGuardRows: executionGuardRows.length,
+      tradeRowsWithExecutionGuard: tradeRowsWithExecutionGuard.length,
+      executionGuardBreakdown: Object.fromEntries(executionGuardBreakdownRows),
       decisionAttributionWarnings,
       liveAttemptedRows,
       verdictReasons,

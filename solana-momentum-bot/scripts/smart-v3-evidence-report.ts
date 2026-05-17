@@ -192,6 +192,10 @@ interface SmartV3EvidenceReport {
   assumedNetworkFeeSol: number;
   tradeRows: {
     paperRows: number;
+    paperComparableRows: number;
+    paperResearchRows: number;
+    paperShadowRows: number;
+    paperNoTradeCounterfactualRows: number;
     paperLiveEligibleRows: number;
     paperLiveBlockedRows: number;
     paperLiveBlockReasons: Array<{ reason: string; count: number }>;
@@ -424,6 +428,36 @@ function isSmartV3Row(row: JsonRow): boolean {
 function isSmartV3LiveEligibleShadowRow(row: JsonRow): boolean {
   const extras = extrasOf(row);
   return row.smartV3LiveEligibleShadow === true || extras.smartV3LiveEligibleShadow === true;
+}
+
+function paperRoleOf(row: JsonRow): string {
+  const extras = extrasOf(row);
+  return str(row.paperRole) || str(extras.paperRole);
+}
+
+function hasShadowPaperMarker(row: JsonRow): boolean {
+  const extras = extrasOf(row);
+  return row.isShadowArm === true || extras.isShadowArm === true;
+}
+
+function isComparableSmartV3PaperRow(row: JsonRow): boolean {
+  const role = paperRoleOf(row);
+  if (role === 'shadow' || hasShadowPaperMarker(row)) return false;
+  if (!role) return true;
+  return role === 'mirror' || role === 'fallback_execution_safety';
+}
+
+function isResearchSmartV3PaperRow(row: JsonRow): boolean {
+  const role = paperRoleOf(row);
+  return role === 'research_arm';
+}
+
+function isShadowSmartV3PaperRow(row: JsonRow): boolean {
+  return paperRoleOf(row) === 'shadow' || hasShadowPaperMarker(row);
+}
+
+function isNoTradeCounterfactualSmartV3PaperRow(row: JsonRow): boolean {
+  return paperRoleOf(row) === 'no_trade_counterfactual';
 }
 
 function smartV3LiveBlockReasonOf(row: JsonRow): string {
@@ -1021,10 +1055,14 @@ export async function buildSmartV3EvidenceReport(args: Args): Promise<SmartV3Evi
     smartV3MarkoutRows(args.realtimeDir, args.sinceMs),
     readJsonl(kolTransferInput),
   ]);
-  const paperLiveEligibleRows = paperRows.filter(isSmartV3LiveEligibleShadowRow);
-  const paperLiveBlockedRows = paperRows.filter(isSmartV3LiveBlockedShadowRow);
+  const paperComparableRows = paperRows.filter(isComparableSmartV3PaperRow);
+  const paperResearchRows = paperRows.filter(isResearchSmartV3PaperRow);
+  const paperShadowRows = paperRows.filter(isShadowSmartV3PaperRow);
+  const paperNoTradeCounterfactualRows = paperRows.filter(isNoTradeCounterfactualSmartV3PaperRow);
+  const paperLiveEligibleRows = paperComparableRows.filter(isSmartV3LiveEligibleShadowRow);
+  const paperLiveBlockedRows = paperComparableRows.filter(isSmartV3LiveBlockedShadowRow);
   const cohortInputs = [
-    ...groupByEntryReason('paper', paperRows).map((group) => ({
+    ...groupByEntryReason('paper', paperComparableRows).map((group) => ({
       rows: group.rows,
       stats: summarizeTradeCohort('paper', group.reason, group.rows, args.assumedAtaRentSol, args.assumedNetworkFeeSol),
     })),
@@ -1039,7 +1077,7 @@ export async function buildSmartV3EvidenceReport(args: Args): Promise<SmartV3Evi
         'paper_live_eligible',
       ),
     })),
-    ...groupByArm(paperRows).map((group) => ({
+    ...groupByArm(paperComparableRows).map((group) => ({
       rows: group.rows,
       stats: summarizeTradeCohort(
         'paper',
@@ -1125,6 +1163,10 @@ export async function buildSmartV3EvidenceReport(args: Args): Promise<SmartV3Evi
     assumedNetworkFeeSol: args.assumedNetworkFeeSol,
     tradeRows: {
       paperRows: paperRows.length,
+      paperComparableRows: paperComparableRows.length,
+      paperResearchRows: paperResearchRows.length,
+      paperShadowRows: paperShadowRows.length,
+      paperNoTradeCounterfactualRows: paperNoTradeCounterfactualRows.length,
       paperLiveEligibleRows: paperLiveEligibleRows.length,
       paperLiveBlockedRows: paperLiveBlockedRows.length,
       paperLiveBlockReasons: countTop(paperLiveBlockedRows, smartV3LiveBlockReasonOf, 8),
@@ -1297,6 +1339,10 @@ export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceRepor
 
   lines.push('## Closed Trades');
   lines.push(`- paper rows: ${report.tradeRows.paperRows}`);
+  lines.push(`- paper comparable rows: ${report.tradeRows.paperComparableRows}`);
+  lines.push(`- paper research rows: ${report.tradeRows.paperResearchRows}`);
+  lines.push(`- paper shadow rows: ${report.tradeRows.paperShadowRows}`);
+  lines.push(`- paper no-trade counterfactual rows: ${report.tradeRows.paperNoTradeCounterfactualRows}`);
   lines.push(`- paper live-eligible rows: ${report.tradeRows.paperLiveEligibleRows}`);
   lines.push(`- paper live-blocked rows: ${report.tradeRows.paperLiveBlockedRows}`);
   lines.push(`- live rows: ${report.tradeRows.liveRows}`);

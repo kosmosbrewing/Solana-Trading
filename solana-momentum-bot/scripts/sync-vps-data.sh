@@ -18,6 +18,9 @@
 #   SKIP_KOL_TRANSFER_REPORT=true bash scripts/sync-vps-data.sh   # KOL transfer posterior report 생략
 #   SKIP_SMART_V3_EVIDENCE_REPORT=true bash scripts/sync-vps-data.sh  # smart-v3 evidence verdict 생략
 #   SKIP_TRADE_MARKOUT_REPORT=true bash scripts/sync-vps-data.sh  # buy/sell T+ markout report 생략
+#   SKIP_ADMISSION_EDGE_REPORT=true bash scripts/sync-vps-data.sh  # admission edge / lookahead-safe markout report 생략
+#   SKIP_PROBE_POLICY_SWEEP_REPORT=true bash scripts/sync-vps-data.sh  # probe-first policy sweep 생략
+#   SKIP_PROBE_POLICY_SHADOW_REPORT=true bash scripts/sync-vps-data.sh  # probe-policy forward paper shadow report 생략
 #   SKIP_PUREWS_TRADE_MARKOUT_REPORT=true bash scripts/sync-vps-data.sh  # pure_ws T+ report 생략
 #   SKIP_CAPITULATION_REPORT=true bash scripts/sync-vps-data.sh   # capitulation rebound paper report 생략
 #   SKIP_WINNER_KILL_REPORT=true bash scripts/sync-vps-data.sh    # winner-kill report 생략
@@ -69,6 +72,9 @@ fi
 # smart-v3-evidence-report: 파일 only → default ON. smart-v3 projection + shared T+ verdict.
 # live-equivalence-report: 파일 only → default ON. paper/live gate divergence reason join.
 # trade-markout-report: 파일 only → default ON. 실제 buy/sell 이후 T+30/60/300/1800 coverage / continuation.
+# admission-edge-report: 파일 only → default ON. KOL discovery 이후 early continuation 이 late-entry edge 인지 probe hold/cut evidence 인지 분리.
+# probe-policy-sweep-report: 파일 only → default ON. probe-first hold/cut 정책 grid 를 historical markout 으로 sweep.
+# probe-policy-shadow-report: 파일 only → default ON. forward paper shadow arm 이 parent smart-v3 대비 실제로 손실을 줄이는지 검증.
 # rotation-report: 파일 only → default ON. rotation lane T+15/30/60 entry/exit/no-trade feedback.
 # capitulation-report: 파일 only → default ON. capitulation rebound T+15/30/60/180/300/1800 feedback.
 # winner-kill-report: 파일 only → default ON. missed-alpha close-site 기반 tail-retain feedback.
@@ -81,6 +87,9 @@ SKIP_KOL_TRANSFER_REPORT="${SKIP_KOL_TRANSFER_REPORT:-false}"
 SKIP_SMART_V3_EVIDENCE_REPORT="${SKIP_SMART_V3_EVIDENCE_REPORT:-false}"
 SKIP_LIVE_EQUIVALENCE_REPORT="${SKIP_LIVE_EQUIVALENCE_REPORT:-false}"
 SKIP_TRADE_MARKOUT_REPORT="${SKIP_TRADE_MARKOUT_REPORT:-false}"
+SKIP_ADMISSION_EDGE_REPORT="${SKIP_ADMISSION_EDGE_REPORT:-false}"
+SKIP_PROBE_POLICY_SWEEP_REPORT="${SKIP_PROBE_POLICY_SWEEP_REPORT:-false}"
+SKIP_PROBE_POLICY_SHADOW_REPORT="${SKIP_PROBE_POLICY_SHADOW_REPORT:-false}"
 SKIP_PUREWS_TRADE_MARKOUT_REPORT="${SKIP_PUREWS_TRADE_MARKOUT_REPORT:-false}"
 SKIP_ROTATION_REPORT="${SKIP_ROTATION_REPORT:-false}"
 SKIP_CAPITULATION_REPORT="${SKIP_CAPITULATION_REPORT:-false}"
@@ -92,6 +101,21 @@ KOL_TRANSFER_REPORT_SINCE="${KOL_TRANSFER_REPORT_SINCE:-7d}"
 KOL_TRANSFER_INPUT="${KOL_TRANSFER_INPUT:-data/research/kol-transfers.jsonl}"
 KOL_TRANSFER_STALE_WARN_HOURS="${KOL_TRANSFER_STALE_WARN_HOURS:-30}"
 SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT="${SMART_V3_EVIDENCE_ROUND_TRIP_COST_PCT:-0.005}"
+ADMISSION_EDGE_ROUND_TRIP_COST_PCT="${ADMISSION_EDGE_ROUND_TRIP_COST_PCT:-0.005}"
+ADMISSION_EDGE_CONFIRM_HORIZON_SEC="${ADMISSION_EDGE_CONFIRM_HORIZON_SEC:-60}"
+ADMISSION_EDGE_TARGET_HORIZON_SEC="${ADMISSION_EDGE_TARGET_HORIZON_SEC:-300}"
+ADMISSION_EDGE_CARRY_HORIZON_SEC="${ADMISSION_EDGE_CARRY_HORIZON_SEC:-1800}"
+ADMISSION_EDGE_CONFIRM_THRESHOLD_PCT="${ADMISSION_EDGE_CONFIRM_THRESHOLD_PCT:-0.12}"
+PROBE_POLICY_ROUND_TRIP_COST_PCT="${PROBE_POLICY_ROUND_TRIP_COST_PCT:-0.005}"
+PROBE_POLICY_CONFIRM_HORIZONS_SEC="${PROBE_POLICY_CONFIRM_HORIZONS_SEC:-30,45,60,90}"
+PROBE_POLICY_CONFIRM_THRESHOLDS_PCT="${PROBE_POLICY_CONFIRM_THRESHOLDS_PCT:-0.05,0.08,0.12,0.15}"
+PROBE_POLICY_TARGET_HORIZONS_SEC="${PROBE_POLICY_TARGET_HORIZONS_SEC:-180,300,600,1800}"
+PROBE_POLICY_MIN_ROWS="${PROBE_POLICY_MIN_ROWS:-50}"
+PROBE_POLICY_MAX_TAIL_KILL_RATE="${PROBE_POLICY_MAX_TAIL_KILL_RATE:-0.01}"
+PROBE_POLICY_MIN_MEDIAN_LOSS_REDUCTION="${PROBE_POLICY_MIN_MEDIAN_LOSS_REDUCTION:-0.3}"
+PROBE_POLICY_SHADOW_SINCE="${PROBE_POLICY_SHADOW_SINCE:-24h}"
+PROBE_POLICY_SHADOW_MIN_CLOSES="${PROBE_POLICY_SHADOW_MIN_CLOSES:-50}"
+PROBE_POLICY_SHADOW_MAX_TAIL_KILL_RATE="${PROBE_POLICY_SHADOW_MAX_TAIL_KILL_RATE:-0.01}"
 ROTATION_REPORT_ROUND_TRIP_COST_PCT="${ROTATION_REPORT_ROUND_TRIP_COST_PCT:-0.005}"
 CAPITULATION_REPORT_ROUND_TRIP_COST_PCT="${CAPITULATION_REPORT_ROUND_TRIP_COST_PCT:-0.005}"
 WINNER_KILL_WINDOW_DAYS="${WINNER_KILL_WINDOW_DAYS:-7}"
@@ -360,6 +384,12 @@ write_sync_health_report() {
       "data/realtime/trade-markout-anchors.jsonl" \
       "data/realtime/trade-markouts.jsonl" \
       "data/research/kol-transfers.jsonl" \
+      "reports/admission-edge-$(date +%Y-%m-%d).md" \
+      "reports/admission-edge-$(date +%Y-%m-%d).json" \
+      "reports/probe-policy-sweep-$(date +%Y-%m-%d).md" \
+      "reports/probe-policy-sweep-$(date +%Y-%m-%d).json" \
+      "reports/probe-policy-shadow-$(date +%Y-%m-%d).md" \
+      "reports/probe-policy-shadow-$(date +%Y-%m-%d).json" \
       "reports/kol-transfer-posterior-$(date +%Y-%m-%d).md" \
       "reports/kol-transfer-posterior-$(date +%Y-%m-%d).json" \
       "data/realtime/executed-buys.jsonl" \
@@ -674,7 +704,55 @@ else
   echo "[sync-vps-data] trade-markout-report: SKIPPED (SKIP_TRADE_MARKOUT_REPORT=true)"
 fi
 
-# ─── 8b. pure_ws paper trade markout report (file-only) ───
+# ─── 8a. Admission edge report (file-only) ───
+# Why: trade ledgers drift as strategy changes. This report normalizes buy anchors
+# by markout horizons and prevents lookahead mistakes when reviewing early
+# continuation as a live admission rule.
+if [ "$SKIP_ADMISSION_EDGE_REPORT" != "true" ]; then
+  ADMISSION_EDGE_MD="${ROOT_DIR}/reports/admission-edge-$(date +%Y-%m-%d).md"
+  ADMISSION_EDGE_JSON="${ROOT_DIR}/reports/admission-edge-$(date +%Y-%m-%d).json"
+  echo "[sync-vps-data] admission-edge-report: generating confirm=T+${ADMISSION_EDGE_CONFIRM_HORIZON_SEC}s threshold=${ADMISSION_EDGE_CONFIRM_THRESHOLD_PCT} target=T+${ADMISSION_EDGE_TARGET_HORIZON_SEC}s"
+  if (cd "${ROOT_DIR}" && npm run -s kol:admission-edge-report -- --realtime-dir data/realtime --confirm-horizon-sec "${ADMISSION_EDGE_CONFIRM_HORIZON_SEC}" --target-horizon-sec "${ADMISSION_EDGE_TARGET_HORIZON_SEC}" --carry-horizon-sec "${ADMISSION_EDGE_CARRY_HORIZON_SEC}" --confirm-threshold-pct "${ADMISSION_EDGE_CONFIRM_THRESHOLD_PCT}" --round-trip-cost-pct "${ADMISSION_EDGE_ROUND_TRIP_COST_PCT}" --md "${ADMISSION_EDGE_MD}" --json "${ADMISSION_EDGE_JSON}" 2>&1 | tail -12); then
+    echo "[sync-vps-data] admission-edge-report: ok → ${ADMISSION_EDGE_MD}"
+  else
+    echo "[sync-vps-data] admission-edge-report: WARN — generation failed (sync 자체는 정상)"
+  fi
+else
+  echo "[sync-vps-data] admission-edge-report: SKIPPED (SKIP_ADMISSION_EDGE_REPORT=true)"
+fi
+
+# ─── 8b. Probe policy sweep report (file-only) ───
+# Why: after admission-edge shows that full-risk entry is lossy, this sweeps
+# probe-first hold/cut policies without changing live or paper execution.
+if [ "$SKIP_PROBE_POLICY_SWEEP_REPORT" != "true" ]; then
+  PROBE_POLICY_MD="${ROOT_DIR}/reports/probe-policy-sweep-$(date +%Y-%m-%d).md"
+  PROBE_POLICY_JSON="${ROOT_DIR}/reports/probe-policy-sweep-$(date +%Y-%m-%d).json"
+  echo "[sync-vps-data] probe-policy-sweep-report: generating confirm=${PROBE_POLICY_CONFIRM_HORIZONS_SEC} thresholds=${PROBE_POLICY_CONFIRM_THRESHOLDS_PCT} target=${PROBE_POLICY_TARGET_HORIZONS_SEC}"
+  if (cd "${ROOT_DIR}" && npm run -s kol:probe-policy-sweep -- --realtime-dir data/realtime --confirm-horizons-sec "${PROBE_POLICY_CONFIRM_HORIZONS_SEC}" --confirm-thresholds-pct "${PROBE_POLICY_CONFIRM_THRESHOLDS_PCT}" --target-horizons-sec "${PROBE_POLICY_TARGET_HORIZONS_SEC}" --round-trip-cost-pct "${PROBE_POLICY_ROUND_TRIP_COST_PCT}" --min-rows "${PROBE_POLICY_MIN_ROWS}" --max-tail-kill-rate "${PROBE_POLICY_MAX_TAIL_KILL_RATE}" --min-median-loss-reduction "${PROBE_POLICY_MIN_MEDIAN_LOSS_REDUCTION}" --md "${PROBE_POLICY_MD}" --json "${PROBE_POLICY_JSON}" 2>&1 | tail -12); then
+    echo "[sync-vps-data] probe-policy-sweep-report: ok → ${PROBE_POLICY_MD}"
+  else
+    echo "[sync-vps-data] probe-policy-sweep-report: WARN — generation failed (sync 자체는 정상)"
+  fi
+else
+  echo "[sync-vps-data] probe-policy-sweep-report: SKIPPED (SKIP_PROBE_POLICY_SWEEP_REPORT=true)"
+fi
+
+# ─── 8c. Probe policy shadow report (file-only) ───
+# Why: historical sweep 후보를 forward paper arm 으로 검증한다. live 승격은 이 리포트만으로 허용하지 않는다.
+if [ "$SKIP_PROBE_POLICY_SHADOW_REPORT" != "true" ]; then
+  PROBE_POLICY_SHADOW_MD="${ROOT_DIR}/reports/probe-policy-shadow-$(date +%Y-%m-%d).md"
+  PROBE_POLICY_SHADOW_JSON="${ROOT_DIR}/reports/probe-policy-shadow-$(date +%Y-%m-%d).json"
+  echo "[sync-vps-data] probe-policy-shadow-report: generating since=${PROBE_POLICY_SHADOW_SINCE} minCloses=${PROBE_POLICY_SHADOW_MIN_CLOSES}"
+  if (cd "${ROOT_DIR}" && npm run -s kol:probe-policy-shadow-report -- --since "${PROBE_POLICY_SHADOW_SINCE}" --realtime-dir data/realtime --min-closes "${PROBE_POLICY_SHADOW_MIN_CLOSES}" --max-tail-kill-rate "${PROBE_POLICY_SHADOW_MAX_TAIL_KILL_RATE}" --md "${PROBE_POLICY_SHADOW_MD}" --json "${PROBE_POLICY_SHADOW_JSON}" 2>&1 | tail -12); then
+    echo "[sync-vps-data] probe-policy-shadow-report: ok → ${PROBE_POLICY_SHADOW_MD}"
+  else
+    echo "[sync-vps-data] probe-policy-shadow-report: WARN — generation failed (sync 자체는 정상)"
+  fi
+else
+  echo "[sync-vps-data] probe-policy-shadow-report: SKIPPED (SKIP_PROBE_POLICY_SHADOW_REPORT=true)"
+fi
+
+# ─── 8d. pure_ws paper trade markout report (file-only) ───
 # Why: pure_ws 는 fast-compound 후보라 T+15/30/60/180/300/1800 horizon 을 별도로 본다.
 if [ "$SKIP_PUREWS_TRADE_MARKOUT_REPORT" != "true" ]; then
   PUREWS_TRADE_MARKOUT_MD="${ROOT_DIR}/reports/pure-ws-trade-markout-$(date +%Y-%m-%d).md"

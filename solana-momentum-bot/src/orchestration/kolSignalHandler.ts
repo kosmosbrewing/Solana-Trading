@@ -166,6 +166,8 @@ const ROTATION_UNDERFILL_ARM = 'rotation_underfill_v1';
 const ROTATION_EXIT_FLOW_ARM = 'rotation_exit_kol_flow_v1';
 const ROTATION_UNDERFILL_EXIT_FLOW_PROFILE_ARM = 'rotation_underfill_exit_flow_v1';
 const ROTATION_UNDERFILL_COST_AWARE_PROFILE_ARM = 'rotation_underfill_cost_aware_exit_v2';
+const SMART_V3_PROBE_CONFIRM_SHADOW_ARM = 'smart_v3_probe_confirm_shadow_v1';
+const SMART_V3_PROBE_CONFIRM_SHADOW_PARAMETER_VERSION = 'smart-v3-probe-confirm-shadow-v1.0.0';
 const ROTATION_SECOND_KOL_WAIT_PARAMETER_VERSION = 'rotation-second-kol-wait-conversion-v1.0.0';
 const ROTATION_SECOND_KOL_WAIT_ARM = 'rotation_second_kol_wait_conversion_v1';
 const ROTATION_SECOND_KOL_WAIT_MAX_DELAY_MS = 30_000;
@@ -193,6 +195,8 @@ export type CloseReason =
   | 'rotation_dead_on_arrival'
   | 'rotation_mae_fast_fail'
   | 'smart_v3_mae_fast_fail'
+  | 'probe_policy_confirm_fail_cut'
+  | 'probe_policy_target_close'
   | 'smart_v3_mfe_floor_exit'
   | 'rotation_flow_residual_timeout'
   | 'capitulation_no_reaction'
@@ -315,6 +319,10 @@ export interface PaperPosition {
   t1ProfitFloorMult?: number;
   probeFlatTimeoutSec?: number;
   probeHardCutPctOverride?: number;
+  probePolicyConfirmHorizonSec?: number;
+  probePolicyConfirmThresholdPct?: number;
+  probePolicyTargetHorizonSec?: number;
+  probePolicyConfirmedAtSec?: number;
   rotationDoaWindowSecOverride?: number;
   rotationDoaMinMfePctOverride?: number;
   rotationDoaMaxMaePctOverride?: number;
@@ -2444,6 +2452,7 @@ function armNameForVersion(parameterVersion: string): string {
   if (parameterVersion === config.kolHunterSmartV3FastCanaryParameterVersion) return 'smart_v3_fast_canary_v1';
   if (parameterVersion === config.kolHunterSmartV3FastFailLiveParameterVersion) return 'smart_v3_fast_fail_live_v1';
   if (parameterVersion === config.kolHunterSmartV3NewPoolConfirmedParameterVersion) return 'smart_v3_new_pool_confirmed_v1';
+  if (parameterVersion === SMART_V3_PROBE_CONFIRM_SHADOW_PARAMETER_VERSION) return SMART_V3_PROBE_CONFIRM_SHADOW_ARM;
   if (parameterVersion === 'smart-v3-fast-fail-v1.0.0') return 'smart_v3_fast_fail';
   if (parameterVersion === 'smart-v3-runner-relaxed-v1.0.0') return 'smart_v3_runner_relaxed';
   if (parameterVersion === config.kolHunterSwingV2ParameterVersion) return 'kol_hunter_swing_v2';
@@ -2480,6 +2489,10 @@ interface SmartV3PaperArmSpec extends DynamicExitParams {
   armName: string;
   parameterVersion: string;
   enabled: boolean;
+  minIndependentKol?: number;
+  probePolicyConfirmHorizonSec?: number;
+  probePolicyConfirmThresholdPct?: number;
+  probePolicyTargetHorizonSec?: number;
   extraSurvivalFlags?: string[];
 }
 
@@ -2540,6 +2553,24 @@ function buildSmartV3PaperArmSpecs(
       t1ProfitFloorMult: Math.max(1.03, baseFloor - 0.03),
       probeFlatTimeoutSec: base.probeFlatTimeoutSec,
       probeHardCutPct: base.probeHardCutPct,
+    },
+    {
+      // Historical sweep 2026-05-17: smart_v3 KOL_3plus T+30 >= 8% had
+      // the best tail-preserving loss reduction. Paper-only forward validation.
+      suffix: 'probe-confirm-shadow',
+      armName: SMART_V3_PROBE_CONFIRM_SHADOW_ARM,
+      parameterVersion: SMART_V3_PROBE_CONFIRM_SHADOW_PARAMETER_VERSION,
+      enabled: true,
+      minIndependentKol: 3,
+      probePolicyConfirmHorizonSec: 30,
+      probePolicyConfirmThresholdPct: 0.08,
+      probePolicyTargetHorizonSec: 1800,
+      extraSurvivalFlags: [
+        'SMART_V3_PROBE_POLICY_SHADOW',
+        'PROBE_POLICY_CONFIRM_T30S',
+        'PROBE_POLICY_THRESHOLD_8PCT',
+        'PROBE_POLICY_TARGET_T1800S',
+      ],
     },
   ];
   if (newPoolContext) {
@@ -2757,6 +2788,10 @@ function applySmartV3PaperArmSpec(pos: PaperPosition, spec: SmartV3PaperArmSpec)
   pos.t1ProfitFloorMult = spec.t1ProfitFloorMult;
   pos.probeFlatTimeoutSec = spec.probeFlatTimeoutSec;
   pos.probeHardCutPctOverride = spec.probeHardCutPct;
+  pos.probePolicyConfirmHorizonSec = spec.probePolicyConfirmHorizonSec;
+  pos.probePolicyConfirmThresholdPct = spec.probePolicyConfirmThresholdPct;
+  pos.probePolicyTargetHorizonSec = spec.probePolicyTargetHorizonSec;
+  if (spec.probePolicyConfirmHorizonSec != null) pos.paperRole = 'probe_policy_shadow';
   pos.survivalFlags = [
     ...pos.survivalFlags,
     'SMART_V3_PAPER_PARAM_ARM',
@@ -8602,6 +8637,49 @@ function maybeHoldSmartV3MaeRecovery(
   return true;
 }
 
+function isProbePolicyShadow(pos: PaperPosition): boolean {
+  return pos.paperRole === 'probe_policy_shadow' &&
+    pos.probePolicyConfirmHorizonSec != null &&
+    pos.probePolicyConfirmThresholdPct != null &&
+    pos.probePolicyTargetHorizonSec != null;
+}
+
+function maybeCloseProbePolicyShadow(
+  pos: PaperPosition,
+  currentPrice: number,
+  nowSec: number,
+  elapsedSec: number,
+  currentPct: number,
+  mfePct: number,
+  maePct: number
+): boolean {
+  if (!isProbePolicyShadow(pos)) return false;
+  const confirmHorizonSec = pos.probePolicyConfirmHorizonSec ?? 30;
+  const confirmThresholdPct = pos.probePolicyConfirmThresholdPct ?? 0.08;
+  const targetHorizonSec = pos.probePolicyTargetHorizonSec ?? 1800;
+
+  if (pos.probePolicyConfirmedAtSec == null) {
+    if (elapsedSec < confirmHorizonSec) return true;
+    if (currentPct < confirmThresholdPct) {
+      closePosition(pos, currentPrice, 'probe_policy_confirm_fail_cut', nowSec, mfePct, maePct);
+      return true;
+    }
+    pos.probePolicyConfirmedAtSec = nowSec;
+    log.info(
+      `[KOL_HUNTER_PROBE_POLICY_CONFIRMED] ${pos.positionId} ` +
+      `current=${(currentPct * 100).toFixed(2)}% threshold=${(confirmThresholdPct * 100).toFixed(2)}% ` +
+      `target=${targetHorizonSec}s`
+    );
+    return true;
+  }
+
+  if (elapsedSec >= targetHorizonSec) {
+    closePosition(pos, currentPrice, 'probe_policy_target_close', nowSec, mfePct, maePct);
+    return true;
+  }
+  return true;
+}
+
 // ─── State Machine ───────────────────────────────────────
 
 function onPriceTick(positionId: string, tick: PriceTick): void {
@@ -8651,6 +8729,9 @@ function onPriceTick(positionId: string, tick: PriceTick): void {
 
   switch (pos.state) {
     case 'PROBE': {
+      if (maybeCloseProbePolicyShadow(pos, currentPrice, nowSec, elapsedSec, currentPct, mfePct, maePct)) {
+        return;
+      }
       if (isCapitulationReboundPosition(pos)) {
         const noReactionSec = config.kolHunterCapitulationReboundNoReactionSec;
         if (
@@ -11253,6 +11334,7 @@ async function enterLivePosition(
     const addedArms: string[] = [];
     for (const spec of smartArmSpecs) {
       if (!spec.enabled) continue;
+      if (spec.minIndependentKol != null && score.independentKolCount < spec.minIndependentKol) continue;
       const shadowPos: PaperPosition = {
         ...position,
         positionId: `${positionId}-${spec.suffix}`,
@@ -11260,7 +11342,7 @@ async function enterLivePosition(
         parameterVersion: spec.parameterVersion,
         isShadowArm: true,
         parentPositionId: positionId,
-        paperRole: 'shadow',
+        paperRole: spec.probePolicyConfirmHorizonSec != null ? 'probe_policy_shadow' : 'shadow',
         isLive: false,
         dbTradeId: undefined,
         entryTxSignature: undefined,

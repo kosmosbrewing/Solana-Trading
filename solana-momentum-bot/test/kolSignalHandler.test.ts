@@ -1063,10 +1063,12 @@ describe('kolSignalHandler — state machine', () => {
       expect(positions.map((pos) => pos.armName).sort()).toEqual([
         'kol_hunter_smart_v3',
         'smart_v3_fast_fail',
+        'smart_v3_probe_confirm_shadow_v1',
         'smart_v3_runner_relaxed',
       ]);
       const control = positions.find((pos) => pos.armName === 'kol_hunter_smart_v3');
       const fastFail = positions.find((pos) => pos.armName === 'smart_v3_fast_fail');
+      const probeConfirm = positions.find((pos) => pos.armName === 'smart_v3_probe_confirm_shadow_v1');
       const runner = positions.find((pos) => pos.armName === 'smart_v3_runner_relaxed');
       expect(fastFail?.isShadowArm).toBe(true);
       expect(fastFail?.parentPositionId).toBe(control?.positionId);
@@ -1074,6 +1076,12 @@ describe('kolSignalHandler — state machine', () => {
       expect(fastFail?.probeHardCutPctOverride).toBe(0.06);
       expect(fastFail?.probeFlatTimeoutSec).toBe(90);
       expect(fastFail?.survivalFlags).toContain('SMART_V3_PAPER_PARAM_ARM');
+      expect(probeConfirm?.isShadowArm).toBe(true);
+      expect(probeConfirm?.paperRole).toBe('probe_policy_shadow');
+      expect(probeConfirm?.probePolicyConfirmHorizonSec).toBe(30);
+      expect(probeConfirm?.probePolicyConfirmThresholdPct).toBe(0.08);
+      expect(probeConfirm?.probePolicyTargetHorizonSec).toBe(1800);
+      expect(probeConfirm?.survivalFlags).toContain('SMART_V3_PROBE_POLICY_SHADOW');
       expect(runner?.isShadowArm).toBe(true);
       expect(runner?.parentPositionId).toBe(control?.positionId);
       expect(runner?.parameterVersion).toBe('smart-v3-runner-relaxed-v1.0.0');
@@ -1109,6 +1117,7 @@ describe('kolSignalHandler — state machine', () => {
         'kol_hunter_smart_v3',
         'smart_v3_fast_fail',
         'smart_v3_new_pool_confirmed_v1',
+        'smart_v3_probe_confirm_shadow_v1',
         'smart_v3_runner_relaxed',
       ]);
       const newPool = positions.find((pos) => pos.armName === 'smart_v3_new_pool_confirmed_v1');
@@ -5986,14 +5995,16 @@ describe('kolSignalHandler — state machine', () => {
 
       expect(delayedSell).toHaveBeenCalledTimes(1);
       expect(fx.closeTrade).toHaveBeenCalledTimes(1);
-      const sellLedgerCalls = mockAppendFile.mock.calls.filter((c) =>
-        typeof c[0] === 'string' && c[0].includes('executed-sells.jsonl')
-      );
-      expect(sellLedgerCalls).toHaveLength(1);
-      const liveLedgerCalls = mockAppendFile.mock.calls.filter((c) =>
-        typeof c[0] === 'string' && c[0].includes('kol-live-trades.jsonl')
-      );
-      expect(liveLedgerCalls).toHaveLength(1);
+      const sellLedgerRows = mockAppendFile.mock.calls
+        .filter((c) => typeof c[0] === 'string' && c[0].includes('executed-sells.jsonl'))
+        .map((c) => JSON.parse(String(c[1]).trim()))
+        .filter((row) => row.positionId === live.positionId);
+      expect(sellLedgerRows).toHaveLength(1);
+      const liveLedgerRows = mockAppendFile.mock.calls
+        .filter((c) => typeof c[0] === 'string' && c[0].includes('kol-live-trades.jsonl'))
+        .map((c) => JSON.parse(String(c[1]).trim()))
+        .filter((row) => row.positionId === live.positionId);
+      expect(liveLedgerRows).toHaveLength(1);
       expect(__testGetActive()).toHaveLength(0);
     });
 

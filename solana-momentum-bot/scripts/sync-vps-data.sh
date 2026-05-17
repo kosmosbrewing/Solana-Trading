@@ -21,6 +21,7 @@
 #   SKIP_ADMISSION_EDGE_REPORT=true bash scripts/sync-vps-data.sh  # admission edge / lookahead-safe markout report 생략
 #   SKIP_PROBE_POLICY_SWEEP_REPORT=true bash scripts/sync-vps-data.sh  # probe-first policy sweep 생략
 #   SKIP_PROBE_POLICY_SHADOW_REPORT=true bash scripts/sync-vps-data.sh  # probe-policy forward paper shadow report 생략
+#   SKIP_LIVE_MIRROR_REPORT=true bash scripts/sync-vps-data.sh  # smart-v3 live/mirror paired report 생략
 #   SKIP_PUREWS_TRADE_MARKOUT_REPORT=true bash scripts/sync-vps-data.sh  # pure_ws T+ report 생략
 #   SKIP_CAPITULATION_REPORT=true bash scripts/sync-vps-data.sh   # capitulation rebound paper report 생략
 #   SKIP_WINNER_KILL_REPORT=true bash scripts/sync-vps-data.sh    # winner-kill report 생략
@@ -75,6 +76,7 @@ fi
 # admission-edge-report: 파일 only → default ON. KOL discovery 이후 early continuation 이 late-entry edge 인지 probe hold/cut evidence 인지 분리.
 # probe-policy-sweep-report: 파일 only → default ON. probe-first hold/cut 정책 grid 를 historical markout 으로 sweep.
 # probe-policy-shadow-report: 파일 only → default ON. forward paper shadow arm 이 parent smart-v3 대비 실제로 손실을 줄이는지 검증.
+# live-mirror-report: 파일 only → default ON. smart-v3 live wallet 과 same-decision paper mirror 괴리를 분리.
 # rotation-report: 파일 only → default ON. rotation lane T+15/30/60 entry/exit/no-trade feedback.
 # capitulation-report: 파일 only → default ON. capitulation rebound T+15/30/60/180/300/1800 feedback.
 # winner-kill-report: 파일 only → default ON. missed-alpha close-site 기반 tail-retain feedback.
@@ -90,6 +92,7 @@ SKIP_TRADE_MARKOUT_REPORT="${SKIP_TRADE_MARKOUT_REPORT:-false}"
 SKIP_ADMISSION_EDGE_REPORT="${SKIP_ADMISSION_EDGE_REPORT:-false}"
 SKIP_PROBE_POLICY_SWEEP_REPORT="${SKIP_PROBE_POLICY_SWEEP_REPORT:-false}"
 SKIP_PROBE_POLICY_SHADOW_REPORT="${SKIP_PROBE_POLICY_SHADOW_REPORT:-false}"
+SKIP_LIVE_MIRROR_REPORT="${SKIP_LIVE_MIRROR_REPORT:-false}"
 SKIP_PUREWS_TRADE_MARKOUT_REPORT="${SKIP_PUREWS_TRADE_MARKOUT_REPORT:-false}"
 SKIP_ROTATION_REPORT="${SKIP_ROTATION_REPORT:-false}"
 SKIP_CAPITULATION_REPORT="${SKIP_CAPITULATION_REPORT:-false}"
@@ -116,6 +119,10 @@ PROBE_POLICY_MIN_MEDIAN_LOSS_REDUCTION="${PROBE_POLICY_MIN_MEDIAN_LOSS_REDUCTION
 PROBE_POLICY_SHADOW_SINCE="${PROBE_POLICY_SHADOW_SINCE:-24h}"
 PROBE_POLICY_SHADOW_MIN_CLOSES="${PROBE_POLICY_SHADOW_MIN_CLOSES:-50}"
 PROBE_POLICY_SHADOW_MAX_TAIL_KILL_RATE="${PROBE_POLICY_SHADOW_MAX_TAIL_KILL_RATE:-0.01}"
+LIVE_MIRROR_SINCE="${LIVE_MIRROR_SINCE:-24h}"
+LIVE_MIRROR_MIN_PAIRS="${LIVE_MIRROR_MIN_PAIRS:-30}"
+LIVE_MIRROR_EXECUTION_DRAG_RATE="${LIVE_MIRROR_EXECUTION_DRAG_RATE:-0.2}"
+LIVE_MIRROR_STRATEGY_LOSS_RATE="${LIVE_MIRROR_STRATEGY_LOSS_RATE:-0.5}"
 ROTATION_REPORT_ROUND_TRIP_COST_PCT="${ROTATION_REPORT_ROUND_TRIP_COST_PCT:-0.005}"
 CAPITULATION_REPORT_ROUND_TRIP_COST_PCT="${CAPITULATION_REPORT_ROUND_TRIP_COST_PCT:-0.005}"
 WINNER_KILL_WINDOW_DAYS="${WINNER_KILL_WINDOW_DAYS:-7}"
@@ -390,6 +397,8 @@ write_sync_health_report() {
       "reports/probe-policy-sweep-$(date +%Y-%m-%d).json" \
       "reports/probe-policy-shadow-$(date +%Y-%m-%d).md" \
       "reports/probe-policy-shadow-$(date +%Y-%m-%d).json" \
+      "reports/kol-live-mirror-$(date +%Y-%m-%d).md" \
+      "reports/kol-live-mirror-$(date +%Y-%m-%d).json" \
       "reports/kol-transfer-posterior-$(date +%Y-%m-%d).md" \
       "reports/kol-transfer-posterior-$(date +%Y-%m-%d).json" \
       "data/realtime/executed-buys.jsonl" \
@@ -752,7 +761,23 @@ else
   echo "[sync-vps-data] probe-policy-shadow-report: SKIPPED (SKIP_PROBE_POLICY_SHADOW_REPORT=true)"
 fi
 
-# ─── 8d. pure_ws paper trade markout report (file-only) ───
+# ─── 8d. KOL live mirror report (file-only) ───
+# Why: live fast-fail wallet result 를 same-decision paper mirror 와 pair 하여
+# execution drag vs strategy loss 를 분리한다. API/RPC 호출 0건.
+if [ "$SKIP_LIVE_MIRROR_REPORT" != "true" ]; then
+  LIVE_MIRROR_MD="${ROOT_DIR}/reports/kol-live-mirror-$(date +%Y-%m-%d).md"
+  LIVE_MIRROR_JSON="${ROOT_DIR}/reports/kol-live-mirror-$(date +%Y-%m-%d).json"
+  echo "[sync-vps-data] live-mirror-report: generating since=${LIVE_MIRROR_SINCE} minPairs=${LIVE_MIRROR_MIN_PAIRS}"
+  if (cd "${ROOT_DIR}" && npm run -s kol:live-mirror-report -- --since "${LIVE_MIRROR_SINCE}" --realtime-dir data/realtime --min-pairs "${LIVE_MIRROR_MIN_PAIRS}" --execution-drag-rate "${LIVE_MIRROR_EXECUTION_DRAG_RATE}" --strategy-loss-rate "${LIVE_MIRROR_STRATEGY_LOSS_RATE}" --md "${LIVE_MIRROR_MD}" --json "${LIVE_MIRROR_JSON}" 2>&1 | tail -12); then
+    echo "[sync-vps-data] live-mirror-report: ok → ${LIVE_MIRROR_MD}"
+  else
+    echo "[sync-vps-data] live-mirror-report: WARN — generation failed (sync 자체는 정상)"
+  fi
+else
+  echo "[sync-vps-data] live-mirror-report: SKIPPED (SKIP_LIVE_MIRROR_REPORT=true)"
+fi
+
+# ─── 8e. pure_ws paper trade markout report (file-only) ───
 # Why: pure_ws 는 fast-compound 후보라 T+15/30/60/180/300/1800 horizon 을 별도로 본다.
 if [ "$SKIP_PUREWS_TRADE_MARKOUT_REPORT" != "true" ]; then
   PUREWS_TRADE_MARKOUT_MD="${ROOT_DIR}/reports/pure-ws-trade-markout-$(date +%Y-%m-%d).md"

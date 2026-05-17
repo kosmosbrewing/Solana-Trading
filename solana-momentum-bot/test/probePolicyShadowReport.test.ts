@@ -21,6 +21,8 @@ function paperTrade(params: {
   parentPositionId?: string;
   paperRole?: string;
   exitReason?: string;
+  independentKolCount?: number;
+  survivalFlags?: string[];
 }): unknown {
   return {
     schemaVersion: 'kol-paper-trade/v1',
@@ -33,6 +35,8 @@ function paperTrade(params: {
     parentPositionId: params.parentPositionId,
     paperRole: params.paperRole,
     exitReason: params.exitReason ?? 'test_close',
+    independentKolCount: params.independentKolCount,
+    survivalFlags: params.survivalFlags,
   };
 }
 
@@ -68,6 +72,7 @@ describe('probe-policy-shadow-report', () => {
         parentPositionId: parentId,
         paperRole: 'probe_policy_shadow',
         exitReason: i < 30 ? 'probe_shadow_cut' : 'probe_shadow_hold',
+        independentKolCount: 3,
       }));
     }
     await writeFile(path.join(dir, 'kol-paper-trades.jsonl'), jsonl(rows));
@@ -85,6 +90,50 @@ describe('probe-policy-shadow-report', () => {
     expect(report.comparison.bigLossReduction).toBeGreaterThan(0);
     expect(report.comparison.tailKillDelta).toBe(0);
     expect(report.promotionGate.livePromotionAllowed).toBe(false);
+    expect(report.cohorts.find((row) => row.cohort === 'parent:kol_hunter_smart_v3')?.pairedRows).toBe(60);
+    expect(report.cohorts.find((row) => row.cohort === 'kol:KOL_3plus')?.pairedRows).toBe(60);
+  });
+
+  it('counts fast-fail live mirror as a valid probe parent arm', async () => {
+    const rows = [
+      paperTrade({
+        positionId: 'live-mirror-1',
+        armName: 'smart_v3_fast_fail_live_mirror_v1',
+        closedAt: '2026-05-01T00:00:00.000Z',
+        netPctTokenOnly: -0.2,
+        mfePctPeakTokenOnly: 0.3,
+        paperRole: 'mirror',
+      }),
+      paperTrade({
+        positionId: 'probe-live-mirror-1',
+        armName: 'smart_v3_probe_confirm_shadow_v1',
+        closedAt: '2026-05-01T00:00:01.000Z',
+        netPctTokenOnly: -0.05,
+        mfePctPeakTokenOnly: 0.3,
+        parentPositionId: 'live-mirror-1',
+        paperRole: 'probe_policy_shadow',
+        exitReason: 'probe_shadow_cut',
+        independentKolCount: 2,
+        survivalFlags: ['SMART_V3_PROBE_BELOW_MIN_KOL_2'],
+      }),
+    ];
+    await writeFile(path.join(dir, 'kol-paper-trades.jsonl'), jsonl(rows));
+
+    const report = await buildProbePolicyShadowReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      minCloses: 1,
+      maxTailKillRate: 0.01,
+    });
+
+    expect(report.parentArms).toContain('smart_v3_fast_fail_live_mirror_v1');
+    expect(report.parentRows).toBe(1);
+    expect(report.pairedRows).toBe(1);
+    expect(report.cohorts.find((row) => row.cohort === 'parent:smart_v3_fast_fail_live_mirror_v1')?.pairedRows).toBe(1);
+    expect(report.cohorts.find((row) => row.cohort === 'kol:below_min')?.pairedRows).toBe(1);
+    expect(report.comparison.medianImprovement).toBeGreaterThan(0);
+    expect(renderProbePolicyShadowReport(report)).toContain('smart_v3_fast_fail_live_mirror_v1');
+    expect(renderProbePolicyShadowReport(report)).toContain('kol:below_min');
   });
 
   it('renders explicit live-promotion guardrails while collecting data', () => {
@@ -100,6 +149,7 @@ describe('probe-policy-shadow-report', () => {
       maxTailKillRate: 0.01,
       probeArm: 'smart_v3_probe_confirm_shadow_v1',
       parentArm: 'kol_hunter_smart_v3',
+      parentArms: ['kol_hunter_smart_v3', 'smart_v3_fast_fail_live_mirror_v1'],
       paperRows: 0,
       probeRows: 0,
       parentRows: 0,
@@ -112,6 +162,7 @@ describe('probe-policy-shadow-report', () => {
         bigLossReduction: null,
         tailKillDelta: null,
       },
+      cohorts: [],
       exitReasons: [],
       verdict: 'COLLECT',
       reasons: ['Report-only. Live promotion is explicitly blocked until separate wallet-truth review.'],

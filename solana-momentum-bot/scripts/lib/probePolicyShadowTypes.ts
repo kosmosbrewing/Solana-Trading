@@ -1,6 +1,10 @@
 export const PROBE_POLICY_SHADOW_ARM = 'smart_v3_probe_confirm_shadow_v1';
 export const PROBE_POLICY_SHADOW_ROLE = 'probe_policy_shadow';
 export const PROBE_POLICY_PARENT_ARM = 'kol_hunter_smart_v3';
+export const PROBE_POLICY_PARENT_ARMS = [
+  PROBE_POLICY_PARENT_ARM,
+  'smart_v3_fast_fail_live_mirror_v1',
+] as const;
 export const DEFAULT_PROBE_POLICY_SHADOW_MIN_CLOSES = 50;
 export const DEFAULT_PROBE_POLICY_SHADOW_MAX_TAIL_KILL_RATE = 0.01;
 
@@ -38,6 +42,10 @@ export interface ProbePolicyShadowComparison {
   tailKillDelta: number | null;
 }
 
+export interface ProbePolicyShadowCohortComparison extends ProbePolicyShadowComparison {
+  cohort: string;
+}
+
 export interface ProbePolicyShadowReport {
   generatedAt: string;
   realtimeDir: string;
@@ -46,11 +54,13 @@ export interface ProbePolicyShadowReport {
   maxTailKillRate: number;
   probeArm: string;
   parentArm: string;
+  parentArms: string[];
   paperRows: number;
   probeRows: number;
   parentRows: number;
   pairedRows: number;
   comparison: ProbePolicyShadowComparison;
+  cohorts: ProbePolicyShadowCohortComparison[];
   exitReasons: Array<{ reason: string; count: number }>;
   verdict: ProbePolicyShadowVerdict;
   reasons: string[];

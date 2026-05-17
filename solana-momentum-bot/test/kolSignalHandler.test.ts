@@ -3716,6 +3716,49 @@ describe('kolSignalHandler — state machine', () => {
       expect(equivalence?.candidateId).toContain(':smart_v3_fast_fail_live_v1:');
     });
 
+    it('smart-v3 fast-fail live arm: live 진입과 같은 decisionId 로 paper mirror/probe 를 병렬 생성한다', async () => {
+      const { ctx, executeBuy, insertTrade } = buildLiveCtx();
+      __testInit({
+        priceFeed: stubFeed as unknown as never,
+        ctx,
+        securityClient: buildSecurityClient({ top10HolderPct: 0.65 }) as never,
+      });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterLiveCanaryArms = ['smart_v3_fast_fail_live_v1'];
+
+      stubFeed.setInitialPrice(MINT_SMART, 0.001);
+      await handleKolSwap(buyTx('pain', 'S', MINT_SMART));
+      await handleKolSwap(buyTx('ghost', 'A', MINT_SMART));
+      await flushAsync();
+
+      expect(executeBuy).toHaveBeenCalledTimes(1);
+      expect(insertTrade).toHaveBeenCalledTimes(1);
+      const positions = __testGetActive();
+      const live = positions.find((p) => p.isLive === true);
+      const mirror = positions.find((p) => p.armName === 'smart_v3_fast_fail_live_mirror_v1');
+      const probe = positions.find((p) => p.armName === 'smart_v3_probe_confirm_shadow_v1');
+
+      expect(live?.armName).toBe('smart_v3_fast_fail_live_v1');
+      expect(mirror?.isLive).toBe(false);
+      expect(mirror?.paperRole).toBe('mirror');
+      expect(mirror?.parameterVersion).toBe(live?.parameterVersion);
+      expect(mirror?.parentPositionId).toBe(live?.positionId);
+      expect(mirror?.liveEquivalenceDecisionId).toBe(live?.liveEquivalenceDecisionId);
+      expect(mirror?.executionPlanSnapshot?.mode).toBe('paper');
+      expect(mirror?.executionPlanSnapshot?.referencePrice).toBe(live?.executionPlanSnapshot?.referencePrice);
+      expect(mirror?.survivalFlags).toContain('SMART_V3_FAST_FAIL_LIVE_MIRROR');
+
+      expect(probe?.isLive).toBe(false);
+      expect(probe?.paperRole).toBe('probe_policy_shadow');
+      expect(probe?.parentPositionId).toBe(mirror?.positionId);
+      expect(probe?.liveEquivalenceDecisionId).toBe(live?.liveEquivalenceDecisionId);
+      expect(probe?.probePolicyConfirmHorizonSec).toBe(30);
+      expect(probe?.probePolicyConfirmThresholdPct).toBe(0.08);
+      expect(probe?.probePolicyTargetHorizonSec).toBe(1800);
+      expect(probe?.executionPlanSnapshot?.mode).toBe('paper');
+    });
+
     it('smart-v3 fast-fail live arm: arm threshold 초과 집중은 paper fallback 으로 유지한다', async () => {
       const { ctx, executeBuy, insertTrade } = buildLiveCtx();
       __testInit({

@@ -33,6 +33,7 @@ export function renderProbePolicyShadowReport(report: ProbePolicyShadowReport): 
   lines.push(`- since: ${report.since}`);
   lines.push(`- probe arm: ${report.probeArm}`);
   lines.push(`- parent arm: ${report.parentArm}`);
+  lines.push(`- parent arms: ${report.parentArms.join(', ')}`);
   lines.push(`- paper rows: ${report.paperRows}`);
   lines.push(`- probe closes: ${report.probeRows}`);
   lines.push(`- paired closes: ${report.pairedRows}/${report.minCloses}`);
@@ -52,6 +53,25 @@ export function renderProbePolicyShadowReport(report: ProbePolicyShadowReport): 
   lines.push(`- median improvement: ${fmtPct(report.comparison.medianImprovement)}`);
   lines.push(`- <=-20% big-loss reduction: ${fmtPct(report.comparison.bigLossReduction)}`);
   lines.push(`- +50% tail kill delta: ${fmtPct(report.comparison.tailKillDelta)}`);
+  lines.push('');
+  lines.push('## Cohorts');
+  lines.push('');
+  lines.push('| cohort | pairs | parent median | probe median | median delta | big-loss reduction | +50% tail kill delta |');
+  lines.push('|---|---:|---:|---:|---:|---:|---:|');
+  if (report.cohorts.length === 0) lines.push('| none | 0 | n/a | n/a | n/a | n/a | n/a |');
+  else {
+    for (const cohort of report.cohorts) {
+      lines.push([
+        `| ${cohort.cohort}`,
+        String(cohort.pairedRows),
+        fmtPct(cohort.parent.medianNetPct),
+        fmtPct(cohort.probe.medianNetPct),
+        fmtPct(cohort.medianImprovement),
+        fmtPct(cohort.bigLossReduction),
+        `${fmtPct(cohort.tailKillDelta)} |`,
+      ].join(' | '));
+    }
+  }
   lines.push('');
   lines.push('## Probe Exit Reasons');
   if (report.exitReasons.length === 0) lines.push('- none');

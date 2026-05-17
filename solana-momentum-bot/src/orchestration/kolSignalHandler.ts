@@ -166,6 +166,7 @@ const ROTATION_UNDERFILL_ARM = 'rotation_underfill_v1';
 const ROTATION_EXIT_FLOW_ARM = 'rotation_exit_kol_flow_v1';
 const ROTATION_UNDERFILL_EXIT_FLOW_PROFILE_ARM = 'rotation_underfill_exit_flow_v1';
 const ROTATION_UNDERFILL_COST_AWARE_PROFILE_ARM = 'rotation_underfill_cost_aware_exit_v2';
+const SMART_V3_FAST_FAIL_LIVE_MIRROR_ARM = 'smart_v3_fast_fail_live_mirror_v1';
 const SMART_V3_PROBE_CONFIRM_SHADOW_ARM = 'smart_v3_probe_confirm_shadow_v1';
 const SMART_V3_PROBE_CONFIRM_SHADOW_PARAMETER_VERSION = 'smart-v3-probe-confirm-shadow-v1.0.0';
 const ROTATION_SECOND_KOL_WAIT_PARAMETER_VERSION = 'rotation-second-kol-wait-conversion-v1.0.0';
@@ -635,6 +636,7 @@ interface PendingCandidate {
 
 const pending = new Map<string, PendingCandidate>();        // tokenMint → pending
 const active = new Map<string, PaperPosition>();            // positionId → position
+let livePositionIdNonce = 0;
 const SMART_V3_ADMISSION_TIMEOUT_MS = 30_000;
 
 /**
@@ -1685,6 +1687,12 @@ function getActivePositionsByMint(tokenMint: string): PaperPosition[] {
   }
   return out;
 }
+function nextLivePositionId(tokenMint: string, nowSec: number): string {
+  // 초 단위 ID 재사용은 테스트/운영 모두에서 async close 가 새 active position 을 지울 수 있다.
+  // process-local nonce 로 같은 초, 같은 mint 의 live ID 를 분리한다.
+  livePositionIdNonce = (livePositionIdNonce + 1) % Number.MAX_SAFE_INTEGER;
+  return `kolh-live-${tokenMint.slice(0, 8)}-${nowSec}-${livePositionIdNonce}`;
+}
 const recentKolTxs: KolTx[] = [];                           // scoring 용 buffer (24h)
 
 // 2026-04-26 P0 audit fix #2: shift while-loop 가 O(N) per push 라 24h × N KOLs × tx-rate 누적 시
@@ -2523,6 +2531,27 @@ function resolveSmartV3NewPoolContext(tokenMint: string): SmartV3NewPoolContext 
   return null;
 }
 
+function buildSmartV3ProbeConfirmShadowSpec(): SmartV3PaperArmSpec {
+  return {
+    // Historical sweep 2026-05-17: smart_v3 KOL_3plus T+30 >= 8% had
+    // the best tail-preserving loss reduction. Paper-only forward validation.
+    suffix: 'probe-confirm-shadow',
+    armName: SMART_V3_PROBE_CONFIRM_SHADOW_ARM,
+    parameterVersion: SMART_V3_PROBE_CONFIRM_SHADOW_PARAMETER_VERSION,
+    enabled: true,
+    minIndependentKol: 3,
+    probePolicyConfirmHorizonSec: 30,
+    probePolicyConfirmThresholdPct: 0.08,
+    probePolicyTargetHorizonSec: 1800,
+    extraSurvivalFlags: [
+      'SMART_V3_PROBE_POLICY_SHADOW',
+      'PROBE_POLICY_CONFIRM_T30S',
+      'PROBE_POLICY_THRESHOLD_8PCT',
+      'PROBE_POLICY_TARGET_T1800S',
+    ],
+  };
+}
+
 function buildSmartV3PaperArmSpecs(
   reason: KolEntryReason,
   newPoolContext: SmartV3NewPoolContext | null = null
@@ -2554,24 +2583,7 @@ function buildSmartV3PaperArmSpecs(
       probeFlatTimeoutSec: base.probeFlatTimeoutSec,
       probeHardCutPct: base.probeHardCutPct,
     },
-    {
-      // Historical sweep 2026-05-17: smart_v3 KOL_3plus T+30 >= 8% had
-      // the best tail-preserving loss reduction. Paper-only forward validation.
-      suffix: 'probe-confirm-shadow',
-      armName: SMART_V3_PROBE_CONFIRM_SHADOW_ARM,
-      parameterVersion: SMART_V3_PROBE_CONFIRM_SHADOW_PARAMETER_VERSION,
-      enabled: true,
-      minIndependentKol: 3,
-      probePolicyConfirmHorizonSec: 30,
-      probePolicyConfirmThresholdPct: 0.08,
-      probePolicyTargetHorizonSec: 1800,
-      extraSurvivalFlags: [
-        'SMART_V3_PROBE_POLICY_SHADOW',
-        'PROBE_POLICY_CONFIRM_T30S',
-        'PROBE_POLICY_THRESHOLD_8PCT',
-        'PROBE_POLICY_TARGET_T1800S',
-      ],
-    },
+    buildSmartV3ProbeConfirmShadowSpec(),
   ];
   if (newPoolContext) {
     specs.push({
@@ -10768,7 +10780,7 @@ async function enterLivePosition(
   let executionGuardReason: string | null = null;
   let executionGuardAction: PaperPosition['executionGuardAction'] = null;
   const nowSec = Math.floor(Date.now() / 1000);
-  const positionId = `kolh-live-${tokenMint.slice(0, 8)}-${nowSec}`;
+  const positionId = nextLivePositionId(tokenMint, nowSec);
   const buyStartedAtMs = Date.now();
   let buyCompletedAtMs = buyStartedAtMs;
   let buyExecutionMs = 0;
@@ -11326,6 +11338,86 @@ async function enterLivePosition(
       `profitFloor=${config.kolHunterSwingV2T1ProfitFloorMult}x`
     );
   }
+  const registerLivePairedPaperPosition = (shadowPos: PaperPosition): void => {
+    setActivePosition(shadowPos);
+    emitKolPositionPolicy(shadowPos, 'entry', 'enter', { routeFound: true });
+    if (config.tokenQualityObserverEnabled && !shadowPos.isTailPosition) {
+      void recordTokenQualityObservation(shadowPos).catch(() => {});
+    }
+    trackPaperPositionMarkout(
+      shadowPos,
+      'buy',
+      shadowPos.entryPriceTokenOnly ?? shadowPos.entryPrice,
+      shadowPos.swapInputSol ?? shadowPos.ticketSol,
+      shadowPos.entryTimeSec * 1000,
+      {
+        eventType: 'paper_entry',
+        survivalFlags: shadowPos.survivalFlags,
+        smartV3LiveEligibleShadow: shadowPos.smartV3LiveEligibleShadow ?? null,
+        smartV3LiveBlockReason: shadowPos.smartV3LiveBlockReason ?? null,
+        smartV3LiveBlockFlags: shadowPos.smartV3LiveBlockFlags ?? null,
+      }
+    );
+    kolHunterEvents.emit('paper_entry', shadowPos);
+  };
+  if (primaryVersion === config.kolHunterSmartV3FastFailLiveParameterVersion) {
+    const mirrorId = `${positionId}-live-mirror`;
+    const mirrorPos: PaperPosition = {
+      ...position,
+      positionId: mirrorId,
+      armName: SMART_V3_FAST_FAIL_LIVE_MIRROR_ARM,
+      isShadowArm: true,
+      parentPositionId: positionId,
+      paperRole: 'mirror',
+      isLive: false,
+      dbTradeId: undefined,
+      entryTxSignature: undefined,
+      entrySlippageBps: undefined,
+      executionPlanSnapshot: position.executionPlanSnapshot
+        ? {
+            ...position.executionPlanSnapshot,
+            planId: `paper:${mirrorId}:plan`,
+            mode: 'paper',
+          }
+        : undefined,
+      survivalFlags: [
+        ...position.survivalFlags,
+        'LIVE_PAIRED_PAPER_MIRROR',
+        'SMART_V3_FAST_FAIL_LIVE_MIRROR',
+      ],
+    };
+    const addedArms = [mirrorPos.armName];
+    registerLivePairedPaperPosition(mirrorPos);
+
+    const probeSpec = buildSmartV3ProbeConfirmShadowSpec();
+    const probeId = `${mirrorId}-${probeSpec.suffix}`;
+    const probeBelowMinKol = score.independentKolCount < (probeSpec.minIndependentKol ?? 0);
+    const probePos: PaperPosition = {
+      ...mirrorPos,
+      positionId: probeId,
+      parentPositionId: mirrorId,
+      paperRole: 'probe_policy_shadow',
+      executionPlanSnapshot: mirrorPos.executionPlanSnapshot
+        ? {
+            ...mirrorPos.executionPlanSnapshot,
+            planId: `paper:${probeId}:plan`,
+            mode: 'paper',
+          }
+        : undefined,
+      survivalFlags: [
+        ...mirrorPos.survivalFlags,
+        'LIVE_PAIRED_PAPER_SHADOW',
+        ...(probeBelowMinKol ? [`SMART_V3_PROBE_BELOW_MIN_KOL_${score.independentKolCount}`] : []),
+      ],
+    };
+    applySmartV3PaperArmSpec(probePos, probeSpec);
+    registerLivePairedPaperPosition(probePos);
+    addedArms.push(probePos.armName);
+    log.info(
+      `[KOL_HUNTER_SMART_V3_LIVE_MIRROR_ARMS] ${positionId} ${tokenMint.slice(0, 8)} ` +
+      `arms=${addedArms.join(',')}`
+    );
+  }
   if (primaryVersion === config.kolHunterSmartV3ParameterVersion) {
     const smartArmSpecs = buildSmartV3PaperArmSpecs(
       entryReason,
@@ -11359,26 +11451,7 @@ async function enterLivePosition(
         ],
       };
       applySmartV3PaperArmSpec(shadowPos, spec);
-      setActivePosition(shadowPos);
-      emitKolPositionPolicy(shadowPos, 'entry', 'enter', { routeFound: true });
-      if (config.tokenQualityObserverEnabled && !shadowPos.isTailPosition) {
-        void recordTokenQualityObservation(shadowPos).catch(() => {});
-      }
-      trackPaperPositionMarkout(
-        shadowPos,
-        'buy',
-        shadowPos.entryPriceTokenOnly ?? shadowPos.entryPrice,
-        shadowPos.swapInputSol ?? shadowPos.ticketSol,
-        shadowPos.entryTimeSec * 1000,
-        {
-          eventType: 'paper_entry',
-          survivalFlags: shadowPos.survivalFlags,
-          smartV3LiveEligibleShadow: shadowPos.smartV3LiveEligibleShadow ?? null,
-          smartV3LiveBlockReason: shadowPos.smartV3LiveBlockReason ?? null,
-          smartV3LiveBlockFlags: shadowPos.smartV3LiveBlockFlags ?? null,
-        }
-      );
-      kolHunterEvents.emit('paper_entry', shadowPos);
+      registerLivePairedPaperPosition(shadowPos);
       addedArms.push(shadowPos.armName);
     }
     if (addedArms.length > 0) {

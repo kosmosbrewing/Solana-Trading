@@ -6411,11 +6411,15 @@ function buildRotationNarrowCohortStats(
   const markoutsByPosition = buyMarkoutsByPosition(markoutRows);
   const routeProofedRows = rows.filter(isRouteProofedUnderfillRow);
   const costAwareRows = routeProofedRows.filter(isCostAwareUnderfillRow);
+  const singleKolRows = routeProofedRows.filter(isSingleKolRow);
+  const singleKolCostAwareRows = singleKolRows.filter(isCostAwareUnderfillRow);
   const twoPlusRows = routeProofedRows.filter(isTwoPlusKolRow);
   const twoPlusCostAwareRows = twoPlusRows.filter(isCostAwareUnderfillRow);
   return [
     { cohort: 'route_proofed_underfill', rows: routeProofedRows },
     { cohort: 'route_proofed_cost_aware', rows: costAwareRows },
+    { cohort: 'route_proofed_1kol', rows: singleKolRows },
+    { cohort: 'route_proofed_1kol_cost_aware', rows: singleKolCostAwareRows },
     { cohort: 'route_proofed_2plus', rows: twoPlusRows },
     { cohort: 'route_proofed_2plus_cost_aware', rows: twoPlusCostAwareRows },
     {
@@ -7743,6 +7747,8 @@ function renderRotationDecayBlockMarkouts(row: RotationDecayBlockMarkoutStats): 
 function renderRotationNarrowCohorts(rows: RotationNarrowCohortStats[]): string {
   if (rows.length === 0) return '_No rotation narrow cohort rows._';
   return [
+    '_1-KOL cohorts are diagnostic only; live/paper promotion evidence remains gated on entry-aligned 2+ KOL cost-aware rows._',
+    '',
     '| cohort | verdict | closes | route proof | candidateId | 2+ KOL | cost-aware | timestamped 2nd KOL | refund-adjusted | close postCost>0 | edge pass | T1 | min T+ coverage | primary postCost | med MFE | median hold | reasons |',
     '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---|',
     ...rows.map((row) =>
@@ -7765,7 +7771,7 @@ function renderRotationNarrowCohorts(rows: RotationNarrowCohortStats[]): string 
 function renderLiveEquivalenceBucketTable(rows: LiveEquivalenceBucketStats[]): string {
   if (rows.length === 0) return '_No live-equivalence rows._';
   return [
-    '| bucket | rows | liveWould | attempted | blocked | 1-KOL | 2+ KOL | unknown KOL |',
+    '| bucket | rows | liveWould | attempted | blocked | entry 1-KOL | entry 2+ KOL | entry unknown KOL |',
     '|---|---:|---:|---:|---:|---:|---:|---:|',
     ...rows.map((row) =>
       `| ${row.bucket} | ${row.rows} | ${row.liveWouldEnterRows} | ${row.liveAttemptedRows} | ` +
@@ -7778,8 +7784,9 @@ function renderLiveEquivalenceSummary(row: LiveEquivalenceSummary): string {
   return [
     `- total rows: ${row.rotationRows}/${row.totalRows}`,
     `- live would/attempted/blocked: ${row.liveWouldEnterRows}/${row.liveAttemptedRows}/${row.blockedRows}`,
-    `- yellow-zone rows: ${row.yellowZoneRows} · 1-KOL=${row.yellowZoneSingleKolRows} · 2+KOL=${row.yellowZoneTwoPlusKolRows} · unknownKOL=${row.yellowZoneUnknownKolRows}`,
+    `- yellow-zone rows: ${row.yellowZoneRows} · entry-aligned 1-KOL=${row.yellowZoneSingleKolRows} · entry-aligned 2+KOL=${row.yellowZoneTwoPlusKolRows} · entry-aligned unknownKOL=${row.yellowZoneUnknownKolRows}`,
     `- route-unknown fallback rows: ${row.routeUnknownFallbackRows}`,
+    '- KOL counts in this section are entry-aligned live-gate counts; candidate-level trigger logs may be higher.',
     '',
     '### By Decision Stage',
     renderLiveEquivalenceBucketTable(row.byStage),

@@ -748,10 +748,18 @@ describe('rotation-lane-report', () => {
       cohort: 'route_known_2kol_cost_aware',
       closes: 0,
     });
+    expect(report.rotationNarrowCohorts.find((row) =>
+      row.cohort === 'route_proofed_1kol_cost_aware'
+    )).toMatchObject({
+      rows: 3,
+      twoPlusKolRows: 0,
+      costAwareRows: 3,
+    });
 
     const markdown = renderRotationLaneReportMarkdown(report);
     expect(markdown).toContain('diagnosis: BLOCKED_BY_2KOL_ABSENCE');
     expect(markdown).toContain('do not promote the 1-KOL route-known cost-aware edge');
+    expect(markdown).toContain('1-KOL cohorts are diagnostic only');
   });
 
   it('joins single-KOL underfill closes to same-token KOL tx flow for second-KOL opportunity review', async () => {
@@ -3915,7 +3923,9 @@ describe('rotation-lane-report', () => {
     expect(markdown).toContain('## Live-Equivalence Gate Review');
     expect(markdown).toContain('## Live-Equivalence Candidate Drilldown');
     expect(markdown).toContain('yellow-zone rows: 3');
-    expect(markdown).toContain('unknownKOL=1');
+    expect(markdown).toContain('entry-aligned unknownKOL=1');
+    expect(markdown).toContain('entry-aligned live-gate counts');
+    expect(markdown).toContain('entry 1-KOL');
     expect(markdown).toContain('route-unknown fallback rows: 1');
     expect(markdown).toContain('review live-equivalence');
     expect(markdown).toContain('linked=0/0, blockers=0');

@@ -5831,6 +5831,8 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
   } else {
     ensureCapitulationReboundState(cand).enteredAtMs = nowMs;
   }
+  const entryIndependentKolCountForLog = entrySignal.entryIndependentKolCount ?? score.independentKolCount;
+  const entryKolScoreForLog = entrySignal.entryKolScore;
   log.info(
     `[${entrySignal.logTag}] ${cand.tokenMint.slice(0, 8)} reason=${entrySignal.entryReason} ` +
     `conviction=${entrySignal.conviction} score=${score.finalScore.toFixed(2)} ` +
@@ -5838,7 +5840,8 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     (entrySignal.label === 'smart-v3'
       ? ` freshKols=${smartFresh.freshIndependentKolCount} freshStrong=${smartFresh.freshTierStrongCount} ` +
         `freshScore=${smartFresh.freshSignalScore.toFixed(2)}`
-      : '') +
+      : ` entryKols=${entryIndependentKolCountForLog} candidateKols=${score.independentKolCount}` +
+        (entryKolScoreForLog != null ? ` entryKolScore=${entryKolScoreForLog.toFixed(2)}` : '')) +
     (entrySignal.telemetry
       ? ` buys=${entrySignal.telemetry.buyCount} smallBuys=${entrySignal.telemetry.smallBuyCount} ` +
         `grossBuy=${Number(entrySignal.telemetry.grossBuySol).toFixed(3)}SOL ` +

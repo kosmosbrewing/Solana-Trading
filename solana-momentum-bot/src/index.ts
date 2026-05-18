@@ -44,6 +44,7 @@ import {
   detectRealtimeDiscoveryMismatch,
   detectRealtimePoolProgramMismatch,
   selectRealtimeEligiblePair,
+  buildKolCandleCoverageTarget,
   type RealtimePoolMetadata,
 } from './realtime';
 import { UniverseEngine, UniverseEngineConfig } from './universe';
@@ -106,6 +107,7 @@ import { SpreadMeasurer } from './gate/spreadMeasurer';
 import { GateCacheManager } from './gate/gateCacheManager';
 import { SOL_MINT } from './utils/constants';
 import { BotContext } from './orchestration/types';
+import type { DexScreenerPair } from './scanner/dexScreenerClient';
 import { resolveAmmFeePct } from './utils/dexFeeMap';
 import { buildRuntimeDriftSnapshot, evaluateRuntimeDriftWarnings } from './ops/runtimeDrift';
 import path from 'path';
@@ -181,6 +183,7 @@ async function main() {
     expiresAtMs: number;
     timer: NodeJS.Timeout;
   }>();
+  const kolRealtimePairResolveCache = new Map<string, { expiresAtMs: number; pairs: DexScreenerPair[] }>();
   const realtimeModeEnabled = config.realtimeEnabled;
   const operatorTokenBlacklist = new Set(config.operatorTokenBlacklist);
   const isOperatorBlacklisted = (value?: string): boolean =>
@@ -216,6 +219,7 @@ async function main() {
   const aliasMissCleanupState = new Map<string, { count: number; windowStartedMs: number; lastCleanupMs: number }>();
   const KOL_REALTIME_CANDLE_TARGET_TTL_MS = 7 * 60 * 1000;
   const KOL_REALTIME_CANDLE_TARGET_MAX = 8;
+  const KOL_REALTIME_PAIR_RESOLVE_CACHE_TTL_MS = 10 * 60 * 1000;
   // Why: unsubscribe 완료 후에도 WS lag으로 swap이 계속 유입되는 zombie pool 차단
   // — 반복 unsubscribe + 로깅 노이즈 방지. TTL 후 자동 제거.
   const ZOMBIE_POOL_TTL_MS = 30 * 60 * 1000; // 30min
@@ -1188,17 +1192,76 @@ async function main() {
     removeKolRealtimeCandleTarget(oldest[0], oldest[1].subscriptionPair);
   };
 
+  const resolveKolRealtimePairs = async (tokenMint: string): Promise<DexScreenerPair[]> => {
+    const now = Date.now();
+    const cached = kolRealtimePairResolveCache.get(tokenMint);
+    if (cached && cached.expiresAtMs > now) return cached.pairs;
+    try {
+      const pairs = await tokenPairResolver.getTokenPairs(tokenMint);
+      if (pairs.length > 0) {
+        heliusPoolRegistry.upsertPairs(pairs);
+      }
+      kolRealtimePairResolveCache.set(tokenMint, {
+        expiresAtMs: now + KOL_REALTIME_PAIR_RESOLVE_CACHE_TTL_MS,
+        pairs,
+      });
+      return pairs;
+    } catch (error) {
+      if (String(error).includes('429')) {
+        runtimeDiagnosticsTracker.recordRateLimit('kol_candle_pair_resolve');
+      }
+      log.info(`[KOL_CANDLE_COVERAGE] resolver_error ${tokenMint.slice(0, 8)} error=${String(error)}`);
+      return [];
+    }
+  };
+
   const ensureRealtimeCandleCoverage: BotContext['ensureRealtimeCandleCoverage'] = async (request) => {
     if (!realtimeModeEnabled || !heliusIngester || !realtimeCandleBuilder) return;
 
     const contexts = heliusPoolRegistry.getObservedPairContexts(request.tokenMint);
-    const matchedContext = contexts.find((context) => context.pairAddress === request.poolAddress);
-    const context = matchedContext ?? contexts[0];
-    const subscriptionPair = request.poolAddress ?? context?.pairAddress;
-    if (!subscriptionPair) {
-      log.debug(`[KOL_CANDLE_COVERAGE] no pool context for ${request.tokenMint.slice(0, 8)} (${request.reason})`);
+    const orderedContexts = request.poolAddress
+      ? [
+        ...contexts.filter((context) => context.pairAddress === request.poolAddress),
+        ...contexts.filter((context) => context.pairAddress !== request.poolAddress),
+      ]
+      : contexts;
+    let resolvedPair: DexScreenerPair | undefined;
+    let resolverPairCount = 0;
+    let resolverReason: string | null = null;
+    if (!request.poolAddress && orderedContexts.length === 0) {
+      const pairs = await resolveKolRealtimePairs(request.tokenMint);
+      resolverPairCount = pairs.length;
+      let poolOwners: Map<string, string | null> | undefined;
+      if (pairs.length > 0 && realtimePoolOwnerResolver) {
+        try {
+          poolOwners = await realtimePoolOwnerResolver.resolveOwners(pairs.map((pair) => pair.pairAddress));
+        } catch (error) {
+          log.debug(`[KOL_CANDLE_COVERAGE] owner resolve failed ${request.tokenMint.slice(0, 8)}: ${error}`);
+        }
+      }
+      const eligibility = selectRealtimeEligiblePair(pairs, poolOwners);
+      resolverReason = eligibility.reason;
+      resolvedPair = eligibility.eligible ? eligibility.pair : undefined;
+    }
+
+    const target = buildKolCandleCoverageTarget({
+      tokenMint: request.tokenMint,
+      poolAddress: request.poolAddress,
+      dexId: request.dexId,
+      dexProgram: request.dexProgram,
+      inputMint: request.inputMint,
+      outputMint: request.outputMint,
+      contexts: orderedContexts,
+      resolvedPair,
+    });
+    if (!target) {
+      log.info(
+        `[KOL_CANDLE_COVERAGE] no_pool_context ${request.tokenMint.slice(0, 8)} reason=${request.reason} ` +
+        `resolvedPairs=${resolverPairCount} resolverReason=${resolverReason ?? 'no_context'}`
+      );
       return;
     }
+    const subscriptionPair = target.subscriptionPair;
 
     const existing = kolRealtimeCandleTargets.get(request.tokenMint);
     const now = Date.now();
@@ -1213,25 +1276,16 @@ async function main() {
       clearTimeout(existing.timer);
     }
 
-    const quoteMint = request.inputMint && request.inputMint !== request.tokenMint
-      ? request.inputMint
-      : SOL_MINT;
-    const metadata: RealtimePoolMetadata = {
-      dexId: request.dexId ?? context?.dexId ?? '',
-      baseMint: request.tokenMint,
-      quoteMint,
-      quoteDecimals: quoteMint === SOL_MINT ? 9 : undefined,
-      poolProgram: request.dexProgram,
-    };
     setRealtimePoolTarget(request.tokenMint, subscriptionPair);
-    setRealtimePoolMetadata(subscriptionPair, metadata);
-    heliusIngester.setPoolMetadata(subscriptionPair, metadata);
+    setRealtimePoolMetadata(subscriptionPair, target.metadata);
+    heliusIngester.setPoolMetadata(subscriptionPair, target.metadata);
 
     const timer = setTimeout(() => {
       removeKolRealtimeCandleTarget(request.tokenMint, subscriptionPair);
     }, ttlMs);
     kolRealtimeCandleTargets.set(request.tokenMint, { subscriptionPair, expiresAtMs, timer });
 
+    let seeded: number | null = null;
     if (!alreadyTracking && config.realtimeSeedBackfillEnabled) {
       const lookbackSec = Math.max(60, Math.min(getRealtimeSeedLookbackSec(), 120));
       try {
@@ -1239,8 +1293,9 @@ async function main() {
           lookbackSec,
           allowSingleFetchFallback: config.realtimeSeedAllowSingleTxFallback,
         });
+        seeded = 0;
         if (recentSwaps.length > 0) {
-          const seeded = realtimeCandleBuilder.seedSwaps(
+          seeded = realtimeCandleBuilder.seedSwaps(
             recentSwaps.map((swap) => ({
               ...swap,
               pool: request.tokenMint,
@@ -1257,8 +1312,8 @@ async function main() {
             ));
           }
           log.info(
-            `[KOL_CANDLE_COVERAGE] ${request.tokenMint.slice(0, 8)} seeded=${seeded} ` +
-            `pool=${subscriptionPair.slice(0, 8)} reason=${request.reason}`
+            `[KOL_CANDLE_COVERAGE] seeded ${request.tokenMint.slice(0, 8)} swaps=${seeded} ` +
+            `pool=${subscriptionPair.slice(0, 8)} source=${target.pairSource} reason=${request.reason}`
           );
         }
       } catch (error) {
@@ -1270,6 +1325,11 @@ async function main() {
     }
 
     await refreshRealtimeSubscriptions();
+    log.info(
+      `[KOL_CANDLE_COVERAGE] subscribed ${request.tokenMint.slice(0, 8)} ` +
+      `pool=${subscriptionPair.slice(0, 8)} source=${target.pairSource} ` +
+      `seeded=${seeded ?? 'skipped'} alreadyTracking=${alreadyTracking} reason=${request.reason}`
+    );
   };
 
   eventMonitor.on('events', (scores) => {

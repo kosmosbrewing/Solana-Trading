@@ -27,6 +27,7 @@
     "kol:admission-edge-report": "ts-node scripts/admission-edge-report.ts",
     "kol:mission-entry-report": "ts-node scripts/mission-entry-report.ts",
     "kol:candle-entry-proof-report": "ts-node scripts/candle-entry-proof-report.ts",
+    "kol:tx-pool-evidence-report": "ts-node scripts/kol-tx-pool-evidence-report.ts",
     "kol:probe-policy-sweep": "ts-node scripts/probe-policy-sweep-report.ts",
     "kol:probe-policy-shadow-report": "ts-node scripts/probe-policy-shadow-report.ts",
     "kol:live-mirror-report": "ts-node scripts/kol-live-mirror-report.ts",

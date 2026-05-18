@@ -13,6 +13,9 @@ export { MicroCandleBuilder } from './microCandleBuilder';
 export { fetchRecentSwapsForPool } from './recentSwapBackfill';
 export { RealtimePoolOwnerResolver } from './poolOwnerResolver';
 export {
+  buildKolCandleCoverageTarget,
+} from './kolCandleCoverageResolver';
+export {
   detectRealtimeDiscoveryMismatch,
   detectRealtimePoolProgramMismatch,
   classifyRealtimeAdmissionSkip,
@@ -43,6 +46,7 @@ export {
   METEORA_DLMM_PROGRAM,
 } from './meteoraPrograms';
 export type { HeliusWSConfig, ParsedSwap, RealtimePoolMetadata, SwapSide, SwapSource } from './types';
+export type { KolCandleCoveragePairSource, KolCandleCoverageTarget } from './kolCandleCoverageResolver';
 export type { StoredRealtimeSwap, StoredMicroCandle, RealtimeReplayManifest } from './replayStore';
 export type {
   RealtimeDiscoveryCandidateMeta,

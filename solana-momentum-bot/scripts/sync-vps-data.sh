@@ -20,6 +20,7 @@
 #   SKIP_TRADE_MARKOUT_REPORT=true bash scripts/sync-vps-data.sh  # buy/sell T+ markout report 생략
 #   SKIP_ADMISSION_EDGE_REPORT=true bash scripts/sync-vps-data.sh  # admission edge / lookahead-safe markout report 생략
 #   SKIP_MISSION_ENTRY_REPORT=true bash scripts/sync-vps-data.sh   # mission root-cause entry/bleed report 생략
+#   SKIP_KOL_TX_POOL_EVIDENCE_REPORT=true bash scripts/sync-vps-data.sh  # KOL tx pool evidence report 생략
 #   RUN_CANDLE_ENTRY_PROOF_REPORT=true bash scripts/sync-vps-data.sh  # heavy: candle/anchor proof mart 생성
 #   SKIP_PROBE_POLICY_SWEEP_REPORT=true bash scripts/sync-vps-data.sh  # probe-first policy sweep 생략
 #   SKIP_PROBE_POLICY_SHADOW_REPORT=true bash scripts/sync-vps-data.sh  # probe-policy forward paper shadow report 생략
@@ -77,6 +78,7 @@ fi
 # trade-markout-report: 파일 only → default ON. 실제 buy/sell 이후 T+30/60/300/1800 coverage / continuation.
 # admission-edge-report: 파일 only → default ON. KOL discovery 이후 early continuation 이 late-entry edge 인지 probe hold/cut evidence 인지 분리.
 # mission-entry-report: 파일 only → default ON. T+ entry decay + live bleed bucket + paper shadow readiness 를 사명 기준으로 묶는다.
+# kol-tx-pool-evidence-report: 파일 only → default ON. KOL tx 에 pool/route evidence 가 있는지, candle coverage 전제가 살아있는지 확인.
 # probe-policy-sweep-report: 파일 only → default ON. probe-first hold/cut 정책 grid 를 historical markout 으로 sweep.
 # probe-policy-shadow-report: 파일 only → default ON. forward paper shadow arm 이 parent smart-v3 대비 실제로 손실을 줄이는지 검증.
 # live-mirror-report: 파일 only → default ON. smart-v3 live wallet 과 same-decision paper mirror 괴리를 분리.
@@ -94,6 +96,7 @@ SKIP_LIVE_EQUIVALENCE_REPORT="${SKIP_LIVE_EQUIVALENCE_REPORT:-false}"
 SKIP_TRADE_MARKOUT_REPORT="${SKIP_TRADE_MARKOUT_REPORT:-false}"
 SKIP_ADMISSION_EDGE_REPORT="${SKIP_ADMISSION_EDGE_REPORT:-false}"
 SKIP_MISSION_ENTRY_REPORT="${SKIP_MISSION_ENTRY_REPORT:-false}"
+SKIP_KOL_TX_POOL_EVIDENCE_REPORT="${SKIP_KOL_TX_POOL_EVIDENCE_REPORT:-false}"
 RUN_CANDLE_ENTRY_PROOF_REPORT="${RUN_CANDLE_ENTRY_PROOF_REPORT:-false}"
 SKIP_PROBE_POLICY_SWEEP_REPORT="${SKIP_PROBE_POLICY_SWEEP_REPORT:-false}"
 SKIP_PROBE_POLICY_SHADOW_REPORT="${SKIP_PROBE_POLICY_SHADOW_REPORT:-false}"
@@ -759,6 +762,23 @@ if [ "$SKIP_MISSION_ENTRY_REPORT" != "true" ]; then
   fi
 else
   echo "[sync-vps-data] mission-entry-report: SKIPPED (SKIP_MISSION_ENTRY_REPORT=true)"
+fi
+
+# ─── 8b-1. KOL tx pool evidence report (file-only) ───
+# Why: candle admission proof requires token → executable pool coverage. KOL tx
+# rows can be heuristic-only, so this report separates strategy weakness from
+# missing pool/route evidence.
+if [ "$SKIP_KOL_TX_POOL_EVIDENCE_REPORT" != "true" ]; then
+  KOL_TX_POOL_EVIDENCE_MD="${ROOT_DIR}/reports/kol-tx-pool-evidence-$(date +%Y-%m-%d).md"
+  KOL_TX_POOL_EVIDENCE_JSON="${ROOT_DIR}/reports/kol-tx-pool-evidence-$(date +%Y-%m-%d).json"
+  echo "[sync-vps-data] kol-tx-pool-evidence-report: generating since=${TRADE_MARKOUT_SINCE}"
+  if (cd "${ROOT_DIR}" && npm run -s kol:tx-pool-evidence-report -- --realtime-dir data/realtime --since "${TRADE_MARKOUT_SINCE}" --md "${KOL_TX_POOL_EVIDENCE_MD}" --json "${KOL_TX_POOL_EVIDENCE_JSON}" 2>&1 | tail -8); then
+    echo "[sync-vps-data] kol-tx-pool-evidence-report: ok → ${KOL_TX_POOL_EVIDENCE_MD}"
+  else
+    echo "[sync-vps-data] kol-tx-pool-evidence-report: WARN — generation failed (sync 자체는 정상)"
+  fi
+else
+  echo "[sync-vps-data] kol-tx-pool-evidence-report: SKIPPED (SKIP_KOL_TX_POOL_EVIDENCE_REPORT=true)"
 fi
 
 # ─── 8b-2. Candle entry proof report (heavy, opt-in) ───

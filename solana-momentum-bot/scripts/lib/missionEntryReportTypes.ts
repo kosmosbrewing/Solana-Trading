@@ -16,6 +16,7 @@ export const MISSION_BLEED_EXIT_REASONS = [
 
 export const MISSION_SHADOW_ARMS = [
   'rotation_doa_veto_shadow_v1',
+  'rotation_candle_confirm_shadow_v1',
   'smart_v3_probe_confirm_shadow_v1',
   'rotation_good_kol_focus_v1',
 ] as const;

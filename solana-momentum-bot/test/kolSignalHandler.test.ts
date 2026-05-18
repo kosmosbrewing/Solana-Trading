@@ -354,6 +354,19 @@ jest.mock('../src/utils/config', () => ({
     kolHunterRotationDoaVetoShadowPaperEnabled: false,
     kolHunterRotationDoaVetoShadowCooldownMs: 3_600_000,
     kolHunterRotationDoaVetoShadowParameterVersion: 'rotation-doa-veto-shadow-v1.0.0',
+    kolHunterRotationCandleConfirmShadowPaperEnabled: false,
+    kolHunterRotationCandleConfirmPreWindowSec: 60,
+    kolHunterRotationCandleConfirmMinRows: 6,
+    kolHunterRotationCandleConfirmMinTrades: 6,
+    kolHunterRotationCandleConfirmMinBuyRatio: 0.50,
+    kolHunterRotationCandleConfirmMinReturnPct: 0,
+    kolHunterRotationCandleConfirmMaxAbsReturnPct: 0.03,
+    kolHunterRotationCandleConfirmDoaWindowSec: 15,
+    kolHunterRotationCandleConfirmDoaMinMfePct: 0.015,
+    kolHunterRotationCandleConfirmDoaMaxMaePct: 0.03,
+    kolHunterRotationCandleConfirmHorizonSec: 30,
+    kolHunterRotationCandleConfirmMinMfePct: 0.02,
+    kolHunterRotationCandleConfirmParameterVersion: 'rotation-candle-confirm-shadow-v1.0.0',
     kolHunterRotationPaperAssumedAtaRentSol: 0.00207408,
     kolHunterRotationPaperAssumedNetworkFeeSol: 0.000105,
     kolHunterRotationLiveKolDecayEnabled: true,
@@ -715,6 +728,19 @@ describe('kolSignalHandler — state machine', () => {
     mockedConfig.kolHunterRotationDoaVetoShadowPaperEnabled = false;
     mockedConfig.kolHunterRotationDoaVetoShadowCooldownMs = 3_600_000;
     mockedConfig.kolHunterRotationDoaVetoShadowParameterVersion = 'rotation-doa-veto-shadow-v1.0.0';
+    mockedConfig.kolHunterRotationCandleConfirmShadowPaperEnabled = false;
+    mockedConfig.kolHunterRotationCandleConfirmPreWindowSec = 60;
+    mockedConfig.kolHunterRotationCandleConfirmMinRows = 6;
+    mockedConfig.kolHunterRotationCandleConfirmMinTrades = 6;
+    mockedConfig.kolHunterRotationCandleConfirmMinBuyRatio = 0.50;
+    mockedConfig.kolHunterRotationCandleConfirmMinReturnPct = 0;
+    mockedConfig.kolHunterRotationCandleConfirmMaxAbsReturnPct = 0.03;
+    mockedConfig.kolHunterRotationCandleConfirmDoaWindowSec = 15;
+    mockedConfig.kolHunterRotationCandleConfirmDoaMinMfePct = 0.015;
+    mockedConfig.kolHunterRotationCandleConfirmDoaMaxMaePct = 0.03;
+    mockedConfig.kolHunterRotationCandleConfirmHorizonSec = 30;
+    mockedConfig.kolHunterRotationCandleConfirmMinMfePct = 0.02;
+    mockedConfig.kolHunterRotationCandleConfirmParameterVersion = 'rotation-candle-confirm-shadow-v1.0.0';
     mockedConfig.kolHunterRotationPaperAssumedAtaRentSol = 0.00207408;
     mockedConfig.kolHunterRotationPaperAssumedNetworkFeeSol = 0.000105;
     mockedConfig.kolHunterRotationLiveKolDecayEnabled = true;
@@ -1874,6 +1900,63 @@ describe('kolSignalHandler — state machine', () => {
       expect(positions[0].probeFlatTimeoutSec).toBe(30);
       expect(positions[0].probeHardCutPctOverride).toBe(0.04);
       expect(positions[0].rotationDoaWindowSecOverride).toBe(10);
+    });
+
+    it('rotation-underfill: 안정적인 pre-entry candle 에서 candle-confirm shadow arm 을 열고 30초 실패를 컷한다', async () => {
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterSmartV3VelocityScoreThreshold = 99;
+      mockedConfig.kolHunterRotationPaperArmsEnabled = true;
+      mockedConfig.kolHunterRotationCandleConfirmShadowPaperEnabled = true;
+      const now = Date.now();
+      const candles = Array.from({ length: 6 }, (_, idx) => {
+        const open = 0.00094 + idx * 0.000001;
+        return {
+          pairAddress: MINT_ROTATION,
+          timestamp: new Date(now - (55 - idx * 5) * 1000),
+          intervalSec: 5,
+          open,
+          high: open * 1.004,
+          low: open * 0.998,
+          close: open * 1.002,
+          volume: 3,
+          buyVolume: 2,
+          sellVolume: 1,
+          tradeCount: 2,
+        };
+      });
+      __testInit({
+        priceFeed: stubFeed as unknown as never,
+        ctx: {
+          realtimeCandleBuilder: {
+            getRecentCandles: jest.fn(() => candles),
+          },
+        } as any,
+      });
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+
+      const positions = __testGetActive();
+      const candleArm = positions.find((pos) => pos.armName === 'rotation_candle_confirm_shadow_v1');
+      expect(candleArm).toBeDefined();
+      expect(candleArm?.paperRole).toBe('probe_policy_shadow');
+      expect(candleArm?.rotationCandleConfirmSnapshot?.pass).toBe(true);
+      expect(candleArm?.rotationCandleConfirmSnapshot?.reason).toBe('pass');
+      expect(candleArm?.rotationDoaWindowSecOverride).toBe(15);
+      expect(candleArm?.rotationDoaMinMfePctOverride).toBe(0.015);
+      expect(candleArm?.rotationDoaMaxMaePctOverride).toBe(0.03);
+      expect(candleArm?.rotationCandleConfirmHorizonSec).toBe(30);
+      expect(candleArm?.rotationCandleConfirmMinMfePct).toBe(0.02);
+
+      let captured: any = null;
+      kolHunterEvents.once('paper_close', (evt) => { captured = evt; });
+      candleArm!.entryTimeSec = Math.floor(Date.now() / 1000) - 31;
+      __testTriggerTick(candleArm!.positionId, candleArm!.entryPrice * 0.99);
+      await flushAsync();
+
+      expect(captured?.reason).toBe('rotation_candle_confirm_fail_cut');
     });
 
     it('rotation-underfill: 1-KOL 진입 후 30초 안에 2번째 KOL 이 붙으면 wait-conversion paper arm 을 연다', async () => {

@@ -1,11 +1,9 @@
 import { mkdtemp, rm, writeFile } from 'fs/promises';
 import os from 'os';
 import path from 'path';
-import {
-  buildMissionEntryReport,
-  parseMissionEntryArgs,
-  renderMissionEntryReport,
-} from '../scripts/mission-entry-report';
+import { buildMissionEntryReport } from '../scripts/lib/missionEntryReport';
+import { parseMissionEntryArgs } from '../scripts/lib/missionEntryReportArgs';
+import { renderMissionEntryReport } from '../scripts/lib/missionEntryReportRenderer';
 
 function jsonl(rows: unknown[]): string {
   return `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`;

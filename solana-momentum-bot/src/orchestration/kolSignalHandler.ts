@@ -119,7 +119,7 @@ import {
   type LiveSellRetryUrgency,
 } from '../executor/liveSellRetry';
 // 2026-04-27 (KOL live canary): pure_ws live path 와 동일 패턴.
-import type { Order, PartialFillDataReason, Trade } from '../utils/types';
+import type { Candle, Order, PartialFillDataReason, Trade } from '../utils/types';
 import type { BotContext } from './types';
 import { isPureWsNewPairDiscoverySource } from './pureWs/sourceGate';
 import { acquireCanarySlot, releaseCanarySlot } from '../risk/canaryConcurrencyGuard';
@@ -169,6 +169,7 @@ const ROTATION_UNDERFILL_EXIT_FLOW_PROFILE_ARM = 'rotation_underfill_exit_flow_v
 const ROTATION_UNDERFILL_COST_AWARE_PROFILE_ARM = 'rotation_underfill_cost_aware_exit_v2';
 const ROTATION_GOOD_KOL_FOCUS_ARM = 'rotation_good_kol_focus_v1';
 const ROTATION_DOA_VETO_SHADOW_ARM = 'rotation_doa_veto_shadow_v1';
+const ROTATION_CANDLE_CONFIRM_SHADOW_ARM = 'rotation_candle_confirm_shadow_v1';
 const SMART_V3_FAST_FAIL_LIVE_MIRROR_ARM = 'smart_v3_fast_fail_live_mirror_v1';
 const SMART_V3_PROBE_CONFIRM_SHADOW_ARM = 'smart_v3_probe_confirm_shadow_v1';
 const SMART_V3_PROBE_CONFIRM_SHADOW_PARAMETER_VERSION = 'smart-v3-probe-confirm-shadow-v1.0.0';
@@ -198,6 +199,7 @@ export type CloseReason =
   | 'quick_reject_classifier_exit'
   | 'rotation_dead_on_arrival'
   | 'rotation_mae_fast_fail'
+  | 'rotation_candle_confirm_fail_cut'
   | 'smart_v3_mae_fast_fail'
   | 'probe_policy_confirm_fail_cut'
   | 'probe_policy_target_close'
@@ -250,6 +252,23 @@ type SmartV3MfeStage =
   | 'profit_lock'
   | 'runner'
   | 'convexity';
+
+interface RotationCandleConfirmSnapshot {
+  schemaVersion: 'rotation-candle-confirm-shadow/v1';
+  evaluatedAtMs: number;
+  source: 'realtime_5s' | 'unavailable';
+  intervalSec: number;
+  preWindowSec: number;
+  rows: number;
+  tradeCount: number;
+  buyVolume: number;
+  sellVolume: number;
+  buyRatio: number | null;
+  returnPct: number | null;
+  maxAbsCandleReturnPct: number | null;
+  pass: boolean;
+  reason: string;
+}
 
 export interface PaperPosition {
   positionId: string;
@@ -352,6 +371,10 @@ export interface PaperPosition {
   rotationFlowLiveReduceTxSignature?: string;
   rotationFlowLiveReduceAttempts?: number;
   rotationMonetizableEdge?: RotationMonetizableEdgeEstimate | null;
+  rotationCandleConfirmSnapshot?: RotationCandleConfirmSnapshot | null;
+  rotationCandleConfirmHorizonSec?: number;
+  rotationCandleConfirmMinMfePct?: number;
+  rotationCandleConfirmConfirmedAtSec?: number;
   executionGuard?: KolExecutionGuardSnapshot | null;
   executionGuardReason?: string | null;
   executionGuardAction?: KolExecutionGuardAction | null;
@@ -2539,6 +2562,7 @@ function armNameForVersion(parameterVersion: string): string {
   if (parameterVersion === config.kolHunterRotationUnderfillCostAwareParameterVersion) return ROTATION_UNDERFILL_COST_AWARE_PROFILE_ARM;
   if (parameterVersion === config.kolHunterRotationGoodKolFocusParameterVersion) return ROTATION_GOOD_KOL_FOCUS_ARM;
   if (parameterVersion === config.kolHunterRotationDoaVetoShadowParameterVersion) return ROTATION_DOA_VETO_SHADOW_ARM;
+  if (parameterVersion === config.kolHunterRotationCandleConfirmParameterVersion) return ROTATION_CANDLE_CONFIRM_SHADOW_ARM;
   if (parameterVersion === ROTATION_SECOND_KOL_WAIT_PARAMETER_VERSION) return ROTATION_SECOND_KOL_WAIT_ARM;
   if (parameterVersion === config.kolHunterRotationExitFlowParameterVersion) return ROTATION_EXIT_FLOW_ARM;
   if (parameterVersion === config.kolHunterRotationChaseTopupParameterVersion) return 'rotation_chase_topup_v1';
@@ -2563,6 +2587,15 @@ interface RotationPaperArmSpec extends DynamicExitParams {
   costAwareProfitFloorMult?: number;
   costAwareProfitFloorBufferPct?: number;
   doaVetoShadow?: boolean;
+  candleConfirmShadow?: boolean;
+  candleConfirmPreWindowSec?: number;
+  candleConfirmMinRows?: number;
+  candleConfirmMinTrades?: number;
+  candleConfirmMinBuyRatio?: number;
+  candleConfirmMinReturnPct?: number;
+  candleConfirmMaxAbsReturnPct?: number;
+  candleConfirmHorizonSec?: number;
+  candleConfirmMinMfePct?: number;
   requiredKolIds?: string[];
   extraSurvivalFlags?: string[];
 }
@@ -2778,7 +2811,43 @@ function buildRotationPaperArmSpecs(primaryVersion: string): RotationPaperArmSpe
         `ROTATION_DOA_VETO_COOLDOWN_${Math.round(config.kolHunterRotationDoaVetoShadowCooldownMs / 1000)}S`,
       ],
     };
-    return [flowSpec, underfillCostAwareSpec, goodKolFocusSpec, doaVetoShadowSpec];
+    const candleConfirmShadowSpec: RotationPaperArmSpec = {
+      suffix: 'candle-confirm-shadow',
+      armName: ROTATION_CANDLE_CONFIRM_SHADOW_ARM,
+      profileArm: ROTATION_CANDLE_CONFIRM_SHADOW_ARM,
+      parameterVersion: config.kolHunterRotationCandleConfirmParameterVersion,
+      enabled: config.kolHunterRotationCandleConfirmShadowPaperEnabled,
+      t1Mfe: config.kolHunterRotationUnderfillCostAwareT1MinMfe,
+      t1TrailPct: config.kolHunterRotationUnderfillCostAwareT1TrailPct,
+      t1ProfitFloorMult: config.kolHunterRotationUnderfillCostAwareProfitFloorMult,
+      probeFlatTimeoutSec: config.kolHunterRotationUnderfillCostAwareProbeTimeoutSec,
+      probeHardCutPct: config.kolHunterRotationUnderfillCostAwareHardCutPct,
+      rotationDoaWindowSec: config.kolHunterRotationCandleConfirmDoaWindowSec,
+      rotationDoaMinMfePct: config.kolHunterRotationCandleConfirmDoaMinMfePct,
+      rotationDoaMaxMaePct: config.kolHunterRotationCandleConfirmDoaMaxMaePct,
+      flowExit: true,
+      costAwareExit: true,
+      costAwareT1MinMfe: config.kolHunterRotationUnderfillCostAwareT1MinMfe,
+      costAwareT1BufferPct: config.kolHunterRotationUnderfillCostAwareT1BufferPct,
+      costAwareT1MaxMfe: config.kolHunterRotationUnderfillCostAwareT1MaxMfe,
+      costAwareProfitFloorMult: config.kolHunterRotationUnderfillCostAwareProfitFloorMult,
+      costAwareProfitFloorBufferPct: config.kolHunterRotationUnderfillCostAwareProfitFloorBufferPct,
+      candleConfirmShadow: true,
+      candleConfirmPreWindowSec: config.kolHunterRotationCandleConfirmPreWindowSec,
+      candleConfirmMinRows: config.kolHunterRotationCandleConfirmMinRows,
+      candleConfirmMinTrades: config.kolHunterRotationCandleConfirmMinTrades,
+      candleConfirmMinBuyRatio: config.kolHunterRotationCandleConfirmMinBuyRatio,
+      candleConfirmMinReturnPct: config.kolHunterRotationCandleConfirmMinReturnPct,
+      candleConfirmMaxAbsReturnPct: config.kolHunterRotationCandleConfirmMaxAbsReturnPct,
+      candleConfirmHorizonSec: config.kolHunterRotationCandleConfirmHorizonSec,
+      candleConfirmMinMfePct: config.kolHunterRotationCandleConfirmMinMfePct,
+      extraSurvivalFlags: [
+        'ROTATION_CANDLE_CONFIRM_SHADOW',
+        `ROTATION_CANDLE_PRE_WINDOW_${Math.round(config.kolHunterRotationCandleConfirmPreWindowSec)}S`,
+        `ROTATION_CANDLE_CONFIRM_T${Math.round(config.kolHunterRotationCandleConfirmHorizonSec)}S`,
+      ],
+    };
+    return [flowSpec, underfillCostAwareSpec, goodKolFocusSpec, doaVetoShadowSpec, candleConfirmShadowSpec];
   }
   return [
     {
@@ -2849,12 +2918,92 @@ function isRotationStrictQualityRiskFlag(flag: string): boolean {
     upper.includes('NO_SELL_ROUTE');
 }
 
+function buildRotationCandleConfirmSnapshot(
+  tokenMint: string,
+  evaluatedAtMs: number,
+  spec: RotationPaperArmSpec
+): RotationCandleConfirmSnapshot {
+  const intervalSec = 5;
+  const preWindowSec = spec.candleConfirmPreWindowSec ?? config.kolHunterRotationCandleConfirmPreWindowSec;
+  const minRows = spec.candleConfirmMinRows ?? config.kolHunterRotationCandleConfirmMinRows;
+  const minTrades = spec.candleConfirmMinTrades ?? config.kolHunterRotationCandleConfirmMinTrades;
+  const minBuyRatio = spec.candleConfirmMinBuyRatio ?? config.kolHunterRotationCandleConfirmMinBuyRatio;
+  const minReturnPct = spec.candleConfirmMinReturnPct ?? config.kolHunterRotationCandleConfirmMinReturnPct;
+  const maxAbsReturnPct =
+    spec.candleConfirmMaxAbsReturnPct ?? config.kolHunterRotationCandleConfirmMaxAbsReturnPct;
+  const base: Omit<RotationCandleConfirmSnapshot, 'rows' | 'tradeCount' | 'buyVolume' | 'sellVolume' | 'buyRatio' | 'returnPct' | 'maxAbsCandleReturnPct' | 'pass' | 'reason'> = {
+    schemaVersion: 'rotation-candle-confirm-shadow/v1',
+    evaluatedAtMs,
+    source: botCtx?.realtimeCandleBuilder ? 'realtime_5s' : 'unavailable',
+    intervalSec,
+    preWindowSec,
+  };
+
+  const builder = botCtx?.realtimeCandleBuilder;
+  if (!builder) {
+    return {
+      ...base,
+      rows: 0,
+      tradeCount: 0,
+      buyVolume: 0,
+      sellVolume: 0,
+      buyRatio: null,
+      returnPct: null,
+      maxAbsCandleReturnPct: null,
+      pass: false,
+      reason: 'source_unavailable',
+    };
+  }
+
+  const windowStartMs = evaluatedAtMs - preWindowSec * 1000;
+  const candles = builder
+    .getRecentCandles(tokenMint, intervalSec, Math.ceil(preWindowSec / intervalSec) + 2)
+    .filter((candle: Candle) => {
+      const t = candle.timestamp.getTime();
+      return t >= windowStartMs && t <= evaluatedAtMs;
+    });
+  const rows = candles.length;
+  const tradeCount = candles.reduce((sum, candle) => sum + Math.max(0, candle.tradeCount), 0);
+  const buyVolume = candles.reduce((sum, candle) => sum + Math.max(0, candle.buyVolume), 0);
+  const sellVolume = candles.reduce((sum, candle) => sum + Math.max(0, candle.sellVolume), 0);
+  const totalVolume = buyVolume + sellVolume;
+  const buyRatio = totalVolume > 0 ? buyVolume / totalVolume : null;
+  const first = candles[0];
+  const last = candles[candles.length - 1];
+  const returnPct = first && last && first.open > 0 ? last.close / first.open - 1 : null;
+  const maxAbsCandleReturnPct = candles.length > 0
+    ? Math.max(...candles.map((candle) => (
+      candle.open > 0 ? Math.abs(candle.close / candle.open - 1) : Number.POSITIVE_INFINITY
+    )))
+    : null;
+  let reason = 'pass';
+  if (rows < minRows) reason = 'insufficient_rows';
+  else if (tradeCount < minTrades) reason = 'insufficient_trades';
+  else if (buyRatio == null || buyRatio < minBuyRatio) reason = 'buy_ratio_low';
+  else if (returnPct == null || returnPct < minReturnPct) reason = 'pre_return_falling';
+  else if (maxAbsCandleReturnPct == null || maxAbsCandleReturnPct > maxAbsReturnPct) reason = 'pre_volatile';
+
+  return {
+    ...base,
+    rows,
+    tradeCount,
+    buyVolume,
+    sellVolume,
+    buyRatio,
+    returnPct,
+    maxAbsCandleReturnPct,
+    pass: reason === 'pass',
+    reason,
+  };
+}
+
 function rotationPaperArmRejectReason(
   spec: RotationPaperArmSpec,
   entryPrice: number,
   anchorPrice: number | undefined,
   survivalFlags: string[],
-  participatingKols: KolDiscoveryScore['participatingKols']
+  participatingKols: KolDiscoveryScore['participatingKols'],
+  candleConfirmSnapshot?: RotationCandleConfirmSnapshot | null
 ): string | undefined {
   if (!spec.enabled) return 'disabled';
   if (spec.requiredKolIds?.length) {
@@ -2865,6 +3014,10 @@ function rotationPaperArmRejectReason(
   if (spec.doaVetoShadow) {
     const veto = checkRotationDoaVetoShadow(participatingKols.map((kol) => kol.id));
     if (veto.blocked) return veto.reason ?? 'doa_veto_kol_cooldown';
+  }
+  if (spec.candleConfirmShadow) {
+    if (!candleConfirmSnapshot) return 'candle_confirm_unavailable';
+    if (!candleConfirmSnapshot.pass) return `candle_confirm_${candleConfirmSnapshot.reason}`;
   }
   const priceResponsePct = rotationPriceResponsePct(entryPrice, anchorPrice);
   if (
@@ -2879,7 +3032,17 @@ function rotationPaperArmRejectReason(
   return undefined;
 }
 
-function applyRotationPaperArmSpec(pos: PaperPosition, spec: RotationPaperArmSpec): void {
+function shouldTrackRotationPaperArmSkip(reason: string): boolean {
+  return reason !== 'disabled' &&
+    reason !== 'focus_kol_missing' &&
+    reason !== 'candle_confirm_source_unavailable';
+}
+
+function applyRotationPaperArmSpec(
+  pos: PaperPosition,
+  spec: RotationPaperArmSpec,
+  candleConfirmSnapshot?: RotationCandleConfirmSnapshot | null
+): void {
   const parentArmName = pos.armName;
   pos.armName = spec.armName;
   pos.parameterVersion = spec.parameterVersion;
@@ -2901,6 +3064,14 @@ function applyRotationPaperArmSpec(pos: PaperPosition, spec: RotationPaperArmSpe
   pos.rotationDoaMinMfePctOverride = spec.rotationDoaMinMfePct;
   pos.rotationDoaMaxMaePctOverride = spec.rotationDoaMaxMaePct;
   pos.rotationFlowExitEnabled = spec.flowExit === true;
+  if (spec.candleConfirmShadow) {
+    pos.paperRole = 'probe_policy_shadow';
+    pos.rotationCandleConfirmSnapshot = candleConfirmSnapshot ?? null;
+    pos.rotationCandleConfirmHorizonSec =
+      spec.candleConfirmHorizonSec ?? config.kolHunterRotationCandleConfirmHorizonSec;
+    pos.rotationCandleConfirmMinMfePct =
+      spec.candleConfirmMinMfePct ?? config.kolHunterRotationCandleConfirmMinMfePct;
+  }
   const costAwareFlags: string[] = [];
   if (spec.costAwareExit) {
     const rawRequiredGrossMove = pos.rotationMonetizableEdge?.requiredGrossMovePct ?? pos.rotationMonetizableEdge?.costRatio;
@@ -7915,19 +8086,23 @@ async function enterPaperPosition(
     primaryVersion === config.kolHunterRotationUnderfillParameterVersion
   ) {
     for (const spec of buildRotationPaperArmSpecs(primaryVersion)) {
+      const candleConfirmSnapshot = spec.candleConfirmShadow
+        ? buildRotationCandleConfirmSnapshot(tokenMint, entryAtMs, spec)
+        : null;
       const rejectReason = rotationPaperArmRejectReason(
         spec,
         entryPrice,
         options.rotationAnchorPrice,
         combinedSurvivalFlags,
-        entryParticipatingKols
+        entryParticipatingKols,
+        candleConfirmSnapshot
       );
       if (rejectReason) {
         log.debug(
           `[KOL_HUNTER_ROTATION_PAPER_ARM_SKIP] ${tokenMint.slice(0, 8)} ` +
           `arm=${spec.armName} reason=${rejectReason}`
         );
-        if (rejectReason !== 'disabled' && rejectReason !== 'focus_kol_missing') {
+        if (shouldTrackRotationPaperArmSkip(rejectReason)) {
           trackRotationPaperArmSkipMarkout(
             cand,
             score,
@@ -7947,7 +8122,7 @@ async function enterPaperPosition(
         true,
         positionId
       );
-      applyRotationPaperArmSpec(arm, spec);
+      applyRotationPaperArmSpec(arm, spec, candleConfirmSnapshot);
       positions.push(arm);
     }
     if (positions.length > 1) {
@@ -8832,6 +9007,39 @@ function isProbePolicyShadow(pos: PaperPosition): boolean {
     pos.probePolicyTargetHorizonSec != null;
 }
 
+function isRotationCandleConfirmShadow(pos: PaperPosition): boolean {
+  return pos.armName === ROTATION_CANDLE_CONFIRM_SHADOW_ARM &&
+    pos.rotationCandleConfirmHorizonSec != null &&
+    pos.rotationCandleConfirmMinMfePct != null;
+}
+
+function maybeCloseRotationCandleConfirmShadow(
+  pos: PaperPosition,
+  currentPrice: number,
+  nowSec: number,
+  elapsedSec: number,
+  currentPct: number,
+  mfePct: number,
+  maePct: number
+): boolean {
+  if (!isRotationCandleConfirmShadow(pos)) return false;
+  if (pos.rotationCandleConfirmConfirmedAtSec != null) return false;
+  const horizonSec = pos.rotationCandleConfirmHorizonSec ?? 30;
+  if (elapsedSec < horizonSec) return false;
+  const minMfePct = pos.rotationCandleConfirmMinMfePct ?? 0.02;
+  if (mfePct < minMfePct && currentPct < 0) {
+    closePosition(pos, currentPrice, 'rotation_candle_confirm_fail_cut', nowSec, mfePct, maePct);
+    return true;
+  }
+  pos.rotationCandleConfirmConfirmedAtSec = nowSec;
+  log.info(
+    `[KOL_HUNTER_ROTATION_CANDLE_CONFIRM] ${pos.positionId} ` +
+    `mfe=${(mfePct * 100).toFixed(2)}% current=${(currentPct * 100).toFixed(2)}% ` +
+    `horizon=${horizonSec}s`
+  );
+  return false;
+}
+
 function maybeCloseProbePolicyShadow(
   pos: PaperPosition,
   currentPrice: number,
@@ -8947,6 +9155,9 @@ function onPriceTick(positionId: string, tick: PriceTick): void {
       }
       if (shouldRotationMaeFastFail(pos, elapsedSec, mfePct, maePct, Date.now())) {
         closePosition(pos, currentPrice, 'rotation_mae_fast_fail', nowSec, mfePct, maePct);
+        return;
+      }
+      if (maybeCloseRotationCandleConfirmShadow(pos, currentPrice, nowSec, elapsedSec, currentPct, mfePct, maePct)) {
         return;
       }
       if (shouldSmartV3MaeFastFail(pos, elapsedSec, mfePct, maePct, Date.now())) {
@@ -10112,6 +10323,11 @@ function buildKolBaseLedgerRecord(
     liveCostShadowReason: pos.rotationMonetizableEdge
       ? (pos.rotationMonetizableEdge.pass ? 'rotation_monetizable_edge_pass' : pos.rotationMonetizableEdge.reason)
       : null,
+    rotationCandleConfirmSnapshot: pos.rotationCandleConfirmSnapshot ?? null,
+    rotationCandleConfirmHorizonSec: pos.rotationCandleConfirmHorizonSec ?? null,
+    rotationCandleConfirmMinMfePct: pos.rotationCandleConfirmMinMfePct ?? null,
+    rotationCandleConfirmConfirmedAtSec: pos.rotationCandleConfirmConfirmedAtSec ?? null,
+    rotationCandleConfirmFailCut: reason === 'rotation_candle_confirm_fail_cut',
     executionGuardReason: pos.executionGuardReason ?? null,
     executionGuardAction: pos.executionGuardAction ?? null,
     capitulationTelemetry: pos.capitulationTelemetry ?? null,
@@ -10290,6 +10506,11 @@ function buildKolLedgerExtras(
     liveCostShadowReason: pos.rotationMonetizableEdge
       ? (pos.rotationMonetizableEdge.pass ? 'rotation_monetizable_edge_pass' : pos.rotationMonetizableEdge.reason)
       : null,
+    rotationCandleConfirmSnapshot: pos.rotationCandleConfirmSnapshot ?? null,
+    rotationCandleConfirmHorizonSec: pos.rotationCandleConfirmHorizonSec ?? null,
+    rotationCandleConfirmMinMfePct: pos.rotationCandleConfirmMinMfePct ?? null,
+    rotationCandleConfirmConfirmedAtSec: pos.rotationCandleConfirmConfirmedAtSec ?? null,
+    rotationCandleConfirmFailCut: reason === 'rotation_candle_confirm_fail_cut',
     executionGuardReason: pos.executionGuardReason ?? null,
     executionGuardAction: pos.executionGuardAction ?? null,
     capitulationTelemetry: pos.capitulationTelemetry ?? null,
@@ -10490,6 +10711,11 @@ async function appendPaperLedger(
       rotationFlowResidualUntilSec: pos.rotationFlowResidualUntilSec ?? null,
       rotationFlowLastReducePct: pos.rotationFlowLastReducePct ?? null,
       rotationMonetizableEdge: pos.rotationMonetizableEdge ?? null,
+      rotationCandleConfirmSnapshot: pos.rotationCandleConfirmSnapshot ?? null,
+      rotationCandleConfirmHorizonSec: pos.rotationCandleConfirmHorizonSec ?? null,
+      rotationCandleConfirmMinMfePct: pos.rotationCandleConfirmMinMfePct ?? null,
+      rotationCandleConfirmConfirmedAtSec: pos.rotationCandleConfirmConfirmedAtSec ?? null,
+      rotationCandleConfirmFailCut: reason === 'rotation_candle_confirm_fail_cut',
       capitulationTelemetry: pos.capitulationTelemetry ?? null,
       capitulationEntryLowPrice: pos.capitulationEntryLowPrice ?? null,
       capitulationEntryLowAtMs: pos.capitulationEntryLowAtMs ?? null,
@@ -11676,16 +11902,26 @@ async function enterLivePosition(
     addedArms.push(mirrorPos.armName);
 
     for (const spec of buildRotationPaperArmSpecs(primaryVersion)) {
-      if (spec.armName !== ROTATION_GOOD_KOL_FOCUS_ARM && spec.armName !== ROTATION_DOA_VETO_SHADOW_ARM) continue;
+      if (
+        spec.armName !== ROTATION_GOOD_KOL_FOCUS_ARM &&
+        spec.armName !== ROTATION_DOA_VETO_SHADOW_ARM &&
+        spec.armName !== ROTATION_CANDLE_CONFIRM_SHADOW_ARM
+      ) {
+        continue;
+      }
+      const candleConfirmSnapshot = spec.candleConfirmShadow
+        ? buildRotationCandleConfirmSnapshot(tokenMint, Date.now(), spec)
+        : null;
       const rejectReason = rotationPaperArmRejectReason(
         spec,
         liveTokenEntryPrice,
         options.rotationAnchorPrice,
         position.survivalFlags,
-        entryParticipatingKols
+        entryParticipatingKols,
+        candleConfirmSnapshot
       );
       if (rejectReason) {
-        if (rejectReason !== 'disabled' && rejectReason !== 'focus_kol_missing') {
+        if (shouldTrackRotationPaperArmSkip(rejectReason)) {
           trackRotationPaperArmSkipMarkout(
             cand,
             score,
@@ -11724,7 +11960,7 @@ async function enterLivePosition(
           'LIVE_PAIRED_PAPER_SHADOW',
         ],
       };
-      applyRotationPaperArmSpec(shadowPos, spec);
+      applyRotationPaperArmSpec(shadowPos, spec, candleConfirmSnapshot);
       registerLivePairedPaperPosition(shadowPos);
       addedArms.push(shadowPos.armName);
     }

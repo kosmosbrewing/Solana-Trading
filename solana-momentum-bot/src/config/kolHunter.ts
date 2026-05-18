@@ -469,6 +469,35 @@ export const kolHunter = {
     numEnv('KOL_HUNTER_ROTATION_DOA_VETO_SHADOW_COOLDOWN_MS', '3600000'),
   kolHunterRotationDoaVetoShadowParameterVersion:
     process.env.KOL_HUNTER_ROTATION_DOA_VETO_SHADOW_PARAMETER_VERSION ?? 'rotation-doa-veto-shadow-v1.0.0',
+  // 2026-05-18: historical candle sweep 기반 paper-only admission cohort.
+  // 진입 전 5s micro-candle 이 안정적이고 buy-side 우위일 때만 sidecar shadow 를 만들고,
+  // 진입 후 30초 내 MFE 가 살아나지 않으면 paper 에서만 컷한다. Live routing 영향 0.
+  kolHunterRotationCandleConfirmShadowPaperEnabled:
+    boolOptional('KOL_HUNTER_ROTATION_CANDLE_CONFIRM_SHADOW_PAPER_ENABLED', true),
+  kolHunterRotationCandleConfirmPreWindowSec:
+    numEnv('KOL_HUNTER_ROTATION_CANDLE_CONFIRM_PRE_WINDOW_SEC', '60'),
+  kolHunterRotationCandleConfirmMinRows:
+    numEnv('KOL_HUNTER_ROTATION_CANDLE_CONFIRM_MIN_ROWS', '6'),
+  kolHunterRotationCandleConfirmMinTrades:
+    numEnv('KOL_HUNTER_ROTATION_CANDLE_CONFIRM_MIN_TRADES', '6'),
+  kolHunterRotationCandleConfirmMinBuyRatio:
+    numEnv('KOL_HUNTER_ROTATION_CANDLE_CONFIRM_MIN_BUY_RATIO', '0.50'),
+  kolHunterRotationCandleConfirmMinReturnPct:
+    numEnv('KOL_HUNTER_ROTATION_CANDLE_CONFIRM_MIN_RETURN_PCT', '0'),
+  kolHunterRotationCandleConfirmMaxAbsReturnPct:
+    numEnv('KOL_HUNTER_ROTATION_CANDLE_CONFIRM_MAX_ABS_RETURN_PCT', '0.03'),
+  kolHunterRotationCandleConfirmDoaWindowSec:
+    numEnv('KOL_HUNTER_ROTATION_CANDLE_CONFIRM_DOA_WINDOW_SEC', '15'),
+  kolHunterRotationCandleConfirmDoaMinMfePct:
+    numEnv('KOL_HUNTER_ROTATION_CANDLE_CONFIRM_DOA_MIN_MFE_PCT', '0.015'),
+  kolHunterRotationCandleConfirmDoaMaxMaePct:
+    numEnv('KOL_HUNTER_ROTATION_CANDLE_CONFIRM_DOA_MAX_MAE_PCT', '0.03'),
+  kolHunterRotationCandleConfirmHorizonSec:
+    numEnv('KOL_HUNTER_ROTATION_CANDLE_CONFIRM_HORIZON_SEC', '30'),
+  kolHunterRotationCandleConfirmMinMfePct:
+    numEnv('KOL_HUNTER_ROTATION_CANDLE_CONFIRM_MIN_MFE_PCT', '0.02'),
+  kolHunterRotationCandleConfirmParameterVersion:
+    process.env.KOL_HUNTER_ROTATION_CANDLE_CONFIRM_PARAMETER_VERSION ?? 'rotation-candle-confirm-shadow-v1.0.0',
   kolHunterRotationPaperAssumedAtaRentSol: numEnv('KOL_HUNTER_ROTATION_PAPER_ASSUMED_ATA_RENT_SOL', '0.00207408'),
   kolHunterRotationPaperAssumedNetworkFeeSol: numEnv('KOL_HUNTER_ROTATION_PAPER_ASSUMED_NETWORK_FEE_SOL', '0.000105'),
   kolHunterRotationPaperNotifyEnabled: boolOptional('KOL_HUNTER_ROTATION_PAPER_NOTIFY_ENABLED', true),

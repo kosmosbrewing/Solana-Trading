@@ -20,6 +20,7 @@
 #   SKIP_TRADE_MARKOUT_REPORT=true bash scripts/sync-vps-data.sh  # buy/sell T+ markout report 생략
 #   SKIP_ADMISSION_EDGE_REPORT=true bash scripts/sync-vps-data.sh  # admission edge / lookahead-safe markout report 생략
 #   SKIP_MISSION_ENTRY_REPORT=true bash scripts/sync-vps-data.sh   # mission root-cause entry/bleed report 생략
+#   RUN_CANDLE_ENTRY_PROOF_REPORT=true bash scripts/sync-vps-data.sh  # heavy: candle/anchor proof mart 생성
 #   SKIP_PROBE_POLICY_SWEEP_REPORT=true bash scripts/sync-vps-data.sh  # probe-first policy sweep 생략
 #   SKIP_PROBE_POLICY_SHADOW_REPORT=true bash scripts/sync-vps-data.sh  # probe-policy forward paper shadow report 생략
 #   SKIP_LIVE_MIRROR_REPORT=true bash scripts/sync-vps-data.sh  # smart-v3 live/mirror paired report 생략
@@ -93,6 +94,7 @@ SKIP_LIVE_EQUIVALENCE_REPORT="${SKIP_LIVE_EQUIVALENCE_REPORT:-false}"
 SKIP_TRADE_MARKOUT_REPORT="${SKIP_TRADE_MARKOUT_REPORT:-false}"
 SKIP_ADMISSION_EDGE_REPORT="${SKIP_ADMISSION_EDGE_REPORT:-false}"
 SKIP_MISSION_ENTRY_REPORT="${SKIP_MISSION_ENTRY_REPORT:-false}"
+RUN_CANDLE_ENTRY_PROOF_REPORT="${RUN_CANDLE_ENTRY_PROOF_REPORT:-false}"
 SKIP_PROBE_POLICY_SWEEP_REPORT="${SKIP_PROBE_POLICY_SWEEP_REPORT:-false}"
 SKIP_PROBE_POLICY_SHADOW_REPORT="${SKIP_PROBE_POLICY_SHADOW_REPORT:-false}"
 SKIP_LIVE_MIRROR_REPORT="${SKIP_LIVE_MIRROR_REPORT:-false}"
@@ -116,6 +118,10 @@ MISSION_ENTRY_ROUND_TRIP_COST_PCT="${MISSION_ENTRY_ROUND_TRIP_COST_PCT:-0.005}"
 MISSION_ENTRY_HORIZONS_SEC="${MISSION_ENTRY_HORIZONS_SEC:-30,60,300,1800}"
 MISSION_ENTRY_MIN_ROWS="${MISSION_ENTRY_MIN_ROWS:-50}"
 MISSION_ENTRY_BLEED_SHARE_THRESHOLD="${MISSION_ENTRY_BLEED_SHARE_THRESHOLD:-0.5}"
+CANDLE_ENTRY_PROOF_ROUND_TRIP_COST_PCT="${CANDLE_ENTRY_PROOF_ROUND_TRIP_COST_PCT:-0.005}"
+CANDLE_ENTRY_PROOF_MIN_ROWS="${CANDLE_ENTRY_PROOF_MIN_ROWS:-30}"
+CANDLE_ENTRY_PROOF_HORIZONS_SEC="${CANDLE_ENTRY_PROOF_HORIZONS_SEC:-15,30,60,300}"
+CANDLE_ENTRY_PROOF_PRE_WINDOWS_SEC="${CANDLE_ENTRY_PROOF_PRE_WINDOWS_SEC:-20,60}"
 PROBE_POLICY_ROUND_TRIP_COST_PCT="${PROBE_POLICY_ROUND_TRIP_COST_PCT:-0.005}"
 PROBE_POLICY_CONFIRM_HORIZONS_SEC="${PROBE_POLICY_CONFIRM_HORIZONS_SEC:-30,45,60,90}"
 PROBE_POLICY_CONFIRM_THRESHOLDS_PCT="${PROBE_POLICY_CONFIRM_THRESHOLDS_PCT:-0.05,0.08,0.12,0.15}"
@@ -753,6 +759,24 @@ if [ "$SKIP_MISSION_ENTRY_REPORT" != "true" ]; then
   fi
 else
   echo "[sync-vps-data] mission-entry-report: SKIPPED (SKIP_MISSION_ENTRY_REPORT=true)"
+fi
+
+# ─── 8b-2. Candle entry proof report (heavy, opt-in) ───
+# Why: scans historical micro-candles and joins them to KOL buy anchors to
+# validate paper-only candle veto/fail-fast/trailing hypotheses. This is
+# intentionally opt-in because the local candle corpus can exceed 47M rows.
+if [ "$RUN_CANDLE_ENTRY_PROOF_REPORT" = "true" ]; then
+  CANDLE_PROOF_MD="${ROOT_DIR}/reports/candle-entry-proof-$(date +%Y-%m-%d).md"
+  CANDLE_PROOF_JSON="${ROOT_DIR}/reports/candle-entry-proof-$(date +%Y-%m-%d).json"
+  CANDLE_PROOF_MART_DIR="${ROOT_DIR}/data/research/candle-entry-proof"
+  echo "[sync-vps-data] candle-entry-proof-report: generating heavy candle/anchor mart"
+  if (cd "${ROOT_DIR}" && npm run -s kol:candle-entry-proof-report -- --realtime-dir data/realtime --horizons-sec "${CANDLE_ENTRY_PROOF_HORIZONS_SEC}" --pre-windows-sec "${CANDLE_ENTRY_PROOF_PRE_WINDOWS_SEC}" --round-trip-cost-pct "${CANDLE_ENTRY_PROOF_ROUND_TRIP_COST_PCT}" --min-rows "${CANDLE_ENTRY_PROOF_MIN_ROWS}" --md-out "${CANDLE_PROOF_MD}" --json-out "${CANDLE_PROOF_JSON}" --mart-dir "${CANDLE_PROOF_MART_DIR}" 2>&1 | tail -12); then
+    echo "[sync-vps-data] candle-entry-proof-report: ok → ${CANDLE_PROOF_MD}"
+  else
+    echo "[sync-vps-data] candle-entry-proof-report: WARN — generation failed (sync 자체는 정상)"
+  fi
+else
+  echo "[sync-vps-data] candle-entry-proof-report: SKIPPED (RUN_CANDLE_ENTRY_PROOF_REPORT=true to enable)"
 fi
 
 # ─── 8c. Probe policy sweep report (file-only) ───

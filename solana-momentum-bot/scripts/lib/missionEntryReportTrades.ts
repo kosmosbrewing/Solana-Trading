@@ -145,7 +145,8 @@ export function buildLiveBleed(rows: JsonRow[]): LiveBleedSummary {
 function isPaperShadowArmRow(row: JsonRow, armName: string): boolean {
   const rowArmName = valueStr(row, 'armName');
   const paperRole = valueStr(row, 'paperRole');
-  if (rowArmName === armName || paperRole === armName) return true;
+  if (rowArmName) return rowArmName === armName;
+  if (paperRole === armName) return true;
   return armName === 'smart_v3_probe_confirm_shadow_v1' && paperRole === 'probe_policy_shadow';
 }
 

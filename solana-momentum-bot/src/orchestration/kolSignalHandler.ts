@@ -170,6 +170,8 @@ const ROTATION_UNDERFILL_COST_AWARE_PROFILE_ARM = 'rotation_underfill_cost_aware
 const ROTATION_GOOD_KOL_FOCUS_ARM = 'rotation_good_kol_focus_v1';
 const ROTATION_DOA_VETO_SHADOW_ARM = 'rotation_doa_veto_shadow_v1';
 const ROTATION_CANDLE_CONFIRM_SHADOW_ARM = 'rotation_candle_confirm_shadow_v1';
+const ROTATION_CANDLE_COVERAGE_PROBE_ARM = 'rotation_candle_coverage_probe_v1';
+const ROTATION_CANDLE_COVERAGE_PROBE_PARAMETER_VERSION = 'rotation-candle-coverage-probe-v1.0.0';
 const SMART_V3_FAST_FAIL_LIVE_MIRROR_ARM = 'smart_v3_fast_fail_live_mirror_v1';
 const SMART_V3_PROBE_CONFIRM_SHADOW_ARM = 'smart_v3_probe_confirm_shadow_v1';
 const SMART_V3_PROBE_CONFIRM_SHADOW_PARAMETER_VERSION = 'smart-v3-probe-confirm-shadow-v1.0.0';
@@ -2563,6 +2565,7 @@ function armNameForVersion(parameterVersion: string): string {
   if (parameterVersion === config.kolHunterRotationGoodKolFocusParameterVersion) return ROTATION_GOOD_KOL_FOCUS_ARM;
   if (parameterVersion === config.kolHunterRotationDoaVetoShadowParameterVersion) return ROTATION_DOA_VETO_SHADOW_ARM;
   if (parameterVersion === config.kolHunterRotationCandleConfirmParameterVersion) return ROTATION_CANDLE_CONFIRM_SHADOW_ARM;
+  if (parameterVersion === ROTATION_CANDLE_COVERAGE_PROBE_PARAMETER_VERSION) return ROTATION_CANDLE_COVERAGE_PROBE_ARM;
   if (parameterVersion === ROTATION_SECOND_KOL_WAIT_PARAMETER_VERSION) return ROTATION_SECOND_KOL_WAIT_ARM;
   if (parameterVersion === config.kolHunterRotationExitFlowParameterVersion) return ROTATION_EXIT_FLOW_ARM;
   if (parameterVersion === config.kolHunterRotationChaseTopupParameterVersion) return 'rotation_chase_topup_v1';
@@ -2588,6 +2591,7 @@ interface RotationPaperArmSpec extends DynamicExitParams {
   costAwareProfitFloorBufferPct?: number;
   doaVetoShadow?: boolean;
   candleConfirmShadow?: boolean;
+  candleCoverageProbe?: boolean;
   candleConfirmPreWindowSec?: number;
   candleConfirmMinRows?: number;
   candleConfirmMinTrades?: number;
@@ -2847,7 +2851,27 @@ function buildRotationPaperArmSpecs(primaryVersion: string): RotationPaperArmSpe
         `ROTATION_CANDLE_CONFIRM_T${Math.round(config.kolHunterRotationCandleConfirmHorizonSec)}S`,
       ],
     };
-    return [flowSpec, underfillCostAwareSpec, goodKolFocusSpec, doaVetoShadowSpec, candleConfirmShadowSpec];
+    const candleCoverageProbeSpec: RotationPaperArmSpec = {
+      ...candleConfirmShadowSpec,
+      suffix: 'candle-coverage-probe',
+      armName: ROTATION_CANDLE_COVERAGE_PROBE_ARM,
+      profileArm: ROTATION_CANDLE_COVERAGE_PROBE_ARM,
+      parameterVersion: ROTATION_CANDLE_COVERAGE_PROBE_PARAMETER_VERSION,
+      candleCoverageProbe: true,
+      extraSurvivalFlags: [
+        'ROTATION_CANDLE_COVERAGE_PROBE',
+        `ROTATION_CANDLE_PRE_WINDOW_${Math.round(config.kolHunterRotationCandleConfirmPreWindowSec)}S`,
+        `ROTATION_CANDLE_CONFIRM_T${Math.round(config.kolHunterRotationCandleConfirmHorizonSec)}S`,
+      ],
+    };
+    return [
+      flowSpec,
+      underfillCostAwareSpec,
+      goodKolFocusSpec,
+      doaVetoShadowSpec,
+      candleConfirmShadowSpec,
+      candleCoverageProbeSpec,
+    ];
   }
   return [
     {
@@ -2997,6 +3021,15 @@ function buildRotationCandleConfirmSnapshot(
   };
 }
 
+function isRotationCandleCoverageGapReason(reason: string | undefined): boolean {
+  return reason === 'insufficient_rows' || reason === 'insufficient_trades';
+}
+
+function rotationCandleCoverageReasonFlag(reason: string | undefined): string[] {
+  if (!reason) return [];
+  return [`ROTATION_CANDLE_COVERAGE_REASON_${reason.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}`];
+}
+
 function rotationPaperArmRejectReason(
   spec: RotationPaperArmSpec,
   entryPrice: number,
@@ -3017,7 +3050,16 @@ function rotationPaperArmRejectReason(
   }
   if (spec.candleConfirmShadow) {
     if (!candleConfirmSnapshot) return 'candle_confirm_unavailable';
-    if (!candleConfirmSnapshot.pass) return `candle_confirm_${candleConfirmSnapshot.reason}`;
+    if (spec.candleCoverageProbe && candleConfirmSnapshot.pass) return 'candle_coverage_not_gap';
+    if (!candleConfirmSnapshot.pass) {
+      if (
+        spec.candleCoverageProbe &&
+        isRotationCandleCoverageGapReason(candleConfirmSnapshot.reason)
+      ) {
+        return undefined;
+      }
+      return `candle_confirm_${candleConfirmSnapshot.reason}`;
+    }
   }
   const priceResponsePct = rotationPriceResponsePct(entryPrice, anchorPrice);
   if (
@@ -3035,6 +3077,7 @@ function rotationPaperArmRejectReason(
 function shouldTrackRotationPaperArmSkip(reason: string): boolean {
   return reason !== 'disabled' &&
     reason !== 'focus_kol_missing' &&
+    reason !== 'candle_coverage_not_gap' &&
     reason !== 'candle_confirm_source_unavailable';
 }
 
@@ -3103,6 +3146,7 @@ function applyRotationPaperArmSpec(
     `ROTATION_V1_PAPER_ARM_${spec.suffix.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}`,
     ...costAwareFlags,
     ...(spec.extraSurvivalFlags ?? []),
+    ...(spec.candleCoverageProbe ? rotationCandleCoverageReasonFlag(candleConfirmSnapshot?.reason) : []),
   ];
 }
 
@@ -3131,6 +3175,7 @@ function defaultEntryReasonForVersion(parameterVersion: string): KolEntryReason 
   if (parameterVersion === config.kolHunterSwingV2ParameterVersion) return 'swing_v2';
   if (parameterVersion === config.kolHunterRotationV1ParameterVersion) return 'rotation_v1';
   if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) return 'rotation_v1';
+  if (parameterVersion === ROTATION_CANDLE_COVERAGE_PROBE_PARAMETER_VERSION) return 'rotation_v1';
   if (parameterVersion === ROTATION_SECOND_KOL_WAIT_PARAMETER_VERSION) return 'rotation_v1';
   if (parameterVersion === config.kolHunterRotationExitFlowParameterVersion) return 'rotation_v1';
   if (parameterVersion === config.kolHunterRotationChaseTopupParameterVersion) return 'rotation_v1';
@@ -3143,6 +3188,7 @@ function defaultConvictionForVersion(parameterVersion: string): KolConvictionLev
   if (parameterVersion === config.kolHunterSwingV2ParameterVersion) return 'HIGH';
   if (parameterVersion === config.kolHunterRotationV1ParameterVersion) return 'MEDIUM_HIGH';
   if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) return 'MEDIUM_HIGH';
+  if (parameterVersion === ROTATION_CANDLE_COVERAGE_PROBE_PARAMETER_VERSION) return 'MEDIUM_HIGH';
   if (parameterVersion === ROTATION_SECOND_KOL_WAIT_PARAMETER_VERSION) return 'MEDIUM_HIGH';
   if (parameterVersion === config.kolHunterRotationExitFlowParameterVersion) return 'MEDIUM_HIGH';
   if (parameterVersion === config.kolHunterRotationChaseTopupParameterVersion) return 'MEDIUM_HIGH';
@@ -3512,6 +3558,9 @@ export async function handleKolSwap(tx: KolTx): Promise<void> {
   if (tx.action === 'buy' && !lookupCachedSymbol(tx.tokenMint)) {
     void resolveTokenSymbol(tx.tokenMint).catch(() => {});
   }
+  if (tx.action === 'buy') {
+    requestRealtimeCandleCoverage(tx, 'kol_buy_candidate');
+  }
 
   // recent buffer 유지 (24h). audit fix #2: batch prune (매 1024 push 마다, splice 1회).
   recentKolTxs.push(tx);
@@ -3581,6 +3630,25 @@ export async function handleKolSwap(tx: KolTx): Promise<void> {
 
 function tokenMint(tx: KolTx): string {
   return tx.tokenMint.slice(0, 8);
+}
+
+function requestRealtimeCandleCoverage(tx: KolTx, reason: string): void {
+  const ensureCoverage = botCtx?.ensureRealtimeCandleCoverage;
+  if (!ensureCoverage) return;
+  void Promise.resolve(ensureCoverage({
+    tokenMint: tx.tokenMint,
+    poolAddress: tx.poolAddress,
+    dexId: tx.dexId,
+    dexProgram: tx.dexProgram,
+    inputMint: tx.inputMint,
+    outputMint: tx.outputMint,
+    source: 'kol_hunter',
+    reason,
+    observedAtMs: Date.now(),
+    holdSec: 7 * 60,
+  })).catch((err) => {
+    log.debug(`[KOL_HUNTER_CANDLE_COVERAGE] ${tokenMint(tx)} ensure failed: ${String(err)}`);
+  });
 }
 
 /**
@@ -9008,7 +9076,10 @@ function isProbePolicyShadow(pos: PaperPosition): boolean {
 }
 
 function isRotationCandleConfirmShadow(pos: PaperPosition): boolean {
-  return pos.armName === ROTATION_CANDLE_CONFIRM_SHADOW_ARM &&
+  return (
+    pos.armName === ROTATION_CANDLE_CONFIRM_SHADOW_ARM ||
+    pos.armName === ROTATION_CANDLE_COVERAGE_PROBE_ARM
+  ) &&
     pos.rotationCandleConfirmHorizonSec != null &&
     pos.rotationCandleConfirmMinMfePct != null;
 }
@@ -11905,7 +11976,8 @@ async function enterLivePosition(
       if (
         spec.armName !== ROTATION_GOOD_KOL_FOCUS_ARM &&
         spec.armName !== ROTATION_DOA_VETO_SHADOW_ARM &&
-        spec.armName !== ROTATION_CANDLE_CONFIRM_SHADOW_ARM
+        spec.armName !== ROTATION_CANDLE_CONFIRM_SHADOW_ARM &&
+        spec.armName !== ROTATION_CANDLE_COVERAGE_PROBE_ARM
       ) {
         continue;
       }

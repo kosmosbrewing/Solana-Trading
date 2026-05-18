@@ -856,6 +856,31 @@ describe('kolSignalHandler — state machine', () => {
     expect(positions[0].participatingKols[0].id).toBe('pain');
   });
 
+  it('KOL buy 후보는 realtime candle coverage 훅을 요청한다', async () => {
+    const ensureRealtimeCandleCoverage = jest.fn();
+    __testInit({
+      priceFeed: stubFeed as unknown as never,
+      ctx: { ensureRealtimeCandleCoverage } as never,
+    });
+
+    await handleKolSwap({
+      ...buyTx('pain', 'S', MINT_WINNER),
+      poolAddress: 'Pool111111111111111111111111111111111111111',
+      dexId: 'pumpswap',
+      dexProgram: 'Prog111111111111111111111111111111111111111',
+      inputMint: 'So11111111111111111111111111111111111111112',
+      outputMint: MINT_WINNER,
+    });
+
+    expect(ensureRealtimeCandleCoverage).toHaveBeenCalledWith(expect.objectContaining({
+      tokenMint: MINT_WINNER,
+      poolAddress: 'Pool111111111111111111111111111111111111111',
+      dexId: 'pumpswap',
+      source: 'kol_hunter',
+      reason: 'kol_buy_candidate',
+    }));
+  });
+
   it('entry 기준가는 오래된 cached tick 대신 fresh tick 을 기다린다', async () => {
     stubFeed.setInitialPrice(MINT_WINNER, 0.001, 6, Date.now() - 30_000);
     await handleKolSwap(buyTx('pain', 'S', MINT_WINNER));
@@ -1957,6 +1982,54 @@ describe('kolSignalHandler — state machine', () => {
       await flushAsync();
 
       expect(captured?.reason).toBe('rotation_candle_confirm_fail_cut');
+    });
+
+    it('rotation-underfill: pre-entry candle rows 부족은 confirm 과 분리된 coverage probe arm 으로만 추적한다', async () => {
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterSmartV3VelocityScoreThreshold = 99;
+      mockedConfig.kolHunterRotationPaperArmsEnabled = true;
+      mockedConfig.kolHunterRotationCandleConfirmShadowPaperEnabled = true;
+      const now = Date.now();
+      const candles = Array.from({ length: 3 }, (_, idx) => {
+        const open = 0.00094 + idx * 0.000001;
+        return {
+          pairAddress: MINT_ROTATION,
+          timestamp: new Date(now - (15 - idx * 5) * 1000),
+          intervalSec: 5,
+          open,
+          high: open * 1.004,
+          low: open * 0.998,
+          close: open * 1.002,
+          volume: 3,
+          buyVolume: 2,
+          sellVolume: 1,
+          tradeCount: 2,
+        };
+      });
+      __testInit({
+        priceFeed: stubFeed as unknown as never,
+        ctx: {
+          realtimeCandleBuilder: {
+            getRecentCandles: jest.fn(() => candles),
+          },
+        } as any,
+      });
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+
+      const positions = __testGetActive();
+      expect(positions.find((pos) => pos.armName === 'rotation_candle_confirm_shadow_v1')).toBeUndefined();
+      const probeArm = positions.find((pos) => pos.armName === 'rotation_candle_coverage_probe_v1');
+      expect(probeArm).toBeDefined();
+      expect(probeArm?.paperRole).toBe('probe_policy_shadow');
+      expect(probeArm?.parameterVersion).toBe('rotation-candle-coverage-probe-v1.0.0');
+      expect(probeArm?.rotationCandleConfirmSnapshot?.pass).toBe(false);
+      expect(probeArm?.rotationCandleConfirmSnapshot?.reason).toBe('insufficient_rows');
+      expect(probeArm?.survivalFlags).toContain('ROTATION_CANDLE_COVERAGE_PROBE');
+      expect(probeArm?.survivalFlags).toContain('ROTATION_CANDLE_COVERAGE_REASON_INSUFFICIENT_ROWS');
     });
 
     it('rotation-underfill: 1-KOL 진입 후 30초 안에 2번째 KOL 이 붙으면 wait-conversion paper arm 을 연다', async () => {

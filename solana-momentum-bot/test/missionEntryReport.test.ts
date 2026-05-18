@@ -94,6 +94,16 @@ describe('mission-entry-report', () => {
         mfePct: 0,
         holdSec: 30,
       },
+      {
+        positionId: 'shadow-3',
+        status: 'closed',
+        armName: 'rotation_candle_coverage_probe_v1',
+        paperRole: 'probe_policy_shadow',
+        netSol: 0.01,
+        netPct: 0.05,
+        mfePct: 0.08,
+        holdSec: 35,
+      },
     ];
 
     await writeFile(path.join(dir, 'trade-markout-anchors.jsonl'), jsonl(anchors));
@@ -113,6 +123,7 @@ describe('mission-entry-report', () => {
     expect(report.cohorts.find((cohort) => cohort.cohort === 'all')?.verdict).toBe('ADMISSION_DECAY_CONFIRMED');
     expect(report.liveBleed.bleedNetShare).toBeGreaterThanOrEqual(1);
     expect(report.paperShadows.find((shadow) => shadow.armName === 'rotation_doa_veto_shadow_v1')?.rows).toBe(1);
+    expect(report.paperShadows.find((shadow) => shadow.armName === 'rotation_candle_coverage_probe_v1')?.rows).toBe(1);
     expect(report.paperShadows.find((shadow) => shadow.armName === 'smart_v3_probe_confirm_shadow_v1')?.rows).toBe(1);
     expect(report.rotationDoaVetoCoverage.parentRows).toBe(30);
     expect(report.rotationDoaVetoCoverage.pairedRows).toBe(1);

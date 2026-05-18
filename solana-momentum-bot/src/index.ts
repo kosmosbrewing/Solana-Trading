@@ -176,6 +176,11 @@ async function main() {
   const realtimePoolTargets = new Map<string, string>();
   const realtimePoolAliases = new Map<string, string>();
   const realtimePoolMetadata = new Map<string, RealtimePoolMetadata>();
+  const kolRealtimeCandleTargets = new Map<string, {
+    subscriptionPair: string;
+    expiresAtMs: number;
+    timer: NodeJS.Timeout;
+  }>();
   const realtimeModeEnabled = config.realtimeEnabled;
   const operatorTokenBlacklist = new Set(config.operatorTokenBlacklist);
   const isOperatorBlacklisted = (value?: string): boolean =>
@@ -209,6 +214,8 @@ async function main() {
   const ALIAS_MISS_CLEANUP_THRESHOLD = 3;
   const ALIAS_MISS_CLEANUP_TTL_MS = ALIAS_GRACE_PERIOD_MS * 2;
   const aliasMissCleanupState = new Map<string, { count: number; windowStartedMs: number; lastCleanupMs: number }>();
+  const KOL_REALTIME_CANDLE_TARGET_TTL_MS = 7 * 60 * 1000;
+  const KOL_REALTIME_CANDLE_TARGET_MAX = 8;
   // Why: unsubscribe 완료 후에도 WS lag으로 swap이 계속 유입되는 zombie pool 차단
   // — 반복 unsubscribe + 로깅 노이즈 방지. TTL 후 자동 제거.
   const ZOMBIE_POOL_TTL_MS = 30 * 60 * 1000; // 30min
@@ -323,9 +330,20 @@ async function main() {
     }
   };
   const resolveRealtimePools = (logicalPairs: string[]) => {
-    const resolved = logicalPairs
-      .map((pair) => realtimePoolTargets.get(pair))
-      .filter((pair): pair is string => Boolean(pair));
+    const resolved: string[] = [];
+    // Why: KOL 후보 캔들 타겟은 짧은 TTL의 proof-critical 구독이다.
+    // maxSubscriptions 가 꽉 찬 경우 watchlist 뒤에 붙이면 잘리므로 앞쪽에 우선 배치한다.
+    for (const { subscriptionPair } of kolRealtimeCandleTargets.values()) {
+      if (!resolved.includes(subscriptionPair)) {
+        resolved.push(subscriptionPair);
+      }
+    }
+    for (const pair of logicalPairs) {
+      const target = realtimePoolTargets.get(pair);
+      if (target && !resolved.includes(target)) {
+        resolved.push(target);
+      }
+    }
     // Why: grace period 중인 pool은 subscribePools의 unsubscribe 대상에서 보호
     for (const { poolAddress } of pendingAliasCleanups.values()) {
       if (!resolved.includes(poolAddress)) {
@@ -1140,6 +1158,120 @@ async function main() {
     setRealtimePoolTarget(targetPair, targetPair);
   }
 
+  const refreshRealtimeSubscriptions = async () => {
+    if (!heliusIngester) return;
+    await heliusIngester.subscribePools(
+      resolveRealtimePools(universeEngine.getWatchlist().map((pool) => pool.pairAddress))
+    );
+  };
+
+  const removeKolRealtimeCandleTarget = (tokenMint: string, subscriptionPair: string) => {
+    const current = kolRealtimeCandleTargets.get(tokenMint);
+    if (!current || current.subscriptionPair !== subscriptionPair) return;
+    clearTimeout(current.timer);
+    kolRealtimeCandleTargets.delete(tokenMint);
+
+    const stillWatchlisted = universeEngine.getWatchlist().some((pool) => pool.pairAddress === tokenMint);
+    if (!stillWatchlisted && realtimePoolTargets.get(tokenMint) === subscriptionPair) {
+      removeRealtimePoolTarget(tokenMint, { immediate: true });
+    }
+    void refreshRealtimeSubscriptions().catch((error) => {
+      log.debug(`[KOL_CANDLE_COVERAGE] refresh after cleanup failed: ${error}`);
+    });
+  };
+
+  const evictOldestKolRealtimeCandleTarget = () => {
+    if (kolRealtimeCandleTargets.size < KOL_REALTIME_CANDLE_TARGET_MAX) return;
+    const oldest = [...kolRealtimeCandleTargets.entries()]
+      .sort((left, right) => left[1].expiresAtMs - right[1].expiresAtMs)[0];
+    if (!oldest) return;
+    removeKolRealtimeCandleTarget(oldest[0], oldest[1].subscriptionPair);
+  };
+
+  const ensureRealtimeCandleCoverage: BotContext['ensureRealtimeCandleCoverage'] = async (request) => {
+    if (!realtimeModeEnabled || !heliusIngester || !realtimeCandleBuilder) return;
+
+    const contexts = heliusPoolRegistry.getObservedPairContexts(request.tokenMint);
+    const matchedContext = contexts.find((context) => context.pairAddress === request.poolAddress);
+    const context = matchedContext ?? contexts[0];
+    const subscriptionPair = request.poolAddress ?? context?.pairAddress;
+    if (!subscriptionPair) {
+      log.debug(`[KOL_CANDLE_COVERAGE] no pool context for ${request.tokenMint.slice(0, 8)} (${request.reason})`);
+      return;
+    }
+
+    const existing = kolRealtimeCandleTargets.get(request.tokenMint);
+    const now = Date.now();
+    const ttlMs = Math.max(KOL_REALTIME_CANDLE_TARGET_TTL_MS, (request.holdSec ?? 0) * 1000);
+    const expiresAtMs = now + ttlMs;
+    const alreadyTracking = existing?.subscriptionPair === subscriptionPair && existing.expiresAtMs > now;
+    if (existing && existing.subscriptionPair !== subscriptionPair) {
+      removeKolRealtimeCandleTarget(request.tokenMint, existing.subscriptionPair);
+    } else if (!existing) {
+      evictOldestKolRealtimeCandleTarget();
+    } else {
+      clearTimeout(existing.timer);
+    }
+
+    const quoteMint = request.inputMint && request.inputMint !== request.tokenMint
+      ? request.inputMint
+      : SOL_MINT;
+    const metadata: RealtimePoolMetadata = {
+      dexId: request.dexId ?? context?.dexId ?? '',
+      baseMint: request.tokenMint,
+      quoteMint,
+      quoteDecimals: quoteMint === SOL_MINT ? 9 : undefined,
+      poolProgram: request.dexProgram,
+    };
+    setRealtimePoolTarget(request.tokenMint, subscriptionPair);
+    setRealtimePoolMetadata(subscriptionPair, metadata);
+    heliusIngester.setPoolMetadata(subscriptionPair, metadata);
+
+    const timer = setTimeout(() => {
+      removeKolRealtimeCandleTarget(request.tokenMint, subscriptionPair);
+    }, ttlMs);
+    kolRealtimeCandleTargets.set(request.tokenMint, { subscriptionPair, expiresAtMs, timer });
+
+    if (!alreadyTracking && config.realtimeSeedBackfillEnabled) {
+      const lookbackSec = Math.max(60, Math.min(getRealtimeSeedLookbackSec(), 120));
+      try {
+        const recentSwaps = await heliusIngester.backfillRecentSwaps(subscriptionPair, {
+          lookbackSec,
+          allowSingleFetchFallback: config.realtimeSeedAllowSingleTxFallback,
+        });
+        if (recentSwaps.length > 0) {
+          const seeded = realtimeCandleBuilder.seedSwaps(
+            recentSwaps.map((swap) => ({
+              ...swap,
+              pool: request.tokenMint,
+            }))
+          );
+          if (realtimeReplayStore) {
+            await Promise.all(recentSwaps.map((swap) =>
+              realtimeReplayStore.appendSwap({
+                ...swap,
+                pairAddress: request.tokenMint,
+                poolAddress: swap.pool,
+                tokenMint: request.tokenMint,
+              })
+            ));
+          }
+          log.info(
+            `[KOL_CANDLE_COVERAGE] ${request.tokenMint.slice(0, 8)} seeded=${seeded} ` +
+            `pool=${subscriptionPair.slice(0, 8)} reason=${request.reason}`
+          );
+        }
+      } catch (error) {
+        if (String(error).includes('429')) {
+          runtimeDiagnosticsTracker.recordRateLimit('helius_seed_backfill');
+        }
+        log.debug(`[KOL_CANDLE_COVERAGE] seed failed for ${request.tokenMint.slice(0, 8)}: ${error}`);
+      }
+    }
+
+    await refreshRealtimeSubscriptions();
+  };
+
   eventMonitor.on('events', (scores) => {
     for (const score of scores) {
       log.info(JSON.stringify({
@@ -1183,6 +1315,7 @@ async function main() {
     realtimeSignalLogger: realtimeSignalLogger ?? undefined,
     realtimeReplayStore: realtimeReplayStore ?? undefined,
     runtimeDiagnosticsTracker,
+    ensureRealtimeCandleCoverage,
     isInGracePeriod: (tokenMint) => pendingAliasCleanups.has(tokenMint),
     // Why: Paper 모드에서 온체인 잔고 대신 시뮬레이션 잔고 (기본 1 SOL)
     paperBalance: effectiveMode === 'paper' ? config.paperInitialBalance : undefined,

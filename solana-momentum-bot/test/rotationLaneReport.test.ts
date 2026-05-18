@@ -557,6 +557,75 @@ describe('rotation-lane-report', () => {
     expect(markdown).toContain('noob_mini');
   });
 
+  it('aligns DOA cooldown shadow gate with runtime admission-veto exit reasons', async () => {
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([
+      {
+        strategy: 'kol_hunter',
+        lane: 'kol_hunter',
+        armName: 'rotation_underfill_v1',
+        profileArm: 'rotation_underfill_cost_aware_exit_v2',
+        entryArm: 'rotation_underfill_v1',
+        kolEntryReason: 'rotation_v1',
+        positionId: 'mae-fast-fail-loss',
+        tokenMint: 'MintMaeFastFail111111111111111111111111',
+        closedAt: '2026-05-02T00:00:00.000Z',
+        exitReason: 'rotation_mae_fast_fail',
+        holdSec: 12,
+        netSol: -0.002,
+        netSolTokenOnly: -0.0018,
+        mfePctPeak: 0.01,
+        routeFound: true,
+        rotationMonetizableEdge: { pass: true, costRatio: 0.04 },
+        kols: [{ id: 'cooldown_kol', timestamp: '2026-05-01T23:59:45.000Z' }],
+        survivalFlags: ['ROTATION_UNDERFILL_KOLS_1', 'ROTATION_COST_AWARE_EXIT_V2'],
+      },
+      {
+        strategy: 'kol_hunter',
+        lane: 'kol_hunter',
+        armName: 'rotation_underfill_v1',
+        profileArm: 'rotation_underfill_cost_aware_exit_v2',
+        entryArm: 'rotation_underfill_v1',
+        kolEntryReason: 'rotation_v1',
+        positionId: 'cooldown-skipped-winner',
+        tokenMint: 'MintCooldownWinner111111111111111111111',
+        closedAt: '2026-05-02T00:30:00.000Z',
+        exitReason: 'winner_trailing_t1',
+        holdSec: 30,
+        netSol: 0.008,
+        netSolTokenOnly: 0.0082,
+        mfePctPeak: 0.18,
+        routeFound: true,
+        rotationMonetizableEdge: { pass: true, costRatio: 0.04 },
+        kols: [{ id: 'cooldown_kol', timestamp: '2026-05-02T00:29:45.000Z' }],
+        survivalFlags: ['ROTATION_UNDERFILL_KOLS_1', 'ROTATION_COST_AWARE_EXIT_V2'],
+      },
+    ]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [15],
+      roundTripCostPct: 0.005,
+      assumedAtaRentSol: 0.001,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    const cooldown = report.weeklyPattern.shadowGateCandidates
+      .find((row) => row.policy === 'doa_1h_kol_cooldown');
+    expect(cooldown).toMatchObject({
+      retainedRows: 1,
+      skippedRows: 1,
+    });
+    expect(cooldown?.missedWinnerCostSol).toBeGreaterThan(0);
+
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('runtime-aligned sequential shadow');
+    expect(markdown).toContain('DOA/MAE/probe-hardcut/flow-timeout');
+  });
+
   it('splits underfill paper trades into route-known and cost-aware cohorts', async () => {
     await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([
       {
@@ -4130,6 +4199,69 @@ describe('rotation-lane-report', () => {
     expect(markdown).toContain('paper readiness is not live proof');
     expect(markdown).toContain('READY_FOR_MICRO_LIVE_REVIEW');
     expect(markdown).toContain('linked=1/1, blockers=0');
+  });
+
+  it('keeps good-KOL focus as a separate forward-shadow proof before live promotion', async () => {
+    const rows = Array.from({ length: 100 }, (_, index) => {
+      const day = 2 + Math.floor(index / 20);
+      return {
+        strategy: 'kol_hunter',
+        lane: 'kol_hunter',
+        armName: 'rotation_good_kol_focus_v1',
+        profileArm: 'rotation_good_kol_focus_v1',
+        entryArm: 'rotation_underfill_v1',
+        exitArm: 'rotation_good_kol_focus_v1',
+        parameterVersion: 'rotation-good-kol-focus-v1.0.0',
+        kolEntryReason: 'rotation_v1',
+        positionId: `good-focus-${index}`,
+        tokenMint: `MintGoodFocus${String(index).padStart(3, '0')}`,
+        liveEquivalenceCandidateId: `good-focus-candidate-${index}`,
+        closedAt: `2026-05-${String(day).padStart(2, '0')}T00:${String(index % 20).padStart(2, '0')}:00.000Z`,
+        exitReason: 'winner_trailing_t1',
+        holdSec: 34,
+        netSol: 0.003,
+        netSolTokenOnly: 0.003,
+        mfePctPeak: 0.16,
+        routeFound: true,
+        rotationMonetizableEdge: { pass: true, costRatio: 0.04 },
+        kols: [{ id: 'dv', timestamp: `2026-05-${String(day).padStart(2, '0')}T00:00:00.000Z` }],
+        survivalFlags: [
+          'ROTATION_UNDERFILL_KOLS_1',
+          'ROTATION_COST_AWARE_EXIT_V2',
+          'ROTATION_GOOD_KOL_FOCUS_FORWARD_PAPER',
+          'SELL_ROUTE_OK',
+        ],
+      };
+    });
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl(rows));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [15, 30],
+      roundTripCostPct: 0.005,
+      assumedAtaRentSol: 0.001,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.rotationForwardShadowProof).toMatchObject({
+      armName: 'rotation_good_kol_focus_v1',
+      verdict: 'FORWARD_SHADOW_PROVEN',
+      closes: 100,
+      dateBuckets: 5,
+      routeProofRows: 100,
+      costAwareRows: 100,
+    });
+    expect(report.compoundingProofPacket.verdict).toBe('NOT_PROVEN');
+    expect(report.compoundingProofPacket.cohort).toBe('route_known_2kol_cost_aware');
+
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('## Rotation Forward Shadow Proof');
+    expect(markdown).toContain('FORWARD_SHADOW_PROVEN');
+    expect(markdown).toContain('in-sample good-KOL hindsight');
   });
 
   it('adds live-equivalence gate review for yellow-zone and route-unknown blockers', async () => {

@@ -89,5 +89,14 @@ export interface KolLiveMirrorReport {
   promotionGate: {
     livePromotionAllowed: false;
     requiresSeparateWalletTruthReview: true;
+    proofReadyForReview: boolean;
+    minPairedRows: number;
+    pairedRowsPass: boolean;
+    liveWithoutMirrorPass: boolean;
+    strategyLossRate: number | null;
+    strategyLossPass: boolean;
+    liveWalletNetPositive: boolean;
+    mirrorNetPositive: boolean;
+    blockedReasons: string[];
   };
 }

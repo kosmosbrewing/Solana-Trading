@@ -49,6 +49,13 @@ const ROTATION_COMPOUND_DECISION_MIN_CLOSES = 50;
 const ROTATION_COMPOUND_EARLY_REJECT_MIN_CLOSES = 10;
 const ROTATION_COMPOUND_EARLY_MIN_POST_COST_POSITIVE_RATE = 0.45;
 const ROTATION_COMPOUND_MAX_LOSING_STREAK = 5;
+const ROTATION_FORWARD_SHADOW_ARM = 'rotation_good_kol_focus_v1';
+const ROTATION_FORWARD_SHADOW_MIN_CLOSES = 100;
+const ROTATION_FORWARD_SHADOW_MIN_DAYS = 5;
+const ROTATION_FORWARD_SHADOW_MIN_METADATA_COVERAGE = 0.95;
+const ROTATION_FORWARD_SHADOW_MIN_POST_COST_POSITIVE_RATE = 0.52;
+const ROTATION_FORWARD_SHADOW_MAX_LOSING_STREAK = 10;
+const ROTATION_FORWARD_SHADOW_MAX_TOP_WINNER_SHARE = 0.20;
 const POSTHOC_SECOND_KOL_REVIEW_MIN_OBSERVED = 30;
 const POSTHOC_SECOND_KOL_DECISION_MIN_OBSERVED = 50;
 const POSTHOC_SECOND_KOL_MIN_POSITIVE_RATE = 0.7;
@@ -869,6 +876,32 @@ interface CompoundingProofPacket {
   nextAction: string;
 }
 
+type RotationForwardShadowProofVerdict =
+  | 'DATA_GAP'
+  | 'COLLECT'
+  | 'REJECT'
+  | 'FORWARD_SHADOW_PROVEN';
+
+interface RotationForwardShadowProof {
+  armName: string;
+  verdict: RotationForwardShadowProofVerdict;
+  closes: number;
+  minCloses: number;
+  dateBuckets: number;
+  minDateBuckets: number;
+  refundAdjustedNetSol: number | null;
+  walletDragStressSol: number | null;
+  postCostPositiveRate: number | null;
+  maxLosingStreak: number | null;
+  topWinnerShare: number | null;
+  routeProofRows: number;
+  costAwareRows: number;
+  routeProofCoverage: number | null;
+  costAwareCoverage: number | null;
+  blockers: string[];
+  nextAction: string;
+}
+
 type CompoundingHistoricalVerdict =
   | 'LIVE_ELIGIBLE_EDGE_PRESENT'
   | 'LIVE_ELIGIBLE_UNPROVEN'
@@ -1583,6 +1616,7 @@ interface RotationReport {
   reviewCohortDecision: ReviewCohortDecision;
   microLiveReviewPacket: MicroLiveReviewPacket;
   compoundingProofPacket: CompoundingProofPacket;
+  rotationForwardShadowProof: RotationForwardShadowProof;
   compoundingHistoricalDecomposition: CompoundingHistoricalDecomposition;
   rotationPaperCompoundReadiness: RotationPaperCompoundReadiness;
   rotationLiveReadiness: RotationLiveReadiness;
@@ -2368,6 +2402,133 @@ function maxLosingStreakForRows(rows: JsonRow[], assumedNetworkFeeSol: number): 
   return maxLosingStreak(values);
 }
 
+function rowMatchesArm(row: JsonRow, armName: string): boolean {
+  return rowArmName(row) === armName ||
+    rowStringWithExtras(row, ['armName']) === armName ||
+    rowStringWithExtras(row, ['profileArm']) === armName ||
+    rowStringWithExtras(row, ['exitArm']) === armName ||
+    rowStringWithExtras(row, ['parameterVersion']) === armName;
+}
+
+function topPositiveWinnerShare(rows: JsonRow[], assumedNetworkFeeSol: number): number | null {
+  const buckets = new Map<string, number>();
+  let positiveTotal = 0;
+  for (const row of rows) {
+    const net = rowRefundAdjustedNetSol(row, assumedNetworkFeeSol);
+    if (net <= 0) continue;
+    positiveTotal += net;
+    const token = rowTokenMintDeep(row) || rowPositionId(row) || '(unknown)';
+    buckets.set(token, (buckets.get(token) ?? 0) + net);
+  }
+  if (positiveTotal <= 0) return null;
+  return Math.max(...buckets.values()) / positiveTotal;
+}
+
+function buildRotationForwardShadowProof(
+  rows: JsonRow[],
+  assumedAtaRentSol: number,
+  assumedNetworkFeeSol: number
+): RotationForwardShadowProof {
+  const shadowRows = rows
+    .filter((row) => rowMatchesArm(row, ROTATION_FORWARD_SHADOW_ARM))
+    .sort((a, b) => rowCloseTimeMs(a) - rowCloseTimeMs(b));
+  const refundAdjustedValues = shadowRows.map((row) => rowRefundAdjustedNetSol(row, assumedNetworkFeeSol));
+  const refundAdjustedNetSol = shadowRows.length > 0
+    ? refundAdjustedValues.reduce((sum, value) => sum + value, 0)
+    : null;
+  const walletDragStressSol = shadowRows.length > 0
+    ? shadowRows
+        .map((row) => rowWalletDragStressSol(row, assumedAtaRentSol, assumedNetworkFeeSol))
+        .reduce((sum, value) => sum + value, 0)
+    : null;
+  const routeProofRows = shadowRows.filter(routeProofRow).length;
+  const costAwareRows = shadowRows.filter(isCostAwareUnderfillRow).length;
+  const routeProofCoverage = ratio(routeProofRows, shadowRows.length);
+  const costAwareCoverage = ratio(costAwareRows, shadowRows.length);
+  const dateBuckets = new Set(
+    shadowRows
+      .map((row) => rowCloseTimeMs(row))
+      .filter((value) => Number.isFinite(value))
+      .map(kstDayFromMs)
+  ).size;
+  const postCostPositiveRate = ratio(
+    refundAdjustedValues.filter((value) => value > 0).length,
+    shadowRows.length
+  );
+  const maxLosingStreak = shadowRows.length > 0
+    ? maxLosingStreakForRows(shadowRows, assumedNetworkFeeSol)
+    : null;
+  const topWinnerShare = topPositiveWinnerShare(shadowRows, assumedNetworkFeeSol);
+  const blockers: string[] = [];
+  if (shadowRows.length < ROTATION_FORWARD_SHADOW_MIN_CLOSES) {
+    blockers.push(`forward shadow closes ${shadowRows.length}/${ROTATION_FORWARD_SHADOW_MIN_CLOSES}`);
+  }
+  if (dateBuckets < ROTATION_FORWARD_SHADOW_MIN_DAYS) {
+    blockers.push(`KST date buckets ${dateBuckets}/${ROTATION_FORWARD_SHADOW_MIN_DAYS}`);
+  }
+  if ((refundAdjustedNetSol ?? 0) <= 0) {
+    blockers.push(`refund-adjusted net ${formatSol(refundAdjustedNetSol)} <= 0`);
+  }
+  if ((walletDragStressSol ?? 0) <= 0) {
+    blockers.push(`wallet-drag stress ${formatSol(walletDragStressSol)} <= 0`);
+  }
+  if ((postCostPositiveRate ?? 0) < ROTATION_FORWARD_SHADOW_MIN_POST_COST_POSITIVE_RATE) {
+    blockers.push(
+      `postCost>0 ${formatPct(postCostPositiveRate)} < ${formatPct(ROTATION_FORWARD_SHADOW_MIN_POST_COST_POSITIVE_RATE)}`
+    );
+  }
+  if ((maxLosingStreak ?? 0) > ROTATION_FORWARD_SHADOW_MAX_LOSING_STREAK) {
+    blockers.push(`max losing streak ${maxLosingStreak} > ${ROTATION_FORWARD_SHADOW_MAX_LOSING_STREAK}`);
+  }
+  if (topWinnerShare != null && topWinnerShare > ROTATION_FORWARD_SHADOW_MAX_TOP_WINNER_SHARE) {
+    blockers.push(`top winner share ${formatPct(topWinnerShare)} > ${formatPct(ROTATION_FORWARD_SHADOW_MAX_TOP_WINNER_SHARE)}`);
+  }
+  if ((routeProofCoverage ?? 0) < ROTATION_FORWARD_SHADOW_MIN_METADATA_COVERAGE) {
+    blockers.push(`route proof coverage ${formatPct(routeProofCoverage)} < ${formatPct(ROTATION_FORWARD_SHADOW_MIN_METADATA_COVERAGE)}`);
+  }
+  if ((costAwareCoverage ?? 0) < ROTATION_FORWARD_SHADOW_MIN_METADATA_COVERAGE) {
+    blockers.push(`cost-aware coverage ${formatPct(costAwareCoverage)} < ${formatPct(ROTATION_FORWARD_SHADOW_MIN_METADATA_COVERAGE)}`);
+  }
+
+  let verdict: RotationForwardShadowProofVerdict = 'COLLECT';
+  if (shadowRows.length === 0) {
+    verdict = 'DATA_GAP';
+  } else if (
+    shadowRows.length >= ROTATION_FORWARD_SHADOW_MIN_CLOSES &&
+    dateBuckets >= ROTATION_FORWARD_SHADOW_MIN_DAYS
+  ) {
+    verdict = blockers.length === 0 ? 'FORWARD_SHADOW_PROVEN' : 'REJECT';
+  }
+  const nextAction =
+    verdict === 'FORWARD_SHADOW_PROVEN'
+      ? 'review mirror/live-equivalence packet; no automatic live promotion'
+      : verdict === 'REJECT'
+      ? 'do not promote good-KOL focus; redesign the cohort before live'
+      : verdict === 'DATA_GAP'
+      ? 'collect rotation_good_kol_focus_v1 forward paper rows; ignore in-sample focus as live proof'
+      : 'continue forward paper collection until sample, date, economics, and metadata gates pass';
+
+  return {
+    armName: ROTATION_FORWARD_SHADOW_ARM,
+    verdict,
+    closes: shadowRows.length,
+    minCloses: ROTATION_FORWARD_SHADOW_MIN_CLOSES,
+    dateBuckets,
+    minDateBuckets: ROTATION_FORWARD_SHADOW_MIN_DAYS,
+    refundAdjustedNetSol,
+    walletDragStressSol,
+    postCostPositiveRate,
+    maxLosingStreak,
+    topWinnerShare,
+    routeProofRows,
+    costAwareRows,
+    routeProofCoverage,
+    costAwareCoverage,
+    blockers,
+    nextAction,
+  };
+}
+
 function summarizeRotationShadowGateCandidate(input: {
   policy: string;
   role?: RotationShadowGateCandidateStats['role'];
@@ -2470,6 +2631,13 @@ function kolStatsForRows(
   return buildRotationConcentrationBy(rows, rowKolLabels, positiveTotal, assumedAtaRentSol, assumedNetworkFeeSol);
 }
 
+function isRotationDoaVetoCooldownReason(reason: string): boolean {
+  return reason === 'rotation_dead_on_arrival' ||
+    reason === 'rotation_mae_fast_fail' ||
+    reason === 'probe_hard_cut' ||
+    reason === 'rotation_flow_residual_timeout';
+}
+
 function buildDoaCooldownRetainedRows(rows: JsonRow[], assumedNetworkFeeSol: number): JsonRow[] {
   const cooldownMs = 3600_000;
   const cooldownByKol = new Map<string, number>();
@@ -2481,7 +2649,7 @@ function buildDoaCooldownRetainedRows(rows: JsonRow[], assumedNetworkFeeSol: num
     if (blocked) continue;
     retained.push(row);
     const reason = str(row.exitReason);
-    if (reason === 'rotation_dead_on_arrival' && rowRefundAdjustedNetSol(row, assumedNetworkFeeSol) <= 0) {
+    if (isRotationDoaVetoCooldownReason(reason) && rowRefundAdjustedNetSol(row, assumedNetworkFeeSol) <= 0) {
       for (const kol of kols) cooldownByKol.set(kol, closeMs + cooldownMs);
     }
   }
@@ -2559,7 +2727,9 @@ function buildRotationShadowGateCandidates(
       retainedRows: buildDoaCooldownRetainedRows(rows, assumedNetworkFeeSol),
       assumedAtaRentSol,
       assumedNetworkFeeSol,
-      reasons: ['sequential shadow: after a KOL causes a refund-negative rotation_dead_on_arrival close, skip that KOL for 1h'],
+      reasons: [
+        'runtime-aligned sequential shadow: after a KOL causes a refund-negative DOA/MAE/probe-hardcut/flow-timeout close, skip that KOL for 1h',
+      ],
     }),
   ];
   const baseline = candidates[0];
@@ -9533,6 +9703,22 @@ function renderCompoundingProofPacket(row: CompoundingProofPacket): string {
   ].join('\n');
 }
 
+function renderRotationForwardShadowProof(row: RotationForwardShadowProof): string {
+  return [
+    '| verdict | arm | closes | KST dates | refund SOL | wallet stress SOL | postCost>0 | max loss streak | top winner | route proof | cost-aware | next action |',
+    '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|',
+    `| ${row.verdict} | ${row.armName} | ${row.closes}/${row.minCloses} | ${row.dateBuckets}/${row.minDateBuckets} | ` +
+      `${formatSol(row.refundAdjustedNetSol)} | ${formatSol(row.walletDragStressSol)} | ${formatPct(row.postCostPositiveRate)} | ` +
+      `${row.maxLosingStreak ?? 'n/a'} | ${formatPct(row.topWinnerShare)} | ` +
+      `${row.routeProofRows}/${row.closes} (${formatPct(row.routeProofCoverage)}) | ` +
+      `${row.costAwareRows}/${row.closes} (${formatPct(row.costAwareCoverage)}) | ${row.nextAction} |`,
+    '',
+    row.blockers.length === 0
+      ? '- blockers: none'
+      : `- blockers: ${row.blockers.join('; ')}`,
+  ].join('\n');
+}
+
 function renderCompoundingHistoricalDecomposition(row: CompoundingHistoricalDecomposition): string {
   const buckets = [
     '| bucket | role | rows | refund-adjusted | postCost>0 | T1 | med MFE |',
@@ -9933,6 +10119,10 @@ function renderReport(report: RotationReport): string {
     '> Report-only. This is the single daily-compounding proof read: paper readiness is not live proof until the same live-eligible cohort has wallet-positive live closes.',
     renderCompoundingProofPacket(report.compoundingProofPacket),
     '',
+    '## Rotation Forward Shadow Proof',
+    '> Report-only. Separates the actual `rotation_good_kol_focus_v1` forward paper arm from in-sample good-KOL hindsight analysis.',
+    renderRotationForwardShadowProof(report.rotationForwardShadowProof),
+    '',
     '## Review Cohort Decision',
     '> Report-only. Compresses collect/watch/reject/pass for the route-known 2+KOL cost-aware paper cohort; live routing remains unchanged.',
     renderReviewCohortDecision(report.reviewCohortDecision),
@@ -10254,6 +10444,11 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
     microLiveReviewPacket,
     rotationLiveRows
   );
+  const rotationForwardShadowProof = buildRotationForwardShadowProof(
+    rotationPaperRows,
+    assumedAtaRentSol,
+    assumedNetworkFeeSol
+  );
   const compoundingHistoricalDecomposition = buildCompoundingHistoricalDecomposition(
     rotationPaperRows,
     assumedNetworkFeeSol
@@ -10356,6 +10551,7 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
     reviewCohortDecision,
     microLiveReviewPacket,
     compoundingProofPacket,
+    rotationForwardShadowProof,
     compoundingHistoricalDecomposition,
     rotationPaperCompoundReadiness,
     rotationLiveReadiness,

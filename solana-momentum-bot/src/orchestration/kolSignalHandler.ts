@@ -127,6 +127,7 @@ import { reportCanaryClose } from '../risk/canaryAutoHalt';
 import { reportBleed } from '../risk/dailyBleedBudget';
 import { getHardTradingHaltReason, isDrawdownGuardHaltReason } from '../risk/tradingHaltPolicy';
 import { isWalletStopActive, getWalletStopGuardState } from '../risk/walletStopGuard';
+import { evaluateMissionCapitalGuard } from '../risk/missionCapitalGuard';
 import { persistOpenTradeWithIntegrity, appendEntryLedger, isEntryHaltActive, triggerEntryHalt, type EntryLane } from './entryIntegrity';
 import { resolveActualEntryMetrics } from './signalProcessor';
 import { bpsToDecimal } from '../utils/units';
@@ -167,6 +168,7 @@ const ROTATION_EXIT_FLOW_ARM = 'rotation_exit_kol_flow_v1';
 const ROTATION_UNDERFILL_EXIT_FLOW_PROFILE_ARM = 'rotation_underfill_exit_flow_v1';
 const ROTATION_UNDERFILL_COST_AWARE_PROFILE_ARM = 'rotation_underfill_cost_aware_exit_v2';
 const ROTATION_GOOD_KOL_FOCUS_ARM = 'rotation_good_kol_focus_v1';
+const ROTATION_DOA_VETO_SHADOW_ARM = 'rotation_doa_veto_shadow_v1';
 const SMART_V3_FAST_FAIL_LIVE_MIRROR_ARM = 'smart_v3_fast_fail_live_mirror_v1';
 const SMART_V3_PROBE_CONFIRM_SHADOW_ARM = 'smart_v3_probe_confirm_shadow_v1';
 const SMART_V3_PROBE_CONFIRM_SHADOW_PARAMETER_VERSION = 'smart-v3-probe-confirm-shadow-v1.0.0';
@@ -1390,7 +1392,9 @@ function checkKolAlphaDecay(kolIds: string[]): { blocked: boolean; reason?: stri
 }
 
 const recentRotationLiveKolCloses = new Map<string, KolCloseRecord[]>();
+const recentRotationDoaVetoKolCloses = new Map<string, Array<KolCloseRecord & { reason: CloseReason }>>();
 const ROTATION_LIVE_KOL_DECAY_RING_SIZE = 5;
+const ROTATION_DOA_VETO_RING_SIZE = 5;
 
 interface RotationLiveKolDecayCloseRecord {
   positionId?: string;
@@ -1452,6 +1456,69 @@ function markRotationLiveKolClosed(pos: PaperPosition, pnlSol: number): void {
       if (last && last.closedAtMs < cutoff) recentRotationLiveKolCloses.delete(id);
     }
   }
+}
+
+function rotationDoaVetoKolIds(pos: PaperPosition): string[] {
+  return [...new Set(
+    [
+      ...(pos.rotationAnchorKols ?? []),
+      ...pos.participatingKols.map((kol) => kol.id),
+    ]
+      .map((id) => id.trim())
+      .filter(Boolean)
+  )];
+}
+
+function isRotationAdmissionVetoReason(reason: CloseReason): boolean {
+  return reason === 'rotation_dead_on_arrival' ||
+    reason === 'rotation_mae_fast_fail' ||
+    reason === 'probe_hard_cut' ||
+    reason === 'rotation_flow_residual_timeout';
+}
+
+function pushRotationDoaVetoKolClose(
+  kolIds: string[],
+  pnlSol: number,
+  reason: CloseReason,
+  closedAtMs: number
+): number {
+  if (!Number.isFinite(pnlSol) || !Number.isFinite(closedAtMs)) return 0;
+  if (pnlSol >= 0) return 0;
+  if (!isRotationAdmissionVetoReason(reason)) return 0;
+  let pushed = 0;
+  for (const kolId of [...new Set(kolIds.map((id) => id.trim()).filter(Boolean))]) {
+    const buf = recentRotationDoaVetoKolCloses.get(kolId) ?? [];
+    buf.push({ closedAtMs, pnlSol, isWin: false, reason });
+    while (buf.length > ROTATION_DOA_VETO_RING_SIZE) buf.shift();
+    recentRotationDoaVetoKolCloses.set(kolId, buf);
+    pushed += 1;
+  }
+  return pushed;
+}
+
+function markRotationDoaVetoKolClosed(pos: PaperPosition, pnlSol: number, reason: CloseReason): void {
+  if (!config.kolHunterRotationDoaVetoShadowPaperEnabled) return;
+  if (!isRotationFamilyMarkoutPosition(pos)) return;
+  if (pos.isShadowArm) return;
+  pushRotationDoaVetoKolClose(rotationDoaVetoKolIds(pos), pnlSol, reason, Date.now());
+}
+
+function checkRotationDoaVetoShadow(kolIds: string[]): { blocked: boolean; reason?: string } {
+  if (!config.kolHunterRotationDoaVetoShadowPaperEnabled) return { blocked: false };
+  const cooldownMs = config.kolHunterRotationDoaVetoShadowCooldownMs;
+  if (cooldownMs <= 0) return { blocked: false };
+  for (const kolId of [...new Set(kolIds.map((id) => id.trim()).filter(Boolean))]) {
+    const buf = recentRotationDoaVetoKolCloses.get(kolId);
+    if (!buf || buf.length === 0) continue;
+    const last = buf[buf.length - 1];
+    const elapsedMs = Date.now() - last.closedAtMs;
+    if (elapsedMs >= cooldownMs) continue;
+    return {
+      blocked: true,
+      reason: `doa_veto_kol_cooldown:${kolId}:${last.reason}`,
+    };
+  }
+  return { blocked: false };
 }
 
 function checkRotationLiveKolDecay(kolIds: string[]): { blocked: boolean; reason?: string; flags: string[] } {
@@ -1651,6 +1718,7 @@ export function resetKolDecayForTests(): void {
   recentKolCloses.clear();
   recentSmartV3ComboCloses.clear();
   recentRotationLiveKolCloses.clear();
+  recentRotationDoaVetoKolCloses.clear();
 }
 // 2026-04-26 P1 audit fix #5: O(N) `[...active.values()].filter(p => p.tokenMint === X)` 패턴이
 // 매 price tick / kol_swap 마다 hot path 에 등장. token → positionId Set 인덱스로 O(1) 화.
@@ -2470,6 +2538,7 @@ function armNameForVersion(parameterVersion: string): string {
   if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) return ROTATION_UNDERFILL_ARM;
   if (parameterVersion === config.kolHunterRotationUnderfillCostAwareParameterVersion) return ROTATION_UNDERFILL_COST_AWARE_PROFILE_ARM;
   if (parameterVersion === config.kolHunterRotationGoodKolFocusParameterVersion) return ROTATION_GOOD_KOL_FOCUS_ARM;
+  if (parameterVersion === config.kolHunterRotationDoaVetoShadowParameterVersion) return ROTATION_DOA_VETO_SHADOW_ARM;
   if (parameterVersion === ROTATION_SECOND_KOL_WAIT_PARAMETER_VERSION) return ROTATION_SECOND_KOL_WAIT_ARM;
   if (parameterVersion === config.kolHunterRotationExitFlowParameterVersion) return ROTATION_EXIT_FLOW_ARM;
   if (parameterVersion === config.kolHunterRotationChaseTopupParameterVersion) return 'rotation_chase_topup_v1';
@@ -2493,6 +2562,7 @@ interface RotationPaperArmSpec extends DynamicExitParams {
   costAwareT1MaxMfe?: number;
   costAwareProfitFloorMult?: number;
   costAwareProfitFloorBufferPct?: number;
+  doaVetoShadow?: boolean;
   requiredKolIds?: string[];
   extraSurvivalFlags?: string[];
 }
@@ -2681,7 +2751,34 @@ function buildRotationPaperArmSpecs(primaryVersion: string): RotationPaperArmSpe
     ],
   };
   if (primaryVersion === config.kolHunterRotationUnderfillParameterVersion) {
-    return [flowSpec, underfillCostAwareSpec, goodKolFocusSpec];
+    const doaVetoShadowSpec: RotationPaperArmSpec = {
+      suffix: 'doa-veto-shadow',
+      armName: ROTATION_DOA_VETO_SHADOW_ARM,
+      profileArm: ROTATION_DOA_VETO_SHADOW_ARM,
+      parameterVersion: config.kolHunterRotationDoaVetoShadowParameterVersion,
+      enabled: config.kolHunterRotationDoaVetoShadowPaperEnabled,
+      t1Mfe: config.kolHunterRotationUnderfillCostAwareT1MinMfe,
+      t1TrailPct: config.kolHunterRotationUnderfillCostAwareT1TrailPct,
+      t1ProfitFloorMult: config.kolHunterRotationUnderfillCostAwareProfitFloorMult,
+      probeFlatTimeoutSec: config.kolHunterRotationUnderfillCostAwareProbeTimeoutSec,
+      probeHardCutPct: config.kolHunterRotationUnderfillCostAwareHardCutPct,
+      rotationDoaWindowSec: config.kolHunterRotationUnderfillDoaWindowSec,
+      rotationDoaMinMfePct: config.kolHunterRotationUnderfillDoaMinMfePct,
+      rotationDoaMaxMaePct: config.kolHunterRotationUnderfillDoaMaxMaePct,
+      flowExit: true,
+      costAwareExit: true,
+      costAwareT1MinMfe: config.kolHunterRotationUnderfillCostAwareT1MinMfe,
+      costAwareT1BufferPct: config.kolHunterRotationUnderfillCostAwareT1BufferPct,
+      costAwareT1MaxMfe: config.kolHunterRotationUnderfillCostAwareT1MaxMfe,
+      costAwareProfitFloorMult: config.kolHunterRotationUnderfillCostAwareProfitFloorMult,
+      costAwareProfitFloorBufferPct: config.kolHunterRotationUnderfillCostAwareProfitFloorBufferPct,
+      doaVetoShadow: true,
+      extraSurvivalFlags: [
+        'ROTATION_DOA_VETO_SHADOW',
+        `ROTATION_DOA_VETO_COOLDOWN_${Math.round(config.kolHunterRotationDoaVetoShadowCooldownMs / 1000)}S`,
+      ],
+    };
+    return [flowSpec, underfillCostAwareSpec, goodKolFocusSpec, doaVetoShadowSpec];
   }
   return [
     {
@@ -2764,6 +2861,10 @@ function rotationPaperArmRejectReason(
     const seen = new Set(participatingKols.map((kol) => kol.id.toLowerCase()));
     const hasRequiredKol = spec.requiredKolIds.some((kolId) => seen.has(kolId.toLowerCase()));
     if (!hasRequiredKol) return 'focus_kol_missing';
+  }
+  if (spec.doaVetoShadow) {
+    const veto = checkRotationDoaVetoShadow(participatingKols.map((kol) => kol.id));
+    if (veto.blocked) return veto.reason ?? 'doa_veto_kol_cooldown';
   }
   const priceResponsePct = rotationPriceResponsePct(entryPrice, anchorPrice);
   if (
@@ -6055,6 +6156,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
   const candIsShadowForHardCutReentry = cand.kolTxs.length > 0 && cand.kolTxs.every((t) => t.isShadow === true);
   const canConsiderSmartV3LiveHardCutReentry =
     entrySignal.label === 'smart-v3' &&
+    config.kolHunterSmartV3HardCutReentryLiveEnabled &&
     isLiveCanaryActive() &&
     !!botCtx &&
     !candIsShadowForHardCutReentry;
@@ -6562,6 +6664,36 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         stage: 'wallet_stop',
         policyFlags,
         reason: 'wallet_stop_active',
+      });
+      return;
+    }
+    const missionCapitalGuard = evaluateMissionCapitalGuard(
+      getWalletStopGuardState().lastBalanceSol,
+      config.walletStopMinSol
+    );
+    if (missionCapitalGuard.softKillActive) {
+      const policyFlags = [
+        ...entryFlags,
+        'MISSION_SOFT_KILL_ACTIVE',
+        `MISSION_SOFT_KILL_LINE_${missionCapitalGuard.softKillLineSol.toFixed(2)}_SOL`,
+      ];
+      if (smartV3HardCutReentryLiveOnly) {
+        rejectSmartV3HardCutReentryLiveOnlyFallback('mission_soft_kill_active', policyFlags, {
+          walletSol: missionCapitalGuard.walletSol,
+          softKillLineSol: missionCapitalGuard.softKillLineSol,
+        });
+        return;
+      }
+      log.warn(
+        `[KOL_HUNTER_MISSION_SOFT_KILL] ${cand.tokenMint.slice(0, 8)} ${entrySignal.label} trigger — ` +
+        `${missionCapitalGuard.reason}. fallback paper.`
+      );
+      await emitAndEnterPaperFromLiveEquivalence({
+        stage: 'mission_soft_kill',
+        policyFlags,
+        reason: 'mission_soft_kill_active',
+        skipPolicyEntry: true,
+        emitFallbackPolicy: true,
       });
       return;
     }
@@ -9248,6 +9380,7 @@ function closePosition(
     // 2026-04-29 (P0-2): KOL alpha decay tracking — paper close 도 KOL track-record 누적.
     markKolClosed(pos.participatingKols.map((k) => k.id), netSol);
     markSmartV3ComboClosed(pos, netSol, 'paper');
+    markRotationDoaVetoKolClosed(pos, netSol, reason);
   }
 
   // price feed unsubscribe — token 의 모든 A/B arm 이 닫힌 뒤에만 정리
@@ -11543,7 +11676,7 @@ async function enterLivePosition(
     addedArms.push(mirrorPos.armName);
 
     for (const spec of buildRotationPaperArmSpecs(primaryVersion)) {
-      if (spec.armName !== ROTATION_GOOD_KOL_FOCUS_ARM) continue;
+      if (spec.armName !== ROTATION_GOOD_KOL_FOCUS_ARM && spec.armName !== ROTATION_DOA_VETO_SHADOW_ARM) continue;
       const rejectReason = rotationPaperArmRejectReason(
         spec,
         liveTokenEntryPrice,
@@ -12149,6 +12282,7 @@ async function closeLivePosition(
     markKolClosed(pos.participatingKols.map((k) => k.id), pnl);
     markSmartV3ComboClosed(pos, pnl, 'live');
     markRotationLiveKolClosed(pos, pnl);
+    markRotationDoaVetoKolClosed(pos, pnl, effectiveReason);
   }
 
   // 2026-04-30 (Sprint 1.B3): live trade outcome 을 jsonl 로 persist (DSR validator 입력).
@@ -12630,4 +12764,12 @@ export function __testRecordSmartV3ComboClose(
 
 export function __testRecordRotationLiveKolClose(kolIds: string[], pnlSol: number): void {
   pushRotationLiveKolClose(kolIds, pnlSol, Date.now());
+}
+
+export function __testRecordRotationDoaVetoKolClose(
+  kolIds: string[],
+  pnlSol: number,
+  reason: CloseReason = 'rotation_dead_on_arrival'
+): void {
+  pushRotationDoaVetoKolClose(kolIds, pnlSol, reason, Date.now());
 }

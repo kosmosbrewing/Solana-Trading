@@ -43,6 +43,7 @@ import {
   __testSetKolLiveSellRetryDelaysMs,
   __testRecordSmartV3ComboClose,
   __testRecordRotationLiveKolClose,
+  __testRecordRotationDoaVetoKolClose,
   __testCanRouteSmartV3FastCanary,
   __testCanRouteSmartV3FastFailLive,
   hydrateLiveExecutionQualityCooldownsFromBuyRecords,
@@ -350,6 +351,9 @@ jest.mock('../src/utils/config', () => ({
     kolHunterRotationGoodKolFocusPaperEnabled: false,
     kolHunterRotationGoodKolFocusKolIds: ['dv', 'kadenox', 'letterbomb', 'naruza'],
     kolHunterRotationGoodKolFocusParameterVersion: 'rotation-good-kol-focus-v1.0.0',
+    kolHunterRotationDoaVetoShadowPaperEnabled: false,
+    kolHunterRotationDoaVetoShadowCooldownMs: 3_600_000,
+    kolHunterRotationDoaVetoShadowParameterVersion: 'rotation-doa-veto-shadow-v1.0.0',
     kolHunterRotationPaperAssumedAtaRentSol: 0.00207408,
     kolHunterRotationPaperAssumedNetworkFeeSol: 0.000105,
     kolHunterRotationLiveKolDecayEnabled: true,
@@ -477,6 +481,7 @@ jest.mock('../src/utils/config', () => ({
     // 2026-04-29 (Track 1): default 0 — test 내 same-token 반복 사용 차단 안 함.
     // Track 1 회귀 테스트에서 explicit 으로 override 하여 검증.
     kolHunterReentryCooldownMs: 0,
+    kolHunterSmartV3HardCutReentryLiveEnabled: false,
     // 2026-04-29 (P0-2): KOL alpha decay default disabled — 회귀 테스트 explicit override.
     kolHunterKolDecayCooldownEnabled: false,
     kolHunterKolDecayCooldownMs: 14_400_000,
@@ -588,6 +593,7 @@ describe('kolSignalHandler — state machine', () => {
     mockedConfig.kolHunterSmartV3LiveBlockUncleanToken = true;
     mockedConfig.kolHunterSmartV3PreEntrySellLiveBlockEnabled = true;
     mockedConfig.kolHunterSmartV3PreEntrySellMinNoSellSec = 60;
+    mockedConfig.kolHunterSmartV3HardCutReentryLiveEnabled = false;
     mockedConfig.kolHunterSmartV3ComboDecayEnabled = true;
     mockedConfig.kolHunterSmartV3ComboDecayCooldownMs = 21_600_000;
     mockedConfig.kolHunterSmartV3ComboDecayMinCloses = 2;
@@ -703,6 +709,12 @@ describe('kolSignalHandler — state machine', () => {
     mockedConfig.kolHunterRotationUnderfillCostAwareProbeTimeoutSec = 30;
     mockedConfig.kolHunterRotationUnderfillCostAwareHardCutPct = 0.04;
     mockedConfig.kolHunterRotationUnderfillCostAwareParameterVersion = 'rotation-underfill-cost-aware-exit-v2.0.0';
+    mockedConfig.kolHunterRotationGoodKolFocusPaperEnabled = false;
+    mockedConfig.kolHunterRotationGoodKolFocusKolIds = ['dv', 'kadenox', 'letterbomb', 'naruza'];
+    mockedConfig.kolHunterRotationGoodKolFocusParameterVersion = 'rotation-good-kol-focus-v1.0.0';
+    mockedConfig.kolHunterRotationDoaVetoShadowPaperEnabled = false;
+    mockedConfig.kolHunterRotationDoaVetoShadowCooldownMs = 3_600_000;
+    mockedConfig.kolHunterRotationDoaVetoShadowParameterVersion = 'rotation-doa-veto-shadow-v1.0.0';
     mockedConfig.kolHunterRotationPaperAssumedAtaRentSol = 0.00207408;
     mockedConfig.kolHunterRotationPaperAssumedNetworkFeeSol = 0.000105;
     mockedConfig.kolHunterRotationLiveKolDecayEnabled = true;
@@ -2060,6 +2072,78 @@ describe('kolSignalHandler — state machine', () => {
         .map((call) => JSON.parse(String(call[1]).trim()))
         .filter((row) => row.extras?.armName === 'rotation_good_kol_focus_v1');
       expect(focusSkips).toHaveLength(0);
+    });
+
+    it('rotation-underfill: DOA veto shadow 는 최근 DOA 기록이 없으면 baseline 과 병렬 진입한다', async () => {
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterRotationPaperArmsEnabled = true;
+      mockedConfig.kolHunterRotationUnderfillCostAwarePaperEnabled = false;
+      mockedConfig.kolHunterRotationDoaVetoShadowPaperEnabled = true;
+      mockedConfig.kolHunterSmartV3VelocityScoreThreshold = 99;
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+
+      const positions = __testGetActive();
+      expect(positions.map((p) => p.armName).sort()).toEqual([
+        'rotation_doa_veto_shadow_v1',
+        'rotation_exit_kol_flow_v1',
+        'rotation_underfill_v1',
+      ]);
+      const parent = positions.find((p) => p.armName === 'rotation_underfill_v1')!;
+      const vetoShadow = positions.find((p) => p.armName === 'rotation_doa_veto_shadow_v1')!;
+      expect(vetoShadow).toBeDefined();
+      expect(vetoShadow.isShadowArm).toBe(true);
+      expect(vetoShadow.parentPositionId).toBe(parent.positionId);
+      expect(vetoShadow.parameterVersion).toBe('rotation-doa-veto-shadow-v1.0.0');
+      expect(vetoShadow.paperRole).toBe('shadow');
+      expect(vetoShadow.profileArm).toBe('rotation_doa_veto_shadow_v1');
+      expect(vetoShadow.entryArm).toBe('rotation_underfill_v1');
+      expect(vetoShadow.exitArm).toBe('rotation_doa_veto_shadow_v1');
+      expect(vetoShadow.rotationFlowExitEnabled).toBe(true);
+      expect(vetoShadow.t1MfeOverride).toBe(0.12);
+      expect(vetoShadow.t1TrailPctOverride).toBe(0.045);
+      expect(vetoShadow.t1ProfitFloorMult).toBe(1.10);
+      expect(vetoShadow.survivalFlags).toContain('ROTATION_DOA_VETO_SHADOW');
+      expect(vetoShadow.survivalFlags).toContain('ROTATION_DOA_VETO_COOLDOWN_3600S');
+    });
+
+    it('rotation-underfill: DOA veto shadow 는 최근 DOA KOL 만 skip 하고 baseline paper 는 유지한다', async () => {
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterRotationPaperArmsEnabled = true;
+      mockedConfig.kolHunterRotationUnderfillCostAwarePaperEnabled = false;
+      mockedConfig.kolHunterRotationDoaVetoShadowPaperEnabled = true;
+      mockedConfig.kolHunterSmartV3VelocityScoreThreshold = 99;
+      mockedConfig.missedAlphaObserverEnabled = true;
+      mockedConfig.kolHunterRotationV1MarkoutOffsetsSec = [15, 30, 60];
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+
+      __testRecordRotationDoaVetoKolClose(['decu'], -0.004, 'rotation_dead_on_arrival');
+
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+
+      expect(__testGetActive().map((p) => p.armName).sort()).toEqual([
+        'rotation_exit_kol_flow_v1',
+        'rotation_underfill_v1',
+      ]);
+      const vetoSkips = mockAppendFile.mock.calls
+        .filter((call) => typeof call[0] === 'string' && call[0].includes('missed-alpha.jsonl'))
+        .map((call) => JSON.parse(String(call[1]).trim()))
+        .filter((row) => row.extras?.armName === 'rotation_doa_veto_shadow_v1');
+      expect(vetoSkips).toHaveLength(1);
+      expect(vetoSkips[0].rejectReason)
+        .toBe('rotation_arm_skip_doa_veto_kol_cooldown:decu:rotation_dead_on_arrival');
+      expect(vetoSkips[0].signalSource).toBe('rotation_doa_veto_shadow_v1');
+      expect(vetoSkips[0].extras.eventType).toBe('rotation_arm_skip');
+      expect(vetoSkips[0].extras.skipReason)
+        .toBe('doa_veto_kol_cooldown:decu:rotation_dead_on_arrival');
+      expect(vetoSkips[0].extras.noTradeReason)
+        .toBe('rotation_doa_veto_shadow_v1_doa_veto_kol_cooldown:decu:rotation_dead_on_arrival');
+      expect(vetoSkips[0].extras.rotationAnchorKols).toEqual(['decu']);
     });
 
     it('rotation-chase-topup: S/A KOL top-up 이 더 높은 fill price 로 붙으면 paper-only 진입한다', async () => {
@@ -4393,6 +4477,52 @@ describe('kolSignalHandler — state machine', () => {
       ]));
     });
 
+    it('rotation-underfill live canary: DOA veto shadow 는 live 주문 변경 없이 paired paper shadow 로만 붙는다', async () => {
+      const { ctx, executeBuy, insertTrade } = buildLiveCtx();
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterLiveMinIndependentKol = 2;
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterRotationV1LiveEnabled = false;
+      mockedConfig.kolHunterRotationV1MinIndependentKol = 1;
+      mockedConfig.kolHunterRotationPaperArmsEnabled = true;
+      mockedConfig.kolHunterRotationUnderfillLiveCanaryEnabled = true;
+      mockedConfig.kolHunterRotationUnderfillLiveExitFlowEnabled = true;
+      mockedConfig.kolHunterRotationUnderfillCostAwarePaperEnabled = false;
+      mockedConfig.kolHunterRotationDoaVetoShadowPaperEnabled = true;
+
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+
+      expect(executeBuy).toHaveBeenCalledTimes(1);
+      expect(insertTrade).toHaveBeenCalledTimes(1);
+      const positions = __testGetActive();
+      const live = positions.find((p) => p.isLive === true)!;
+      const mirror = positions.find((p) => p.paperRole === 'mirror' && p.parentPositionId === live.positionId)!;
+      const vetoShadow = positions.find((p) => p.armName === 'rotation_doa_veto_shadow_v1')!;
+      expect(live.armName).toBe('rotation_underfill_v1');
+      expect(mirror).toBeDefined();
+      expect(vetoShadow).toBeDefined();
+      expect(vetoShadow.isLive).toBe(false);
+      expect(vetoShadow.isShadowArm).toBe(true);
+      expect(vetoShadow.parentPositionId).toBe(live.positionId);
+      expect(vetoShadow.paperRole).toBe('shadow');
+      expect(vetoShadow.parameterVersion).toBe('rotation-doa-veto-shadow-v1.0.0');
+      expect(vetoShadow.executionPlanSnapshot).toEqual(expect.objectContaining({
+        mode: 'paper',
+        candidateId: live.liveEquivalenceCandidateId,
+        decisionId: live.liveEquivalenceDecisionId,
+      }));
+      expect(vetoShadow.survivalFlags).toEqual(expect.arrayContaining([
+        'LIVE_PAIRED_PAPER_SHADOW',
+        'ROTATION_DOA_VETO_SHADOW',
+        'ROTATION_COST_AWARE_EXIT_V2',
+      ]));
+    });
+
     it('rotation-underfill exit-flow profile allowlist: paper/live 비교용 profileArm 을 보존한다', async () => {
       const { ctx, executeBuy, insertTrade } = buildLiveCtx();
       __testInit({ priceFeed: stubFeed as unknown as never, ctx });
@@ -6491,8 +6621,30 @@ describe('kolSignalHandler — state machine', () => {
       }
     });
 
-    it('3b-2. smart-v3 live hardcut 후 참여 KOL sell 이 없으면 할인 재진입은 cooldown 을 1회 우회', async () => {
+    it('3b-2. smart-v3 live hardcut 재진입은 기본값에서 cooldown 차단으로 남긴다', async () => {
       mockedConfig.kolHunterReentryCooldownMs = 1_800_000;
+      mockedConfig.kolHunterSmartV3HardCutReentryLiveEnabled = false;
+      const fx = buildE2EFixtures();
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx: fx.ctx });
+
+      await triggerSmartV3LiveEntry(MINT_SMART, 'pain', 0.001);
+      const firstLive = __testGetActive().find((p) => p.isLive === true)!;
+      expect(firstLive).toBeDefined();
+
+      __testTriggerTick(firstLive.positionId, firstLive.entryPrice * 0.85);
+      await flushAsync();
+      expect(__testGetActive()).toHaveLength(0);
+      expect(fx.executeBuy).toHaveBeenCalledTimes(1);
+
+      await triggerSmartV3LiveEntry(MINT_SMART, 'reentry_default_blocked', 0.0009);
+
+      expect(fx.executeBuy).toHaveBeenCalledTimes(1);
+      expect(__testGetActive()).toHaveLength(0);
+    }, 10_000);
+
+    it('3b-3. smart-v3 live hardcut 후 참여 KOL sell 이 없으면 할인 재진입은 explicit opt-in 에서만 cooldown 을 1회 우회', async () => {
+      mockedConfig.kolHunterReentryCooldownMs = 1_800_000;
+      mockedConfig.kolHunterSmartV3HardCutReentryLiveEnabled = true;
       const fx = buildE2EFixtures();
       __testInit({ priceFeed: stubFeed as unknown as never, ctx: fx.ctx });
 
@@ -6515,8 +6667,9 @@ describe('kolSignalHandler — state machine', () => {
       expect(reentry?.smartV3HardCutDiscountPct).toBeLessThanOrEqual(0);
     }, 10_000);
 
-    it('3b-3. smart-v3 hardcut 재진입은 live-only라 wallet stop 중 paper fallback 하지 않는다', async () => {
+    it('3b-4. smart-v3 hardcut 재진입은 live-only라 wallet stop 중 paper fallback 하지 않는다', async () => {
       mockedConfig.kolHunterReentryCooldownMs = 1_800_000;
+      mockedConfig.kolHunterSmartV3HardCutReentryLiveEnabled = true;
       const fx = buildE2EFixtures();
       __testInit({ priceFeed: stubFeed as unknown as never, ctx: fx.ctx });
 
@@ -6535,8 +6688,9 @@ describe('kolSignalHandler — state machine', () => {
       expect(__testGetActive()).toHaveLength(0);
     }, 10_000);
 
-    it('3b-4. smart-v3 hardcut 재진입은 buy 실패가 아니라 체결 성공 1회만 소모한다', async () => {
+    it('3b-5. smart-v3 hardcut 재진입은 buy 실패가 아니라 체결 성공 1회만 소모한다', async () => {
       mockedConfig.kolHunterReentryCooldownMs = 1_800_000;
+      mockedConfig.kolHunterSmartV3HardCutReentryLiveEnabled = true;
       const buyOk = {
         txSignature: 'KOL_LIVE_BUY_SIG',
         expectedInAmount: 10_000_000n,

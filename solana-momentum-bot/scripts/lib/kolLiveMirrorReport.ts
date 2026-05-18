@@ -290,10 +290,25 @@ export async function buildKolLiveMirrorReport(args: KolLiveMirrorArgs): Promise
   const pairs = buildPairs(liveRows, mirrorRows);
   const pairedLiveIds = new Set(pairs.map((pair) => pair.livePositionId));
   const pairedMirrorIds = new Set(pairs.map((pair) => pair.mirrorPositionId));
+  const unpairedMirrorRows = mirrorRows.filter((row) => !pairedMirrorIds.has(valueStr(row, 'positionId'))).length;
+  const liveWithoutMirrorRows = liveRows.filter((row) => !pairedLiveIds.has(valueStr(row, 'positionId'))).length;
   const liveStats = stats(pairs, 'live');
   const mirrorStats = stats(pairs, 'mirror');
   const counts = classificationCounts(pairs);
   const rates = classificationRates(counts, pairs.length);
+  const pairedRowsPass = pairs.length >= args.minPairs;
+  const liveWithoutMirrorPass = liveWithoutMirrorRows === 0;
+  const strategyLossRate = rates.strategy_loss;
+  const strategyLossPass = (strategyLossRate ?? 0) < args.strategyLossRate;
+  const liveWalletNetPositive = liveStats.netSol > 0;
+  const mirrorNetPositive = mirrorStats.netSol > 0;
+  const promotionBlockedReasons = [
+    ...(!pairedRowsPass ? [`paired mirror closes ${pairs.length}/${args.minPairs}`] : []),
+    ...(!liveWithoutMirrorPass ? [`live closes without mirror ${liveWithoutMirrorRows}`] : []),
+    ...(!strategyLossPass ? [`strategy loss rate ${(strategyLossRate ?? 0).toFixed(3)} >= ${args.strategyLossRate.toFixed(3)}`] : []),
+    ...(!liveWalletNetPositive ? [`live wallet net ${liveStats.netSol.toFixed(6)} <= 0`] : []),
+    ...(!mirrorNetPositive ? [`paper mirror net ${mirrorStats.netSol.toFixed(6)} <= 0`] : []),
+  ];
   const partial = {
     generatedAt: new Date().toISOString(),
     realtimeDir: args.realtimeDir,
@@ -305,8 +320,8 @@ export async function buildKolLiveMirrorReport(args: KolLiveMirrorArgs): Promise
     liveRows: liveRows.length,
     mirrorRows: mirrorRows.length,
     pairedRows: pairs.length,
-    unpairedMirrorRows: mirrorRows.filter((row) => !pairedMirrorIds.has(valueStr(row, 'positionId'))).length,
-    liveWithoutMirrorRows: liveRows.filter((row) => !pairedLiveIds.has(valueStr(row, 'positionId'))).length,
+    unpairedMirrorRows,
+    liveWithoutMirrorRows,
     live: liveStats,
     mirror: mirrorStats,
     deltas: {
@@ -334,6 +349,15 @@ export async function buildKolLiveMirrorReport(args: KolLiveMirrorArgs): Promise
     promotionGate: {
       livePromotionAllowed: false as const,
       requiresSeparateWalletTruthReview: true as const,
+      proofReadyForReview: promotionBlockedReasons.length === 0,
+      minPairedRows: args.minPairs,
+      pairedRowsPass,
+      liveWithoutMirrorPass,
+      strategyLossRate,
+      strategyLossPass,
+      liveWalletNetPositive,
+      mirrorNetPositive,
+      blockedReasons: promotionBlockedReasons,
     },
   };
   const withVerdict = {

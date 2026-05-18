@@ -100,6 +100,13 @@ export function renderKolLiveMirrorReport(report: KolLiveMirrorReport): string {
   lines.push('## Promotion Gate');
   lines.push(`- live promotion allowed: ${report.promotionGate.livePromotionAllowed}`);
   lines.push(`- requires separate wallet-truth review: ${report.promotionGate.requiresSeparateWalletTruthReview}`);
+  lines.push(`- proof ready for review: ${report.promotionGate.proofReadyForReview}`);
+  lines.push(`- paired rows pass: ${report.promotionGate.pairedRowsPass} (${report.pairedRows}/${report.promotionGate.minPairedRows})`);
+  lines.push(`- live without mirror pass: ${report.promotionGate.liveWithoutMirrorPass}`);
+  lines.push(`- strategy loss pass: ${report.promotionGate.strategyLossPass} (${fmtPct(report.promotionGate.strategyLossRate)})`);
+  lines.push(`- live wallet net positive: ${report.promotionGate.liveWalletNetPositive}`);
+  lines.push(`- paper mirror net positive: ${report.promotionGate.mirrorNetPositive}`);
+  lines.push(`- blocked reasons: ${report.promotionGate.blockedReasons.join('; ') || 'none'}`);
   lines.push('- This report explains cause; it does not promote live size by itself.');
   return lines.join('\n');
 }

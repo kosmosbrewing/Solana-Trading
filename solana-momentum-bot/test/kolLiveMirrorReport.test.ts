@@ -93,6 +93,9 @@ describe('kol-live-mirror-report', () => {
 
     expect(report.verdict).toBe('EXECUTION_DRAG_REVIEW');
     expect(report.pairedRows).toBe(2);
+    expect(report.promotionGate.proofReadyForReview).toBe(false);
+    expect(report.promotionGate.liveWalletNetPositive).toBe(false);
+    expect(report.promotionGate.blockedReasons).toContain('live wallet net -0.005000 <= 0');
     expect(report.classifications.execution_drag).toBe(2);
     expect(report.live.netSol).toBeCloseTo(-0.005, 6);
     expect(report.mirror.netSol).toBeCloseTo(0.003, 6);
@@ -286,9 +289,19 @@ describe('kol-live-mirror-report', () => {
       promotionGate: {
         livePromotionAllowed: false,
         requiresSeparateWalletTruthReview: true,
+        proofReadyForReview: false,
+        minPairedRows: 30,
+        pairedRowsPass: false,
+        liveWithoutMirrorPass: true,
+        strategyLossRate: null,
+        strategyLossPass: true,
+        liveWalletNetPositive: false,
+        mirrorNetPositive: false,
+        blockedReasons: ['paired mirror closes 0/30', 'live wallet net 0.000000 <= 0', 'paper mirror net 0.000000 <= 0'],
       },
     });
     expect(markdown).toContain('live promotion allowed: false');
+    expect(markdown).toContain('proof ready for review: false');
     expect(markdown).toContain('This report explains cause');
   });
 });

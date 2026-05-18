@@ -13,6 +13,10 @@
  */
 import { mkdir, readFile, writeFile } from 'fs/promises';
 import path from 'path';
+import {
+  evaluateMissionCapitalGuard,
+  type MissionFundedLivePolicy,
+} from '../src/risk/missionCapitalGuard';
 
 interface CliArgs {
   ledgerDir: string;
@@ -367,6 +371,9 @@ interface CanaryBudgetProjection {
   remainingKolBudgetSol: number;
   projectedWalletAtBudgetExhaustionSol: number;
   projectedFloorBufferSol: number;
+  softKillLineSol: number;
+  softKillActive: boolean;
+  fundedLivePolicy: MissionFundedLivePolicy;
   kolTicketSol: number;
   approxFullTicketLosers: number;
   capExhausted: boolean;
@@ -1521,6 +1528,7 @@ function buildCanaryBudgetProjection(
   const remainingKolBudgetSol = Math.max(0, input.kolCanaryCapSol + cumulativeKolPnlSol);
   const projectedWalletAtBudgetExhaustionSol = input.walletSol - remainingKolBudgetSol;
   const projectedFloorBufferSol = projectedWalletAtBudgetExhaustionSol - input.walletFloorSol;
+  const missionCapital = evaluateMissionCapitalGuard(input.walletSol, input.walletFloorSol);
   const approxFullTicketLosers = input.kolTicketSol > 0
     ? Math.floor(remainingKolBudgetSol / input.kolTicketSol)
     : 0;
@@ -1549,6 +1557,9 @@ function buildCanaryBudgetProjection(
     remainingKolBudgetSol,
     projectedWalletAtBudgetExhaustionSol,
     projectedFloorBufferSol,
+    softKillLineSol: missionCapital.softKillLineSol,
+    softKillActive: missionCapital.softKillActive,
+    fundedLivePolicy: missionCapital.fundedLivePolicy,
     kolTicketSol: input.kolTicketSol,
     approxFullTicketLosers,
     capExhausted,
@@ -1818,6 +1829,8 @@ function formatCanaryBudgetProjectionSection(projection: CanaryBudgetProjection 
     '',
     `- Verdict: ${projection.verdict}`,
     `- Wallet / floor / room: ${sol(projection.walletSol)} / ${sol(projection.walletFloorSol)} / ${sol(projection.walletRoomSol)} SOL`,
+    `- Mission soft-kill line / active: ${sol(projection.softKillLineSol)} SOL / ${projection.softKillActive ? 'yes' : 'no'}`,
+    `- Funded live policy: ${projection.fundedLivePolicy}`,
     `- KOL canary cap: ${sol(projection.kolCanaryCapSol)} SOL`,
     `- KOL cumulative PnL: ${sol(projection.cumulativeKolPnlSol)} SOL`,
     `- Remaining KOL budget: ${sol(projection.remainingKolBudgetSol)} SOL`,

@@ -10,6 +10,7 @@ export type KolLiveEquivalenceDecisionStage =
   | 'rotation_live_disabled'
   | 'hard_trading_halt'
   | 'wallet_stop'
+  | 'mission_soft_kill'
   | 'entry_halt'
   | 'live_execution_quality_cooldown'
   | 'yellow_zone'

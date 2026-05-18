@@ -53,6 +53,10 @@ export const kolHunter = {
   // Why: paper 데이터 5 mints / 12 big losses (cum -0.033 SOL). 시뮬 +13% improvement.
   // 같은 mint 의 close 후 N ms 안에는 재진입 차단. 5x winner 보호 (대부분 single-entry).
   kolHunterReentryCooldownMs: numEnv('KOL_HUNTER_REENTRY_COOLDOWN_MS', '1800000'),  // 30분
+  // 2026-05-17 mission restructure: live hardcut is loser evidence.
+  // Same-mint smart-v3 re-entry with real funds is explicit opt-in only.
+  kolHunterSmartV3HardCutReentryLiveEnabled:
+    boolOptional('KOL_HUNTER_SMART_V3_HARD_CUT_REENTRY_LIVE_ENABLED', false),
 
   // 2026-04-29 (외부 전략 리포트 권고 #5): Co-buy graph community detection.
   // 같은 community KOL 들이 chain forward 시 simple 60s anti-correlation dedup 만으로 부족.
@@ -456,6 +460,15 @@ export const kolHunter = {
   kolHunterRotationGoodKolFocusPaperEnabled: boolOptional('KOL_HUNTER_ROTATION_GOOD_KOL_FOCUS_PAPER_ENABLED', true),
   kolHunterRotationGoodKolFocusKolIds: parseStringList(optional('KOL_HUNTER_ROTATION_GOOD_KOL_FOCUS_KOL_IDS', 'dv,kadenox,letterbomb,naruza')),
   kolHunterRotationGoodKolFocusParameterVersion: process.env.KOL_HUNTER_ROTATION_GOOD_KOL_FOCUS_PARAMETER_VERSION ?? 'rotation-good-kol-focus-v1.0.0',
+  // 2026-05-18: paper-first admission veto shadow. Baseline rotation paper still
+  // enters; this sidecar tests whether skipping KOLs that just produced DOA-like
+  // losses improves wallet-cost compounding without touching live routing.
+  kolHunterRotationDoaVetoShadowPaperEnabled:
+    boolOptional('KOL_HUNTER_ROTATION_DOA_VETO_SHADOW_PAPER_ENABLED', true),
+  kolHunterRotationDoaVetoShadowCooldownMs:
+    numEnv('KOL_HUNTER_ROTATION_DOA_VETO_SHADOW_COOLDOWN_MS', '3600000'),
+  kolHunterRotationDoaVetoShadowParameterVersion:
+    process.env.KOL_HUNTER_ROTATION_DOA_VETO_SHADOW_PARAMETER_VERSION ?? 'rotation-doa-veto-shadow-v1.0.0',
   kolHunterRotationPaperAssumedAtaRentSol: numEnv('KOL_HUNTER_ROTATION_PAPER_ASSUMED_ATA_RENT_SOL', '0.00207408'),
   kolHunterRotationPaperAssumedNetworkFeeSol: numEnv('KOL_HUNTER_ROTATION_PAPER_ASSUMED_NETWORK_FEE_SOL', '0.000105'),
   kolHunterRotationPaperNotifyEnabled: boolOptional('KOL_HUNTER_ROTATION_PAPER_NOTIFY_ENABLED', true),
@@ -544,7 +557,9 @@ export const kolHunter = {
   kolHunterSmartV3Enabled: boolOptional('KOL_HUNTER_SMART_V3_ENABLED', true),
   // KOL_HUNTER_LIVE_CANARY_ENABLED 는 KOL live 공통 상위 gate 이다. smart-v3 live 는
   // 별도 flag 로 막고, rotation arm 은 arm-specific live canary flag 로 승격한다.
-  kolHunterSmartV3LiveEnabled: boolOptional('KOL_HUNTER_SMART_V3_LIVE_ENABLED', true),
+  // 2026-05-17 mission restructure: smart-v3 is no longer funded-live by default.
+  // Keep explicit arm/env opt-in available, but the no-env baseline must be shadow/mirror-first.
+  kolHunterSmartV3LiveEnabled: boolOptional('KOL_HUNTER_SMART_V3_LIVE_ENABLED', false),
   kolHunterSmartV3QualityUnknownMicroParameterVersion:
     process.env.KOL_HUNTER_SMART_V3_QUALITY_UNKNOWN_MICRO_PARAMETER_VERSION ??
     'smart-v3-quality-unknown-micro-v1.0.0',

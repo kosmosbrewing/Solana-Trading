@@ -11684,7 +11684,21 @@ async function enterLivePosition(
         position.survivalFlags,
         entryParticipatingKols
       );
-      if (rejectReason) continue;
+      if (rejectReason) {
+        if (rejectReason !== 'disabled' && rejectReason !== 'focus_kol_missing') {
+          trackRotationPaperArmSkipMarkout(
+            cand,
+            score,
+            spec,
+            rejectReason,
+            liveTokenEntryPrice,
+            options,
+            position.survivalFlags,
+            { value: liveDecimals, source: liveDecimalsSource }
+          );
+        }
+        continue;
+      }
       const shadowId = `${positionId}-${spec.suffix}`;
       const shadowPos: PaperPosition = {
         ...position,

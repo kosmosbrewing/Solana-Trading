@@ -3,6 +3,7 @@ import {
   type MissionEntryCohort,
   type MissionEntryReport,
   type PaperShadowArmSummary,
+  type RotationDoaVetoSkipReasonSummary,
 } from './missionEntryReportTypes';
 
 function fmtPct(value: number | null): string {
@@ -68,6 +69,13 @@ function shadowRow(shadow: PaperShadowArmSummary): string {
   ].join(' | ');
 }
 
+function skipReasonRow(reason: RotationDoaVetoSkipReasonSummary): string {
+  return [
+    reason.reason,
+    String(reason.count),
+  ].join(' | ');
+}
+
 export function renderMissionEntryReport(report: MissionEntryReport): string {
   const lines: string[] = [];
   lines.push('# Mission Entry Report');
@@ -104,6 +112,23 @@ export function renderMissionEntryReport(report: MissionEntryReport): string {
   lines.push('|---|---:|---:|---:|---:|---:|---:|');
   if (report.paperShadows.length === 0) lines.push('| none | 0 | 0.000000 | n/a | n/a | n/a | n/a |');
   else for (const shadow of report.paperShadows) lines.push(`| ${shadowRow(shadow)} |`);
+  lines.push('');
+  lines.push('## Rotation DOA Veto Coverage');
+  lines.push(`- verdict: ${report.rotationDoaVetoCoverage.verdict}`);
+  lines.push(`- parent/shadow/paired: ${report.rotationDoaVetoCoverage.parentRows} / ${report.rotationDoaVetoCoverage.shadowRows} / ${report.rotationDoaVetoCoverage.pairedRows}`);
+  lines.push(`- skips raw/unique: ${report.rotationDoaVetoCoverage.rawSkipRows} / ${report.rotationDoaVetoCoverage.uniqueSkipRows}`);
+  lines.push(`- attributed coverage: ${fmtRate(report.rotationDoaVetoCoverage.attributedCoverage)}`);
+  lines.push(`- unattributed parent rows: ${report.rotationDoaVetoCoverage.unattributedParentRows}`);
+  lines.push(`- parent/shadow net SOL: ${fmtSol(report.rotationDoaVetoCoverage.parentNetSol)} / ${fmtSol(report.rotationDoaVetoCoverage.shadowNetSol)}`);
+  lines.push(`- paired parent/shadow/delta SOL: ${fmtSol(report.rotationDoaVetoCoverage.pairedParentNetSol)} / ${fmtSol(report.rotationDoaVetoCoverage.pairedShadowNetSol)} / ${fmtSol(report.rotationDoaVetoCoverage.pairedNetDeltaSol)}`);
+  lines.push('');
+  lines.push('Reasons:');
+  for (const reason of report.rotationDoaVetoCoverage.reasons) lines.push(`- ${reason}`);
+  lines.push('');
+  lines.push('| skip reason | unique candidates |');
+  lines.push('|---|---:|');
+  if (report.rotationDoaVetoCoverage.skipReasons.length === 0) lines.push('| none | 0 |');
+  else for (const reason of report.rotationDoaVetoCoverage.skipReasons) lines.push(`| ${skipReasonRow(reason)} |`);
   lines.push('');
   lines.push('## Next Actions');
   for (const action of report.nextActions) lines.push(`- ${action}`);

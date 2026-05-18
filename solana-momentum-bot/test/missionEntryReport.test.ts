@@ -69,6 +69,7 @@ describe('mission-entry-report', () => {
     const liveRows = Array.from({ length: 30 }, (_, i) => ({
       positionId: `live-${i}`,
       status: 'closed',
+      armName: 'rotation_underfill_v1',
       exitReason: i % 2 === 0 ? 'probe_hard_cut' : 'rotation_dead_on_arrival',
       netSol: -0.01,
       actualMfePct: 0.03,
@@ -80,6 +81,7 @@ describe('mission-entry-report', () => {
         positionId: 'shadow-1',
         status: 'closed',
         armName: 'rotation_doa_veto_shadow_v1',
+        parentPositionId: 'live-0',
         netSol: 0.02,
         netPct: 0.1,
         mfePct: 0.2,
@@ -114,6 +116,9 @@ describe('mission-entry-report', () => {
     expect(report.liveBleed.bleedNetShare).toBeGreaterThanOrEqual(1);
     expect(report.paperShadows.find((shadow) => shadow.armName === 'rotation_doa_veto_shadow_v1')?.rows).toBe(1);
     expect(report.paperShadows.find((shadow) => shadow.armName === 'smart_v3_probe_confirm_shadow_v1')?.rows).toBe(1);
+    expect(report.rotationDoaVetoCoverage.parentRows).toBe(30);
+    expect(report.rotationDoaVetoCoverage.pairedRows).toBe(1);
+    expect(report.rotationDoaVetoCoverage.verdict).toBe('COVERAGE_GAP');
   });
 
   it('parses args and renders guardrails', () => {
@@ -152,6 +157,23 @@ describe('mission-entry-report', () => {
         buckets: [],
       },
       paperShadows: [],
+      rotationDoaVetoCoverage: {
+        verdict: 'DATA_GAP',
+        parentRows: 0,
+        shadowRows: 0,
+        pairedRows: 0,
+        rawSkipRows: 0,
+        uniqueSkipRows: 0,
+        attributedCoverage: null,
+        unattributedParentRows: 0,
+        parentNetSol: 0,
+        shadowNetSol: 0,
+        pairedParentNetSol: 0,
+        pairedShadowNetSol: 0,
+        pairedNetDeltaSol: null,
+        skipReasons: [],
+        reasons: ['no rotation_underfill_v1 parent rows'],
+      },
       nextActions: ['Collect forward paper shadow rows.'],
     });
     expect(markdown).toContain('Report-only');

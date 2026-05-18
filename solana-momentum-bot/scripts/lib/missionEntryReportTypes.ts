@@ -86,6 +86,36 @@ export interface PaperShadowArmSummary {
   medianHoldSec: number | null;
 }
 
+export type RotationDoaVetoCoverageVerdict =
+  | 'DATA_GAP'
+  | 'NO_ARTIFACTS'
+  | 'COVERAGE_GAP'
+  | 'COLLECT_FORWARD_ROWS'
+  | 'PAIRED_REVIEW_READY';
+
+export interface RotationDoaVetoSkipReasonSummary {
+  reason: string;
+  count: number;
+}
+
+export interface RotationDoaVetoCoverageSummary {
+  verdict: RotationDoaVetoCoverageVerdict;
+  parentRows: number;
+  shadowRows: number;
+  pairedRows: number;
+  rawSkipRows: number;
+  uniqueSkipRows: number;
+  attributedCoverage: number | null;
+  unattributedParentRows: number;
+  parentNetSol: number;
+  shadowNetSol: number;
+  pairedParentNetSol: number;
+  pairedShadowNetSol: number;
+  pairedNetDeltaSol: number | null;
+  skipReasons: RotationDoaVetoSkipReasonSummary[];
+  reasons: string[];
+}
+
 export interface MissionEntryReport {
   generatedAt: string;
   realtimeDir: string;
@@ -103,5 +133,6 @@ export interface MissionEntryReport {
   cohorts: MissionEntryCohort[];
   liveBleed: LiveBleedSummary;
   paperShadows: PaperShadowArmSummary[];
+  rotationDoaVetoCoverage: RotationDoaVetoCoverageSummary;
   nextActions: string[];
 }

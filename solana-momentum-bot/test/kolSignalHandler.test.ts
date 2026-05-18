@@ -4523,6 +4523,45 @@ describe('kolSignalHandler — state machine', () => {
       ]));
     });
 
+    it('rotation-underfill live canary: DOA veto shadow skip 도 missed-alpha 에 남긴다', async () => {
+      const { ctx, executeBuy, insertTrade } = buildLiveCtx();
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterLiveMinIndependentKol = 2;
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterRotationV1LiveEnabled = false;
+      mockedConfig.kolHunterRotationV1MinIndependentKol = 1;
+      mockedConfig.kolHunterRotationPaperArmsEnabled = true;
+      mockedConfig.kolHunterRotationUnderfillLiveCanaryEnabled = true;
+      mockedConfig.kolHunterRotationUnderfillLiveExitFlowEnabled = true;
+      mockedConfig.kolHunterRotationUnderfillCostAwarePaperEnabled = false;
+      mockedConfig.kolHunterRotationDoaVetoShadowPaperEnabled = true;
+      mockedConfig.missedAlphaObserverEnabled = true;
+      mockedConfig.kolHunterRotationV1MarkoutOffsetsSec = [15, 30, 60];
+      __testRecordRotationDoaVetoKolClose(['decu'], -0.004, 'rotation_dead_on_arrival');
+
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+
+      expect(executeBuy).toHaveBeenCalledTimes(1);
+      expect(insertTrade).toHaveBeenCalledTimes(1);
+      expect(__testGetActive().some((p) => p.armName === 'rotation_doa_veto_shadow_v1')).toBe(false);
+      const vetoSkips = mockAppendFile.mock.calls
+        .filter((call) => typeof call[0] === 'string' && call[0].includes('missed-alpha.jsonl'))
+        .map((call) => JSON.parse(String(call[1]).trim()))
+        .filter((row) => row.extras?.armName === 'rotation_doa_veto_shadow_v1');
+      expect(vetoSkips).toHaveLength(1);
+      expect(vetoSkips[0].rejectReason)
+        .toBe('rotation_arm_skip_doa_veto_kol_cooldown:decu:rotation_dead_on_arrival');
+      expect(vetoSkips[0].extras.eventType).toBe('rotation_arm_skip');
+      expect(vetoSkips[0].extras.skipReason)
+        .toBe('doa_veto_kol_cooldown:decu:rotation_dead_on_arrival');
+      expect(vetoSkips[0].extras.parentArmName).toBe('rotation_underfill_v1');
+    });
+
     it('rotation-underfill exit-flow profile allowlist: paper/live 비교용 profileArm 을 보존한다', async () => {
       const { ctx, executeBuy, insertTrade } = buildLiveCtx();
       __testInit({ priceFeed: stubFeed as unknown as never, ctx });

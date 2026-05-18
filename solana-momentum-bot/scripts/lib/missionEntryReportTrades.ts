@@ -12,6 +12,9 @@ import {
   type LiveBleedExitBucket,
   type LiveBleedSummary,
   type PaperShadowArmSummary,
+  type RotationDoaVetoCoverageSummary,
+  type RotationDoaVetoCoverageVerdict,
+  type RotationDoaVetoSkipReasonSummary,
 } from './missionEntryReportTypes';
 
 const LIVE_TRADE_FILES = [
@@ -32,14 +35,16 @@ const PAPER_TRADE_FILES = [
 export interface MissionTradeRows {
   liveRows: JsonRow[];
   paperRows: JsonRow[];
+  missedAlphaRows: JsonRow[];
 }
 
 export async function loadMissionTradeRows(realtimeDir: string): Promise<MissionTradeRows> {
-  const [liveRows, paperRows] = await Promise.all([
+  const [liveRows, paperRows, missedAlphaRows] = await Promise.all([
     readTradeFiles(realtimeDir, LIVE_TRADE_FILES),
     readTradeFiles(realtimeDir, PAPER_TRADE_FILES),
+    readJsonl(path.join(realtimeDir, 'missed-alpha.jsonl')),
   ]);
-  return { liveRows, paperRows };
+  return { liveRows, paperRows, missedAlphaRows };
 }
 
 function extrasOf(row: JsonRow): JsonRow {
@@ -165,4 +170,98 @@ export function buildPaperShadows(rows: JsonRow[]): PaperShadowArmSummary[] {
   return MISSION_SHADOW_ARMS
     .map((armName) => summarizePaperArm(armName, rows))
     .filter((summary) => summary.rows > 0);
+}
+
+function uniqueSkipKey(row: JsonRow): string {
+  return str(row.eventId) || valueStr(row, 'positionId') || `${str(row.tokenMint)}:${str(row.rejectedAt)}`;
+}
+
+function isRotationDoaVetoSkip(row: JsonRow): boolean {
+  return valueStr(row, 'eventType') === 'rotation_arm_skip' &&
+    valueStr(row, 'armName') === 'rotation_doa_veto_shadow_v1';
+}
+
+function skipReason(row: JsonRow): string {
+  return valueStr(row, 'skipReason') || str(row.rejectReason) || 'unknown';
+}
+
+function summarizeSkipReasons(rows: JsonRow[]): RotationDoaVetoSkipReasonSummary[] {
+  const counts = new Map<string, number>();
+  for (const row of rows) counts.set(skipReason(row), (counts.get(skipReason(row)) ?? 0) + 1);
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([reason, count]) => ({ reason, count }));
+}
+
+function isRotationUnderfillParent(row: JsonRow): boolean {
+  return valueStr(row, 'armName') === 'rotation_underfill_v1' && valueStr(row, 'isShadowArm') !== 'true';
+}
+
+function isRotationDoaVetoShadow(row: JsonRow): boolean {
+  return valueStr(row, 'armName') === 'rotation_doa_veto_shadow_v1';
+}
+
+function coverageVerdict(
+  parentRows: number,
+  pairedRows: number,
+  uniqueSkipRows: number,
+  attributedCoverage: number | null
+): RotationDoaVetoCoverageVerdict {
+  if (parentRows === 0) return 'DATA_GAP';
+  if (pairedRows === 0 && uniqueSkipRows === 0) return 'NO_ARTIFACTS';
+  if (attributedCoverage != null && attributedCoverage < 0.95) return 'COVERAGE_GAP';
+  if (pairedRows < 30) return 'COLLECT_FORWARD_ROWS';
+  return 'PAIRED_REVIEW_READY';
+}
+
+function coverageReasons(summary: Omit<RotationDoaVetoCoverageSummary, 'reasons'>): string[] {
+  const reasons: string[] = [];
+  if (summary.parentRows === 0) reasons.push('no rotation_underfill_v1 parent rows');
+  if (summary.shadowRows === 0) reasons.push('no rotation_doa_veto_shadow_v1 close rows');
+  if (summary.uniqueSkipRows === 0) reasons.push('no rotation_doa_veto_shadow_v1 skip artifacts');
+  if ((summary.attributedCoverage ?? 0) < 0.95 && summary.parentRows > 0) {
+    reasons.push(`attributed coverage ${(summary.attributedCoverage ?? 0) * 100}% < 95%`);
+  }
+  if (summary.pairedRows < 30 && summary.pairedRows > 0) reasons.push(`paired rows ${summary.pairedRows} < 30`);
+  if (reasons.length === 0) reasons.push('rotation DOA veto shadow is attributable');
+  return reasons;
+}
+
+export function buildRotationDoaVetoCoverage(
+  tradeRows: JsonRow[],
+  missedAlphaRows: JsonRow[]
+): RotationDoaVetoCoverageSummary {
+  const parentRows = closedRows(tradeRows.filter(isRotationUnderfillParent));
+  const shadowRows = closedRows(tradeRows.filter(isRotationDoaVetoShadow));
+  const parentById = new Map(parentRows.map((row) => [valueStr(row, 'positionId'), row]));
+  const pairedShadows = shadowRows.filter((row) => parentById.has(valueStr(row, 'parentPositionId')));
+  const pairedParents = pairedShadows
+    .map((row) => parentById.get(valueStr(row, 'parentPositionId')))
+    .filter((row): row is JsonRow => row != null);
+  const rawSkips = missedAlphaRows.filter(isRotationDoaVetoSkip);
+  const uniqueSkips = new Map(rawSkips.map((row) => [uniqueSkipKey(row), row]));
+  const attributed = pairedShadows.length + uniqueSkips.size;
+  const attributedCoverage = parentRows.length > 0 ? rounded(attributed / parentRows.length) : null;
+  const pairedParentNet = sum(pairedParents.map(netSol));
+  const pairedShadowNet = sum(pairedShadows.map(netSol));
+  const draft = {
+    verdict: coverageVerdict(parentRows.length, pairedShadows.length, uniqueSkips.size, attributedCoverage),
+    parentRows: parentRows.length,
+    shadowRows: shadowRows.length,
+    pairedRows: pairedShadows.length,
+    rawSkipRows: rawSkips.length,
+    uniqueSkipRows: uniqueSkips.size,
+    attributedCoverage,
+    unattributedParentRows: Math.max(0, parentRows.length - attributed),
+    parentNetSol: rounded(sum(parentRows.map(netSol))) ?? 0,
+    shadowNetSol: rounded(sum(shadowRows.map(netSol))) ?? 0,
+    pairedParentNetSol: rounded(pairedParentNet) ?? 0,
+    pairedShadowNetSol: rounded(pairedShadowNet) ?? 0,
+    pairedNetDeltaSol: pairedShadows.length > 0 ? rounded(pairedShadowNet - pairedParentNet) : null,
+    skipReasons: summarizeSkipReasons([...uniqueSkips.values()]),
+  };
+  return {
+    ...draft,
+    reasons: coverageReasons(draft),
+  };
 }

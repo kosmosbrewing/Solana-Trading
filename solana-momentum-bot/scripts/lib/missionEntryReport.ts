@@ -22,6 +22,7 @@ import {
 import {
   buildLiveBleed,
   buildPaperShadows,
+  buildRotationDoaVetoCoverage,
   loadMissionTradeRows,
 } from './missionEntryReportTrades';
 
@@ -138,7 +139,11 @@ function overallReasons(cohorts: MissionEntryCohort[], liveBleed: LiveBleedSumma
   return reasons;
 }
 
-function nextActions(verdict: MissionEntryVerdict, paperShadows: PaperShadowArmSummary[]): string[] {
+function nextActions(
+  verdict: MissionEntryVerdict,
+  paperShadows: PaperShadowArmSummary[],
+  rotationDoaVetoCoverageVerdict: string
+): string[] {
   const actions = [
     'Keep funded live unchanged until mirror/live proof improves.',
     'Use paper shadow arms as promotion evidence only after forward closes, not as live profit proof.',
@@ -148,6 +153,11 @@ function nextActions(verdict: MissionEntryVerdict, paperShadows: PaperShadowArmS
   }
   if (!paperShadows.some((shadow) => shadow.armName === 'rotation_doa_veto_shadow_v1')) {
     actions.push('Collect rotation_doa_veto_shadow_v1 rows before relaxing rotation admission.');
+  }
+  if (rotationDoaVetoCoverageVerdict === 'NO_ARTIFACTS') {
+    actions.push('Investigate rotation_doa_veto_shadow_v1 spawn/skip artifact path before assuming no eligible candidates.');
+  } else if (rotationDoaVetoCoverageVerdict === 'COVERAGE_GAP') {
+    actions.push('Close rotation DOA veto attribution gap before using the arm as promotion evidence.');
   }
   if (!paperShadows.some((shadow) => shadow.armName === 'smart_v3_probe_confirm_shadow_v1')) {
     actions.push('Collect smart_v3_probe_confirm_shadow_v1 rows before restoring smart-v3 funded exposure.');
@@ -168,6 +178,10 @@ export async function buildMissionEntryReport(args: MissionEntryArgs): Promise<M
   const cohorts = buildCohorts(markout.candidates, args);
   const liveBleed = buildLiveBleed(trades.liveRows);
   const paperShadows = buildPaperShadows(trades.paperRows);
+  const rotationDoaVetoCoverage = buildRotationDoaVetoCoverage(
+    [...trades.liveRows, ...trades.paperRows],
+    trades.missedAlphaRows
+  );
   const verdict = overallVerdict(cohorts, liveBleed, args);
 
   return {
@@ -187,6 +201,7 @@ export async function buildMissionEntryReport(args: MissionEntryArgs): Promise<M
     cohorts,
     liveBleed,
     paperShadows,
-    nextActions: nextActions(verdict, paperShadows),
+    rotationDoaVetoCoverage,
+    nextActions: nextActions(verdict, paperShadows, rotationDoaVetoCoverage.verdict),
   };
 }

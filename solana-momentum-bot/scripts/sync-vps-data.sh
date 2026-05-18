@@ -19,6 +19,7 @@
 #   SKIP_SMART_V3_EVIDENCE_REPORT=true bash scripts/sync-vps-data.sh  # smart-v3 evidence verdict 생략
 #   SKIP_TRADE_MARKOUT_REPORT=true bash scripts/sync-vps-data.sh  # buy/sell T+ markout report 생략
 #   SKIP_ADMISSION_EDGE_REPORT=true bash scripts/sync-vps-data.sh  # admission edge / lookahead-safe markout report 생략
+#   SKIP_MISSION_ENTRY_REPORT=true bash scripts/sync-vps-data.sh   # mission root-cause entry/bleed report 생략
 #   SKIP_PROBE_POLICY_SWEEP_REPORT=true bash scripts/sync-vps-data.sh  # probe-first policy sweep 생략
 #   SKIP_PROBE_POLICY_SHADOW_REPORT=true bash scripts/sync-vps-data.sh  # probe-policy forward paper shadow report 생략
 #   SKIP_LIVE_MIRROR_REPORT=true bash scripts/sync-vps-data.sh  # smart-v3 live/mirror paired report 생략
@@ -74,6 +75,7 @@ fi
 # live-equivalence-report: 파일 only → default ON. paper/live gate divergence reason join.
 # trade-markout-report: 파일 only → default ON. 실제 buy/sell 이후 T+30/60/300/1800 coverage / continuation.
 # admission-edge-report: 파일 only → default ON. KOL discovery 이후 early continuation 이 late-entry edge 인지 probe hold/cut evidence 인지 분리.
+# mission-entry-report: 파일 only → default ON. T+ entry decay + live bleed bucket + paper shadow readiness 를 사명 기준으로 묶는다.
 # probe-policy-sweep-report: 파일 only → default ON. probe-first hold/cut 정책 grid 를 historical markout 으로 sweep.
 # probe-policy-shadow-report: 파일 only → default ON. forward paper shadow arm 이 parent smart-v3 대비 실제로 손실을 줄이는지 검증.
 # live-mirror-report: 파일 only → default ON. smart-v3 live wallet 과 same-decision paper mirror 괴리를 분리.
@@ -90,6 +92,7 @@ SKIP_SMART_V3_EVIDENCE_REPORT="${SKIP_SMART_V3_EVIDENCE_REPORT:-false}"
 SKIP_LIVE_EQUIVALENCE_REPORT="${SKIP_LIVE_EQUIVALENCE_REPORT:-false}"
 SKIP_TRADE_MARKOUT_REPORT="${SKIP_TRADE_MARKOUT_REPORT:-false}"
 SKIP_ADMISSION_EDGE_REPORT="${SKIP_ADMISSION_EDGE_REPORT:-false}"
+SKIP_MISSION_ENTRY_REPORT="${SKIP_MISSION_ENTRY_REPORT:-false}"
 SKIP_PROBE_POLICY_SWEEP_REPORT="${SKIP_PROBE_POLICY_SWEEP_REPORT:-false}"
 SKIP_PROBE_POLICY_SHADOW_REPORT="${SKIP_PROBE_POLICY_SHADOW_REPORT:-false}"
 SKIP_LIVE_MIRROR_REPORT="${SKIP_LIVE_MIRROR_REPORT:-false}"
@@ -109,6 +112,10 @@ ADMISSION_EDGE_CONFIRM_HORIZON_SEC="${ADMISSION_EDGE_CONFIRM_HORIZON_SEC:-60}"
 ADMISSION_EDGE_TARGET_HORIZON_SEC="${ADMISSION_EDGE_TARGET_HORIZON_SEC:-300}"
 ADMISSION_EDGE_CARRY_HORIZON_SEC="${ADMISSION_EDGE_CARRY_HORIZON_SEC:-1800}"
 ADMISSION_EDGE_CONFIRM_THRESHOLD_PCT="${ADMISSION_EDGE_CONFIRM_THRESHOLD_PCT:-0.12}"
+MISSION_ENTRY_ROUND_TRIP_COST_PCT="${MISSION_ENTRY_ROUND_TRIP_COST_PCT:-0.005}"
+MISSION_ENTRY_HORIZONS_SEC="${MISSION_ENTRY_HORIZONS_SEC:-30,60,300,1800}"
+MISSION_ENTRY_MIN_ROWS="${MISSION_ENTRY_MIN_ROWS:-50}"
+MISSION_ENTRY_BLEED_SHARE_THRESHOLD="${MISSION_ENTRY_BLEED_SHARE_THRESHOLD:-0.5}"
 PROBE_POLICY_ROUND_TRIP_COST_PCT="${PROBE_POLICY_ROUND_TRIP_COST_PCT:-0.005}"
 PROBE_POLICY_CONFIRM_HORIZONS_SEC="${PROBE_POLICY_CONFIRM_HORIZONS_SEC:-30,45,60,90}"
 PROBE_POLICY_CONFIRM_THRESHOLDS_PCT="${PROBE_POLICY_CONFIRM_THRESHOLDS_PCT:-0.05,0.08,0.12,0.15}"
@@ -393,6 +400,8 @@ write_sync_health_report() {
       "data/research/kol-transfers.jsonl" \
       "reports/admission-edge-$(date +%Y-%m-%d).md" \
       "reports/admission-edge-$(date +%Y-%m-%d).json" \
+      "reports/mission-entry-$(date +%Y-%m-%d).md" \
+      "reports/mission-entry-$(date +%Y-%m-%d).json" \
       "reports/probe-policy-sweep-$(date +%Y-%m-%d).md" \
       "reports/probe-policy-sweep-$(date +%Y-%m-%d).json" \
       "reports/probe-policy-shadow-$(date +%Y-%m-%d).md" \
@@ -730,7 +739,23 @@ else
   echo "[sync-vps-data] admission-edge-report: SKIPPED (SKIP_ADMISSION_EDGE_REPORT=true)"
 fi
 
-# ─── 8b. Probe policy sweep report (file-only) ───
+# ─── 8b. Mission entry report (file-only) ───
+# Why: mission proof needs one place that joins entry trajectory decay, live
+# bleed buckets, and current forward paper-shadow readiness.
+if [ "$SKIP_MISSION_ENTRY_REPORT" != "true" ]; then
+  MISSION_ENTRY_MD="${ROOT_DIR}/reports/mission-entry-$(date +%Y-%m-%d).md"
+  MISSION_ENTRY_JSON="${ROOT_DIR}/reports/mission-entry-$(date +%Y-%m-%d).json"
+  echo "[sync-vps-data] mission-entry-report: generating horizons=${MISSION_ENTRY_HORIZONS_SEC} minRows=${MISSION_ENTRY_MIN_ROWS}"
+  if (cd "${ROOT_DIR}" && npm run -s kol:mission-entry-report -- --realtime-dir data/realtime --horizons-sec "${MISSION_ENTRY_HORIZONS_SEC}" --round-trip-cost-pct "${MISSION_ENTRY_ROUND_TRIP_COST_PCT}" --min-rows "${MISSION_ENTRY_MIN_ROWS}" --bleed-share-threshold "${MISSION_ENTRY_BLEED_SHARE_THRESHOLD}" --md "${MISSION_ENTRY_MD}" --json "${MISSION_ENTRY_JSON}" 2>&1 | tail -12); then
+    echo "[sync-vps-data] mission-entry-report: ok → ${MISSION_ENTRY_MD}"
+  else
+    echo "[sync-vps-data] mission-entry-report: WARN — generation failed (sync 자체는 정상)"
+  fi
+else
+  echo "[sync-vps-data] mission-entry-report: SKIPPED (SKIP_MISSION_ENTRY_REPORT=true)"
+fi
+
+# ─── 8c. Probe policy sweep report (file-only) ───
 # Why: after admission-edge shows that full-risk entry is lossy, this sweeps
 # probe-first hold/cut policies without changing live or paper execution.
 if [ "$SKIP_PROBE_POLICY_SWEEP_REPORT" != "true" ]; then
@@ -746,7 +771,7 @@ else
   echo "[sync-vps-data] probe-policy-sweep-report: SKIPPED (SKIP_PROBE_POLICY_SWEEP_REPORT=true)"
 fi
 
-# ─── 8c. Probe policy shadow report (file-only) ───
+# ─── 8d. Probe policy shadow report (file-only) ───
 # Why: historical sweep 후보를 forward paper arm 으로 검증한다. live 승격은 이 리포트만으로 허용하지 않는다.
 if [ "$SKIP_PROBE_POLICY_SHADOW_REPORT" != "true" ]; then
   PROBE_POLICY_SHADOW_MD="${ROOT_DIR}/reports/probe-policy-shadow-$(date +%Y-%m-%d).md"
@@ -761,7 +786,7 @@ else
   echo "[sync-vps-data] probe-policy-shadow-report: SKIPPED (SKIP_PROBE_POLICY_SHADOW_REPORT=true)"
 fi
 
-# ─── 8d. KOL live mirror report (file-only) ───
+# ─── 8e. KOL live mirror report (file-only) ───
 # Why: live fast-fail wallet result 를 same-decision paper mirror 와 pair 하여
 # execution drag vs strategy loss 를 분리한다. API/RPC 호출 0건.
 if [ "$SKIP_LIVE_MIRROR_REPORT" != "true" ]; then

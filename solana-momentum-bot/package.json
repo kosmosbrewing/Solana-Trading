@@ -25,6 +25,7 @@
     "kol:smart-v3-evidence-report": "ts-node scripts/smart-v3-evidence-report.ts",
     "kol:historical-loss-report": "ts-node scripts/historical-loss-miner.ts",
     "kol:admission-edge-report": "ts-node scripts/admission-edge-report.ts",
+    "kol:mission-entry-report": "ts-node scripts/mission-entry-report.ts",
     "kol:probe-policy-sweep": "ts-node scripts/probe-policy-sweep-report.ts",
     "kol:probe-policy-shadow-report": "ts-node scripts/probe-policy-shadow-report.ts",
     "kol:live-mirror-report": "ts-node scripts/kol-live-mirror-report.ts",

@@ -11,6 +11,47 @@ export interface KolCandleCoverageTarget {
   metadata: RealtimePoolMetadata;
 }
 
+export function formatKolCandleCoverageMissDetail(input: {
+  reason: string;
+  poolAddress?: string;
+  dexId?: string;
+  dexProgram?: string;
+  inputMint?: string;
+  outputMint?: string;
+  contexts: ObservedPairContext[];
+  resolvedPairs: DexScreenerPair[];
+  resolverReason?: string | null;
+}): string {
+  const resolvedDexIds = dedupe(input.resolvedPairs.map((pair) => pair.dexId || 'unknown'));
+  const contextDexIds = dedupe(input.contexts.map((context) => context.dexId || 'unknown'));
+  const samplePair = input.resolvedPairs[0]?.pairAddress ?? input.contexts[0]?.pairAddress;
+  const fields = [
+    `reason=${input.reason}`,
+    `requestPool=${input.poolAddress ? short(input.poolAddress) : 'missing'}`,
+    `requestDex=${input.dexId || 'unknown'}`,
+    `requestProgram=${input.dexProgram ? short(input.dexProgram) : 'unknown'}`,
+    `input=${input.inputMint ? short(input.inputMint) : 'unknown'}`,
+    `output=${input.outputMint ? short(input.outputMint) : 'unknown'}`,
+    `contexts=${input.contexts.length}`,
+    `contextDex=${contextDexIds.slice(0, 3).join(',') || 'none'}`,
+    `resolvedPairs=${input.resolvedPairs.length}`,
+    `resolvedDex=${resolvedDexIds.slice(0, 3).join(',') || 'none'}`,
+    `resolverReason=${input.resolverReason ?? 'no_context'}`,
+    samplePair ? `samplePair=${short(samplePair)}` : undefined,
+  ].filter(Boolean);
+  return fields.join(' ');
+}
+
+export function shouldSeedKolCandleCoverage(input: {
+  alreadyTracking: boolean;
+  globalSeedBackfillEnabled: boolean;
+}): boolean {
+  // KOL coverage is policy evidence for admission. It must not inherit the broad
+  // bootstrap seed toggle; otherwise pre-entry candle windows stay empty in live.
+  void input.globalSeedBackfillEnabled;
+  return !input.alreadyTracking;
+}
+
 export function buildKolCandleCoverageTarget(input: {
   tokenMint: string;
   poolAddress?: string;
@@ -47,6 +88,14 @@ export function buildKolCandleCoverageTarget(input: {
   }
 
   return null;
+}
+
+function dedupe(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
+}
+
+function short(value: string): string {
+  return value.length > 8 ? value.slice(0, 8) : value;
 }
 
 function buildMetadataFromRequest(input: {

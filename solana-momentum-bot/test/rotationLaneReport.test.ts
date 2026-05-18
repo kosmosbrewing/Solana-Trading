@@ -4824,4 +4824,64 @@ describe('rotation-lane-report', () => {
     expect(markdown).toContain('After Sell — Hard Cut Cohort');
     expect(markdown).toContain('After Sell — MAE Fast-Fail Cohort');
   });
+
+  it('surfaces rotation candle evidence coverage before policy interpretation', async () => {
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl([
+      {
+        strategy: 'kol_hunter',
+        lane: 'kol_hunter',
+        armName: 'rotation_candle_coverage_probe_v1',
+        positionId: 'candle-pass-1',
+        closedAt: '2026-05-02T00:01:00.000Z',
+        netSol: 0.001,
+        netSolTokenOnly: 0.001,
+        exitReason: 'winner_trailing_t1',
+        rotationCandleConfirmSnapshot: {
+          rows: 12,
+          tradeCount: 8,
+          pass: true,
+          reason: 'pass',
+        },
+      },
+      {
+        strategy: 'kol_hunter',
+        lane: 'kol_hunter',
+        armName: 'rotation_candle_coverage_probe_v1',
+        positionId: 'candle-gap-1',
+        closedAt: '2026-05-02T00:02:00.000Z',
+        netSol: -0.001,
+        netSolTokenOnly: -0.001,
+        exitReason: 'probe_hard_cut',
+        rotationCandleConfirmSnapshot: {
+          rows: 0,
+          tradeCount: 0,
+          pass: false,
+          reason: 'insufficient_rows',
+        },
+      },
+    ]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [30],
+      roundTripCostPct: 0.005,
+    });
+
+    expect(report.candleCoverage).toMatchObject({
+      totalRows: 2,
+      snapshotRows: 2,
+      usableRows: 1,
+      passRows: 1,
+      insufficientRows: 1,
+    });
+    expect(report.candleCoverage.usableCoverage).toBeCloseTo(0.5);
+
+    const markdown = renderRotationLaneReportMarkdown(report);
+    expect(markdown).toContain('## Rotation Candle Evidence Coverage');
+    expect(markdown).toContain('insufficient_rows:1');
+  });
 });

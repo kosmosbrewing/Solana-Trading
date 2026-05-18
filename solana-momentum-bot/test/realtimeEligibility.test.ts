@@ -2,9 +2,11 @@ import {
   buildRealtimeAdmissionSkipDetail,
   detectRealtimeDiscoveryMismatch,
   detectRealtimePoolProgramMismatch,
+  formatKolCandleCoverageMissDetail,
   METEORA_DLMM_PROGRAM,
   RAYDIUM_V4_PROGRAM,
   selectRealtimeEligiblePair,
+  shouldSeedKolCandleCoverage,
 } from '../src/realtime';
 import { SOL_MINT } from '../src/utils/constants';
 
@@ -229,5 +231,58 @@ describe('buildRealtimeAdmissionSkipDetail', () => {
     });
 
     expect(result).toBe('resolver_miss');
+  });
+});
+
+describe('shouldSeedKolCandleCoverage', () => {
+  it('seeds fresh KOL targets even when broad realtime seed is disabled', () => {
+    expect(shouldSeedKolCandleCoverage({
+      alreadyTracking: false,
+      globalSeedBackfillEnabled: false,
+    })).toBe(true);
+  });
+
+  it('does not reseed an actively tracked KOL target', () => {
+    expect(shouldSeedKolCandleCoverage({
+      alreadyTracking: true,
+      globalSeedBackfillEnabled: true,
+    })).toBe(false);
+  });
+});
+
+describe('formatKolCandleCoverageMissDetail', () => {
+  it('renders enough context to separate resolver, request, and registry misses', () => {
+    const detail = formatKolCandleCoverageMissDetail({
+      reason: 'kol_buy_candidate',
+      dexId: 'raydium',
+      dexProgram: RAYDIUM_V4_PROGRAM,
+      inputMint: SOL_MINT,
+      outputMint: 'TokenMint111111111111111111111111111111111111',
+      contexts: [],
+      resolvedPairs: [
+        {
+          chainId: 'solana',
+          dexId: 'lifinity',
+          pairAddress: 'Pair111111111111111111111111111111111111',
+          baseToken: { address: 'TokenMint111111111111111111111111111111111111', name: 'Token', symbol: 'TKN' },
+          quoteToken: { address: SOL_MINT, name: 'Solana', symbol: 'SOL' },
+          priceUsd: 0.001,
+          liquidity: { usd: 10_000, base: 1_000_000, quote: 100 },
+          volume: {},
+          priceChange: {},
+          txns: {},
+        },
+      ],
+      resolverReason: 'unsupported_dex',
+    });
+
+    expect(detail).toContain('reason=kol_buy_candidate');
+    expect(detail).toContain('requestPool=missing');
+    expect(detail).toContain('requestDex=raydium');
+    expect(detail).toContain('contexts=0');
+    expect(detail).toContain('resolvedPairs=1');
+    expect(detail).toContain('resolvedDex=lifinity');
+    expect(detail).toContain('resolverReason=unsupported_dex');
+    expect(detail).toContain('samplePair=Pair1111');
   });
 });

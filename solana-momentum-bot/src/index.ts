@@ -45,6 +45,8 @@ import {
   detectRealtimePoolProgramMismatch,
   selectRealtimeEligiblePair,
   buildKolCandleCoverageTarget,
+  formatKolCandleCoverageMissDetail,
+  shouldSeedKolCandleCoverage,
   type RealtimePoolMetadata,
 } from './realtime';
 import { UniverseEngine, UniverseEngineConfig } from './universe';
@@ -1226,11 +1228,11 @@ async function main() {
       ]
       : contexts;
     let resolvedPair: DexScreenerPair | undefined;
-    let resolverPairCount = 0;
+    let resolverPairs: DexScreenerPair[] = [];
     let resolverReason: string | null = null;
     if (!request.poolAddress && orderedContexts.length === 0) {
       const pairs = await resolveKolRealtimePairs(request.tokenMint);
-      resolverPairCount = pairs.length;
+      resolverPairs = pairs;
       let poolOwners: Map<string, string | null> | undefined;
       if (pairs.length > 0 && realtimePoolOwnerResolver) {
         try {
@@ -1255,9 +1257,20 @@ async function main() {
       resolvedPair,
     });
     if (!target) {
+      const detail = formatKolCandleCoverageMissDetail({
+        reason: request.reason,
+        poolAddress: request.poolAddress,
+        dexId: request.dexId,
+        dexProgram: request.dexProgram,
+        inputMint: request.inputMint,
+        outputMint: request.outputMint,
+        contexts: orderedContexts,
+        resolvedPairs: resolverPairs,
+        resolverReason,
+      });
       log.info(
-        `[KOL_CANDLE_COVERAGE] no_pool_context ${request.tokenMint.slice(0, 8)} reason=${request.reason} ` +
-        `resolvedPairs=${resolverPairCount} resolverReason=${resolverReason ?? 'no_context'}`
+        `[KOL_CANDLE_COVERAGE] no_pool_context ${request.tokenMint.slice(0, 8)} ` +
+        detail
       );
       return;
     }
@@ -1286,7 +1299,10 @@ async function main() {
     kolRealtimeCandleTargets.set(request.tokenMint, { subscriptionPair, expiresAtMs, timer });
 
     let seeded: number | null = null;
-    if (!alreadyTracking && config.realtimeSeedBackfillEnabled) {
+    if (shouldSeedKolCandleCoverage({
+      alreadyTracking,
+      globalSeedBackfillEnabled: config.realtimeSeedBackfillEnabled,
+    })) {
       const lookbackSec = Math.max(60, Math.min(getRealtimeSeedLookbackSec(), 120));
       try {
         const recentSwaps = await heliusIngester.backfillRecentSwaps(subscriptionPair, {

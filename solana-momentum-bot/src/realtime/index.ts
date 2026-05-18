@@ -14,6 +14,8 @@ export { fetchRecentSwapsForPool } from './recentSwapBackfill';
 export { RealtimePoolOwnerResolver } from './poolOwnerResolver';
 export {
   buildKolCandleCoverageTarget,
+  formatKolCandleCoverageMissDetail,
+  shouldSeedKolCandleCoverage,
 } from './kolCandleCoverageResolver';
 export {
   detectRealtimeDiscoveryMismatch,

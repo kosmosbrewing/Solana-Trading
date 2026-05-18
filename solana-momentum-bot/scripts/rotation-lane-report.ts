@@ -143,6 +143,19 @@ interface PaperArmStats {
   topExitReasons: Array<{ reason: string; count: number }>;
 }
 
+interface RotationCandleCoverageEvidenceStats {
+  totalRows: number;
+  snapshotRows: number;
+  usableRows: number;
+  passRows: number;
+  insufficientRows: number;
+  insufficientTradesRows: number;
+  medianRows: number | null;
+  medianTradeCount: number | null;
+  usableCoverage: number | null;
+  topReasons: Array<{ reason: string; count: number }>;
+}
+
 interface WinnerEntryPairingStats {
   armName: string;
   exitBucket: 'winner_trailing_t1' | 'other_exits';
@@ -1572,6 +1585,7 @@ interface RotationReport {
     winnerEntryPairings: WinnerEntryPairingStats[];
     winnerEntryDiagnostics: WinnerEntryDiagnosticStats[];
   };
+  candleCoverage: RotationCandleCoverageEvidenceStats;
   intradayBottlenecks: RotationIntradayBottleneckStats;
   weeklyPattern: RotationWeeklyPatternStats;
   liveTrades: {
@@ -2052,6 +2066,39 @@ function buildTopExitReasons(rows: JsonRow[]): Array<{ reason: string; count: nu
     .map(([reason, count]) => ({ reason, count }))
     .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason))
     .slice(0, 5);
+}
+
+function buildRotationCandleCoverageEvidence(rows: JsonRow[]): RotationCandleCoverageEvidenceStats {
+  const scoped = rows.filter((row) => {
+    const arm = rowArmName(row);
+    return arm === 'rotation_candle_coverage_probe_v1' || arm === 'rotation_candle_confirm_shadow_v1';
+  });
+  const snapshots = scoped
+    .map((row) => obj(row.rotationCandleConfirmSnapshot))
+    .filter((snapshot) => Object.keys(snapshot).length > 0);
+  const reasons = snapshots.map((snapshot) => str(snapshot.reason) || '(unknown)');
+  const topReasons = countByLabel(reasons, 'reason')
+    .map((row) => ({ reason: String(row.reason), count: row.count }));
+  const usable = snapshots.filter((snapshot) => {
+    const reason = str(snapshot.reason);
+    return reason !== 'insufficient_rows' && reason !== 'insufficient_trades';
+  });
+  const rowCounts = snapshots.map((snapshot) => num(snapshot.rows)).filter((value): value is number => value != null);
+  const tradeCounts = snapshots
+    .map((snapshot) => num(snapshot.tradeCount))
+    .filter((value): value is number => value != null);
+  return {
+    totalRows: scoped.length,
+    snapshotRows: snapshots.length,
+    usableRows: usable.length,
+    passRows: snapshots.filter((snapshot) => snapshot.pass === true).length,
+    insufficientRows: reasons.filter((reason) => reason === 'insufficient_rows').length,
+    insufficientTradesRows: reasons.filter((reason) => reason === 'insufficient_trades').length,
+    medianRows: percentile(rowCounts, 0.5),
+    medianTradeCount: percentile(tradeCounts, 0.5),
+    usableCoverage: ratio(usable.length, scoped.length),
+    topReasons,
+  };
 }
 
 function rowPaperTokenOnlyNetSol(row: JsonRow): number {
@@ -9899,6 +9946,20 @@ function renderArmMarkouts(rows: ArmHorizonStats[]): string {
   ].join('\n')).join('\n\n');
 }
 
+function renderRotationCandleCoverageEvidence(row: RotationCandleCoverageEvidenceStats): string {
+  const topReasons = row.topReasons.map((item) => `${item.reason}:${item.count}`).join(', ') || 'n/a';
+  return [
+    '| rows | snapshots | usable | usable coverage | pass | insufficient rows | insufficient trades | median rows | median trades |',
+    '|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
+    `| ${row.totalRows} | ${row.snapshotRows} | ${row.usableRows} | ${formatPct(row.usableCoverage)} | ` +
+      `${row.passRows} | ${row.insufficientRows} | ${row.insufficientTradesRows} | ` +
+      `${row.medianRows == null ? 'n/a' : row.medianRows.toFixed(1)} | ` +
+      `${row.medianTradeCount == null ? 'n/a' : row.medianTradeCount.toFixed(1)} |`,
+    '',
+    `- top reasons: ${topReasons}`,
+  ].join('\n');
+}
+
 function renderReport(report: RotationReport): string {
   const reasons = report.noTrade.byReason.length === 0
     ? '_No no-trade rows._'
@@ -9958,6 +10019,10 @@ function renderReport(report: RotationReport): string {
     '',
     '## Paper Trades By Arm',
     renderPaperArmTable(report.paperTrades.byArm),
+    '',
+    '## Rotation Candle Evidence Coverage',
+    '> Report-only. Candle arms are promotion-blocked when usable coverage is low; `insufficient_rows` means the pre-entry market context was not available at decision time.',
+    renderRotationCandleCoverageEvidence(report.candleCoverage),
     '',
     '## Rotation Intraday Bottleneck Board',
     '> Report-only. Uses paper closes to separate short-lived edge, loss-regime hours, and token/KOL concentration. `DIAGNOSTIC_ONLY` means do not treat the row as live promotion evidence.',
@@ -10494,6 +10559,7 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
       winnerEntryPairings,
       winnerEntryDiagnostics,
     },
+    candleCoverage: buildRotationCandleCoverageEvidence(rotationPaperRows),
     intradayBottlenecks: buildRotationIntradayBottlenecks(
       rotationPaperRows,
       args.sinceMs,

@@ -33,6 +33,8 @@
     "kol:live-mirror-report": "ts-node scripts/kol-live-mirror-report.ts",
     "kol:promotion-loop-report": "ts-node scripts/promotion-loop-report.ts",
     "kol:rotation-promotion-candidates-report": "ts-node scripts/rotation-promotion-candidates-report.ts",
+    "kol:rotation-promotion-gatekeeper": "ts-node scripts/rotation-promotion-gatekeeper.ts",
+    "kol:rotation-promotion-readiness-trend": "ts-node scripts/rotation-promotion-readiness-trend.ts",
     "kol:transfer-backfill": "ts-node scripts/kol-transfer-backfill.ts",
     "kol:transfer-refresh": "bash scripts/kol-transfer-refresh.sh",
     "kol:transfer-report": "ts-node scripts/kol-transfer-posterior-report.ts",

@@ -1,6 +1,6 @@
 # Mission Control Framework
 
-> Updated: 2026-05-14
+> Updated: 2026-05-19
 > Document type: control-plane policy
 > Authority chain: `mission-refinement-2026-04-21.md` -> `mission-pivot-2026-04-18.md` -> `PLAN.md` / `MEASUREMENT.md` -> this document
 
@@ -178,6 +178,19 @@ Trade count interpretation:
 | 50 | safety checkpoint only; no promotion decision |
 | 100 | preliminary friction / bleed / quick-reject review |
 | 200 | scale / retire / hold decision |
+
+Rotation-specific promotion rule:
+
+```text
+Raw paper profit is not promotion evidence.
+rotation_underfill_cost_aware_exit_v2 can enter manual micro-canary review only after
+rotation-promotion-gatekeeper returns READY on comparable, route-proofed, cost-aware,
+wallet-stress-positive bridge evidence.
+```
+
+The gatekeeper never enables live automatically. It can only move an arm from paper evidence
+to a manual tiny micro-canary review queue, with an explicit sleeve loss cap and wallet-truth
+stop rules.
 
 Adaptive changes require a change log:
 

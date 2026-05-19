@@ -1,7 +1,7 @@
 # STRATEGY.md (post-pivot)
 
 > Status: current quick reference
-> Updated: 2026-05-16
+> Updated: 2026-05-19
 > Purpose: 현재 runtime 에서 읽어야 할 전략 / gate / risk / 핵심 파라미터를 짧게 정리한다.
 > Pivot decision: [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md)
 > Current lane refactor: [`docs/design-docs/lane-operating-refactor-2026-05-03.md`](./docs/design-docs/lane-operating-refactor-2026-05-03.md)
@@ -30,7 +30,7 @@
 | `bootstrap_10s` | **signal-only** | cupsey/pure_ws trigger source. `executionRrReject=99.0` 로 실거래 100% 억제. |
 | **`kol_hunter_smart_v3`** | **main 5x lane / live canary with strategy no-trade + safety fallback** | Fresh active 2+ KOL velocity 중심. A+A 허용, S+B/A+B 는 fresh S/A strength rule 미통과. Pullback-only / weak post-sell recovery / unclean quality / repeated losing KOL combo / adverse KOL-fill price 는 live-canary 전략 탈락으로 기록하고 main paper 포지션을 만들지 않는다. Pre-T1 dead probe 는 MAE fast-fail, 살아난 probe 는 bounded recovery-hold. |
 | ↳ `kol_hunter` swing-v2 | paper shadow (`KOL_HUNTER_SWING_V2_ENABLED`) | multi-KOL S/A ≥2 + score ≥5.0 자격 시 동시 생성. 600s stalk / 25% trail / 1.10 floor. |
-| **`kol_hunter_rotation_v1`** | **fast-compound auxiliary / canonical live off; underfill canary only** | T+15/T+30 post-cost harvesting 실험. Control + `rotation_fast15_v1` / `rotation_cost_guard_v1` / `rotation_quality_strict_v1` / `rotation_underfill_v1` / `rotation_chase_topup_v1` / `rotation_underfill_cost_aware_exit_v2`. Canonical live와 chase-topup live는 닫고, S/A KOL fill보다 유리한 `rotation_underfill_exit_flow_v1`만 explicit live canary arm 으로 연다. `rotation_underfill_cost_aware_exit_v2` 는 live 금지 paper shadow 이며 cost-aware T1/floor 후보를 검증한다. |
+| **`kol_hunter_rotation_v1`** | **fast-compound auxiliary / canonical live off; explicit underfill canary only** | T+15/T+30 post-cost harvesting 실험. Control + `rotation_fast15_v1` / `rotation_cost_guard_v1` / `rotation_quality_strict_v1` / `rotation_underfill_v1` / `rotation_chase_topup_v1` / `rotation_underfill_cost_aware_exit_v2`. Canonical live와 chase-topup live는 닫고, `KOL_HUNTER_LIVE_CANARY_ARMS` allowlist에 명시된 `rotation_underfill_exit_flow_v1`만 live canary 예산을 쓴다. `rotation_underfill_cost_aware_exit_v2` 는 live 금지 paper shadow 이며, `rotation-promotion-gatekeeper`가 `READY`를 내기 전에는 micro-canary 검토도 금지한다. |
 | **`kol_hunter_capitulation_rebound_v1` / `kol_hunter_capitulation_rebound_rr_v1`** | **paper-only liquidity-shock experiment** | Strict arm은 sell-wave veto baseline, RR arm은 pre-low sell을 측정하되 post-low/post-bounce sell과 불리한 stop/target RR을 차단한다. 둘 다 T+15/30/60/180/300/1800 post-cost 와 no-trade counterfactual 이 핵심이며 live 승격 금지. |
 | **`pure_ws botflow`** | **paper/observe-only rebuild candidate** | New-pair / botflow microstructure 관측. Mayhem copy 금지. T+15/30/60/180/300/1800 markout + 15분 digest + paper arms. |
 | `migration_reclaim` | signal-only (env) | Migration Handoff Reclaim. paper 대기. |
@@ -222,6 +222,8 @@ Rotation live canary operating rule (2026-05-08):
 ```text
 KOL_HUNTER_ROTATION_V1_ENABLED=true
 KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=false
+KOL_HUNTER_LIVE_CANARY_ENABLED=true
+KOL_HUNTER_LIVE_CANARY_ARMS=smart_v3_fast_fail_live_v1,rotation_underfill_exit_flow_v1
 
 # demoted to paper after live/paper divergence
 KOL_HUNTER_ROTATION_CHASE_TOPUP_LIVE_CANARY_ENABLED=false
@@ -231,13 +233,27 @@ KOL_HUNTER_ROTATION_CHASE_TOPUP_MIN_BUYS=2
 KOL_HUNTER_ROTATION_CHASE_TOPUP_MIN_TOPUP_STRENGTH=0.08
 KOL_HUNTER_ROTATION_CHASE_TOPUP_MAX_RECENT_SELL_SEC=60
 
-# single promoted arm only
+# explicit allowlist is the current truth; legacy switches stay false when the allowlist is set
 KOL_HUNTER_ROTATION_UNDERFILL_PAPER_ENABLED=true
-KOL_HUNTER_ROTATION_UNDERFILL_LIVE_CANARY_ENABLED=true
-KOL_HUNTER_ROTATION_UNDERFILL_LIVE_EXIT_FLOW_ENABLED=true
+KOL_HUNTER_ROTATION_UNDERFILL_LIVE_CANARY_ENABLED=false
+KOL_HUNTER_ROTATION_UNDERFILL_LIVE_EXIT_FLOW_ENABLED=false
 ```
 
-`KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=true` opens the broader canonical rotation-v1 live path and is not the current operating intent.
+`KOL_HUNTER_ROTATION_V1_LIVE_ENABLED=true` opens the broader canonical rotation-v1 live path and is not the current operating intent. With a non-empty `KOL_HUNTER_LIVE_CANARY_ARMS`, legacy rotation live switches are not the source of truth.
+
+Rotation promotion proof loop (2026-05-19):
+
+```bash
+npm run kol:rotation-promotion-candidates-report -- --realtime-dir=data/realtime --since-hours=168 --json-out=reports/rotation-promotion-candidates-7d-$(date -u +%F).json
+npm run kol:rotation-promotion-gatekeeper -- --report-json=reports/rotation-promotion-candidates-24h-$(date -u +%F).json --report-json=reports/rotation-promotion-candidates-7d-$(date -u +%F).json
+npm run kol:rotation-promotion-readiness-trend -- --history-file=data/research/rotation-promotion-readiness-history.jsonl
+```
+
+- `rotation-promotion-candidates-report` separates strict live-promotable rows from cost-aware comparable bridge rows.
+- `rotation-promotion-gatekeeper` returns `READY` / `WAIT` / `REJECT`; current data is `WAIT` until the 7d bridge has at least 30 unique candidates.
+- `READY` does not enable live. It only queues manual tiny micro-canary review with floor `0.6 SOL`, sleeve loss cap `0.02 SOL`, max close `30`, min active days `7`, and max ticket `0.002 SOL`.
+- `rotation-promotion-readiness-trend` reads the accumulated history and labels the bridge trend as `IMPROVING` / `FLAT` / `DETERIORATING`.
+- `sync-vps-data.sh` generates 24h/7d candidate reports, gatekeeper output, trend output, and `data/research/rotation-promotion-readiness-history.jsonl` by default.
 
 Deployment/env note:
 

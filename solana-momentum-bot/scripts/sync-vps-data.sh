@@ -27,6 +27,10 @@
 #   SKIP_LIVE_MIRROR_REPORT=true bash scripts/sync-vps-data.sh  # smart-v3 live/mirror paired report 생략
 #   SKIP_PUREWS_TRADE_MARKOUT_REPORT=true bash scripts/sync-vps-data.sh  # pure_ws T+ report 생략
 #   SKIP_CAPITULATION_REPORT=true bash scripts/sync-vps-data.sh   # capitulation rebound paper report 생략
+#   SKIP_ROTATION_PROMOTION_CANDIDATES_REPORT=true bash scripts/sync-vps-data.sh  # rotation promotion candidate bridge report 생략
+#   SKIP_ROTATION_PROMOTION_GATEKEEPER_REPORT=true bash scripts/sync-vps-data.sh  # rotation promotion gatekeeper 생략
+#   SKIP_ROTATION_PROMOTION_TREND_REPORT=true bash scripts/sync-vps-data.sh  # rotation promotion readiness trend 생략
+#   ROTATION_PROMOTION_CANDIDATES_WINDOWS_HOURS="24 168" bash scripts/sync-vps-data.sh  # 24h/7d bridge windows
 #   SKIP_WINNER_KILL_REPORT=true bash scripts/sync-vps-data.sh    # winner-kill report 생략
 #   SKIP_SYNC_HEALTH=true bash scripts/sync-vps-data.sh           # sync health manifest 생략
 #   RUN_SHADOW_EVAL=true bash scripts/sync-vps-data.sh     # KOL shadow eval 추가 (Jupiter API 사용)
@@ -84,6 +88,12 @@ fi
 # live-mirror-report: 파일 only → default ON. smart-v3 live wallet 과 same-decision paper mirror 괴리를 분리.
 # rotation-report: 파일 only → default ON. rotation lane T+15/30/60 entry/exit/no-trade feedback.
 # capitulation-report: 파일 only → default ON. capitulation rebound T+15/30/60/180/300/1800 feedback.
+# rotation-promotion-candidates-report: 파일 only → default ON. paper headline 이 아니라
+#   comparable/cost-aware/wallet-stress bridge 후보만 별도 추적한다.
+# rotation-promotion-gatekeeper: 파일 only → default ON. 24h/7d bridge 후보를
+#   READY/WAIT/REJECT로 판정하고 readiness history 를 누적한다.
+# rotation-promotion-readiness-trend: 파일 only → default ON. readiness history 로
+#   IMPROVING/FLAT/DETERIORATING 추세를 판정한다.
 # winner-kill-report: 파일 only → default ON. missed-alpha close-site 기반 tail-retain feedback.
 # sync-health: 파일 only → default ON. 핵심 JSONL row count / mtime manifest.
 # shadow-eval: Jupiter forward quote 호출 다수 → quota 절약을 위해 default OFF (opt-in).
@@ -104,6 +114,9 @@ SKIP_LIVE_MIRROR_REPORT="${SKIP_LIVE_MIRROR_REPORT:-false}"
 SKIP_PUREWS_TRADE_MARKOUT_REPORT="${SKIP_PUREWS_TRADE_MARKOUT_REPORT:-false}"
 SKIP_ROTATION_REPORT="${SKIP_ROTATION_REPORT:-false}"
 SKIP_CAPITULATION_REPORT="${SKIP_CAPITULATION_REPORT:-false}"
+SKIP_ROTATION_PROMOTION_CANDIDATES_REPORT="${SKIP_ROTATION_PROMOTION_CANDIDATES_REPORT:-false}"
+SKIP_ROTATION_PROMOTION_GATEKEEPER_REPORT="${SKIP_ROTATION_PROMOTION_GATEKEEPER_REPORT:-false}"
+SKIP_ROTATION_PROMOTION_TREND_REPORT="${SKIP_ROTATION_PROMOTION_TREND_REPORT:-false}"
 SKIP_WINNER_KILL_REPORT="${SKIP_WINNER_KILL_REPORT:-false}"
 SKIP_SYNC_HEALTH="${SKIP_SYNC_HEALTH:-false}"
 TOKEN_QUALITY_WINDOW_DAYS="${TOKEN_QUALITY_WINDOW_DAYS:-7}"
@@ -141,6 +154,7 @@ LIVE_MIRROR_EXECUTION_DRAG_RATE="${LIVE_MIRROR_EXECUTION_DRAG_RATE:-0.2}"
 LIVE_MIRROR_STRATEGY_LOSS_RATE="${LIVE_MIRROR_STRATEGY_LOSS_RATE:-0.5}"
 ROTATION_REPORT_ROUND_TRIP_COST_PCT="${ROTATION_REPORT_ROUND_TRIP_COST_PCT:-0.005}"
 CAPITULATION_REPORT_ROUND_TRIP_COST_PCT="${CAPITULATION_REPORT_ROUND_TRIP_COST_PCT:-0.005}"
+ROTATION_PROMOTION_CANDIDATES_WINDOWS_HOURS="${ROTATION_PROMOTION_CANDIDATES_WINDOWS_HOURS:-24 168}"
 WINNER_KILL_WINDOW_DAYS="${WINNER_KILL_WINDOW_DAYS:-7}"
 RUN_SHADOW_EVAL="${RUN_SHADOW_EVAL:-false}"
 # Local analysis cache. The operator analyzes VPS runtime data locally, so Helius
@@ -212,6 +226,14 @@ file_mtime_iso() {
   fi
   date -u -r "$epoch" "+%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || \
   date -u -d "@$epoch" "+%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "$epoch"
+}
+
+promotion_window_label() {
+  case "$1" in
+    24) echo "24h" ;;
+    168) echo "7d" ;;
+    *) echo "${1}h" ;;
+  esac
 }
 
 abs_path() {
@@ -417,6 +439,15 @@ write_sync_health_report() {
       "reports/probe-policy-shadow-$(date +%Y-%m-%d).json" \
       "reports/kol-live-mirror-$(date +%Y-%m-%d).md" \
       "reports/kol-live-mirror-$(date +%Y-%m-%d).json" \
+      "reports/rotation-promotion-candidates-24h-$(date +%Y-%m-%d).md" \
+      "reports/rotation-promotion-candidates-24h-$(date +%Y-%m-%d).json" \
+      "reports/rotation-promotion-candidates-7d-$(date +%Y-%m-%d).md" \
+      "reports/rotation-promotion-candidates-7d-$(date +%Y-%m-%d).json" \
+      "reports/rotation-promotion-gatekeeper-$(date +%Y-%m-%d).md" \
+      "reports/rotation-promotion-gatekeeper-$(date +%Y-%m-%d).json" \
+      "reports/rotation-promotion-readiness-trend-$(date +%Y-%m-%d).md" \
+      "reports/rotation-promotion-readiness-trend-$(date +%Y-%m-%d).json" \
+      "data/research/rotation-promotion-readiness-history.jsonl" \
       "reports/kol-transfer-posterior-$(date +%Y-%m-%d).md" \
       "reports/kol-transfer-posterior-$(date +%Y-%m-%d).json" \
       "data/realtime/executed-buys.jsonl" \
@@ -889,6 +920,68 @@ if [ "$SKIP_CAPITULATION_REPORT" != "true" ]; then
   fi
 else
   echo "[sync-vps-data] capitulation-report: SKIPPED (SKIP_CAPITULATION_REPORT=true)"
+fi
+
+# ─── 9c. Rotation promotion candidate bridge report (file-only) ───
+# Why: raw rotation paper net can be positive while live-promotable intersection
+# is empty. This report separates strict promotion candidates from cost-aware
+# shadow rows that share a comparable parent decision.
+if [ "$SKIP_ROTATION_PROMOTION_CANDIDATES_REPORT" != "true" ]; then
+  for window_hours in ${ROTATION_PROMOTION_CANDIDATES_WINDOWS_HOURS}; do
+    window_label="$(promotion_window_label "${window_hours}")"
+    ROTATION_PROMOTION_MD="${ROOT_DIR}/reports/rotation-promotion-candidates-${window_label}-$(date +%Y-%m-%d).md"
+    ROTATION_PROMOTION_JSON="${ROOT_DIR}/reports/rotation-promotion-candidates-${window_label}-$(date +%Y-%m-%d).json"
+    echo "[sync-vps-data] rotation-promotion-candidates-report: generating since=${window_hours}h (${window_label})"
+    if (cd "${ROOT_DIR}" && npm run -s kol:rotation-promotion-candidates-report -- --realtime-dir=data/realtime --since-hours="${window_hours}" --json-out="${ROTATION_PROMOTION_JSON}" > "${ROTATION_PROMOTION_MD}"); then
+      echo "[sync-vps-data] rotation-promotion-candidates-report: ok → ${ROTATION_PROMOTION_MD}"
+    else
+      echo "[sync-vps-data] rotation-promotion-candidates-report: WARN — generation failed for ${window_label} (sync 자체는 정상)"
+    fi
+  done
+else
+  echo "[sync-vps-data] rotation-promotion-candidates-report: SKIPPED (SKIP_ROTATION_PROMOTION_CANDIDATES_REPORT=true)"
+fi
+
+# ─── 9d. Rotation promotion gatekeeper (file-only) ───
+# Why: paper bridge evidence must pass fixed readiness gates before any
+# micro-canary review. This never enables live by itself.
+if [ "$SKIP_ROTATION_PROMOTION_GATEKEEPER_REPORT" != "true" ]; then
+  ROTATION_PROMOTION_GATEKEEPER_MD="${ROOT_DIR}/reports/rotation-promotion-gatekeeper-$(date +%Y-%m-%d).md"
+  ROTATION_PROMOTION_GATEKEEPER_JSON="${ROOT_DIR}/reports/rotation-promotion-gatekeeper-$(date +%Y-%m-%d).json"
+  ROTATION_PROMOTION_HISTORY="${ROOT_DIR}/data/research/rotation-promotion-readiness-history.jsonl"
+  ROTATION_PROMOTION_24H_JSON="${ROOT_DIR}/reports/rotation-promotion-candidates-24h-$(date +%Y-%m-%d).json"
+  ROTATION_PROMOTION_7D_JSON="${ROOT_DIR}/reports/rotation-promotion-candidates-7d-$(date +%Y-%m-%d).json"
+  if [ -f "${ROTATION_PROMOTION_24H_JSON}" ] && [ -f "${ROTATION_PROMOTION_7D_JSON}" ]; then
+    echo "[sync-vps-data] rotation-promotion-gatekeeper: generating"
+    if (cd "${ROOT_DIR}" && npm run -s kol:rotation-promotion-gatekeeper -- --report-json="${ROTATION_PROMOTION_24H_JSON}" --report-json="${ROTATION_PROMOTION_7D_JSON}" --json-out="${ROTATION_PROMOTION_GATEKEEPER_JSON}" --history-out="${ROTATION_PROMOTION_HISTORY}" > "${ROTATION_PROMOTION_GATEKEEPER_MD}"); then
+      echo "[sync-vps-data] rotation-promotion-gatekeeper: ok → ${ROTATION_PROMOTION_GATEKEEPER_MD}"
+    else
+      echo "[sync-vps-data] rotation-promotion-gatekeeper: WARN — generation failed (sync 자체는 정상)"
+    fi
+  else
+    echo "[sync-vps-data] rotation-promotion-gatekeeper: WARN — candidate JSON missing; skipped"
+  fi
+else
+  echo "[sync-vps-data] rotation-promotion-gatekeeper: SKIPPED (SKIP_ROTATION_PROMOTION_GATEKEEPER_REPORT=true)"
+fi
+
+# ─── 9e. Rotation promotion readiness trend (file-only) ───
+if [ "$SKIP_ROTATION_PROMOTION_TREND_REPORT" != "true" ]; then
+  ROTATION_PROMOTION_HISTORY="${ROOT_DIR}/data/research/rotation-promotion-readiness-history.jsonl"
+  ROTATION_PROMOTION_TREND_MD="${ROOT_DIR}/reports/rotation-promotion-readiness-trend-$(date +%Y-%m-%d).md"
+  ROTATION_PROMOTION_TREND_JSON="${ROOT_DIR}/reports/rotation-promotion-readiness-trend-$(date +%Y-%m-%d).json"
+  if [ -f "${ROTATION_PROMOTION_HISTORY}" ]; then
+    echo "[sync-vps-data] rotation-promotion-readiness-trend: generating"
+    if (cd "${ROOT_DIR}" && npm run -s kol:rotation-promotion-readiness-trend -- --history-file="${ROTATION_PROMOTION_HISTORY}" --json-out="${ROTATION_PROMOTION_TREND_JSON}" > "${ROTATION_PROMOTION_TREND_MD}"); then
+      echo "[sync-vps-data] rotation-promotion-readiness-trend: ok → ${ROTATION_PROMOTION_TREND_MD}"
+    else
+      echo "[sync-vps-data] rotation-promotion-readiness-trend: WARN — generation failed (sync 자체는 정상)"
+    fi
+  else
+    echo "[sync-vps-data] rotation-promotion-readiness-trend: WARN — history missing; skipped"
+  fi
+else
+  echo "[sync-vps-data] rotation-promotion-readiness-trend: SKIPPED (SKIP_ROTATION_PROMOTION_TREND_REPORT=true)"
 fi
 
 # ─── 10. Winner-kill report (file-only) ───

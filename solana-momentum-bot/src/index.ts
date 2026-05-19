@@ -3,6 +3,7 @@ import { config } from './utils/config';
 import { createModuleLogger } from './utils/logger';
 import { HealthMonitor } from './utils/healthMonitor';
 import { checkAllLanesAutoResetHalt, hydrateCanaryAutoHaltFromLedger } from './risk/canaryAutoHalt';
+import { hydratePromotionLoopGuardFromLedger } from './risk/promotionLoopGuard';
 import { enforceTicketPolicyForAllLanes } from './utils/policyGuards';
 import { Candle, Signal } from './utils/types';
 
@@ -667,6 +668,7 @@ async function main() {
   // live boot 에서 executed-sells ledger 를 replay 해 이미 소진된 budget/max-trade halt 를 복원한다.
   if (tradingMode === 'live' && config.canaryAutoHaltHydrateOnStart) {
     await hydrateCanaryAutoHaltFromLedger(config.realtimeDataDir);
+    await hydratePromotionLoopGuardFromLedger(config.realtimeDataDir);
   }
 
   // 2026-04-21 P0 (observability) + 2026-04-27 (handle 저장): v2 scanner / canary auto-reset

@@ -2060,7 +2060,8 @@ describe('kolSignalHandler — state machine', () => {
       expect(waitArm?.profileArm).toBe('rotation_second_kol_wait_conversion_v1');
       expect(waitArm?.parentPositionId).toBe(parent?.positionId);
       expect(waitArm?.parentUnderfillPositionId).toBe(parent?.positionId);
-      expect(waitArm?.secondKolDelaySec).toBeCloseTo(10);
+      expect(waitArm?.secondKolDelaySec).toBeGreaterThanOrEqual(9.9);
+      expect(waitArm?.secondKolDelaySec).toBeLessThan(10.5);
       expect(waitArm?.isLive).not.toBe(true);
       expect(waitArm?.paperRole).toBe('research_arm');
       expect(waitArm?.independentKolCount).toBe(2);

@@ -124,6 +124,11 @@ import type { BotContext } from './types';
 import { isPureWsNewPairDiscoverySource } from './pureWs/sourceGate';
 import { acquireCanarySlot, releaseCanarySlot } from '../risk/canaryConcurrencyGuard';
 import { reportCanaryClose } from '../risk/canaryAutoHalt';
+import {
+  assessPromotionLoopEntry,
+  resolvePromotionLoopCohort,
+  reportPromotionLoopClose,
+} from '../risk/promotionLoopGuard';
 import { reportBleed } from '../risk/dailyBleedBudget';
 import { getHardTradingHaltReason, isDrawdownGuardHaltReason } from '../risk/tradingHaltPolicy';
 import { isWalletStopActive, getWalletStopGuardState } from '../risk/walletStopGuard';
@@ -7153,6 +7158,38 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         return;
       }
     }
+    const promotionLoopGate = assessPromotionLoopEntry({
+      lane: liveCanaryLane,
+      armName: armNameForVersion(liveEntryOptions.parameterVersion ?? entrySignal.parameterVersion),
+      profileArm: liveEntryOptions.profileArm,
+      entryArm: liveEntryOptions.entryArm,
+      liveEquivalenceCandidateId: liveEntryOptions.liveEquivalenceCandidateId ?? liveEquivalenceCandidateId,
+      liveEquivalenceDecisionId: liveEntryOptions.liveEquivalenceDecisionId ??
+        buildLiveEquivalenceDecisionId(
+          liveEntryOptions.liveEquivalenceCandidateId ?? liveEquivalenceCandidateId,
+          'pre_execution_live_allowed',
+          'enter',
+          null
+        ),
+    });
+    if (!promotionLoopGate.allowed) {
+      const policyFlags = [
+        ...liveEntryFlags,
+        ...promotionLoopGate.flags,
+      ];
+      log.warn(
+        `[KOL_HUNTER_PROMOTION_LOOP_HALT] ${cand.tokenMint.slice(0, 8)} ${entrySignal.label} trigger — ` +
+        `${promotionLoopGate.reason ?? 'promotion_loop_halt'}. fallback paper.`
+      );
+      await emitAndEnterPaperFromLiveEquivalence({
+        stage: 'promotion_loop_halt',
+        policyFlags,
+        reason: promotionLoopGate.reason ?? 'promotion_loop_halt',
+        skipPolicyEntry: true,
+        emitFallbackPolicy: true,
+      });
+      return;
+    }
     emitKolLiveEquivalence({
       candidateId: liveEntryOptions.liveEquivalenceCandidateId ?? liveEquivalenceCandidateId,
       tokenMint: cand.tokenMint,
@@ -10361,6 +10398,14 @@ function buildKolBaseLedgerRecord(
     profileArm: pos.profileArm ?? null,
     entryArm: pos.entryArm ?? pos.armName,
     exitArm: pos.exitArm ?? pos.armName,
+    promotionLoopCohort: resolvePromotionLoopCohort({
+      lane: pos.canaryLane ?? null,
+      armName: pos.armName,
+      profileArm: pos.profileArm,
+      entryArm: pos.entryArm,
+      liveEquivalenceCandidateId: pos.liveEquivalenceCandidateId,
+      liveEquivalenceDecisionId: pos.liveEquivalenceDecisionId,
+    }),
     isShadowArm: pos.isShadowArm,
     parentPositionId: pos.parentPositionId ?? null,
     parentUnderfillPositionId: pos.parentUnderfillPositionId ?? null,
@@ -12108,6 +12153,7 @@ async function closeLivePosition(
   }
   const ctx = botCtx;
   const previousState = callerPreviousState ?? pos.state;
+  const canaryLane = kolHunterCanaryLaneForPosition(pos);
   let actualExitPrice = exitPrice;
   let executionSlippage = 0;
   let exitTxSignature = pos.entryTxSignature;
@@ -12334,6 +12380,14 @@ async function closeLivePosition(
         entryArm: pos.entryArm ?? pos.armName,
         exitArm: pos.exitArm ?? pos.armName,
         parameterVersion: pos.parameterVersion,
+        promotionLoopCohort: resolvePromotionLoopCohort({
+          lane: canaryLane,
+          armName: pos.armName,
+          profileArm: pos.profileArm,
+          entryArm: pos.entryArm,
+          liveEquivalenceCandidateId: pos.liveEquivalenceCandidateId,
+          liveEquivalenceDecisionId: pos.liveEquivalenceDecisionId,
+        }),
         entryReason: pos.kolEntryReason,
         rotationAnchorKols: pos.rotationAnchorKols ?? null,
         rotationEntryAtMs: pos.rotationEntryAtMs ?? null,
@@ -12499,8 +12553,6 @@ async function closeLivePosition(
   const pnlPct = effectiveTicketSol > 0
     ? pnl / effectiveTicketSol
     : (pos.entryPrice > 0 ? (actualExitPrice - pos.entryPrice) / pos.entryPrice : 0);
-  const canaryLane = kolHunterCanaryLaneForPosition(pos);
-
   // DB closeTrade.
   let dbCloseSucceeded = false;
   try {
@@ -12678,6 +12730,18 @@ async function closeLivePosition(
 
   // Real Asset Guard feed: canary auto-halt + bleed budget.
   reportCanaryClose(canaryLane, pnl);
+  reportPromotionLoopClose({
+    lane: canaryLane,
+    armName: pos.armName,
+    profileArm: pos.profileArm,
+    entryArm: pos.entryArm,
+    liveEquivalenceCandidateId: pos.liveEquivalenceCandidateId,
+    liveEquivalenceDecisionId: pos.liveEquivalenceDecisionId,
+    positionId: pos.positionId,
+    tokenMint: pos.tokenMint,
+    pnlSol: pnl,
+    exitReason: effectiveReason,
+  });
   releaseCanarySlot(canaryLane);
   if (config.dailyBleedBudgetEnabled) {
     const walletState = getWalletStopGuardState();

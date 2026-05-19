@@ -26,7 +26,8 @@ export type KolExecutionGuardName =
   | 'canary_slot_full'
   | 'smart_v3_hardcut_reentry_inflight'
   | 'live_buy_failed'
-  | 'rotation_underfill_actual_discount_warn';
+  | 'rotation_underfill_actual_discount_warn'
+  | 'promotion_loop_halt';
 
 export interface KolExecutionGuardSnapshot {
   schemaVersion: typeof KOL_EXECUTION_GUARD_SCHEMA_VERSION;

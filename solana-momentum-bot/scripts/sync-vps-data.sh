@@ -30,6 +30,9 @@
 #   SKIP_ROTATION_PROMOTION_CANDIDATES_REPORT=true bash scripts/sync-vps-data.sh  # rotation promotion candidate bridge report 생략
 #   SKIP_ROTATION_PROMOTION_GATEKEEPER_REPORT=true bash scripts/sync-vps-data.sh  # rotation promotion gatekeeper 생략
 #   SKIP_ROTATION_PROMOTION_TREND_REPORT=true bash scripts/sync-vps-data.sh  # rotation promotion readiness trend 생략
+#   SKIP_ROTATION_PROMOTION_VELOCITY_REPORT=true bash scripts/sync-vps-data.sh  # bridge candidate velocity/ETA 생략
+#   SKIP_ROTATION_PROMOTION_BLOCKED_WINNER_AUDIT=true bash scripts/sync-vps-data.sh  # blocked winner audit 생략
+#   SKIP_ROTATION_PROMOTION_PREFLIGHT=true bash scripts/sync-vps-data.sh  # micro-canary preflight 생략
 #   ROTATION_PROMOTION_CANDIDATES_WINDOWS_HOURS="24 168" bash scripts/sync-vps-data.sh  # 24h/7d bridge windows
 #   SKIP_WINNER_KILL_REPORT=true bash scripts/sync-vps-data.sh    # winner-kill report 생략
 #   SKIP_SYNC_HEALTH=true bash scripts/sync-vps-data.sh           # sync health manifest 생략
@@ -94,6 +97,12 @@ fi
 #   READY/WAIT/REJECT로 판정하고 readiness history 를 누적한다.
 # rotation-promotion-readiness-trend: 파일 only → default ON. readiness history 로
 #   IMPROVING/FLAT/DETERIORATING 추세를 판정한다.
+# rotation-promotion-velocity-report: 파일 only → default ON. 현재 bridge 후보가
+#   READY target 까지 얼마나 빨리 쌓이는지 ETA를 계산한다.
+# rotation-promotion-blocked-winner-audit: 파일 only → default ON. 막힌 양수 후보가
+#   어떤 block reason 에 집중되는지 확인한다.
+# rotation-promotion-micro-canary-preflight: 파일 only → default ON. gatekeeper READY 전
+#   live/env 변경을 차단하고 READY 시 수동 검토 packet 만 출력한다.
 # winner-kill-report: 파일 only → default ON. missed-alpha close-site 기반 tail-retain feedback.
 # sync-health: 파일 only → default ON. 핵심 JSONL row count / mtime manifest.
 # shadow-eval: Jupiter forward quote 호출 다수 → quota 절약을 위해 default OFF (opt-in).
@@ -117,6 +126,9 @@ SKIP_CAPITULATION_REPORT="${SKIP_CAPITULATION_REPORT:-false}"
 SKIP_ROTATION_PROMOTION_CANDIDATES_REPORT="${SKIP_ROTATION_PROMOTION_CANDIDATES_REPORT:-false}"
 SKIP_ROTATION_PROMOTION_GATEKEEPER_REPORT="${SKIP_ROTATION_PROMOTION_GATEKEEPER_REPORT:-false}"
 SKIP_ROTATION_PROMOTION_TREND_REPORT="${SKIP_ROTATION_PROMOTION_TREND_REPORT:-false}"
+SKIP_ROTATION_PROMOTION_VELOCITY_REPORT="${SKIP_ROTATION_PROMOTION_VELOCITY_REPORT:-false}"
+SKIP_ROTATION_PROMOTION_BLOCKED_WINNER_AUDIT="${SKIP_ROTATION_PROMOTION_BLOCKED_WINNER_AUDIT:-false}"
+SKIP_ROTATION_PROMOTION_PREFLIGHT="${SKIP_ROTATION_PROMOTION_PREFLIGHT:-false}"
 SKIP_WINNER_KILL_REPORT="${SKIP_WINNER_KILL_REPORT:-false}"
 SKIP_SYNC_HEALTH="${SKIP_SYNC_HEALTH:-false}"
 TOKEN_QUALITY_WINDOW_DAYS="${TOKEN_QUALITY_WINDOW_DAYS:-7}"
@@ -447,6 +459,12 @@ write_sync_health_report() {
       "reports/rotation-promotion-gatekeeper-$(date +%Y-%m-%d).json" \
       "reports/rotation-promotion-readiness-trend-$(date +%Y-%m-%d).md" \
       "reports/rotation-promotion-readiness-trend-$(date +%Y-%m-%d).json" \
+      "reports/rotation-promotion-velocity-$(date +%Y-%m-%d).md" \
+      "reports/rotation-promotion-velocity-$(date +%Y-%m-%d).json" \
+      "reports/rotation-promotion-blocked-winner-audit-$(date +%Y-%m-%d).md" \
+      "reports/rotation-promotion-blocked-winner-audit-$(date +%Y-%m-%d).json" \
+      "reports/rotation-promotion-micro-canary-preflight-$(date +%Y-%m-%d).md" \
+      "reports/rotation-promotion-micro-canary-preflight-$(date +%Y-%m-%d).json" \
       "data/research/rotation-promotion-readiness-history.jsonl" \
       "reports/kol-transfer-posterior-$(date +%Y-%m-%d).md" \
       "reports/kol-transfer-posterior-$(date +%Y-%m-%d).json" \
@@ -982,6 +1000,63 @@ if [ "$SKIP_ROTATION_PROMOTION_TREND_REPORT" != "true" ]; then
   fi
 else
   echo "[sync-vps-data] rotation-promotion-readiness-trend: SKIPPED (SKIP_ROTATION_PROMOTION_TREND_REPORT=true)"
+fi
+
+# ─── 9f. Rotation promotion candidate velocity / ETA (file-only) ───
+if [ "$SKIP_ROTATION_PROMOTION_VELOCITY_REPORT" != "true" ]; then
+  ROTATION_PROMOTION_7D_JSON="${ROOT_DIR}/reports/rotation-promotion-candidates-7d-$(date +%Y-%m-%d).json"
+  ROTATION_PROMOTION_VELOCITY_MD="${ROOT_DIR}/reports/rotation-promotion-velocity-$(date +%Y-%m-%d).md"
+  ROTATION_PROMOTION_VELOCITY_JSON="${ROOT_DIR}/reports/rotation-promotion-velocity-$(date +%Y-%m-%d).json"
+  if [ -f "${ROTATION_PROMOTION_7D_JSON}" ]; then
+    echo "[sync-vps-data] rotation-promotion-velocity-report: generating"
+    if (cd "${ROOT_DIR}" && npm run -s kol:rotation-promotion-velocity-report -- --candidate-report="${ROTATION_PROMOTION_7D_JSON}" --json-out="${ROTATION_PROMOTION_VELOCITY_JSON}" > "${ROTATION_PROMOTION_VELOCITY_MD}"); then
+      echo "[sync-vps-data] rotation-promotion-velocity-report: ok → ${ROTATION_PROMOTION_VELOCITY_MD}"
+    else
+      echo "[sync-vps-data] rotation-promotion-velocity-report: WARN — generation failed (sync 자체는 정상)"
+    fi
+  else
+    echo "[sync-vps-data] rotation-promotion-velocity-report: WARN — 7d candidate JSON missing; skipped"
+  fi
+else
+  echo "[sync-vps-data] rotation-promotion-velocity-report: SKIPPED (SKIP_ROTATION_PROMOTION_VELOCITY_REPORT=true)"
+fi
+
+# ─── 9g. Rotation promotion blocked winner audit (file-only) ───
+if [ "$SKIP_ROTATION_PROMOTION_BLOCKED_WINNER_AUDIT" != "true" ]; then
+  ROTATION_PROMOTION_7D_JSON="${ROOT_DIR}/reports/rotation-promotion-candidates-7d-$(date +%Y-%m-%d).json"
+  ROTATION_PROMOTION_BLOCKED_MD="${ROOT_DIR}/reports/rotation-promotion-blocked-winner-audit-$(date +%Y-%m-%d).md"
+  ROTATION_PROMOTION_BLOCKED_JSON="${ROOT_DIR}/reports/rotation-promotion-blocked-winner-audit-$(date +%Y-%m-%d).json"
+  if [ -f "${ROTATION_PROMOTION_7D_JSON}" ]; then
+    echo "[sync-vps-data] rotation-promotion-blocked-winner-audit: generating"
+    if (cd "${ROOT_DIR}" && npm run -s kol:rotation-promotion-blocked-winner-audit -- --candidate-report="${ROTATION_PROMOTION_7D_JSON}" --json-out="${ROTATION_PROMOTION_BLOCKED_JSON}" > "${ROTATION_PROMOTION_BLOCKED_MD}"); then
+      echo "[sync-vps-data] rotation-promotion-blocked-winner-audit: ok → ${ROTATION_PROMOTION_BLOCKED_MD}"
+    else
+      echo "[sync-vps-data] rotation-promotion-blocked-winner-audit: WARN — generation failed (sync 자체는 정상)"
+    fi
+  else
+    echo "[sync-vps-data] rotation-promotion-blocked-winner-audit: WARN — 7d candidate JSON missing; skipped"
+  fi
+else
+  echo "[sync-vps-data] rotation-promotion-blocked-winner-audit: SKIPPED (SKIP_ROTATION_PROMOTION_BLOCKED_WINNER_AUDIT=true)"
+fi
+
+# ─── 9h. Rotation promotion micro-canary preflight (file-only) ───
+if [ "$SKIP_ROTATION_PROMOTION_PREFLIGHT" != "true" ]; then
+  ROTATION_PROMOTION_GATEKEEPER_JSON="${ROOT_DIR}/reports/rotation-promotion-gatekeeper-$(date +%Y-%m-%d).json"
+  ROTATION_PROMOTION_PREFLIGHT_MD="${ROOT_DIR}/reports/rotation-promotion-micro-canary-preflight-$(date +%Y-%m-%d).md"
+  ROTATION_PROMOTION_PREFLIGHT_JSON="${ROOT_DIR}/reports/rotation-promotion-micro-canary-preflight-$(date +%Y-%m-%d).json"
+  if [ -f "${ROTATION_PROMOTION_GATEKEEPER_JSON}" ]; then
+    echo "[sync-vps-data] rotation-promotion-micro-canary-preflight: generating"
+    if (cd "${ROOT_DIR}" && npm run -s kol:rotation-promotion-micro-canary-preflight -- --gatekeeper-report="${ROTATION_PROMOTION_GATEKEEPER_JSON}" --json-out="${ROTATION_PROMOTION_PREFLIGHT_JSON}" > "${ROTATION_PROMOTION_PREFLIGHT_MD}"); then
+      echo "[sync-vps-data] rotation-promotion-micro-canary-preflight: ok → ${ROTATION_PROMOTION_PREFLIGHT_MD}"
+    else
+      echo "[sync-vps-data] rotation-promotion-micro-canary-preflight: WARN — generation failed (sync 자체는 정상)"
+    fi
+  else
+    echo "[sync-vps-data] rotation-promotion-micro-canary-preflight: WARN — gatekeeper JSON missing; skipped"
+  fi
+else
+  echo "[sync-vps-data] rotation-promotion-micro-canary-preflight: SKIPPED (SKIP_ROTATION_PROMOTION_PREFLIGHT=true)"
 fi
 
 # ─── 10. Winner-kill report (file-only) ───

@@ -151,6 +151,10 @@ import {
   type RotationMonetizableEdgeEstimate,
 } from './rotation/monetizableEdge';
 import {
+  assessRotationUnderfillLiveRoute,
+  isRotationUnderfillExitRouteUnknownFlag,
+} from './rotation/underfillLiveRouteGate';
+import {
   buildExcursionTelemetryRecord,
   updateExcursionTelemetry,
   type ExcursionTelemetrySnapshot,
@@ -2324,6 +2328,7 @@ function emitKolLiveEquivalence(input: {
   liveAttempted?: boolean;
   liveBlockReason?: string | null;
   liveBlockFlags?: string[];
+  preExecutionSellQuoteEvidence?: KolEntrySellQuoteEvidence | null;
   paperOnlyReason?: string | null;
   sameMintLiveActive?: boolean;
   hardTradingHaltReason?: string | null;
@@ -2372,6 +2377,9 @@ function emitKolLiveEquivalence(input: {
     decisionStage: input.stage,
     liveBlockReason: input.liveBlockReason ?? null,
     liveBlockFlags: Array.from(new Set(input.liveBlockFlags ?? [])),
+    preExecutionRouteFound: input.preExecutionSellQuoteEvidence?.routeFound ?? null,
+    preExecutionSellQuoteReason: input.preExecutionSellQuoteEvidence?.reason ?? null,
+    preExecutionSellQuoteEvidence: input.preExecutionSellQuoteEvidence ?? null,
     paperOnlyReason: input.paperOnlyReason ?? null,
     isShadowKol: input.candIsShadow,
     isLiveCanaryActive: isLiveCanaryActive(),
@@ -4784,26 +4792,21 @@ function rotationUnderfillReferencePriceFromTelemetry(
   return solAmount / tokenAmount;
 }
 
-function isRotationUnderfillExitRouteUnknownFlag(flag: string): boolean {
-  const upper = flag.toUpperCase();
-  return upper === 'EXIT_LIQUIDITY_UNKNOWN' ||
-    upper === 'NO_SELL_ROUTE' ||
-    upper === 'SELL_NO_ROUTE' ||
-    upper === 'NO_ROUTE' ||
-    upper.includes('NO_SELL_ROUTE');
-}
-
 function evaluateRotationUnderfillLiveFallback(
   entrySignal: KolEntrySignal,
-  entryFlags: string[] = []
+  entryFlags: string[] = [],
+  sellRouteEvidence?: KolEntrySellQuoteEvidence | null
 ): { fallback: boolean; reason?: string; flags: string[] } {
   if (entrySignal.label !== 'rotation-underfill') return { fallback: false, flags: [] };
   const flags: string[] = [];
   if (!isRotationUnderfillLiveCanaryEnabled()) {
     flags.push('ROTATION_UNDERFILL_LIVE_DISABLED');
   }
-  if (entryFlags.some(isRotationUnderfillExitRouteUnknownFlag)) {
-    flags.push('ROTATION_UNDERFILL_LIVE_EXIT_ROUTE_UNKNOWN');
+  const routeAssessment = assessRotationUnderfillLiveRoute(entryFlags, sellRouteEvidence);
+  if (routeAssessment.blocked) {
+    flags.push('ROTATION_UNDERFILL_LIVE_EXIT_ROUTE_UNKNOWN', ...routeAssessment.flags);
+  } else {
+    flags.push(...routeAssessment.flags);
   }
   const decayCheck = checkRotationLiveKolDecay(
     (entrySignal.entryParticipatingKols ?? [])
@@ -4814,13 +4817,19 @@ function evaluateRotationUnderfillLiveFallback(
     flags.push(...decayCheck.flags);
   }
   if (flags.length === 0) return { fallback: false, flags: [] };
+  const fallback = flags.some((flag) =>
+    flag === 'ROTATION_UNDERFILL_LIVE_DISABLED' ||
+    flag === 'ROTATION_UNDERFILL_LIVE_EXIT_ROUTE_UNKNOWN' ||
+    flag === 'ROTATION_LIVE_KOL_DECAY'
+  );
+  if (!fallback) return { fallback: false, flags };
   const reason = flags.includes('ROTATION_UNDERFILL_LIVE_DISABLED')
     ? 'rotation_underfill_live_disabled'
     : flags.includes('ROTATION_UNDERFILL_LIVE_EXIT_ROUTE_UNKNOWN')
-      ? 'rotation_underfill_live_exit_route_unknown'
+      ? routeAssessment.reason ?? 'rotation_underfill_live_exit_route_unknown'
       : decayCheck.reason ?? 'rotation_underfill_live_kol_decay';
   return {
-    fallback: true,
+    fallback,
     reason,
     flags,
   };
@@ -6703,6 +6712,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     hardTradingHaltReason?: string | null;
     liveExecutionQualityReason?: string | null;
     liveExecutionQualityRemainingMs?: number | null;
+    preExecutionSellQuoteEvidence?: KolEntrySellQuoteEvidence | null;
     optionsPatch?: Partial<PaperEntryOptions>;
   }): Promise<void> => {
     const decisionFlags = input.decisionFlags ?? input.policyFlags;
@@ -6744,6 +6754,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       hardTradingHaltReason: input.hardTradingHaltReason ?? null,
       liveExecutionQualityReason: input.liveExecutionQualityReason ?? null,
       liveExecutionQualityRemainingMs: input.liveExecutionQualityRemainingMs ?? null,
+      preExecutionSellQuoteEvidence: input.preExecutionSellQuoteEvidence ?? null,
     });
     await enterPaperPosition(cand.tokenMint, cand, score, input.policyFlags, paperOptions);
   };
@@ -7023,10 +7034,25 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       });
       return;
     }
-    const rotationUnderfillLiveFallback = evaluateRotationUnderfillLiveFallback(entrySignal, entryFlags);
+    const rotationUnderfillPreExecutionRouteProof =
+      entrySignal.label === 'rotation-underfill' &&
+      entryFlags.some(isRotationUnderfillExitRouteUnknownFlag)
+        ? await checkRotationUnderfillPreExecutionRouteProof({
+            tokenMint: cand.tokenMint,
+            entrySignal,
+            referencePrice: smart.currentPrice,
+            tokenDecimals: entryOptionsWithLiveShadow.tokenDecimals,
+          })
+        : null;
+    const rotationUnderfillLiveFallback = evaluateRotationUnderfillLiveFallback(
+      entrySignal,
+      entryFlags,
+      rotationUnderfillPreExecutionRouteProof?.evidence ?? null
+    );
     if (rotationUnderfillLiveFallback.fallback) {
       const policyFlags = [
         ...entryFlags,
+        ...(rotationUnderfillPreExecutionRouteProof?.flags ?? []),
         ...rotationUnderfillLiveFallback.flags,
       ];
       log.warn(
@@ -7039,11 +7065,16 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         reason: rotationUnderfillLiveFallback.reason ?? 'rotation_underfill_live_fallback',
         skipPolicyEntry: true,
         emitFallbackPolicy: true,
+        preExecutionSellQuoteEvidence: rotationUnderfillPreExecutionRouteProof?.evidence ?? null,
       });
       return;
     }
     const smartV3LiveFallback = evaluateSmartV3LiveFallback(cand, entrySignal, smartFresh, entryFlags);
-    let liveEntryFlags = entryFlags;
+    let liveEntryFlags = [
+      ...entryFlags,
+      ...(rotationUnderfillPreExecutionRouteProof?.flags ?? []),
+      ...rotationUnderfillLiveFallback.flags,
+    ];
     let liveEntryOptions = entryOptionsWithLiveShadow;
     if (smartV3LiveFallback.fallback) {
       const policyFlags = [
@@ -7203,6 +7234,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       liveAttempted: true,
       liveBlockReason: null,
       liveBlockFlags: [],
+      preExecutionSellQuoteEvidence: rotationUnderfillPreExecutionRouteProof?.evidence ?? null,
     });
     await enterLivePosition(
       cand.tokenMint,
@@ -7888,6 +7920,37 @@ async function checkKolSellQuoteSized(
       }),
     };
   }
+}
+
+async function checkRotationUnderfillPreExecutionRouteProof(input: {
+  tokenMint: string;
+  entrySignal: KolEntrySignal;
+  referencePrice: number;
+  tokenDecimals?: number;
+}): Promise<KolSellQuoteSizedResult | null> {
+  if (input.entrySignal.label !== 'rotation-underfill') return null;
+  if (!Number.isFinite(input.referencePrice) || input.referencePrice <= 0) {
+    return {
+      approved: false,
+      reason: 'invalid_reference_price',
+      flags: ['ROTATION_UNDERFILL_PRELIVE_ROUTE_PROOF_INVALID_REFERENCE_PRICE'],
+      evidence: buildEntrySellQuoteEvidence({
+        probeEnabled: true,
+        approved: false,
+        reason: 'invalid_reference_price',
+        routeFound: null,
+        ticketSol: config.kolHunterTicketSol,
+        tokenDecimals: input.tokenDecimals ?? null,
+      }),
+    };
+  }
+  const plannedQuantityUi = config.kolHunterTicketSol / input.referencePrice;
+  return checkKolSellQuoteSized(
+    input.tokenMint,
+    plannedQuantityUi,
+    config.kolHunterTicketSol,
+    input.tokenDecimals
+  );
 }
 
 async function resolveTokenDecimalsForObserver(

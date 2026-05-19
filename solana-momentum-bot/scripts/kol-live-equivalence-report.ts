@@ -360,6 +360,27 @@ function countBy(rows: JsonRecord[], key: string): Array<[string, number]> {
   return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 }
 
+function stringArray(row: JsonRecord, key: string): string[] {
+  const value = row[key];
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string');
+}
+
+function countFlags(
+  rows: JsonRecord[],
+  key: string,
+  predicate: (flag: string) => boolean
+): Array<[string, number]> {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    for (const flag of stringArray(row, key)) {
+      if (!predicate(flag)) continue;
+      counts.set(flag, (counts.get(flag) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+
 function dedupeTradeRows(rows: JsonRecord[]): JsonRecord[] {
   const seen = new Set<string>();
   const out: JsonRecord[] = [];
@@ -979,6 +1000,18 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
     .sort((a, b) => b[1].decisions - a[1].decisions || a[0].localeCompare(b[0]));
   const executionGuardBreakdownRows = [...executionGuardBuckets.entries()]
     .sort((a, b) => b[1].rows - a[1].rows || a[0].localeCompare(b[0]));
+  const routeProofRows = equivalence.filter((row) => row.preExecutionRouteFound === true).length;
+  const routeNoRouteRows = equivalence.filter((row) => row.preExecutionRouteFound === false).length;
+  const routeUnknownRows = equivalence.filter((row) =>
+    row.preExecutionRouteFound !== true && row.preExecutionRouteFound !== false
+  ).length;
+  const routeBucketRows = countFlags(
+    equivalence,
+    'liveBlockFlags',
+    (flag) => flag.startsWith('ROTATION_UNDERFILL_ROUTE_BUCKET_') ||
+      flag === 'ROTATION_UNDERFILL_PRELIVE_SELL_ROUTE_OK' ||
+      flag === 'ROTATION_UNDERFILL_ROUTE_PROOF_REQUIRED'
+  );
   const lines = [
     `# KOL Live Equivalence Report`,
     '',
@@ -1023,6 +1056,7 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
     `- live attempted equivalence rows: ${liveAttemptedRows}`,
     `- execution guard sidecar rows: ${executionGuardRows.length}`,
     `- trade rows with executionGuard: ${tradeRowsWithExecutionGuard.length}`,
+    `- pre-execution route proof ok/no/unknown: ${routeProofRows}/${routeNoRouteRows}/${routeUnknownRows}`,
     `- promotion evidence verdict: ${promotionEvidenceVerdict}`,
     `- promotion comparable paper closes: ${promotionComparablePaperRows.length}`,
     `- promotion ready paper closes: ${promotionReadyPaperRows.length}`,
@@ -1094,6 +1128,12 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
       .slice(0, 20)
       .map(([key, count]) => `| ${key} | ${count} |`),
     '',
+    '## Rotation Pre-Execution Route Proof',
+    '',
+    '| bucket | count |',
+    '|---|---:|',
+    ...routeBucketRows.slice(0, 30).map(([key, count]) => `| ${key} | ${count} |`),
+    '',
     '## Arm Summary',
     '',
     '| arm | rows | liveWould | attempted | blocked | paper W/L | paper net | token-only net | avg MFE | live closes | live net |',
@@ -1149,6 +1189,10 @@ async function buildReport(args: Args): Promise<{ md: string; json: JsonRecord }
       liveAttributionBreakdown,
       executionGuardRows: executionGuardRows.length,
       tradeRowsWithExecutionGuard: tradeRowsWithExecutionGuard.length,
+      preExecutionRouteProofOkRows: routeProofRows,
+      preExecutionRouteNoRouteRows: routeNoRouteRows,
+      preExecutionRouteUnknownRows: routeUnknownRows,
+      rotationPreExecutionRouteProofBuckets: Object.fromEntries(routeBucketRows),
       promotionEvidenceVerdict,
       promotionComparablePaperRows: promotionComparablePaperRows.length,
       promotionReadyPaperRows: promotionReadyPaperRows.length,

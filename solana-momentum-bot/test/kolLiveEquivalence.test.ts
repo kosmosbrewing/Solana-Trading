@@ -28,7 +28,16 @@ describe('kol live equivalence observability', () => {
       paperRole: 'fallback_execution_safety',
       decisionStage: 'yellow_zone',
       liveBlockReason: 'single_kol_live_not_enough',
-      liveBlockFlags: ['SINGLE_KOL_LIVE_NOT_ENOUGH'],
+      liveBlockFlags: [
+        'SINGLE_KOL_LIVE_NOT_ENOUGH',
+        'ROTATION_UNDERFILL_ROUTE_BUCKET_QUOTE_OK_SECURITY_UNKNOWN',
+      ],
+      preExecutionRouteFound: true,
+      preExecutionSellQuoteReason: null,
+      preExecutionSellQuoteEvidence: {
+        routeFound: true,
+        reason: null,
+      },
       paperOnlyReason: null,
       isShadowKol: false,
       isLiveCanaryActive: true,
@@ -72,7 +81,16 @@ describe('kol live equivalence observability', () => {
       paperRole: 'fallback_execution_safety',
       decisionStage: 'yellow_zone',
       liveBlockReason: 'single_kol_live_not_enough',
-      liveBlockFlags: ['SINGLE_KOL_LIVE_NOT_ENOUGH'],
+      liveBlockFlags: [
+        'SINGLE_KOL_LIVE_NOT_ENOUGH',
+        'ROTATION_UNDERFILL_ROUTE_BUCKET_QUOTE_OK_SECURITY_UNKNOWN',
+      ],
+      preExecutionRouteFound: true,
+      preExecutionSellQuoteReason: null,
+      preExecutionSellQuoteEvidence: {
+        routeFound: true,
+        reason: null,
+      },
       paperOnlyReason: null,
       isShadowKol: false,
       isLiveCanaryActive: true,
@@ -165,7 +183,12 @@ describe('kol live equivalence observability', () => {
         avgMfePct: 0.60,
       }),
     }));
+    expect(report.json.preExecutionRouteProofOkRows).toBe(1);
+    expect(report.json.rotationPreExecutionRouteProofBuckets).toEqual(expect.objectContaining({
+      ROTATION_UNDERFILL_ROUTE_BUCKET_QUOTE_OK_SECURITY_UNKNOWN: 1,
+    }));
     expect(report.md).toContain('| fallback_execution_safety | 1 | 1/0 | +0.0100 | +0.0120 | 25.0% |');
+    expect(report.md).toContain('| ROTATION_UNDERFILL_ROUTE_BUCKET_QUOTE_OK_SECURITY_UNKNOWN | 1 |');
     expect(report.md).toContain('- attribution warnings: n/a');
     expect(report.md).toContain('| rotation_underfill_v1 | 1 | 0 | 0 | 1 | 1/0 | +0.0100 | +0.0120 | 25.0% | 0 | +0.0000 |');
   });

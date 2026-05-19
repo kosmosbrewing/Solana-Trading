@@ -60,6 +60,9 @@ export interface KolLiveEquivalenceRow {
   decisionStage: KolLiveEquivalenceDecisionStage;
   liveBlockReason: string | null;
   liveBlockFlags: string[];
+  preExecutionRouteFound?: boolean | null;
+  preExecutionSellQuoteReason?: string | null;
+  preExecutionSellQuoteEvidence?: unknown;
   paperOnlyReason: string | null;
   isShadowKol: boolean;
   isLiveCanaryActive: boolean;

@@ -4834,7 +4834,7 @@ describe('kolSignalHandler — state machine', () => {
       expect(equivalenceRows.at(-1)?.liveBlockFlags).toContain('YELLOW_ZONE_MIN_KOL');
     });
 
-    it('rotation-underfill live canary: exit liquidity unknown 은 live 체결 전 paper fallback 으로 남긴다', async () => {
+    it('rotation-underfill live canary: security exit-liquidity unknown 이라도 sized sell route 가 있으면 live 검증으로 진입한다', async () => {
       const { ctx, executeBuy, insertTrade } = buildLiveCtx();
       mockedConfig.kolHunterRunSellQuoteProbe = true;
       const probeSpy = jest.spyOn(sellQuoteProbeModule, 'evaluateSellQuoteProbe').mockResolvedValue({
@@ -4867,29 +4867,83 @@ describe('kolSignalHandler — state machine', () => {
         stubFeed.emitTick(MINT_ROTATION, 0.00096);
         await flushAsync();
 
-        expect(executeBuy).not.toHaveBeenCalled();
-        expect(insertTrade).not.toHaveBeenCalled();
-        expect(probeSpy).toHaveBeenCalledTimes(1);
-        const paper = __testGetActive().find((p) => p.isLive !== true);
-        expect(paper?.armName).toBe('rotation_underfill_v1');
-        expect(paper?.entrySecurityEvidence).toMatchObject({
+        expect(executeBuy).toHaveBeenCalledTimes(1);
+        expect(insertTrade).toHaveBeenCalledTimes(1);
+        expect(probeSpy).toHaveBeenCalledTimes(2);
+        const live = __testGetActive().find((p) => p.isLive === true);
+        expect(live?.armName).toBe('rotation_underfill_v1');
+        expect(live?.profileArm).toBe('rotation_underfill_exit_flow_v1');
+        expect(live?.entrySecurityEvidence).toMatchObject({
           securityClientPresent: true,
           tokenSecurityKnown: true,
           exitLiquidityKnown: false,
         });
-        expect(paper?.entrySellQuoteEvidence).toMatchObject({
+        expect(live?.entrySellQuoteEvidence).toMatchObject({
           probeEnabled: true,
           approved: true,
           routeFound: true,
           observedOutSol: 0.019,
           roundTripPct: 0.95,
         });
-        expect(paper?.survivalFlags).toEqual(expect.arrayContaining([
+        expect(live?.survivalFlags).toEqual(expect.arrayContaining([
           'EXIT_LIQUIDITY_UNKNOWN',
-          'ROTATION_UNDERFILL_LIVE_EXIT_ROUTE_UNKNOWN',
           'SELL_ROUTE_OK',
           'EXIT_LIQUIDITY_KNOWN',
+          'ROTATION_UNDERFILL_PRELIVE_SELL_ROUTE_OK',
+          'ROTATION_UNDERFILL_ROUTE_BUCKET_QUOTE_OK_SECURITY_UNKNOWN',
         ]));
+        const equivalenceRows = mockAppendFile.mock.calls
+          .filter((call) => typeof call[0] === 'string' && call[0].includes('kol-live-equivalence.jsonl'))
+          .map((call) => JSON.parse(String(call[1]).trim()));
+        expect(equivalenceRows.at(-1)).toEqual(expect.objectContaining({
+          decisionStage: 'pre_execution_live_allowed',
+          liveWouldEnter: true,
+          liveAttempted: true,
+          preExecutionRouteFound: true,
+        }));
+      } finally {
+        mockedConfig.kolHunterRunSellQuoteProbe = false;
+        probeSpy.mockRestore();
+      }
+    });
+
+    it('rotation-underfill live canary: sized sell route 가 없으면 live 전 paper fallback 으로 남긴다', async () => {
+      const { ctx, executeBuy, insertTrade } = buildLiveCtx();
+      mockedConfig.kolHunterRunSellQuoteProbe = true;
+      const probeSpy = jest.spyOn(sellQuoteProbeModule, 'evaluateSellQuoteProbe').mockResolvedValue({
+        approved: false,
+        routeFound: false,
+        observedOutSol: null,
+        observedImpactPct: null,
+        roundTripPct: null,
+        quoteFailed: false,
+        reason: 'no_sell_route',
+        cacheStatus: 'miss',
+      } as any);
+      __testInit({
+        priceFeed: stubFeed as unknown as never,
+        ctx,
+        securityClient: {
+          ...buildSecurityClient(),
+          getExitLiquidity: jest.fn().mockResolvedValue(null),
+        } as never,
+      });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterRotationV1LiveEnabled = false;
+      mockedConfig.kolHunterRotationV1MinIndependentKol = 1;
+      mockedConfig.kolHunterRotationUnderfillLiveCanaryEnabled = true;
+
+      try {
+        stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+        await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+        stubFeed.emitTick(MINT_ROTATION, 0.00096);
+        await flushAsync();
+
+        expect(executeBuy).not.toHaveBeenCalled();
+        expect(insertTrade).not.toHaveBeenCalled();
+        expect(probeSpy).toHaveBeenCalled();
         const equivalenceRows = mockAppendFile.mock.calls
           .filter((call) => typeof call[0] === 'string' && call[0].includes('kol-live-equivalence.jsonl'))
           .map((call) => JSON.parse(String(call[1]).trim()));
@@ -4897,32 +4951,12 @@ describe('kolSignalHandler — state machine', () => {
           decisionStage: 'rotation_underfill_live_fallback',
           liveWouldEnter: false,
           liveBlockReason: 'rotation_underfill_live_exit_route_unknown',
+          preExecutionRouteFound: false,
         }));
-
-        mockAppendFile.mockClear();
-        stubFeed.emitTick(MINT_ROTATION, 0.00105);
-        await flushAsync();
-        stubFeed.emitTick(MINT_ROTATION, 0.00102);
-        await flushAsync();
-        const projectionRows = mockAppendFile.mock.calls
-          .filter((call) => typeof call[0] === 'string' && call[0].includes('rotation-v1-paper-trades.jsonl'))
-          .map((call) => JSON.parse(String(call[1]).trim()));
-        expect(projectionRows.at(-1)).toMatchObject({
-          armName: 'rotation_underfill_v1',
-          routeFound: true,
-          sellRouteKnown: true,
-          exitLiquidityKnown: false,
-          tokenSecurityKnown: true,
-        });
-        expect(projectionRows.at(-1)?.entrySellQuoteEvidence).toMatchObject({
-          approved: true,
-          routeFound: true,
-          observedOutSol: 0.019,
-        });
-        expect(projectionRows.at(-1)?.entrySecurityEvidence).toMatchObject({
-          tokenSecurityKnown: true,
-          exitLiquidityKnown: false,
-        });
+        expect(equivalenceRows.at(-1)?.liveBlockFlags).toEqual(expect.arrayContaining([
+          'ROTATION_UNDERFILL_LIVE_EXIT_ROUTE_UNKNOWN',
+          'ROTATION_UNDERFILL_ROUTE_BUCKET_SELL_QUOTE_NO_ROUTE',
+        ]));
       } finally {
         mockedConfig.kolHunterRunSellQuoteProbe = false;
         probeSpy.mockRestore();

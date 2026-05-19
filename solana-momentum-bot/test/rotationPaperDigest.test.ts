@@ -48,6 +48,8 @@ describe('rotation paper digest', () => {
         kolEntryReason: 'rotation_v1',
         closedAt: new Date(startMs + 60_000).toISOString(),
         exitReason: 'winner_trailing_t1',
+        paperRole: 'fallback_execution_safety',
+        liveEquivalenceCandidateId: 'candidate-rotation-1',
         holdSec: 18,
         netSol: 0.002,
         netSolTokenOnly: 0.003,
@@ -142,6 +144,10 @@ describe('rotation paper digest', () => {
     expect(message).toContain('- 00-08 · close 0건');
     expect(message).toContain('- 09:00 · close 1건 (1W/0L) net +0.0020');
     expect(message).toContain('· 합계 close 1건 (1W/0L) net +0.0020 SOL');
+    expect(message).toContain('· PAPER role comparable 1건 / non-comparable 0건');
+    expect(message).toContain('· unique candidates 1건 · tokens 1건');
+    expect(message).toContain('· refund-adjusted +0.0029 SOL · wallet-stress +0.0008 SOL');
+    expect(message).toContain('· tokenWinWalletLose 0건 · top winner concentration 100.0%');
     expect(message).toContain('· PAPER open 0건 · entries 1건 · skips 1건');
     expect(notifier.sendInfo.mock.calls[0][1]).toBe('kol_rotation_paper_digest');
   });

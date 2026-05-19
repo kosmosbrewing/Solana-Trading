@@ -7,6 +7,7 @@ import type { Notifier } from '../notifier';
 import { config } from '../utils/config';
 import { createModuleLogger } from '../utils/logger';
 import { getActiveKolHunterPositionsSnapshot, type PaperPosition } from './kolSignalHandler';
+import { buildRotationPaperDigestMetrics, renderRotationPaperDigestMetrics } from './rotationPaperDigestMetrics';
 
 const log = createModuleLogger('RotationPaperDigest');
 const ROTATION_PAPER_TRADES_FILE = 'rotation-v1-paper-trades.jsonl';
@@ -232,6 +233,14 @@ function eventKey(row: JsonRow): string {
   return str(row.eventId) || `${str(row.tokenMint)}:${str(row.rejectReason)}:${timeMs(row.rejectedAt)}`;
 }
 
+function todayRows(rows: JsonRow[], nowMs: number): JsonRow[] {
+  const dayStartMs = kstDayStartMs(nowMs);
+  return rows.filter((row) => {
+    const closedAt = timeMs(row.closedAt);
+    return Number.isFinite(closedAt) && closedAt >= dayStartMs && closedAt < nowMs;
+  });
+}
+
 export async function flushRotationPaperDigest(
   notifier: Notifier,
   options: { force?: boolean } = {}
@@ -287,7 +296,13 @@ export async function flushRotationPaperDigest(
   }
 
   const dayClosed = trades.filter((row) => isRotationPaperTrade(row));
+  const todayClosed = todayRows(dayClosed, nowMs);
+  const missionMetrics = buildRotationPaperDigestMetrics(todayClosed, {
+    assumedAtaRentSol: Math.max(0, config.kolHunterRotationPaperAssumedAtaRentSol),
+    assumedNetworkFeeSol: Math.max(0, config.kolHunterRotationPaperAssumedNetworkFeeSol),
+  });
   const lines = [buildPaperTodayDigest('ROTATION', dayClosed, nowMs)];
+  lines.push(...renderRotationPaperDigestMetrics(missionMetrics));
   lines.push(`· PAPER open ${openPaper.length}건 · entries ${entries.length}건 · skips ${skipMarkers.length}건`);
 
   try {

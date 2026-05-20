@@ -8,6 +8,7 @@ export type PromotionLoopResetPreflightStatus = 'READY_TO_RESET' | 'BLOCKED' | '
 export interface PromotionLoopResetPreflightReport {
   status: PromotionLoopResetPreflightStatus;
   nextAction: string;
+  targetArm: string;
   minPaperCloses: number;
   minRecentPaperCloses: number;
   recentWindowHours: number;
@@ -39,6 +40,7 @@ export const RESET_PREFLIGHT_MIN_RECENT_CLOSES = 10;
 export const RESET_PREFLIGHT_MAX_ADMISSION_FAILURE_RATE = 0.5;
 export const RESET_PREFLIGHT_MIN_ROUTE_PROOF_COVERAGE = 0.95;
 export const RESET_PREFLIGHT_MIN_COMPARABLE_TRACE_COVERAGE = 0.95;
+export const RESET_PREFLIGHT_TARGET_ARM = 'rotation_underfill_cost_aware_exit_v2';
 
 const ADMISSION_FAILURE_REASONS = new Set([
   'probe_hard_cut',
@@ -143,10 +145,10 @@ function isComparablePaperRole(row: PromotionLoopJsonRow): boolean {
     role === 'fallback_execution_safety';
 }
 
-function hasUnderfillLabel(row: PromotionLoopJsonRow): boolean {
+function hasTargetArmLabel(row: PromotionLoopJsonRow): boolean {
   const labels = [str(row, 'armName'), str(row, 'profileArm'), str(row, 'entryArm')]
     .map((value) => String(value ?? '').toLowerCase());
-  return labels.some((label) => label.includes('rotation_underfill'));
+  return labels.includes(RESET_PREFLIGHT_TARGET_ARM);
 }
 
 function paperPositionId(row: PromotionLoopJsonRow): string | null {
@@ -205,7 +207,7 @@ function resetPreflightEligiblePaperRows(
       atMs >= sinceMs &&
       !isPartialReduce(row) &&
       isPaperRow(row) &&
-      hasUnderfillLabel(row) &&
+      hasTargetArmLabel(row) &&
       isComparablePaperRole(row);
   });
 }
@@ -288,6 +290,7 @@ export function buildPromotionLoopResetPreflightReport(
   return {
     status,
     nextAction,
+    targetArm: RESET_PREFLIGHT_TARGET_ARM,
     minPaperCloses: RESET_PREFLIGHT_MIN_PAPER_CLOSES,
     minRecentPaperCloses: RESET_PREFLIGHT_MIN_RECENT_CLOSES,
     recentWindowHours: RESET_PREFLIGHT_RECENT_WINDOW_MS / 3_600_000,

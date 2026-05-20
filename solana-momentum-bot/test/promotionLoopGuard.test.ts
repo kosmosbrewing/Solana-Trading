@@ -24,7 +24,7 @@ function readyPreflightRows(nowMs = Date.parse('2026-05-18T00:30:00.000Z')) {
   return Array.from({ length: 20 }, (_, i) => ({
     positionId: `paper-${i}`,
     paperRole: 'fallback_execution_safety',
-    profileArm: 'rotation_underfill_exit_flow_v1',
+    profileArm: PROMOTION_LOOP_MICRO_LIVE_TARGET_ARM,
     liveEquivalenceCandidateId: `candidate-${i}`,
     liveEquivalenceDecisionId: `decision-${i}`,
     refundAdjustedNetSol: 0.001,

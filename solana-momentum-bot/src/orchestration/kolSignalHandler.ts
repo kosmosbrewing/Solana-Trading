@@ -3200,6 +3200,7 @@ function defaultEntryReasonForVersion(parameterVersion: string): KolEntryReason 
   if (parameterVersion === config.kolHunterSwingV2ParameterVersion) return 'swing_v2';
   if (parameterVersion === config.kolHunterRotationV1ParameterVersion) return 'rotation_v1';
   if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) return 'rotation_v1';
+  if (parameterVersion === config.kolHunterRotationUnderfillCostAwareParameterVersion) return 'rotation_v1';
   if (parameterVersion === ROTATION_CANDLE_COVERAGE_PROBE_PARAMETER_VERSION) return 'rotation_v1';
   if (parameterVersion === ROTATION_SECOND_KOL_WAIT_PARAMETER_VERSION) return 'rotation_v1';
   if (parameterVersion === config.kolHunterRotationExitFlowParameterVersion) return 'rotation_v1';
@@ -3213,6 +3214,7 @@ function defaultConvictionForVersion(parameterVersion: string): KolConvictionLev
   if (parameterVersion === config.kolHunterSwingV2ParameterVersion) return 'HIGH';
   if (parameterVersion === config.kolHunterRotationV1ParameterVersion) return 'MEDIUM_HIGH';
   if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) return 'MEDIUM_HIGH';
+  if (parameterVersion === config.kolHunterRotationUnderfillCostAwareParameterVersion) return 'MEDIUM_HIGH';
   if (parameterVersion === ROTATION_CANDLE_COVERAGE_PROBE_PARAMETER_VERSION) return 'MEDIUM_HIGH';
   if (parameterVersion === ROTATION_SECOND_KOL_WAIT_PARAMETER_VERSION) return 'MEDIUM_HIGH';
   if (parameterVersion === config.kolHunterRotationExitFlowParameterVersion) return 'MEDIUM_HIGH';
@@ -3265,6 +3267,20 @@ function dynamicExitParamsForEntry(reason: KolEntryReason): DynamicExitParams {
 }
 
 function dynamicExitParamsForPosition(parameterVersion: string, reason: KolEntryReason): DynamicExitParams {
+  if (
+    parameterVersion === config.kolHunterRotationUnderfillCostAwareParameterVersion
+  ) {
+    return {
+      t1Mfe: config.kolHunterRotationUnderfillCostAwareT1MinMfe,
+      t1TrailPct: config.kolHunterRotationUnderfillCostAwareT1TrailPct,
+      t1ProfitFloorMult: config.kolHunterRotationUnderfillCostAwareProfitFloorMult,
+      probeFlatTimeoutSec: config.kolHunterRotationUnderfillCostAwareProbeTimeoutSec,
+      probeHardCutPct: config.kolHunterRotationUnderfillCostAwareHardCutPct,
+      rotationDoaWindowSec: config.kolHunterRotationUnderfillDoaWindowSec,
+      rotationDoaMinMfePct: config.kolHunterRotationUnderfillDoaMinMfePct,
+      rotationDoaMaxMaePct: config.kolHunterRotationUnderfillDoaMaxMaePct,
+    };
+  }
   if (
     parameterVersion === config.kolHunterRotationUnderfillParameterVersion ||
     parameterVersion === ROTATION_SECOND_KOL_WAIT_PARAMETER_VERSION ||
@@ -3419,7 +3435,8 @@ type KolLiveCanaryArm =
   | 'rotation_v1'
   | 'rotation_chase_topup_v1'
   | 'rotation_underfill_v1'
-  | 'rotation_underfill_exit_flow_v1';
+  | 'rotation_underfill_exit_flow_v1'
+  | 'rotation_underfill_cost_aware_exit_v2';
 
 function normalizedLiveCanaryArmSet(): Set<string> {
   const configured = Array.isArray(config.kolHunterLiveCanaryArms)
@@ -3457,6 +3474,8 @@ function isKolLiveCanaryArmEnabled(arm: KolLiveCanaryArm): boolean {
     case 'rotation_underfill_exit_flow_v1':
       return config.kolHunterRotationUnderfillLiveCanaryEnabled &&
         config.kolHunterRotationUnderfillLiveExitFlowEnabled;
+    case 'rotation_underfill_cost_aware_exit_v2':
+      return false;
   }
 }
 
@@ -3467,16 +3486,47 @@ function isRotationUnderfillExitFlowLiveCanaryEnabled(): boolean {
     config.kolHunterRotationUnderfillLiveExitFlowEnabled;
 }
 
+function isRotationUnderfillCostAwareLiveCanaryEnabled(): boolean {
+  const explicit = normalizedLiveCanaryArmSet();
+  return explicit.size > 0 && explicit.has(ROTATION_UNDERFILL_COST_AWARE_PROFILE_ARM);
+}
+
 function isRotationUnderfillLiveCanaryEnabled(): boolean {
   return isKolLiveCanaryArmEnabled('rotation_underfill_v1') ||
+    isRotationUnderfillCostAwareLiveCanaryEnabled() ||
     isRotationUnderfillExitFlowLiveCanaryEnabled();
 }
 
 function rotationUnderfillLiveProfileArm(): string | undefined {
+  if (isRotationUnderfillCostAwareLiveCanaryEnabled()) {
+    return ROTATION_UNDERFILL_COST_AWARE_PROFILE_ARM;
+  }
   if (isRotationUnderfillExitFlowLiveCanaryEnabled()) {
     return ROTATION_UNDERFILL_EXIT_FLOW_PROFILE_ARM;
   }
   return undefined;
+}
+
+function rotationUnderfillLiveParameterVersion(): string | undefined {
+  if (isRotationUnderfillCostAwareLiveCanaryEnabled()) {
+    return config.kolHunterRotationUnderfillCostAwareParameterVersion;
+  }
+  return undefined;
+}
+
+function rotationUnderfillLiveExitArm(profileArm?: string): string | undefined {
+  if (profileArm === ROTATION_UNDERFILL_COST_AWARE_PROFILE_ARM) {
+    return ROTATION_UNDERFILL_COST_AWARE_PROFILE_ARM;
+  }
+  if (profileArm === ROTATION_UNDERFILL_EXIT_FLOW_PROFILE_ARM) {
+    return ROTATION_EXIT_FLOW_ARM;
+  }
+  return undefined;
+}
+
+function isRotationUnderfillFlowLiveProfile(profileArm?: string): boolean {
+  return profileArm === ROTATION_UNDERFILL_EXIT_FLOW_PROFILE_ARM ||
+    profileArm === ROTATION_UNDERFILL_COST_AWARE_PROFILE_ARM;
 }
 
 function configuredLiveCanaryArmsForLog(): string {
@@ -6515,18 +6565,21 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
   const entryArm = entrySignal.label === 'rotation-underfill'
     ? ROTATION_UNDERFILL_ARM
     : undefined;
-  const exitArm = entrySignal.label === 'rotation-underfill' && profileArm
-    ? ROTATION_EXIT_FLOW_ARM
+  const exitArm = entrySignal.label === 'rotation-underfill'
+    ? rotationUnderfillLiveExitArm(profileArm)
     : undefined;
+  const parameterVersion = entrySignal.label === 'rotation-underfill'
+    ? rotationUnderfillLiveParameterVersion() ?? entrySignal.parameterVersion
+    : entrySignal.parameterVersion;
   const liveEquivalenceCandidateId = buildLiveEquivalenceCandidateId(
     cand.tokenMint,
     entrySignal,
     Date.now(),
-    undefined,
+    parameterVersion,
     profileArm
   );
   const entryOptions: PaperEntryOptions = {
-    parameterVersion: entrySignal.parameterVersion,
+    parameterVersion,
     profileArm,
     entryArm,
     exitArm,
@@ -6547,7 +6600,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     underfillReferenceSolAmount: entrySignal.telemetry?.underfillReferenceSolAmount,
     underfillReferenceTokenAmount: entrySignal.telemetry?.underfillReferenceTokenAmount,
     rotationFlowExitEnabled: entrySignal.label === 'rotation-underfill' &&
-      isRotationUnderfillExitFlowLiveCanaryEnabled(),
+      isRotationUnderfillFlowLiveProfile(profileArm),
     smartV3LiveHardCutReentry: smartV3HardCutReentry.allowed,
     smartV3HardCutParentPositionId: smartV3HardCutReentry.state?.parentPositionId,
     smartV3HardCutAtMs: smartV3HardCutReentry.state?.closedAtMs,
@@ -11739,6 +11792,7 @@ async function enterLivePosition(
     underfillReferenceSolAmount: options.underfillReferenceSolAmount,
     underfillReferenceTokenAmount: options.underfillReferenceTokenAmount,
     rotationFlowExitEnabled: options.rotationFlowExitEnabled === true ||
+      primaryVersion === config.kolHunterRotationUnderfillCostAwareParameterVersion ||
       primaryVersion === config.kolHunterRotationExitFlowParameterVersion ||
       primaryVersion === config.kolHunterRotationChaseTopupParameterVersion,
     executionGuard,

@@ -69,6 +69,7 @@ import {
   applyPromotionLoopResetPreflightRowsForTests,
   PROMOTION_LOOP_COHORT,
   PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL,
+  PROMOTION_LOOP_MICRO_LIVE_TARGET_ARM,
   resetPromotionLoopGuardForTests,
 } from '../src/risk/promotionLoopGuard';
 
@@ -573,7 +574,7 @@ function readyPromotionLoopPreflightRows(nowMs = Date.now()): any[] {
   return Array.from({ length: 20 }, (_, i) => ({
     positionId: `kolh-paper-preflight-${i}`,
     paperRole: 'fallback_execution_safety',
-    profileArm: 'rotation_underfill_exit_flow_v1',
+    profileArm: PROMOTION_LOOP_MICRO_LIVE_TARGET_ARM,
     liveEquivalenceCandidateId: `preflight-candidate-${i}`,
     liveEquivalenceDecisionId: `preflight-decision-${i}`,
     refundAdjustedNetSol: 0.001,
@@ -4835,6 +4836,57 @@ describe('kolSignalHandler — state machine', () => {
         profileArm: 'rotation_underfill_exit_flow_v1',
         entryArm: 'rotation_underfill_v1',
         exitArm: 'rotation_exit_kol_flow_v1',
+        liveWouldEnter: true,
+      }));
+    });
+
+    it('rotation-underfill cost-aware allowlist: 새 micro-live 대상 arm 으로만 라우팅한다', async () => {
+      const { ctx, executeBuy, insertTrade } = buildLiveCtx();
+      const nowMs = Date.now();
+      applyPromotionLoopManualApprovalForTests({
+        approved: true,
+        cohort: PROMOTION_LOOP_COHORT,
+        targetArm: 'rotation_underfill_cost_aware_exit_v2',
+        maxTicketSol: PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL,
+        approvedAt: new Date(nowMs).toISOString(),
+        expiresAt: new Date(nowMs + 60 * 60 * 1000).toISOString(),
+        reason: 'test approval for cost-aware micro-live target',
+      });
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterLiveCanaryArms = ['rotation_underfill_cost_aware_exit_v2'];
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterRotationV1LiveEnabled = false;
+      mockedConfig.kolHunterRotationV1MinIndependentKol = 1;
+      mockedConfig.kolHunterRotationUnderfillLiveCanaryEnabled = false;
+      mockedConfig.kolHunterRotationUnderfillLiveExitFlowEnabled = false;
+
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+
+      expect(executeBuy).toHaveBeenCalledTimes(1);
+      expect(insertTrade).toHaveBeenCalledTimes(1);
+      const live = __testGetActive().find((p) => p.isLive === true);
+      expect(live?.armName).toBe('rotation_underfill_cost_aware_exit_v2');
+      expect(live?.parameterVersion).toBe('rotation-underfill-cost-aware-exit-v2.0.0');
+      expect(live?.profileArm).toBe('rotation_underfill_cost_aware_exit_v2');
+      expect(live?.entryArm).toBe('rotation_underfill_v1');
+      expect(live?.exitArm).toBe('rotation_underfill_cost_aware_exit_v2');
+      expect(live?.ticketSol).toBe(PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL);
+      expect(live?.rotationFlowExitEnabled).toBe(true);
+      expect(live?.t1MfeOverride).toBe(mockedConfig.kolHunterRotationUnderfillCostAwareT1MinMfe);
+      expect(live?.t1TrailPctOverride).toBe(mockedConfig.kolHunterRotationUnderfillCostAwareT1TrailPct);
+      const equivalenceRows = mockAppendFile.mock.calls
+        .filter((call) => typeof call[0] === 'string' && call[0].includes('kol-live-equivalence.jsonl'))
+        .map((call) => JSON.parse(String(call[1]).trim()));
+      expect(equivalenceRows.at(-1)).toEqual(expect.objectContaining({
+        armName: 'rotation_underfill_cost_aware_exit_v2',
+        profileArm: 'rotation_underfill_cost_aware_exit_v2',
+        entryArm: 'rotation_underfill_v1',
+        exitArm: 'rotation_underfill_cost_aware_exit_v2',
         liveWouldEnter: true,
       }));
     });

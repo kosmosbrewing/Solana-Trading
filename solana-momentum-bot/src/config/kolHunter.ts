@@ -262,7 +262,8 @@ export const kolHunter = {
   // 2026-05-10: live canary 를 단일 on/off 가 아니라 arm portfolio 로 운영한다.
   // 값이 비어 있으면 기존 arm-specific env 들로 fallback 하여 운영 호환성을 보존한다.
   // 예: smart_v3_clean,smart_v3_quality_unknown_micro,smart_v3_fast_canary_v1,
-  // smart_v3_fast_fail_live_v1,rotation_underfill_exit_flow_v1
+  // smart_v3_fast_fail_live_v1,rotation_underfill_exit_flow_v1,
+  // rotation_underfill_cost_aware_exit_v2
   // smart_v3_quality_unknown_micro 는 ticket 축소가 아니라 unknown-only restricted arm label 이다.
   // smart_v3_fast_canary_v1 은 rotation underfill 처럼 unknown/medium holder-risk 를 허용해
   // paper/live 괴리를 줄이는 explicit canary arm 이다. HOLDER_TOP10_HIGH / high-concentration /
@@ -444,7 +445,9 @@ export const kolHunter = {
   kolHunterRotationUnderfillDoaMinMfePct: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_DOA_MIN_MFE_PCT', '0.015'),
   kolHunterRotationUnderfillDoaMaxMaePct: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_DOA_MAX_MAE_PCT', '0.02'),
   kolHunterRotationUnderfillParameterVersion: process.env.KOL_HUNTER_ROTATION_UNDERFILL_PARAMETER_VERSION ?? 'rotation-underfill-v1.0.0',
-  // 2026-05-14: cost-aware underfill exit is shadow/paper-only until live wallet evidence proves it.
+  // 2026-05-14: cost-aware underfill exit started as shadow/paper-only.
+  // 2026-05-21: it may be named in KOL_HUNTER_LIVE_CANARY_ARMS only as the tiny
+  // promotion-loop target after comparable paper/mirror evidence and manual approval.
   kolHunterRotationUnderfillCostAwarePaperEnabled: boolOptional('KOL_HUNTER_ROTATION_UNDERFILL_COST_AWARE_PAPER_ENABLED', true),
   kolHunterRotationUnderfillCostAwareT1MinMfe: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_COST_AWARE_T1_MIN_MFE', '0.12'),
   kolHunterRotationUnderfillCostAwareT1BufferPct: numEnv('KOL_HUNTER_ROTATION_UNDERFILL_COST_AWARE_T1_BUFFER_PCT', '0.03'),

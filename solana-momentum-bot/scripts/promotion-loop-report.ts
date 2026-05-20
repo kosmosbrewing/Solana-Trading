@@ -334,6 +334,7 @@ export function renderPromotionLoopReport(report: PromotionLoopReport): string {
   lines.push('');
   lines.push(`- status: ${report.resetPreflight.status}`);
   lines.push(`- nextAction: ${report.resetPreflight.nextAction}`);
+  lines.push(`- targetArm: ${report.resetPreflight.targetArm}`);
   lines.push(`- runtimeResetDecision: ${report.runtimeResetDecision}`);
   if (report.runtimeResetBlockReason) lines.push(`- runtimeResetBlockReason: ${report.runtimeResetBlockReason}`);
   lines.push(`- manualApprovalFile: ${PROMOTION_LOOP_MANUAL_APPROVAL_FILE}`);

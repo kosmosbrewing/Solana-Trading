@@ -7,7 +7,10 @@ import {
   PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL,
   PROMOTION_LOOP_MICRO_LIVE_TARGET_ARM,
 } from '../src/risk/promotionLoopGuard';
-import { buildPromotionLoopResetPreflightReport } from '../src/risk/promotionLoopResetPreflight';
+import {
+  buildPromotionLoopResetPreflightReport,
+  RESET_PREFLIGHT_TARGET_ARM,
+} from '../src/risk/promotionLoopResetPreflight';
 
 describe('promotion-loop-report', () => {
   const sinceMs = new Date('2026-05-18T00:00:00.000Z').getTime();
@@ -33,7 +36,7 @@ describe('promotion-loop-report', () => {
       promotionLoopCohort: PROMOTION_LOOP_COHORT,
       recordedAt: `2026-05-18T00:00:0${i}.000Z`,
       canaryLane: 'kol_hunter_rotation',
-      profileArm: 'rotation_underfill_exit_flow_v1',
+      profileArm: RESET_PREFLIGHT_TARGET_ARM,
       liveEquivalenceCandidateId: `candidate-${i}`,
       liveEquivalenceDecisionId: `decision-${i}`,
       walletDeltaSol: -0.001,
@@ -55,7 +58,7 @@ describe('promotion-loop-report', () => {
       closedAt: `2026-05-18T00:00:${String(i).padStart(2, '0')}.000Z`,
       positionId: `kolh-paper-${i}`,
       canaryLane: 'kol_hunter_rotation',
-      profileArm: 'rotation_underfill_exit_flow_v1',
+      profileArm: RESET_PREFLIGHT_TARGET_ARM,
       paperRole: 'fallback_execution_safety',
       liveEquivalenceCandidateId: `candidate-${i}`,
       liveEquivalenceDecisionId: `decision-${i}`,
@@ -82,7 +85,7 @@ describe('promotion-loop-report', () => {
       closedAt: `2026-05-18T00:00:${String(i).padStart(2, '0')}.000Z`,
       positionId: `kolh-paper-${i}`,
       canaryLane: 'kol_hunter_rotation',
-      profileArm: 'rotation_underfill_exit_flow_v1',
+      profileArm: RESET_PREFLIGHT_TARGET_ARM,
       paperRole: 'fallback_execution_safety',
       liveEquivalenceCandidateId: `candidate-${i}`,
       liveEquivalenceDecisionId: `decision-${i}`,
@@ -109,7 +112,7 @@ describe('promotion-loop-report', () => {
       closedAt: `2026-05-18T00:00:${String(i).padStart(2, '0')}.000Z`,
       positionId: `kolh-paper-${i}`,
       canaryLane: 'kol_hunter_rotation',
-      profileArm: 'rotation_underfill_exit_flow_v1',
+      profileArm: RESET_PREFLIGHT_TARGET_ARM,
       paperRole: 'fallback_execution_safety',
       liveEquivalenceCandidateId: `candidate-${i}`,
       liveEquivalenceDecisionId: `decision-${i}`,
@@ -133,7 +136,7 @@ describe('promotion-loop-report', () => {
       closedAt: `2026-05-18T00:00:${String(i).padStart(2, '0')}.000Z`,
       positionId: `kolh-paper-${i}`,
       canaryLane: 'kol_hunter_rotation',
-      profileArm: 'rotation_underfill_exit_flow_v1',
+      profileArm: RESET_PREFLIGHT_TARGET_ARM,
       paperRole: 'fallback_execution_safety',
       liveEquivalenceCandidateId: `candidate-${i}`,
       liveEquivalenceDecisionId: `decision-${i}`,
@@ -164,7 +167,7 @@ describe('promotion-loop-report', () => {
       closedAt: `2026-05-18T00:00:${String(i).padStart(2, '0')}.000Z`,
       positionId: `kolh-paper-${i}`,
       canaryLane: 'kol_hunter_rotation',
-      profileArm: 'rotation_underfill_exit_flow_v1',
+      profileArm: RESET_PREFLIGHT_TARGET_ARM,
       paperRole: 'shadow',
       liveEquivalenceCandidateId: `candidate-${i}`,
       liveEquivalenceDecisionId: `decision-${i}`,
@@ -180,5 +183,28 @@ describe('promotion-loop-report', () => {
     expect(report.status).toBe('COLLECT');
     expect(report.eligiblePaperRows).toBe(0);
     expect(report.nextAction).toContain('collect more fresh comparable');
+  });
+
+  it('excludes retired exit-flow paper from the cost-aware reset preflight target', () => {
+    const rows = Array.from({ length: 20 }, (_, i) => ({
+      closedAt: `2026-05-18T00:00:${String(i).padStart(2, '0')}.000Z`,
+      positionId: `kolh-paper-exit-flow-${i}`,
+      canaryLane: 'kol_hunter_rotation',
+      profileArm: 'rotation_underfill_exit_flow_v1',
+      paperRole: 'fallback_execution_safety',
+      liveEquivalenceCandidateId: `candidate-${i}`,
+      liveEquivalenceDecisionId: `decision-${i}`,
+      refundAdjustedNetSol: 0.002,
+      netSol: 0.002,
+      exitReason: 'winner_trailing_t1',
+      exitSellQuoteEvidence: { routeFound: true },
+      rotationMonetizableEdge: { pass: true },
+    }));
+
+    const report = buildPromotionLoopResetPreflightReport(rows, sinceMs, nowMs);
+
+    expect(report.targetArm).toBe(RESET_PREFLIGHT_TARGET_ARM);
+    expect(report.status).toBe('COLLECT');
+    expect(report.eligiblePaperRows).toBe(0);
   });
 });

@@ -33,6 +33,7 @@
 #   SKIP_ROTATION_PROMOTION_VELOCITY_REPORT=true bash scripts/sync-vps-data.sh  # bridge candidate velocity/ETA 생략
 #   SKIP_ROTATION_PROMOTION_BLOCKED_WINNER_AUDIT=true bash scripts/sync-vps-data.sh  # blocked winner audit 생략
 #   SKIP_ROTATION_PROMOTION_PREFLIGHT=true bash scripts/sync-vps-data.sh  # micro-canary preflight 생략
+#   SKIP_PROMOTION_LOOP_REPORT=true bash scripts/sync-vps-data.sh  # promotion-loop halt/reset preflight 생략
 #   ROTATION_PROMOTION_CANDIDATES_WINDOWS_HOURS="24 168" bash scripts/sync-vps-data.sh  # 24h/7d bridge windows
 #   SKIP_WINNER_KILL_REPORT=true bash scripts/sync-vps-data.sh    # winner-kill report 생략
 #   SKIP_SYNC_HEALTH=true bash scripts/sync-vps-data.sh           # sync health manifest 생략
@@ -103,6 +104,8 @@ fi
 #   어떤 block reason 에 집중되는지 확인한다.
 # rotation-promotion-micro-canary-preflight: 파일 only → default ON. gatekeeper READY 전
 #   live/env 변경을 차단하고 READY 시 수동 검토 packet 만 출력한다.
+# promotion-loop-report: 파일 only → default ON. rotation underfill micro-live loop
+#   상태와 fresh paper reset preflight 를 함께 표시한다.
 # winner-kill-report: 파일 only → default ON. missed-alpha close-site 기반 tail-retain feedback.
 # sync-health: 파일 only → default ON. 핵심 JSONL row count / mtime manifest.
 # shadow-eval: Jupiter forward quote 호출 다수 → quota 절약을 위해 default OFF (opt-in).
@@ -129,6 +132,7 @@ SKIP_ROTATION_PROMOTION_TREND_REPORT="${SKIP_ROTATION_PROMOTION_TREND_REPORT:-fa
 SKIP_ROTATION_PROMOTION_VELOCITY_REPORT="${SKIP_ROTATION_PROMOTION_VELOCITY_REPORT:-false}"
 SKIP_ROTATION_PROMOTION_BLOCKED_WINNER_AUDIT="${SKIP_ROTATION_PROMOTION_BLOCKED_WINNER_AUDIT:-false}"
 SKIP_ROTATION_PROMOTION_PREFLIGHT="${SKIP_ROTATION_PROMOTION_PREFLIGHT:-false}"
+SKIP_PROMOTION_LOOP_REPORT="${SKIP_PROMOTION_LOOP_REPORT:-false}"
 SKIP_WINNER_KILL_REPORT="${SKIP_WINNER_KILL_REPORT:-false}"
 SKIP_SYNC_HEALTH="${SKIP_SYNC_HEALTH:-false}"
 TOKEN_QUALITY_WINDOW_DAYS="${TOKEN_QUALITY_WINDOW_DAYS:-7}"
@@ -167,6 +171,7 @@ LIVE_MIRROR_STRATEGY_LOSS_RATE="${LIVE_MIRROR_STRATEGY_LOSS_RATE:-0.5}"
 ROTATION_REPORT_ROUND_TRIP_COST_PCT="${ROTATION_REPORT_ROUND_TRIP_COST_PCT:-0.005}"
 CAPITULATION_REPORT_ROUND_TRIP_COST_PCT="${CAPITULATION_REPORT_ROUND_TRIP_COST_PCT:-0.005}"
 ROTATION_PROMOTION_CANDIDATES_WINDOWS_HOURS="${ROTATION_PROMOTION_CANDIDATES_WINDOWS_HOURS:-24 168}"
+PROMOTION_LOOP_SINCE="${PROMOTION_LOOP_SINCE:-72h}"
 WINNER_KILL_WINDOW_DAYS="${WINNER_KILL_WINDOW_DAYS:-7}"
 RUN_SHADOW_EVAL="${RUN_SHADOW_EVAL:-false}"
 # Local analysis cache. The operator analyzes VPS runtime data locally, so Helius
@@ -465,6 +470,8 @@ write_sync_health_report() {
       "reports/rotation-promotion-blocked-winner-audit-$(date +%Y-%m-%d).json" \
       "reports/rotation-promotion-micro-canary-preflight-$(date +%Y-%m-%d).md" \
       "reports/rotation-promotion-micro-canary-preflight-$(date +%Y-%m-%d).json" \
+      "reports/promotion-loop-$(date +%Y-%m-%d).md" \
+      "reports/promotion-loop-$(date +%Y-%m-%d).json" \
       "data/research/rotation-promotion-readiness-history.jsonl" \
       "reports/kol-transfer-posterior-$(date +%Y-%m-%d).md" \
       "reports/kol-transfer-posterior-$(date +%Y-%m-%d).json" \
@@ -1057,6 +1064,23 @@ if [ "$SKIP_ROTATION_PROMOTION_PREFLIGHT" != "true" ]; then
   fi
 else
   echo "[sync-vps-data] rotation-promotion-micro-canary-preflight: SKIPPED (SKIP_ROTATION_PROMOTION_PREFLIGHT=true)"
+fi
+
+# ─── 9i. Promotion loop halt/reset preflight (file-only) ───
+# Why: route-proof fixes can expose the next blocker: promotion-loop killed by
+# prior live losers. This report makes reset criteria explicit and does not
+# clear the halt by itself.
+if [ "$SKIP_PROMOTION_LOOP_REPORT" != "true" ]; then
+  PROMOTION_LOOP_MD="${ROOT_DIR}/reports/promotion-loop-$(date +%Y-%m-%d).md"
+  PROMOTION_LOOP_JSON="${ROOT_DIR}/reports/promotion-loop-$(date +%Y-%m-%d).json"
+  echo "[sync-vps-data] promotion-loop-report: generating since=${PROMOTION_LOOP_SINCE}"
+  if (cd "${ROOT_DIR}" && npm run -s kol:promotion-loop-report -- --realtime-dir data/realtime --since "${PROMOTION_LOOP_SINCE}" --md "${PROMOTION_LOOP_MD}" --json "${PROMOTION_LOOP_JSON}" 2>&1 | tail -10); then
+    echo "[sync-vps-data] promotion-loop-report: ok → ${PROMOTION_LOOP_MD}"
+  else
+    echo "[sync-vps-data] promotion-loop-report: WARN — generation failed (sync 자체는 정상)"
+  fi
+else
+  echo "[sync-vps-data] promotion-loop-report: SKIPPED (SKIP_PROMOTION_LOOP_REPORT=true)"
 fi
 
 # ─── 10. Winner-kill report (file-only) ───

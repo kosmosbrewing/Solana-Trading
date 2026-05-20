@@ -9,8 +9,13 @@ import {
   PROMOTION_LOOP_MAX_CONSECUTIVE_LOSERS,
   PROMOTION_LOOP_TOTAL_LOSS_CAP_SOL,
 } from '../src/risk/promotionLoopGuard';
+import {
+  buildPromotionLoopResetPreflightReport,
+  type PromotionLoopJsonRow,
+  type PromotionLoopResetPreflightReport,
+} from '../src/risk/promotionLoopResetPreflight';
 
-type JsonRow = Record<string, unknown>;
+type JsonRow = PromotionLoopJsonRow;
 
 interface Args {
   realtimeDir: string;
@@ -37,6 +42,7 @@ export interface PromotionLoopReport {
   cohort: typeof PROMOTION_LOOP_COHORT;
   verdict: 'NO_SAMPLE' | 'COLLECT' | 'KILL' | 'REVIEW';
   nextAction: string;
+  resetPreflight: PromotionLoopResetPreflightReport;
   rows: number;
   unmarkedEligibleRows: number;
   missingTraceRows: number;
@@ -147,6 +153,10 @@ function rowPnlSol(row: JsonRow): number | null {
 function isUnderfillEligible(row: JsonRow): boolean {
   const lane = str(row, 'canaryLane') ?? str(row, 'lane');
   if (lane !== 'kol_hunter_rotation') return false;
+  return hasUnderfillLabel(row);
+}
+
+function hasUnderfillLabel(row: JsonRow): boolean {
   const labels = [str(row, 'armName'), str(row, 'profileArm'), str(row, 'entryArm')]
     .map((value) => String(value ?? '').toLowerCase());
   return labels.some((label) => label.includes('rotation_underfill'));
@@ -171,7 +181,11 @@ function toReportRow(row: JsonRow): PromotionLoopReportRow | null {
   };
 }
 
-export function buildPromotionLoopReport(rows: JsonRow[], sinceMs: number): PromotionLoopReport {
+export function buildPromotionLoopReport(
+  rows: JsonRow[],
+  sinceMs: number,
+  paperRows: JsonRow[] = []
+): PromotionLoopReport {
   const recentRows = rows.filter((row) => {
     const atMs = recordedAtMs(row);
     return atMs != null && atMs >= sinceMs && !isPartialReduce(row);
@@ -254,6 +268,7 @@ export function buildPromotionLoopReport(rows: JsonRow[], sinceMs: number): Prom
     cohort: PROMOTION_LOOP_COHORT,
     verdict,
     nextAction,
+    resetPreflight: buildPromotionLoopResetPreflightReport(paperRows, sinceMs),
     rows: markedRows.length,
     unmarkedEligibleRows,
     missingTraceRows,
@@ -282,6 +297,34 @@ export function renderPromotionLoopReport(report: PromotionLoopReport): string {
   lines.push(`- legacyUnmarkedEligibleRows: ${report.unmarkedEligibleRows}`);
   if (report.statusReason) lines.push(`- statusReason: ${report.statusReason}`);
   lines.push('');
+  lines.push('## Reset Preflight');
+  lines.push('');
+  lines.push(`- status: ${report.resetPreflight.status}`);
+  lines.push(`- nextAction: ${report.resetPreflight.nextAction}`);
+  lines.push(`- eligiblePaperRows: ${report.resetPreflight.eligiblePaperRows}/${report.resetPreflight.minPaperCloses}`);
+  lines.push(
+    `- recent${report.resetPreflight.recentWindowHours}hEligiblePaperRows: ` +
+    `${report.resetPreflight.recentEligiblePaperRows}/${report.resetPreflight.minRecentPaperCloses}`
+  );
+  lines.push(`- refundAdjustedNet: ${report.resetPreflight.refundAdjustedNetSol.toFixed(6)} SOL`);
+  lines.push(`- recentRefundAdjustedNet: ${report.resetPreflight.recentRefundAdjustedNetSol.toFixed(6)} SOL`);
+  lines.push(`- netSol: ${report.resetPreflight.netSol.toFixed(6)} SOL`);
+  lines.push(`- recentNetSol: ${report.resetPreflight.recentNetSol.toFixed(6)} SOL`);
+  lines.push(`- routeProofCoverage: ${formatRate(report.resetPreflight.routeProofCoverage)}`);
+  lines.push(`- comparableTraceCoverage: ${formatRate(report.resetPreflight.comparableTraceCoverage)}`);
+  lines.push(`- costEvidenceCoverage: ${formatRate(report.resetPreflight.costEvidenceCoverage)}`);
+  lines.push(
+    `- admissionFailureRate: ${formatRate(report.resetPreflight.admissionFailureRate)} ` +
+    `(${report.resetPreflight.admissionFailureRows}/${report.resetPreflight.eligiblePaperRows})`
+  );
+  lines.push(
+    `- recentAdmissionFailureRate: ${formatRate(report.resetPreflight.recentAdmissionFailureRate)} ` +
+    `(${report.resetPreflight.recentAdmissionFailureRows}/${report.resetPreflight.recentEligiblePaperRows})`
+  );
+  if (report.resetPreflight.reasons.length > 0) {
+    for (const reason of report.resetPreflight.reasons) lines.push(`- blocker: ${reason}`);
+  }
+  lines.push('');
   lines.push(`| exitReason | rows | net SOL |`);
   lines.push(`|---|---:|---:|`);
   if (report.topExitReasons.length === 0) {
@@ -295,10 +338,15 @@ export function renderPromotionLoopReport(report: PromotionLoopReport): string {
   return `${lines.join('\n')}\n`;
 }
 
+function formatRate(value: number | null): string {
+  return value == null ? 'n/a' : `${(value * 100).toFixed(1)}%`;
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const rows = await readJsonlMaybe(path.join(args.realtimeDir, 'executed-sells.jsonl'));
-  const report = buildPromotionLoopReport(rows, args.sinceMs);
+  const paperRows = await readJsonlMaybe(path.join(args.realtimeDir, 'rotation-v1-paper-trades.jsonl'));
+  const report = buildPromotionLoopReport(rows, args.sinceMs, paperRows);
   const md = renderPromotionLoopReport(report);
   if (args.mdOut) {
     await mkdir(path.dirname(args.mdOut), { recursive: true });

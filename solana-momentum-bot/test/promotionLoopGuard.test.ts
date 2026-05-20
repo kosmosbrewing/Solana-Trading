@@ -3,6 +3,7 @@ jest.mock('../src/utils/logger', () => ({
 }));
 
 import {
+  applyPromotionLoopResetPreflightRowsForTests,
   assessPromotionLoopEntry,
   getPromotionLoopStateSnapshot,
   hydratePromotionLoopGuardFromCloseRecords,
@@ -15,6 +16,21 @@ import {
   isEntryHaltActive,
   resetAllEntryHaltsForTests,
 } from '../src/state/entryHaltState';
+
+function readyPreflightRows(nowMs = Date.parse('2026-05-18T00:30:00.000Z')) {
+  return Array.from({ length: 20 }, (_, i) => ({
+    positionId: `paper-${i}`,
+    paperRole: 'shadow',
+    profileArm: 'rotation_underfill_exit_flow_v1',
+    liveEquivalenceCandidateId: `candidate-${i}`,
+    liveEquivalenceDecisionId: `decision-${i}`,
+    refundAdjustedNetSol: 0.001,
+    netSol: 0.001,
+    exitRouteFound: true,
+    exitReason: 'winner_trailing_t1',
+    recordedAt: new Date(nowMs - i * 60_000).toISOString(),
+  }));
+}
 
 describe('promotionLoopGuard', () => {
   beforeEach(() => {
@@ -44,6 +60,13 @@ describe('promotionLoopGuard', () => {
   });
 
   it('allows traced rotation underfill micro-live candidates', () => {
+    const nowMs = Date.parse('2026-05-18T00:30:00.000Z');
+    applyPromotionLoopResetPreflightRowsForTests(
+      readyPreflightRows(nowMs),
+      nowMs - 72 * 60 * 60 * 1000,
+      nowMs
+    );
+
     const gate = assessPromotionLoopEntry({
       lane: 'kol_hunter_rotation',
       profileArm: 'rotation_underfill_exit_flow_v1',
@@ -54,6 +77,45 @@ describe('promotionLoopGuard', () => {
     expect(gate.allowed).toBe(true);
     expect(gate.inScope).toBe(true);
     expect(gate.flags).toContain('PROMOTION_LOOP_ACTIVE');
+    expect(gate.flags).toContain('PROMOTION_LOOP_RESET_PREFLIGHT_READY');
+  });
+
+  it('blocks traced rotation underfill live candidates until paper reset preflight is ready', () => {
+    const gate = assessPromotionLoopEntry({
+      lane: 'kol_hunter_rotation',
+      profileArm: 'rotation_underfill_exit_flow_v1',
+      liveEquivalenceCandidateId: 'candidate-1',
+      liveEquivalenceDecisionId: 'decision-1',
+    });
+
+    expect(gate.allowed).toBe(false);
+    expect(gate.reason).toBe('promotion_loop_reset_preflight_missing');
+    expect(gate.flags).toContain('PROMOTION_LOOP_RESET_PREFLIGHT_MISSING');
+  });
+
+  it('blocks traced rotation underfill live candidates when recent paper quality is bad', () => {
+    const nowMs = Date.parse('2026-05-18T00:30:00.000Z');
+    applyPromotionLoopResetPreflightRowsForTests(
+      readyPreflightRows(nowMs).map((row, i) => ({
+        ...row,
+        refundAdjustedNetSol: i < 14 ? -0.001 : 0.001,
+        netSol: i < 14 ? -0.001 : 0.001,
+        exitReason: i < 14 ? 'probe_hard_cut' : 'winner_trailing_t1',
+      })),
+      nowMs - 72 * 60 * 60 * 1000,
+      nowMs
+    );
+
+    const gate = assessPromotionLoopEntry({
+      lane: 'kol_hunter_rotation',
+      profileArm: 'rotation_underfill_exit_flow_v1',
+      liveEquivalenceCandidateId: 'candidate-1',
+      liveEquivalenceDecisionId: 'decision-1',
+    });
+
+    expect(gate.allowed).toBe(false);
+    expect(gate.reason).toContain('promotion_loop_reset_preflight_blocked');
+    expect(gate.flags).toContain('PROMOTION_LOOP_RESET_PREFLIGHT_BLOCKED');
   });
 
   it('kills the loop on three consecutive losers and blocks later entries', () => {

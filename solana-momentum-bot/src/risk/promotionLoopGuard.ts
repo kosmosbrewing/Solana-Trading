@@ -13,6 +13,12 @@ import {
   type EntryLane,
 } from '../state/entryHaltState';
 import { config } from '../utils/config';
+import {
+  buildPromotionLoopResetPreflightReport,
+  readPromotionLoopPaperRows,
+  type PromotionLoopJsonRow,
+  type PromotionLoopResetPreflightReport,
+} from './promotionLoopResetPreflight';
 
 const log = createModuleLogger('PromotionLoopGuard');
 
@@ -22,6 +28,7 @@ export const PROMOTION_LOOP_MAX_CLOSES = 15;
 export const PROMOTION_LOOP_CHECKPOINT_LOSS_CAP_SOL = 0.01;
 export const PROMOTION_LOOP_TOTAL_LOSS_CAP_SOL = 0.02;
 export const PROMOTION_LOOP_MAX_CONSECUTIVE_LOSERS = 3;
+const PROMOTION_LOOP_RESET_PREFLIGHT_REFRESH_MS = 60_000;
 
 type PromotionLoopStatus = 'collecting' | 'killed' | 'review';
 
@@ -112,6 +119,9 @@ const state: PromotionLoopState = {
   consecutiveLosers: 0,
   lastHaltReason: null,
 };
+
+let resetPreflightReport: PromotionLoopResetPreflightReport | null = null;
+let resetPreflightRefreshedAtMs = 0;
 
 function normalize(value?: string | null): string {
   return String(value ?? '').toLowerCase();
@@ -221,7 +231,35 @@ export function assessPromotionLoopEntry(
       flags: ['PROMOTION_LOOP_MISSING_TRACE'],
     };
   }
-  return { allowed: true, inScope: true, cohort, reason: null, flags: ['PROMOTION_LOOP_ACTIVE'] };
+  if (!resetPreflightReport) {
+    return {
+      allowed: false,
+      inScope: true,
+      cohort,
+      reason: 'promotion_loop_reset_preflight_missing',
+      flags: ['PROMOTION_LOOP_RESET_PREFLIGHT_MISSING'],
+    };
+  }
+  if (resetPreflightReport.status !== 'READY_TO_RESET') {
+    const detail = resetPreflightReport.reasons[0] ?? resetPreflightReport.nextAction;
+    return {
+      allowed: false,
+      inScope: true,
+      cohort,
+      reason: `promotion_loop_reset_preflight_${resetPreflightReport.status.toLowerCase()}: ${detail}`,
+      flags: [
+        'PROMOTION_LOOP_RESET_PREFLIGHT_BLOCKED',
+        `PROMOTION_LOOP_RESET_PREFLIGHT_${resetPreflightReport.status}`,
+      ],
+    };
+  }
+  return {
+    allowed: true,
+    inScope: true,
+    cohort,
+    reason: null,
+    flags: ['PROMOTION_LOOP_ACTIVE', 'PROMOTION_LOOP_RESET_PREFLIGHT_READY'],
+  };
 }
 
 function haltPromotionLoop(
@@ -372,6 +410,7 @@ export async function hydratePromotionLoopGuardFromLedger(
     sinceMs: hydrationSinceMs(nowMs),
     resetBeforeHydrate: false,
   });
+  await refreshPromotionLoopResetPreflightFromPaperLedger(ledgerDir, nowMs, true);
   const snapshot = getPromotionLoopStateSnapshot();
   log.info(
     `[PROMOTION_LOOP_HYDRATE] loaded=${summary.loadedRows} replayed=${summary.replayedRows} ` +
@@ -379,6 +418,50 @@ export async function hydratePromotionLoopGuardFromLedger(
     `status=${snapshot.status} closes=${snapshot.closeCount} net=${snapshot.cumulativePnlSol.toFixed(6)}`
   );
   return summary;
+}
+
+export async function refreshPromotionLoopResetPreflightFromPaperLedger(
+  ledgerDir = config.realtimeDataDir,
+  nowMs = Date.now(),
+  force = false
+): Promise<PromotionLoopResetPreflightReport> {
+  if (
+    !force &&
+    resetPreflightReport &&
+    nowMs - resetPreflightRefreshedAtMs < PROMOTION_LOOP_RESET_PREFLIGHT_REFRESH_MS
+  ) {
+    return resetPreflightReport;
+  }
+  const paperRows = await readPromotionLoopPaperRows(ledgerDir);
+  const sinceMs = hydrationSinceMs(nowMs) ?? 0;
+  const report = buildPromotionLoopResetPreflightReport(paperRows, sinceMs, nowMs);
+  const previousStatus = resetPreflightReport?.status ?? null;
+  resetPreflightReport = report;
+  resetPreflightRefreshedAtMs = nowMs;
+  if (previousStatus !== report.status) {
+    log.warn(
+      `[PROMOTION_LOOP_RESET_PREFLIGHT] status=${report.status} ` +
+      `eligible=${report.eligiblePaperRows}/${report.minPaperCloses} ` +
+      `recent=${report.recentEligiblePaperRows}/${report.minRecentPaperCloses} ` +
+      `recentNet=${report.recentRefundAdjustedNetSol.toFixed(6)} ` +
+      `reason=${report.reasons[0] ?? 'ready'}`
+    );
+  }
+  return report;
+}
+
+export function applyPromotionLoopResetPreflightRowsForTests(
+  rows: PromotionLoopJsonRow[],
+  sinceMs: number,
+  nowMs = Date.now()
+): PromotionLoopResetPreflightReport {
+  resetPreflightReport = buildPromotionLoopResetPreflightReport(rows, sinceMs, nowMs);
+  resetPreflightRefreshedAtMs = nowMs;
+  return resetPreflightReport;
+}
+
+export function getPromotionLoopResetPreflightSnapshot(): PromotionLoopResetPreflightReport | null {
+  return resetPreflightReport;
 }
 
 export function getPromotionLoopStateSnapshot(): PromotionLoopStateSnapshot {
@@ -402,4 +485,6 @@ export function resetPromotionLoopGuardForTests(): void {
   state.checkpointPnlSol = 0;
   state.consecutiveLosers = 0;
   state.lastHaltReason = null;
+  resetPreflightReport = null;
+  resetPreflightRefreshedAtMs = 0;
 }

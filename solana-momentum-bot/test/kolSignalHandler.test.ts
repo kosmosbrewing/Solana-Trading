@@ -64,6 +64,10 @@ import {
   resetMissedAlphaObserverState,
 } from '../src/observability/missedAlphaObserver';
 import { HeliusPoolRegistry } from '../src/scanner/heliusPoolRegistry';
+import {
+  applyPromotionLoopResetPreflightRowsForTests,
+  resetPromotionLoopGuardForTests,
+} from '../src/risk/promotionLoopGuard';
 
 // 최소 Stub PaperPriceFeed — subscribe/unsubscribe + getLastPrice + on/off 지원
 class StubPaperPriceFeed extends EventEmitter {
@@ -562,6 +566,21 @@ function liveEquivalenceRecords(): any[] {
     .map((call) => JSON.parse(String(call[1]).trim()));
 }
 
+function readyPromotionLoopPreflightRows(nowMs = Date.now()): any[] {
+  return Array.from({ length: 20 }, (_, i) => ({
+    positionId: `kolh-paper-preflight-${i}`,
+    paperRole: 'shadow',
+    profileArm: 'rotation_underfill_exit_flow_v1',
+    liveEquivalenceCandidateId: `preflight-candidate-${i}`,
+    liveEquivalenceDecisionId: `preflight-decision-${i}`,
+    refundAdjustedNetSol: 0.001,
+    netSol: 0.001,
+    exitRouteFound: true,
+    exitReason: 'winner_trailing_t1',
+    recordedAt: new Date(nowMs - i * 60_000).toISOString(),
+  }));
+}
+
 describe('kolSignalHandler — state machine', () => {
   let stubFeed: StubPaperPriceFeed;
 
@@ -597,6 +616,13 @@ describe('kolSignalHandler — state machine', () => {
     resetAllCanaryStatesForTests();
     const { resetAllEntryHaltsForTests } = require('../src/orchestration/entryIntegrity');
     resetAllEntryHaltsForTests();
+    resetPromotionLoopGuardForTests();
+    const nowMs = Date.now();
+    applyPromotionLoopResetPreflightRowsForTests(
+      readyPromotionLoopPreflightRows(nowMs),
+      nowMs - 72 * 60 * 60 * 1000,
+      nowMs
+    );
     const mockedConfig = (require('../src/utils/config') as any).config;
     mockedConfig.kolHunterSmartV3Enabled = false;
     mockedConfig.kolHunterSmartV3LiveEnabled = true;
@@ -4575,6 +4601,49 @@ describe('kolSignalHandler — state machine', () => {
       ]));
       expect(live?.survivalFlags).not.toContain('ROTATION_UNDERFILL_PAPER_ONLY');
       expect(live?.survivalFlags).not.toContain('ROTATION_V1_LIVE_DISABLED');
+    });
+
+    it('rotation-underfill live canary: paper reset preflight 가 나쁘면 funded live 대신 paper fallback 한다', async () => {
+      const nowMs = Date.now();
+      applyPromotionLoopResetPreflightRowsForTests(
+        readyPromotionLoopPreflightRows(nowMs).map((row, i) => ({
+          ...row,
+          refundAdjustedNetSol: i < 14 ? -0.001 : 0.001,
+          netSol: i < 14 ? -0.001 : 0.001,
+          exitReason: i < 14 ? 'probe_hard_cut' : 'winner_trailing_t1',
+        })),
+        nowMs - 72 * 60 * 60 * 1000,
+        nowMs
+      );
+      const { ctx, executeBuy, insertTrade } = buildLiveCtx();
+      __testInit({ priceFeed: stubFeed as unknown as never, ctx });
+      mockedConfig.kolHunterPaperOnly = false;
+      mockedConfig.kolHunterLiveCanaryEnabled = true;
+      mockedConfig.kolHunterLiveMinIndependentKol = 2;
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterRotationV1LiveEnabled = false;
+      mockedConfig.kolHunterRotationV1MinIndependentKol = 1;
+      mockedConfig.kolHunterRotationChaseTopupLiveCanaryEnabled = false;
+      mockedConfig.kolHunterRotationUnderfillLiveCanaryEnabled = true;
+      mockedConfig.kolHunterRotationUnderfillLiveExitFlowEnabled = true;
+
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+      await handleKolSwap(buyTxWithFill('decu', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+
+      expect(executeBuy).not.toHaveBeenCalled();
+      expect(insertTrade).not.toHaveBeenCalled();
+      const paper = __testGetActive().find((p) => p.isLive !== true);
+      expect(paper?.armName).toBe('rotation_underfill_v1');
+      expect(paper?.survivalFlags).toContain('PROMOTION_LOOP_RESET_PREFLIGHT_BLOCKED');
+      const equivalenceRows = liveEquivalenceRecords();
+      expect(equivalenceRows.at(-1)).toEqual(expect.objectContaining({
+        decisionStage: 'promotion_loop_halt',
+        liveWouldEnter: false,
+      }));
+      expect(String(equivalenceRows.at(-1)?.liveBlockReason ?? ''))
+        .toContain('promotion_loop_reset_preflight_blocked');
     });
 
     it('rotation-underfill live canary: good KOL focus 는 live 주문 변경 없이 paired paper shadow 를 만든다', async () => {

@@ -126,6 +126,7 @@ import { acquireCanarySlot, releaseCanarySlot } from '../risk/canaryConcurrencyG
 import { reportCanaryClose } from '../risk/canaryAutoHalt';
 import {
   assessPromotionLoopEntry,
+  refreshPromotionLoopResetPreflightFromPaperLedger,
   resolvePromotionLoopCohort,
   reportPromotionLoopClose,
 } from '../risk/promotionLoopGuard';
@@ -7189,6 +7190,9 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
         return;
       }
     }
+    await refreshPromotionLoopResetPreflightFromPaperLedger(config.realtimeDataDir).catch((err) => {
+      log.warn(`[KOL_HUNTER_PROMOTION_LOOP_PREFLIGHT_REFRESH_FAILED] ${err}`);
+    });
     const promotionLoopGate = assessPromotionLoopEntry({
       lane: liveCanaryLane,
       armName: armNameForVersion(liveEntryOptions.parameterVersion ?? entrySignal.parameterVersion),

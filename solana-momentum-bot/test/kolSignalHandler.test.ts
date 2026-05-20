@@ -65,7 +65,10 @@ import {
 } from '../src/observability/missedAlphaObserver';
 import { HeliusPoolRegistry } from '../src/scanner/heliusPoolRegistry';
 import {
+  applyPromotionLoopManualApprovalForTests,
   applyPromotionLoopResetPreflightRowsForTests,
+  PROMOTION_LOOP_COHORT,
+  PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL,
   resetPromotionLoopGuardForTests,
 } from '../src/risk/promotionLoopGuard';
 
@@ -569,7 +572,7 @@ function liveEquivalenceRecords(): any[] {
 function readyPromotionLoopPreflightRows(nowMs = Date.now()): any[] {
   return Array.from({ length: 20 }, (_, i) => ({
     positionId: `kolh-paper-preflight-${i}`,
-    paperRole: 'shadow',
+    paperRole: 'fallback_execution_safety',
     profileArm: 'rotation_underfill_exit_flow_v1',
     liveEquivalenceCandidateId: `preflight-candidate-${i}`,
     liveEquivalenceDecisionId: `preflight-decision-${i}`,
@@ -3559,11 +3562,22 @@ describe('kolSignalHandler — state machine', () => {
     beforeEach(() => {
       mockedConfig.kolHunterSmartV3Enabled = true;
       mockedConfig.kolHunterSmartV3LiveEnabled = true;
+      mockedConfig.kolHunterTicketSol = PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL;
+      applyPromotionLoopManualApprovalForTests({
+        approved: true,
+        cohort: PROMOTION_LOOP_COHORT,
+        targetArm: 'rotation_underfill_exit_flow_v1',
+        maxTicketSol: PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL,
+        approvedAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        reason: 'test approval for legacy rotation live wiring coverage',
+      });
     });
     afterEach(() => {
       mockedConfig.kolHunterSmartV3Enabled = false;
       mockedConfig.kolHunterSmartV3LiveEnabled = true;
       mockedConfig.kolHunterPaperOnly = true;
+      mockedConfig.kolHunterTicketSol = 0.02;
       mockedConfig.kolHunterLiveCanaryEnabled = false;
       mockedConfig.kolHunterLiveMinIndependentKol = 2;
       mockedConfig.kolHunterRotationV1Enabled = false;
@@ -4825,7 +4839,7 @@ describe('kolSignalHandler — state machine', () => {
       }));
     });
 
-    it('rotation-underfill raw allowlist: exit-flow env 가 켜져도 profile 로 승격하지 않는다', async () => {
+    it('rotation-underfill raw allowlist: manual-approved exit-flow target 과 다르면 funded live 를 막는다', async () => {
       const { ctx, executeBuy, insertTrade } = buildLiveCtx();
       __testInit({ priceFeed: stubFeed as unknown as never, ctx });
       mockedConfig.kolHunterPaperOnly = false;
@@ -4842,24 +4856,20 @@ describe('kolSignalHandler — state machine', () => {
       stubFeed.emitTick(MINT_ROTATION, 0.00096);
       await flushAsync();
 
-      expect(executeBuy).toHaveBeenCalledTimes(1);
-      expect(insertTrade).toHaveBeenCalledTimes(1);
-      const live = __testGetActive().find((p) => p.isLive === true);
-      expect(live?.armName).toBe('rotation_underfill_v1');
-      expect(live?.profileArm).toBeUndefined();
-      expect(live?.entryArm).toBe('rotation_underfill_v1');
-      expect(live?.exitArm).toBeUndefined();
-      expect(live?.rotationFlowExitEnabled).toBe(false);
+      expect(executeBuy).not.toHaveBeenCalled();
+      expect(insertTrade).not.toHaveBeenCalled();
+      const paper = __testGetActive().find((p) => p.isLive !== true);
+      expect(paper?.armName).toBe('rotation_underfill_v1');
+      expect(paper?.survivalFlags).toContain('PROMOTION_LOOP_MANUAL_REVIEW_REQUIRED');
       const equivalenceRows = mockAppendFile.mock.calls
         .filter((call) => typeof call[0] === 'string' && call[0].includes('kol-live-equivalence.jsonl'))
         .map((call) => JSON.parse(String(call[1]).trim()));
       expect(equivalenceRows.at(-1)).toEqual(expect.objectContaining({
-        armName: 'rotation_underfill_v1',
-        profileArm: 'rotation_underfill_v1',
-        entryArm: 'rotation_underfill_v1',
-        exitArm: 'rotation_underfill_v1',
-        liveWouldEnter: true,
+        decisionStage: 'promotion_loop_halt',
+        liveWouldEnter: false,
       }));
+      expect(String(equivalenceRows.at(-1)?.liveBlockReason ?? ''))
+        .toContain('promotion_loop_manual_approval_target_mismatch');
     });
 
     it('rotation-underfill live canary: yellow-zone 에서는 arm별 1-KOL 예외를 적용하지 않는다', async () => {
@@ -5257,7 +5267,7 @@ describe('kolSignalHandler — state machine', () => {
       expect(executeSell).toHaveBeenCalledTimes(1);
       expect(closeTrade).not.toHaveBeenCalled();
       expect(live?.rotationFlowDecision).toBe('low_sell_pressure');
-      expect(live?.ticketSol).toBeCloseTo(0.0065);
+      expect(live?.ticketSol).toBeCloseTo(0.0013);
       expect(live?.rotationFlowReducedAtSec).toBeDefined();
       expect(live?.rotationFlowReduceInFlight).toBe(false);
       expect(live?.survivalFlags).toContain('ROTATION_FLOW_LIVE_REDUCE');
@@ -5300,7 +5310,7 @@ describe('kolSignalHandler — state machine', () => {
       const live = __testGetActive().find((p) => p.isLive === true);
       expect(live).toBeDefined();
       expect(live?.rotationFlowDecision).toBe('medium_sell_pressure');
-      expect(live?.ticketSol).toBeCloseTo(0.0025);
+      expect(live?.ticketSol).toBeCloseTo(0.0005);
       expect(live?.survivalFlags).toContain('ROTATION_FLOW_LIVE_REDUCE');
     });
 
@@ -5568,7 +5578,7 @@ describe('kolSignalHandler — state machine', () => {
           txSignature: 'KOL_LIVE_FAVORABLE_REFERENCE_SIG',
           expectedInAmount: 10_000_000n,
           actualInputAmount: 10_000_000n,
-          actualInputUiAmount: 0.01,
+          actualInputUiAmount: PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL,
           inputDecimals: 9,
           expectedOutAmount: outRaw,
           actualOutAmount: outRaw,

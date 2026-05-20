@@ -23,12 +23,15 @@ import {
 const log = createModuleLogger('PromotionLoopGuard');
 
 export const PROMOTION_LOOP_COHORT = 'rotation_underfill_micro_live_v1' as const;
+export const PROMOTION_LOOP_MICRO_LIVE_TARGET_ARM = 'rotation_underfill_cost_aware_exit_v2' as const;
+export const PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL = 0.002;
 export const PROMOTION_LOOP_CHECKPOINT_CLOSES = 5;
 export const PROMOTION_LOOP_MAX_CLOSES = 15;
 export const PROMOTION_LOOP_CHECKPOINT_LOSS_CAP_SOL = 0.01;
 export const PROMOTION_LOOP_TOTAL_LOSS_CAP_SOL = 0.02;
 export const PROMOTION_LOOP_MAX_CONSECUTIVE_LOSERS = 3;
 const PROMOTION_LOOP_RESET_PREFLIGHT_REFRESH_MS = 60_000;
+export const PROMOTION_LOOP_MANUAL_APPROVAL_FILE = 'promotion-loop-manual-approval.json';
 
 type PromotionLoopStatus = 'collecting' | 'killed' | 'review';
 
@@ -37,8 +40,19 @@ export interface PromotionLoopEntryInput {
   armName?: string | null;
   profileArm?: string | null;
   entryArm?: string | null;
+  ticketSol?: number | null;
   liveEquivalenceCandidateId?: string | null;
   liveEquivalenceDecisionId?: string | null;
+}
+
+export interface PromotionLoopManualApproval {
+  approved: boolean;
+  cohort: typeof PROMOTION_LOOP_COHORT;
+  targetArm: string;
+  maxTicketSol: number;
+  approvedAt?: string | null;
+  expiresAt: string;
+  reason?: string | null;
 }
 
 export interface PromotionLoopCloseInput extends PromotionLoopEntryInput {
@@ -122,6 +136,8 @@ const state: PromotionLoopState = {
 
 let resetPreflightReport: PromotionLoopResetPreflightReport | null = null;
 let resetPreflightRefreshedAtMs = 0;
+let manualApproval: PromotionLoopManualApproval | null = null;
+let manualApprovalRefreshedAtMs = 0;
 
 function normalize(value?: string | null): string {
   return String(value ?? '').toLowerCase();
@@ -141,6 +157,12 @@ function isRotationUnderfillArm(input: PromotionLoopEntryInput): boolean {
   );
 }
 
+function isApprovedPromotionTargetArm(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length === 0) return false;
+  return value === PROMOTION_LOOP_MICRO_LIVE_TARGET_ARM ||
+    value === 'rotation_underfill_exit_flow_v1';
+}
+
 export function resolvePromotionLoopCohort(
   input: PromotionLoopEntryInput
 ): typeof PROMOTION_LOOP_COHORT | null {
@@ -150,6 +172,60 @@ export function resolvePromotionLoopCohort(
 
 function hasLiveTrace(input: PromotionLoopEntryInput): boolean {
   return Boolean(input.liveEquivalenceCandidateId && input.liveEquivalenceDecisionId);
+}
+
+export function parsePromotionLoopManualApproval(value: unknown): PromotionLoopManualApproval | null {
+  if (typeof value !== 'object' || value == null || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  if (raw.approved !== true) return null;
+  if (raw.cohort !== PROMOTION_LOOP_COHORT) return null;
+  if (!isApprovedPromotionTargetArm(raw.targetArm)) return null;
+  const maxTicketSol = typeof raw.maxTicketSol === 'number' && Number.isFinite(raw.maxTicketSol)
+    ? raw.maxTicketSol
+    : null;
+  if (maxTicketSol == null || maxTicketSol <= 0 || maxTicketSol > PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL) {
+    return null;
+  }
+  const expiresAt = typeof raw.expiresAt === 'string' ? raw.expiresAt : null;
+  if (!expiresAt || !Number.isFinite(new Date(expiresAt).getTime())) return null;
+  return {
+    approved: true,
+    cohort: PROMOTION_LOOP_COHORT,
+    targetArm: raw.targetArm,
+    maxTicketSol,
+    approvedAt: typeof raw.approvedAt === 'string' ? raw.approvedAt : null,
+    expiresAt,
+    reason: typeof raw.reason === 'string' ? raw.reason : null,
+  };
+}
+
+export function assessPromotionLoopManualApproval(
+  approval: PromotionLoopManualApproval | null,
+  input: PromotionLoopEntryInput,
+  nowMs = Date.now()
+): string | null {
+  if (!approval) return 'promotion_loop_manual_review_required';
+  const expiryMs = new Date(approval.expiresAt).getTime();
+  if (!Number.isFinite(expiryMs) || expiryMs <= nowMs) {
+    return 'promotion_loop_manual_approval_expired';
+  }
+  const labels = [
+    normalize(input.profileArm),
+    normalize(input.entryArm),
+    normalize(input.armName),
+  ];
+  if (!labels.includes(normalize(approval.targetArm))) {
+    return `promotion_loop_manual_approval_target_mismatch: target=${approval.targetArm}`;
+  }
+  const ticketSol = input.ticketSol;
+  if (typeof ticketSol !== 'number' || !Number.isFinite(ticketSol) || ticketSol <= 0) {
+    return 'promotion_loop_manual_approval_missing_ticket';
+  }
+  const cap = Math.min(approval.maxTicketSol, PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL);
+  if (ticketSol > cap) {
+    return `promotion_loop_micro_ticket_too_large: ticket=${ticketSol.toFixed(6)} > cap=${cap.toFixed(6)}`;
+  }
+  return null;
 }
 
 function parseRecordedAtMs(row: PromotionLoopCloseLedgerRecord): number | null {
@@ -253,12 +329,30 @@ export function assessPromotionLoopEntry(
       ],
     };
   }
+  const manualApprovalBlockReason = assessPromotionLoopManualApproval(manualApproval, input);
+  if (manualApprovalBlockReason) {
+    return {
+      allowed: false,
+      inScope: true,
+      cohort,
+      reason: manualApprovalBlockReason,
+      flags: [
+        'PROMOTION_LOOP_RESET_PREFLIGHT_READY',
+        'PROMOTION_LOOP_MANUAL_REVIEW_REQUIRED',
+      ],
+    };
+  }
   return {
     allowed: true,
     inScope: true,
     cohort,
     reason: null,
-    flags: ['PROMOTION_LOOP_ACTIVE', 'PROMOTION_LOOP_RESET_PREFLIGHT_READY'],
+    flags: [
+      'PROMOTION_LOOP_ACTIVE',
+      'PROMOTION_LOOP_RESET_PREFLIGHT_READY',
+      'PROMOTION_LOOP_MANUAL_APPROVED',
+      'PROMOTION_LOOP_MICRO_TICKET_CAP_OK',
+    ],
   };
 }
 
@@ -411,6 +505,7 @@ export async function hydratePromotionLoopGuardFromLedger(
     resetBeforeHydrate: false,
   });
   await refreshPromotionLoopResetPreflightFromPaperLedger(ledgerDir, nowMs, true);
+  await refreshPromotionLoopManualApproval(ledgerDir, nowMs, true);
   const snapshot = getPromotionLoopStateSnapshot();
   log.info(
     `[PROMOTION_LOOP_HYDRATE] loaded=${summary.loadedRows} replayed=${summary.replayedRows} ` +
@@ -450,6 +545,40 @@ export async function refreshPromotionLoopResetPreflightFromPaperLedger(
   return report;
 }
 
+export async function refreshPromotionLoopManualApproval(
+  ledgerDir = config.realtimeDataDir,
+  nowMs = Date.now(),
+  force = false
+): Promise<PromotionLoopManualApproval | null> {
+  if (
+    !force &&
+    nowMs - manualApprovalRefreshedAtMs < PROMOTION_LOOP_RESET_PREFLIGHT_REFRESH_MS
+  ) {
+    return manualApproval;
+  }
+  const file = path.join(ledgerDir, PROMOTION_LOOP_MANUAL_APPROVAL_FILE);
+  let next: PromotionLoopManualApproval | null = null;
+  try {
+    next = parsePromotionLoopManualApproval(JSON.parse(await readFile(file, 'utf8')));
+  } catch {
+    next = null;
+  }
+  const previousKey = manualApproval
+    ? `${manualApproval.targetArm}:${manualApproval.expiresAt}:${manualApproval.maxTicketSol}`
+    : null;
+  const nextKey = next ? `${next.targetArm}:${next.expiresAt}:${next.maxTicketSol}` : null;
+  manualApproval = next;
+  manualApprovalRefreshedAtMs = nowMs;
+  if (previousKey !== nextKey) {
+    log.warn(
+      next
+        ? `[PROMOTION_LOOP_MANUAL_APPROVAL] loaded target=${next.targetArm} cap=${next.maxTicketSol.toFixed(6)} expires=${next.expiresAt}`
+        : '[PROMOTION_LOOP_MANUAL_APPROVAL] not present; READY preflight remains manual-review blocked'
+    );
+  }
+  return manualApproval;
+}
+
 export function applyPromotionLoopResetPreflightRowsForTests(
   rows: PromotionLoopJsonRow[],
   sinceMs: number,
@@ -458,6 +587,13 @@ export function applyPromotionLoopResetPreflightRowsForTests(
   resetPreflightReport = buildPromotionLoopResetPreflightReport(rows, sinceMs, nowMs);
   resetPreflightRefreshedAtMs = nowMs;
   return resetPreflightReport;
+}
+
+export function applyPromotionLoopManualApprovalForTests(
+  approval: PromotionLoopManualApproval | null
+): void {
+  manualApproval = approval;
+  manualApprovalRefreshedAtMs = Date.now();
 }
 
 export function getPromotionLoopResetPreflightSnapshot(): PromotionLoopResetPreflightReport | null {
@@ -487,4 +623,6 @@ export function resetPromotionLoopGuardForTests(): void {
   state.lastHaltReason = null;
   resetPreflightReport = null;
   resetPreflightRefreshedAtMs = 0;
+  manualApproval = null;
+  manualApprovalRefreshedAtMs = 0;
 }

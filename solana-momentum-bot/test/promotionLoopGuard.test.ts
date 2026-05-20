@@ -3,6 +3,7 @@ jest.mock('../src/utils/logger', () => ({
 }));
 
 import {
+  applyPromotionLoopManualApprovalForTests,
   applyPromotionLoopResetPreflightRowsForTests,
   assessPromotionLoopEntry,
   getPromotionLoopStateSnapshot,
@@ -11,6 +12,8 @@ import {
   resetPromotionLoopGuardForTests,
   PROMOTION_LOOP_CHECKPOINT_CLOSES,
   PROMOTION_LOOP_COHORT,
+  PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL,
+  PROMOTION_LOOP_MICRO_LIVE_TARGET_ARM,
 } from '../src/risk/promotionLoopGuard';
 import {
   isEntryHaltActive,
@@ -20,7 +23,7 @@ import {
 function readyPreflightRows(nowMs = Date.parse('2026-05-18T00:30:00.000Z')) {
   return Array.from({ length: 20 }, (_, i) => ({
     positionId: `paper-${i}`,
-    paperRole: 'shadow',
+    paperRole: 'fallback_execution_safety',
     profileArm: 'rotation_underfill_exit_flow_v1',
     liveEquivalenceCandidateId: `candidate-${i}`,
     liveEquivalenceDecisionId: `decision-${i}`,
@@ -59,7 +62,7 @@ describe('promotionLoopGuard', () => {
     expect(gate.flags).toContain('PROMOTION_LOOP_MISSING_TRACE');
   });
 
-  it('allows traced rotation underfill micro-live candidates', () => {
+  it('blocks READY reset preflight until manual approval is present', () => {
     const nowMs = Date.parse('2026-05-18T00:30:00.000Z');
     applyPromotionLoopResetPreflightRowsForTests(
       readyPreflightRows(nowMs),
@@ -69,7 +72,40 @@ describe('promotionLoopGuard', () => {
 
     const gate = assessPromotionLoopEntry({
       lane: 'kol_hunter_rotation',
-      profileArm: 'rotation_underfill_exit_flow_v1',
+      profileArm: PROMOTION_LOOP_MICRO_LIVE_TARGET_ARM,
+      ticketSol: PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL,
+      liveEquivalenceCandidateId: 'candidate-1',
+      liveEquivalenceDecisionId: 'decision-1',
+    });
+
+    expect(gate.allowed).toBe(false);
+    expect(gate.inScope).toBe(true);
+    expect(gate.reason).toBe('promotion_loop_manual_review_required');
+    expect(gate.flags).toContain('PROMOTION_LOOP_RESET_PREFLIGHT_READY');
+    expect(gate.flags).toContain('PROMOTION_LOOP_MANUAL_REVIEW_REQUIRED');
+  });
+
+  it('allows only manually approved cost-aware micro-live candidates under the ticket cap', () => {
+    const nowMs = Date.parse('2026-05-18T00:30:00.000Z');
+    applyPromotionLoopResetPreflightRowsForTests(
+      readyPreflightRows(nowMs),
+      nowMs - 72 * 60 * 60 * 1000,
+      nowMs
+    );
+    applyPromotionLoopManualApprovalForTests({
+      approved: true,
+      cohort: PROMOTION_LOOP_COHORT,
+      targetArm: PROMOTION_LOOP_MICRO_LIVE_TARGET_ARM,
+      maxTicketSol: PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL,
+      approvedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      reason: 'test approval',
+    });
+
+    const gate = assessPromotionLoopEntry({
+      lane: 'kol_hunter_rotation',
+      profileArm: PROMOTION_LOOP_MICRO_LIVE_TARGET_ARM,
+      ticketSol: PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL,
       liveEquivalenceCandidateId: 'candidate-1',
       liveEquivalenceDecisionId: 'decision-1',
     });
@@ -77,7 +113,64 @@ describe('promotionLoopGuard', () => {
     expect(gate.allowed).toBe(true);
     expect(gate.inScope).toBe(true);
     expect(gate.flags).toContain('PROMOTION_LOOP_ACTIVE');
-    expect(gate.flags).toContain('PROMOTION_LOOP_RESET_PREFLIGHT_READY');
+    expect(gate.flags).toContain('PROMOTION_LOOP_MANUAL_APPROVED');
+    expect(gate.flags).toContain('PROMOTION_LOOP_MICRO_TICKET_CAP_OK');
+  });
+
+  it('blocks old underfill live arms even when manual approval exists for cost-aware micro-live', () => {
+    const nowMs = Date.parse('2026-05-18T00:30:00.000Z');
+    applyPromotionLoopResetPreflightRowsForTests(
+      readyPreflightRows(nowMs),
+      nowMs - 72 * 60 * 60 * 1000,
+      nowMs
+    );
+    applyPromotionLoopManualApprovalForTests({
+      approved: true,
+      cohort: PROMOTION_LOOP_COHORT,
+      targetArm: PROMOTION_LOOP_MICRO_LIVE_TARGET_ARM,
+      maxTicketSol: PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL,
+      approvedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    });
+
+    const gate = assessPromotionLoopEntry({
+      lane: 'kol_hunter_rotation',
+      profileArm: 'rotation_underfill_exit_flow_v1',
+      ticketSol: PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL,
+      liveEquivalenceCandidateId: 'candidate-1',
+      liveEquivalenceDecisionId: 'decision-1',
+    });
+
+    expect(gate.allowed).toBe(false);
+    expect(gate.reason).toContain('promotion_loop_manual_approval_target_mismatch');
+  });
+
+  it('blocks approved micro-live candidates above the ticket cap', () => {
+    const nowMs = Date.parse('2026-05-18T00:30:00.000Z');
+    applyPromotionLoopResetPreflightRowsForTests(
+      readyPreflightRows(nowMs),
+      nowMs - 72 * 60 * 60 * 1000,
+      nowMs
+    );
+    applyPromotionLoopManualApprovalForTests({
+      approved: true,
+      cohort: PROMOTION_LOOP_COHORT,
+      targetArm: PROMOTION_LOOP_MICRO_LIVE_TARGET_ARM,
+      maxTicketSol: PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL,
+      approvedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    });
+
+    const gate = assessPromotionLoopEntry({
+      lane: 'kol_hunter_rotation',
+      profileArm: PROMOTION_LOOP_MICRO_LIVE_TARGET_ARM,
+      ticketSol: 0.02,
+      liveEquivalenceCandidateId: 'candidate-1',
+      liveEquivalenceDecisionId: 'decision-1',
+    });
+
+    expect(gate.allowed).toBe(false);
+    expect(gate.reason).toContain('promotion_loop_micro_ticket_too_large');
   });
 
   it('blocks traced rotation underfill live candidates until paper reset preflight is ready', () => {

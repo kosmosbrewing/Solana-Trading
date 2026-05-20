@@ -2,12 +2,18 @@
 import { mkdir, readFile, writeFile } from 'fs/promises';
 import path from 'path';
 import {
+  assessPromotionLoopManualApproval,
   PROMOTION_LOOP_CHECKPOINT_CLOSES,
   PROMOTION_LOOP_CHECKPOINT_LOSS_CAP_SOL,
   PROMOTION_LOOP_COHORT,
+  PROMOTION_LOOP_MANUAL_APPROVAL_FILE,
   PROMOTION_LOOP_MAX_CLOSES,
   PROMOTION_LOOP_MAX_CONSECUTIVE_LOSERS,
+  PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL,
+  PROMOTION_LOOP_MICRO_LIVE_TARGET_ARM,
   PROMOTION_LOOP_TOTAL_LOSS_CAP_SOL,
+  parsePromotionLoopManualApproval,
+  type PromotionLoopManualApproval,
 } from '../src/risk/promotionLoopGuard';
 import {
   buildPromotionLoopResetPreflightReport,
@@ -43,6 +49,9 @@ export interface PromotionLoopReport {
   verdict: 'NO_SAMPLE' | 'COLLECT' | 'KILL' | 'REVIEW';
   nextAction: string;
   resetPreflight: PromotionLoopResetPreflightReport;
+  manualApproval: PromotionLoopManualApproval | null;
+  runtimeResetDecision: 'BLOCKED' | 'ALLOWED';
+  runtimeResetBlockReason: string | null;
   rows: number;
   unmarkedEligibleRows: number;
   missingTraceRows: number;
@@ -88,6 +97,14 @@ async function readJsonlMaybe(file: string): Promise<JsonRow[]> {
     return parseJsonl(await readFile(file, 'utf8'));
   } catch {
     return [];
+  }
+}
+
+async function readJsonMaybe(file: string): Promise<unknown | null> {
+  try {
+    return JSON.parse(await readFile(file, 'utf8')) as unknown;
+  } catch {
+    return null;
   }
 }
 
@@ -184,7 +201,9 @@ function toReportRow(row: JsonRow): PromotionLoopReportRow | null {
 export function buildPromotionLoopReport(
   rows: JsonRow[],
   sinceMs: number,
-  paperRows: JsonRow[] = []
+  paperRows: JsonRow[] = [],
+  approval: PromotionLoopManualApproval | null = null,
+  nowMs = Date.now()
 ): PromotionLoopReport {
   const recentRows = rows.filter((row) => {
     const atMs = recordedAtMs(row);
@@ -264,11 +283,25 @@ export function buildPromotionLoopReport(
     .sort((a, b) => Math.abs(b.netSol) - Math.abs(a.netSol))
     .slice(0, 8);
 
+  const resetPreflight = buildPromotionLoopResetPreflightReport(paperRows, sinceMs, nowMs);
+  const runtimeResetBlockReason = resetPreflight.status === 'READY_TO_RESET'
+    ? assessPromotionLoopManualApproval(approval, {
+        lane: 'kol_hunter_rotation',
+        profileArm: approval?.targetArm ?? PROMOTION_LOOP_MICRO_LIVE_TARGET_ARM,
+        ticketSol: Math.min(approval?.maxTicketSol ?? PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL, PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL),
+        liveEquivalenceCandidateId: 'report-candidate',
+        liveEquivalenceDecisionId: 'report-decision',
+      }, nowMs)
+    : `promotion_loop_reset_preflight_${resetPreflight.status.toLowerCase()}`;
+
   return {
     cohort: PROMOTION_LOOP_COHORT,
     verdict,
     nextAction,
-    resetPreflight: buildPromotionLoopResetPreflightReport(paperRows, sinceMs),
+    resetPreflight,
+    manualApproval: approval,
+    runtimeResetDecision: runtimeResetBlockReason == null ? 'ALLOWED' : 'BLOCKED',
+    runtimeResetBlockReason,
     rows: markedRows.length,
     unmarkedEligibleRows,
     missingTraceRows,
@@ -301,6 +334,14 @@ export function renderPromotionLoopReport(report: PromotionLoopReport): string {
   lines.push('');
   lines.push(`- status: ${report.resetPreflight.status}`);
   lines.push(`- nextAction: ${report.resetPreflight.nextAction}`);
+  lines.push(`- runtimeResetDecision: ${report.runtimeResetDecision}`);
+  if (report.runtimeResetBlockReason) lines.push(`- runtimeResetBlockReason: ${report.runtimeResetBlockReason}`);
+  lines.push(`- manualApprovalFile: ${PROMOTION_LOOP_MANUAL_APPROVAL_FILE}`);
+  lines.push(`- manualApprovalPresent: ${report.manualApproval != null}`);
+  lines.push(`- manualApprovalTarget: ${report.manualApproval?.targetArm ?? 'n/a'}`);
+  lines.push(`- manualApprovalMaxTicket: ${report.manualApproval?.maxTicketSol?.toFixed(6) ?? 'n/a'} SOL`);
+  lines.push(`- microTicketHardCap: ${PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL.toFixed(6)} SOL`);
+  lines.push(`- preferredTargetArm: ${PROMOTION_LOOP_MICRO_LIVE_TARGET_ARM}`);
   lines.push(`- eligiblePaperRows: ${report.resetPreflight.eligiblePaperRows}/${report.resetPreflight.minPaperCloses}`);
   lines.push(
     `- recent${report.resetPreflight.recentWindowHours}hEligiblePaperRows: ` +
@@ -346,7 +387,10 @@ async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const rows = await readJsonlMaybe(path.join(args.realtimeDir, 'executed-sells.jsonl'));
   const paperRows = await readJsonlMaybe(path.join(args.realtimeDir, 'rotation-v1-paper-trades.jsonl'));
-  const report = buildPromotionLoopReport(rows, args.sinceMs, paperRows);
+  const approval = parsePromotionLoopManualApproval(
+    await readJsonMaybe(path.join(args.realtimeDir, PROMOTION_LOOP_MANUAL_APPROVAL_FILE))
+  );
+  const report = buildPromotionLoopReport(rows, args.sinceMs, paperRows, approval);
   const md = renderPromotionLoopReport(report);
   if (args.mdOut) {
     await mkdir(path.dirname(args.mdOut), { recursive: true });

@@ -2,7 +2,11 @@ import {
   buildPromotionLoopReport,
   renderPromotionLoopReport,
 } from '../scripts/promotion-loop-report';
-import { PROMOTION_LOOP_COHORT } from '../src/risk/promotionLoopGuard';
+import {
+  PROMOTION_LOOP_COHORT,
+  PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL,
+  PROMOTION_LOOP_MICRO_LIVE_TARGET_ARM,
+} from '../src/risk/promotionLoopGuard';
 import { buildPromotionLoopResetPreflightReport } from '../src/risk/promotionLoopResetPreflight';
 
 describe('promotion-loop-report', () => {
@@ -98,5 +102,83 @@ describe('promotion-loop-report', () => {
     expect(report.recentAdmissionFailureRate).toBe(0.3);
     expect(report.routeProofCoverage).toBe(1);
     expect(report.comparableTraceCoverage).toBe(1);
+  });
+
+  it('keeps runtime reset blocked when preflight is READY but manual approval is absent', () => {
+    const rows = Array.from({ length: 20 }, (_, i) => ({
+      closedAt: `2026-05-18T00:00:${String(i).padStart(2, '0')}.000Z`,
+      positionId: `kolh-paper-${i}`,
+      canaryLane: 'kol_hunter_rotation',
+      profileArm: 'rotation_underfill_exit_flow_v1',
+      paperRole: 'fallback_execution_safety',
+      liveEquivalenceCandidateId: `candidate-${i}`,
+      liveEquivalenceDecisionId: `decision-${i}`,
+      refundAdjustedNetSol: 0.001,
+      netSol: 0.001,
+      exitReason: 'winner_trailing_t1',
+      exitSellQuoteEvidence: { routeFound: true },
+      rotationMonetizableEdge: { pass: true },
+    }));
+
+    const report = buildPromotionLoopReport([], sinceMs, rows, null, nowMs);
+
+    expect(report.resetPreflight.status).toBe('READY_TO_RESET');
+    expect(report.runtimeResetDecision).toBe('BLOCKED');
+    expect(report.runtimeResetBlockReason).toBe('promotion_loop_manual_review_required');
+    expect(renderPromotionLoopReport(report)).toContain('runtimeResetDecision: BLOCKED');
+  });
+
+  it('shows runtime reset allowed only with matching manual approval and micro ticket cap', () => {
+    const rows = Array.from({ length: 20 }, (_, i) => ({
+      closedAt: `2026-05-18T00:00:${String(i).padStart(2, '0')}.000Z`,
+      positionId: `kolh-paper-${i}`,
+      canaryLane: 'kol_hunter_rotation',
+      profileArm: 'rotation_underfill_exit_flow_v1',
+      paperRole: 'fallback_execution_safety',
+      liveEquivalenceCandidateId: `candidate-${i}`,
+      liveEquivalenceDecisionId: `decision-${i}`,
+      refundAdjustedNetSol: 0.001,
+      netSol: 0.001,
+      exitReason: 'winner_trailing_t1',
+      exitSellQuoteEvidence: { routeFound: true },
+      rotationMonetizableEdge: { pass: true },
+    }));
+
+    const report = buildPromotionLoopReport([], sinceMs, rows, {
+      approved: true,
+      cohort: PROMOTION_LOOP_COHORT,
+      targetArm: PROMOTION_LOOP_MICRO_LIVE_TARGET_ARM,
+      maxTicketSol: PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL,
+      approvedAt: new Date(nowMs).toISOString(),
+      expiresAt: new Date(nowMs + 60_000).toISOString(),
+    }, nowMs);
+
+    expect(report.resetPreflight.status).toBe('READY_TO_RESET');
+    expect(report.runtimeResetDecision).toBe('ALLOWED');
+    expect(report.runtimeResetBlockReason).toBeNull();
+    expect(renderPromotionLoopReport(report)).toContain('runtimeResetDecision: ALLOWED');
+  });
+
+  it('excludes shadow-only paper from promotion-loop reset evidence', () => {
+    const rows = Array.from({ length: 20 }, (_, i) => ({
+      closedAt: `2026-05-18T00:00:${String(i).padStart(2, '0')}.000Z`,
+      positionId: `kolh-paper-${i}`,
+      canaryLane: 'kol_hunter_rotation',
+      profileArm: 'rotation_underfill_exit_flow_v1',
+      paperRole: 'shadow',
+      liveEquivalenceCandidateId: `candidate-${i}`,
+      liveEquivalenceDecisionId: `decision-${i}`,
+      refundAdjustedNetSol: 0.001,
+      netSol: 0.001,
+      exitReason: 'winner_trailing_t1',
+      exitSellQuoteEvidence: { routeFound: true },
+      rotationMonetizableEdge: { pass: true },
+    }));
+
+    const report = buildPromotionLoopResetPreflightReport(rows, sinceMs, nowMs);
+
+    expect(report.status).toBe('COLLECT');
+    expect(report.eligiblePaperRows).toBe(0);
+    expect(report.nextAction).toContain('collect more fresh comparable');
   });
 });

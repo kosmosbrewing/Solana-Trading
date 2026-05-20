@@ -126,7 +126,9 @@ import { acquireCanarySlot, releaseCanarySlot } from '../risk/canaryConcurrencyG
 import { reportCanaryClose } from '../risk/canaryAutoHalt';
 import {
   assessPromotionLoopEntry,
+  refreshPromotionLoopManualApproval,
   refreshPromotionLoopResetPreflightFromPaperLedger,
+  PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL,
   resolvePromotionLoopCohort,
   reportPromotionLoopClose,
 } from '../risk/promotionLoopGuard';
@@ -627,6 +629,15 @@ interface PaperEntryOptions {
   capitulationEntryLowPrice?: number;
   capitulationEntryLowAtMs?: number;
   capitulationRecoveryConfirmations?: number;
+  ticketSolOverride?: number;
+}
+
+function resolveKolEntryTicketSol(options: PaperEntryOptions = {}): number {
+  return typeof options.ticketSolOverride === 'number' &&
+    Number.isFinite(options.ticketSolOverride) &&
+    options.ticketSolOverride > 0
+    ? options.ticketSolOverride
+    : config.kolHunterTicketSol;
 }
 
 interface DynamicExitParams {
@@ -7193,15 +7204,31 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
     await refreshPromotionLoopResetPreflightFromPaperLedger(config.realtimeDataDir).catch((err) => {
       log.warn(`[KOL_HUNTER_PROMOTION_LOOP_PREFLIGHT_REFRESH_FAILED] ${err}`);
     });
-    const promotionLoopGate = assessPromotionLoopEntry({
+    await refreshPromotionLoopManualApproval(config.realtimeDataDir).catch((err) => {
+      log.warn(`[KOL_HUNTER_PROMOTION_LOOP_MANUAL_APPROVAL_REFRESH_FAILED] ${err}`);
+    });
+    const promotionLoopCohort = resolvePromotionLoopCohort({
       lane: liveCanaryLane,
       armName: armNameForVersion(liveEntryOptions.parameterVersion ?? entrySignal.parameterVersion),
       profileArm: liveEntryOptions.profileArm,
       entryArm: liveEntryOptions.entryArm,
-      liveEquivalenceCandidateId: liveEntryOptions.liveEquivalenceCandidateId ?? liveEquivalenceCandidateId,
-      liveEquivalenceDecisionId: liveEntryOptions.liveEquivalenceDecisionId ??
+    });
+    const promotionLoopTicketSol = promotionLoopCohort
+      ? Math.min(config.kolHunterTicketSol, PROMOTION_LOOP_MICRO_LIVE_MAX_TICKET_SOL)
+      : config.kolHunterTicketSol;
+    const promotionLoopEntryOptions = promotionLoopCohort
+      ? { ...liveEntryOptions, ticketSolOverride: promotionLoopTicketSol }
+      : liveEntryOptions;
+    const promotionLoopGate = assessPromotionLoopEntry({
+      lane: liveCanaryLane,
+      armName: armNameForVersion(promotionLoopEntryOptions.parameterVersion ?? entrySignal.parameterVersion),
+      profileArm: promotionLoopEntryOptions.profileArm,
+      entryArm: promotionLoopEntryOptions.entryArm,
+      ticketSol: promotionLoopTicketSol,
+      liveEquivalenceCandidateId: promotionLoopEntryOptions.liveEquivalenceCandidateId ?? liveEquivalenceCandidateId,
+      liveEquivalenceDecisionId: promotionLoopEntryOptions.liveEquivalenceDecisionId ??
         buildLiveEquivalenceDecisionId(
-          liveEntryOptions.liveEquivalenceCandidateId ?? liveEquivalenceCandidateId,
+          promotionLoopEntryOptions.liveEquivalenceCandidateId ?? liveEquivalenceCandidateId,
           'pre_execution_live_allowed',
           'enter',
           null
@@ -7226,11 +7253,11 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       return;
     }
     emitKolLiveEquivalence({
-      candidateId: liveEntryOptions.liveEquivalenceCandidateId ?? liveEquivalenceCandidateId,
+      candidateId: promotionLoopEntryOptions.liveEquivalenceCandidateId ?? liveEquivalenceCandidateId,
       tokenMint: cand.tokenMint,
       entrySignal,
       score,
-      entryOptions: liveEntryOptions,
+      entryOptions: promotionLoopEntryOptions,
       survivalFlags: liveEntryFlags,
       candIsShadow,
       stage: 'pre_execution_live_allowed',
@@ -7246,7 +7273,7 @@ async function evaluateSmartV3Triggers(cand: PendingCandidate): Promise<void> {
       score,
       liveEntryFlags,
       botCtx,
-      withLiveEquivalence(liveEntryOptions, 'pre_execution_live_allowed', true, null, [])
+      withLiveEquivalence(promotionLoopEntryOptions, 'pre_execution_live_allowed', true, null, [])
     );
     return;
   }
@@ -8022,7 +8049,7 @@ async function enterPaperPosition(
     ? { value: options.tokenDecimals, source: options.tokenDecimalsSource }
     : await resolveTokenDecimalsForObserver(tokenMint, firstTick.outputDecimals);
 
-  const ticketSol = config.kolHunterTicketSol;
+  const ticketSol = resolveKolEntryTicketSol(options);
   const entryAtMs = Date.now();
   const nowSec = Math.floor(entryAtMs / 1000);
   const positionIdBase = `kolh-${tokenMint.slice(0, 8)}-${nowSec}`;
@@ -11239,7 +11266,7 @@ async function enterLivePosition(
   const entryParticipatingKols = options.entryParticipatingKols ?? score.participatingKols;
   const entryKolScore = options.entryKolScore ?? score.finalScore;
   const entryIndependentKolCount = options.entryIndependentKolCount ?? score.independentKolCount;
-  const ticketSol = config.kolHunterTicketSol;
+  const ticketSol = resolveKolEntryTicketSol(options);
   const plannedQty = referencePrice > 0 ? ticketSol / referencePrice : 0;
   if (plannedQty <= 0) {
     unsubscribePriceIfIdle(tokenMint);

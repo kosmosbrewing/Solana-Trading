@@ -140,9 +140,7 @@ function paperRole(row: PromotionLoopJsonRow): string | null {
 function isComparablePaperRole(row: PromotionLoopJsonRow): boolean {
   const role = paperRole(row);
   return role === 'mirror' ||
-    role === 'fallback_execution_safety' ||
-    role === 'shadow' ||
-    role === 'probe_policy_shadow';
+    role === 'fallback_execution_safety';
 }
 
 function hasUnderfillLabel(row: PromotionLoopJsonRow): boolean {

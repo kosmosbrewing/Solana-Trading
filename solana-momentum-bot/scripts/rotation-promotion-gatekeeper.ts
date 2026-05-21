@@ -64,6 +64,16 @@ interface BlockerSummary {
   walletStressSol: number | null;
 }
 
+interface BridgeReconciliationSummary {
+  priority: string;
+  disposition: string;
+  blocker: string;
+  action: string;
+  rows: number;
+  uniqueCandidates: number;
+  walletStressSol: number | null;
+}
+
 interface FunnelSummary {
   step: string;
   rows: number;
@@ -81,6 +91,7 @@ export interface PromotionBlockerDrilldown {
   dominantBlocker: string | null;
   topBlockers: BlockerSummary[];
   singleBlockerNearMisses: BlockerSummary[];
+  bridgeReconciliationBacklog: BridgeReconciliationSummary[];
   funnel: FunnelSummary[];
   bridgeFunnel: FunnelSummary[];
 }
@@ -108,6 +119,7 @@ export interface RotationPromotionReportInput {
   funnel?: CountRow[];
   bridgeFunnel?: CountRow[];
   promotionEvidenceBuckets?: CountRow[];
+  bridgeReconciliationBacklog?: JsonObject[];
 }
 
 export interface RotationPromotionWindowGate {
@@ -338,6 +350,27 @@ function blockerSummaries(value: unknown): BlockerSummary[] {
     .sort((a, b) => b.count - a.count || a.blocker.localeCompare(b.blocker));
 }
 
+function bridgeReconciliationSummaries(value: unknown): BridgeReconciliationSummary[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(isObject)
+    .map((row) => ({
+      priority: str(row.priority, ''),
+      disposition: str(row.disposition, ''),
+      blocker: str(row.blocker, ''),
+      action: str(row.action, ''),
+      rows: num(row.rows, 0),
+      uniqueCandidates: num(row.uniqueCandidates, 0),
+      walletStressSol: typeof row.walletStressSol === 'number' ? row.walletStressSol : null,
+    }))
+    .filter((row) => row.priority.length > 0 && row.blocker.length > 0)
+    .sort((a, b) =>
+      a.priority.localeCompare(b.priority) ||
+      b.rows - a.rows ||
+      a.blocker.localeCompare(b.blocker)
+    );
+}
+
 function funnelSummaries(value: unknown): FunnelSummary[] {
   if (!Array.isArray(value)) return [];
   return value
@@ -370,6 +403,7 @@ function buildBlockerDrilldown(
   const uniqueBridgeCandidates = num(report.uniqueBridgeCandidates, readinessGap.currentUniqueCandidates);
   const topBlockers = blockerSummaries(report.blockers).slice(0, 8);
   const singleBlockerNearMisses = blockerSummaries(report.singleBlockers).slice(0, 8);
+  const bridgeReconciliationBacklog = bridgeReconciliationSummaries(report.bridgeReconciliationBacklog).slice(0, 8);
   const funnel = funnelSummaries(report.funnel);
   const bridgeFunnel = funnelSummaries(report.bridgeFunnel);
   const dominantBlocker = topBlockers[0]?.blocker ?? null;
@@ -406,6 +440,7 @@ function buildBlockerDrilldown(
       dominantBlocker,
       topBlockers,
       singleBlockerNearMisses,
+      bridgeReconciliationBacklog,
       funnel,
       bridgeFunnel,
     };
@@ -424,6 +459,7 @@ function buildBlockerDrilldown(
       dominantBlocker,
       topBlockers,
       singleBlockerNearMisses,
+      bridgeReconciliationBacklog,
       funnel,
       bridgeFunnel,
     };
@@ -442,6 +478,7 @@ function buildBlockerDrilldown(
       dominantBlocker,
       topBlockers,
       singleBlockerNearMisses,
+      bridgeReconciliationBacklog,
       funnel,
       bridgeFunnel,
     };
@@ -459,6 +496,7 @@ function buildBlockerDrilldown(
     dominantBlocker,
     topBlockers,
     singleBlockerNearMisses,
+    bridgeReconciliationBacklog,
     funnel,
     bridgeFunnel,
   };
@@ -629,6 +667,15 @@ function renderBlockerRows(rows: BlockerSummary[]): string[] {
   );
 }
 
+function renderBridgeReconciliationRows(rows: BridgeReconciliationSummary[]): string[] {
+  if (rows.length === 0) return ['| none | none | none | 0 | 0 | n/a | n/a |'];
+  return rows.map((row) =>
+    `| ${row.priority} | ${row.disposition} | ${row.blocker} | ${row.rows} | ` +
+    `${row.uniqueCandidates} | ${row.walletStressSol == null ? 'n/a' : row.walletStressSol.toFixed(6)} | ` +
+    `${row.action} |`
+  );
+}
+
 export function renderRotationPromotionGatekeeperReport(report: RotationPromotionGatekeeperReport): string {
   const lines: string[] = [];
   lines.push('# Rotation Promotion Gatekeeper');
@@ -698,6 +745,11 @@ export function renderRotationPromotionGatekeeperReport(report: RotationPromotio
     lines.push('| blocker | count | refund SOL | walletStress SOL |');
     lines.push('|---|---:|---:|---:|');
     lines.push(...renderBlockerRows(primaryWindow.blockerDrilldown.singleBlockerNearMisses.slice(0, 5)));
+    lines.push('');
+    lines.push('### Primary Window Bridge Reconciliation Backlog');
+    lines.push('| priority | disposition | blocker | rows | unique | walletStress SOL | action |');
+    lines.push('|---|---|---|---:|---:|---:|---|');
+    lines.push(...renderBridgeReconciliationRows(primaryWindow.blockerDrilldown.bridgeReconciliationBacklog.slice(0, 5)));
     lines.push('');
   }
   return `${lines.join('\n')}\n`;

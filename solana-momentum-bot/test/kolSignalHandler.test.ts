@@ -359,6 +359,9 @@ jest.mock('../src/utils/config', () => ({
     kolHunterRotationGoodKolFocusPaperEnabled: false,
     kolHunterRotationGoodKolFocusKolIds: ['dv', 'kadenox', 'letterbomb', 'naruza'],
     kolHunterRotationGoodKolFocusParameterVersion: 'rotation-good-kol-focus-v1.0.0',
+    kolHunterRotationBadKolBlockPaperEnabled: false,
+    kolHunterRotationBadKolBlockKolIds: ['daumen', 'jijo', 'noob_mini', 'yenni'],
+    kolHunterRotationBadKolBlockParameterVersion: 'rotation-bad-kol-block-v1.0.0',
     kolHunterRotationDoaVetoShadowPaperEnabled: false,
     kolHunterRotationDoaVetoShadowCooldownMs: 3_600_000,
     kolHunterRotationDoaVetoShadowParameterVersion: 'rotation-doa-veto-shadow-v1.0.0',
@@ -755,6 +758,9 @@ describe('kolSignalHandler — state machine', () => {
     mockedConfig.kolHunterRotationGoodKolFocusPaperEnabled = false;
     mockedConfig.kolHunterRotationGoodKolFocusKolIds = ['dv', 'kadenox', 'letterbomb', 'naruza'];
     mockedConfig.kolHunterRotationGoodKolFocusParameterVersion = 'rotation-good-kol-focus-v1.0.0';
+    mockedConfig.kolHunterRotationBadKolBlockPaperEnabled = false;
+    mockedConfig.kolHunterRotationBadKolBlockKolIds = ['daumen', 'jijo', 'noob_mini', 'yenni'];
+    mockedConfig.kolHunterRotationBadKolBlockParameterVersion = 'rotation-bad-kol-block-v1.0.0';
     mockedConfig.kolHunterRotationDoaVetoShadowPaperEnabled = false;
     mockedConfig.kolHunterRotationDoaVetoShadowCooldownMs = 3_600_000;
     mockedConfig.kolHunterRotationDoaVetoShadowParameterVersion = 'rotation-doa-veto-shadow-v1.0.0';
@@ -2259,6 +2265,66 @@ describe('kolSignalHandler — state machine', () => {
         .map((call) => JSON.parse(String(call[1]).trim()))
         .filter((row) => row.extras?.armName === 'rotation_good_kol_focus_v1');
       expect(focusSkips).toHaveLength(0);
+    });
+
+    it('rotation-underfill: bad KOL block forward paper 는 blocked KOL 이 없을 때만 열린다', async () => {
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterRotationPaperArmsEnabled = true;
+      mockedConfig.kolHunterRotationUnderfillCostAwarePaperEnabled = false;
+      mockedConfig.kolHunterRotationGoodKolFocusPaperEnabled = false;
+      mockedConfig.kolHunterRotationBadKolBlockPaperEnabled = true;
+      mockedConfig.kolHunterRotationBadKolBlockKolIds = ['noob_mini', 'yenni'];
+      mockedConfig.kolHunterSmartV3VelocityScoreThreshold = 99;
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+
+      await handleKolSwap(buyTxWithFill('dv', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+
+      const positions = __testGetActive();
+      const badKolBlock = positions.find((p) => p.armName === 'rotation_bad_kol_block_forward_v1')!;
+      const parent = positions.find((p) => p.armName === 'rotation_underfill_v1')!;
+      expect(badKolBlock).toBeDefined();
+      expect(badKolBlock.isShadowArm).toBe(true);
+      expect(badKolBlock.parentPositionId).toBe(parent.positionId);
+      expect(badKolBlock.paperRole).toBe('shadow');
+      expect(badKolBlock.profileArm).toBe('rotation_bad_kol_block_forward_v1');
+      expect(badKolBlock.entryArm).toBe('rotation_underfill_v1');
+      expect(badKolBlock.exitArm).toBe('rotation_bad_kol_block_forward_v1');
+      expect(badKolBlock.rotationFlowExitEnabled).toBe(true);
+      expect(badKolBlock.survivalFlags).toEqual(expect.arrayContaining([
+        'ROTATION_BAD_KOL_BLOCK_FORWARD_PAPER',
+        'ROTATION_BAD_KOL_BLOCK_KOL_NOOB_MINI',
+        'ROTATION_COST_AWARE_EXIT_V2',
+      ]));
+    });
+
+    it('rotation-underfill: bad KOL block forward paper 는 blocked KOL 을 missed-alpha skip 으로 기록한다', async () => {
+      mockedConfig.kolHunterRotationV1Enabled = true;
+      mockedConfig.kolHunterRotationPaperArmsEnabled = true;
+      mockedConfig.kolHunterRotationUnderfillCostAwarePaperEnabled = false;
+      mockedConfig.kolHunterRotationGoodKolFocusPaperEnabled = false;
+      mockedConfig.kolHunterRotationBadKolBlockPaperEnabled = true;
+      mockedConfig.kolHunterRotationBadKolBlockKolIds = ['dv', 'yenni'];
+      mockedConfig.missedAlphaObserverEnabled = true;
+      mockedConfig.kolHunterRotationV1MarkoutOffsetsSec = [15, 30, 60];
+      mockedConfig.kolHunterSmartV3VelocityScoreThreshold = 99;
+      stubFeed.setInitialPrice(MINT_ROTATION, 0.001);
+
+      await handleKolSwap(buyTxWithFill('dv', 'A', MINT_ROTATION, 0.001, 0.25, 1_000));
+      stubFeed.emitTick(MINT_ROTATION, 0.00096);
+      await flushAsync();
+
+      expect(__testGetActive().some((p) => p.armName === 'rotation_bad_kol_block_forward_v1')).toBe(false);
+      const blockSkips = mockAppendFile.mock.calls
+        .filter((call) => typeof call[0] === 'string' && call[0].includes('missed-alpha.jsonl'))
+        .map((call) => JSON.parse(String(call[1]).trim()))
+        .filter((row) => row.extras?.armName === 'rotation_bad_kol_block_forward_v1');
+      expect(blockSkips).toHaveLength(1);
+      expect(blockSkips[0].rejectReason).toBe('rotation_arm_skip_bad_kol_block:dv');
+      expect(blockSkips[0].extras.eventType).toBe('rotation_arm_skip');
+      expect(blockSkips[0].extras.skipReason).toBe('bad_kol_block:dv');
+      expect(blockSkips[0].extras.parentArmName).toBe('rotation_underfill_v1');
     });
 
     it('rotation-underfill: DOA veto shadow 는 최근 DOA 기록이 없으면 baseline 과 병렬 진입한다', async () => {

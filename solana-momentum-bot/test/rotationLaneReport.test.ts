@@ -4255,6 +4255,12 @@ describe('rotation-lane-report', () => {
       routeProofRows: 100,
       costAwareRows: 100,
     });
+    expect(report.rotationForwardShadowProofs.map((row) => row.armName)).toEqual(expect.arrayContaining([
+      'rotation_good_kol_focus_v1',
+      'rotation_bad_kol_block_forward_v1',
+      'rotation_doa_veto_shadow_v1',
+      'rotation_candle_confirm_shadow_v1',
+    ]));
     expect(report.compoundingProofPacket.verdict).toBe('NOT_PROVEN');
     expect(report.compoundingProofPacket.cohort).toBe('route_known_2kol_cost_aware');
 
@@ -4262,6 +4268,63 @@ describe('rotation-lane-report', () => {
     expect(markdown).toContain('## Rotation Forward Shadow Proof');
     expect(markdown).toContain('FORWARD_SHADOW_PROVEN');
     expect(markdown).toContain('in-sample good-KOL hindsight');
+  });
+
+  it('tracks bad-KOL block as a separate forward-shadow proof candidate', async () => {
+    const rows = Array.from({ length: 100 }, (_, index) => {
+      const day = 2 + Math.floor(index / 20);
+      return {
+        strategy: 'kol_hunter',
+        lane: 'kol_hunter',
+        armName: 'rotation_bad_kol_block_forward_v1',
+        profileArm: 'rotation_bad_kol_block_forward_v1',
+        entryArm: 'rotation_underfill_v1',
+        exitArm: 'rotation_bad_kol_block_forward_v1',
+        parameterVersion: 'rotation-bad-kol-block-v1.0.0',
+        kolEntryReason: 'rotation_v1',
+        positionId: `bad-block-${index}`,
+        tokenMint: `MintBadBlock${String(index).padStart(3, '0')}`,
+        liveEquivalenceCandidateId: `bad-block-candidate-${index}`,
+        closedAt: `2026-05-${String(day).padStart(2, '0')}T00:${String(index % 20).padStart(2, '0')}:00.000Z`,
+        exitReason: 'winner_trailing_t1',
+        holdSec: 31,
+        netSol: 0.003,
+        netSolTokenOnly: 0.003,
+        mfePctPeak: 0.15,
+        routeFound: true,
+        rotationMonetizableEdge: { pass: true, costRatio: 0.04 },
+        kols: [{ id: 'dv', timestamp: `2026-05-${String(day).padStart(2, '0')}T00:00:00.000Z` }],
+        survivalFlags: [
+          'ROTATION_UNDERFILL_KOLS_1',
+          'ROTATION_COST_AWARE_EXIT_V2',
+          'ROTATION_BAD_KOL_BLOCK_FORWARD_PAPER',
+          'SELL_ROUTE_OK',
+        ],
+      };
+    });
+    await writeFile(path.join(dir, 'rotation-v1-paper-trades.jsonl'), jsonl(rows));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'token-quality-observations.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'missed-alpha.jsonl'), jsonl([]));
+
+    const report = await buildRotationLaneReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [15, 30],
+      roundTripCostPct: 0.005,
+      assumedAtaRentSol: 0.001,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    expect(report.rotationForwardShadowProofs.find((row) =>
+      row.armName === 'rotation_bad_kol_block_forward_v1'
+    )).toMatchObject({
+      verdict: 'FORWARD_SHADOW_PROVEN',
+      closes: 100,
+      dateBuckets: 5,
+      routeProofRows: 100,
+      costAwareRows: 100,
+    });
   });
 
   it('adds live-equivalence gate review for yellow-zone and route-unknown blockers', async () => {

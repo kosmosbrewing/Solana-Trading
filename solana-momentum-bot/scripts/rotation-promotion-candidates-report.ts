@@ -9,6 +9,14 @@ const PRIMARY_BRIDGE_ARM = 'rotation_underfill_cost_aware_exit_v2';
 const BRIDGE_REVIEW_MIN_UNIQUE_CANDIDATES = 30;
 const BRIDGE_REVIEW_MIN_ACTIVE_DAYS = 3;
 const BRIDGE_REVIEW_MAX_TOP_WINNER_SHARE = 0.35;
+const RECONCILIATION_SAMPLE_LIMIT = 5;
+const ATTRIBUTION_REPAIR_BLOCKERS = new Set([
+  'missing_candidate_id',
+  'missing_decision_id',
+  'missing_execution_plan_hash',
+  'missing_route_proof',
+  'missing_cost_aware_profile',
+]);
 
 interface JsonRow {
   [key: string]: unknown;
@@ -35,6 +43,28 @@ interface CandidateRow {
   exitReason: string;
   refundAdjustedNetSol: number;
   walletStressSol: number;
+}
+
+type BridgeReconciliationPriority = 'P0' | 'P1' | 'P2';
+type BridgeReconciliationDisposition =
+  | 'READY_MANUAL_REVIEW'
+  | 'COLLECT_FORWARD_SAMPLE'
+  | 'COUNTED_AS_BRIDGE'
+  | 'REPAIR_ATTRIBUTION'
+  | 'POLICY_MISMATCH'
+  | 'KEEP_BLOCKED';
+
+interface BridgeReconciliationBacklogItem {
+  priority: BridgeReconciliationPriority;
+  disposition: BridgeReconciliationDisposition;
+  blocker: string;
+  action: string;
+  rows: number;
+  uniqueCandidates: number;
+  refundAdjustedNetSol: number;
+  walletStressSol: number;
+  reason: string;
+  sampleCandidates: CandidateRow[];
 }
 
 interface DayBucketStats {
@@ -141,6 +171,7 @@ interface PromotionReport {
   primaryBridgeParentChildDelta: ParentChildDeltaSummary;
   primaryBridgeNextNeededPacket: PrimaryBridgeNextNeededPacket;
   primaryBridgeRoster: CandidateRow[];
+  bridgeReconciliationBacklog: BridgeReconciliationBacklogItem[];
   blockers: Array<{ blocker: string; count: number }>;
   singleBlockerRows: number;
   singleBlockers: Array<{ blocker: string; count: number; refundAdjustedNetSol: number; walletStressSol: number }>;
@@ -732,6 +763,263 @@ function candidateRow(
   };
 }
 
+function uniqueCandidateCount(rows: JsonRow[]): number {
+  return new Set(rows.map(candidateId).filter(Boolean)).size;
+}
+
+function sumRefundAdjusted(rows: JsonRow[], args: Args): number {
+  return rows.reduce((sum, row) => sum + refundAdjustedNetSol(row, args.assumedNetworkFeeSol), 0);
+}
+
+function sumWalletStress(rows: JsonRow[], args: Args): number {
+  return rows.reduce((sum, row) =>
+    sum + walletStressSol(row, args.assumedAtaRentSol, args.assumedNetworkFeeSol), 0);
+}
+
+function sampleCandidateRows(
+  rows: JsonRow[],
+  args: Args,
+  byPositionId: Map<string, JsonRow>
+): CandidateRow[] {
+  return rows
+    .slice()
+    .sort((a, b) =>
+      walletStressSol(b, args.assumedAtaRentSol, args.assumedNetworkFeeSol) -
+      walletStressSol(a, args.assumedAtaRentSol, args.assumedNetworkFeeSol)
+    )
+    .slice(0, RECONCILIATION_SAMPLE_LIMIT)
+    .map((row) => candidateRow(row, args, byPositionId));
+}
+
+function singleBlockerRowsByBlocker(rows: JsonRow[], args: Args): Map<string, JsonRow[]> {
+  const byBlocker = new Map<string, JsonRow[]>();
+  for (const row of rows) {
+    const blockers = blockersFor(row, args);
+    if (blockers.length !== 1) continue;
+    const blocker = blockers[0];
+    const bucket = byBlocker.get(blocker) ?? [];
+    bucket.push(row);
+    byBlocker.set(blocker, bucket);
+  }
+  return byBlocker;
+}
+
+function attributionRepairAction(blocker: string): string {
+  switch (blocker) {
+    case 'missing_candidate_id':
+      return 'repair candidateId writer path before counting this cohort as promotion evidence';
+    case 'missing_decision_id':
+      return 'repair decisionId writer path before counting this cohort as promotion evidence';
+    case 'missing_execution_plan_hash':
+      return 'repair executionPlanHash writer path before counting this cohort as promotion evidence';
+    case 'missing_route_proof':
+      return 'repair routeProof / sell-route evidence writer path before counting this cohort as promotion evidence';
+    case 'missing_cost_aware_profile':
+      return 'repair cost-aware profile tagging before counting this cohort as promotion evidence';
+    default:
+      return 'review attribution before counting this cohort as promotion evidence';
+  }
+}
+
+function hasCostAwareIntent(row: JsonRow): boolean {
+  const extras = extrasOf(row);
+  return [
+    str(row.liveEquivalenceCandidateId),
+    str(row.liveEquivalenceDecisionId),
+    str(row.candidateId),
+    str(row.decisionId),
+    str(row.parameterVersion),
+    str(extras.parameterVersion),
+  ]
+    .join(' ')
+    .toLowerCase()
+    .includes('cost_aware') ||
+    [
+      str(row.parameterVersion),
+      str(extras.parameterVersion),
+    ]
+      .join(' ')
+      .toLowerCase()
+      .includes('cost-aware');
+}
+
+function makeBacklogItem(input: {
+  priority: BridgeReconciliationPriority;
+  disposition: BridgeReconciliationDisposition;
+  blocker: string;
+  action: string;
+  rows: JsonRow[];
+  args: Args;
+  byPositionId: Map<string, JsonRow>;
+  reason: string;
+}): BridgeReconciliationBacklogItem {
+  return {
+    priority: input.priority,
+    disposition: input.disposition,
+    blocker: input.blocker,
+    action: input.action,
+    rows: input.rows.length,
+    uniqueCandidates: uniqueCandidateCount(input.rows),
+    refundAdjustedNetSol: sumRefundAdjusted(input.rows, input.args),
+    walletStressSol: sumWalletStress(input.rows, input.args),
+    reason: input.reason,
+    sampleCandidates: sampleCandidateRows(input.rows, input.args, input.byPositionId),
+  };
+}
+
+function buildBridgeReconciliationBacklog(input: {
+  rows: JsonRow[];
+  args: Args;
+  byPositionId: Map<string, JsonRow>;
+  bridgeOosReady: boolean;
+  primaryBridgeReadinessGap: BridgeReadinessGap;
+  uniquePrimaryBridge: JsonRow[];
+}): BridgeReconciliationBacklogItem[] {
+  const backlog: BridgeReconciliationBacklogItem[] = [];
+  const {
+    rows,
+    args,
+    byPositionId,
+    bridgeOosReady,
+    primaryBridgeReadinessGap,
+    uniquePrimaryBridge,
+  } = input;
+  const safeBridgeParentIds = new Set(
+    rows
+      .filter((row) => isBridgeCandidate(row, byPositionId, args))
+      .map(parentPositionId)
+      .filter(Boolean)
+  );
+
+  if (bridgeOosReady) {
+    backlog.push(makeBacklogItem({
+      priority: 'P0',
+      disposition: 'READY_MANUAL_REVIEW',
+      blocker: 'manual_micro_canary_review',
+      action: 'prepare manual tiny micro-canary packet; do not auto-enable live',
+      rows: uniquePrimaryBridge,
+      args,
+      byPositionId,
+      reason: 'primary bridge passed unique/day/wallet-stress/concentration gates',
+    }));
+  } else if (primaryBridgeReadinessGap.neededUniqueCandidates > 0) {
+    backlog.push(makeBacklogItem({
+      priority: 'P0',
+      disposition: 'COLLECT_FORWARD_SAMPLE',
+      blocker: 'primary_bridge_unique_gap',
+      action: `collect +${primaryBridgeReadinessGap.neededUniqueCandidates} unique primary bridge candidates before funded testing`,
+      rows: uniquePrimaryBridge,
+      args,
+      byPositionId,
+      reason: 'this is the shortest safe path from paper edge to wallet-truth micro-canary review',
+    }));
+  }
+
+  const byBlocker = singleBlockerRowsByBlocker(rows, args);
+  for (const [blocker, blockerRows] of byBlocker.entries()) {
+    const safeBridgeRows = blockerRows.filter((row) => isBridgeCandidate(row, byPositionId, args));
+    const safeBridgeParentRows = blockerRows.filter((row) => safeBridgeParentIds.has(positionId(row)));
+    const repairRows = blockerRows.filter((row) =>
+      !isBridgeCandidate(row, byPositionId, args) &&
+      !safeBridgeParentIds.has(positionId(row))
+    );
+
+    if (safeBridgeRows.length > 0) {
+      backlog.push(makeBacklogItem({
+        priority: 'P1',
+        disposition: 'COUNTED_AS_BRIDGE',
+        blocker: `safe_bridge:${blocker}`,
+        action: 'keep as bridge-review evidence; do not relabel as strict live-promotion evidence',
+        rows: safeBridgeRows,
+        args,
+        byPositionId,
+        reason: 'row is not strict-comparable itself, but parent bridge makes it valid for bridge review',
+      }));
+    }
+
+    if (safeBridgeParentRows.length > 0) {
+      backlog.push(makeBacklogItem({
+        priority: 'P1',
+        disposition: 'COUNTED_AS_BRIDGE',
+        blocker: `safe_bridge_parent:${blocker}`,
+        action: 'keep as bridge parent evidence; do not repair expected parent/child profile differences',
+        rows: safeBridgeParentRows,
+        args,
+        byPositionId,
+        reason: 'row is a comparable parent for a cost-aware child bridge candidate',
+      }));
+    }
+
+    if (blocker === 'wallet_stress_non_positive' && repairRows.length > 0) {
+      backlog.push(makeBacklogItem({
+        priority: 'P2',
+        disposition: 'KEEP_BLOCKED',
+        blocker,
+        action: 'keep wallet-stress gate closed; do not recover these rows by metadata repair',
+        rows: repairRows,
+        args,
+        byPositionId,
+        reason: 'wallet-level stress is non-positive, so this is strategy/cost weakness rather than attribution loss',
+      }));
+    } else if (blocker === 'missing_cost_aware_profile' && repairRows.length > 0) {
+      const intendedRows = repairRows.filter(hasCostAwareIntent);
+      const policyMismatchRows = repairRows.filter((row) => !hasCostAwareIntent(row));
+      if (intendedRows.length > 0) {
+        backlog.push(makeBacklogItem({
+          priority: sumWalletStress(intendedRows, args) > 0 ? 'P0' : 'P2',
+          disposition: 'REPAIR_ATTRIBUTION',
+          blocker,
+          action: attributionRepairAction(blocker),
+          rows: intendedRows,
+          args,
+          byPositionId,
+          reason: 'cost-aware intent is present, but the profile tag did not survive into the ledger row',
+        }));
+      }
+      if (policyMismatchRows.length > 0) {
+        backlog.push(makeBacklogItem({
+          priority: 'P2',
+          disposition: 'POLICY_MISMATCH',
+          blocker,
+          action: 'do not promote legacy/non-cost-aware rotation rows as cost-aware bridge evidence',
+          rows: policyMismatchRows,
+          args,
+          byPositionId,
+          reason: 'row may be profitable, but it is not the locked cost-aware promotion cohort',
+        }));
+      }
+    } else if (ATTRIBUTION_REPAIR_BLOCKERS.has(blocker) && repairRows.length > 0) {
+      backlog.push(makeBacklogItem({
+        priority: sumWalletStress(repairRows, args) > 0 ? 'P0' : 'P2',
+        disposition: 'REPAIR_ATTRIBUTION',
+        blocker,
+        action: attributionRepairAction(blocker),
+        rows: repairRows,
+        args,
+        byPositionId,
+        reason: 'metadata-only blockage can hide whether a row is truly promotable or safely non-promotable',
+      }));
+    }
+  }
+
+  const priorityRank: Record<BridgeReconciliationPriority, number> = { P0: 0, P1: 1, P2: 2 };
+  const dispositionRank: Record<BridgeReconciliationDisposition, number> = {
+    READY_MANUAL_REVIEW: 0,
+    COLLECT_FORWARD_SAMPLE: 1,
+    REPAIR_ATTRIBUTION: 2,
+    COUNTED_AS_BRIDGE: 3,
+    POLICY_MISMATCH: 4,
+    KEEP_BLOCKED: 5,
+  };
+  return backlog.sort((a, b) =>
+    priorityRank[a.priority] - priorityRank[b.priority] ||
+    dispositionRank[a.disposition] - dispositionRank[b.disposition] ||
+    b.walletStressSol - a.walletStressSol ||
+    b.rows - a.rows ||
+    a.blocker.localeCompare(b.blocker)
+  );
+}
+
 export function buildReport(rows: JsonRow[], args: Args): PromotionReport {
   const blockers = countBlockers(rows, args);
   const candidates = rows.filter((row) => blockersFor(row, args).length === 0);
@@ -747,6 +1035,9 @@ export function buildReport(rows: JsonRow[], args: Args): PromotionReport {
     (sum, row) => sum + walletStressSol(row, args.assumedAtaRentSol, args.assumedNetworkFeeSol),
     0
   );
+  const promotionDayBuckets = dayBucketStats(candidates, args);
+  const promotionPositiveDays = promotionDayBuckets.filter((row) => row.walletStressSol > 0).length;
+  const promotionTopShare = topWinnerShare(candidates, args);
   const primaryBridgeWalletStress = uniquePrimaryBridge.reduce(
     (sum, row) => sum + walletStressSol(row, args.assumedAtaRentSol, args.assumedNetworkFeeSol),
     0
@@ -781,13 +1072,19 @@ export function buildReport(rows: JsonRow[], args: Args): PromotionReport {
     topWinnerShare: primaryBridgeTopShare,
     parentChildDeltaWalletStressSol: primaryBridgeDelta.deltaWalletStressSol,
   };
+  const strictPromotionReady =
+    uniqueCandidateIds.size >= BRIDGE_REVIEW_MIN_UNIQUE_CANDIDATES &&
+    promotionWalletStress > 0 &&
+    promotionDayBuckets.length >= BRIDGE_REVIEW_MIN_ACTIVE_DAYS &&
+    promotionPositiveDays >= BRIDGE_REVIEW_MIN_ACTIVE_DAYS &&
+    (promotionTopShare ?? 1) <= BRIDGE_REVIEW_MAX_TOP_WINNER_SHARE;
   const primaryBridgeRoster = uniquePrimaryBridge
     .slice()
     .sort((a, b) => timeMs(a.closedAt) - timeMs(b.closedAt))
     .map((row) => candidateRow(row, args, byPositionId));
   const verdict = rows.length === 0
     ? 'NO_SAMPLE'
-    : candidates.length > 0 && promotionWalletStress > 0
+    : strictPromotionReady
       ? 'STRICT_PROMOTION_READY'
       : bridgeOosReady
         ? 'BRIDGE_OOS_REVIEW'
@@ -796,6 +1093,15 @@ export function buildReport(rows: JsonRow[], args: Args): PromotionReport {
         : 'NO_PROMOTION_EDGE';
   const verdictReasons = [
     ...(candidates.length === 0 ? ['strict promotion candidates are empty'] : []),
+    ...(candidates.length > 0 && uniqueCandidateIds.size < BRIDGE_REVIEW_MIN_UNIQUE_CANDIDATES
+      ? [`strict promotion unique ${uniqueCandidateIds.size} < ${BRIDGE_REVIEW_MIN_UNIQUE_CANDIDATES}`]
+      : []),
+    ...(candidates.length > 0 && promotionDayBuckets.length < BRIDGE_REVIEW_MIN_ACTIVE_DAYS
+      ? [`strict promotion active days ${promotionDayBuckets.length} < ${BRIDGE_REVIEW_MIN_ACTIVE_DAYS}`]
+      : []),
+    ...(candidates.length > 0 && promotionTopShare != null && promotionTopShare > BRIDGE_REVIEW_MAX_TOP_WINNER_SHARE
+      ? [`strict top winner share ${formatPct(promotionTopShare)} > ${formatPct(BRIDGE_REVIEW_MAX_TOP_WINNER_SHARE)}`]
+      : []),
     ...(uniquePrimaryBridge.length < BRIDGE_REVIEW_MIN_UNIQUE_CANDIDATES
       ? [`primary bridge unique ${uniquePrimaryBridge.length} < ${BRIDGE_REVIEW_MIN_UNIQUE_CANDIDATES}`]
       : []),
@@ -873,6 +1179,14 @@ export function buildReport(rows: JsonRow[], args: Args): PromotionReport {
     primaryBridgeParentChildDelta: primaryBridgeDelta,
     primaryBridgeNextNeededPacket,
     primaryBridgeRoster,
+    bridgeReconciliationBacklog: buildBridgeReconciliationBacklog({
+      rows,
+      args,
+      byPositionId,
+      bridgeOosReady,
+      primaryBridgeReadinessGap,
+      uniquePrimaryBridge,
+    }),
     blockers,
     singleBlockerRows: singleBlockerStats.reduce((sum, row) => sum + row.count, 0),
     singleBlockers: singleBlockerStats,
@@ -979,6 +1293,14 @@ function renderReport(report: PromotionReport): string {
     `- wallet stress: ${formatSol(report.primaryBridgeNextNeededPacket.walletStressSol)}`,
     `- top winner share: ${formatPct(report.primaryBridgeNextNeededPacket.topWinnerShare)}`,
     `- parent-child wallet delta: ${formatSol(report.primaryBridgeNextNeededPacket.parentChildDeltaWalletStressSol)}`,
+    '',
+    '## Bridge Reconciliation Backlog',
+    ...report.bridgeReconciliationBacklog.map((row) =>
+      `- ${row.priority} ${row.disposition} ${row.blocker}: rows=${row.rows} ` +
+      `unique=${row.uniqueCandidates} walletStress=${formatSol(row.walletStressSol)} ` +
+      `action=${row.action} reason=${row.reason}`
+    ),
+    ...(report.bridgeReconciliationBacklog.length === 0 ? ['- none'] : []),
     '',
     '## Primary Bridge Roster',
     ...report.primaryBridgeRoster.map((row) =>

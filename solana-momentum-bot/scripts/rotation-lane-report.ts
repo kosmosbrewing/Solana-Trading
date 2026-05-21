@@ -50,6 +50,12 @@ const ROTATION_COMPOUND_EARLY_REJECT_MIN_CLOSES = 10;
 const ROTATION_COMPOUND_EARLY_MIN_POST_COST_POSITIVE_RATE = 0.45;
 const ROTATION_COMPOUND_MAX_LOSING_STREAK = 5;
 const ROTATION_FORWARD_SHADOW_ARM = 'rotation_good_kol_focus_v1';
+const ROTATION_FORWARD_SHADOW_ARMS = [
+  ROTATION_FORWARD_SHADOW_ARM,
+  'rotation_bad_kol_block_forward_v1',
+  'rotation_doa_veto_shadow_v1',
+  'rotation_candle_confirm_shadow_v1',
+] as const;
 const ROTATION_FORWARD_SHADOW_MIN_CLOSES = 100;
 const ROTATION_FORWARD_SHADOW_MIN_DAYS = 5;
 const ROTATION_FORWARD_SHADOW_MIN_METADATA_COVERAGE = 0.95;
@@ -1631,6 +1637,7 @@ interface RotationReport {
   microLiveReviewPacket: MicroLiveReviewPacket;
   compoundingProofPacket: CompoundingProofPacket;
   rotationForwardShadowProof: RotationForwardShadowProof;
+  rotationForwardShadowProofs: RotationForwardShadowProof[];
   compoundingHistoricalDecomposition: CompoundingHistoricalDecomposition;
   rotationPaperCompoundReadiness: RotationPaperCompoundReadiness;
   rotationLiveReadiness: RotationLiveReadiness;
@@ -2474,10 +2481,11 @@ function topPositiveWinnerShare(rows: JsonRow[], assumedNetworkFeeSol: number): 
 function buildRotationForwardShadowProof(
   rows: JsonRow[],
   assumedAtaRentSol: number,
-  assumedNetworkFeeSol: number
+  assumedNetworkFeeSol: number,
+  armName: string = ROTATION_FORWARD_SHADOW_ARM
 ): RotationForwardShadowProof {
   const shadowRows = rows
-    .filter((row) => rowMatchesArm(row, ROTATION_FORWARD_SHADOW_ARM))
+    .filter((row) => rowMatchesArm(row, armName))
     .sort((a, b) => rowCloseTimeMs(a) - rowCloseTimeMs(b));
   const refundAdjustedValues = shadowRows.map((row) => rowRefundAdjustedNetSol(row, assumedNetworkFeeSol));
   const refundAdjustedNetSol = shadowRows.length > 0
@@ -2548,15 +2556,15 @@ function buildRotationForwardShadowProof(
   }
   const nextAction =
     verdict === 'FORWARD_SHADOW_PROVEN'
-      ? 'review mirror/live-equivalence packet; no automatic live promotion'
+      ? `review ${armName} mirror/live-equivalence packet; no automatic live promotion`
       : verdict === 'REJECT'
-      ? 'do not promote good-KOL focus; redesign the cohort before live'
+      ? `do not promote ${armName}; redesign the cohort before live`
       : verdict === 'DATA_GAP'
-      ? 'collect rotation_good_kol_focus_v1 forward paper rows; ignore in-sample focus as live proof'
-      : 'continue forward paper collection until sample, date, economics, and metadata gates pass';
+      ? `collect ${armName} forward paper rows; ignore in-sample focus as live proof`
+      : `continue ${armName} forward paper collection until sample, date, economics, and metadata gates pass`;
 
   return {
-    armName: ROTATION_FORWARD_SHADOW_ARM,
+    armName,
     verdict,
     closes: shadowRows.length,
     minCloses: ROTATION_FORWARD_SHADOW_MIN_CLOSES,
@@ -2574,6 +2582,16 @@ function buildRotationForwardShadowProof(
     blockers,
     nextAction,
   };
+}
+
+function buildRotationForwardShadowProofs(
+  rows: JsonRow[],
+  assumedAtaRentSol: number,
+  assumedNetworkFeeSol: number
+): RotationForwardShadowProof[] {
+  return ROTATION_FORWARD_SHADOW_ARMS.map((armName) =>
+    buildRotationForwardShadowProof(rows, assumedAtaRentSol, assumedNetworkFeeSol, armName)
+  );
 }
 
 function summarizeRotationShadowGateCandidate(input: {
@@ -9766,6 +9784,21 @@ function renderRotationForwardShadowProof(row: RotationForwardShadowProof): stri
   ].join('\n');
 }
 
+function renderRotationForwardShadowProofs(rows: RotationForwardShadowProof[]): string {
+  if (rows.length === 0) return '_No forward shadow proof rows._';
+  return [
+    '| arm | verdict | closes | KST dates | refund SOL | wallet stress SOL | postCost>0 | max loss streak | top winner | route proof | cost-aware | next action |',
+    '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|',
+    ...rows.map((row) =>
+      `| ${row.armName} | ${row.verdict} | ${row.closes}/${row.minCloses} | ${row.dateBuckets}/${row.minDateBuckets} | ` +
+        `${formatSol(row.refundAdjustedNetSol)} | ${formatSol(row.walletDragStressSol)} | ${formatPct(row.postCostPositiveRate)} | ` +
+        `${row.maxLosingStreak ?? 'n/a'} | ${formatPct(row.topWinnerShare)} | ` +
+        `${row.routeProofRows}/${row.closes} (${formatPct(row.routeProofCoverage)}) | ` +
+        `${row.costAwareRows}/${row.closes} (${formatPct(row.costAwareCoverage)}) | ${row.nextAction} |`
+    ),
+  ].join('\n');
+}
+
 function renderCompoundingHistoricalDecomposition(row: CompoundingHistoricalDecomposition): string {
   const buckets = [
     '| bucket | role | rows | refund-adjusted | postCost>0 | T1 | med MFE |',
@@ -10185,8 +10218,8 @@ function renderReport(report: RotationReport): string {
     renderCompoundingProofPacket(report.compoundingProofPacket),
     '',
     '## Rotation Forward Shadow Proof',
-    '> Report-only. Separates the actual `rotation_good_kol_focus_v1` forward paper arm from in-sample good-KOL hindsight analysis.',
-    renderRotationForwardShadowProof(report.rotationForwardShadowProof),
+    '> Report-only. Separates actual forward paper arms from in-sample good-KOL hindsight analysis. This board is for fast collect/reject/manual-review only.',
+    renderRotationForwardShadowProofs(report.rotationForwardShadowProofs),
     '',
     '## Review Cohort Decision',
     '> Report-only. Compresses collect/watch/reject/pass for the route-known 2+KOL cost-aware paper cohort; live routing remains unchanged.',
@@ -10509,11 +10542,14 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
     microLiveReviewPacket,
     rotationLiveRows
   );
-  const rotationForwardShadowProof = buildRotationForwardShadowProof(
+  const rotationForwardShadowProofs = buildRotationForwardShadowProofs(
     rotationPaperRows,
     assumedAtaRentSol,
     assumedNetworkFeeSol
   );
+  const rotationForwardShadowProof =
+    rotationForwardShadowProofs.find((row) => row.armName === ROTATION_FORWARD_SHADOW_ARM) ??
+    buildRotationForwardShadowProof(rotationPaperRows, assumedAtaRentSol, assumedNetworkFeeSol);
   const compoundingHistoricalDecomposition = buildCompoundingHistoricalDecomposition(
     rotationPaperRows,
     assumedNetworkFeeSol
@@ -10618,6 +10654,7 @@ export async function buildRotationLaneReport(args: Args): Promise<RotationRepor
     microLiveReviewPacket,
     compoundingProofPacket,
     rotationForwardShadowProof,
+    rotationForwardShadowProofs,
     compoundingHistoricalDecomposition,
     rotationPaperCompoundReadiness,
     rotationLiveReadiness,

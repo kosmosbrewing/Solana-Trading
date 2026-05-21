@@ -116,4 +116,109 @@ describe('rotation-promotion-candidates-report', () => {
     expect(report.primaryBridgeRoster).toHaveLength(1);
     expect(report.primaryBridgeRoster[0].candidateId).toBe('candidate-1');
   });
+
+  it('does not mark strict promotion ready from a sparse strict row', () => {
+    const report = buildReport([
+      baseRow({
+        paperRole: 'mirror',
+        profileArm: 'rotation_underfill_cost_aware_exit_v2',
+        liveEquivalenceCandidateId: 'strict-candidate-1',
+        liveEquivalenceDecisionId: 'strict-decision-1',
+        executionPlanHash: 'strict-hash-1',
+        routeFound: true,
+        netSolTokenOnly: 0.02,
+      }),
+    ], args);
+
+    expect(report.promotionCandidateRows).toBe(1);
+    expect(report.verdict).not.toBe('STRICT_PROMOTION_READY');
+    expect(report.verdictReasons).toContain('strict promotion unique 1 < 30');
+  });
+
+  it('marks strict promotion ready only after the strict sample gate is met', () => {
+    const rows = Array.from({ length: 30 }, (_, index) => baseRow({
+      closedAt: `2026-05-${String(17 + (index % 3)).padStart(2, '0')}T00:00:00.000Z`,
+      paperRole: 'mirror',
+      profileArm: 'rotation_underfill_cost_aware_exit_v2',
+      liveEquivalenceCandidateId: `strict-candidate-${index}`,
+      liveEquivalenceDecisionId: `strict-decision-${index}`,
+      executionPlanHash: `strict-hash-${index}`,
+      routeFound: true,
+      netSolTokenOnly: 0.01,
+    }));
+
+    const report = buildReport(rows, args);
+
+    expect(report.uniquePromotionCandidates).toBe(30);
+    expect(report.verdict).toBe('STRICT_PROMOTION_READY');
+  });
+
+  it('builds a bridge reconciliation backlog for the shortest safe promotion path', () => {
+    const report = buildReport([
+      ...bridgePair(1),
+      baseRow({
+        positionId: 'repair-1',
+        paperRole: 'mirror',
+        profileArm: 'rotation_underfill_exit_flow_v1',
+        liveEquivalenceCandidateId: 'repair-candidate:rotation_underfill_cost_aware_exit_v2',
+        liveEquivalenceDecisionId: 'repair-decision:rotation_underfill_cost_aware_exit_v2',
+        executionPlanHash: 'repair-hash',
+        routeFound: true,
+        netSolTokenOnly: 0.02,
+      }),
+      baseRow({
+        positionId: 'legacy-positive-1',
+        paperRole: 'mirror',
+        profileArm: 'rotation_underfill_exit_flow_v1',
+        liveEquivalenceCandidateId: 'legacy-candidate',
+        liveEquivalenceDecisionId: 'legacy-decision',
+        executionPlanHash: 'legacy-hash',
+        routeFound: true,
+        netSolTokenOnly: 0.015,
+      }),
+      baseRow({
+        positionId: 'cost-loss-1',
+        paperRole: 'mirror',
+        profileArm: 'rotation_underfill_cost_aware_exit_v2',
+        liveEquivalenceCandidateId: 'loss-candidate',
+        liveEquivalenceDecisionId: 'loss-decision',
+        executionPlanHash: 'loss-hash',
+        routeFound: true,
+        netSolTokenOnly: -0.01,
+      }),
+    ], args);
+
+    expect(report.bridgeReconciliationBacklog[0]).toMatchObject({
+      priority: 'P0',
+      disposition: 'COLLECT_FORWARD_SAMPLE',
+      blocker: 'primary_bridge_unique_gap',
+      action: expect.stringContaining('collect +29 unique primary bridge candidates'),
+    });
+    expect(report.bridgeReconciliationBacklog).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        priority: 'P0',
+        disposition: 'REPAIR_ATTRIBUTION',
+        blocker: 'missing_cost_aware_profile',
+        uniqueCandidates: 1,
+      }),
+      expect.objectContaining({
+        priority: 'P2',
+        disposition: 'POLICY_MISMATCH',
+        blocker: 'missing_cost_aware_profile',
+        uniqueCandidates: 1,
+      }),
+      expect.objectContaining({
+        priority: 'P1',
+        disposition: 'COUNTED_AS_BRIDGE',
+        blocker: 'safe_bridge:non_comparable_role',
+        uniqueCandidates: 1,
+      }),
+      expect.objectContaining({
+        priority: 'P2',
+        disposition: 'KEEP_BLOCKED',
+        blocker: 'wallet_stress_non_positive',
+        uniqueCandidates: 1,
+      }),
+    ]));
+  });
 });

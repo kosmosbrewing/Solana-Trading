@@ -463,6 +463,11 @@ export const kolHunter = {
   kolHunterRotationGoodKolFocusPaperEnabled: boolOptional('KOL_HUNTER_ROTATION_GOOD_KOL_FOCUS_PAPER_ENABLED', true),
   kolHunterRotationGoodKolFocusKolIds: parseStringList(optional('KOL_HUNTER_ROTATION_GOOD_KOL_FOCUS_KOL_IDS', 'dv,kadenox,letterbomb,naruza')),
   kolHunterRotationGoodKolFocusParameterVersion: process.env.KOL_HUNTER_ROTATION_GOOD_KOL_FOCUS_PARAMETER_VERSION ?? 'rotation-good-kol-focus-v1.0.0',
+  // 2026-05-21: bad-KOL 차단 후보를 forward paper-only 로 검증한다.
+  // live 주문은 바꾸지 않고, 차단 후보는 false-negative 검토용 rotation arm skip 으로 남긴다.
+  kolHunterRotationBadKolBlockPaperEnabled: boolOptional('KOL_HUNTER_ROTATION_BAD_KOL_BLOCK_PAPER_ENABLED', true),
+  kolHunterRotationBadKolBlockKolIds: parseStringList(optional('KOL_HUNTER_ROTATION_BAD_KOL_BLOCK_KOL_IDS', 'daumen,jijo,noob_mini,yenni')),
+  kolHunterRotationBadKolBlockParameterVersion: process.env.KOL_HUNTER_ROTATION_BAD_KOL_BLOCK_PARAMETER_VERSION ?? 'rotation-bad-kol-block-v1.0.0',
   // 2026-05-18: paper-first admission veto shadow. Baseline rotation paper still
   // enters; this sidecar tests whether skipping KOLs that just produced DOA-like
   // losses improves wallet-cost compounding without touching live routing.

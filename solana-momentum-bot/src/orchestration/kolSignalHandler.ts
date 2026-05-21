@@ -180,6 +180,7 @@ const ROTATION_EXIT_FLOW_ARM = 'rotation_exit_kol_flow_v1';
 const ROTATION_UNDERFILL_EXIT_FLOW_PROFILE_ARM = 'rotation_underfill_exit_flow_v1';
 const ROTATION_UNDERFILL_COST_AWARE_PROFILE_ARM = 'rotation_underfill_cost_aware_exit_v2';
 const ROTATION_GOOD_KOL_FOCUS_ARM = 'rotation_good_kol_focus_v1';
+const ROTATION_BAD_KOL_BLOCK_ARM = 'rotation_bad_kol_block_forward_v1';
 const ROTATION_DOA_VETO_SHADOW_ARM = 'rotation_doa_veto_shadow_v1';
 const ROTATION_CANDLE_CONFIRM_SHADOW_ARM = 'rotation_candle_confirm_shadow_v1';
 const ROTATION_CANDLE_COVERAGE_PROBE_ARM = 'rotation_candle_coverage_probe_v1';
@@ -2588,6 +2589,7 @@ function armNameForVersion(parameterVersion: string): string {
   if (parameterVersion === config.kolHunterRotationUnderfillParameterVersion) return ROTATION_UNDERFILL_ARM;
   if (parameterVersion === config.kolHunterRotationUnderfillCostAwareParameterVersion) return ROTATION_UNDERFILL_COST_AWARE_PROFILE_ARM;
   if (parameterVersion === config.kolHunterRotationGoodKolFocusParameterVersion) return ROTATION_GOOD_KOL_FOCUS_ARM;
+  if (parameterVersion === config.kolHunterRotationBadKolBlockParameterVersion) return ROTATION_BAD_KOL_BLOCK_ARM;
   if (parameterVersion === config.kolHunterRotationDoaVetoShadowParameterVersion) return ROTATION_DOA_VETO_SHADOW_ARM;
   if (parameterVersion === config.kolHunterRotationCandleConfirmParameterVersion) return ROTATION_CANDLE_CONFIRM_SHADOW_ARM;
   if (parameterVersion === ROTATION_CANDLE_COVERAGE_PROBE_PARAMETER_VERSION) return ROTATION_CANDLE_COVERAGE_PROBE_ARM;
@@ -2626,6 +2628,7 @@ interface RotationPaperArmSpec extends DynamicExitParams {
   candleConfirmHorizonSec?: number;
   candleConfirmMinMfePct?: number;
   requiredKolIds?: string[];
+  blockedKolIds?: string[];
   extraSurvivalFlags?: string[];
 }
 
@@ -2812,6 +2815,36 @@ function buildRotationPaperArmSpecs(primaryVersion: string): RotationPaperArmSpe
       ),
     ],
   };
+  const badKolBlockSpec: RotationPaperArmSpec = {
+    suffix: 'bad-kol-block',
+    armName: ROTATION_BAD_KOL_BLOCK_ARM,
+    profileArm: ROTATION_BAD_KOL_BLOCK_ARM,
+    parameterVersion: config.kolHunterRotationBadKolBlockParameterVersion,
+    enabled: config.kolHunterRotationBadKolBlockPaperEnabled &&
+      config.kolHunterRotationBadKolBlockKolIds.length > 0,
+    t1Mfe: config.kolHunterRotationUnderfillCostAwareT1MinMfe,
+    t1TrailPct: config.kolHunterRotationUnderfillCostAwareT1TrailPct,
+    t1ProfitFloorMult: config.kolHunterRotationUnderfillCostAwareProfitFloorMult,
+    probeFlatTimeoutSec: config.kolHunterRotationUnderfillCostAwareProbeTimeoutSec,
+    probeHardCutPct: config.kolHunterRotationUnderfillCostAwareHardCutPct,
+    rotationDoaWindowSec: config.kolHunterRotationUnderfillDoaWindowSec,
+    rotationDoaMinMfePct: config.kolHunterRotationUnderfillDoaMinMfePct,
+    rotationDoaMaxMaePct: config.kolHunterRotationUnderfillDoaMaxMaePct,
+    flowExit: true,
+    costAwareExit: true,
+    costAwareT1MinMfe: config.kolHunterRotationUnderfillCostAwareT1MinMfe,
+    costAwareT1BufferPct: config.kolHunterRotationUnderfillCostAwareT1BufferPct,
+    costAwareT1MaxMfe: config.kolHunterRotationUnderfillCostAwareT1MaxMfe,
+    costAwareProfitFloorMult: config.kolHunterRotationUnderfillCostAwareProfitFloorMult,
+    costAwareProfitFloorBufferPct: config.kolHunterRotationUnderfillCostAwareProfitFloorBufferPct,
+    blockedKolIds: config.kolHunterRotationBadKolBlockKolIds,
+    extraSurvivalFlags: [
+      'ROTATION_BAD_KOL_BLOCK_FORWARD_PAPER',
+      ...config.kolHunterRotationBadKolBlockKolIds.map((kolId) =>
+        `ROTATION_BAD_KOL_BLOCK_KOL_${kolId.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}`
+      ),
+    ],
+  };
   if (primaryVersion === config.kolHunterRotationUnderfillParameterVersion) {
     const doaVetoShadowSpec: RotationPaperArmSpec = {
       suffix: 'doa-veto-shadow',
@@ -2893,6 +2926,7 @@ function buildRotationPaperArmSpecs(primaryVersion: string): RotationPaperArmSpe
       flowSpec,
       underfillCostAwareSpec,
       goodKolFocusSpec,
+      badKolBlockSpec,
       doaVetoShadowSpec,
       candleConfirmShadowSpec,
       candleCoverageProbeSpec,
@@ -3068,6 +3102,13 @@ function rotationPaperArmRejectReason(
     const seen = new Set(participatingKols.map((kol) => kol.id.toLowerCase()));
     const hasRequiredKol = spec.requiredKolIds.some((kolId) => seen.has(kolId.toLowerCase()));
     if (!hasRequiredKol) return 'focus_kol_missing';
+  }
+  if (spec.blockedKolIds?.length) {
+    const blocked = new Set(spec.blockedKolIds.map((kolId) => kolId.toLowerCase()));
+    const blockedKol = participatingKols
+      .map((kol) => kol.id)
+      .find((kolId) => blocked.has(kolId.toLowerCase()));
+    if (blockedKol) return `bad_kol_block:${blockedKol}`;
   }
   if (spec.doaVetoShadow) {
     const veto = checkRotationDoaVetoShadow(participatingKols.map((kol) => kol.id));
@@ -12168,6 +12209,7 @@ async function enterLivePosition(
     for (const spec of buildRotationPaperArmSpecs(primaryVersion)) {
       if (
         spec.armName !== ROTATION_GOOD_KOL_FOCUS_ARM &&
+        spec.armName !== ROTATION_BAD_KOL_BLOCK_ARM &&
         spec.armName !== ROTATION_DOA_VETO_SHADOW_ARM &&
         spec.armName !== ROTATION_CANDLE_CONFIRM_SHADOW_ARM &&
         spec.armName !== ROTATION_CANDLE_COVERAGE_PROBE_ARM

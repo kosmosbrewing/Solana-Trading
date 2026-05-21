@@ -69,6 +69,15 @@ describe('rotation-promotion-gatekeeper', () => {
           refundAdjustedNetSol: 0.3,
           walletStressSol: 0.2,
         }],
+        bridgeReconciliationBacklog: [{
+          priority: 'P0',
+          disposition: 'COLLECT_FORWARD_SAMPLE',
+          blocker: 'primary_bridge_unique_gap',
+          action: 'collect +13 unique primary bridge candidates before funded testing',
+          rows: 17,
+          uniqueCandidates: 17,
+          walletStressSol: 0.2,
+        }],
         primaryBridgeReadinessGap: {
           ...baseReport().primaryBridgeReadinessGap,
           currentUniqueCandidates: 17,
@@ -81,6 +90,10 @@ describe('rotation-promotion-gatekeeper', () => {
     expect(report.primaryBlockerDisposition).toBe('WAIT_MORE_FORWARD_SAMPLE');
     expect(report.windows[0].blockerDrilldown.safeBridgeRows).toBe(39);
     expect(report.windows[0].blockerDrilldown.missingMetadataRows).toBe(21);
+    expect(report.windows[0].blockerDrilldown.bridgeReconciliationBacklog[0]).toMatchObject({
+      priority: 'P0',
+      blocker: 'primary_bridge_unique_gap',
+    });
     expect(report.nextAction).toContain('collect missing bridge evidence');
   });
 
@@ -150,6 +163,7 @@ describe('rotation-promotion-gatekeeper', () => {
     expect(md).toContain('## Micro-Canary Sleeve');
     expect(md).toContain('## Micro-Canary Preflight Packet');
     expect(md).toContain('## Promotion Blocker Drilldown');
+    expect(md).toContain('### Primary Window Bridge Reconciliation Backlog');
     expect(md).toContain('| 168h | READY |');
   });
 

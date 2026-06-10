@@ -25,6 +25,8 @@ npm run check:fast
 
 ## 2. 현재 paradigm — 무엇이 active 한가
 
+> ⚠️ **2026-06-10 Edge Audit 판정: `RETIRE_CURRENT_LIVE`** — live wallet-truth 음수 확정 (475 closes / −1.128 SOL, P(net>0)=0.0000). bot 정지 유지, KOL-follow live 전략 (smart-v3 / rotation / broad canary) archive, 차기 신호 연구는 offline-only. 아래 Lane 표의 live/canary 표기는 **historical 구성** 이며 live 재개는 audit §7 kill criteria 통과 전 금지. 근거: `analysis/edge-audit-2026-06-10/EDGE_AUDIT_REPORT.md`, 연표: `INCIDENT.md` 2026-06-10.
+
 ### Authority chain (위에서부터 읽기)
 
 1. **`MISSION_CONTROL.md`** — 6 control framework (survival/universe/payoff/execution/experiment/discipline). 모든 변경의 4-layer reporting 의무.
@@ -65,6 +67,7 @@ npm run check:fast
 ## 4. 5 분 안에 알아야 할 것
 
 ### 최근 무엇을 했나
+- **2026-06-10** — **Edge Audit 완결 (`RETIRE_CURRENT_LIVE`) + 측정 부채 수리**. 엣지 부재 진단 8 phase 완료 (`analysis/edge-audit-2026-06-10/`): 신호 수명 ~60s × 왕복 고정비 13.6% × 5x tail 92% 가 exit 후 발생의 3중 자기모순으로 KOL-follow live 폐기 판정. 후속 수리: offline-sim positionId dedup (M1 이중 계상), token-only sanity clamp (decimals 버그 row 집계 제외), jest production ledger 오염 차단 + synthetic markout rows 18건 격리 (`npm run ops:quarantine:synthetic-markouts`), KOL candle 구독 TTL 7→15min env knob + funnel telemetry (observe-only, 기대 coverage 1.81→6-9%). capitulation-rebound 가설도 offline 기각 (08 리포트). 병렬 2차 검수: 코드 리뷰 MAJOR 1 (token-only clamp 의 fiveXRows 조작 hole) 수정 + 적대적 재계산으로 판정 유지 확인 (stale 인용은 EDGE_AUDIT_REPORT §8 Errata). check:fast 210/2122 PASS.
 - **2026-05-19** — **rotation paper → micro-canary 승격 gatekeeper 추가**. Raw rotation paper net 이 아니라 `paperRole=mirror/fallback_execution_safety`, route/cost-aware, wallet-stress, parent-child delta 를 통과한 bridge 후보만 승격 검토 대상으로 본다. `sync-vps-data.sh`는 기본으로 `rotation-promotion-candidates-24h/7d-YYYY-MM-DD.md/json`, `rotation-promotion-gatekeeper-YYYY-MM-DD.md/json`, `rotation-promotion-readiness-trend-YYYY-MM-DD.md/json` 을 생성하고, `data/research/rotation-promotion-readiness-history.jsonl`에 readiness 추세를 누적한다. 현재 데이터 기준 gatekeeper 는 `WAIT`이며 7d primary bridge unique `17/30`이라 `+13` 후보가 더 필요하다. `READY`가 되어도 live 자동 활성화는 금지이고, 수동 micro-canary review 만 허용한다.
 - **2026-05-16** — **historical loss / paper-shadow promotion 기준 고정**. 500+ close historical 손실을 live 정책으로 직접 승격하지 않고, `npm run kol:historical-loss-report` 의 report-only pipeline 으로 `Promotion Watchlist` → `Paper Shadow Fresh Readiness` → `Paper Shadow Fresh Counters` 를 확인한다. 운영 분석은 항상 `bash scripts/sync-vps-data.sh` 이후 같은 시점의 `data/realtime` 로 재생성한다. `READY_FOR_LIVE_REVIEW` 또는 `READY_FRESH_REVIEW` 전에는 live 반영 금지. 현재 실제 데이터 기준 liveReview=0, smart-v3 `SMART_V3_LAST_BUY_AGE_3S` 는 paper-shadow-only/fresh rows 0, rotation `ROTATION_V1_SMALL_BUYS_3 + ROTATION_V1_SCORE_0.80` 은 3d/7d rows 3 이지만 24h rows 0 으로 `STALE_NO_24H_ROWS`.
 - **2026-05-14** — **wallet hard floor 0.6 SOL 완화**. 운영자가 기존 0.7 SOL threshold 근접으로 live evidence 수집이 닫힐 위험을 승인하고 `WALLET_STOP_MIN_SOL` default 를 0.6 으로 낮췄다. Yellow-zone paper fallback 하한도 `KOL_HUNTER_YELLOW_ZONE_PAPER_FALLBACK_BELOW_SOL=0.60` 으로 맞춰 0.60~0.85 SOL 구간에서는 promoted arm별 live 기준을 계속 적용한다. Ticket/KOL cap/drift halt/max concurrent/security hard reject 는 변경 없음.

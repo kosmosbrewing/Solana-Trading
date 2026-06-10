@@ -34,3 +34,9 @@ logs/*
 
 # Patch 백업
 *.bak
+
+# Edge audit scratch caches (로컬 data/realtime 에서 재생성 가능, 대용량)
+analysis/*/cache/
+# 단, audit phase report 는 commit 대상 (INCIDENT/CLAUDE.md 가 참조하는 증거 문서)
+!analysis/*/reports/
+!analysis/*/reports/**

@@ -6,6 +6,40 @@
 
 ---
 
+## 2026-06-10 — Edge Audit 최종 판정 `RETIRE_CURRENT_LIVE` + 측정 부채 수리 sprint
+
+### 판정 (audit 완결 — `analysis/edge-audit-2026-06-10/EDGE_AUDIT_REPORT.md`)
+- **Verdict: `RETIRE_CURRENT_LIVE`** — live wallet-truth 음수 확정 (475 closes / −1.128 SOL, dedup ledger −0.803 SOL, bootstrap P(net>0)=0.0000), 승격 gate 통과 cohort 0/탐색 23 arms.
+- 근본 구조 3중 자기모순: **A(신호 수명 ~60s) × B(왕복 고정비 0.0027 SOL = ticket 13.6%) × C(5x tail 의 92% 가 exit 후 발생)**. 단일 수정으로 해소 불가.
+- Option 5 핵심 가설 반증: multi-KOL consensus 는 역예측 (T+1800 median: 1-KOL −43% / 2-KOL −64.5% / 3+ −68.1%).
+- Action: bot 정지 유지 / KOL-follow live 전략 (smart-v3 · rotation · broad canary) archive / 측정·승격 인프라 + 데이터 자산 보존 / 차기 신호 연구는 offline-only.
+- 부속 결론: 08 리포트에서 capitulation-rebound 가설도 offline 기각 (전 d300 bucket gross median 음수, 양 chrono half sign-stable) — paper lane as-is 활성화 비권고.
+- Phase 0-8 산출물: `analysis/edge-audit-2026-06-10/` (scripts 5, cache 5, reports 9). 감사 prompt: `docs/exec-plans/active/solone-edge-audit-prompt-2026-06-10.md`.
+
+### 측정 부채 수리 (audit §6 권고 1·2 구현 — 본 sprint)
+- **M1 offline-sim 이중 계상 fix**: projection ledger (smart-v3/rotation) 가 aggregate ledger (kol-live/kol-paper) 의 positionId 를 복제 → `dedupByPositionId` first-wins (aggregate 우선) 도입. live 596 rows/−1.565 SOL → 실제 325/−0.803. 리포트에 raw/dedup row 표기 추가 (`scripts/lib/missionOfflineSimulator*.ts`).
+- **Token-only sanity clamp**: decimals 버그 row (예: 0.02 ticket 에 netSolTokenOnly −20.77) 의 token-only 축을 집계 제외 + 카운트 표기. ledger 원본 무수정 (`scripts/lib/tokenOnlySanity.ts` + canary/smart-v3 report 통합).
+- **Jest production ledger 오염 차단**: `tradeMarkoutObserver` 에 test-env production write guard (opt-in `TRADE_MARKOUT_LEDGER_IN_TEST=true`) + jest setup 에서 `REALTIME_DATA_DIR` worker 별 tmpdir 강제 + markout observer default off.
+- **Synthetic row 격리 실행**: `npm run ops:quarantine:synthetic-markouts` (신규 등록) — anchors 10 + markouts 8 rows (PAIR* mint) 를 `data/realtime/quarantine/*.synthetic.jsonl` 로 이동, timestamped .bak 백업 생성 (20260610T102554Z).
+
+### KOL candle coverage fix (audit 07 리포트 — observe-only)
+- Root cause 정량 분해: hook 부재 78.2% / pair resolution 실패 (post-deploy unique mint 92% 구독 실패, pumpfun bonding curve parser 미지원 24.7%) / TTL 7min misalignment 7.6%p. capacity 는 현재 non-binding (max concurrent 7/8, eviction 0).
+- Fix: TTL 7→15min env knob (`KOL_REALTIME_CANDLE_TARGET_TTL_MS`/`_MAX`, clamp 포함 `kolCandleCoveragePolicy.ts`) + 일별 funnel telemetry (`kol-candle-coverage-telemetry.jsonl`, UTC day_final + 60min interval, fail-open). 기대 coverage 1.81% → 6-9% (resolution fix 없이는 80% 도달 불가 — follow-up: KolTx poolAddress 추출 / pumpfun bonding parser ADR).
+- **불변**: live entry/exit 판단 경로 변경 0, Real Asset Guard 미접촉, 신규 paid RPC 0.
+
+### 검증 (병렬 2차 검수 포함)
+- `npm run check:fast` **210 suites / 2122 tests PASS** (신규 test 4: coverage policy/telemetry, tokenOnlySanity, quarantine; 보강 4: offline-sim/canary/smart-v3/markout; 5x 조작 차단 회귀 test +1).
+- **병렬 코드 리뷰 (2차)**: MAJOR 1건 수정 — smart-v3 report 의 token-only clamp 가 합계에만 적용되고 `maxMfe`/`tokenOnlyIsWin` 미적용 → 부풀린 `mfePctPeakTokenOnly` 가 fiveXRows (verdict gate) 를 조작 가능했던 hole 봉쇄. MINOR: candle target max 하한 1 (0/음수 설정 시 default 8 복귀는 의도 반대) / telemetry `flush()` 선행 rollover (idle day 의 day_final 유실 방지) / token-only sanity multiplier 50→200x (50x tail winner 오판 방지, 실제 버그 class ~850x) / offline-sim dedup key 에 live-paper mode 포함 / .env.example CRLF→LF 정규화 / quarantine argv guard.
+- **병렬 감사 정합성 검증 (적대적 재계산)**: 판정 유지 (**YES_WITH_CAVEATS**, CRITICAL 0). E1/E2/E5-E7/E11-E17 전부 재현 (E2 독립 bootstrap 2,000 resample 일치). stale 인용 정정은 `EDGE_AUDIT_REPORT.md` **§8 Errata** 에 기록 (E9 saved 1.22→0.660 / ruin 13.5→5.98% — 06-07 이중계상 run 인용이 원인, 부호 불변; Phase 1 CI 는 cache 가 본문보다 더 음수 = 판정 강화 방향; E8/baseline-1 diagnostic-grade 단서; "미실행" 문구 모순 해소).
+- 신규 live 거래 0 / paid Helius 호출 0 / wallet floor 0.6 SOL 불변.
+
+### 잔여 follow-up (운영자 결정 대기)
+- KolTx `poolAddress` 파싱 + pump.fun bonding curve WS parser (coverage 50-80% 의 실제 해법, 별도 ADR)
+- `momentum-ops-bot` 잔여 폴링 점검 (Telegram 429) + VPS 비용 유지 여부 (audit §6-4)
+- 차기 신호 가설은 기존 로컬 데이터 offline 검증만 — kill criteria 는 audit §7 (기존 promotion gate 완화 불가)
+
+---
+
 ## 2026-05-01 (evening) — Helius Credit-to-Edge plan + Research Ledger Unification 통합 sprint
 
 ### 산출 (~3,625 LOC + 2 ADR + 다수 후속 보정)

@@ -1,6 +1,12 @@
 # Survivor Momentum Lane — 설계 초안 (2026-06-10)
 
-> Status: **DRAFT — offline 검증 전. 코드 구현 금지** (Phase 0 통과 후 paper lane 구현)
+> Status: **PHASE 0 REJECTED (2026-06-10, 같은 날)** — §7 kill criteria 발동. 코드 미구현, 매몰 0.
+> 판정: 3 trigger 모두 T+30m gross median ≤ 0 (t1 −2.1% CI[−4.7,−0.6] / t2 −0.2% / t3 −0.3%),
+> post-cost 두 ticket 시나리오 전부 음수. **단 universe 필터 자체는 유효** (KOL universe 의
+> T+30m −48% bleed → −0.2~−2% 로 제거. 진입 edge 가 없을 뿐).
+> 상세: `analysis/survivor-momentum-phase0-2026-06-10/FINDINGS.md`
+> 재검정 조건: coverage 레버 1 가동 후 신선 데이터 (universe 확장) 또는 10s bar 바깥 정보
+> (holder/dev 행동) 를 쓰는 새 trigger 의 사전 등록.
 > Parent: `mission-refinement-v2-2026-06-10.md`
 > Evidence constraints: edge audit §8 errata (KOL universe 측정 한계) + 함정 3개 (v2 ADR §5)
 

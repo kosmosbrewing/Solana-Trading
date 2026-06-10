@@ -41,6 +41,13 @@
 - Lever 2 (bonding curve WS parser) 는 보류 + 착수 trigger 3개 ADR §3 명시 (pumpfun 추출 비중 ≥30% / coverage 20% plateau / 차기 가설의 명시 요구).
 - 검증: extractor 7 tests + resolver gate 2 tests 신규. `check:fast` **211 suites / 2130 tests PASS**. 신규 paid API 0, live 판단 경로 변경 0.
 
+### Survivor Momentum Phase 0 — REJECT_ALL (같은 날 후속, mission v2 첫 가설 검정)
+- 운영자 지시로 Phase 0 offline 검정 실행 (`analysis/survivor-momentum-phase0-2026-06-10/`). sessions 810개 (03-31..05-22) / unique pairs 1,334 / 10s bars (동일 ts 재기록 최대 156회 → 최종본 dedup).
+- **3 trigger 전부 기각**: t1_burst T+30m gross median −2.1% (CI95 [−4.7,−0.6], n=142) / t2_persist −0.2% (n=2,424) / t3_breakout −0.3% (n=227). post-cost (ticket 0.05/0.1 bar 6.9%/4.2%) 전부 음수. P(≥+50%) 0~4% — 수확할 tail 자체가 얇음.
+- **긍정 발견 1**: 생존+나이+활동 필터가 KOL universe 의 T+30m −48% bleed 를 −0.2~−2% 로 제거 — universe 정의 (손실 통제) 는 유효, 진입 edge 가 없을 뿐.
+- 한계: universe = 구독된 pool 한정 (1,334 pairs) / trigger 는 Python 근사 / entry=bar close (낙관) / 출생=first-seen proxy. 차기: coverage 레버 1 가동 신선 데이터 재검정 또는 holder/dev 행동 기반 새 trigger 사전 등록 (`FINDINGS.md` §4).
+- lane design 문서 status PHASE 0 REJECTED 로 갱신. 코드 구현 0, 매몰 0.
+
 ### 잔여 follow-up (운영자 결정 대기)
 - **Lever 2**: pump.fun bonding curve WS parser (ADR §3 trigger 충족 시 착수)
 - 다음 observe run (운영자 승인 필요, paper/observe 모드): telemetry `resolveMiss` 분포 + `source=kol_tx_pool` 등장 + full coverage 재측정으로 Lever 1 효과 검증

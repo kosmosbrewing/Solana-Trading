@@ -274,16 +274,58 @@ function hasCostAware(row: JsonRow): boolean {
   return armName.includes('cost_aware') || parameterVersion.includes('cost-aware');
 }
 
+// 왜: lane projection ledger (smart-v3-*/rotation-v1-*)는 aggregate ledger
+// (kol-live-trades/kol-paper-trades)의 positionId 부분집합을 같은 row 로 복제한다
+// (lane-operating-refactor-2026-05-03). 단순 합산하면 동일 trade 의 net/승률/streak 이
+// 이중 계상된다 (2026-06-10 edge audit M1: live 596 rows/-1.565 SOL → 실제 325/-0.803).
+// first-wins dedup 이므로 입력 순서가 곧 우선순위다: aggregate 파일을 먼저 넣어
+// aggregate row 를 보존하고, projection row 는 aggregate 에 없는 positionId 만 채운다.
+// 같은 파일 안의 재기록 (kol-live 328 rows / 325 unique) 도 동일하게 한 번만 남는다.
+export function dedupByPositionId<T extends { positionId: string; armName: string; isLive?: boolean }>(rows: T[]): T[] {
+  const keptById = new Map<string, T>();
+  const result: T[] = [];
+  for (const row of rows) {
+    if (!row.positionId) {
+      // positionId 가 없으면 dedup 키가 없으므로 그대로 보존한다 (계상 누락 방지).
+      result.push(row);
+      continue;
+    }
+    // live/paper 는 별도 namespace — 이론상 cross-mode positionId 충돌이 생겨도
+    // 한쪽 mode 의 정당한 row 를 떨어뜨리지 않도록 mode 를 키에 포함한다.
+    const key = `${row.isLive === true ? 'L' : 'P'}:${row.positionId}`;
+    const kept = keptById.get(key);
+    if (kept == null) {
+      keptById.set(key, row);
+      result.push(row);
+      continue;
+    }
+    // duplicate 는 net 계상에서 제외하되, 보존된 row 에 armName 이 비어 있으면
+    // projection row 의 lane 정보로만 보강한다 (enrichment, 이중 계상 없음).
+    if (!kept.armName && row.armName) kept.armName = row.armName;
+  }
+  return result;
+}
+
 async function loadTradeRows(args: MissionOfflineSimulatorArgs): Promise<{ rows: TradeRow[]; files: DataFileSummary[] }> {
   const files = [...LIVE_TRADE_FILES, ...PAPER_TRADE_FILES];
-  const summaries: DataFileSummary[] = [];
   const chunks = await Promise.all(files.map(async (file) => {
     const rows = (await readJsonl(path.join(args.realtimeDir, file))).filter(isClosed);
-    summaries.push({ file: `data/realtime/${file}`, rows: rows.length });
     return rows.map((row) => normalizeTradeRow(row, file, args));
   }));
+  // Promise.all 은 files 선언 순서를 보존하므로 aggregate ledger 가 projection 보다
+  // 먼저 dedup 에 들어간다 (first-wins = aggregate-우선).
+  const rows = dedupByPositionId(chunks.flat());
+  const dedupCountByFile = new Map<string, number>();
+  for (const row of rows) dedupCountByFile.set(row.sourceFile, (dedupCountByFile.get(row.sourceFile) ?? 0) + 1);
+  // rows = 실제 계상에 들어간 (dedup 후) row 수 — rawRows 와 동일 값 중복 표기를 피한다.
+  const summaries: DataFileSummary[] = files.map((file, index) => ({
+    file: `data/realtime/${file}`,
+    rows: dedupCountByFile.get(file) ?? 0,
+    rawRows: chunks[index].length,
+    dedupRows: dedupCountByFile.get(file) ?? 0,
+  }));
   return {
-    rows: chunks.flat(),
+    rows,
     files: summaries.sort((a, b) => a.file.localeCompare(b.file)),
   };
 }

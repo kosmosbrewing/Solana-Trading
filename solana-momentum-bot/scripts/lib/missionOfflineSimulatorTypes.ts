@@ -31,6 +31,10 @@ export type NetSource = 'wallet_truth' | 'refund_adjusted' | 'paper_net';
 export interface DataFileSummary {
   file: string;
   rows: number;
+  // trade ledger 한정: positionId dedup 전/후 row 수. 미래 audit 이 이중 계상 여부를
+  // 리포트만으로 검증할 수 있도록 둘 다 기록한다 (2026-06-10 edge audit M1).
+  rawRows?: number;
+  dedupRows?: number;
 }
 
 export interface RoleSummary {

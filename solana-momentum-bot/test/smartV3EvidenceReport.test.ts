@@ -628,6 +628,93 @@ describe('smart-v3-evidence-report', () => {
     expect(markdown).toContain('daily compound');
   });
 
+  // (2026-06-10 edge audit) decimals 버그 row (0.02 SOL ticket 에 netSolTokenOnly -17 SOL)
+  // 가 token-only 합계를 왜곡하지 않도록 sanity clamp 검증.
+  it('clamps decimals-bug netSolTokenOnly rows out of token-only sums', async () => {
+    await writeFile(path.join(dir, 'smart-v3-paper-trades.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'smart-v3-live-trades.jsonl'), jsonl([
+      ...smartV3TradeRows(9, {
+        mode: 'live',
+        netSol: 0.001,
+        netSolTokenOnly: 0.0015,
+        ticketSol: 0.02,
+      }),
+      ...smartV3TradeRows(1, {
+        mode: 'live',
+        positionId: 'live-smart-v3-decimals-bug',
+        netSol: -0.0027,
+        netSolTokenOnly: -17.013500070322088,
+        ticketSol: 0.02,
+        exitReason: 'smart_v3_mae_fast_fail',
+      }),
+    ]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+
+    const report = await buildSmartV3EvidenceReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [30, 60, 300, 1800],
+      roundTripCostPct: 0.005,
+      assumedAtaRentSol: 0.002,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    const verdict = report.evidenceVerdicts.find((entry) => entry.cohort === 'live:velocity');
+    expect(verdict?.tokenOnlyInvalidRows).toBe(1);
+    // invalid row 제외 → 9 * 0.0015 만 합산 (wallet 축 netSol 은 invalid row 포함 유지)
+    expect(verdict?.netSolTokenOnly).toBeCloseTo(9 * 0.0015, 6);
+    expect(verdict?.netSol).toBeCloseTo(9 * 0.001 - 0.0027, 6);
+
+    const markdown = renderSmartV3EvidenceReportMarkdown(report);
+    expect(markdown).toContain('tokenOnlyInvalid');
+  });
+
+  it('blocks invalid token-only rows from fabricating 5x evidence and token wins', async () => {
+    await writeFile(path.join(dir, 'smart-v3-paper-trades.jsonl'), jsonl([]));
+    await writeFile(path.join(dir, 'smart-v3-live-trades.jsonl'), jsonl([
+      ...smartV3TradeRows(9, {
+        mode: 'live',
+        netSol: 0.001,
+        netSolTokenOnly: 0.0015,
+        ticketSol: 0.02,
+      }),
+      // decimals 버그가 "양수 winner + 부풀린 token-only MFE" 형태로 나타난 경우:
+      // wallet 축은 loser 인데 token-only 축이 5x 증거 (fiveXRows verdict gate) 를 조작하면 안 된다.
+      ...smartV3TradeRows(1, {
+        mode: 'live',
+        positionId: 'live-smart-v3-decimals-bug-winner',
+        netSol: -0.0027,
+        netSolTokenOnly: 18.2,
+        mfePctPeak: 0.10,
+        mfePctPeakTokenOnly: 6.5,
+        ticketSol: 0.02,
+        exitReason: 'winner_trailing_t1',
+      }),
+    ]));
+    await writeFile(path.join(dir, 'trade-markouts.jsonl'), jsonl([]));
+
+    const report = await buildSmartV3EvidenceReport({
+      realtimeDir: dir,
+      sinceMs: Date.parse('2026-05-01T00:00:00.000Z'),
+      horizonsSec: [30, 60, 300, 1800],
+      roundTripCostPct: 0.005,
+      assumedAtaRentSol: 0.002,
+      assumedNetworkFeeSol: 0.0001,
+    });
+
+    const verdict = report.evidenceVerdicts.find((entry) => entry.cohort === 'live:velocity');
+    expect(verdict?.tokenOnlyInvalidRows).toBe(1);
+    // 부풀린 mfePctPeakTokenOnly(6.5) 가 fiveXRows 를 만들면 안 됨 (reference MFE 0.10 만 유효)
+    expect(verdict?.fiveXRows).toBe(0);
+    // token-only 합계에서도 +18.2 가 제외
+    expect(verdict?.netSolTokenOnly).toBeCloseTo(9 * 0.0015, 6);
+
+    // win/lose 판정은 wallet 축으로 fallback — invalid row 는 loser (netSol −0.0027)
+    const cohort = report.tradeRows.byCohort.find((entry) => entry.cohort === 'live:velocity');
+    expect(cohort?.tokenOnlyWins).toBe(9);
+    expect(cohort?.tokenOnlyLosses).toBe(1);
+  });
+
   it('keeps smart-v3 as tail-only when live sample contains 5x evidence', async () => {
     await writeFile(path.join(dir, 'smart-v3-paper-trades.jsonl'), jsonl([]));
     await writeFile(path.join(dir, 'smart-v3-live-trades.jsonl'), jsonl([

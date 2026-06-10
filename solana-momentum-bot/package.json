@@ -16,6 +16,7 @@
     "ops:reconcile:wallet": "ts-node scripts/wallet-reconcile.ts",
     "ops:reconcile:live-assets": "ts-node scripts/live-asset-reconcile.ts",
     "ops:canary:eval": "ts-node scripts/canary-eval.ts",
+    "ops:quarantine:synthetic-markouts": "ts-node scripts/quarantine-synthetic-markout-rows.ts",
     "kol:shadow-eval": "ts-node scripts/kol-shadow-eval.ts",
     "kol:paper-arm-report": "ts-node scripts/kol-paper-arm-report.ts",
     "kol:live-canary-report": "ts-node scripts/kol-live-canary-report.ts",

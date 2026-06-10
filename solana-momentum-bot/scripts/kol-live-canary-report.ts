@@ -17,6 +17,7 @@ import {
   evaluateMissionCapitalGuard,
   type MissionFundedLivePolicy,
 } from '../src/risk/missionCapitalGuard';
+import { isTokenOnlyNetSolInvalid } from './lib/tokenOnlySanity';
 
 interface CliArgs {
   ledgerDir: string;
@@ -228,6 +229,9 @@ interface PairedKolLiveTrade {
   kolScore?: number;
   recordedAtMs: number;
   orphanSell: boolean;
+  /** (2026-06-10) decimals 버그 등으로 netSolTokenOnly 가 물리적으로 불가능한 row.
+   *  token-only 축 (*_TokenOnly 필드) 을 집계에서 제외하고 카운트만 한다. */
+  tokenOnlyInvalid: boolean;
 }
 
 interface BucketSummary {
@@ -433,6 +437,8 @@ interface KolLiveCanaryReport {
   entryAdvantageArtifactTrades: number;
   entryAdvantageAdverseTrades: number;
   entryAdvantageFavorableTrades: number;
+  /** (2026-06-10) token-only sanity clamp 에 걸린 row 수 — token-only 집계에서 제외됨. */
+  tokenOnlyInvalidRows: number;
   maxDrawdownSol: number;
   t1Visits: number;
   t2Visits: number;
@@ -732,12 +738,19 @@ function pairKolLiveTrades(
     ) ?? 0;
     const referenceMaePct = ratioPct(sell.troughPrice, sell.marketReferencePrice);
     const actualEntryPrice = firstKnown(sell.entryPrice, buy?.actualEntryPrice);
+    // (2026-06-10) token-only sanity clamp — netSolTokenOnly 가 ticket 대비 물리적으로
+    // 불가능하면 (decimals 버그) 같은 row 의 *_TokenOnly 축 전체를 invalid 처리하고
+    // wallet/price 기반 fallback 으로만 계산한다. ledger row 는 수정하지 않는다.
+    const tokenOnlyInvalid = isTokenOnlyNetSolInvalid(
+      sell.netSolTokenOnly,
+      sell.swapInputSol ?? sell.solSpentNominal
+    );
     const actualMfePctPeak = firstKnown(
-      sell.mfePctPeakTokenOnly,
+      tokenOnlyInvalid ? null : sell.mfePctPeakTokenOnly,
       ratioPct(sell.peakPrice, actualEntryPrice ?? undefined)
     );
     const actualMaePct = firstKnown(
-      sell.maePctTokenOnly,
+      tokenOnlyInvalid ? null : sell.maePctTokenOnly,
       ratioPct(sell.troughPrice, actualEntryPrice ?? undefined)
     );
     const entryAdvantagePct = firstKnown(
@@ -793,6 +806,7 @@ function pairKolLiveTrades(
       kolScore: sell.kolScore ?? buy?.kolScore,
       recordedAtMs: recordedAtMs(sell),
       orphanSell: !buy,
+      tokenOnlyInvalid,
     });
   }
 
@@ -861,6 +875,8 @@ function paperFallbackToTrade(row: KolPaperTradeLedger): PairedKolLiveTrade {
     kolScore: row.kolScore,
     recordedAtMs: Number.isFinite(closedAtMs) ? closedAtMs : 0,
     orphanSell: false,
+    // paper fallback row 는 token-only 축을 쓰지 않는다 (actual* = null).
+    tokenOnlyInvalid: false,
   };
 }
 
@@ -1679,6 +1695,7 @@ function buildKolLiveCanaryReport(
     entryAdvantageArtifactTrades,
     entryAdvantageAdverseTrades,
     entryAdvantageFavorableTrades,
+    tokenOnlyInvalidRows: trades.filter((trade) => trade.tokenOnlyInvalid).length,
     maxDrawdownSol: maxDrawdownSol(trades),
     t1Visits: trades.filter((trade) => trade.t1Visited).length,
     t2Visits: trades.filter((trade) => trade.t2Visited).length,
@@ -2070,6 +2087,7 @@ function formatKolLiveCanaryMarkdown(report: KolLiveCanaryReport): string {
     `- Win rate: ${pct(report.winRate)}`,
     `- Avg ref MFE: ${pct(report.avgMfePct)}`,
     `- Avg actual MFE: ${pct(report.avgActualMfePct)}`,
+    `- Token-only invalid rows (sanity clamp): ${report.tokenOnlyInvalidRows}`,
     `- Avg non-artifact entry advantage: ${pct(report.avgEntryAdvantagePct)}`,
     `- Avg fresh quote entry advantage: ${pct(report.avgSwapQuoteEntryAdvantagePct)}`,
     `- Avg reference→fresh quote drift: ${pct(report.avgReferenceToSwapQuotePct)}`,

@@ -140,6 +140,32 @@ const scheduled = new Map<string, ScheduledMarkout>();
 let inflightProbes = 0;
 let outputDirEnsured = false;
 let rateLimitedUntilMs = 0;
+let testIsolationWarned = false;
+
+// (2026-06-10 edge audit) Test isolation guard — jest 가 default config.realtimeDataDir 를 통해
+// production ledger (data/realtime/trade-markout-anchors.jsonl / trade-markouts.jsonl) 에
+// synthetic row 를 append 한 회귀 방지. heliusRpcAttribution 의 HELIUS_CREDIT_LEDGER_IN_TEST
+// 와 동일한 opt-in 패턴 — 테스트가 의도적으로 production 경로를 검증해야 하면
+// TRADE_MARKOUT_LEDGER_IN_TEST=true 로 명시. 운영 (non-test env) 동작에는 영향 없다.
+function isBlockedTestEnvProductionWrite(cfg: TradeMarkoutObserverConfig): boolean {
+  const isTestEnv = process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_ID != null;
+  if (!isTestEnv || process.env.TRADE_MARKOUT_LEDGER_IN_TEST === 'true') return false;
+  const productionDefaultDir = path.resolve(process.cwd(), 'data', 'realtime');
+  const blocked = [cfg.outputFile, cfg.anchorOutputFile]
+    .filter((file): file is string => Boolean(file))
+    .some((file) => {
+      const rel = path.relative(productionDefaultDir, path.resolve(file));
+      return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+    });
+  if (blocked && !testIsolationWarned) {
+    testIsolationWarned = true;
+    log.warn(
+      '[TRADE_MARKOUT_TEST_ISOLATION] blocked write to production data/realtime under test env ' +
+      '(set TRADE_MARKOUT_LEDGER_IN_TEST=true to opt in)'
+    );
+  }
+  return blocked;
+}
 
 export function buildTradeMarkoutConfigFromGlobal(overrides: {
   realtimeDataDir: string;
@@ -175,6 +201,7 @@ export function resetTradeMarkoutObserverState(): void {
   inflightProbes = 0;
   outputDirEnsured = false;
   rateLimitedUntilMs = 0;
+  testIsolationWarned = false;
 }
 
 export function getTradeMarkoutObserverStats(): {
@@ -197,6 +224,7 @@ export function trackTradeMarkout(
 ): void {
   const cfg = resolveConfig(config);
   if (!cfg.enabled || !isValidAnchor(anchor, cfg)) return;
+  if (isBlockedTestEnvProductionWrite(cfg)) return;
   const scheduledOffsetsSec = [...cfg.offsetsSec];
   const scheduledAnchor: TradeMarkoutAnchor = {
     ...anchor,
@@ -241,6 +269,7 @@ export async function hydrateTradeMarkoutSchedulesFromLedger(options: {
     skippedExpired: 0,
   };
   if (!cfg.enabled) return summary;
+  if (isBlockedTestEnvProductionWrite(cfg)) return summary;
 
   const nowMs = Date.now();
   const sinceMs = nowMs - Math.max(0, options.lookbackHours) * 3600_000;

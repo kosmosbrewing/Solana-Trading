@@ -23,6 +23,7 @@ jest.mock('fs/promises', () => ({
   readFile: (...args: unknown[]) => mockReadFile(...args),
 }));
 
+import path from 'path';
 import {
   getTradeMarkoutObserverStats,
   hydrateTradeMarkoutSchedulesFromLedger,
@@ -557,5 +558,65 @@ describe('tradeMarkoutObserver', () => {
     const records = mockAppendFile.mock.calls.map(([, payload]) => JSON.parse(String(payload).trim()));
     expect(records.map((row) => row.anchorType).sort()).toEqual(['buy', 'sell', 'sell']);
     expect(records.every((row) => row.positionId === 'paper-pos')).toBe(true);
+  });
+
+  // (2026-06-10 edge audit) Test isolation guard — jest 가 production data/realtime 에
+  // synthetic row 를 append 한 회귀 (PAIR7 / PAIR_SURVIVAL_MISSING_ALLOW) 방지 검증.
+  describe('test-env production ledger write guard', () => {
+    const productionCfg: Partial<TradeMarkoutObserverConfig> = {
+      ...BASE_CFG,
+      outputFile: path.join(process.cwd(), 'data/realtime/trade-markouts.jsonl'),
+      anchorOutputFile: path.join(process.cwd(), 'data/realtime/trade-markout-anchors.jsonl'),
+    };
+    const guardAnchor = {
+      anchorType: 'buy' as const,
+      positionId: 'pos-guard',
+      tokenMint: 'MintGuard111111111111111111111111111111',
+      anchorTxSignature: 'guard-sig',
+      anchorPrice: 0.01,
+      anchorPriceKind: 'entry_token_only' as const,
+      probeSolAmount: 0.02,
+      tokenDecimals: 6,
+    };
+
+    afterEach(() => {
+      delete process.env.TRADE_MARKOUT_LEDGER_IN_TEST;
+    });
+
+    it('refuses to write or schedule when output targets production data/realtime under test env', async () => {
+      trackTradeMarkout({ ...guardAnchor, anchorAtMs: Date.now() }, productionCfg);
+
+      expect(getTradeMarkoutObserverStats().scheduled).toBe(0);
+      await flushAsync();
+      expect(mockAppendFile).not.toHaveBeenCalled();
+    });
+
+    it('blocks hydrate scheduling against production data/realtime under test env', async () => {
+      const summary = await hydrateTradeMarkoutSchedulesFromLedger({
+        realtimeDir: path.join(process.cwd(), 'data/realtime'),
+        config: productionCfg,
+        lookbackHours: 2,
+      });
+
+      expect(summary.scheduled).toBe(0);
+      expect(getTradeMarkoutObserverStats().scheduled).toBe(0);
+      expect(mockReadFile).not.toHaveBeenCalled();
+    });
+
+    it('allows production path when TRADE_MARKOUT_LEDGER_IN_TEST=true (explicit opt-in)', async () => {
+      process.env.TRADE_MARKOUT_LEDGER_IN_TEST = 'true';
+      trackTradeMarkout({ ...guardAnchor, anchorAtMs: Date.now() }, productionCfg);
+
+      expect(getTradeMarkoutObserverStats().scheduled).toBe(1);
+      await flushAsync();
+      // anchor record 1건 (probe 는 30s 후 — advance 하지 않음)
+      expect(mockAppendFile).toHaveBeenCalledTimes(1);
+    });
+
+    it('still writes to non-production (temp) paths under test env', async () => {
+      trackTradeMarkout({ ...guardAnchor, anchorAtMs: Date.now() }, BASE_CFG);
+
+      expect(getTradeMarkoutObserverStats().scheduled).toBe(1);
+    });
   });
 });

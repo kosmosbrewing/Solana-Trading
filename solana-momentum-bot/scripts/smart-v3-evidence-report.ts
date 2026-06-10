@@ -6,6 +6,7 @@ import {
   type KolPosteriorMetrics,
   type KolTransferRow,
 } from './kol-transfer-posterior-report';
+import { isTokenOnlyNetSolInvalid } from './lib/tokenOnlySanity';
 
 const SMART_V3_PAPER_TRADES_FILE = 'smart-v3-paper-trades.jsonl';
 const SMART_V3_LIVE_TRADES_FILE = 'smart-v3-live-trades.jsonl';
@@ -64,6 +65,8 @@ interface SmartV3CohortStats {
   tokenOnlyLosses: number;
   netSol: number;
   netSolTokenOnly: number;
+  /** (2026-06-10) token-only sanity clamp 에 걸려 token-only 합계에서 제외된 row 수. */
+  tokenOnlyInvalidRows: number;
   rentAdjustedNetSol: number;
   copyableEdgeRows: number;
   copyablePassRows: number;
@@ -140,6 +143,7 @@ interface SmartV3EvidenceVerdict {
   t1800SellMedianPostCostDeltaPct: number | null;
   netSol: number;
   netSolTokenOnly: number;
+  tokenOnlyInvalidRows: number;
   rentAdjustedNetSol: number;
   fiveXRows: number;
 }
@@ -520,7 +524,22 @@ function tradeNetSolTokenOnly(row: JsonRow): number {
   return firstNum(row, ['netSolTokenOnly', 'netSolTokenOnlyP', 'tokenOnlyNetSol']) ?? tradeNetSol(row);
 }
 
+// (2026-06-10 edge audit) decimals 버그 row (예: 0.02 SOL ticket 에 netSolTokenOnly -20.77)
+// 의 token-only 축 invalid 판정. netSol fallback 은 wallet 축이므로 clamp 대상이 아니다.
+function tradeTokenOnlyInvalid(row: JsonRow): boolean {
+  const explicitTokenOnly = firstNum(row, ['netSolTokenOnly', 'netSolTokenOnlyP', 'tokenOnlyNetSol']);
+  if (explicitTokenOnly == null) return false;
+  return isTokenOnlyNetSolInvalid(
+    explicitTokenOnly,
+    firstNum(row, ['ticketSol', 'swapInputSol', 'solSpentNominal'])
+  );
+}
+
 function tradeNetPctTokenOnly(row: JsonRow): number | null {
+  // (2026-06-10) invalid row 의 token-only pct 는 같은 decimals 버그 산물 — wallet 축 pct 로 fallback.
+  if (tradeTokenOnlyInvalid(row)) {
+    return normalizeReturnFraction(firstNum(row, ['netPct', 'returnPct']));
+  }
   return normalizeReturnFraction(firstNum(row, ['netPctTokenOnly', 'netPctTokenOnlyP', 'netPct', 'returnPct']));
 }
 
@@ -533,6 +552,8 @@ function tradePositionId(row: JsonRow): string {
 }
 
 function tokenOnlyIsWin(row: JsonRow): boolean {
+  // (2026-06-10) invalid row 는 wallet 축으로만 판정 — 조작된 token-only win/lose 차단.
+  if (tradeTokenOnlyInvalid(row)) return tradeNetSol(row) > 0;
   const pct = tradeNetPctTokenOnly(row);
   if (pct != null) return pct > 0;
   return tradeNetSolTokenOnly(row) > 0;
@@ -544,9 +565,13 @@ function hasFieldWithExtras(row: JsonRow, keys: string[]): boolean {
 }
 
 function maxMfe(row: JsonRow): number {
+  // (2026-06-10) invalid row 의 token-only/actual MFE 후보 제외 — 부풀려진 peak 가
+  // fiveXRows (verdict gate) 를 조작하는 것을 차단. reference MFE 후보는 유지.
   const candidates = [
     normalizeReturnFraction(firstNum(row, ['mfePctPeak', 'mfePct', 'maxMfePct'])),
-    normalizeReturnFraction(firstNum(row, ['mfePctPeakTokenOnly', 'actualMfePctPeak'])),
+    tradeTokenOnlyInvalid(row)
+      ? null
+      : normalizeReturnFraction(firstNum(row, ['mfePctPeakTokenOnly', 'actualMfePctPeak'])),
   ].filter((value): value is number => value != null);
   return candidates.length > 0 ? Math.max(...candidates) : 0;
 }
@@ -637,7 +662,9 @@ function copyableNetSolOfRow(
     return baseNet + recoverableRentSolOfRow(row, assumedAtaRentSol);
   }
   if (edgeNet != null) return edgeNet;
-  return tradeNetSolTokenOnly(row) - assumedAtaRentSol - assumedNetworkFeeSol;
+  // token-only invalid row 는 wallet 축 (netSol) 으로 fallback — copyable 추정 왜곡 방지.
+  const tokenOnlyBase = tradeTokenOnlyInvalid(row) ? tradeNetSol(row) : tradeNetSolTokenOnly(row);
+  return tokenOnlyBase - assumedAtaRentSol - assumedNetworkFeeSol;
 }
 
 function summarizeTradeCohort(
@@ -653,7 +680,12 @@ function summarizeTradeCohort(
   const wins = copyableNetByRow.filter((value) => value > 0).length;
   const tokenOnlyWins = rows.filter(tokenOnlyIsWin).length;
   const netSol = rows.reduce((sum, row) => sum + tradeNetSol(row), 0);
-  const netSolTokenOnly = rows.reduce((sum, row) => sum + tradeNetSolTokenOnly(row), 0);
+  // (2026-06-10) token-only sanity clamp — invalid row 는 token-only 합계에서 제외하고 카운트만.
+  const tokenOnlyInvalidRows = rows.filter(tradeTokenOnlyInvalid).length;
+  const netSolTokenOnly = rows.reduce(
+    (sum, row) => sum + (tradeTokenOnlyInvalid(row) ? 0 : tradeNetSolTokenOnly(row)),
+    0
+  );
   const holds = rows.map(tradeHoldSec).filter((value): value is number => value != null);
   const copyableEdges = rows.map(smartV3CopyableEdgeOf).filter((edge): edge is JsonRow => edge != null);
   const copyableNetSol = copyableNetByRow.reduce((sum, value) => sum + value, 0);
@@ -675,6 +707,7 @@ function summarizeTradeCohort(
     tokenOnlyLosses: rows.length - tokenOnlyWins,
     netSol,
     netSolTokenOnly,
+    tokenOnlyInvalidRows,
     rentAdjustedNetSol: copyableNetSol,
     copyableEdgeRows: copyableEdges.length,
     copyablePassRows: copyableEdges.filter((edge) => edge.pass === true).length,
@@ -863,6 +896,7 @@ function buildVerdict(
     t1800SellMedianPostCostDeltaPct: t1800Sell,
     netSol: cohort.netSol,
     netSolTokenOnly: cohort.netSolTokenOnly,
+    tokenOnlyInvalidRows: cohort.tokenOnlyInvalidRows,
     rentAdjustedNetSol: cohort.rentAdjustedNetSol,
     fiveXRows: cohort.fiveXRows,
   };
@@ -1274,8 +1308,8 @@ export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceRepor
   lines.push('');
 
   lines.push('## Evidence Verdicts');
-  lines.push('| cohort | verdict | closes | minCov | netSOL | tokenOnly | copyable | 5x | T+300 buy | T+300 sell | reasons |');
-  lines.push('|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|');
+  lines.push('| cohort | verdict | closes | minCov | netSOL | tokenOnly | tokenOnlyInvalid | copyable | 5x | T+300 buy | T+300 sell | reasons |');
+  lines.push('|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|');
   for (const verdict of report.evidenceVerdicts) {
     lines.push([
       `| ${verdict.cohort}`,
@@ -1284,6 +1318,7 @@ export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceRepor
       ratio(verdict.minOkCoverage),
       sol(verdict.netSol),
       sol(verdict.netSolTokenOnly),
+      verdict.tokenOnlyInvalidRows,
       sol(verdict.rentAdjustedNetSol),
       verdict.fiveXRows,
       pct(verdict.t300BuyMedianPostCostDeltaPct),
@@ -1291,7 +1326,7 @@ export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceRepor
       verdict.reasons.join('; '),
     ].join(' | ') + ' |');
   }
-  if (report.evidenceVerdicts.length === 0) lines.push('| n/a | COLLECT | 0 | n/a | +0.0000 | +0.0000 | +0.0000 | 0 | n/a | n/a | no smart-v3 closes |');
+  if (report.evidenceVerdicts.length === 0) lines.push('| n/a | COLLECT | 0 | n/a | +0.0000 | +0.0000 | 0 | +0.0000 | 0 | n/a | n/a | no smart-v3 closes |');
   lines.push('');
 
   lines.push('## Smart-v3 Bleed Review');
@@ -1353,8 +1388,8 @@ export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceRepor
     lines.push(`- live block flags: ${report.tradeRows.paperLiveBlockFlags.map((entry) => `${entry.reason}:${entry.count}`).join(', ')}`);
   }
   lines.push('');
-  lines.push('| cohort | rows | copyable W/L | token W/L | netSOL | tokenOnly | rent-adj | edgeRows | hardCut | maeFastFail | stagedFF5 | stagedFF15 | stagedFFAny | stagedTailRisk | tokenWinWalletLose | MFE>=5 walletLose | MFE>=12 walletLose | MAE<=-5 within15 | MAE<=-10 preT1 | recoveryHold | floorExit | stage>=20 | stage>=50 | stage>=100 | preT1 10-20 | preT1 20-30 | preT1 30-50 | med worst MAE | med hardCut MAE | T1 | T2 | T3 | 5x | medHold | top exits |');
-  lines.push('|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|');
+  lines.push('| cohort | rows | copyable W/L | token W/L | netSOL | tokenOnly | tokenOnlyInvalid | rent-adj | edgeRows | hardCut | maeFastFail | stagedFF5 | stagedFF15 | stagedFFAny | stagedTailRisk | tokenWinWalletLose | MFE>=5 walletLose | MFE>=12 walletLose | MAE<=-5 within15 | MAE<=-10 preT1 | recoveryHold | floorExit | stage>=20 | stage>=50 | stage>=100 | preT1 10-20 | preT1 20-30 | preT1 30-50 | med worst MAE | med hardCut MAE | T1 | T2 | T3 | 5x | medHold | top exits |');
+  lines.push('|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|');
   for (const cohort of report.tradeRows.byCohort) {
     lines.push([
       `| ${cohort.cohort}`,
@@ -1363,6 +1398,7 @@ export function renderSmartV3EvidenceReportMarkdown(report: SmartV3EvidenceRepor
       `${cohort.tokenOnlyWins}/${cohort.tokenOnlyLosses}`,
       sol(cohort.netSol),
       sol(cohort.netSolTokenOnly),
+      cohort.tokenOnlyInvalidRows,
       sol(cohort.rentAdjustedNetSol),
       `${cohort.copyablePassRows}/${cohort.copyableEdgeRows}`,
       cohort.hardCutRows,

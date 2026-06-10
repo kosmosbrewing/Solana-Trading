@@ -144,6 +144,81 @@ describe('mission-offline-simulator', () => {
     expect(report.finalDecisions.find((row) => row.cohort === 'broad_live_canary')?.decision).toBe('KILL');
   });
 
+  it('counts projection ledger duplicates once via positionId dedup', async () => {
+    // 왜: smart-v3/rotation-v1 projection ledger 는 kol aggregate ledger 의 positionId
+    // 부분집합을 같은 row 로 복제한다 (2026-06-10 edge audit M1). aggregate row 1회만
+    // 계상되어야 하며, intra-file 재기록도 한 번만 남아야 한다.
+    const liveBase = {
+      status: 'closed',
+      isLive: true,
+      armName: 'rotation_underfill_v1',
+      mfePctPeak: 0,
+      ticketSol: 0.02,
+    };
+    await writeFile(path.join(dir, 'kol-live-trades.jsonl'), jsonl([
+      { ...liveBase, positionId: 'live-1', tokenMint: 'mint-a', exitReason: 'probe_hard_cut', netSol: -0.01, closedAt: '2026-05-01T00:00:00.000Z' },
+      // intra-file 재기록 (kol-live 328 rows / 325 unique 실측 사례): first-wins 로 1회만.
+      { ...liveBase, positionId: 'live-1', tokenMint: 'mint-a', exitReason: 'rotation_dead_on_arrival', netSol: -0.01, closedAt: '2026-05-01T00:00:10.000Z' },
+      { ...liveBase, positionId: 'live-2', tokenMint: 'mint-b', armName: 'kol_hunter_smart_v3', exitReason: 'winner_trailing_t1', netSol: 0.03, mfePctPeak: 4.5, closedAt: '2026-05-01T00:01:00.000Z' },
+    ]));
+    await writeFile(path.join(dir, 'rotation-v1-live-trades.jsonl'), jsonl([
+      // aggregate 와 동일 positionId 의 projection copy — net 이중 계상 금지.
+      { ...liveBase, positionId: 'live-1', tokenMint: 'mint-a', exitReason: 'probe_hard_cut', netSol: -0.01, closedAt: '2026-05-01T00:00:00.000Z' },
+      // projection 에만 있는 positionId 는 정상 계상.
+      { ...liveBase, positionId: 'live-3', tokenMint: 'mint-c', exitReason: 'winner_trailing_t1', netSol: -0.005, closedAt: '2026-05-01T00:02:00.000Z' },
+    ]));
+    const paperBase = {
+      status: 'closed',
+      paperRole: 'paper_research',
+      armName: 'kol_hunter_smart_v3',
+      ticketSol: 0.02,
+    };
+    await writeFile(path.join(dir, 'kol-paper-trades.jsonl'), jsonl([
+      { ...paperBase, positionId: 'pap-1', tokenMint: 'mint-p', netSol: 0.02, closedAt: '2026-05-01T00:03:00.000Z' },
+    ]));
+    await writeFile(path.join(dir, 'smart-v3-paper-trades.jsonl'), jsonl([
+      { ...paperBase, positionId: 'pap-1', tokenMint: 'mint-p', netSol: 0.02, closedAt: '2026-05-01T00:03:00.000Z' },
+    ]));
+
+    const report = await buildMissionOfflineSimulatorReport({
+      realtimeDir: dir,
+      reportsDir: path.join(dir, 'reports'),
+      minRows: 3,
+      minActiveDays: 3,
+      stressCostPct: 0.005,
+      minStressCostSol: 0.0001,
+      top5WinnerShareCap: 1,
+      top10WinnerShareCap: 1,
+      sleeveLossCapSol: 0.02,
+      microCanaryCloseTarget: 2,
+    });
+
+    // live: live-1(-0.01, 1회) + live-2(+0.03) + live-3(-0.005) = +0.015 (이중 계상 시 -0.005).
+    expect(report.baseline.liveRows).toBe(3);
+    expect(report.baseline.liveNetSol).toBeCloseTo(0.015, 6);
+    // paper: pap-1 은 aggregate 1회만 (이중 계상 시 rows 2 / net 0.04).
+    expect(report.baseline.paperRows).toBe(1);
+    expect(report.baseline.paperNetSol).toBeCloseTo(0.02, 6);
+
+    // veto 시뮬레이션도 dedup 행 기준: probe_hard_cut 1건, intra-file 재기록의
+    // rotation_dead_on_arrival 은 계상되지 않아야 한다 (first-wins).
+    const probeVeto = report.admissionVeto.find((row) => row.reason === 'probe_hard_cut');
+    expect(probeVeto?.rows).toBe(1);
+    expect(probeVeto?.savedLossSol).toBeCloseTo(0.01, 6);
+    expect(report.admissionVeto.find((row) => row.reason === 'rotation_dead_on_arrival')).toBeUndefined();
+
+    // 파일별 raw/dedup row 수가 리포트에 기록되어 audit 가능해야 한다.
+    const fileSummary = (file: string) => report.dataFiles.find((row) => row.file === `data/realtime/${file}`);
+    expect(fileSummary('kol-live-trades.jsonl')).toMatchObject({ rawRows: 3, dedupRows: 2 });
+    expect(fileSummary('rotation-v1-live-trades.jsonl')).toMatchObject({ rawRows: 2, dedupRows: 1 });
+    expect(fileSummary('kol-paper-trades.jsonl')).toMatchObject({ rawRows: 1, dedupRows: 1 });
+    expect(fileSummary('smart-v3-paper-trades.jsonl')).toMatchObject({ rawRows: 1, dedupRows: 0 });
+
+    const markdown = renderMissionOfflineSimulatorReport(report);
+    expect(markdown).toContain('### Dedup');
+    expect(markdown).toContain('trade ledger rows raw/dedup: 7 / 4 (duplicates removed: 3)');
+  });
+
   it('parses args and renders promotion guardrails', () => {
     const args = parseMissionOfflineSimulatorArgs([
       '--realtime-dir', dir,

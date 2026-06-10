@@ -20,7 +20,11 @@ function fmtPct(value: number | null): string {
 }
 
 function fileRow(row: DataFileSummary): string {
-  return `${row.file} | ${row.rows}`;
+  // rawRows/dedupRows 는 trade ledger 에만 존재한다 (positionId dedup 대상이 아닌
+  // markout/credit 파일은 n/a). audit 이 이중 계상 여부를 표에서 바로 검증하게 한다.
+  const rawRows = row.rawRows == null ? 'n/a' : String(row.rawRows);
+  const dedupRows = row.dedupRows == null ? 'n/a' : String(row.dedupRows);
+  return `${row.file} | ${row.rows} | ${rawRows} | ${dedupRows}`;
 }
 
 function roleRow(row: RoleSummary): string {
@@ -97,9 +101,16 @@ export function renderMissionOfflineSimulatorReport(report: MissionOfflineSimula
   lines.push(`- reportsDir: ${report.reportsDir}`);
   lines.push('');
   lines.push('## Data Files');
-  lines.push('| file | rows |');
-  lines.push('|---|---:|');
+  lines.push('| file | rows | raw rows | dedup rows |');
+  lines.push('|---|---:|---:|---:|');
   for (const row of report.dataFiles) lines.push(`| ${fileRow(row)} |`);
+  const dedupFiles = report.dataFiles.filter((row) => row.rawRows != null && row.dedupRows != null);
+  const rawTotal = dedupFiles.reduce((total, row) => total + (row.rawRows ?? 0), 0);
+  const dedupTotal = dedupFiles.reduce((total, row) => total + (row.dedupRows ?? 0), 0);
+  lines.push('');
+  lines.push('### Dedup');
+  lines.push('- positionId dedup keeps aggregate ledger rows (kol-live/kol-paper); projection ledgers only add positionIds missing from the aggregate.');
+  lines.push(`- trade ledger rows raw/dedup: ${rawTotal} / ${dedupTotal} (duplicates removed: ${rawTotal - dedupTotal})`);
   lines.push('');
   lines.push('## Baseline Replay');
   lines.push(`- live rows/net: ${report.baseline.liveRows} / ${fmtSol(report.baseline.liveNetSol)}`);

@@ -10,10 +10,30 @@
  *  - Date.now() block: 기존 코드 다수 의존 → 점진 전환 (Clock interface, Phase H2)
  */
 
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+
 // Logger noise 감소 — winston 의 INFO/DEBUG 출력 최소화
 if (!process.env.LOG_LEVEL) {
   process.env.LOG_LEVEL = 'error';
 }
+
+// (2026-06-10 edge audit) Test isolation — production ledger 오염 방지.
+// jest 가 pure_ws paper markout 경로 (pureWs/markout.ts → tradeMarkoutObserver) 를 통해
+// data/realtime/trade-markout-anchors.jsonl / trade-markouts.jsonl 에 synthetic row
+// (PAIR7, PAIR_SURVIVAL_MISSING_ALLOW) 를 append 한 사건의 재발 방지.
+// config.realtimeDataDir 의 env 소스를 worker 별 임시 디렉토리로 항상 강제한다.
+// env 는 같은 jest worker 내 test file 간 유지되므로 mkdtemp 는 worker 당 1회만 실행된다.
+if (!process.env.JEST_REALTIME_TMP_DIR) {
+  process.env.JEST_REALTIME_TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'solbot-jest-realtime-'));
+}
+process.env.REALTIME_DATA_DIR = process.env.JEST_REALTIME_TMP_DIR;
+
+// trade markout observer 는 테스트에서 opt-in (pureWsPaperFirst.test.ts 패턴).
+// default-on 이면 paper open/close 가 실제 Jupiter quote probe timer (min 15s) 를 스케줄하고,
+// jest worker 가 살아있는 동안 timer 가 발화해 외부 네트워크 호출이 발생한다.
+process.env.TRADE_MARKOUT_OBSERVER_ENABLED = process.env.TRADE_MARKOUT_OBSERVER_ENABLED ?? 'false';
 
 // 2026-04-25 (H1 follow-up): test 에서는 console 전부 차단.
 // expect-error 테스트의 의도된 ERROR 가 stdout 에 흘러들어 jest --silent 도 noisy.

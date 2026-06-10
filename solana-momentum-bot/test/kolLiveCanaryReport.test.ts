@@ -175,6 +175,53 @@ describe('kol-live-canary-report', () => {
     expect(paired.orphanSells).toBe(0);
   });
 
+  // (2026-06-10 edge audit) decimals 버그 row — 0.02 SOL ticket 에 netSolTokenOnly -17 SOL.
+  // token-only 축만 invalid 처리, wallet 축 (netSol) 은 그대로 유지한다.
+  it('clamps absurd netSolTokenOnly rows out of the token-only axis', () => {
+    const buys = [buy()];
+    const sells = [
+      sell({
+        netSolTokenOnly: -17.013500070322088,
+        swapInputSol: 0.019999999,
+        solSpentNominal: 0.016999979999999998,
+        mfePctPeakTokenOnly: 0,
+        maePctTokenOnly: -0.9990818536358007,
+      }),
+    ];
+
+    const paired = pairKolLiveTrades(buys, sells);
+
+    expect(paired.trades[0].tokenOnlyInvalid).toBe(true);
+    // token-only MFE/MAE 무시 → price 기반 fallback (peak 0.0018 / entry 0.001 등)
+    expect(paired.trades[0].actualMfePctPeak).toBeCloseTo(0.8, 6);
+    expect(paired.trades[0].actualMaePct).toBeCloseTo(-0.1, 6);
+    // wallet 축은 그대로
+    expect(paired.trades[0].netSol).toBeCloseTo(0.002, 6);
+
+    const report = buildKolLiveCanaryReport(buys, sells);
+    expect(report.tokenOnlyInvalidRows).toBe(1);
+    expect(formatKolLiveCanaryMarkdown(report)).toContain('Token-only invalid rows (sanity clamp): 1');
+  });
+
+  it('keeps sane netSolTokenOnly rows on the token-only axis', () => {
+    const buys = [buy()];
+    const sells = [
+      sell({
+        netSolTokenOnly: 0.003,
+        swapInputSol: 0.02,
+        mfePctPeakTokenOnly: 0.9,
+        maePctTokenOnly: -0.05,
+      }),
+    ];
+
+    const paired = pairKolLiveTrades(buys, sells);
+
+    expect(paired.trades[0].tokenOnlyInvalid).toBe(false);
+    expect(paired.trades[0].actualMfePctPeak).toBeCloseTo(0.9, 6);
+    expect(paired.trades[0].actualMaePct).toBeCloseTo(-0.05, 6);
+    expect(buildKolLiveCanaryReport(buys, sells).tokenOnlyInvalidRows).toBe(0);
+  });
+
   it('preserves promoted profile arms for live canary attribution', () => {
     const buys = [
       buy({

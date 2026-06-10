@@ -18,6 +18,19 @@ export {
   shouldSeedKolCandleCoverage,
 } from './kolCandleCoverageResolver';
 export {
+  resolveKolCandleCoverageLimits,
+  selectKolCandleCoverageEvictions,
+  DEFAULT_KOL_CANDLE_TARGET_MAX,
+  DEFAULT_KOL_CANDLE_TARGET_TTL_MS,
+  MIN_KOL_CANDLE_TARGET_TTL_MS,
+} from './kolCandleCoveragePolicy';
+export { KolCandleCoverageTelemetry } from './kolCandleCoverageTelemetry';
+export type { KolCandleCoverageLimits, KolCandleCoverageEvictionEntry } from './kolCandleCoveragePolicy';
+export type {
+  KolCandleCoverageRemovalCause,
+  KolCandleCoverageTelemetrySnapshot,
+} from './kolCandleCoverageTelemetry';
+export {
   detectRealtimeDiscoveryMismatch,
   detectRealtimePoolProgramMismatch,
   classifyRealtimeAdmissionSkip,

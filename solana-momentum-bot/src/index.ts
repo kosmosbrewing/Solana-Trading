@@ -48,6 +48,10 @@ import {
   buildKolCandleCoverageTarget,
   formatKolCandleCoverageMissDetail,
   shouldSeedKolCandleCoverage,
+  resolveKolCandleCoverageLimits,
+  selectKolCandleCoverageEvictions,
+  KolCandleCoverageTelemetry,
+  type KolCandleCoverageRemovalCause,
   type RealtimePoolMetadata,
 } from './realtime';
 import { UniverseEngine, UniverseEngineConfig } from './universe';
@@ -220,8 +224,27 @@ async function main() {
   const ALIAS_MISS_CLEANUP_THRESHOLD = 3;
   const ALIAS_MISS_CLEANUP_TTL_MS = ALIAS_GRACE_PERIOD_MS * 2;
   const aliasMissCleanupState = new Map<string, { count: number; windowStartedMs: number; lastCleanupMs: number }>();
-  const KOL_REALTIME_CANDLE_TARGET_TTL_MS = 7 * 60 * 1000;
-  const KOL_REALTIME_CANDLE_TARGET_MAX = 8;
+  // 2026-06-10 (edge-audit 07): hardcoded 7min/8 → env knob (관측 capacity 전용, clamp 포함).
+  // KOL target 은 resolveRealtimePools 에서 watchlist 보다 우선 배치되므로
+  // targetMax 는 realtimeMaxSubscriptions cap 으로 clamp — watchlist 전멸 사고 방지.
+  const kolCandleCoverageLimits = resolveKolCandleCoverageLimits({
+    configuredTargetMax: config.kolRealtimeCandleTargetMax,
+    configuredTtlMs: config.kolRealtimeCandleTargetTtlMs,
+    realtimeMaxSubscriptions: config.realtimeMaxSubscriptions,
+  });
+  const KOL_REALTIME_CANDLE_TARGET_TTL_MS = kolCandleCoverageLimits.ttlMs;
+  const KOL_REALTIME_CANDLE_TARGET_MAX = kolCandleCoverageLimits.targetMax;
+  const kolCandleCoverageTelemetry = realtimeModeEnabled
+    ? new KolCandleCoverageTelemetry({
+      filePath: path.join(config.realtimeDataDir, 'kol-candle-coverage-telemetry.jsonl'),
+    })
+    : null;
+  if (realtimeModeEnabled) {
+    log.info(
+      `[KOL_CANDLE_COVERAGE] limits targetMax=${KOL_REALTIME_CANDLE_TARGET_MAX} ` +
+      `ttlMs=${KOL_REALTIME_CANDLE_TARGET_TTL_MS}`
+    );
+  }
   const KOL_REALTIME_PAIR_RESOLVE_CACHE_TTL_MS = 10 * 60 * 1000;
   // Why: unsubscribe 완료 후에도 WS lag으로 swap이 계속 유입되는 zombie pool 차단
   // — 반복 unsubscribe + 로깅 노이즈 방지. TTL 후 자동 제거.
@@ -1173,11 +1196,16 @@ async function main() {
     );
   };
 
-  const removeKolRealtimeCandleTarget = (tokenMint: string, subscriptionPair: string) => {
+  const removeKolRealtimeCandleTarget = (
+    tokenMint: string,
+    subscriptionPair: string,
+    cause: KolCandleCoverageRemovalCause
+  ) => {
     const current = kolRealtimeCandleTargets.get(tokenMint);
     if (!current || current.subscriptionPair !== subscriptionPair) return;
     clearTimeout(current.timer);
     kolRealtimeCandleTargets.delete(tokenMint);
+    kolCandleCoverageTelemetry?.recordRemoved(cause);
 
     const stillWatchlisted = universeEngine.getWatchlist().some((pool) => pool.pairAddress === tokenMint);
     if (!stillWatchlisted && realtimePoolTargets.get(tokenMint) === subscriptionPair) {
@@ -1189,11 +1217,19 @@ async function main() {
   };
 
   const evictOldestKolRealtimeCandleTarget = () => {
-    if (kolRealtimeCandleTargets.size < KOL_REALTIME_CANDLE_TARGET_MAX) return;
-    const oldest = [...kolRealtimeCandleTargets.entries()]
-      .sort((left, right) => left[1].expiresAtMs - right[1].expiresAtMs)[0];
-    if (!oldest) return;
-    removeKolRealtimeCandleTarget(oldest[0], oldest[1].subscriptionPair);
+    const evictMints = selectKolCandleCoverageEvictions(
+      [...kolRealtimeCandleTargets.entries()].map(([mint, entry]) => ({
+        tokenMint: mint,
+        expiresAtMs: entry.expiresAtMs,
+      })),
+      KOL_REALTIME_CANDLE_TARGET_MAX
+    );
+    for (const mint of evictMints) {
+      const entry = kolRealtimeCandleTargets.get(mint);
+      if (!entry) continue;
+      log.debug(`[KOL_CANDLE_COVERAGE] capacity_evict ${mint.slice(0, 8)} (max=${KOL_REALTIME_CANDLE_TARGET_MAX})`);
+      removeKolRealtimeCandleTarget(mint, entry.subscriptionPair, 'capacity_evict');
+    }
   };
 
   const resolveKolRealtimePairs = async (tokenMint: string): Promise<DexScreenerPair[]> => {
@@ -1221,6 +1257,7 @@ async function main() {
 
   const ensureRealtimeCandleCoverage: BotContext['ensureRealtimeCandleCoverage'] = async (request) => {
     if (!realtimeModeEnabled || !heliusIngester || !realtimeCandleBuilder) return;
+    kolCandleCoverageTelemetry?.recordRequested();
 
     const contexts = heliusPoolRegistry.getObservedPairContexts(request.tokenMint);
     const orderedContexts = request.poolAddress
@@ -1270,6 +1307,7 @@ async function main() {
         resolvedPairs: resolverPairs,
         resolverReason,
       });
+      kolCandleCoverageTelemetry?.recordResolveMiss(resolverReason ?? 'no_context');
       log.info(
         `[KOL_CANDLE_COVERAGE] no_pool_context ${request.tokenMint.slice(0, 8)} ` +
         detail
@@ -1284,7 +1322,7 @@ async function main() {
     const expiresAtMs = now + ttlMs;
     const alreadyTracking = existing?.subscriptionPair === subscriptionPair && existing.expiresAtMs > now;
     if (existing && existing.subscriptionPair !== subscriptionPair) {
-      removeKolRealtimeCandleTarget(request.tokenMint, existing.subscriptionPair);
+      removeKolRealtimeCandleTarget(request.tokenMint, existing.subscriptionPair, 'replaced');
     } else if (!existing) {
       evictOldestKolRealtimeCandleTarget();
     } else {
@@ -1296,7 +1334,7 @@ async function main() {
     heliusIngester.setPoolMetadata(subscriptionPair, target.metadata);
 
     const timer = setTimeout(() => {
-      removeKolRealtimeCandleTarget(request.tokenMint, subscriptionPair);
+      removeKolRealtimeCandleTarget(request.tokenMint, subscriptionPair, 'ttl_expire');
     }, ttlMs);
     kolRealtimeCandleTargets.set(request.tokenMint, { subscriptionPair, expiresAtMs, timer });
 
@@ -1343,6 +1381,8 @@ async function main() {
     }
 
     await refreshRealtimeSubscriptions();
+    kolCandleCoverageTelemetry?.recordSubscribed(alreadyTracking);
+    if (seeded != null) kolCandleCoverageTelemetry?.recordSeedSwaps(seeded);
     log.info(
       `[KOL_CANDLE_COVERAGE] subscribed ${request.tokenMint.slice(0, 8)} ` +
       `pool=${subscriptionPair.slice(0, 8)} source=${target.pairSource} ` +
@@ -2157,6 +2197,7 @@ async function main() {
     kolTracker,
     dbPool,
     notifier,
+    kolCandleCoverageTelemetry,
   });
 }
 

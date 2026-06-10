@@ -139,6 +139,15 @@ export const kolHunter = {
   kolHunterQuickRejectPullbackThreshold: numEnv('KOL_HUNTER_QUICK_REJECT_PULLBACK_THRESHOLD', '0.10'),
   kolHunterQuickRejectWinnerSafeMfe: numEnv('KOL_HUNTER_QUICK_REJECT_WINNER_SAFE_MFE', '0.05'),
 
+  // 2026-06-10 (edge-audit 07 candle coverage root cause): KOL 후보 realtime candle 구독 knob.
+  // Why: observe-only 관측 인프라 — live entry/exit 판단에 영향 0. 2026-05-18 도입 당시
+  //   TTL 7분이 anchor+300s 관측 창보다 짧아 post_window_missing / candles_end_before_pre_window
+  //   버킷 (post-deploy anchor 의 7.5%) 발생 → default 15분으로 연장.
+  //   MAX 는 8 유지 (live 구간 실측 max concurrent 7, eviction 0건). resolution 개선 후
+  //   eviction telemetry 가 누적되면 env 로 상향 (Helius realtimeMaxSubscriptions=30 cap 내 clamp).
+  kolRealtimeCandleTargetMax: numEnv('KOL_REALTIME_CANDLE_TARGET_MAX', '8'),
+  kolRealtimeCandleTargetTtlMs: numEnv('KOL_REALTIME_CANDLE_TARGET_TTL_MS', String(15 * 60 * 1000)),
+
   // 2026-04-30 (Sprint 2.A1, 외부 학술 리포트 §exit two-layer): structural kill-switch.
   // Why: live 운영 15h 분석 — D-bucket 6건 (mae<-30%) 의 root cause 가 sell tx confirm 84s 동안
   //   가격 -10% → -34% 진행. universal hardcut (-10%) 만으로는 sellability 변화 못 잡음.

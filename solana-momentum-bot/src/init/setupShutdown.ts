@@ -17,6 +17,7 @@ import type {
   ReplayWarmSync,
   RealtimeAdmissionTracker,
   RealtimeAdmissionStore,
+  KolCandleCoverageTelemetry,
 } from '../realtime';
 import type { RuntimeDiagnosticsTracker } from '../reporting';
 import type { ExecutionLock } from '../state';
@@ -51,6 +52,8 @@ export interface ShutdownContext {
   kolTracker: { stop: () => Promise<void> } | null;
   dbPool: Pool;
   notifier?: Notifier;  // unused but kept for symmetry / future hooks
+  // 2026-06-10 (edge-audit 07): 관측 telemetry — 종료 직전 당일 partial snapshot flush
+  kolCandleCoverageTelemetry?: KolCandleCoverageTelemetry | null;
 }
 
 export function setupShutdown(c: ShutdownContext): void {
@@ -91,6 +94,10 @@ export function setupShutdown(c: ShutdownContext): void {
     await c.runtimeDiagnosticsTracker.flush().catch((error) => {
       log.warn(`Failed to persist runtime diagnostics snapshot: ${error}`);
     });
+    if (c.kolCandleCoverageTelemetry) {
+      c.kolCandleCoverageTelemetry.stop();
+      await c.kolCandleCoverageTelemetry.flush('interval').catch(() => {});
+    }
     await c.ingester.stop();
     c.eventMonitor.stop();
     c.universeEngine.stop();

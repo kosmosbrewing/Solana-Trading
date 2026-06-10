@@ -1,6 +1,7 @@
 import type { DexScreenerPair } from '../scanner/dexScreenerClient';
 import type { ObservedPairContext } from '../scanner/heliusPoolRegistry';
 import { SOL_MINT } from '../utils/constants';
+import { isWsSupportedPoolProgram } from './realtimeEligibility';
 import type { RealtimePoolMetadata } from './types';
 
 export type KolCandleCoveragePairSource = 'kol_tx_pool' | 'registry_context' | 'token_pair_resolver';
@@ -62,7 +63,10 @@ export function buildKolCandleCoverageTarget(input: {
   contexts: ObservedPairContext[];
   resolvedPair?: DexScreenerPair;
 }): KolCandleCoverageTarget | null {
-  if (input.poolAddress) {
+  // 2026-06-10 (coverage repair lever 1): kol_tx_pool 직행은 WS candle parser 가
+  // 해석 가능한 프로그램일 때만. 미지원 프로그램 (pump.fun bonding curve 등) pool 을
+  // 구독하면 candle 0 인 채 capacity slot 만 소모한다 — registry/resolver 경로로 fall through.
+  if (input.poolAddress && isWsSupportedPoolProgram(input.dexProgram)) {
     return {
       subscriptionPair: input.poolAddress,
       pairSource: 'kol_tx_pool',

@@ -87,6 +87,19 @@ export const SUPPORTED_REALTIME_POOL_PROGRAMS = new Map<string, Set<string>>([
   ['meteora', new Set([METEORA_DLMM_PROGRAM, METEORA_DAMM_V1_PROGRAM, METEORA_DAMM_V2_PROGRAM])],
 ]);
 
+// 2026-06-10 (coverage repair lever 1): WS candle parser 가 swap 을 해석할 수 있는
+// 프로그램의 flat union. kol_tx_pool 직행 구독의 사전 gate 로 사용 —
+// 미지원 프로그램 pool (예: pump.fun bonding curve) 을 구독하면 candle 0 인 채
+// capacity slot 만 소모한다 (edge-audit 07 의 (d') zero-candle 버킷).
+const WS_SUPPORTED_POOL_PROGRAM_UNION = new Set(
+  [...SUPPORTED_REALTIME_POOL_PROGRAMS.values()].flatMap((programs) => [...programs])
+);
+
+export function isWsSupportedPoolProgram(programId?: string | null): boolean {
+  if (!programId) return false;
+  return WS_SUPPORTED_POOL_PROGRAM_UNION.has(programId);
+}
+
 export function detectRealtimeDiscoveryMismatch(
   candidate: RealtimeDiscoveryCandidateMeta
 ): 'unsupported_dex' | 'non_sol_quote' | null {

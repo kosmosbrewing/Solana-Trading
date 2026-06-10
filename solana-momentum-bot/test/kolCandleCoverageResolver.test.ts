@@ -1,4 +1,6 @@
 import { buildKolCandleCoverageTarget } from '../src/realtime/kolCandleCoverageResolver';
+import { PUMP_SWAP_PROGRAM } from '../src/realtime/pumpSwapParser';
+import { PUMP_FUN_BONDING_CURVE_PROGRAM } from '../src/realtime/migrationEventDetector';
 import { SOL_MINT } from '../src/utils/constants';
 import type { DexScreenerPair } from '../src/scanner/dexScreenerClient';
 
@@ -22,11 +24,12 @@ function pair(overrides: Partial<DexScreenerPair> = {}): DexScreenerPair {
 }
 
 describe('kolCandleCoverageResolver', () => {
-  it('uses explicit KOL tx pool evidence first', () => {
+  it('uses explicit KOL tx pool evidence first when the program is WS-supported', () => {
     const target = buildKolCandleCoverageTarget({
       tokenMint: TOKEN,
       poolAddress: POOL,
       dexId: 'pumpswap',
+      dexProgram: PUMP_SWAP_PROGRAM,
       inputMint: SOL_MINT,
       outputMint: TOKEN,
       contexts: [],
@@ -41,6 +44,28 @@ describe('kolCandleCoverageResolver', () => {
         quoteMint: SOL_MINT,
       },
     });
+  });
+
+  it('skips kol_tx_pool when the program is not WS-parseable (zero-candle slot 방지)', () => {
+    // pump.fun bonding curve — 추출은 되지만 WS candle parser 미지원 → 직행 구독 금지.
+    const blocked = buildKolCandleCoverageTarget({
+      tokenMint: TOKEN,
+      poolAddress: POOL,
+      dexId: 'pumpfun',
+      dexProgram: PUMP_FUN_BONDING_CURVE_PROGRAM,
+      contexts: [],
+    });
+    expect(blocked).toBeNull();
+
+    // dexProgram 미상이면 (provenance 없는 pool 주소) 동일하게 직행 금지 — fallback 경로 사용.
+    const unknownProgram = buildKolCandleCoverageTarget({
+      tokenMint: TOKEN,
+      poolAddress: POOL,
+      dexId: 'pumpswap',
+      contexts: [],
+      resolvedPair: pair(),
+    });
+    expect(unknownProgram).toMatchObject({ pairSource: 'token_pair_resolver' });
   });
 
   it('falls back to registry context when tx pool is absent', () => {

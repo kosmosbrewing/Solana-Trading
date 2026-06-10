@@ -25,6 +25,8 @@ export {
   MIN_KOL_CANDLE_TARGET_TTL_MS,
 } from './kolCandleCoveragePolicy';
 export { KolCandleCoverageTelemetry } from './kolCandleCoverageTelemetry';
+export { extractKolSwapPool } from './kolSwapPoolExtractor';
+export type { KolSwapPoolExtraction, ParsedTxLike } from './kolSwapPoolExtractor';
 export type { KolCandleCoverageLimits, KolCandleCoverageEvictionEntry } from './kolCandleCoveragePolicy';
 export type {
   KolCandleCoverageRemovalCause,

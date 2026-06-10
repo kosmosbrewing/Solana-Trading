@@ -33,8 +33,17 @@
 - **병렬 감사 정합성 검증 (적대적 재계산)**: 판정 유지 (**YES_WITH_CAVEATS**, CRITICAL 0). E1/E2/E5-E7/E11-E17 전부 재현 (E2 독립 bootstrap 2,000 resample 일치). stale 인용 정정은 `EDGE_AUDIT_REPORT.md` **§8 Errata** 에 기록 (E9 saved 1.22→0.660 / ruin 13.5→5.98% — 06-07 이중계상 run 인용이 원인, 부호 불변; Phase 1 CI 는 cache 가 본문보다 더 음수 = 판정 강화 방향; E8/baseline-1 diagnostic-grade 단서; "미실행" 문구 모순 해소).
 - 신규 live 거래 0 / paid Helius 호출 0 / wallet floor 0.6 SOL 불변.
 
+### Coverage 수리 Lever 1 — KolTx poolAddress 추출 (같은 날 후속, 구현 완료)
+- ADR: [`docs/design-docs/kol-candle-coverage-repair-2026-06-10.md`](./docs/design-docs/kol-candle-coverage-repair-2026-06-10.md)
+- `src/realtime/kolSwapPoolExtractor.ts` (신규): getParsedTransaction 의 DEX instruction 계정 배열에서 프로그램별 인덱스로 pool 추출 (pure function). token-account 교차 검증으로 인덱스 오인 방지. Jupiter aggregator route 는 inner instruction 에서 추출 + `routeKind='aggregator'`.
+- `kolWalletTracker`: KolTx 에 `poolAddress/dexId/dexProgram/routeKind` 채움 → kolSignalHandler 가 이미 전달하던 필드라 `kol_tx_pool` 직행 구독 경로 (기존 dead, `requestPool=missing` 100%) 가 코드 변경 없이 활성화.
+- `kolCandleCoverageResolver`: 직행 구독은 **WS parser 지원 프로그램일 때만** (pump.fun bonding curve 는 추출만, 구독 차단 — zero-candle slot 소모 방지). `isWsSupportedPoolProgram` 헬퍼 신설.
+- Lever 2 (bonding curve WS parser) 는 보류 + 착수 trigger 3개 ADR §3 명시 (pumpfun 추출 비중 ≥30% / coverage 20% plateau / 차기 가설의 명시 요구).
+- 검증: extractor 7 tests + resolver gate 2 tests 신규. `check:fast` **211 suites / 2130 tests PASS**. 신규 paid API 0, live 판단 경로 변경 0.
+
 ### 잔여 follow-up (운영자 결정 대기)
-- KolTx `poolAddress` 파싱 + pump.fun bonding curve WS parser (coverage 50-80% 의 실제 해법, 별도 ADR)
+- **Lever 2**: pump.fun bonding curve WS parser (ADR §3 trigger 충족 시 착수)
+- 다음 observe run (운영자 승인 필요, paper/observe 모드): telemetry `resolveMiss` 분포 + `source=kol_tx_pool` 등장 + full coverage 재측정으로 Lever 1 효과 검증
 - `momentum-ops-bot` 잔여 폴링 점검 (Telegram 429) + VPS 비용 유지 여부 (audit §6-4)
 - 차기 신호 가설은 기존 로컬 데이터 offline 검증만 — kill criteria 는 audit §7 (기존 promotion gate 완화 불가)
 

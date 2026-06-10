@@ -31,6 +31,9 @@ import {
   lookupKolByAddress,
 } from '../kol/db';
 import type { KolTx, KolAction } from '../kol/types';
+// 2026-06-10 (coverage repair lever 1): DEX instruction 에서 pool 추출 —
+// kol_tx_pool 직행 candle 구독 경로 활성화 (edge-audit 07, no_pairs 73.4% 해소).
+import { extractKolSwapPool } from '../realtime/kolSwapPoolExtractor';
 
 const log = createModuleLogger('KolWalletTracker');
 
@@ -363,6 +366,10 @@ export class KolWalletTracker extends EventEmitter {
     const swap = detectSwapFromWalletPerspective(tx, walletAddress);
     if (!swap) return;
 
+    // 2026-06-10 (coverage repair lever 1): parsed tx 의 DEX instruction 에서 pool 추출.
+    // 실패해도 swap 감지/emit 은 그대로 진행 (추출은 enrichment, 필수 아님).
+    const poolInfo = extractKolSwapPool(tx, swap.tokenMint, walletAddress);
+
     const kolTx: KolTx = {
       kolId: wallet.id,
       walletAddress,
@@ -384,7 +391,12 @@ export class KolWalletTracker extends EventEmitter {
       //   `standard_rpc` 가 정확. 단 swap detection 자체가 SOL delta + token delta 추정이라
       //   `heuristic` 분류가 더 보수적 — 외부 reader 가 신뢰도 낮게 처리.
       parseSource: 'heuristic',
-      routeKind: 'unknown',
+      // 2026-06-10: instruction 기반 pool 추출 결과 — kolSignalHandler 의
+      // requestRealtimeCandleCoverage 가 그대로 전달해 kol_tx_pool 직행 구독에 사용.
+      poolAddress: poolInfo?.poolAddress,
+      dexId: poolInfo?.dexId,
+      dexProgram: poolInfo?.dexProgram,
+      routeKind: poolInfo?.routeKind ?? 'unknown',
     };
 
     if (isShadow) {

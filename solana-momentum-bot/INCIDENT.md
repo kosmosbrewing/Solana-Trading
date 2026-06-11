@@ -56,7 +56,15 @@
 - **배포 체크리스트 (이후 필수)**: ① local push ② VPS `git pull --ff-only` ③ `npm run build` ④ `pm2 restart momentum-bot` ⑤ 기동 로그에서 limits 라인 + `mode: paper` 확인.
 - **D+7 시계 재시작**: 정식 coverage 측정 = **2026-06-18** (6/10-11 구코드 구간은 pre-fix baseline 으로만 사용). 중간 읽기 D+3 (6/14): resolveMiss 분포 + pumpfun 비중 (레버 2 trigger 예비 판단).
 
+### 2026-06-11 (오후) — Helius 일 25% 소모 경보 → seed churn fix + 결제 보류 결정
+- 운영자 보고: 재가동 ~1일 만에 Helius quota 25% (~2.5M credits) 소모. 추가 결제 $50 검토 요청.
+- **귀속 ledger 분해 (27h)**: 총 295k credits 중 **73% = `recent_swap_backfill_batch`** — KOL coverage 구독이 TTL 만료 → 재구독될 때마다 같은 pool 의 recent-swap seed (getSignatures + 최대 80 getParsedTransaction) 를 재실행. 이 경로는 설계상 `REALTIME_SEED_BACKFILL_ENABLED=false` 를 무시함 (pre-entry candle 창 확보 목적).
+- **Fix 배포 (`e8a9ab9`)**: `KOL_REALTIME_CANDLE_SEED_COOLDOWN_MS` (default 30min) — pool 별 seed 최소 간격. 신규 pool 첫 seed 무영향, 재구독 churn 의 중복 호출만 차단. 손실 범위 = 미구독 공백의 60-120s lookback 한정.
+- **미해결 격차**: 대시보드 ~2.5M vs 귀속 295k — **~8배 차이**. 유력 후보: WS logsSubscribe notification 과금 (우리 ledger 는 우리가 발신한 RPC 호출만 기록 — 수신 push 는 미계상). 운영자 액션: Helius 대시보드 method 별 사용량 1분 확인으로 확정 필요.
+- **결정: 추가 결제 $50 보류** — mission v2 hard constraint (Helius ≤ $50/월) 위반 + observe run 의 가치 (telemetry 검증) 가 예산 2배를 정당화 못 함. quota 소진 시 fallback: D+3 (6/14) 중간 읽기까지 데이터 확보 → 봇 일시정지 → cycle reset (6/23 추정) 후 재개. 결제는 어떤 경우에도 안 함.
+
 ### 잔여 follow-up (운영자 결정 대기)
+- **Helius 대시보드 method 별 사용량 확인** (운영자, 1분) — 미귀속 ~2.2M 의 정체 (WS notification 의심) 확정
 - **Lever 2**: pump.fun bonding curve WS parser (ADR §3 trigger 충족 시 착수)
 - 다음 observe run (운영자 승인 필요, paper/observe 모드): telemetry `resolveMiss` 분포 + `source=kol_tx_pool` 등장 + full coverage 재측정으로 Lever 1 효과 검증
 - `momentum-ops-bot` 잔여 폴링 점검 (Telegram 429) + VPS 비용 유지 여부 (audit §6-4)

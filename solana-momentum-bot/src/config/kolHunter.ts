@@ -147,6 +147,11 @@ export const kolHunter = {
   //   eviction telemetry 가 누적되면 env 로 상향 (Helius realtimeMaxSubscriptions=30 cap 내 clamp).
   kolRealtimeCandleTargetMax: numEnv('KOL_REALTIME_CANDLE_TARGET_MAX', '8'),
   kolRealtimeCandleTargetTtlMs: numEnv('KOL_REALTIME_CANDLE_TARGET_TTL_MS', String(15 * 60 * 1000)),
+  // 2026-06-11 (Helius credit guard): 같은 pool seed backfill 의 최소 재실행 간격.
+  // Why: TTL 재구독마다 recent-swap backfill (getSignatures + 최대 80 getParsedTransaction)
+  //   이 재실행되어 일 ~200k credits 소모 (귀속 사용량의 73%). cooldown 은 재구독 churn 의
+  //   중복 호출만 차단 — 신규 pool 의 첫 seed 는 영향 없음. 0 = 기존 동작 (매 구독 seed).
+  kolRealtimeCandleSeedCooldownMs: numEnv('KOL_REALTIME_CANDLE_SEED_COOLDOWN_MS', String(30 * 60 * 1000)),
 
   // 2026-04-30 (Sprint 2.A1, 외부 학술 리포트 §exit two-layer): structural kill-switch.
   // Why: live 운영 15h 분석 — D-bucket 6건 (mae<-30%) 의 root cause 가 sell tx confirm 84s 동안

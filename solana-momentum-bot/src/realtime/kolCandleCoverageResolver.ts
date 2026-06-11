@@ -46,11 +46,29 @@ export function formatKolCandleCoverageMissDetail(input: {
 export function shouldSeedKolCandleCoverage(input: {
   alreadyTracking: boolean;
   globalSeedBackfillEnabled: boolean;
+  /** (2026-06-11 credit guard) 같은 pool 의 직전 seed 시각 — TTL 재구독 churn 의 중복 backfill 차단 */
+  lastSeededAtMs?: number | null;
+  nowMs?: number;
+  seedCooldownMs?: number;
 }): boolean {
   // KOL coverage is policy evidence for admission. It must not inherit the broad
   // bootstrap seed toggle; otherwise pre-entry candle windows stay empty in live.
   void input.globalSeedBackfillEnabled;
-  return !input.alreadyTracking;
+  if (input.alreadyTracking) return false;
+  // 2026-06-11: seed 1회 = getSignatures + getParsedTransactions 최대 80 credits.
+  // TTL 만료 → 재구독마다 재실행되어 일 ~200k credits 를 태웠다 (귀속 사용량의 73%).
+  // cooldown 내 재구독은 직전 구독 구간의 candle 이 이미 persist 되어 있어 손실이
+  // 미구독 공백 구간 (≤ lookback 60-120s) 으로 제한된다.
+  const cooldownMs = input.seedCooldownMs ?? 0;
+  if (
+    cooldownMs > 0
+    && input.lastSeededAtMs != null
+    && input.nowMs != null
+    && input.nowMs - input.lastSeededAtMs < cooldownMs
+  ) {
+    return false;
+  }
+  return true;
 }
 
 export function buildKolCandleCoverageTarget(input: {

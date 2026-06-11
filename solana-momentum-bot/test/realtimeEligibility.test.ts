@@ -248,6 +248,24 @@ describe('shouldSeedKolCandleCoverage', () => {
       globalSeedBackfillEnabled: true,
     })).toBe(false);
   });
+
+  it('blocks re-seed within the cooldown window (TTL churn credit guard)', () => {
+    const base = { alreadyTracking: false, globalSeedBackfillEnabled: false, seedCooldownMs: 1_800_000 };
+    // cooldown 내 재구독 → seed 차단
+    expect(shouldSeedKolCandleCoverage({
+      ...base, lastSeededAtMs: 1_000_000, nowMs: 1_000_000 + 1_799_999,
+    })).toBe(false);
+    // cooldown 경과 → 다시 seed
+    expect(shouldSeedKolCandleCoverage({
+      ...base, lastSeededAtMs: 1_000_000, nowMs: 1_000_000 + 1_800_000,
+    })).toBe(true);
+    // 첫 seed (이력 없음) 는 영향 없음
+    expect(shouldSeedKolCandleCoverage({ ...base, lastSeededAtMs: null, nowMs: 5 })).toBe(true);
+    // cooldown=0 = 기존 동작 유지
+    expect(shouldSeedKolCandleCoverage({
+      ...base, seedCooldownMs: 0, lastSeededAtMs: 1, nowMs: 2,
+    })).toBe(true);
+  });
 });
 
 describe('formatKolCandleCoverageMissDetail', () => {

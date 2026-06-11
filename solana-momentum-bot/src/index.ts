@@ -239,6 +239,8 @@ async function main() {
       filePath: path.join(config.realtimeDataDir, 'kol-candle-coverage-telemetry.jsonl'),
     })
     : null;
+  // 2026-06-11 (credit guard): pool 별 마지막 seed backfill 시각 — cooldown 판정용.
+  const kolCandleSeedLastMs = new Map<string, number>();
   if (realtimeModeEnabled) {
     log.info(
       `[KOL_CANDLE_COVERAGE] limits targetMax=${KOL_REALTIME_CANDLE_TARGET_MAX} ` +
@@ -1342,7 +1344,16 @@ async function main() {
     if (shouldSeedKolCandleCoverage({
       alreadyTracking,
       globalSeedBackfillEnabled: config.realtimeSeedBackfillEnabled,
+      // 2026-06-11 (credit guard): TTL 재구독 churn 의 중복 backfill 차단 — 비용 상세는 config 주석.
+      lastSeededAtMs: kolCandleSeedLastMs.get(subscriptionPair) ?? null,
+      nowMs: now,
+      seedCooldownMs: config.kolRealtimeCandleSeedCooldownMs,
     })) {
+      kolCandleSeedLastMs.set(subscriptionPair, now);
+      if (kolCandleSeedLastMs.size > 2000) {
+        // 무한 성장 방지 — oldest 절반 제거 (insertion order = 대체로 시간 순)
+        for (const key of [...kolCandleSeedLastMs.keys()].slice(0, 1000)) kolCandleSeedLastMs.delete(key);
+      }
       const lookbackSec = Math.max(60, Math.min(getRealtimeSeedLookbackSec(), 120));
       try {
         const recentSwaps = await heliusIngester.backfillRecentSwaps(subscriptionPair, {

@@ -24,6 +24,7 @@
 | H-004 | survivor momentum — t1 burst 추격 | **REJECTED** (2026-06-10 Phase 0) | T+30m gross −2.1% CI[−4.7,−0.6] n=142, first-per-pair −7.4% | H-008 |
 | H-005 | survivor momentum — t2 ratio+accel 지속 | **REJECTED** (동일) | T+30m gross −0.2% n=2,424 — 효율적, 비용 bar 못 넘음 | H-008 |
 | H-006 | survivor momentum — t3 consolidation breakout | **REJECTED** (동일) | T+30m gross −0.3% n=227 | H-008 |
+| H-009 | 메이저 페어 저빈도 룰 (long/flat) | **REJECTED** (2026-06-11 Phase 0, 영구) | 6/6 rule K1+K2 발동: recent-2y SOL 전부 음수 + maxDD 53~84%. 상세는 하단 TESTING 항목 | 없음 (kill criterion 5) |
 
 > 공통 음의 지식: **가격/거래량 모멘텀 추격은 우리 universe 들에서 전부 기각.**
 > 0.02 SOL ticket 의 고정비 13.6% 구조에서는 어떤 미세 edge 도 생존 불가.
@@ -49,7 +50,13 @@
 ## TESTING
 
 ### H-009 — 메이저 페어 저빈도 룰 기반 (long/flat) — **사전 등록 (2026-06-11, 결과 미확인 상태에서 커밋)**
-- 상태: `TESTING` (Phase 0 offline, 비용 $0)
+- 상태: **`REJECTED` (2026-06-11 같은 날, kill criterion 5 — 재검정 조건 없음, 영구)**
+- 판정: 6/6 rule 전부 K1 (recent-2y SOL post-cost ≤ 0: −19.9%~−72.7%) + K2 (maxDD 53~84% > 50%) 발동.
+  full-history 는 크게 양수 (+83%~+13,155% — TSMOM anomaly 실재 확인) → "원래 안 됨" 이 아니라
+  **"존재했던 edge 가 2024-06 이후 SOL 에서 사망"**. 구조 발견: 전 rule maxDD > 50% 는 역사상
+  최고 구간 포함 — 생존 우선 사명과 long/flat 메이저 추세는 **구조적 비호환**.
+  ETH recent-2y 양수 (+70.5%) 는 사후 자산 선택 → `hypothesis_only`, 등록 비권고 (§3 비호환 우선).
+  상세: `analysis/majors-lowfreq-phase0-2026-06-11/reports/PHASE0_REPORT.md`
 - 가설: BTC/ETH/SOL 4h 봉의 단순 룰 기반 long/flat 전략에 post-cost 양수 +
   buy&hold 대비 생존성 개선 (max DD 감소) 이 2024-06 이후 regime 에서도 존재한다.
 - 동기: TSMOM 은 문헌·실증 prior 가 있는 anomaly (우리가 측정한 밈코인 모멘텀과 다른 모집단).

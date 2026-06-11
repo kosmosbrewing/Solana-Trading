@@ -48,6 +48,14 @@
 - 한계: universe = 구독된 pool 한정 (1,334 pairs) / trigger 는 Python 근사 / entry=bar close (낙관) / 출생=first-seen proxy. 차기: coverage 레버 1 가동 신선 데이터 재검정 또는 holder/dev 행동 기반 새 trigger 사전 등록 (`FINDINGS.md` §4).
 - lane design 문서 status PHASE 0 REJECTED 로 갱신. 코드 구현 0, 매몰 0.
 
+### 2026-06-11 — D+1 스모크 체크가 배포 결함 2건 적발 (observe run 코드 불일치)
+- 운영자가 "6/17까지 기다리기 너무 길지 않냐" 질문 → D+1 스모크 체크 실행 → **VPS 가 구버전 코드로 observe run 재시작돼 있었음** 발견. 6/17까지 방치 시 7일 창 전체 무효였음.
+- 결함 1: 로컬 커밋 8개 (audit/수리/레버1/사명 v2) 미push — VPS 는 `939aaf4` 에 머묾. → push + `git pull --ff-only` (`888cc1c`).
+- 결함 2: pm2 가 `node dist/index.js` (컴파일 산출물) 실행 — **git pull 만으로 코드 미반영, `npm run build` 필수**. dist 가 6/10 11:12 빌드로 잔존. → VPS 빌드 + 재시작.
+- 검증: 02:57:29 재기동, `mode: paper` + `[KOL_CANDLE_COVERAGE] limits targetMax=8 ttlMs=900000` 출력, pm2 online, 에러 없음 (punycode deprecation 경고만).
+- **배포 체크리스트 (이후 필수)**: ① local push ② VPS `git pull --ff-only` ③ `npm run build` ④ `pm2 restart momentum-bot` ⑤ 기동 로그에서 limits 라인 + `mode: paper` 확인.
+- **D+7 시계 재시작**: 정식 coverage 측정 = **2026-06-18** (6/10-11 구코드 구간은 pre-fix baseline 으로만 사용). 중간 읽기 D+3 (6/14): resolveMiss 분포 + pumpfun 비중 (레버 2 trigger 예비 판단).
+
 ### 잔여 follow-up (운영자 결정 대기)
 - **Lever 2**: pump.fun bonding curve WS parser (ADR §3 trigger 충족 시 착수)
 - 다음 observe run (운영자 승인 필요, paper/observe 모드): telemetry `resolveMiss` 분포 + `source=kol_tx_pool` 등장 + full coverage 재측정으로 Lever 1 효과 검증

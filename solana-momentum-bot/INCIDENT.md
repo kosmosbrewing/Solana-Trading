@@ -63,9 +63,18 @@
 - **미해결 격차**: 대시보드 ~2.5M vs 귀속 295k — **~8배 차이**. 유력 후보: WS logsSubscribe notification 과금 (우리 ledger 는 우리가 발신한 RPC 호출만 기록 — 수신 push 는 미계상). 운영자 액션: Helius 대시보드 method 별 사용량 1분 확인으로 확정 필요.
 - **결정: 추가 결제 $50 보류** — mission v2 hard constraint (Helius ≤ $50/월) 위반 + observe run 의 가치 (telemetry 검증) 가 예산 2배를 정당화 못 함. quota 소진 시 fallback: D+3 (6/14) 중간 읽기까지 데이터 확보 → 봇 일시정지 → cycle reset (6/23 추정) 후 재개. 결제는 어떤 경우에도 안 함.
 
+### 2026-06-12 — 대시보드 확인으로 Helius 진단 확정 (가설 2개 기각, 플랜 사실 정정)
+- **운영자 대시보드 실측**: 사용 676,066 / **1,000,000** (reset 12일 후 ≈ 6/24). method 별 (6/11): GET_TRANSACTION 81,648 (96%) / GET_ACCOUNT_INFO 1,464 / GET_TOKEN_LARGEST_ACCOUNTS 1,083 / **WEBSOCKET_CONNECT 27**.
+- **정정 1 — WS notification 과금설 기각**: WS 비용은 27 credits. 소모의 정체는 전부 우리 발신 RPC 였고, 대시보드 ≈ 우리 ledger (6/11: 85k vs 100k, 시간대·집계 차이) — **attribution ledger 검증됨**.
+- **정정 2 — 플랜은 free tier 1M** (기존 기록 "Developer tier 10M" 은 outdated). "일 25%" = 1M 기준이었음. 6/11 분석의 "8배 미귀속 격차" 는 존재하지 않았다 — 10M 가정 + estimatedCredits×requestCount 이중 곱 (6/12 정정) 의 합작 오류.
+- **진짜 비용 구조**: GET_TRANSACTION ≈ ws_fallback_single (구독 pool swap 파서, 1/s 캡 근처에서 ~57k+/일) + kol_wallet_tracker + backfill. 일 ~85-100k = **free 1M 으로는 관측 run 자체가 월 10일 분량**.
+- **잔여 324k / 일 ~100k → ~6/15 소진 예상.** D+3 (6/14) 읽기는 확보 가능, D+7 (6/18) 은 무료로는 불가.
+- 결정 프레임 변경: "$50 추가 결제" 가 아니라 **"free → Developer ($49/월, 10M) 전환"** 질문이었고, mission v2 예산 (Helius ≤ $50/월) 은 이를 허용. 판단 = "H-007 데이터 수집에 월 $49 를 지금 투자하는가".
+
 ### 잔여 follow-up (운영자 결정 대기)
-- **Helius 대시보드 method 별 사용량 확인** (운영자, 1분) — 미귀속 ~2.2M 의 정체 (WS notification 의심) 확정
-- **Lever 2**: pump.fun bonding curve WS parser (ADR §3 trigger 충족 시 착수)
+- **Helius 유료 전환 여부** — H-007 1-2개월 commit 이면 전환 권고 / 아니면 6/14 확보 후 정지 → 6/24 reset 재개
+- **Lever 2**: pump.fun bonding curve WS parser (ADR §3 trigger 충족 시 착수 — 6/14 확정 예정)
+- seedSwaps=0 (seed 가 swap 파싱 실패) root cause — pre-window 완전성 영향, P2
 - 다음 observe run (운영자 승인 필요, paper/observe 모드): telemetry `resolveMiss` 분포 + `source=kol_tx_pool` 등장 + full coverage 재측정으로 Lever 1 효과 검증
 - `momentum-ops-bot` 잔여 폴링 점검 (Telegram 429) + VPS 비용 유지 여부 (audit §6-4)
 - 차기 신호 가설은 기존 로컬 데이터 offline 검증만 — kill criteria 는 audit §7 (기존 promotion gate 완화 불가)

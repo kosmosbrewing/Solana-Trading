@@ -32,20 +32,28 @@
 ## DATA_STARVED / REGISTERED (활성)
 
 ### H-007 — holder/dev 행동 기반 진입 (PRIMARY)
-- 상태: `DATA_STARVED`
+- 상태: `DATA_STARVED` — **2026-06-13 관측으로 데이터 미생산 확정** (`analysis/coverage-postfix-2026-06-13/FINDINGS.md` §3).
 - 가설: 10s 가격/거래량 bar 바깥의 정보 (holder 유입 속도 / dev wallet 행동 / 분포 변화) 가
-  survivor universe (검증된 손실 통제 필터) 위에서 진입 edge 를 제공한다.
-- 필요 데이터: token lifecycle mart (observe run 적립분 + tokenQualityInspector /
-  devWalletRegistry / holderDistribution join). 현재 token-quality obs 4,944 rows — N 부족.
-- 검정 조건: lifecycle mart 에 신규 토큰 ≥ 500 + holder 시계열 충족 시 Phase 0 사전 등록.
-- Kill: 등록 시 명시 (지금 정의 금지 — 데이터 보기 전 룰 확정 원칙).
+  survivor universe 위에서 진입 edge 를 제공한다.
+- **발견된 장애**: 현 observe run 구성은 H-007 신호 데이터를 생산하지 못한다. token-quality obs 는
+  point-in-time `operatorDevStatus`/`riskFlags` (거친 분류, 시계열 아님), holder snapshot stream 부재,
+  holder 수집은 Helius 비용 증가. 따라서 "더 돌리면 데이터 쌓임"이 성립 안 함.
+- 검정 경로 분기: 먼저 H-007a (저비용 proxy) 로 dev/quality 차원에 신호 유무부터 확인.
+
+### H-007a — dev/quality ex-ante 예측력 (H-007 의 $0 proxy) — **등록 (2026-06-13)**
+- 상태: `REGISTERED` (지금 실행 가능, API 0)
+- 가설: 이미 수집된 `token-quality-observations` 의 `operatorDevStatus`/`riskFlags` 가
+  markout forward outcome 을 ex-ante 예측한다 (dev/quality 차원에 신호 존재 여부).
+- 데이터: token-quality-observations (5,970 rows) ⋈ trade-markout-anchors/markouts (tokenMint+시점 join).
+- Kill: flag 별 forward outcome 분포가 무차별 (CI 0 포함) → dev/quality 차원 무신호 →
+  H-007 (holder 수집 투자) 기각. 신호 있으면 → holder 수집 정당화 후 H-007 본검정.
 
 ### H-008 — survivor momentum 재검정 (레버 1 신선 데이터)
-- 상태: `REGISTERED` (blocked by coverage D+7 측정, 2026-06-17)
-- 가설: H-004~006 의 기각이 universe 협소함 (구독 pool 1,334개) 의 산물일 가능성 검정.
-  레버 1 가동 후 확장된 universe 에서 **동일 trigger·동일 조건** 재실행.
-- Kill: 재실행에서도 전 trigger post-cost median 음수 → H-004~006 의 `REJECTED` 를
-  `RETIRED` 로 격상 (universe 탓 가설 소멸).
+- 상태: **`BLOCKED` (재검정 불가 — 2026-06-13)**
+- 결과: 레버 1 로 universe 확장은 실재 (no_pairs miss 73→19%) 했으나 **full candle coverage 10.7%**
+  (1.81%→5.9x 개선이지만 promotion-grade 95% 와 멀고, bonding curve 66% + 구독지연 33% 가 구조적 상한).
+  price-path 재검정에 필요한 coverage 미달 → H-004~006 재검정 무의미. 단 universe 탓 가설은 약화되었으므로
+  `RETIRED` 격상은 보류, bonding parser (레버 2) 후 재평가 가능.
 
 ## TESTING
 

@@ -71,10 +71,20 @@
 - **잔여 324k / 일 ~100k → ~6/15 소진 예상.** D+3 (6/14) 읽기는 확보 가능, D+7 (6/18) 은 무료로는 불가.
 - 결정 프레임 변경: "$50 추가 결제" 가 아니라 **"free → Developer ($49/월, 10M) 전환"** 질문이었고, mission v2 예산 (Helius ≤ $50/월) 은 이를 허용. 판단 = "H-007 데이터 수집에 월 $49 를 지금 투자하는가".
 
+### 2026-06-13 — Helius 1M 소진 → observe run 결과 분석 (D+7 측정 당겨서 실행)
+- 1M 월 quota 소진 (~6/12 22:07 UTC candle 수집 정지, 봇 429 스팸). 봇 정지 (paper, 자본 위험 0, 깨끗한 reset 대기).
+- 전 측정 로컬 데이터 / API 0. 산출: `analysis/coverage-postfix-2026-06-13/FINDINGS.md`.
+- **레버 1 = 기술 성공**: full candle coverage **1.81% → 10.7% (5.9x)**, no_pairs miss 73.4%→19%, kol_tx_pool 이 신규 구독의 94.8%, KolTx 추출률 71.1%.
+- **레버 2 trigger 결정적 충족**: KOL 매수 추출 pool 의 **65.8% 가 pump.fun bonding curve** (≥30% 기준 초과). bonding parser 없이 coverage 상한 ~34%.
+- **3대 구조 벽 확인** (FINDINGS §5): ① bonding curve 66% 관측 불가 ② 구독 지연 — covered anchor 의 33% 가 pre-entry 창 손실 ③ **신호 불일치 — candle coverage 는 price-path 완전성인데 price-path 모멘텀은 H-004/5/6 기각됨. H-007 (PRIMARY) 의 holder/dev 시계열은 이 run 이 미수집** (token-quality 는 point-in-time, holder snapshot stream 부재).
+- **Helius 회계**: 귀속 ~210k/run, ~100k/day. 월 1M = 이 구성 observe run ~10일 한계. holder 수집 추가는 비용 악화.
+- **결정 프레임**: 돈 쓰기 전 H-007a ($0 proxy — token-quality flag ⋈ markout forward) 로 dev/quality 신호 유무 먼저. 신호 無 → KOL-discovery 관측 종료. 봇은 6/24경 reset 까지 정지 유지.
+
 ### 잔여 follow-up (운영자 결정 대기)
-- **Helius 유료 전환 여부** — H-007 1-2개월 commit 이면 전환 권고 / 아니면 6/14 확보 후 정지 → 6/24 reset 재개
-- **Lever 2**: pump.fun bonding curve WS parser (ADR §3 trigger 충족 시 착수 — 6/14 확정 예정)
-- seedSwaps=0 (seed 가 swap 파싱 실패) root cause — pre-window 완전성 영향, P2
+- **H-007a $0 검정** (권고, 지금 가능) — dev/quality 차원 신호 유무 → Helius 결제·레버2 투자 정당성 판단
+- **Helius 유료 전환** — H-007a 신호 + holder 수집 commit 시에만. 무료로는 observe run 자체가 월 10일 한계
+- **Lever 2** (bonding parser) — H-007a 신호 확인 후에만 정당 (pre-migration = 최고 rug 위험 단계)
+- seedSwaps=0 root cause — pre-window 완전성 영향, P2
 - 다음 observe run (운영자 승인 필요, paper/observe 모드): telemetry `resolveMiss` 분포 + `source=kol_tx_pool` 등장 + full coverage 재측정으로 Lever 1 효과 검증
 - `momentum-ops-bot` 잔여 폴링 점검 (Telegram 429) + VPS 비용 유지 여부 (audit §6-4)
 - 차기 신호 가설은 기존 로컬 데이터 offline 검증만 — kill criteria 는 audit §7 (기존 promotion gate 완화 불가)

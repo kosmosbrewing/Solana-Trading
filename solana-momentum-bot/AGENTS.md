@@ -15,7 +15,7 @@
 
 ### Stage 2 (10분) — 현재 작업
 5. **[`REFACTORING_v1.0.md`](./REFACTORING_v1.0.md)** — Option 5 Phase 0-5 진행 상태
-6. **[`INCIDENT.md`](./INCIDENT.md)** — 최근 운영 관측 + 결정 연표
+6. **[`docs/INCIDENT_SUMMARY.md`](./docs/INCIDENT_SUMMARY.md)** — 인시던트 요약 (전체 연표는 `INCIDENT.md` — 필요 시에만)
 
 ### Stage 3 (필요 시)
 7. **[`ARCHITECTURE.md`](./ARCHITECTURE.md)** — 모듈 구조

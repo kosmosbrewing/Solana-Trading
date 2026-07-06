@@ -1,0 +1,18 @@
+# 민감 파일 — AI 컨텍스트 제외
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa*
+credentials*.json
+
+# 대용량 — AI 컨텍스트 제외
+node_modules/
+dist/
+build/
+.git/
+
+# 봇 수집 데이터/로그 (22G+)
+data/
+logs/

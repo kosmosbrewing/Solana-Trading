@@ -3,19 +3,18 @@
 ## 🚀 새 세션 진입 순서 (이 순서로 읽으세요)
 
 새 AI/사람 세션이 별도 지시 없이도 paradigm 을 자동 파악할 수 있도록 **이 순서로** 문서를 읽으세요.
-Stage 1-2 만 읽으면 (5-10분) 코드 변경 가능. Stage 3+ 는 필요 시.
+필수 2건만 읽으면 (2-3분) 코드 변경 가능. 나머지는 필요 시.
 
-### Stage 0 — 즉시 진입 (1-2분)
-1. **[`SESSION_START.md`](./SESSION_START.md)** — 1 페이지 hand-off. 1줄 신뢰 명령 / Lane 표 / Real Asset Guard / 금지 사항.
+### Stage 0-2 — 필수 (2-3분)
+1. **[`MISSION_CONTROL.md`](./MISSION_CONTROL.md)** — 6 control framework (survival/universe/payoff/execution/experiment/discipline)
+2. **[`docs/INCIDENT_SUMMARY.md`](./docs/INCIDENT_SUMMARY.md)** — 반복 패턴 교훈 + 최근 30일 인시던트 (왜 이 상태인가)
 
-### Stage 1 — Paradigm authority (5분)
-2. **[`MISSION_CONTROL.md`](./MISSION_CONTROL.md)** — 6 control framework (survival/universe/payoff/execution/experiment/discipline)
-3. **[`docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md`](./docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md)** — 현 active paradigm
-4. **[`docs/design-docs/mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md)** — 원 사명 정의 (historical 0.8 SOL; 현재 운영 floor 는 `SESSION_START.md`의 0.6 SOL)
-
-### Stage 2 — 현재 active 작업 (10분)
-5. **[`REFACTORING_v1.0.md`](./REFACTORING_v1.0.md)** — Option 5 Phase 0-5 진행 상태 (어디까지 왔나)
-6. **[`INCIDENT.md`](./INCIDENT.md)** — 최근 운영 관측 + 결정 연표 (왜 이 상태인가)
+### 필요 시 참조 (2026-07-05 필수 목록에서 강등 — 내용은 여전히 유효)
+- [`SESSION_START.md`](./SESSION_START.md) — 1 페이지 hand-off. 1줄 신뢰 명령 / Lane 표 / Real Asset Guard / 금지 사항.
+- [`REFACTORING_v1.0.md`](./REFACTORING_v1.0.md) — Option 5 Phase 0-5 진행 상태 (어디까지 왔나)
+- [`docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md`](./docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md) — 현 active paradigm
+- [`docs/design-docs/mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md) — 원 사명 정의 (historical 0.8 SOL; 현재 운영 floor 는 `SESSION_START.md`의 0.6 SOL)
+- [`INCIDENT.md`](./INCIDENT.md) — append-only 전체 연표 (요약은 `docs/INCIDENT_SUMMARY.md`)
 
 ### Stage 3 — 깊이 들어갈 때 (필요 시)
 7. **[`ARCHITECTURE.md`](./ARCHITECTURE.md)** — 모듈 구조 / 의존성 방향
@@ -31,7 +30,7 @@ Stage 1-2 만 읽으면 (5-10분) 코드 변경 가능. Stage 3+ 는 필요 시.
 ---
 
 ## Quick Reference (legacy, Stage 1-2 의 alias)
-- **운영 로그 / 거래 분석 표준 (2026-05-05)**: 먼저 `bash scripts/sync-vps-data.sh` 실행. DB dump 는 기본 사용 금지 (`RUN_TRADES_DUMP=true`일 때만). Helius `getTransfersByAddress` posterior 입력인 `data/research/kol-transfers.jsonl` 은 local-only 분석 캐시이며 sync 기본 rsync 제외 + API 호출 0건이다. stale 경고가 뜨면 `npm run kol:transfer-refresh` 를 별도 sidecar 로 실행한다. 판정 순서: `sync-health` → `kol-live-canary` → `kol-transfer-posterior` → `smart-v3-evidence` → `trade-markout` → `winner-kill` → `token-quality` → `kol-paper-arms`. 표준 판정 축은 freshness / KOL transfer posterior freshness / current-session 이후 entry / live closed-open-orphan / wallet-truth net SOL / actual T1-T2-5x / smart-v3 evidence / buy-sell T+ coverage / winner-kill / token-quality observations / wallet drift / recent ERROR-WARN. 결론은 `OK / WATCH / PAUSE_REVIEW / INVESTIGATE` 중 하나로 끝낸다. 공통 규칙은 [`AGENTS.md`](./AGENTS.md)의 "운영 로그 / 거래 분석 표준"을 따른다.
+- **운영 로그 / 거래 분석 표준 (2026-05-05)**: [`AGENTS.md`](./AGENTS.md)의 "운영 로그 / 거래 분석 표준" 섹션 참조 (원본 — sync 절차 / DB dump opt-in / kol-transfers.jsonl 캐시 규칙 / 판정 산출물 순서 / 표준 판정 축 / `OK · WATCH · PAUSE_REVIEW · INVESTIGATE` 결론 규칙 전부 그쪽이 기준).
 - **2026-06-10 Mission Refinement v2 (생존 우선 재정의)**: [`docs/design-docs/mission-refinement-v2-2026-06-10.md`](./docs/design-docs/mission-refinement-v2-2026-06-10.md) — 운영자 선언 채택. "1→100 빠르게" 명시 폐기, 목표 = 손실 통제 / 데이터 축적 / 소액 실전 검증 / 반복 가능한 승리 조건. 예산 hard constraint: Helius ≤$50/월, VPS $8/월, **예비금 $1,000 동결** (OFFLINE_COHORT_FOUND 전 투입 금지). 저빈도 × ex-ante 필터 × (검증 후) ticket 상향 = 실측 사망 원인 (고정비 13.5%@0.02) 직접 제거. 신규 lane 설계 초안: [`survivor-momentum-lane-design-2026-06-10.md`](./docs/design-docs/survivor-momentum-lane-design-2026-06-10.md) (DRAFT, Phase 0 offline 검증 전 코드 구현 금지). Gate/guard/floor 전부 불변.
 - **2026-06-10 KOL Candle Coverage Repair ADR**: [`docs/design-docs/kol-candle-coverage-repair-2026-06-10.md`](./docs/design-docs/kol-candle-coverage-repair-2026-06-10.md) — Lever 1 (KolTx poolAddress 추출 → `kol_tx_pool` 직행 구독, WS 지원 프로그램 gate) 구현 완료. Lever 2 (pump.fun bonding curve WS parser) 보류 + trigger 3개 명시. 차기 신호 가설 검증 인프라 (observe-only, live 판단 영향 0).
 - **2026-06-10 Edge Audit 최종 판정 `RETIRE_CURRENT_LIVE`**: [`analysis/edge-audit-2026-06-10/EDGE_AUDIT_REPORT.md`](./analysis/edge-audit-2026-06-10/EDGE_AUDIT_REPORT.md) — live wallet-truth 음수 확정 (475 closes / −1.128 SOL, P(net>0)=0.0000), 승격 통과 cohort 0. 신호 수명 ~60s × 왕복 고정비 13.6% × 5x tail 92% exit-후-발생 의 3중 자기모순. KOL-follow live (smart-v3/rotation/broad canary) archive, bot 정지 유지, 차기 신호 연구는 offline-only (kill criteria 는 report §7). 측정 부채 수리: offline-sim positionId dedup / token-only sanity clamp / jest ledger 오염 차단 + `ops:quarantine:synthetic-markouts` / candle 구독 TTL 15min + funnel telemetry (observe-only). 감사 prompt: [`docs/exec-plans/active/solone-edge-audit-prompt-2026-06-10.md`](./docs/exec-plans/active/solone-edge-audit-prompt-2026-06-10.md).

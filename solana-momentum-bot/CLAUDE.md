@@ -30,6 +30,7 @@
 ---
 
 ## Quick Reference (legacy, Stage 1-2 의 alias)
+- **⚠ 2026-07-08 기로 점검 (폐기 vs 재개) — 운영자 결정 대기**: [`20260708.md`](./20260708.md) — 엔지니어링 저력 증명 / edge 저력 미증명 (가설 7전 7패 + 구조 벽 3개). 마지막 $0 게이트 = **H-007a** (token-quality flags ⋈ markout forward, `HYPOTHESES.md`). 그 결과가 폐기/재개를 가른다. 결정 기록란은 문서 §8.
 - **운영 로그 / 거래 분석 표준 (2026-05-05)**: [`AGENTS.md`](./AGENTS.md)의 "운영 로그 / 거래 분석 표준" 섹션 참조 (원본 — sync 절차 / DB dump opt-in / kol-transfers.jsonl 캐시 규칙 / 판정 산출물 순서 / 표준 판정 축 / `OK · WATCH · PAUSE_REVIEW · INVESTIGATE` 결론 규칙 전부 그쪽이 기준).
 - **2026-06-10 Mission Refinement v2 (생존 우선 재정의)**: [`docs/design-docs/mission-refinement-v2-2026-06-10.md`](./docs/design-docs/mission-refinement-v2-2026-06-10.md) — 운영자 선언 채택. "1→100 빠르게" 명시 폐기, 목표 = 손실 통제 / 데이터 축적 / 소액 실전 검증 / 반복 가능한 승리 조건. 예산 hard constraint: Helius ≤$50/월, VPS $8/월, **예비금 $1,000 동결** (OFFLINE_COHORT_FOUND 전 투입 금지). 저빈도 × ex-ante 필터 × (검증 후) ticket 상향 = 실측 사망 원인 (고정비 13.5%@0.02) 직접 제거. 신규 lane 설계 초안: [`survivor-momentum-lane-design-2026-06-10.md`](./docs/design-docs/survivor-momentum-lane-design-2026-06-10.md) (DRAFT, Phase 0 offline 검증 전 코드 구현 금지). Gate/guard/floor 전부 불변.
 - **2026-06-10 KOL Candle Coverage Repair ADR**: [`docs/design-docs/kol-candle-coverage-repair-2026-06-10.md`](./docs/design-docs/kol-candle-coverage-repair-2026-06-10.md) — Lever 1 (KolTx poolAddress 추출 → `kol_tx_pool` 직행 구독, WS 지원 프로그램 gate) 구현 완료. Lever 2 (pump.fun bonding curve WS parser) 보류 + trigger 3개 명시. 차기 신호 가설 검증 인프라 (observe-only, live 판단 영향 0).

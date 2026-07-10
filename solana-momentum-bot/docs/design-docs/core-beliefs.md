@@ -1,5 +1,7 @@
 # Core Beliefs — 에이전트 우선 운영 원칙
 
+> Status: historical pre-pivot belief snapshot. 현재 정책은 `index.md`의 allowlist와 Mission v2를 따른다.
+
 ## 봇 원칙
 1. **이유 없이 추격하지 않는다** — 설명 불가 급등은 조작 가능성으로 간주
 2. **이벤트가 확인된 코인만 감시한다** — AttentionScore가 선행 컨텍스트

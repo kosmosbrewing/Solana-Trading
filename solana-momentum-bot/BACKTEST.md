@@ -1,5 +1,8 @@
 # 대량 백테스트 실행 계획
 
+> **2026-07-10 note:** retained offline workflow only. Backtest output cannot authorize live; all
+> promotion gates and the current `RETIRE_CURRENT_LIVE` decision remain binding.
+
 > Created: 2026-03-22
 > Updated: 2026-04-05 (replay-loop 병렬 백테스팅 + session-backtest + Strategy A/C dormancy)
 > Goal: 5분봉 대량 백테스트와 realtime micro replay를 분리해 각각의 역할로 edge를 검증한다

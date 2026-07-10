@@ -1,5 +1,8 @@
 # PLAN_CMPL.md
 
+> Status: completed/historical plan archive. Any `active` wording below reflects the archive date;
+> current status is [`SESSION_START.md`](./SESSION_START.md) and [`20260708.md`](./20260708.md).
+
 > Status: completed plan archive
 > Updated: 2026-03-31
 > Purpose: 완료된 `PLAN*` 및 dated canary/handoff 문서의 핵심 결론을 한곳에 보관한다.

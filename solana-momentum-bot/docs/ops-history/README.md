@@ -1,7 +1,11 @@
-Status: current
-Updated: 2026-04-07
-Purpose: live ops loop 반복 수행 시 `근거 -> 판단 -> 조치 -> 재확인 계획` 이력을 UTC 기준으로 누적 기록하는 규칙
-Use with: `docs/runbooks/live-ops-loop.md`, `CRITICAL_LIVE.md`
+Status: historical append-only archive
+Updated: 2026-07-10 (classification only; entries remain unchanged)
+Purpose: 과거 live ops loop의 `근거 -> 판단 -> 조치 -> 재확인 계획` 보존
+Current authority: `../../SESSION_START.md`, `../../MEMORY.md`, `../../20260708.md`
+
+> 2026-06-10 `RETIRE_CURRENT_LIVE` 이후 이 디렉터리는 현재 운영 상태나 실행 지시의
+> source of truth가 아니다. 날짜별 파일의 `Status: current`는 작성 당시 상태를 뜻한다.
+> 새 live ops entry는 새로운 운영자 승인과 promotion gate 통과 전에는 만들지 않는다.
 
 # Ops History
 

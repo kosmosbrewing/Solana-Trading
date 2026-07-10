@@ -1,6 +1,10 @@
 # Operations Guide
 
-> Last updated: 2026-05-19
+> **Status: suspended live/paper operations reference.** Current verdict is `RETIRE_CURRENT_LIVE`.
+> Do not execute deploy/restart/live commands in this document until a qualified cohort and explicit
+> operator decision exist. Read [`SESSION_START.md`](./SESSION_START.md) and [`MEMORY.md`](./MEMORY.md) first.
+
+> Last updated: 2026-05-19 (body snapshot); suspension banner updated 2026-07-10
 > Scope: VPS 배포 + paper 운영 점검 + risk tier demotion + live 운영 판단
 
 ---

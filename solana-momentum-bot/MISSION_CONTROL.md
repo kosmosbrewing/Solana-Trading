@@ -1,6 +1,11 @@
 # Mission Control Framework
 
-> Updated: 2026-05-19
+> **Current classification (2026-07-10): policy/reference, not live authorization.** Mission v2 and
+> `RETIRE_CURRENT_LIVE` supersede this document's 4~5월 live lane/status language. The reusable
+> controls (wallet truth, promotion gates, Real Asset Guard, experiment discipline) remain policy.
+> Current decision: [`20260708.md`](./20260708.md); mission: [`mission-refinement-v2-2026-06-10.md`](./docs/design-docs/mission-refinement-v2-2026-06-10.md).
+
+> Updated: 2026-05-19 (body snapshot); classification updated 2026-07-10
 > Document type: control-plane policy
 > Authority chain: `mission-refinement-2026-04-21.md` -> `mission-pivot-2026-04-18.md` -> `PLAN.md` / `MEASUREMENT.md` -> this document
 

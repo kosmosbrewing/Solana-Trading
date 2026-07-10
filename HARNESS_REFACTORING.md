@@ -1,5 +1,10 @@
 # HARNESS_REFACTORING.md — Solana Momentum Bot 하네스 리팩토링 계획
 
+> **Status: historical plan (2026-03 snapshot).** 당시의 파일 수, 테스트 수, gap, live 배포
+> 전제는 현재 사실이 아니다. 완료 여부와 현재 운영 규칙은 [`harness.md`](./harness.md),
+> [`AGENTS.md`](./AGENTS.md), [`solana-momentum-bot/SESSION_START.md`](./solana-momentum-bot/SESSION_START.md)를 따른다.
+> 이 문서는 도입 이력 보존을 위해 본문을 갱신하지 않는다.
+
 > **기준:** harness.md (shakilabs 에이전트 하네스 운영 가이드)
 > **대상:** solana-momentum-bot/ (~50 파일, ~7K LOC, Phase 0–4 완료)
 > **작성일:** 2026-03-18

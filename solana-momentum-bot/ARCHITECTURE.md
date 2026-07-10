@@ -1,5 +1,9 @@
 # ARCHITECTURE.md — Solana Momentum Bot
 
+> **2026-07-10 scope note:** module boundaries and retained runtime capability remain useful. Lane
+> status tables dated 4~5월 are historical inventory, not enabled/approved operation. Current state is
+> [`SESSION_START.md`](./SESSION_START.md); code truth is `src/`, `src/config/`, and tests.
+
 > 이 문서는 모듈 구조, 의존성 방향, 데이터 흐름을 정의한다.
 > 새 파일 생성 전 반드시 이 문서의 의존성 규칙을 확인하라.
 >
@@ -8,7 +12,7 @@
 
 ---
 
-## 0. 3-Layer Model (현 active)
+## 0. 3-Layer Model (retained architecture; lane status historical)
 
 본 프로젝트는 **3 paradigm 시대** (Pre-pivot → Mission-pivot → Mission-refinement → Option 5) 를 거쳤다.
 신규 lane 추가 시 기존 layer 가 변하지 않도록 다음 3 layer 분리:

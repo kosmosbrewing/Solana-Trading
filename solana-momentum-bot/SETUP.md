@@ -1,5 +1,10 @@
 # VPS 환경 구성 가이드
 
+> **Status: installation history/reference, not a deployment instruction.** Current policy forbids
+> deploy/restart/live activation pending H-007a and operator decision. Examples below may describe
+> legacy providers or live settings; validate against `package.json`, `src/config/`, and
+> [`SESSION_START.md`](./SESSION_START.md) before reuse. Never copy actual secrets into Git.
+
 > Vultr VPS (US) + Ubuntu 22.04 + TimescaleDB + Node.js 20
 > 목적: 백테스트 실행 + paper runtime 운영 + 라이브 전환 대비
 > Last updated: 2026-03-21

@@ -1,5 +1,9 @@
 # Measurement Framework (post-pivot, refined 2026-04-21)
 
+> **Current classification (2026-07-10): reusable measurement policy plus mission-v1 history.**
+> Wallet truth and promotion hygiene remain binding. The 200-live-trade/Option-5 operating goal is
+> superseded by Mission v2, `RETIRE_CURRENT_LIVE`, and H-007a. See [`SESSION_START.md`](./SESSION_START.md).
+
 > Updated: 2026-05-06
 > Goal: convexity 사명 하에서 전략 채택 / 승격 / 폐기 판정을 wallet truth 기준으로 내린다.
 > Authority chain: [`SESSION_START.md`](./SESSION_START.md) / [`MISSION_CONTROL.md`](./MISSION_CONTROL.md) (current operating override) → [`mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md) (historical refinement) → [`mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md) → 본 문서

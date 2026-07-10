@@ -1,5 +1,9 @@
 # Project Goals & Persona (post-pivot, refined 2026-04-21)
 
+> **Status: historical mission-v1 product snapshot.** The current project is a preserved research
+> and guard system under `RETIRE_CURRENT_LIVE`; Mission v2 and the H-007a decision gate supersede
+> the live-trade success criteria below. See [`SESSION_START.md`](./SESSION_START.md).
+
 > Updated: 2026-05-06
 > Authority chain: [`SESSION_START.md`](./SESSION_START.md) / [`MISSION_CONTROL.md`](./MISSION_CONTROL.md) (current operating override) → [`mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md) (historical refinement) → [`mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md) → 본 문서
 > Pre-pivot snapshot: [`docs/historical/pre-pivot-2026-04-18/PROJECT.md`](./docs/historical/pre-pivot-2026-04-18/PROJECT.md)

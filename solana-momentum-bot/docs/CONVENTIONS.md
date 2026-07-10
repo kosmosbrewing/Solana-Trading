@@ -29,9 +29,11 @@
 
 ## 환경변수
 
-- 모든 환경변수는 `src/utils/config.ts`에서 정의·참조
-- `process.env` 직접 접근 금지 (config.ts, logger.ts 제외)
-- 새 환경변수 추가 시 `.env.example`도 동시 업데이트
+- 새 환경변수는 `src/config/`의 도메인 section에서 정의한다.
+- 호출부는 호환성을 위해 `src/utils/config.ts` shim에서 import할 수 있다.
+- `process.env` 직접 접근은 `src/config/` 외에 새로 추가하지 않는다. executor/gate/bootstrap/test
+  경계의 legacy 직접 접근은 `MEMORY.md` Known Issue이며 현재 `env:check` 카탈로그 범위 밖이다.
+- 새 환경변수 추가 시 `.env.example`과 `.env.example.generated` 정합을 함께 확인한다.
 
 ## 로깅
 

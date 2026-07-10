@@ -1,5 +1,8 @@
 # `src/risk/paper/` — Pre-gate Phase Outputs
 
+> 2026-07-10: retained implementation reference. Any dated `현 상태` below is historical and does
+> not authorize paper/live runtime. See [`../../../SESSION_START.md`](../../../SESSION_START.md).
+
 > **Status**: ADR phase gate 미통과 산출물.
 > **Authority**: [`docs/design-docs/lane-edge-controller-kelly-2026-04-25.md`](../../../docs/design-docs/lane-edge-controller-kelly-2026-04-25.md) §10
 >

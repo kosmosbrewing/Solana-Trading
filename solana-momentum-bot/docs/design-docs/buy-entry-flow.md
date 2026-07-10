@@ -1,6 +1,6 @@
 # Buy/Entry Strategy — 전체 흐름 상세
 
-> Status: current
+> Status: historical pre-pivot implementation reference
 > Updated: 2026-04-05
 > Quick reference: [`STRATEGY.md`](../../STRATEGY.md)
 > Full spec: [`../product-specs/strategy-catalog.md`](../product-specs/strategy-catalog.md)

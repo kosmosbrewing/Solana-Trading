@@ -1,5 +1,9 @@
 # Realtime Edge Validation Guide
 
+> **Status: retained data/replay reference; collection runtime currently suspended.** Do not start
+> remote collection or paid API use from this guide while `RETIRE_CURRENT_LIVE` and H-007a decision
+> pending remain active. See [`SESSION_START.md`](./SESSION_START.md).
+
 > Created: 2026-03-22
 > Updated: 2026-04-05
 > Goal: Helius realtime shadow, historical swap backfill, micro replay를 하나의 실행 경로로 정리해 초봉 momentum edge를 검증한다

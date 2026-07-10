@@ -1,7 +1,10 @@
-Status: current
-Updated: 2026-04-08
-Purpose: VPS 운영 데이터 동기화부터 Codex 분석 요청, 후속 조치, loop history 기록까지 반복 루프를 고정
-Use with: `OPERATIONS.md`, `docs/ops-history/README.md`, `CRITICAL_LIVE.md`
+Status: historical runbook — suspended
+Updated: 2026-07-10 (classification only)
+Purpose: 2026-04 live ops loop 재현용 역사 문서
+Current authority: `../../SESSION_START.md`, `../../MEMORY.md`, `../../20260708.md`
+
+> `RETIRE_CURRENT_LIVE` 상태에서는 이 문서의 deploy/live/반복 운영 명령을 실행하지 않는다.
+> 본문은 당시 운영 절차를 재현하기 위해 보존한다.
 
 # Live Ops Loop Runbook
 

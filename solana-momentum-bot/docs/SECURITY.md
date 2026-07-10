@@ -22,7 +22,8 @@
 
 ## 환경변수 중앙화
 
-- 모든 민감 값은 `src/utils/config.ts`에서 파싱
+- 모든 민감 값은 `src/config/infraSecrets.ts` 등 `src/config/` 도메인 section에서 파싱한다.
+- `src/utils/config.ts`는 기존 import를 유지하는 shim이며 새 env 정의 위치가 아니다.
 - `process.env` 직접 접근 금지 (config.ts, logger.ts 제외)
 - config.ts에서 누락된 필수 변수는 시작 시 즉시 실패
 

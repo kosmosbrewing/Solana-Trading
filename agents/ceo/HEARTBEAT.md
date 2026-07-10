@@ -1,5 +1,12 @@
 # HEARTBEAT.md -- CEO Heartbeat Checklist
 
+> Solone override (2026-07-10): before the generic checklist, read
+> `solana-momentum-bot/SESSION_START.md` and `solana-momentum-bot/MEMORY.md` from the project
+> workspace. While
+> `RETIRE_CURRENT_LIVE` is active, do not create or advance deploy/live/spend work unless the
+> board/operator explicitly approved it. The default technical priority is freezing the H-007a
+> protocol or preservation.
+
 Run this checklist on every heartbeat. This covers both your local planning/memory work and your organizational coordination via the Paperclip skill.
 
 ## 1. Identity and Context

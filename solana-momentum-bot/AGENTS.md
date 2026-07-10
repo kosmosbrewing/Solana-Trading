@@ -1,81 +1,66 @@
 # AGENTS.md — Solana Momentum Bot
 
-## 🚀 새 세션 진입 순서 (Codex / Cursor / Claude Code 모두 동일)
+## Current Authority
 
-> 본 프로젝트는 **paradigm 이 여러 번 진화**했습니다 (pre-pivot → mission-pivot 2026-04-18 → mission-refinement 2026-04-21 → **Option 5 KOL Discovery 2026-04-23**).
-> 새 세션이 정확한 active paradigm 을 빠르게 파악하려면 **이 순서로** 읽으세요.
+1. [`20260708.md`](./20260708.md) — go/no-go 결정 대기
+2. [`HYPOTHESES.md`](./HYPOTHESES.md) — H-007a 선행조건과 기각 가설 원장
+3. [Mission v2](./docs/design-docs/mission-refinement-v2-2026-06-10.md) — 현재 mission
+4. [`docs/INCIDENT_SUMMARY.md`](./docs/INCIDENT_SUMMARY.md) — 마지막 검증된 운영 맥락
+5. [`SESSION_START.md`](./SESSION_START.md) / [`MEMORY.md`](./MEMORY.md) — 현재 hand-off, blocker, 검증 상태
+6. Source, `package.json`, tests — runtime capability/default; live 승인과는 별개
 
-### Stage 0 (1-2분)
-1. **[`SESSION_START.md`](./SESSION_START.md)** — 1 페이지 hand-off (Lane 표 + Real Asset Guard + 1줄 신뢰 명령)
+현재 판정은 `RETIRE_CURRENT_LIVE`; H-007a 프로토콜·결과와 운영자 결정 전 live 재개 금지다.
+Option 5, lane backlog, `REFACTORING_v1.0.md`, dated docs는 역사/구현 참고다.
 
-### Stage 1 (5분) — Paradigm authority
-2. **[`MISSION_CONTROL.md`](./MISSION_CONTROL.md)** — 6 control framework (survival/universe/payoff/execution/experiment/discipline)
-3. **[`docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md`](./docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md)** — **현 active paradigm**
-4. **[`docs/design-docs/mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md)** — 원 사명 정의 (historical 0.8 SOL; 현재 운영 floor 는 `SESSION_START.md`의 0.6 SOL)
+## Start Protocol
 
-### Stage 2 (10분) — 현재 작업
-5. **[`REFACTORING_v1.0.md`](./REFACTORING_v1.0.md)** — Option 5 Phase 0-5 진행 상태
-6. **[`docs/INCIDENT_SUMMARY.md`](./docs/INCIDENT_SUMMARY.md)** — 인시던트 요약 (전체 연표는 `INCIDENT.md` — 필요 시에만)
+- `git status --short --branch`와 대상 파일을 먼저 확인한다.
+- 사용자 변경과 append-only `INCIDENT.md`/ops history를 보존한다.
+- 구현 판단은 source, `package.json`, tests, tracked example/profile만 사용한다.
+- 원격 상태를 확인하지 않았으면 `Needs Verification`으로 남긴다.
 
-### Stage 3 (필요 시)
-7. **[`ARCHITECTURE.md`](./ARCHITECTURE.md)** — 모듈 구조
-8. **[`docs/debates/`](./docs/debates/)** — 의사결정 history
+## High-Risk Guard
 
-### 코드 작업 시작 전
-- 1줄 신뢰 명령: `npm run check:fast` (typecheck + jest + env drift)
-- Real Asset Guard (wallet floor 0.6 / KOL ticket 0.02 / default ticket 0.01 / default canary -0.3 / KOL canary -0.2 / drift halt 0.2 / max concurrent 3) **변경 금지**
-- `npm run check:strict` (lint + structure 포함) 빨강은 **Phase H2-H4 에서 점진 해소 deferred**, 의도
+- deploy, PM2 restart, live 전환, 지갑/예비금 사용, ticket/guard 완화는 별도 운영자 승인 없이는 금지.
+- 실제 `.env`, `.env.production`, private key, RPC/API token을 읽거나 출력하지 않는다.
+- tracked `ops/env/production.env`는 현재 판정과 충돌하는 역사적 live profile이다.
+- main의 `solana-momentum-bot/**` push는 자동 배포 workflow를 촉발할 수 있다.
+- wallet truth만 최종 손익 근거로 사용한다. DB PnL 단독 판정 금지.
 
-### 운영 로그 / 거래 분석 표준
-- 운영 분석은 먼저 `bash scripts/sync-vps-data.sh`를 실행해 로컬 `data/`, `logs/`, `reports/`를 같은 시점으로 맞춘다.
-- DB trades dump 는 기본 사용 금지. 필요할 때만 `RUN_TRADES_DUMP=true bash scripts/sync-vps-data.sh`로 opt-in 한다.
-- Helius `getTransfersByAddress` 기반 `data/research/kol-transfers.jsonl` 은 로컬 분석 캐시다. `sync-vps-data.sh`는 이 파일을 기본 rsync 제외하고 API를 호출하지 않는다. stale 경고가 뜨면 `npm run kol:transfer-refresh`를 별도 sidecar로 실행한다.
-- historical paper-shadow / promotion 판단은 sync 후 `npm run kol:historical-loss-report -- --realtime-dir data/realtime --min-rows 20 --max-p90-mfe 0.03 --md reports/historical-loss-miner-$(date -u +%F).md --json reports/historical-loss-miner-$(date -u +%F).json` 를 실행해 같은 시점의 fresh window 로 본다.
-- 분석 기준 산출물은 아래 순서로 본다.
-  1. `sync-health` daily report — 파일 freshness / row count / missing artifact 확인. `logs/bot.log`가 30분 이상 stale 이면 결론 보류.
-  2. `historical-loss-miner` report — `Promotion Watchlist`, `Paper Shadow Fresh Readiness`, `Paper Shadow Fresh Counters` 순서로 live-review/paper-shadow/wait-fresh/reject 를 본다. `READY_FOR_LIVE_REVIEW` 또는 `READY_FRESH_REVIEW`가 아니면 live 승격 금지.
-  3. `kol-live-canary` daily report — live canary wallet-truth, net SOL, actual 5x, Phase 4 gate. `phase4=PAUSE_REVIEW`면 승격 금지.
-  4. `kol-transfer-posterior` daily report — KOL별 rotation/smart-v3 fit posterior. 진단 전용이며 precise swap PnL 이 아니므로 정책 승격 전 gTFA drill-down 이 필요하다.
-  5. `smart-v3-evidence` daily report — smart-v3 projection + shared T+ 기반 cohort verdict. `minCov`는 close-anchor coverage이며, W/L은 copyable/wallet-first다.
-  6. `kol-live-equivalence` daily report — paper candidate 가 live 에서 막힌 게이트/사유와 해당 paper 성과를 후보 ID로 join 한다. live 승격/강등 논의의 1차 근거다.
-  7. `trade-markout` / `pure_ws` / `rotation` / `capitulation-rebound` daily reports — 실제 buy/sell/paper anchor 이후 T+ 관측률과 continuation. `coverage < 80%`이면 T+ 기반 결론은 보류한다. `capitulation-rebound`는 paper-only liquidity-shock 실험이며 live 승격 근거가 아니다.
-  8. `winner-kill` daily report — close 후 5x winner-kill rate. winner-kill 존재 시 exit/tail 정책을 먼저 검토한다.
-  9. `token-quality` daily report — token-quality / dev-candidate cohort. `observations=0`이면 dev-quality 결론 금지.
-  10. `kol-paper-arms` daily report — paper/shadow arm 비교. live 결정보다 낮은 권위.
-- 운영 판정은 wallet truth 를 우선한다. DB PnL 단독 판정 금지.
-- 표준 판정 축: sync freshness, historical-loss promotion watchlist/fresh readiness/fresh counters, KOL transfer posterior freshness, current session 이후 entry 유무, live closed/open/orphan, net SOL / max drawdown, actual MFE/T1/T2/5x, smart-v3 evidence verdict, live-equivalence block reason, rotation/pure_ws/capitulation paper verdict, buy/sell T+ markout coverage/continuation, winner-kill, token-quality observations, wallet drift, recent ERROR/WARN.
-- 한 줄 판정은 `OK / WATCH / PAUSE_REVIEW / INVESTIGATE` 중 하나로 끝낸다.
+## Code Rules
 
----
+1. 새 파일은 [`ARCHITECTURE.md`](./ARCHITECTURE.md)의 의존성 방향을 따른다.
+2. 새 env 정의는 `src/config/`의 도메인 section에 둔다. `src/utils/config.ts`는 import 호환 shim이다.
+   기존 executor/gate/bootstrap 직접 접근은 Known Issue이며 새 직접 접근을 추가하지 않는다.
+3. 외부 API는 기존 client/ingester를 경유하고 timeout·backoff·credit budget을 유지한다.
+4. `risk/`, `gate/`, executor, wallet/ledger 변경은 관련 테스트와 rollback 근거가 필수다.
+5. 변수·함수·에러는 영어, 설명·Why 주석은 한국어를 사용한다.
+6. 기각 가설은 재검정 조건 없이 다시 구현하지 않는다.
+7. H-007a는 기존 retro script와 다르다. 결과를 열람하기 전에 outcome/join/dedup/cohort/
+   N·coverage/통계 판정 계약을 커밋하고 운영자 승인을 받아야 한다.
 
-## 프로젝트 개요
-- 한 줄 설명: Convexity-first Solana momentum/sniper bot (Option 5: KOL Discovery + 자체 Execution)
-- 스택: TypeScript, `@solana/web3.js`, Jupiter, TimescaleDB, Winston, pm2
-- 모드: `paper` / `live` (`TRADING_MODE`)
-- 아키텍처 기준: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
-- 현 active paradigm: [`docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md`](./docs/design-docs/option5-kol-discovery-adoption-2026-04-23.md)
-- 이전 pivot (하위 권위): [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md)
+## Documentation Rules
 
-## 현재 우선 문서
+- 현재 사실은 README/SESSION_START/MEMORY/HYPOTHESES에 반영한다.
+- `docs/design-docs/mission-refinement-v2-2026-06-10.md` 외 design/report/ops-history 본문은 당시 스냅샷으로 보존한다.
+- current vs historical 분류는 [`docs/design-docs/index.md`](./docs/design-docs/index.md)에서 관리한다.
+- project `MEMORY.md`에는 가변 상태만 기록하고 정책은 이 파일/mission 문서에 둔다.
 
-- 현재 진입/운영 기준은 `SESSION_START.md`, `MISSION_CONTROL.md`, `STRATEGY.md`, `OPERATIONS.md`, `docs/design-docs/lane-operating-refactor-2026-05-03.md`, `docs/exec-plans/active/20260503_BACKLOG.md`를 우선한다.
-- 오래된 pivot/mission 문서는 historical context 로만 본다. 현재 판단과 충돌하면 최신 lane/refactor 문서를 따른다.
+## Validation
 
-## 에이전트 작업 규칙
+```bash
+npm run check:fast
+npm run docs:lint
+npm run build
+```
 
-1. 새 파일 생성 전 [`ARCHITECTURE.md`](./ARCHITECTURE.md)의 의존성 방향을 확인한다.
-2. 외부 API 호출은 반드시 해당 client 모듈을 경유한다. 직접 `axios` 호출 금지.
-3. 환경변수는 반드시 `src/utils/config.ts`에서 정의·참조한다. `process.env` 직접 접근 금지.
-4. 파일당 200줄 이내를 지향한다. 300줄 초과 시 분리를 우선 검토한다.
-5. 변수명·함수명·에러 메시지는 영어, 주석은 한국어를 사용한다.
-6. 새 전략 추가 시 `docs/design-docs/`에 설계 문서를 먼저 작성한다.
-7. `risk/` 또는 `gate/` 변경 시 관련 테스트를 반드시 갱신한다.
+- 변경 범위가 넓으면 `npm run check:strict`도 실행한다.
+- `deploy:preflight`는 배포 없는 정적 점검에만 사용한다.
+- 미실행 항목, 외부 상태, 데이터 부족은 이유와 리스크를 보고한다.
 
-## 문서 정리 원칙
+## Handoff Format
 
-- 현재 동작의 기준은 `docs/design-docs/mission-pivot-2026-04-18.md`, `PLAN.md`, `docs/exec-plans/active/1sol-to-100sol.md`, `STRATEGY.md`, `OPERATIONS.md` 순서로 우선한다.
-- 완료된 root plan/handoff는 `PLAN_CMPL.md`로 이관하고, 원본 파일은 필요 없으면 삭제한다.
-- dated handoff는 historical note로만 유지하고, 현재 판단과 충돌하면 최신 plan 문서를 따른다.
-- 중복 메모는 남기지 않는다. 새로운 운영 해석은 기존 handoff를 덧붙이기보다 기준 문서에 흡수한다.
-- root stub 파일은 `README.md`나 active 문서 목록에 개별 나열하지 않는다.
-- Pre-pivot 문서(2026-04-18 이전)는 `docs/historical/pre-pivot-2026-04-18/`에 보존한다 — 현재 판정 근거로 사용 금지.
+- 변경 파일과 코드 근거
+- 검증 명령과 결과
+- `Blocked` / `Needs Verification`
+- 거래·secret·배포 관련 미수행 사항

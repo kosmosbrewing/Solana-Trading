@@ -1,6 +1,7 @@
 # PLAN.md
 
-> Status: current mission charter (post-pivot, refined 2026-04-21)
+> Status: historical mission-v1 charter; superseded by Mission v2 and `RETIRE_CURRENT_LIVE`
+> Current decision: [`20260708.md`](./20260708.md) / [`HYPOTHESES.md`](./HYPOTHESES.md)
 > Updated: 2026-05-06
 > Purpose: 이 저장소의 장기 목표, 운영 원칙, 문서 계층을 고정한다.
 > **Authority chain**: [`SESSION_START.md`](./SESSION_START.md) / [`MISSION_CONTROL.md`](./MISSION_CONTROL.md) (current operating override) → [`mission-refinement-2026-04-21.md`](./docs/design-docs/mission-refinement-2026-04-21.md) (historical refinement) → [`mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md) → 본 문서

@@ -1,73 +1,66 @@
-#!/bin/bash
-# Why: 문서가 코드와 괴리되면 에이전트가 잘못된 컨텍스트로 작업한다
-# 사용: bash scripts/check-docs-freshness.sh
-
+#!/usr/bin/env bash
+# Why: current/historical drift can turn an old live runbook into a capital-risk instruction.
 set -euo pipefail
 
-FAIL=0
+fail=0
 
-echo "=== AGENTS.md 존재 확인 ==="
-if [ ! -f AGENTS.md ]; then
-  echo "❌ AGENTS.md 누락"
-  FAIL=$((FAIL + 1))
-else
-  lines=$(wc -l < AGENTS.md)
-  if [ "$lines" -gt 100 ]; then
-    echo "❌ AGENTS.md가 ${lines}줄 (100줄 초과)"
-    FAIL=$((FAIL + 1))
-  else
-    echo "✅ AGENTS.md 존재 (${lines}줄)"
+require_file() {
+  local path="$1"
+  if [[ ! -e "$path" ]]; then
+    echo "[docs-freshness] MISSING: $path" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+require_text() {
+  local path="$1"
+  local text="$2"
+  if [[ -f "$path" ]] && ! grep -Fq "$text" "$path"; then
+    echo "[docs-freshness] STALE: $path missing '$text'" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+for path in \
+  AGENTS.md \
+  ARCHITECTURE.md \
+  README.md \
+  SESSION_START.md \
+  MEMORY.md \
+  HYPOTHESES.md \
+  20260708.md \
+  docs/design-docs/index.md \
+  docs/design-docs/mission-refinement-v2-2026-06-10.md; do
+  require_file "$path"
+done
+
+if [[ -f AGENTS.md ]]; then
+  lines=$(wc -l < AGENTS.md | tr -d ' ')
+  if [[ "$lines" -gt 100 ]]; then
+    echo "[docs-freshness] AGENTS.md is ${lines} lines (>100)" >&2
+    fail=$((fail + 1))
   fi
 fi
 
-echo ""
-echo "=== ARCHITECTURE.md 존재 확인 ==="
-if [ ! -f ARCHITECTURE.md ]; then
-  echo "❌ ARCHITECTURE.md 누락"
-  FAIL=$((FAIL + 1))
-else
-  echo "✅ ARCHITECTURE.md 존재"
-fi
+require_text README.md 'RETIRE_CURRENT_LIVE'
+require_text SESSION_START.md 'H-007a Is Not Yet Execution-Ready'
+require_text HYPOTHESES.md 'PROTOCOL_REQUIRED'
+require_text MEMORY.md '### Needs Verification'
+require_text docs/design-docs/index.md 'Current allowlist'
+require_text docs/design-docs/index.md 'Superseded Operating Paradigms'
 
-echo ""
-echo "=== docs/design-docs/index.md 존재 확인 ==="
-if [ ! -f docs/design-docs/index.md ]; then
-  echo "❌ docs/design-docs/index.md 누락"
-  FAIL=$((FAIL + 1))
-else
-  echo "✅ docs/design-docs/index.md 존재"
-fi
-
-echo ""
-echo "=== AGENTS.md 내 경로 참조 검증 ==="
-# AGENTS.md에서 backtick으로 감싼 경로를 추출하여 존재 확인
-grep -oE '`[^`]+\.(md|txt)`' AGENTS.md | tr -d '`' | while read -r docpath; do
-  if [ ! -e "$docpath" ]; then
-    echo "❌ AGENTS.md에서 참조하는 $docpath 가 존재하지 않음"
-    # subshell이므로 FAIL 직접 증가 불가, 표준 에러로 출력
-    echo "DOCFAIL" >&2
+# AGENTS.md의 backtick Markdown/text path는 실제 파일이어야 한다.
+while IFS= read -r docpath; do
+  [[ -z "$docpath" ]] && continue
+  if [[ ! -e "$docpath" ]]; then
+    echo "[docs-freshness] AGENTS.md broken path: $docpath" >&2
+    fail=$((fail + 1))
   fi
-done 2>/tmp/doccheck_errors
+done < <(grep -oE '`[^`]+\.(md|txt)`' AGENTS.md | tr -d '`' | sort -u || true)
 
-if [ -s /tmp/doccheck_errors ]; then
-  DOCFAILS=$(wc -l < /tmp/doccheck_errors)
-  FAIL=$((FAIL + DOCFAILS))
-fi
-rm -f /tmp/doccheck_errors
-
-echo ""
-echo "=== docs/exec-plans/active/ 비어있지 않은지 확인 ==="
-if [ -z "$(ls -A docs/exec-plans/active/ 2>/dev/null)" ]; then
-  echo "⚠️  활성 실행 계획 없음 (docs/exec-plans/active/ 비어있음)"
-else
-  echo "✅ 활성 실행 계획 존재"
-fi
-
-echo ""
-echo "=== 결과 ==="
-if [ "$FAIL" -gt 0 ]; then
-  echo "❌ 문서 검증 실패 ($FAIL errors)"
+if [[ "$fail" -ne 0 ]]; then
+  echo "[docs-freshness] failed with $fail issue(s)" >&2
   exit 1
 fi
 
-echo "✅ 문서 검증 통과"
+echo "[docs-freshness] passed"

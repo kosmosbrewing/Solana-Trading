@@ -5,12 +5,16 @@
 > 1. **결과를 보기 전에 등록한다** — 룰·파라미터·판정 조건을 먼저 커밋하고 검정한다.
 > 2. 기각된 가설의 재제안 금지 — 명시된 재검정 조건 충족 시에만 새 항목으로 재등록.
 > 3. 사후 발견 cohort/슬라이스는 `hypothesis_only` 라벨로 별도 등록 (승격 증거 아님).
-> 4. 상태: `REGISTERED`(등록) / `TESTING`(검정 중) / `DATA_STARVED`(데이터 대기) /
+> 4. 상태: `PROTOCOL_REQUIRED`(가설 의도만 등록, 판정 계약 고정 전) / `REGISTERED`(판정 계약까지 등록) /
+>    `TESTING`(검정 중) / `DATA_STARVED`(데이터 대기) /
 >    `CANDIDATE`(Phase 0 통과, 다음 gate 대기) / `REJECTED`(기각) / `RETIRED`(영구 폐기)
-> 5. promotion gate (N≥100 / chrono OOS / wallet-stress / mirror≥30 / sign≥85%) 는
+> 5. promotion gate (N≥100 / active days≥5 / promotion-grade join≥95% / chrono OOS /
+>    wallet-stress / paired mirror≥30 / sign agreement≥85%) 는
 >    어느 가설에도 완화 불가 (`MISSION_CONTROL.md`, mission v2 ADR §6).
 
-마지막 갱신: 2026-06-11
+마지막 가설 의도 갱신: 2026-06-13 (H-007a 제안)
+현재 결정 상태 확인: 2026-07-10 — H-007a `PROTOCOL_REQUIRED`, 전용 runner/result 없음,
+운영자 최종 결정 대기 ([`20260708.md`](./20260708.md)).
 
 ---
 
@@ -40,13 +44,17 @@
   holder 수집은 Helius 비용 증가. 따라서 "더 돌리면 데이터 쌓임"이 성립 안 함.
 - 검정 경로 분기: 먼저 H-007a (저비용 proxy) 로 dev/quality 차원에 신호 유무부터 확인.
 
-### H-007a — dev/quality ex-ante 예측력 (H-007 의 $0 proxy) — **등록 (2026-06-13)**
-- 상태: `REGISTERED` (지금 실행 가능, API 0)
+### H-007a — dev/quality ex-ante 예측력 (H-007 의 $0 proxy) — **가설 의도 등록 (2026-06-13)**
+- 상태: `PROTOCOL_REQUIRED` (API 비용은 0이지만 아직 실행·결과 열람 금지)
 - 가설: 이미 수집된 `token-quality-observations` 의 `operatorDevStatus`/`riskFlags` 가
   markout forward outcome 을 ex-ante 예측한다 (dev/quality 차원에 신호 존재 여부).
 - 데이터: token-quality-observations (5,970 rows) ⋈ trade-markout-anchors/markouts (tokenMint+시점 join).
-- Kill: flag 별 forward outcome 분포가 무차별 (CI 0 포함) → dev/quality 차원 무신호 →
-  H-007 (holder 수집 투자) 기각. 신호 있으면 → holder 수집 정당화 후 H-007 본검정.
+- 판정 방향: flag 별 forward outcome 분포가 무차별이면 dev/quality 차원 무신호로 H-007 투자
+  근거가 닫히고, 신호가 있으면 holder 수집과 H-007 본검정 검토로 이동한다.
+- **실행 전 고정·승인할 계약**: horizon/outcome axis, entry-time join tolerance와 tie-break,
+  dedup 단위, flag whitelist/control cohort, 최소 N/coverage, CI 방식·alpha, multiple-testing 처리,
+  결측/중복 규칙, 최종 verdict 표. 이 계약을 별도 문서로 커밋하고 운영자가 승인하기 전에는
+  join 결과를 생성·열람하거나 cohort를 선택하지 않는다.
 
 ### H-008 — survivor momentum 재검정 (레버 1 신선 데이터)
 - 상태: **`BLOCKED` (재검정 불가 — 2026-06-13)**

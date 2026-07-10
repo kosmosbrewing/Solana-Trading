@@ -1,6 +1,8 @@
 # STRATEGY.md (post-pivot)
 
-> Status: current quick reference
+> Status: implemented runtime inventory / historical operating reference; not live authorization
+> Current verdict: `RETIRE_CURRENT_LIVE`; all 4~5월 lane statuses below are historical.
+> Current decision: [`20260708.md`](./20260708.md) / [`HYPOTHESES.md`](./HYPOTHESES.md)
 > Updated: 2026-05-19
 > Purpose: 현재 runtime 에서 읽어야 할 전략 / gate / risk / 핵심 파라미터를 짧게 정리한다.
 > Pivot decision: [`docs/design-docs/mission-pivot-2026-04-18.md`](./docs/design-docs/mission-pivot-2026-04-18.md)

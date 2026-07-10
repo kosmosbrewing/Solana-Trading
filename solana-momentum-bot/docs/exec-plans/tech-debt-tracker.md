@@ -1,5 +1,8 @@
 # Tech Debt Tracker
 
+> Status: historical 2026-04 tracker. Do not treat open rows as current priority without source/test
+> re-verification. Current P0 items are in [`../../MEMORY.md`](../../MEMORY.md).
+
 > Last updated: 2026-04-12
 > Scope: 현재 운영과 직접 맞닿은 기술 부채만 남긴다.
 > Related: [`active/exit-execution-mechanism-2026-04-08.md`](./active/exit-execution-mechanism-2026-04-08.md) (TD-15 참조)

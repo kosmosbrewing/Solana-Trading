@@ -2,7 +2,9 @@
 
 > 원본: [`../INCIDENT.md`](../INCIDENT.md) — append-only 전체 연표 (2026-04-22 ~ ). 이 문서는 요약본이다.
 > 세부 수치·판정 근거·QA 이력·미해결 gap 은 반드시 원본에서 확인하라. 원본은 절대 수정/삭제 금지.
-> 요약 갱신: 2026-07-05 (원본 최신 항목: 2026-06-13)
+> 요약 갱신: 2026-07-10 (원본 최신 incident: 2026-06-13; 2026-07-08 결정 지원 평가 반영)
+> 현재 상태: `RETIRE_CURRENT_LIVE` 유지 / H-007a `PROTOCOL_REQUIRED` / 운영자 최종 결정 대기.
+> 결정 트리: [`../20260708.md`](../20260708.md). 원격 runtime 상태는 별도 검증 전 확정하지 않는다.
 
 ## 1. 반복 패턴별 교훈
 
@@ -50,6 +52,7 @@
 - **06-11 D+1 스모크가 배포 결함 2건 적발** — 로컬 8 commits 미push + VPS dist 미빌드. 배포 체크리스트 5단계 확립, D+7 시계 6/18 재시작.
 - **06-11~12 Helius quota 사건** — 일 25% 소모 → seed cooldown fix (`e8a9ab9`) → 대시보드 실측으로 free 1M 플랜 확정, 과금 가설 2개 기각, attribution ledger 검증됨. 추가 결제 보류.
 - **06-13 Helius 1M 소진 → 봇 정지** (paper, 자본 위험 0, ~6/24 reset 대기). observe run 조기 분석 (`analysis/coverage-postfix-2026-06-13/FINDINGS.md`): coverage 1.81%→10.7% (Lever 1 기술 성공), pump.fun bonding 65.8% (Lever 2 trigger 충족), 3대 구조 벽 (bonding 관측 불가 / 구독 지연 33% / H-007 holder 시계열 미수집). 결정 프레임: 돈 쓰기 전 H-007a $0 proxy 검정 먼저.
+- **07-08 폐기 vs 재개 평가** — 엔지니어링 저력은 증명, edge 저력은 미증명·부정 증거 누적. 최종 판단 전 남은 gate를 H-007a 하나로 고정했다. 이 항목은 incident가 아니라 decision-support 기록이며 결과/운영자 결정은 아직 없다.
 - **미결 (운영자 결정 대기)**: H-007a $0 검정 / Helius 유료 전환 (신호 + holder 수집 commit 시에만) / Lever 2 (H-007a 신호 확인 후에만) / seedSwaps=0 root cause (P2) / 다음 observe run 승인 / momentum-ops-bot 잔여 폴링 + VPS 비용 유지 여부.
 
 ## 3. 전체 이력
